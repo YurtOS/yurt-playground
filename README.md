@@ -15,9 +15,11 @@ port the guest is already listening on. There is no hosted
 ## Status — repo is bootstrapped, page is not built yet
 
 This repository exists so the page, pins, local COOP/COEP server, and Playwright
-acceptance have a home. The first demo (ash in Chromium) is tracked in GitHub
-issues and is blocked on kernel PTY/dial PRs and the `yurt-ports` playground
-image.
+acceptance have a home. Tracking is
+[#1](https://github.com/YurtOS/yurt-playground/issues/1). The first demo (ash in
+Chromium) is [#2](https://github.com/YurtOS/yurt-playground/issues/2) and is
+blocked on kernel PTY/dial PRs and the `yurt-ports` playground image
+([#52](https://github.com/YurtOS/yurt-ports/issues/52)).
 
 Plan:
 [`docs/superpowers/plans/2026-08-17-browser-yurt-playground.md`](./docs/superpowers/plans/2026-08-17-browser-yurt-playground.md).
