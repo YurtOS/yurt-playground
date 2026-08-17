@@ -1,0 +1,14 @@
+# Pinned blobs — hashes live in artifacts/pins.json
+artifacts/*.wasm
+artifacts/*.yurtimg
+artifacts/*.yurtpkg
+
+# Local / generated
+/dist
+/node_modules
+.DS_Store
+*.log
+
+# Worktrees
+.worktrees/
+worktrees/
