@@ -44,20 +44,13 @@ async function ensureBundle(): Promise<void> {
       "self.location.href",
     ),
   );
-  const workerOut = join(repoRoot, "public/worker_bootstrap.ts");
   await bundle(kernel, {
     entry: join(
       kernel,
       "packages/kernel-host-interface-js/kernel-host-interface/worker_bootstrap.ts",
     ),
-    out: workerOut,
+    out: join(repoRoot, "public/worker_bootstrap.ts"),
   });
-  // Chrome will not start a nested *module* Worker from a module parent.
-  // Classic coordinator + classic guest works. Strip ESM export lists.
-  await Deno.writeTextFile(
-    workerOut,
-    (await Deno.readTextFile(workerOut)).replace(/\nexport \{[\s\S]*$/, "\n"),
-  );
 }
 
 async function bundle(

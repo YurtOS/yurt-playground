@@ -8,7 +8,9 @@ import {
   fetchPlaygroundBytes,
   type PlaygroundTerm,
 } from "./boot.ts";
+import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 
+installCoordinatorWorkerProxy();
 type ToWorker =
   | { type: "start"; cols: number; rows: number; isolated: boolean }
   | { type: "in"; text: string }
@@ -22,23 +24,6 @@ type FromWorker =
 function post(msg: FromWorker): void {
   self.postMessage(msg);
 }
-
-const guestWorkerUrl = new URL(
-  "/worker_bootstrap.ts",
-  self.location.origin,
-).href;
-const OrigWorker = self.Worker;
-self.Worker = class extends OrigWorker {
-  constructor(scriptURL: string | URL, _options?: WorkerOptions) {
-    const href = String(scriptURL);
-    super(
-      href.includes("worker_bootstrap") ? guestWorkerUrl : scriptURL,
-      // Nested module Workers do not start. The bundled bootstrap is
-      // rewritten to a classic script.
-      { type: "classic" },
-    );
-  }
-};
 
 function workerTerm(init: { cols: number; rows: number }): PlaygroundTerm {
   const dataHandlers: Array<(data: string) => void> = [];

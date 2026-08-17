@@ -1,3 +1,4 @@
+import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 
 type FromWorker =
@@ -17,6 +18,7 @@ function runPage(): void {
   // Classic worker: Chrome will not start a nested *module* Worker.
   // A classic coordinator can spawn the module guest bootstrap.
   const worker = new Worker("/coordinator.bundle.js");
+  attachGuestWorkerFactory(worker);
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
     if (msg.type === "status" && status) status.textContent = msg.text;
