@@ -12,17 +12,37 @@ ordinary guest `/bin/sh`. The page loads `kernel.wasm` through
 port the guest is already listening on. There is no hosted
 `yurt-runtime-wasmtime`, no JupyterLite/Pyodide, and no guest egress.
 
-## Status — repo is bootstrapped, page is not built yet
+## Status — ash in a tab (Task 4)
 
-This repository exists so the page, pins, local COOP/COEP server, and Playwright
-acceptance have a home. Tracking is
-[#1](https://github.com/YurtOS/yurt-playground/issues/1). The first demo (ash in
-Chromium) is [#2](https://github.com/YurtOS/yurt-playground/issues/2) and is
-blocked on kernel PTY/dial PRs and the `yurt-ports` playground image
-([#52](https://github.com/YurtOS/yurt-ports/issues/52)).
+Tracking is [#1](https://github.com/YurtOS/yurt-playground/issues/1). This slice
+is [#2](https://github.com/YurtOS/yurt-playground/issues/2): load pinned
+`kernel.wasm` + `playground.yurtimg`, attach a host PTY, pump it into xterm.
+
+Python and Jupyter are later slices. The image recipe lives in
+[`yurt-ports#53`](https://github.com/YurtOS/yurt-ports/pull/53).
 
 Plan:
 [`docs/superpowers/plans/2026-08-17-browser-yurt-playground.md`](./docs/superpowers/plans/2026-08-17-browser-yurt-playground.md).
+
+## Run locally
+
+Sibling checkouts, kernel wasm already built, playground image already packaged:
+
+```bash
+YURT_KERNEL_ROOT=../yurtos-kernel \
+YURT_PORTS_ROOT=../yurt-ports \
+  deno task pin
+deno task serve
+```
+
+Then open `http://127.0.0.1:4173/`. The server sets
+`Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp`. GitHub Pages cannot host this.
+Reload is a fresh sandbox.
+
+`scripts/pin-artifacts.ts` never rebuilds. It copies matching blobs from
+`artifacts/`, sibling checkouts, or `PLAYGROUND_*_URL`, and exits 2 if none
+match `artifacts/pins.json`.
 
 ## Layout
 
@@ -57,12 +77,8 @@ yurt-playground/
 deno fmt --check
 deno lint
 deno check '**/*.ts'
-deno test --allow-read --allow-env
+deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
 ```
-
-Once Task 4 lands: `deno task serve` on `http://127.0.0.1:4173/` with
-`Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: require-corp`. GitHub Pages cannot host this.
 
 ## License
 

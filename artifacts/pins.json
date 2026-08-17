@@ -1,0 +1,16 @@
+{
+  "kernelWasm": {
+    "repo": "YurtOS/yurtos-kernel",
+    "rev": "127190820d770f439dac9661b0de634bb36f3ffa",
+    "build": "scripts/build-kernel-wasm.sh",
+    "path": "target/kernel-wasm/release/yurt_kernel.wasm",
+    "sha256": "351fb4606dab0cea5c06bc7ec29ff06fcea4f45f29ea4eacd02b917e381590b2"
+  },
+  "image": {
+    "repo": "YurtOS/yurt-ports",
+    "rev": "a7bbc88cba179c89f23413122f5ff23eb10ff1f3",
+    "build": "ports/playground-image/scripts/package.sh",
+    "path": "ports/playground-image/build/dist/playground.yurtimg",
+    "sha256": "c51bac554d2749e53503e9a23577c646e4d398e7f6113ae090e9d4b840b844b1"
+  }
+}

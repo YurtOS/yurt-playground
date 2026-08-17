@@ -1,21 +1,31 @@
 {
+  "unstable": ["sloppy-imports"],
   "imports": {
-    "@std/assert": "jsr:@std/assert@^1"
+    "@std/assert": "jsr:@std/assert@^1",
+    "@xterm/xterm": "npm:@xterm/xterm@5.5.0",
+    "@yurt/kernel-host-interface-js": "../yurtos-kernel/packages/kernel-host-interface-js/mod.ts",
+    "@yurt/stage-image": "../yurtos-kernel/packages/runner/src/vfs-stage.ts"
   },
+  "nodeModulesDir": "auto",
   "compilerOptions": {
     "lib": ["deno.window", "dom"]
   },
-  "exclude": [".worktrees", "worktrees"],
+  "exclude": [".worktrees", "worktrees", "public/boot.bundle.js"],
   "lint": {
-    "exclude": [".worktrees", "worktrees"]
+    "exclude": [".worktrees", "worktrees", "public/boot.bundle.js"],
+    "rules": {
+      "exclude": ["no-sloppy-imports"]
+    }
   },
   "fmt": {
-    "exclude": [".worktrees", "worktrees"]
+    "exclude": [".worktrees", "worktrees", "public/boot.bundle.js"]
   },
   "tasks": {
     "fmt": "deno fmt",
     "lint": "deno lint",
     "check": "deno check '**/*.ts'",
-    "test": "deno test --allow-read --allow-env"
+    "test": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run",
+    "pin": "deno run --allow-read --allow-write --allow-env --allow-net scripts/pin-artifacts.ts",
+    "serve": "deno run --allow-read --allow-write --allow-env --allow-net --allow-run scripts/serve.ts"
   }
 }

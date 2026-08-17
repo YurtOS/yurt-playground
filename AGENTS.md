@@ -43,8 +43,10 @@ Kernel primitives stay in `yurtos-kernel`. Image composition stays in
 ## The bar: CI green = done
 
 `.github/workflows/ci.yml` is the gate: `deno fmt --check`, `deno lint`,
-`deno check '**/*.ts'`, `deno test`. A change is not done until that job is
-green. Do not claim completion from a local pass alone.
+`deno check '**/*.ts'`, `deno test --no-check` (with read/write/env/net/run). CI
+checks out `yurtos-kernel` at the pinned rev so `@yurt/*` imports resolve. A
+change is not done until that job is green. Do not claim completion from a local
+pass alone.
 
 ## Development procedure (non-trivial work)
 
