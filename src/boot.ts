@@ -4,7 +4,7 @@ import {
   pumpPtyMaster,
   s,
 } from "@yurt/kernel-host-interface-js";
-import { stageImage } from "@yurt/stage-image";
+import { stageYurtimg } from "./stage.ts";
 
 export type PlaygroundTerm = {
   cols: number;
@@ -53,11 +53,13 @@ export async function bootPlayground(
 
   env.show("loading kernel");
   const kernel = await env.fetchBytes("./yurt_kernel.wasm");
+  env.show("compiling kernel");
+  const mk = await KernelHostInterface.load(kernel, defaultHostState());
   env.show("loading image");
   const image = await env.fetchBytes("./playground.yurtimg");
-  const mk = await KernelHostInterface.load(kernel, defaultHostState());
+  env.show("unpacking image");
   const files = new Map<string, Uint8Array>();
-  await stageImage(mk, image, undefined, files);
+  await stageYurtimg(mk, image, files);
   const sh = files.get("/bin/sh");
   if (sh === undefined) {
     throw new Error("playground image is missing /bin/sh");
@@ -95,35 +97,4 @@ export async function bootPlayground(
 
   env.show("");
   return { stop };
-}
-
-const page = globalThis as typeof globalThis & {
-  document?: {
-    getElementById(
-      id: string,
-    ): { textContent: string | null } | null;
-  };
-  crossOriginIsolated?: boolean;
-};
-
-async function runPage(): Promise<void> {
-  const { createPlaygroundTerminal } = await import("./terminal.ts");
-  const status = page.document?.getElementById("status");
-  const termHost = page.document?.getElementById("term");
-  if (termHost === null || termHost === undefined) {
-    throw new Error("missing #term");
-  }
-  const term = createPlaygroundTerminal(termHost);
-  await bootPlayground({
-    isolated: page.crossOriginIsolated === true,
-    fetchBytes: fetchPlaygroundBytes,
-    show: (text) => {
-      if (status) status.textContent = text;
-    },
-    term,
-  });
-}
-
-if (import.meta.main || !("Deno" in globalThis)) {
-  await runPage();
 }

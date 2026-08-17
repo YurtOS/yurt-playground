@@ -8,6 +8,8 @@ const artifactsDir = join(repoRoot, "artifacts");
 export const ISOLATION_HEADERS = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
+  // Nested module workers (guest WorkerHost) are COEP subresources.
+  "Cross-Origin-Resource-Policy": "same-origin",
 };
 
 const ARTIFACT_FILES: Record<string, string> = {
@@ -37,7 +39,9 @@ export function resolvePlaygroundPath(pathname: string): string | null {
 
 function contentType(path: string): string {
   if (path.endsWith(".html")) return "text/html; charset=utf-8";
-  if (path.endsWith(".js")) return "text/javascript; charset=utf-8";
+  if (path.endsWith(".js") || path.endsWith(".ts")) {
+    return "text/javascript; charset=utf-8";
+  }
   if (path.endsWith(".css")) return "text/css; charset=utf-8";
   if (path.endsWith(".wasm")) return "application/wasm";
   if (path.endsWith(".yurtimg")) return "application/octet-stream";
