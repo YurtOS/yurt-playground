@@ -16,6 +16,8 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
   );
   assertEquals(workflow.includes("repository: YurtOS/yurt-ports"), true);
   assertEquals(workflow.includes("ports_rev"), true);
+  assertEquals(workflow.includes("scripts/build-kernel-wasm.sh"), true);
+  assertEquals(workflow.includes("wasm32-wasip1-threads"), true);
   assertEquals(
     workflow.includes("scripts/build-all-ports.sh --only busybox --build-only"),
     true,

@@ -32,9 +32,16 @@ jobs:
           repository: YurtOS/yurt-ports
           ref: ${{ steps.pins.outputs.ports_rev }}
           path: yurt-ports
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32-wasip1,wasm32-wasip1-threads
+          components: rust-src
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      - name: Build pinned kernel wasm
+        working-directory: yurtos-kernel
+        run: scripts/build-kernel-wasm.sh
       - name: Materialize pinned playground image
         working-directory: yurt-ports
         env:
