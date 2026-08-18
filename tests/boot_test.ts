@@ -57,6 +57,30 @@ async function waitFor(
   }
 }
 
+async function typeCommand(term: MemoryTerm, command: string): Promise<string> {
+  const before = term.output().length;
+  term.type(command.endsWith("\n") ? command : `${command}\n`);
+  let last = "";
+  const start = Date.now();
+  while (Date.now() - start < 10_000) {
+    await new Promise((r) => setTimeout(r, 80));
+    const added = term.output().slice(before);
+    if (
+      added === last &&
+      added.includes(command.replace(/\n$/, "")) &&
+      /\$ $/.test(added.replace(/\r/g, ""))
+    ) {
+      return added;
+    }
+    last = added;
+  }
+  throw new Error(
+    `prompt after ${JSON.stringify(command)} in ${
+      JSON.stringify(term.output())
+    }`,
+  );
+}
+
 Deno.test("bootPlayground fails closed when the page is not isolated", async () => {
   let shown = "";
   try {
@@ -134,6 +158,28 @@ Deno.test({
         () => /root\s+root/.test(term.output()),
         `ls -ld /bin in ${JSON.stringify(term.output())}`,
       );
+
+      // ash `>` and hidden names: `ls -l` omits dotfiles (Linux).
+      await typeCommand(term, "echo xxx > visible");
+      await typeCommand(term, "echo yyy > .hidden");
+      const listing = await typeCommand(term, "ls -l");
+      if (!/-rw-r--r--\s+1 user\s+user\s+4 .*visible/.test(listing)) {
+        throw new Error(`ls -l missing visible: ${JSON.stringify(listing)}`);
+      }
+      if (listing.includes(".hidden")) {
+        throw new Error(`ls -l showed hidden file: ${JSON.stringify(listing)}`);
+      }
+      const all = await typeCommand(term, "ls -la");
+      if (!/-rw-r--r--\s+1 user\s+user\s+4 .*\.hidden/.test(all)) {
+        throw new Error(`ls -la missing .hidden: ${JSON.stringify(all)}`);
+      }
+      const cats = await typeCommand(
+        term,
+        "cat visible; echo --; cat .hidden; echo ENDCAT",
+      );
+      if (!/xxx[\r\n]+--[\r\n]+yyy[\r\n]+ENDCAT/.test(cats)) {
+        throw new Error(`redirect contents: ${JSON.stringify(cats)}`);
+      }
     } finally {
       session.stop();
     }
