@@ -14,14 +14,53 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: playground
+      - name: Read kernel pin
+        id: pins
+        working-directory: playground
+        run: |
+          echo "kernel_rev=$(jq -r .kernelWasm.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
+          echo "ports_rev=$(jq -r .image.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: YurtOS/yurtos-kernel
+          ref: ${{ steps.pins.outputs.kernel_rev }}
+          path: yurtos-kernel
+      - uses: actions/checkout@v7
+        with:
+          repository: YurtOS/yurt-ports
+          ref: ${{ steps.pins.outputs.ports_rev }}
+          path: yurt-ports
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32-wasip1,wasm32-wasip1-threads
+          components: rust-src
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      - name: Build pinned kernel wasm
+        working-directory: yurtos-kernel
+        run: scripts/build-kernel-wasm.sh
+      - name: Materialize pinned playground image
+        working-directory: yurt-ports
+        env:
+          YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
+        run: |
+          scripts/build-all-ports.sh --only busybox --build-only
+          ports/playground-image/scripts/package.sh
       - name: fmt
+        working-directory: playground
         run: deno fmt --check
       - name: lint
+        working-directory: playground
         run: deno lint
       - name: check
+        working-directory: playground
         run: deno check "**/*.ts"
       - name: test
-        run: deno test --allow-read --allow-env
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+          YURT_PORTS_ROOT: ../yurt-ports
+        run: deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run

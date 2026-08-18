@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Yurt playground</title>
+    <link rel="stylesheet" href="./xterm.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #111;
+        color: #eee;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      #status {
+        margin: 0;
+        padding: 8px 12px;
+      }
+      #term {
+        position: absolute;
+        inset: 32px 0 0;
+      }
+    </style>
+  </head>
+  <body>
+    <pre id="status">checking isolation</pre>
+    <div id="term"></div>
+    <script type="module">
+      const status = document.getElementById("status");
+      if (globalThis.crossOriginIsolated !== true) {
+        status.textContent = "need COOP/COEP";
+        throw new Error("not crossOriginIsolated");
+      }
+      status.textContent = "booting";
+      await import("./boot.bundle.js");
+    </script>
+  </body>
+</html>
