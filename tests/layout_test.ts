@@ -9,3 +9,16 @@ Deno.test("deno.json exposes the fmt/lint/check/test tasks", () => {
   assertEquals(typeof deno.tasks.check, "string");
   assertEquals(typeof deno.tasks.test, "string");
 });
+
+Deno.test("CI materializes the pinned playground image for integration tests", async () => {
+  const workflow = await Deno.readTextFile(
+    new URL("../.github/workflows/ci.yml", import.meta.url),
+  );
+  assertEquals(workflow.includes("repository: YurtOS/yurt-ports"), true);
+  assertEquals(workflow.includes("ports_rev"), true);
+  assertEquals(
+    workflow.includes("scripts/build-all-ports.sh --only busybox --build-only"),
+    true,
+  );
+  assertEquals(workflow.includes("YURT_PORTS_ROOT: ../yurt-ports"), true);
+});
