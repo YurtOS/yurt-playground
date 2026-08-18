@@ -153,10 +153,29 @@ Deno.test({
         () => term.output().includes("/home/user"),
         `pwd in ${JSON.stringify(term.output())}`,
       );
+      term.type("id\n");
+      await waitFor(
+        () =>
+          term.output().includes("uid=1000(user)") &&
+          term.output().includes("gid=1000(user)"),
+        `id in ${JSON.stringify(term.output())}`,
+      );
       term.type("ls -ld /bin\n");
       await waitFor(
-        () => /root\s+root/.test(term.output()),
+        () => /root\s+root.*\/bin/.test(term.output().replace(/\r/g, "")),
         `ls -ld /bin in ${JSON.stringify(term.output())}`,
+      );
+      term.type("ls -ld /home\n");
+      await waitFor(
+        () =>
+          /root\s+root.*\/home(?:\n|$)/.test(term.output().replace(/\r/g, "")),
+        `ls -ld /home in ${JSON.stringify(term.output())}`,
+      );
+      term.type("ls -ld /home/user\n");
+      await waitFor(
+        () =>
+          /user\s+user.*\/home\/user/.test(term.output().replace(/\r/g, "")),
+        `ls -ld /home/user in ${JSON.stringify(term.output())}`,
       );
 
       // ash `>` and hidden names: `ls -l` omits dotfiles (Linux).
