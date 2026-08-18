@@ -1,11 +1,42 @@
 export const CREATE_GUEST_WORKER = "yurt-create-guest-worker";
 export const TERMINATE_GUEST_WORKER = "yurt-terminate";
+export const GUEST_WORKER_ERROR = "yurt-guest-worker-error";
 
 export type CreateGuestWorkerMessage = {
   type: typeof CREATE_GUEST_WORKER;
   url: string;
   options?: WorkerOptions;
 };
+
+type GuestWorkerErrorMessage = {
+  type: typeof GUEST_WORKER_ERROR;
+  message: string;
+};
+
+function isGuestWorkerErrorMessage(
+  value: unknown,
+): value is GuestWorkerErrorMessage {
+  return value !== null && typeof value === "object" &&
+    (value as { type?: unknown }).type === GUEST_WORKER_ERROR;
+}
+
+export function dispatchGuestWorkerProxyEvent(
+  target: EventTarget,
+  event: MessageEvent,
+): void {
+  if (isGuestWorkerErrorMessage(event.data)) {
+    target.dispatchEvent(
+      new ErrorEvent("error", { message: event.data.message }),
+    );
+    return;
+  }
+  target.dispatchEvent(
+    new MessageEvent("message", {
+      data: event.data,
+      ports: [...event.ports],
+    }),
+  );
+}
 
 /**
  * WorkerHost.spawnRootLeader does `new Worker` then immediately
@@ -22,12 +53,7 @@ export function installCoordinatorWorkerProxy(): void {
       const channel = new MessageChannel();
       this.#port = channel.port1;
       this.#port.onmessage = (event) => {
-        this.dispatchEvent(
-          new MessageEvent("message", {
-            data: event.data,
-            ports: [...event.ports],
-          }),
-        );
+        dispatchGuestWorkerProxyEvent(this, event);
       };
       this.#port.onmessageerror = () => {
         this.dispatchEvent(new Event("error"));
@@ -62,8 +88,13 @@ export function attachGuestWorkerFactory(coordinator: Worker): void {
     guest.onmessage = (guestEvent) => {
       port.postMessage(guestEvent.data, [...guestEvent.ports]);
     };
-    guest.onerror = () => {
-      port.postMessage({ type: "error" });
+    guest.onerror = (event) => {
+      port.postMessage(
+        {
+          type: GUEST_WORKER_ERROR,
+          message: event.message || "guest worker failed",
+        } satisfies GuestWorkerErrorMessage,
+      );
     };
     port.onmessage = (portEvent) => {
       if (
