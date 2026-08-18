@@ -8,13 +8,19 @@ import {
 } from "@yurt/kernel-host-interface-js";
 import { handlePlaygroundRequest } from "../src/serve.ts";
 import { loadPins, resolveArtifacts } from "../src/pins.ts";
-import { stageYurtimg } from "../src/stage.ts";
+import { ownershipMethodForEntry, stageYurtimg } from "../src/stage.ts";
 
 const STAT_UID = 16;
 const STAT_GID = 20;
 const STAT_LEN = 48;
 
 const repoRoot = join(fileURLToPath(import.meta.url), "../..");
+
+Deno.test("symlink ownership uses no-follow lchown", () => {
+  assertEquals(ownershipMethodForEntry("symlink"), 0x1_01D2);
+  assertEquals(ownershipMethodForEntry("file"), 0x1_0023);
+  assertEquals(ownershipMethodForEntry("dir"), 0x1_0023);
+});
 
 function openReq(path: string): Uint8Array {
   const bytes = new TextEncoder().encode(path);

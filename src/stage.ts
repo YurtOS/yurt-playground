@@ -29,12 +29,18 @@ export function setPidCredentials(
 }
 
 const SYS_CHOWN = 0x1_0023;
+const SYS_LCHOWN = 0x1_01D2;
+
+export function ownershipMethodForEntry(type: string): number {
+  return type === "symlink" ? SYS_LCHOWN : SYS_CHOWN;
+}
 
 function chownPath(
   mk: KernelHostInterface,
   path: string,
   uid: number,
   gid: number,
+  method: number,
 ): void {
   const pathBytes = s(path);
   const req = new Uint8Array(8 + pathBytes.byteLength);
@@ -42,7 +48,7 @@ function chownPath(
   view.setUint32(0, uid >>> 0, true);
   view.setUint32(4, gid >>> 0, true);
   req.set(pathBytes, 8);
-  const { rc } = mk.syscall(SYS_CHOWN, req, 0);
+  const { rc } = mk.syscall(method, req, 0);
   if (Number(rc) !== 0) {
     throw new Error(`chown ${path} ${uid}:${gid} failed: rc=${rc}`);
   }
@@ -87,7 +93,13 @@ export async function stageYurtimg(
   }
   for (const [path, entry] of Object.entries(index.entries)) {
     if (entry.uid === 0 && entry.gid === 0) continue;
-    chownPath(mk, path, entry.uid, entry.gid);
+    chownPath(
+      mk,
+      path,
+      entry.uid,
+      entry.gid,
+      ownershipMethodForEntry(entry.type),
+    );
   }
 }
 
