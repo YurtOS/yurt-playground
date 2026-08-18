@@ -38,6 +38,19 @@ Deno.test({
     if (!session) return;
     const { term } = session;
     try {
+      const hi = await typeCommand(term, "echo hi");
+      if (!/^hi$/m.test(hi.replace(/\r/g, ""))) {
+        throw new Error(`echo hi: ${JSON.stringify(hi)}`);
+      }
+      const uname = await typeCommand(term, "uname");
+      if (!/^Linux$/m.test(uname.replace(/\r/g, ""))) {
+        throw new Error(`uname: ${JSON.stringify(uname)}`);
+      }
+      const ls = await typeCommand(term, "ls");
+      if (ls.includes("No such file") || ls.includes("Permission denied")) {
+        throw new Error(`ls: ${JSON.stringify(ls)}`);
+      }
+
       const id = await typeCommand(term, "id");
       if (
         !id.includes("uid=1000(user)") || !id.includes("gid=1000(user)")
@@ -87,6 +100,24 @@ Deno.test({
       // Unqualified `touch` must exec /bin/touch. After other commands a
       // leftover wait errno used to print ECHILD; a second touch on the
       // created file is the existing-path stamp.
+      // FEATURE_SH_STANDALONE=n: ash only finds applets that exist on PATH.
+      for (const applet of ["date", "ps"]) {
+        const which = await typeCommand(term, `command -v ${applet}`);
+        if (!which.includes(`/bin/${applet}`)) {
+          throw new Error(
+            `${applet} must resolve on PATH: ${JSON.stringify(which)}`,
+          );
+        }
+      }
+      const date = await typeCommand(term, "date");
+      if (date.includes("not found")) {
+        throw new Error(`date: ${JSON.stringify(date)}`);
+      }
+      const ps = await typeCommand(term, "ps");
+      if (ps.includes("not found")) {
+        throw new Error(`ps: ${JSON.stringify(ps)}`);
+      }
+
       const whichTouch = await typeCommand(term, "command -v touch");
       if (!whichTouch.includes("/bin/touch")) {
         throw new Error(
@@ -103,6 +134,38 @@ Deno.test({
       assertNoTouchFailure(retouch, "second touch sss");
     } finally {
       session.stop();
+    }
+  },
+});
+
+Deno.test({
+  name: "a second ash boot is a fresh sandbox",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const first = await bootAshSession();
+    if (!first) return;
+    try {
+      await typeCommand(first.term, "echo leftover > /home/user/stale");
+      const seen = await typeCommand(first.term, "ls /home/user/stale");
+      if (!seen.includes("stale")) {
+        throw new Error(`first boot missing stale: ${JSON.stringify(seen)}`);
+      }
+    } finally {
+      first.stop();
+    }
+
+    const second = await bootAshSession();
+    if (!second) return;
+    try {
+      const gone = await typeCommand(second.term, "ls /home/user/stale");
+      if (!gone.includes("No such file")) {
+        throw new Error(
+          `reload reused the previous overlay: ${JSON.stringify(gone)}`,
+        );
+      }
+    } finally {
+      second.stop();
     }
   },
 });
