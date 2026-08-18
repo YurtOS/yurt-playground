@@ -9,6 +9,7 @@ export function createPlaygroundTerminal(host: unknown): PlaygroundTerm {
     theme: { background: "#111111", foreground: "#eeeeee" },
   });
   term.open(host as HTMLElement);
+  term.focus();
   return {
     get cols() {
       return term.cols;

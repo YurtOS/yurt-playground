@@ -5,7 +5,8 @@
     "@xterm/xterm": "npm:@xterm/xterm@5.5.0",
     "fzstd": "npm:fzstd@0.1.1",
     "@yurt/kernel-host-interface-js": "../yurtos-kernel/packages/kernel-host-interface-js/mod.ts",
-    "@yurt/tar-image": "../yurtos-kernel/packages/runner/src/vfs/tar-image-root-provider.ts"
+    "@yurt/tar-image": "../yurtos-kernel/packages/runner/src/vfs/tar-image-root-provider.ts",
+    "playwright": "npm:playwright@1.62.1"
   },
   "nodeModulesDir": "auto",
   "compilerOptions": {
@@ -43,7 +44,7 @@
     "fmt": "deno fmt",
     "lint": "deno lint",
     "check": "deno check '**/*.ts'",
-    "test": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run",
+    "test": "deno test --allow-read --allow-write --allow-env --allow-net --allow-run --allow-ffi --allow-sys",
     "pin": "deno run --allow-read --allow-write --allow-env --allow-net scripts/pin-artifacts.ts",
     "serve": "deno run --allow-read --allow-write --allow-env --allow-net --allow-run scripts/serve.ts"
   }

@@ -77,7 +77,7 @@ yurt-playground/
 deno fmt --check
 deno lint
 deno check '**/*.ts'
-deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
+deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run --allow-ffi --allow-sys
 ```
 
 ## License
