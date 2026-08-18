@@ -1,9 +1,8 @@
 import { assertEquals } from "@std/assert";
 import { handlePlaygroundRequest } from "../src/serve.ts";
 
-// Playwright (`page.goto` + xterm locator) is the browser acceptance
-// test. The Deno suite below is the same contract without a browser
-// binary: isolation headers, then ash via boot_test.ts.
+// Deno is the ash contract: isolation headers here, session behavior
+// in boot_test.ts via bootPlayground (same kernel + image + PTY).
 
 Deno.test("ash page is served with isolation headers", async () => {
   const res = await handlePlaygroundRequest(new Request("http://playground/"));
