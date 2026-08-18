@@ -1,4 +1,5 @@
 import {
+  KERNEL_PID,
   type KernelHostInterface,
   METHOD,
   s,
@@ -10,11 +11,49 @@ const NEG_EEXIST = -17;
 const REGISTER_FILE_CHUNK_HEADER_BYTES = 12;
 const DEFAULT_KERNEL_SCRATCH_LEN = 64 * 1024;
 
+export function setPidCredentials(
+  mk: KernelHostInterface,
+  pid: number,
+  uid: number,
+  gid: number,
+): void {
+  const req = new Uint8Array(28);
+  const view = new DataView(req.buffer);
+  for (const [index, value] of [pid, uid, uid, uid, gid, gid, gid].entries()) {
+    view.setUint32(index * 4, value >>> 0, true);
+  }
+  const { rc } = mk.syscall(METHOD.KERNEL_SET_PROCESS_CREDENTIALS, req, 0);
+  if (Number(rc) !== 0) {
+    throw new Error(`set credentials pid=${pid} uid=${uid}: rc=${rc}`);
+  }
+}
+
+const SYS_CHOWN = 0x1_0023;
+
+function chownPath(
+  mk: KernelHostInterface,
+  path: string,
+  uid: number,
+  gid: number,
+): void {
+  const pathBytes = s(path);
+  const req = new Uint8Array(8 + pathBytes.byteLength);
+  const view = new DataView(req.buffer);
+  view.setUint32(0, uid >>> 0, true);
+  view.setUint32(4, gid >>> 0, true);
+  req.set(pathBytes, 8);
+  const { rc } = mk.syscall(SYS_CHOWN, req, 0);
+  if (Number(rc) !== 0) {
+    throw new Error(`chown ${path} ${uid}:${gid} failed: rc=${rc}`);
+  }
+}
+
 export async function stageYurtimg(
   mk: KernelHostInterface,
   yurtimg: Uint8Array,
   host: Map<string, Uint8Array>,
 ): Promise<void> {
+  setPidCredentials(mk, KERNEL_PID, 0, 0);
   const tarBytes = decompressYurtimg(yurtimg);
   const index = await buildTarImageIndex(tarBytes);
   const provider = new TarImageRootProvider({
@@ -45,6 +84,10 @@ export async function stageYurtimg(
     } catch {
       // Dangling or non-file symlink: valid VFS entry, not a module.
     }
+  }
+  for (const [path, entry] of Object.entries(index.entries)) {
+    if (entry.uid === 0 && entry.gid === 0) continue;
+    chownPath(mk, path, entry.uid, entry.gid);
   }
 }
 

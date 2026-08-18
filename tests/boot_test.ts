@@ -79,48 +79,63 @@ Deno.test("bootPlayground fails closed when the page is not isolated", async () 
   assertEquals(shown, "need COOP/COEP");
 });
 
-Deno.test("bootPlayground attaches ash and echoes through the PTY", async () => {
-  const artifactsDir = join(repoRoot, "artifacts");
-  try {
-    await resolveArtifacts({
-      artifactsDir,
-      pins: await loadPins(join(artifactsDir, "pins.json")),
-      kernelRoot: Deno.env.get("YURT_KERNEL_ROOT") ??
-        join(repoRoot, "../yurtos-kernel"),
-      portsRoot: Deno.env.get("YURT_PORTS_ROOT"),
-    });
-  } catch (error) {
-    console.log(
-      `skipping ash boot: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-    return;
-  }
+Deno.test({
+  name: "bootPlayground attaches ash and echoes through the PTY",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const artifactsDir = join(repoRoot, "artifacts");
+    try {
+      await resolveArtifacts({
+        artifactsDir,
+        pins: await loadPins(join(artifactsDir, "pins.json")),
+        kernelRoot: Deno.env.get("YURT_KERNEL_ROOT") ??
+          join(repoRoot, "../yurtos-kernel"),
+        portsRoot: Deno.env.get("YURT_PORTS_ROOT"),
+      });
+    } catch (error) {
+      console.log(
+        `skipping ash boot: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
 
-  const term = memoryTerm();
-  let shown = "";
-  const session = await bootPlayground({
-    isolated: true,
-    fetchBytes: fetchViaHandler,
-    show: (text: string) => {
-      shown = text;
-    },
-    term,
-  });
-  try {
-    await waitFor(
-      () => /[$#]/.test(term.output()) || term.output().length > 0,
-      `ash prompt, shown=${JSON.stringify(shown)} out=${
-        JSON.stringify(term.output())
-      }`,
-    );
-    term.type("echo hi\n");
-    await waitFor(
-      () => term.output().includes("hi"),
-      `echo hi in ${JSON.stringify(term.output())}`,
-    );
-  } finally {
-    session.stop();
-  }
+    const term = memoryTerm();
+    let shown = "";
+    const session = await bootPlayground({
+      isolated: true,
+      fetchBytes: fetchViaHandler,
+      show: (text: string) => {
+        shown = text;
+      },
+      term,
+    });
+    try {
+      await waitFor(
+        () => /[$#]/.test(term.output()) || term.output().length > 0,
+        `ash prompt, shown=${JSON.stringify(shown)} out=${
+          JSON.stringify(term.output())
+        }`,
+      );
+      term.type("echo hi\n");
+      await waitFor(
+        () => term.output().includes("hi"),
+        `echo hi in ${JSON.stringify(term.output())}`,
+      );
+      term.type("pwd\n");
+      await waitFor(
+        () => term.output().includes("/home/user"),
+        `pwd in ${JSON.stringify(term.output())}`,
+      );
+      term.type("ls -ld /bin\n");
+      await waitFor(
+        () => /root\s+root/.test(term.output()),
+        `ls -ld /bin in ${JSON.stringify(term.output())}`,
+      );
+    } finally {
+      session.stop();
+    }
+  },
 });

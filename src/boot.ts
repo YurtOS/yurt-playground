@@ -1,10 +1,11 @@
 import {
   defaultHostState,
   KernelHostInterface,
+  METHOD,
   pumpPtyMaster,
   s,
 } from "@yurt/kernel-host-interface-js";
-import { stageYurtimg } from "./stage.ts";
+import { setPidCredentials, stageYurtimg } from "./stage.ts";
 
 export type PlaygroundTerm = {
   cols: number;
@@ -27,11 +28,17 @@ export type PlaygroundSession = {
   stop: () => void;
 };
 
+const LOGIN_USER = "user";
+const LOGIN_UID = 1000;
+const LOGIN_GID = 1000;
+const LOGIN_HOME = "/home/user";
+
 const DEFAULT_ENV: Record<string, string> = {
-  HOME: "/",
+  HOME: LOGIN_HOME,
   PATH: "/bin:/usr/bin:/usr/local/bin",
-  PWD: "/",
-  USER: "root",
+  PWD: LOGIN_HOME,
+  USER: LOGIN_USER,
+  LOGNAME: LOGIN_USER,
   TERM: "xterm-256color",
 };
 
@@ -69,6 +76,16 @@ export async function bootPlayground(
   const user = await mk.spawnUserProcessWithArgsAsync(sh, [s("/bin/sh")], {
     ...DEFAULT_ENV,
   });
+  setPidCredentials(mk, user.pid, LOGIN_UID, LOGIN_GID);
+  const { rc: chdirRc } = mk.kernelSyscall(
+    METHOD.KERNEL_FS_CHDIR,
+    user.pid,
+    s(LOGIN_HOME),
+    0,
+  );
+  if (Number(chdirRc) !== 0) {
+    throw new Error(`chdir ${LOGIN_HOME} failed: rc=${chdirRc}`);
+  }
   const pty = mk.attachHostPty(user.pid);
   mk.ptySetWinsize(pty, env.term.rows, env.term.cols);
   const encoder = new TextEncoder();
