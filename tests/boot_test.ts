@@ -180,6 +180,27 @@ Deno.test({
       if (!/xxx[\r\n]+--[\r\n]+yyy[\r\n]+ENDCAT/.test(cats)) {
         throw new Error(`redirect contents: ${JSON.stringify(cats)}`);
       }
+
+      // Unqualified `touch` must exec /bin/touch (not a standalone
+      // applet). Linux touch creates a missing file; ECHILD/EPERM here
+      // means ash still short-circuits the name.
+      const whichTouch = await typeCommand(term, "command -v touch");
+      if (!whichTouch.includes("/bin/touch")) {
+        throw new Error(
+          `touch must resolve on PATH: ${JSON.stringify(whichTouch)}`,
+        );
+      }
+      const touchOut = await typeCommand(term, "touch sss");
+      if (
+        touchOut.includes("No child process") ||
+        touchOut.includes("Operation not permitted")
+      ) {
+        throw new Error(`touch sss failed: ${JSON.stringify(touchOut)}`);
+      }
+      const touched = await typeCommand(term, "ls -l sss");
+      if (!/-rw-r--r--\s+1 user\s+user\s+0 .*sss/.test(touched)) {
+        throw new Error(`touch did not create sss: ${JSON.stringify(touched)}`);
+      }
     } finally {
       session.stop();
     }

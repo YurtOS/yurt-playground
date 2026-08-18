@@ -8,9 +8,9 @@
   },
   "image": {
     "repo": "YurtOS/yurt-ports",
-    "rev": "b73b57f0bdb1137144c030eeecd63922c9bd5a46",
+    "rev": "284492ac90e2bd9614552d75b591808876da3f35",
     "build": "ports/playground-image/scripts/package.sh",
     "path": "ports/playground-image/build/dist/playground.yurtimg",
-    "sha256": "1adabfcdcdf510f13ee17a46e3146dee2136615dc5aafbd820824fe553f47e32"
+    "sha256": "7db61f348409244baa87a87ee0691580cc215d1a586b907504960e5a2f93c815"
   }
 }
