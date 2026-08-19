@@ -11,21 +11,22 @@ function cacheHarness(initial?: Uint8Array) {
     entries.set(url, new Response(initial as unknown as BodyInit));
   }
   const cache = {
-    async match(key: string) {
-      return entries.get(key)?.clone();
+    match(key: string) {
+      return Promise.resolve(entries.get(key)?.clone());
     },
-    async put(key: string, response: Response) {
+    put(key: string, response: Response) {
       entries.set(key, response.clone());
+      return Promise.resolve();
     },
-    async delete(key: string) {
-      return entries.delete(key);
+    delete(key: string) {
+      return Promise.resolve(entries.delete(key));
     },
   };
   return {
     entries,
     caches: {
-      async open() {
-        return cache;
+      open() {
+        return Promise.resolve(cache);
       },
     } as unknown as CacheStorage,
   };
@@ -49,9 +50,11 @@ Deno.test("pinned fetch uses a valid cache entry and reports completion", async 
     url,
     cacheName: "test",
     cacheStorage: harness.caches,
-    fetch: async () => {
+    fetch: () => {
       calls++;
-      return new Response(new Uint8Array() as unknown as BodyInit);
+      return Promise.resolve(
+        new Response(new Uint8Array() as unknown as BodyInit),
+      );
     },
     onProgress: (value) => progress.push(value),
   });
@@ -67,9 +70,9 @@ Deno.test("pinned fetch discards stale cache and uses verified network bytes", a
     url,
     cacheName: "test",
     cacheStorage: harness.caches,
-    fetch: async () => {
+    fetch: () => {
       calls++;
-      return new Response(bytes as unknown as BodyInit);
+      return Promise.resolve(new Response(bytes as unknown as BodyInit));
     },
   });
   assertEquals(result, bytes);
@@ -85,9 +88,11 @@ Deno.test("pinned fetch rejects a network hash mismatch", async () => {
         url,
         cacheName: "test",
         cacheStorage: harness.caches,
-        fetch: async () =>
-          new Response(
-            new TextEncoder().encode("wrong") as unknown as BodyInit,
+        fetch: () =>
+          Promise.resolve(
+            new Response(
+              new TextEncoder().encode("wrong") as unknown as BodyInit,
+            ),
           ),
       }),
     Error,
