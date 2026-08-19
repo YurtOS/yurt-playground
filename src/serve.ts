@@ -13,6 +13,7 @@ export const ISOLATION_HEADERS = {
 };
 
 const ARTIFACT_FILES: Record<string, string> = {
+  "/pins.json": join(artifactsDir, "pins.json"),
   "/yurt_kernel.wasm": join(artifactsDir, "yurt_kernel.wasm"),
   "/playground.yurtimg": join(artifactsDir, "playground.yurtimg"),
   "/xterm.css": join(repoRoot, "node_modules/@xterm/xterm/css/xterm.css"),
@@ -45,6 +46,7 @@ function contentType(path: string): string {
   if (path.endsWith(".css")) return "text/css; charset=utf-8";
   if (path.endsWith(".wasm")) return "application/wasm";
   if (path.endsWith(".yurtimg")) return "application/octet-stream";
+  if (path.endsWith(".json")) return "application/json; charset=utf-8";
   return "application/octet-stream";
 }
 

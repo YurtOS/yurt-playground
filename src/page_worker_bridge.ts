@@ -63,7 +63,7 @@ export function installCoordinatorWorkerProxy(): void {
         url: String(scriptURL),
         options,
       };
-      self.postMessage(message, [channel.port2]);
+      self.postMessage(message, { transfer: [channel.port2] });
     }
 
     postMessage(data: unknown, transfer?: Transferable[]): void {
