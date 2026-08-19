@@ -36,7 +36,7 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
     importMap: importMapPath,
   });
   // Classic coordinator: import.meta is a syntax error. WorkerHost only
-  // uses it to resolve ./worker_bootstrap.ts; location.href is the same.
+  // uses it to resolve ./worker_bootstrap.js; location.href is the same.
   await Deno.writeTextFile(
     coordinatorOut,
     (await Deno.readTextFile(coordinatorOut)).replaceAll(
@@ -49,7 +49,7 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
       kernelPath,
       "packages/kernel-host-interface-js/kernel-host-interface/worker_bootstrap.ts",
     ),
-    out: join(repoRoot, "public/worker_bootstrap.ts"),
+    out: join(repoRoot, "public/worker_bootstrap.js"),
   });
 }
 

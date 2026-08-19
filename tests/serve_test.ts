@@ -43,11 +43,11 @@ Deno.test("handler rejects a malformed percent-encoding", async () => {
 
 Deno.test("worker bootstrap is served as a JS module", async () => {
   const publicDir = join(dirname(fileURLToPath(import.meta.url)), "../public");
-  const workerPath = join(publicDir, "worker_bootstrap.ts");
+  const workerPath = join(publicDir, "worker_bootstrap.js");
   await Deno.writeTextFile(workerPath, "export {};\n");
   try {
     const res = await handlePlaygroundRequest(
-      new Request("http://playground/worker_bootstrap.ts"),
+      new Request("http://playground/worker_bootstrap.js"),
     );
     assertEquals(res.status, 200);
     assertEquals(

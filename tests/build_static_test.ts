@@ -12,6 +12,7 @@ Deno.test("static build emits isolated playground deployment", async () => {
       '"_headers"',
       '"yurt_kernel.wasm"',
       '"playground.yurtimg"',
+      '"worker_bootstrap.js"',
       "Cross-Origin-Opener-Policy",
       "Cross-Origin-Embedder-Policy",
       "Cross-Origin-Resource-Policy",

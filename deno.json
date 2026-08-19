@@ -16,7 +16,7 @@
     "worktrees",
     "public/boot.bundle.js",
     "public/coordinator.bundle.js",
-    "public/worker_bootstrap.ts"
+    "public/worker_bootstrap.js"
   ],
   "lint": {
     "exclude": [
@@ -24,7 +24,7 @@
       "worktrees",
       "public/boot.bundle.js",
       "public/coordinator.bundle.js",
-      "public/worker_bootstrap.ts"
+      "public/worker_bootstrap.js"
     ],
     "rules": {
       "exclude": ["no-sloppy-imports"]
@@ -36,7 +36,7 @@
       "worktrees",
       "public/boot.bundle.js",
       "public/coordinator.bundle.js",
-      "public/worker_bootstrap.ts"
+      "public/worker_bootstrap.js"
     ]
   },
   "tasks": {

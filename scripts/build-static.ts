@@ -12,7 +12,7 @@ const STATIC_FILES = [
   "index.html",
   "boot.bundle.js",
   "coordinator.bundle.js",
-  "worker_bootstrap.ts",
+  "worker_bootstrap.js",
   "xterm.css",
 ];
 
