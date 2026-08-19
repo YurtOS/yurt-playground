@@ -98,6 +98,31 @@ image pinning step also hashes the final image. A clean runner must never
 obtain the payload from an unpinned working tree or an implicit package-manager
 install.
 
+The normalized-tree digest uses a repository-owned serializer, not the host's
+`tar` command. `scripts/canonical-tree-tar.ts` emits exactly one POSIX USTAR
+512-byte header per entry, followed by file data padded to a 512-byte boundary,
+and exactly two zero 512-byte end blocks. The serialization rules are:
+
+- entries are relative UTF-8 paths with `/` separators, no leading `/`, and no
+  `.` or `..` components; the root entry is omitted;
+- entries are sorted by raw UTF-8 path bytes; paths that cannot fit the USTAR
+  name and prefix fields are rejected rather than encoded with PAX or GNU
+  extensions; directory names have no trailing `/` in the canonical path;
+- all numeric fields use NUL-terminated octal ASCII in the POSIX USTAR field
+  widths; the checksum field uses six octal digits, NUL, and a trailing space;
+- directories use type `5`, mode `0755`, size zero, and an empty link target;
+- regular files use type `0`, mode `0755` when any execute bit is present and
+  `0644` otherwise, with their exact bytes and no transformation;
+- symlinks use type `2`, mode `0777`, size zero, and their exact UTF-8 link
+  target in the USTAR link-name field; symlink targets are never followed;
+- uid, gid, device numbers, user/group names, and atime/ctime/mtime are zero
+  or empty; USTAR magic/version, checksum spacing, and numeric field encoding
+  are fixed by the serializer and are not delegated to a platform utility.
+
+The digest is SHA-256 over those emitted bytes. The same serializer and rules
+run in local pinning and CI, and the serializer source itself is covered by
+`materializerSha256`.
+
 ### Jupyter
 
 Real ipykernel execution is gated on yurtos-kernel#2304. That issue must prove
