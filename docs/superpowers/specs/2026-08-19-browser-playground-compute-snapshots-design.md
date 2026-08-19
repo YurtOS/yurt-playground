@@ -66,19 +66,29 @@ is machine-readable and has this shape, with the concrete values above:
   "sourceArchiveSha256": "c4290ab8a682b76645fb09b5981255b7615429b757825301088a4e7774b8159d",
   "dependencyLock": "artifacts/jupyter-requirements.lock",
   "materializer": "scripts/materialize-jupyter.ts",
+  "hostPython": {
+    "implementation": "CPython",
+    "version": "3.14.0",
+    "architecture": "x86_64",
+    "ciProvisioner": "actions/setup-python@v5"
+  },
   "package": "yurt-jupyter-0.1.0-yurt_0.yurtpkg"
 }
 ```
 
 The lock file is checked in and lists every pure-Python dependency with an
 exact version, source URL, and SHA-256. `materialize-jupyter.ts` runs under
-the pinned host Python 3.14, installs with hash checking and no binary
-extensions, applies the existing yurt-jupyter exclusions (`zmq`, `psutil`,
-compiled files), normalizes ownership/timestamps/order, and emits the package
-input tree. The image pinning step hashes that normalized tree and the final
-image; CI fails if either the source archive, lock file, or generated package
-input differs from the checked-in pin. A clean runner must never obtain the
-payload from an unpinned working tree or an implicit package-manager install.
+the exact CPython 3.14.0 x86_64 runtime provisioned by CI. CI must verify
+`sys.implementation.name`, `sys.version_info == (3, 14, 0)`, and the expected
+architecture before it invokes the materializer; the system `python` is not an
+acceptable fallback. The materializer installs with hash checking and no
+binary extensions, applies the existing yurt-jupyter exclusions (`zmq`,
+`psutil`, compiled files), normalizes ownership/timestamps/order, and emits
+the package input tree. The image pinning step hashes that normalized tree and
+the final image; CI fails if either the source archive, lock file, host-Python
+identity, or generated package input differs from the checked-in pin. A clean
+runner must never obtain the payload from an unpinned working tree or an
+implicit package-manager install.
 
 ### Jupyter
 
@@ -141,10 +151,22 @@ Restore:
 1. Read the selected file into an immutable byte array.
 2. Validate its snapshot version and complete resource graph before mutation.
 3. Disable terminal, notebook, and snapshot controls.
-4. Quiesce or detach current PTY and Jupyter transport pumps.
-5. Restore through the kernel host interface transaction.
-6. Reattach/reconnect the PTY and Jupyter transports to the restored state.
-7. Re-enable controls and report success.
+4. Ask the host interface to prepare the restored kernel and replacement PTY
+   and Jupyter resources while the current transports remain attached.
+5. Enter the checkpoint barrier without destroying the current pumps, then
+   commit the kernel/resource swap as one host transaction.
+6. Only after the commit acknowledgement, atomically hand the terminal and
+   notebook clients their replacement transport handles.
+7. End the barrier, re-enable controls, and report success.
+
+There is no detach-first path. The current pumps and resource handles remain
+the rollback set until the host transaction commits. Any validation,
+preparation, barrier, restore, or replacement-transport failure before that
+acknowledgement aborts the transaction and resumes the original pumps against
+the unchanged sandbox. If a failure occurs after the acknowledgement, the
+host contract must provide an atomic rollback to that same rollback set before
+the UI reports failure; otherwise the commit operation itself must not expose
+success.
 
 If validation, host-resource admission, or restore fails, the current sandbox
 must remain usable and the UI must report the failure. In particular, an
@@ -154,8 +176,9 @@ yurtos-kernel#2289.
 
 ## Interfaces and ownership
 
-- `src/boot.ts` exposes a session lifecycle sufficient to quiesce, detach, and
-  reattach terminal/Jupyter clients without creating a second sandbox.
+- `src/boot.ts` exposes a session lifecycle sufficient to quiesce and
+  transactionally swap terminal/Jupyter clients without creating a second
+  sandbox; it retains the old transport set until commit.
 - A new playground session/controller module coordinates notebook and snapshot
   state transitions.
 - `src/jupyter.ts` owns guest kernel startup and the page-side standard Jupyter
@@ -197,6 +220,8 @@ yurtos-kernel#2289.
 - Verify that both PTY and Jupyter connections are live after restore.
 - Verify malformed, incompatible, and unreattachable snapshots fail before
   partial mutation.
+- Verify a failed restore leaves the original terminal and Jupyter transports
+  usable, with the original filesystem and process state unchanged.
 - Verify controls are disabled during the transition and re-enabled after both
   success and failure.
 
