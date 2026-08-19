@@ -25,8 +25,8 @@ repository gates and publish `dist/` only after the build succeeds.
 - The deployed assets must be generated from the revisions and hashes in
   `artifacts/pins.json`.
 - Generated bundles and binary artifacts remain ignored and uncommitted.
-- CI builds `busybox`, `cpython`, `libcxx`, and `libzmq` before packaging the
-  image.
+- CI builds `busybox`, `cpython`, `libcxx`, `libzmq`, `zlib`, `openssl`, and
+  `sqlite` before packaging the image.
 - GitHub Pages is not used for the isolated runtime.
 
 ---
@@ -92,7 +92,7 @@ git commit -m "feat: add static playground build"
 **Interfaces:**
 
 - CI materializes the image with
-  `scripts/build-all-ports.sh --only busybox cpython libcxx libzmq --build-only`.
+  `scripts/build-all-ports.sh --only busybox cpython libcxx libzmq zlib openssl sqlite --build-only`.
 - Deployment invokes `deno run ... scripts/build-static.ts` and uploads `dist/`
   with `cloudflare/pages-action@v1`.
 

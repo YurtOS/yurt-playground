@@ -47,7 +47,7 @@ jobs:
         env:
           YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
         run: |
-          scripts/build-all-ports.sh --only busybox cpython libcxx libzmq --build-only
+          scripts/build-all-ports.sh --only busybox cpython libcxx libzmq zlib openssl sqlite --build-only
           ports/playground-image/scripts/package.sh
       - name: fmt
         working-directory: playground

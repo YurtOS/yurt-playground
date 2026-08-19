@@ -20,7 +20,7 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
   assertEquals(workflow.includes("wasm32-wasip1-threads"), true);
   assertEquals(
     workflow.includes(
-      "scripts/build-all-ports.sh --only busybox cpython libcxx libzmq --build-only",
+      "scripts/build-all-ports.sh --only busybox cpython libcxx libzmq zlib openssl sqlite --build-only",
     ),
     true,
   );
@@ -33,6 +33,7 @@ Deno.test("deployment workflow publishes an isolated static site", async () => {
   );
   for (
     const value of [
+      "scripts/build-all-ports.sh --only busybox cpython libcxx libzmq zlib openssl sqlite --build-only",
       "dist",
       "_headers",
       "CLOUDFLARE_API_TOKEN",
