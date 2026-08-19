@@ -26,3 +26,21 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
   );
   assertEquals(workflow.includes("YURT_PORTS_ROOT: ../yurt-ports"), true);
 });
+
+Deno.test("deployment workflow publishes an isolated static site", async () => {
+  const workflow = await Deno.readTextFile(
+    new URL("../.github/workflows/deploy-pages.yml", import.meta.url),
+  );
+  for (
+    const value of [
+      "scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython --build-only",
+      "dist",
+      "_headers",
+      "CLOUDFLARE_API_TOKEN",
+      "CLOUDFLARE_ACCOUNT_ID",
+      "CLOUDFLARE_PROJECT_NAME",
+    ]
+  ) {
+    assertEquals(workflow.includes(value), true);
+  }
+});

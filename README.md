@@ -40,6 +40,32 @@ Then open `http://127.0.0.1:4173/`. The server sets
 `Cross-Origin-Embedder-Policy: require-corp`. GitHub Pages cannot host this.
 Reload is a fresh sandbox.
 
+## Deploy
+
+The GitHub Actions workflow builds the pinned kernel and playground image,
+bundles the static page, and deploys `dist/` to Cloudflare Pages. Cloudflare
+Pages is used for the runtime because the playground needs COOP/COEP response
+headers; a plain `github.io` site cannot provide them.
+
+Create a Cloudflare Pages project and add these repository secrets:
+
+- `CLOUDFLARE_API_TOKEN` — an API token allowed to deploy the Pages project.
+- `CLOUDFLARE_ACCOUNT_ID` — the Cloudflare account containing the project.
+- `CLOUDFLARE_PROJECT_NAME` — the Pages project name.
+
+Pushes to `main` and manual workflow runs publish the site. The output directory
+is `dist/`; the generated `_headers` file applies the required cross-origin
+isolation headers.
+
+To build the same output locally after materializing matching pinned artifacts:
+
+```bash
+YURT_KERNEL_ROOT=../yurtos-kernel \
+YURT_PORTS_ROOT=../yurt-ports \
+  deno task pin
+deno task build-static
+```
+
 `scripts/pin-artifacts.ts` never rebuilds. It copies matching blobs from
 `artifacts/`, sibling checkouts, or `PLAYGROUND_*_URL`, and exits 2 if none
 match `artifacts/pins.json`.
