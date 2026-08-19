@@ -20,7 +20,7 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
   assertEquals(workflow.includes("wasm32-wasip1-threads"), true);
   assertEquals(
     workflow.includes(
-      "scripts/build-all-ports.sh --only busybox cpython --build-only",
+      "scripts/build-all-ports.sh --only zlib openssl sqlite busybox cpython --build-only",
     ),
     true,
   );
