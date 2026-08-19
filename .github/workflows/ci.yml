@@ -39,6 +39,9 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
       - name: Build pinned kernel wasm
         working-directory: yurtos-kernel
         run: scripts/build-kernel-wasm.sh
@@ -46,8 +49,9 @@ jobs:
         working-directory: yurt-ports
         env:
           YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
+          HOST_PYTHON: python
         run: |
-          scripts/build-all-ports.sh --only busybox cpython libcxx libzmq zlib openssl sqlite --build-only
+          scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython --build-only
           ports/playground-image/scripts/package.sh
       - name: fmt
         working-directory: playground

@@ -92,7 +92,7 @@ git commit -m "feat: add static playground build"
 **Interfaces:**
 
 - CI materializes the image with
-  `scripts/build-all-ports.sh --only busybox cpython libcxx libzmq zlib openssl sqlite --build-only`.
+  `scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython --build-only`.
 - Deployment invokes `deno run ... scripts/build-static.ts` and uploads `dist/`
   with `cloudflare/pages-action@v1`.
 

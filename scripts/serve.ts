@@ -1,13 +1,21 @@
 #!/usr/bin/env -S deno run --allow-read --allow-net --allow-run --allow-env --allow-write
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startPlaygroundServer } from "../src/serve.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+export function resolveKernelRoot(
+  root: string,
+  base = repoRoot,
+): string {
+  return resolve(base, root);
+}
+
 function kernelRoot(): string {
-  return Deno.env.get("YURT_KERNEL_ROOT") ??
-    join(repoRoot, "../yurtos-kernel");
+  return resolveKernelRoot(
+    Deno.env.get("YURT_KERNEL_ROOT") ?? "../yurtos-kernel",
+  );
 }
 
 export async function ensureBundle(kernel = kernelRoot()): Promise<void> {

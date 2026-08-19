@@ -5,12 +5,23 @@ import {
   handlePlaygroundRequest,
   resolvePlaygroundPath,
 } from "../src/serve.ts";
+import { resolveKernelRoot } from "../scripts/serve.ts";
 
 const isolation = {
   coop: "same-origin",
   coep: "require-corp",
   corp: "same-origin",
 };
+
+Deno.test("relative YURT_KERNEL_ROOT resolves from the repository root", () => {
+  assertEquals(
+    resolveKernelRoot(
+      "../yurtos-kernel",
+      "/workspace/yurt-playground",
+    ),
+    "/workspace/yurtos-kernel",
+  );
+});
 
 Deno.test("playground HTTP responses carry COOP/COEP", async () => {
   const res = await handlePlaygroundRequest(new Request("http://playground/"));
