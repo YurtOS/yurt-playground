@@ -62,6 +62,7 @@ let markerSeq = 0;
 export async function typeCommand(
   term: MemoryTerm,
   command: string,
+  timeoutMs = 10_000,
 ): Promise<string> {
   const marker = `__YURT_${++markerSeq}__`;
   const before = term.output().length;
@@ -75,6 +76,7 @@ export async function typeCommand(
     `marker ${marker} after ${JSON.stringify(command)} in ${
       JSON.stringify(term.output())
     }`,
+    timeoutMs,
   );
   return term.output().slice(before);
 }
