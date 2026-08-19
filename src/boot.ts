@@ -57,7 +57,12 @@ async function browserPins(): Promise<Pins> {
     }
     return parsePins(await response.json());
   });
-  return await pinsPromise;
+  try {
+    return await pinsPromise;
+  } catch (error) {
+    pinsPromise = undefined;
+    throw error;
+  }
 }
 
 export async function fetchPlaygroundBytes(

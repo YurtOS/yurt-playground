@@ -1,5 +1,5 @@
-import { assertEquals } from "@std/assert";
-import { bootPlayground } from "../src/boot.ts";
+import { assertEquals, assertRejects } from "@std/assert";
+import { bootPlayground, fetchPlaygroundBytes } from "../src/boot.ts";
 import {
   assertNoTouchFailure,
   bootAshSession,
@@ -27,6 +27,53 @@ Deno.test("bootPlayground fails closed when the page is not isolated", async () 
     }
   }
   assertEquals(shown, "need COOP/COEP");
+});
+
+Deno.test("fetchPlaygroundBytes retries pins.json after a failed load", async () => {
+  const originalFetch = globalThis.fetch;
+  const artifact = new Uint8Array();
+  const pins = {
+    kernelWasm: {
+      repo: "test/repo",
+      rev: "a".repeat(40),
+      build: "test",
+      path: "yurt_kernel.wasm",
+      sha256:
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    },
+    image: {
+      repo: "test/repo",
+      rev: "b".repeat(40),
+      build: "test",
+      path: "playground.yurtimg",
+      sha256:
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    },
+  };
+  let pinsRequests = 0;
+  try {
+    globalThis.fetch = (input) => {
+      const url = String(input);
+      if (url === "./pins.json") {
+        pinsRequests++;
+        return Promise.resolve(
+          pinsRequests === 1
+            ? new Response("temporary failure", { status: 503 })
+            : new Response(JSON.stringify(pins), { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response(artifact, { status: 200 }));
+    };
+
+    await assertRejects(() => fetchPlaygroundBytes("./yurt_kernel.wasm"));
+    assertEquals(
+      await fetchPlaygroundBytes("http://playground/yurt_kernel.wasm"),
+      artifact,
+    );
+    assertEquals(pinsRequests, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 Deno.test({
