@@ -1,7 +1,6 @@
-name: CI
+name: Deploy playground
 
 on:
-  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
@@ -9,14 +8,17 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+permissions:
+  contents: read
+
 jobs:
-  deno:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           path: playground
-      - name: Read kernel pin
+      - name: Read pins
         id: pins
         working-directory: playground
         run: |
@@ -49,18 +51,33 @@ jobs:
         run: |
           scripts/build-all-ports.sh --only busybox cpython libcxx libzmq --build-only
           ports/playground-image/scripts/package.sh
-      - name: fmt
-        working-directory: playground
-        run: deno fmt --check
-      - name: lint
-        working-directory: playground
-        run: deno lint
-      - name: check
-        working-directory: playground
-        run: deno check "**/*.ts"
-      - name: test
+      - name: Pin artifacts
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
           YURT_PORTS_ROOT: ../yurt-ports
-        run: deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
+        run: deno task pin
+      - name: Verify playground
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+          YURT_PORTS_ROOT: ../yurt-ports
+        run: |
+          deno fmt --check
+          deno lint
+          deno check '**/*.ts'
+          deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
+      - name: Build static site
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+        run: |
+          deno task build-static
+          test -f dist/_headers
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: ${{ secrets.CLOUDFLARE_PROJECT_NAME }}
+          directory: playground/dist
