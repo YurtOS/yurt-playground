@@ -31,13 +31,15 @@ Deno.test("deployment workflow publishes an isolated static site", async () => {
   const workflow = await Deno.readTextFile(
     new URL("../.github/workflows/deploy-pages.yml", import.meta.url),
   );
-  for (const value of [
-    "dist",
-    "_headers",
-    "CLOUDFLARE_API_TOKEN",
-    "CLOUDFLARE_ACCOUNT_ID",
-    "CLOUDFLARE_PROJECT_NAME",
-  ]) {
+  for (
+    const value of [
+      "dist",
+      "_headers",
+      "CLOUDFLARE_API_TOKEN",
+      "CLOUDFLARE_ACCOUNT_ID",
+      "CLOUDFLARE_PROJECT_NAME",
+    ]
+  ) {
     assertEquals(workflow.includes(value), true);
   }
 });

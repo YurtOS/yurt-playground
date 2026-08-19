@@ -11,8 +11,8 @@ local build and CI verification path.
 - The browser page must receive `Cross-Origin-Opener-Policy: same-origin`.
 - The browser page must receive `Cross-Origin-Embedder-Policy: require-corp`.
 - Static assets must be built from the git-pinned kernel and playground image.
-- Generated bundles and binary artifacts remain deployment outputs; they are
-  not committed to git.
+- Generated bundles and binary artifacts remain deployment outputs; they are not
+  committed to git.
 - CI must build every port required by the pinned playground image, including
   `busybox`, `cpython`, `libcxx`, and `libzmq`.
 - GitHub Pages is not suitable for the runtime because it cannot configure the
@@ -22,21 +22,21 @@ local build and CI verification path.
 
 GitHub Actions will build a self-contained `dist/` directory. The build will
 materialize the pinned kernel and image, bundle the page and workers using the
-existing Deno script, copy the static page and verified artifacts into
-`dist/`, and write a Cloudflare Pages `_headers` file. Cloudflare Pages will
-deploy `dist/` on pushes to `main` through its deployment action using a
-repository secret for authentication.
+existing Deno script, copy the static page and verified artifacts into `dist/`,
+and write a Cloudflare Pages `_headers` file. Cloudflare Pages will deploy
+`dist/` on pushes to `main` through its deployment action using a repository
+secret for authentication.
 
-The deployment workflow will run the same formatting, lint, type-check, and
-test gates as CI before publishing. The workflow will have least-privilege
-contents access and will fail before deployment if artifact hashes or the
-required isolation configuration are invalid.
+The deployment workflow will run the same formatting, lint, type-check, and test
+gates as CI before publishing. The workflow will have least-privilege contents
+access and will fail before deployment if artifact hashes or the required
+isolation configuration are invalid.
 
 The repository README will explain that the public runtime is Cloudflare Pages
 despite the GitHub-owned source and workflow, and will document the required
-repository secrets and the resulting URL configuration. A small generated
-build test will verify that `dist/index.html`, the bundles, both binary
-artifacts, and `_headers` are present with the expected header rules.
+repository secrets and the resulting URL configuration. A small generated build
+test will verify that `dist/index.html`, the bundles, both binary artifacts, and
+`_headers` are present with the expected header rules.
 
 ## Non-goals
 

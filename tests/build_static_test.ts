@@ -4,17 +4,19 @@ Deno.test("static build emits isolated playground deployment", async () => {
   const script = await Deno.readTextFile(
     new URL("../scripts/build-static.ts", import.meta.url),
   );
-  for (const value of [
-    '"dist"',
-    '"public"',
-    '"artifacts"',
-    '"_headers"',
-    '"yurt_kernel.wasm"',
-    '"playground.yurtimg"',
-    "Cross-Origin-Opener-Policy",
-    "Cross-Origin-Embedder-Policy",
-    "Cross-Origin-Resource-Policy",
-  ]) {
+  for (
+    const value of [
+      '"dist"',
+      '"public"',
+      '"artifacts"',
+      '"_headers"',
+      '"yurt_kernel.wasm"',
+      '"playground.yurtimg"',
+      "Cross-Origin-Opener-Policy",
+      "Cross-Origin-Embedder-Policy",
+      "Cross-Origin-Resource-Policy",
+    ]
+  ) {
     assertStringIncludes(script, value);
   }
 });

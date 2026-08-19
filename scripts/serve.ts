@@ -11,26 +11,26 @@ function kernelRoot(): string {
 }
 
 export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
-  const kernel = kernelRoot();
+  const kernelPath = kernel;
   const importMap = {
     imports: {
       "@yurt/kernel-host-interface-js":
-        `${kernel}/packages/kernel-host-interface-js/mod.ts`,
+        `${kernelPath}/packages/kernel-host-interface-js/mod.ts`,
       "@yurt/tar-image":
-        `${kernel}/packages/runner/src/vfs/tar-image-root-provider.ts`,
+        `${kernelPath}/packages/runner/src/vfs/tar-image-root-provider.ts`,
       "@xterm/xterm": "npm:@xterm/xterm@5.5.0",
       fzstd: "npm:fzstd@0.1.1",
     },
   };
   const importMapPath = join(repoRoot, "public/import-map.json");
   await Deno.writeTextFile(importMapPath, JSON.stringify(importMap, null, 2));
-  await bundle(kernel, {
+  await bundle(kernelPath, {
     entry: join(repoRoot, "src/page.ts"),
     out: join(repoRoot, "public/boot.bundle.js"),
     importMap: importMapPath,
   });
   const coordinatorOut = join(repoRoot, "public/coordinator.bundle.js");
-  await bundle(kernel, {
+  await bundle(kernelPath, {
     entry: join(repoRoot, "src/coordinator_worker.ts"),
     out: coordinatorOut,
     importMap: importMapPath,
@@ -46,7 +46,7 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
   );
   await bundle(kernel, {
     entry: join(
-      kernel,
+      kernelPath,
       "packages/kernel-host-interface-js/kernel-host-interface/worker_bootstrap.ts",
     ),
     out: join(repoRoot, "public/worker_bootstrap.ts"),

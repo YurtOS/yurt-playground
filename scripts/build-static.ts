@@ -26,7 +26,11 @@ function kernelRoot(): string {
   return Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel");
 }
 
-async function copyFiles(files: string[], sourceDir: string, targetDir: string) {
+async function copyFiles(
+  files: string[],
+  sourceDir: string,
+  targetDir: string,
+) {
   for (const file of files) {
     await Deno.copyFile(join(sourceDir, file), join(targetDir, file));
   }
