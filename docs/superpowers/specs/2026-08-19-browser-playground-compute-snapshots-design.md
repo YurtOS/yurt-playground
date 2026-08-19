@@ -8,6 +8,7 @@
   - [yurt-ports#56](https://github.com/YurtOS/yurt-ports/issues/56)
   - [yurtos-kernel#2289](https://github.com/YurtOS/yurtos-kernel/issues/2289)
   - [yurtos-kernel#2269](https://github.com/YurtOS/yurtos-kernel/issues/2269)
+  - [yurtos-kernel#2304](https://github.com/YurtOS/yurtos-kernel/issues/2304)
 
 ## Goal
 
@@ -55,12 +56,38 @@ to:
 
 CI checks out that exact revision, verifies the archive hash, stages the
 payload through the existing yurt-jupyter packaging script, and passes the
-result into the ports image build. The resulting package/image hash is then
-recorded in the playground artifact pins. A clean runner must never obtain
-the payload from an unpinned working tree or an implicit package-manager
-install.
+result into the ports image build. The Jupyter entry in `artifacts/pins.json`
+is machine-readable and has this shape, with the concrete values above:
+
+```json
+"jupyter": {
+  "repo": "YurtOS/yurt-jupyter",
+  "rev": "c30f1073c244aab166c67dc3b9b1ff1048def0d4",
+  "sourceArchiveSha256": "c4290ab8a682b76645fb09b5981255b7615429b757825301088a4e7774b8159d",
+  "dependencyLock": "artifacts/jupyter-requirements.lock",
+  "materializer": "scripts/materialize-jupyter.ts",
+  "package": "yurt-jupyter-0.1.0-yurt_0.yurtpkg"
+}
+```
+
+The lock file is checked in and lists every pure-Python dependency with an
+exact version, source URL, and SHA-256. `materialize-jupyter.ts` runs under
+the pinned host Python 3.14, installs with hash checking and no binary
+extensions, applies the existing yurt-jupyter exclusions (`zmq`, `psutil`,
+compiled files), normalizes ownership/timestamps/order, and emits the package
+input tree. The image pinning step hashes that normalized tree and the final
+image; CI fails if either the source archive, lock file, or generated package
+input differs from the checked-in pin. A clean runner must never obtain the
+payload from an unpinned working tree or an implicit package-manager install.
 
 ### Jupyter
+
+Real ipykernel execution is gated on yurtos-kernel#2304. That issue must prove
+the Worker-backed multi-threaded kernel path with the unchanged yurt-jupyter
+payload, including libzmq I/O-thread progress and a host-bridge cell smoke.
+Until that gate is green, this arc may verify deterministic payload staging and
+import readiness, but it must not claim notebook execution or add a successful
+Jupyter acceptance test.
 
 The guest starts the real ipykernel using the image's Python 3 executable. The
 page uses the kernel host's `dialSandboxPort` mechanism to reach the guest's
@@ -175,14 +202,17 @@ yurtos-kernel#2289.
 
 ## Delivery order
 
-1. Land and verify the kernel/JS host resource-admission and reattachment
+1. Land and verify yurtos-kernel#2304: Worker-backed multi-threaded ipykernel
+   and libzmq progress through the browser host. This is a hard gate for real
+   notebook execution.
+2. Land and verify the kernel/JS host resource-admission and reattachment
    contract required above. This is a hard gate for active-session snapshots.
-2. Pin and check out the yurt-jupyter revision above, update the ports image
-   composition, and update artifact pins; prove NumPy and Jupyter import
-   readiness from a clean build.
-3. Refactor the playground boot/session lifecycle around explicit clients and
+3. Add the machine-readable Jupyter source/dependency pins and deterministic
+   materializer, then update the ports image composition and artifact pins;
+   prove NumPy and Jupyter import readiness from a clean build.
+4. Refactor the playground boot/session lifecycle around explicit clients and
    quiescence.
-4. Add the standard Jupyter client and notebook pane.
-5. Add snapshot export/import controls and in-place reconnect.
-6. Run focused tests, browser acceptance tests, and all CI gates from a clean
+5. Add the standard Jupyter client and notebook pane.
+6. Add snapshot export/import controls and in-place reconnect.
+7. Run focused tests, browser acceptance tests, and all CI gates from a clean
    artifact configuration.
