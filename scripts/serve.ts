@@ -10,7 +10,7 @@ function kernelRoot(): string {
     join(repoRoot, "../yurtos-kernel");
 }
 
-async function ensureBundle(): Promise<void> {
+export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
   const kernel = kernelRoot();
   const importMap = {
     imports: {
