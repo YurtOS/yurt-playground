@@ -51,7 +51,7 @@ jobs:
           YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
           HOST_PYTHON: python
         run: |
-          scripts/build-all-ports.sh --only zlib openssl sqlite busybox cpython
+          scripts/build-all-ports.sh --only zlib openssl sqlite busybox cpython --build-only
           ports/playground-image/scripts/package.sh
       - name: fmt
         working-directory: playground
