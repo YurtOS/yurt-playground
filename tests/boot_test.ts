@@ -5,6 +5,7 @@ import {
   bootAshSession,
   memoryTerm,
   typeCommand,
+  waitFor,
 } from "./ash_harness.ts";
 
 Deno.test("bootPlayground fails closed when the page is not isolated", async () => {
@@ -213,6 +214,44 @@ Deno.test({
       }
     } finally {
       second.stop();
+    }
+  },
+});
+
+Deno.test({
+  name: "ash consumes Up-arrow as command history",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootAshSession({ requireArtifacts: true });
+    if (!session) throw new Error("required ash session unexpectedly skipped");
+    try {
+      const marker = "__YURT_ARROW_HISTORY__";
+      const before = session.term.output().length;
+      session.term.type(`printf '${marker}\\n'\n`);
+      await waitFor(
+        () => {
+          const added = session.term.output().slice(before).replace(/\r/g, "");
+          return added.split("\n").filter((line) => line === marker).length >=
+              1 &&
+            /\$ $/.test(added);
+        },
+        "initial arrow-history command and prompt",
+        60_000,
+      );
+      session.term.type("\x1b[A\n");
+      await waitFor(
+        () =>
+          session.term.output().slice(before).split(/\r?\n/).filter((line) =>
+            line === marker
+          ).length >= 2,
+        `replayed arrow-history command: ${
+          JSON.stringify(session.term.output().slice(before))
+        }`,
+        60_000,
+      );
+    } finally {
+      session.stop();
     }
   },
 });

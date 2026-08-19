@@ -38,6 +38,14 @@ Deno.test("playground runs Python 3 one-shot commands with PYTHONHOME", async ()
       await typeCommand(term, "python -c 'print(2**20)'", 60_000),
       "1048576",
     );
+    assertStringIncludes(
+      await typeCommand(
+        term,
+        "python -c 'import os; print(len(os.urandom(32)))'",
+        60_000,
+      ),
+      "32",
+    );
   });
 });
 
