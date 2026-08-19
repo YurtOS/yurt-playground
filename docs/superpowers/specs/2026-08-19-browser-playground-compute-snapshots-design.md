@@ -45,7 +45,20 @@ is not supported.
 
 The same image stages the versioned pure-Python payload from `yurt-jupyter`.
 The payload remains responsible for ipykernel and its Python dependencies; the
-playground only starts and connects to it.
+playground only starts and connects to it. The source is pinned for this arc
+to:
+
+- repository: `YurtOS/yurt-jupyter`;
+- git revision: `c30f1073c244aab166c67dc3b9b1ff1048def0d4`;
+- SHA-256 of the canonical `git archive --format=tar` at that revision:
+  `c4290ab8a682b76645fb09b5981255b7615429b757825301088a4e7774b8159d`.
+
+CI checks out that exact revision, verifies the archive hash, stages the
+payload through the existing yurt-jupyter packaging script, and passes the
+result into the ports image build. The resulting package/image hash is then
+recorded in the playground artifact pins. A clean runner must never obtain
+the payload from an unpinned working tree or an implicit package-manager
+install.
 
 ### Jupyter
 
@@ -61,6 +74,27 @@ Jupyter messages, not a replacement for ipykernel. The terminal and notebook
 share the same guest VFS and process environment.
 
 ### Snapshot lifecycle
+
+Active-session restore is a hard prerequisite, not an assumption of the
+playground. Before snapshot UI work begins, yurtos-kernel#2289 must provide a
+host-interface contract with all of the following properties:
+
+- an admission/preflight operation validates the complete kernel resource graph
+  before capture or restore mutates state;
+- the capture response identifies every host-backed resource that must be
+  reattached, including the host PTY and guest Jupyter port transports;
+- restore accepts a host reattachment table and atomically reconnects those
+  resources to restored guest descriptors; and
+- any missing or rejected reattachment leaves both kernel and host state
+  unchanged and returns a structured error.
+
+The JS host wrapper must expose this contract to the playground as paired
+capture/restore operations, rather than making the page call raw wasm exports
+or guess how to rebuild a live fd. Until that contract and its kernel/JS tests
+exist, the active-session round-trip acceptance tests are blocked and no
+snapshot button should be presented as working. A separately scoped
+filesystem-only export would be a different feature and is not substituted
+silently.
 
 The page exposes Save snapshot and Restore snapshot controls above the
 terminal. A session controller owns the lifecycle so terminal and Jupyter
@@ -88,9 +122,8 @@ Restore:
 If validation, host-resource admission, or restore fails, the current sandbox
 must remain usable and the UI must report the failure. In particular, an
 active PTY or Jupyter socket may not be silently replaced by a dead or local
-stand-in. The implementation must follow the kernel contract in
-yurtos-kernel#2289; if the active session is not restorable, the operation is
-rejected clearly until the kernel-side contract supports it.
+stand-in. The implementation must follow the completed kernel contract in
+yurtos-kernel#2289.
 
 ## Interfaces and ownership
 
@@ -142,10 +175,10 @@ rejected clearly until the kernel-side contract supports it.
 
 ## Delivery order
 
-1. Confirm the pinned kernel host exposes the required snapshot restore and
-   transport reattachment contract; open follow-up kernel work only if the
-   existing issues do not cover the concrete gap.
-2. Update the ports image composition and pins; prove NumPy and Jupyter import
+1. Land and verify the kernel/JS host resource-admission and reattachment
+   contract required above. This is a hard gate for active-session snapshots.
+2. Pin and check out the yurt-jupyter revision above, update the ports image
+   composition, and update artifact pins; prove NumPy and Jupyter import
    readiness from a clean build.
 3. Refactor the playground boot/session lifecycle around explicit clients and
    quiescence.
@@ -153,4 +186,3 @@ rejected clearly until the kernel-side contract supports it.
 5. Add snapshot export/import controls and in-place reconnect.
 6. Run focused tests, browser acceptance tests, and all CI gates from a clean
    artifact configuration.
-
