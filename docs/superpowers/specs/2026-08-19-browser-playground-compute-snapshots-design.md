@@ -65,13 +65,16 @@ is machine-readable and has this shape, with the concrete values above:
   "rev": "c30f1073c244aab166c67dc3b9b1ff1048def0d4",
   "sourceArchiveSha256": "c4290ab8a682b76645fb09b5981255b7615429b757825301088a4e7774b8159d",
   "dependencyLock": "artifacts/jupyter-requirements.lock",
+  "dependencyLockSha256": "<64 lowercase hex, populated by pin-artifacts>",
   "materializer": "scripts/materialize-jupyter.ts",
+  "materializerSha256": "<64 lowercase hex, populated by pin-artifacts>",
   "hostPython": {
     "implementation": "CPython",
     "version": "3.14.0",
     "architecture": "x86_64",
     "ciProvisioner": "actions/setup-python@v5"
   },
+  "normalizedTreeSha256": "<64 lowercase hex, populated by pin-artifacts>",
   "package": "yurt-jupyter-0.1.0-yurt_0.yurtpkg"
 }
 ```
@@ -84,11 +87,16 @@ architecture before it invokes the materializer; the system `python` is not an
 acceptable fallback. The materializer installs with hash checking and no
 binary extensions, applies the existing yurt-jupyter exclusions (`zmq`,
 `psutil`, compiled files), normalizes ownership/timestamps/order, and emits
-the package input tree. The image pinning step hashes that normalized tree and
-the final image; CI fails if either the source archive, lock file, host-Python
-identity, or generated package input differs from the checked-in pin. A clean
-runner must never obtain the payload from an unpinned working tree or an
-implicit package-manager install.
+the package input tree. The three digest fields above are required pins, not
+optional annotations: the implementation PR must replace each schema marker
+with a concrete lowercase SHA-256 before changing the image pin. The lock
+digest covers the exact lock-file bytes, the materializer digest covers the
+exact script bytes, and the normalized-tree digest covers a canonical tar of
+the generated tree. `pin-artifacts` and CI fail closed if any field is absent,
+not 64 lowercase hex characters, or does not match the checked-in input. The
+image pinning step also hashes the final image. A clean runner must never
+obtain the payload from an unpinned working tree or an implicit package-manager
+install.
 
 ### Jupyter
 
