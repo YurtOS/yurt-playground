@@ -17,6 +17,7 @@ export type MaterializedJupyter = {
 
 type Lock = {
   yurtJupyterRev: string;
+  payloadTreeSha256: string;
   packages: Array<{ name: string; version: string; sha256: string }>;
 };
 
@@ -41,6 +42,7 @@ export async function materializeJupyter(
 
   const source = await existingPayloadRoot(jupyterRoot);
   rejectForbiddenPackages(source);
+  await verifyLockedPayload(source, lock);
   await Deno.remove(options.outputDir, { recursive: true }).catch(() => {});
   await copyTree(source, options.outputDir);
   const tar = await canonicalTreeTar(options.outputDir);
@@ -72,14 +74,76 @@ async function readLock(path: string): Promise<Lock> {
   }
   try {
     const parsed = JSON.parse(raw) as Lock;
-    if (!parsed.yurtJupyterRev || !Array.isArray(parsed.packages)) {
+    if (
+      !parsed.yurtJupyterRev ||
+      !/^[0-9a-f]{64}$/.test(parsed.payloadTreeSha256) ||
+      !Array.isArray(parsed.packages) ||
+      parsed.packages.length === 0
+    ) {
       throw new Error("invalid lock shape");
+    }
+    const names = new Set<string>();
+    for (const packagePin of parsed.packages) {
+      if (
+        typeof packagePin.name !== "string" ||
+        typeof packagePin.version !== "string" ||
+        !/^[0-9a-f]{64}$/.test(packagePin.sha256) ||
+        names.has(packagePin.name.toLowerCase())
+      ) {
+        throw new Error("invalid package lock entry");
+      }
+      names.add(packagePin.name.toLowerCase());
     }
     return parsed;
   } catch {
-    const match = raw.match(/yurt-jupyter-rev\s*=\s*([0-9a-f]{40})/i);
-    if (!match) throw new Error(`Jupyter dependency lock is invalid: ${path}`);
-    return { yurtJupyterRev: match[1], packages: [] };
+    throw new Error(`Jupyter dependency lock is invalid: ${path}`);
+  }
+}
+
+async function verifyLockedPayload(root: string, lock: Lock): Promise<void> {
+  const actualTreeSha256 = await sha256Bytes(await canonicalTreeTar(root));
+  if (actualTreeSha256 !== lock.payloadTreeSha256) {
+    throw new Error(
+      `Jupyter payload tree hash mismatch: got ${actualTreeSha256}, lock ${lock.payloadTreeSha256}`,
+    );
+  }
+  const metadata = new Map<string, { version: string; root: string }>();
+  for (const entry of walk(root)) {
+    if (!entry.endsWith(".dist-info/METADATA")) continue;
+    const text = await Deno.readTextFile(entry);
+    const name = text.match(/^Name:\s*(.+)$/mi)?.[1]?.trim();
+    const version = text.match(/^Version:\s*(.+)$/mi)?.[1]?.trim();
+    if (!name || !version) {
+      throw new Error(`invalid package metadata: ${entry}`);
+    }
+    metadata.set(name.toLowerCase(), {
+      version,
+      root: entry.slice(0, -"/METADATA".length),
+    });
+  }
+  if (metadata.size !== lock.packages.length) {
+    throw new Error(
+      `locked package count ${lock.packages.length} does not match payload ${metadata.size}`,
+    );
+  }
+  for (const packagePin of lock.packages) {
+    const actual = metadata.get(packagePin.name.toLowerCase());
+    if (actual === undefined) {
+      throw new Error(`locked package is missing: ${packagePin.name}`);
+    }
+    if (actual.version !== packagePin.version) {
+      throw new Error(
+        `locked package version mismatch for ${packagePin.name}: got ${actual.version}, lock ${packagePin.version}`,
+      );
+    }
+    const actualSha256 = await sha256Bytes(
+      await canonicalTreeTar(actual.root),
+    );
+    if (actualSha256 !== packagePin.sha256) {
+      throw new Error(
+        `locked package hash mismatch for ${packagePin.name}: got ${actualSha256}, lock ${packagePin.sha256}`,
+      );
+    }
   }
 }
 
