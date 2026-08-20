@@ -68,6 +68,8 @@ is machine-readable and has this shape, with the concrete values above:
   "dependencyLockSha256": "<64 lowercase hex, populated by pin-artifacts>",
   "materializer": "scripts/materialize-jupyter.ts",
   "materializerSha256": "<64 lowercase hex, populated by pin-artifacts>",
+  "serializer": "scripts/canonical-tree-tar.ts",
+  "serializerSha256": "<64 lowercase hex, populated by pin-artifacts>",
   "hostPython": {
     "implementation": "CPython",
     "version": "3.14.0",
@@ -87,12 +89,13 @@ architecture before it invokes the materializer; the system `python` is not an
 acceptable fallback. The materializer installs with hash checking and no
 binary extensions, applies the existing yurt-jupyter exclusions (`zmq`,
 `psutil`, compiled files), normalizes ownership/timestamps/order, and emits
-the package input tree. The three digest fields above are required pins, not
+the package input tree. The four digest fields above are required pins, not
 optional annotations: the implementation PR must replace each schema marker
 with a concrete lowercase SHA-256 before changing the image pin. The lock
 digest covers the exact lock-file bytes, the materializer digest covers the
-exact script bytes, and the normalized-tree digest covers a canonical tar of
-the generated tree. `pin-artifacts` and CI fail closed if any field is absent,
+exact materializer script bytes, the serializer digest covers the exact
+serializer script bytes, and the normalized-tree digest covers a canonical
+tar of the generated tree. `pin-artifacts` and CI fail closed if any field is absent,
 not 64 lowercase hex characters, or does not match the checked-in input. The
 image pinning step also hashes the final image. A clean runner must never
 obtain the payload from an unpinned working tree or an implicit package-manager
@@ -105,23 +108,30 @@ and exactly two zero 512-byte end blocks. The serialization rules are:
 
 - entries are relative UTF-8 paths with `/` separators, no leading `/`, and no
   `.` or `..` components; the root entry is omitted;
-- entries are sorted by raw UTF-8 path bytes; paths that cannot fit the USTAR
-  name and prefix fields are rejected rather than encoded with PAX or GNU
-  extensions; directory names have no trailing `/` in the canonical path;
+- entries are sorted by raw UTF-8 path bytes; directory names have no trailing
+  `/` in the canonical path;
+- for each path, if its UTF-8 byte length is at most 100 bytes, the complete
+  path is stored in `name` and `prefix` is empty; otherwise, consider only `/`
+  boundaries whose prefix is at most 155 bytes and whose final component is at
+  most 100 bytes, and choose the rightmost fitting boundary; paths with no
+  fitting boundary are rejected rather than encoded with PAX or GNU
+  extensions;
 - all numeric fields use NUL-terminated octal ASCII in the POSIX USTAR field
   widths; the checksum field uses six octal digits, NUL, and a trailing space;
 - directories use type `5`, mode `0755`, size zero, and an empty link target;
 - regular files use type `0`, mode `0755` when any execute bit is present and
   `0644` otherwise, with their exact bytes and no transformation;
 - symlinks use type `2`, mode `0777`, size zero, and their exact UTF-8 link
-  target in the USTAR link-name field; symlink targets are never followed;
+  target in the USTAR link-name field; targets containing NUL, invalid UTF-8,
+  or more than 100 UTF-8 bytes are rejected, and symlink targets are never
+  followed;
 - uid, gid, device numbers, user/group names, and atime/ctime/mtime are zero
   or empty; USTAR magic/version, checksum spacing, and numeric field encoding
   are fixed by the serializer and are not delegated to a platform utility.
 
 The digest is SHA-256 over those emitted bytes. The same serializer and rules
-run in local pinning and CI, and the serializer source itself is covered by
-`materializerSha256`.
+run in local pinning and CI, and the serializer source is covered by its own
+`serializerSha256`.
 
 ### Jupyter
 
