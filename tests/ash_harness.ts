@@ -95,7 +95,11 @@ export async function resolvePlaygroundArtifacts(
     });
     return true;
   } catch (error) {
-    if (requireArtifacts) throw error;
+    if (
+      requireArtifacts || Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS") === "1"
+    ) {
+      throw error;
+    }
     console.log(
       `skipping ash session: ${
         error instanceof Error ? error.message : String(error)

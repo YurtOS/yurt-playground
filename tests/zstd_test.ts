@@ -11,6 +11,9 @@ Deno.test("decompressYurtimg unpacks a zstd yurtimg without node:zlib", async ()
     img = await Deno.readFile(join(repoRoot, "artifacts/playground.yurtimg"));
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
+      if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS") === "1") {
+        throw new Error("required playground.yurtimg artifact is absent");
+      }
       console.log("skipping zstd artifact test: playground.yurtimg is absent");
       return;
     }

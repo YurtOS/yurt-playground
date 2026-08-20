@@ -7,6 +7,11 @@ import {
 } from "@yurt/kernel-host-interface-js";
 import { setPidCredentials, stageYurtimg } from "./stage.ts";
 import {
+  createSessionController,
+  type PtyTransport,
+  type SessionController,
+} from "./session_controller.ts";
+import {
   type ArtifactProgress,
   fetchPinnedArtifact,
 } from "./artifact_fetch.ts";
@@ -31,6 +36,8 @@ export type PlaygroundEnv = {
 
 export type PlaygroundSession = {
   stop: () => void;
+  controller: SessionController;
+  terminal: PtyTransport;
 };
 
 const LOGIN_USER = "user";
@@ -41,11 +48,11 @@ const LOGIN_HOME = "/home/user";
 const DEFAULT_ENV: Record<string, string> = {
   HOME: LOGIN_HOME,
   PATH: "/bin:/usr/bin:/usr/local/bin",
+  PYTHONHOME: "/usr/local",
   PWD: LOGIN_HOME,
   USER: LOGIN_USER,
   LOGNAME: LOGIN_USER,
   TERM: "xterm-256color",
-  PYTHONHOME: "/usr/local",
 };
 
 let pinsPromise: Promise<Pins> | undefined;
@@ -120,7 +127,20 @@ export async function bootPlayground(
   mk.ptySetWinsize(pty, env.term.rows, env.term.cols);
   const encoder = new TextEncoder();
   const stopPump = pumpPtyMaster(mk, pty, (bytes) => env.term.write(bytes));
-  env.term.onData((data) => mk.ptyMasterWrite(pty, encoder.encode(data)));
+  const terminal: PtyTransport = {
+    write(bytes) {
+      mk.ptyMasterWrite(pty, bytes);
+      return Promise.resolve();
+    },
+    close() {
+      mk.ptyMasterClose(pty);
+    },
+  };
+  const controller = createSessionController({ pty: terminal });
+  env.term.onData((data) => {
+    if (controller.state !== "ready") return;
+    void controller.current.pty.write(encoder.encode(data));
+  });
   env.term.onResize(({ rows, cols }) => mk.ptySetWinsize(pty, rows, cols));
 
   let stopped = false;
@@ -129,7 +149,7 @@ export async function bootPlayground(
     stopped = true;
     stopPump();
     try {
-      mk.ptyMasterClose(pty);
+      controller.current.pty.close();
     } catch {
       // guest may already have hung up
     }
@@ -143,5 +163,5 @@ export async function bootPlayground(
   }).finally(stop);
 
   env.show("");
-  return { stop };
+  return { stop, controller, terminal };
 }
