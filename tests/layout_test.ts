@@ -23,4 +23,5 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
     true,
   );
   assertEquals(workflow.includes("YURT_PORTS_ROOT: ../yurt-ports"), true);
+  assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
 });

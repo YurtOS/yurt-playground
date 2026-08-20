@@ -91,6 +91,9 @@ export async function resolvePlaygroundArtifacts(): Promise<boolean> {
     });
     return true;
   } catch (error) {
+    if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS") === "1") {
+      throw error;
+    }
     console.log(
       `skipping ash session: ${
         error instanceof Error ? error.message : String(error)

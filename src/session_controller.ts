@@ -55,23 +55,27 @@ export function createSessionController(
       await Promise.resolve();
       state = "restoring";
     },
-    async commitTransportSwap(next) {
-      if (state !== "restoring") {
-        throw new Error("transport swap requires a quiesced session");
-      }
-      const old = current;
-      current = next;
-      previous = undefined;
-      state = "ready";
-      closeTransportSet(old, next);
+    commitTransportSwap(next) {
+      return Promise.resolve().then(() => {
+        if (state !== "restoring") {
+          throw new Error("transport swap requires a quiesced session");
+        }
+        const old = current;
+        current = next;
+        previous = undefined;
+        state = "ready";
+        closeTransportSet(old, next);
+      });
     },
-    async rollback() {
-      if (state !== "restoring" && state !== "quiescing") {
-        throw new Error(`cannot roll back session in ${state} state`);
-      }
-      if (previous !== undefined) current = previous;
-      previous = undefined;
-      state = "ready";
+    rollback() {
+      return Promise.resolve().then(() => {
+        if (state !== "restoring" && state !== "quiescing") {
+          throw new Error(`cannot roll back session in ${state} state`);
+        }
+        if (previous !== undefined) current = previous;
+        previous = undefined;
+        state = "ready";
+      });
     },
   };
 }
