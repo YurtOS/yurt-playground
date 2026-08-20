@@ -6,7 +6,7 @@ export async function canonicalTreeTar(root: string): Promise<Uint8Array> {
   const entries = await collect(root, "");
   entries.sort((a, b) => compareUtf8(a.path, b.path));
   const chunks: Uint8Array[] = [];
-  for (const entry of entries) chunks.push(await header(entry));
+  for (const entry of entries) chunks.push(header(entry));
   chunks.push(new Uint8Array(BLOCK * 2));
   const output = new Uint8Array(
     chunks.reduce((n, chunk) => n + chunk.length, 0),
@@ -60,7 +60,7 @@ async function collect(root: string, prefix: string): Promise<Entry[]> {
   return entries;
 }
 
-async function header(entry: Entry): Promise<Uint8Array> {
+function header(entry: Entry): Uint8Array {
   const { name, prefix } = splitPath(entry.path);
   const block = new Uint8Array(BLOCK);
   block.set(name, 0);

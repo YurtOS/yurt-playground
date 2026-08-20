@@ -99,8 +99,9 @@ export async function bootPlayground(
   const encoder = new TextEncoder();
   const stopPump = pumpPtyMaster(mk, pty, (bytes) => env.term.write(bytes));
   const terminal: PtyTransport = {
-    async write(bytes) {
+    write(bytes) {
       mk.ptyMasterWrite(pty, bytes);
+      return Promise.resolve();
     },
     close() {
       mk.ptyMasterClose(pty);

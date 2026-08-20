@@ -26,13 +26,19 @@ Deno.test("snapshot envelope round-trips opaque kernel bytes", () => {
 
 Deno.test("snapshot validation rejects malformed metadata and truncation", async () => {
   await assertRejects(
-    async () => decodeSnapshot(new TextEncoder().encode("bad")),
+    async () => {
+      await Promise.resolve();
+      decodeSnapshot(new TextEncoder().encode("bad"));
+    },
     Error,
     "magic",
   );
   const encoded = encodeSnapshot(envelope).slice(0, -1);
   await assertRejects(
-    async () => decodeSnapshot(encoded),
+    async () => {
+      await Promise.resolve();
+      decodeSnapshot(encoded);
+    },
     Error,
     "length",
   );

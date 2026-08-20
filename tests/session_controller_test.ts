@@ -15,8 +15,9 @@ function transport(name: string): TestTransport {
     name,
     writes: [],
     closed: false,
-    async write(bytes: Uint8Array) {
+    write(bytes: Uint8Array) {
       result.writes.push(bytes);
+      return Promise.resolve();
     },
     close() {
       result.closed = true;
