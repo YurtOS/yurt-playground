@@ -240,8 +240,11 @@ async function copyTree(source: string, destination: string): Promise<void> {
     const from = join(source, entry.name);
     const to = join(destination, entry.name);
     if (entry.isDirectory) await copyTree(from, to);
-    else if (entry.isFile) await Deno.copyFile(from, to);
-    else throw new Error(`unsupported payload entry: ${from}`);
+    else if (entry.isFile) {
+      await Deno.copyFile(from, to);
+      const info = await Deno.stat(from);
+      await Deno.chmod(to, (info.mode ?? 0o644) & 0o777);
+    } else throw new Error(`unsupported payload entry: ${from}`);
   }
 }
 

@@ -15,6 +15,10 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
     new URL("../.github/workflows/ci.yml", import.meta.url),
   );
   assertEquals(workflow.includes("repository: YurtOS/yurt-ports"), true);
+  assertEquals(workflow.includes("repository: YurtOS/yurt-jupyter"), true);
+  assertEquals(workflow.includes("actions/setup-python@v5"), true);
+  assertEquals(workflow.includes("scripts/materialize-jupyter.ts"), true);
+  assertEquals(workflow.includes("YURT_JUPYTER_STAGE"), true);
   assertEquals(workflow.includes("ports_rev"), true);
   assertEquals(workflow.includes("scripts/build-kernel-wasm.sh"), true);
   assertEquals(workflow.includes("wasm32-wasip1-threads"), true);

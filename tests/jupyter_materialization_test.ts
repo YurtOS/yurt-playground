@@ -132,6 +132,12 @@ Deno.test("materializer copies only a payload matching every lock hash", async (
       join(dist, "METADATA"),
       "Name: example\nVersion: 1.0.0\n",
     );
+    const launcher = join(stage, "usr/share/yurt-jupyter/launcher.py");
+    await Deno.mkdir(join(stage, "usr/share/yurt-jupyter"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(launcher, "#!/usr/bin/env python3\n");
+    await Deno.chmod(launcher, 0o755);
     const packageSha256 = await sha256Bytes(await canonicalTreeTar(dist));
     const payloadTreeSha256 = await sha256Bytes(await canonicalTreeTar(stage));
     await Deno.writeTextFile(join(root, "yurt-jupyter/REVISION"), `${REV}\n`);
@@ -171,6 +177,11 @@ Deno.test("materializer copies only a payload matching every lock hash", async (
         ),
       ),
       "Name: example\nVersion: 1.0.0\n",
+    );
+    assertEquals(
+      (await Deno.stat(join(root, "out/usr/share/yurt-jupyter/launcher.py")))
+        .mode! & 0o111,
+      0o111,
     );
     await Deno.writeTextFile(join(stage, "tampered.py"), "changed\n");
     await assertRejects(

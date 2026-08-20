@@ -1,6 +1,6 @@
 {
   "yurtJupyterRev": "c30f1073c244aab166c67dc3b9b1ff1048def0d4",
-  "payloadTreeSha256": "d581d9ec26ca041040f1ee9a4a1a0e850a47e7d42a1927b6f9f0081d84e2ce9a",
+  "payloadTreeSha256": "837a7a092e3514a885d4a416aeac8459a48fd2741efdbc3aab983176d776f7c0",
   "packages": [
     {"name":"appnope","version":"0.1.4","sha256":"68096b772ce154557270f16d42d6030ed0003d19de67ea8ea867152921589a78"},
     {"name":"asttokens","version":"3.0.1","sha256":"8db9fda9d93b0ef3b9e1d3d9d069ad57a76ae84d089a1e159430b1053db41130"},
@@ -26,7 +26,6 @@
     {"name":"pure_eval","version":"0.2.3","sha256":"9676f21a659fe360a961a91f327643c088a34f80c7254455c734dcec78f4f785"},
     {"name":"Pygments","version":"2.20.0","sha256":"2f09ef4791c1e156b736cc3f68aac38e2cfcc72e00c355ccaf5372f9f13f3205"},
     {"name":"python-dateutil","version":"2.9.0.post0","sha256":"90ed1436ce4e9bfc49ec8b7370e9197f7ac14046a7d1ae8e4696f93f9481cdcb"},
-    {"name":"pyzmq","version":"27.1.0","sha256":"65738d96e0134dcd5039997a890f63abad5032c3aa458f0c9d60a35629b3e6dd"},
     {"name":"six","version":"1.17.0","sha256":"250eee3d391c8eede3bea0af4a5fc0b17a15f9a577da4820c68a71043289b82e"},
     {"name":"stack_data","version":"0.6.3","sha256":"5aa89b95f39913bcd683e3486cbc80d0e36a628e35f14687614e7ca6a8b31346"},
     {"name":"tornado","version":"6.5.5","sha256":"6adf87d642401dbeb1004e0b1d042165f4a7c2c464c2be4ded9d321f5ea75d7c"},
