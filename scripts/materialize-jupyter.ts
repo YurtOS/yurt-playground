@@ -1,0 +1,213 @@
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env --allow-run
+
+import { basename, dirname, join, relative, resolve } from "node:path";
+import { canonicalTreeTar } from "./canonical-tree-tar.ts";
+
+export type MaterializeJupyterOptions = {
+  repoRoot: string;
+  lockPath: string;
+  python: string;
+  outputDir: string;
+};
+
+export type MaterializedJupyter = {
+  treeSha256: string;
+  packagePath: string;
+};
+
+type Lock = {
+  yurtJupyterRev: string;
+  packages: Array<{ name: string; version: string; sha256: string }>;
+};
+
+const YURT_JUPYTER_REV = "c30f1073c244aab166c67dc3b9b1ff1048def0d4";
+
+export async function materializeJupyter(
+  options: MaterializeJupyterOptions,
+): Promise<MaterializedJupyter> {
+  const lock = await readLock(options.lockPath);
+  await verifyInterpreter(options.python);
+  if (lock.yurtJupyterRev !== YURT_JUPYTER_REV) {
+    throw new Error(
+      `yurt-jupyter revision ${lock.yurtJupyterRev} is not pinned to ${YURT_JUPYTER_REV}`,
+    );
+  }
+
+  const jupyterRoot = findJupyterRoot(options.repoRoot);
+  const revision = await jupyterRevision(jupyterRoot);
+  if (revision !== YURT_JUPYTER_REV) {
+    throw new Error(`yurt-jupyter revision marker is missing or mismatched`);
+  }
+
+  const source = await existingPayloadRoot(jupyterRoot);
+  rejectForbiddenPackages(source);
+  await Deno.remove(options.outputDir, { recursive: true }).catch(() => {});
+  await copyTree(source, options.outputDir);
+  const tar = await canonicalTreeTar(options.outputDir);
+  const treeSha256 = await sha256Bytes(tar);
+  return {
+    treeSha256,
+    packagePath: relative(
+      resolve(options.repoRoot),
+      resolve(options.outputDir),
+    ),
+  };
+}
+
+export async function sha256Bytes(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
+}
+
+async function readLock(path: string): Promise<Lock> {
+  let raw: string;
+  try {
+    raw = await Deno.readTextFile(path);
+  } catch {
+    throw new Error(`Jupyter dependency lock is missing: ${path}`);
+  }
+  try {
+    const parsed = JSON.parse(raw) as Lock;
+    if (!parsed.yurtJupyterRev || !Array.isArray(parsed.packages)) {
+      throw new Error("invalid lock shape");
+    }
+    return parsed;
+  } catch {
+    const match = raw.match(/yurt-jupyter-rev\s*=\s*([0-9a-f]{40})/i);
+    if (!match) throw new Error(`Jupyter dependency lock is invalid: ${path}`);
+    return { yurtJupyterRev: match[1], packages: [] };
+  }
+}
+
+async function verifyInterpreter(python: string): Promise<void> {
+  let output: string;
+  try {
+    const command = new Deno.Command(python, {
+      args: [
+        "-c",
+        "import platform,sys; print(sys.implementation.name, sys.version_info[:3], platform.machine())",
+      ],
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const result = await command.output();
+    output = new TextDecoder().decode(result.stdout);
+    if (!result.success) {
+      throw new Error(new TextDecoder().decode(result.stderr));
+    }
+  } catch (error) {
+    throw new Error(
+      `unable to execute pinned Python 3.14 interpreter: ${error}`,
+    );
+  }
+  if (
+    !/cpython\s*\(3,\s*14,\s*0\)/i.test(output) &&
+    !/cpython\s+3\.14\.0/i.test(output)
+  ) {
+    throw new Error(
+      `materializer requires CPython 3.14.0, got: ${output.trim()}`,
+    );
+  }
+  if (!/x86_64|amd64/i.test(output)) {
+    throw new Error(
+      `materializer requires x86_64 Python, got: ${output.trim()}`,
+    );
+  }
+}
+
+function findJupyterRoot(repoRoot: string): string {
+  const candidates = [
+    Deno.env.get("YURT_JUPYTER_ROOT"),
+    join(repoRoot, "yurt-jupyter"),
+    join(repoRoot, "..", "yurt-jupyter"),
+  ].filter((value): value is string => value !== undefined);
+  for (const candidate of candidates) {
+    try {
+      if (Deno.statSync(candidate).isDirectory) return candidate;
+    } catch {
+      // continue
+    }
+  }
+  throw new Error("yurt-jupyter checkout is missing");
+}
+
+async function existingPayloadRoot(root: string): Promise<string> {
+  for (const candidate of [join(root, "stage"), join(root, "site-packages")]) {
+    try {
+      if ((await Deno.stat(candidate)).isDirectory) return candidate;
+    } catch {
+      // continue
+    }
+  }
+  throw new Error("yurt-jupyter staged payload is missing");
+}
+
+function rejectForbiddenPackages(root: string): void {
+  for (const entry of walk(root)) {
+    if (entry.endsWith(".so") || entry.endsWith(".dylib")) {
+      throw new Error(
+        `yurt-jupyter payload contains compiled extension ${entry}`,
+      );
+    }
+    const name = basename(entry);
+    if (name === "zmq" || name === "psutil") {
+      throw new Error(
+        `yurt-jupyter payload duplicates forbidden package ${name}`,
+      );
+    }
+  }
+}
+
+function* walk(root: string): Generator<string> {
+  for (const entry of Deno.readDirSync(root)) {
+    const path = join(root, entry.name);
+    yield path;
+    if (entry.isDirectory) yield* walk(path);
+  }
+}
+
+async function copyTree(source: string, destination: string): Promise<void> {
+  await Deno.mkdir(destination, { recursive: true });
+  for await (const entry of Deno.readDir(source)) {
+    const from = join(source, entry.name);
+    const to = join(destination, entry.name);
+    if (entry.isDirectory) await copyTree(from, to);
+    else if (entry.isFile) await Deno.copyFile(from, to);
+    else throw new Error(`unsupported payload entry: ${from}`);
+  }
+}
+
+async function readOptionalText(path: string): Promise<string | undefined> {
+  try {
+    return await Deno.readTextFile(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw error;
+  }
+}
+
+async function jupyterRevision(root: string): Promise<string | undefined> {
+  const marker = await readOptionalText(join(root, "REVISION"));
+  if (marker !== undefined) return marker.trim();
+  const result = await new Deno.Command("git", {
+    args: ["-C", root, "rev-parse", "HEAD"],
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  return result.success
+    ? new TextDecoder().decode(result.stdout).trim()
+    : undefined;
+}
+
+if (import.meta.main) {
+  const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
+  const result = await materializeJupyter({
+    repoRoot,
+    lockPath: join(repoRoot, "artifacts/jupyter-requirements.lock"),
+    python: Deno.env.get("HOST_PYTHON") ?? "python3.14",
+    outputDir: join(repoRoot, "artifacts/jupyter-site-packages"),
+  });
+  console.log(JSON.stringify(result));
+}

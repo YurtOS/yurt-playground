@@ -28,7 +28,10 @@ Deno.test("materializer rejects a missing lock file", async () => {
 
 Deno.test("materializer rejects a non-CPython 3.14 interpreter", async () => {
   await withTempDir(async (root) => {
-    await Deno.writeTextFile(`${root}/requirements.lock`, "");
+    await Deno.writeTextFile(
+      `${root}/requirements.lock`,
+      '{"yurtJupyterRev":"c30f1073c244aab166c67dc3b9b1ff1048def0d4","packages":[]}',
+    );
     await assertRejects(
       () =>
         materializeJupyter({
@@ -45,13 +48,22 @@ Deno.test("materializer rejects a non-CPython 3.14 interpreter", async () => {
 
 Deno.test("materializer requires the pinned yurt-jupyter revision", async () => {
   await withTempDir(async (root) => {
-    await Deno.writeTextFile(`${root}/requirements.lock`, "");
+    await Deno.writeTextFile(
+      `${root}/requirements.lock`,
+      '{"yurtJupyterRev":"c30f1073c244aab166c67dc3b9b1ff1048def0d4","packages":[]}',
+    );
+    const fakePython = `${root}/python3.14`;
+    await Deno.writeTextFile(
+      fakePython,
+      '#!/bin/sh\nif [ "$1" = "-c" ]; then echo "cpython (3, 14, 0) x86_64"; fi\n',
+    );
+    await Deno.chmod(fakePython, 0o755);
     await assertRejects(
       () =>
         materializeJupyter({
           repoRoot: root,
           lockPath: `${root}/requirements.lock`,
-          python: "python3.14",
+          python: fakePython,
           outputDir: `${root}/out`,
         }),
       Error,
@@ -64,7 +76,7 @@ Deno.test("materializer rejects duplicate compiled-package trees", async () => {
   await withTempDir(async (root) => {
     await Deno.writeTextFile(
       `${root}/requirements.lock`,
-      "yurt-jupyter-rev = c30f1073c244aab166c67dc3b9b1ff1048def0d4\n",
+      '{"yurtJupyterRev":"c30f1073c244aab166c67dc3b9b1ff1048def0d4","packages":[]}',
     );
     await Deno.mkdir(`${root}/yurt-jupyter`, { recursive: true });
     await Deno.writeTextFile(
@@ -74,12 +86,18 @@ Deno.test("materializer rejects duplicate compiled-package trees", async () => {
     await Deno.mkdir(`${root}/yurt-jupyter/site-packages/zmq`, {
       recursive: true,
     });
+    const fakePython = `${root}/python3.14`;
+    await Deno.writeTextFile(
+      fakePython,
+      '#!/bin/sh\nif [ "$1" = "-c" ]; then echo "cpython (3, 14, 0) x86_64"; fi\n',
+    );
+    await Deno.chmod(fakePython, 0o755);
     await assertRejects(
       () =>
         materializeJupyter({
           repoRoot: root,
           lockPath: `${root}/requirements.lock`,
-          python: "python3.14",
+          python: fakePython,
           outputDir: `${root}/out`,
         }),
       Error,
