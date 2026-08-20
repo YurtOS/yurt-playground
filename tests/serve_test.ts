@@ -5,12 +5,23 @@ import {
   handlePlaygroundRequest,
   resolvePlaygroundPath,
 } from "../src/serve.ts";
+import { resolveKernelRoot } from "../scripts/serve.ts";
 
 const isolation = {
   coop: "same-origin",
   coep: "require-corp",
   corp: "same-origin",
 };
+
+Deno.test("relative YURT_KERNEL_ROOT resolves from the repository root", () => {
+  assertEquals(
+    resolveKernelRoot(
+      "../yurtos-kernel",
+      "/workspace/yurt-playground",
+    ),
+    "/workspace/yurtos-kernel",
+  );
+});
 
 Deno.test("playground HTTP responses carry COOP/COEP", async () => {
   const res = await handlePlaygroundRequest(new Request("http://playground/"));
@@ -43,11 +54,11 @@ Deno.test("handler rejects a malformed percent-encoding", async () => {
 
 Deno.test("worker bootstrap is served as a JS module", async () => {
   const publicDir = join(dirname(fileURLToPath(import.meta.url)), "../public");
-  const workerPath = join(publicDir, "worker_bootstrap.ts");
+  const workerPath = join(publicDir, "worker_bootstrap.js");
   await Deno.writeTextFile(workerPath, "export {};\n");
   try {
     const res = await handlePlaygroundRequest(
-      new Request("http://playground/worker_bootstrap.ts"),
+      new Request("http://playground/worker_bootstrap.js"),
     );
     assertEquals(res.status, 200);
     assertEquals(

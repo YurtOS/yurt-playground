@@ -1,42 +1,50 @@
 #!/usr/bin/env -S deno run --allow-read --allow-net --allow-run --allow-env --allow-write
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startPlaygroundServer } from "../src/serve.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-function kernelRoot(): string {
-  return Deno.env.get("YURT_KERNEL_ROOT") ??
-    join(repoRoot, "../yurtos-kernel");
+export function resolveKernelRoot(
+  root: string,
+  base = repoRoot,
+): string {
+  return resolve(base, root);
 }
 
-async function ensureBundle(): Promise<void> {
-  const kernel = kernelRoot();
+function kernelRoot(): string {
+  return resolveKernelRoot(
+    Deno.env.get("YURT_KERNEL_ROOT") ?? "../yurtos-kernel",
+  );
+}
+
+export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
+  const kernelPath = kernel;
   const importMap = {
     imports: {
       "@yurt/kernel-host-interface-js":
-        `${kernel}/packages/kernel-host-interface-js/mod.ts`,
+        `${kernelPath}/packages/kernel-host-interface-js/mod.ts`,
       "@yurt/tar-image":
-        `${kernel}/packages/runner/src/vfs/tar-image-root-provider.ts`,
+        `${kernelPath}/packages/runner/src/vfs/tar-image-root-provider.ts`,
       "@xterm/xterm": "npm:@xterm/xterm@5.5.0",
       fzstd: "npm:fzstd@0.1.1",
     },
   };
   const importMapPath = join(repoRoot, "public/import-map.json");
   await Deno.writeTextFile(importMapPath, JSON.stringify(importMap, null, 2));
-  await bundle(kernel, {
+  await bundle(kernelPath, {
     entry: join(repoRoot, "src/page.ts"),
     out: join(repoRoot, "public/boot.bundle.js"),
     importMap: importMapPath,
   });
   const coordinatorOut = join(repoRoot, "public/coordinator.bundle.js");
-  await bundle(kernel, {
+  await bundle(kernelPath, {
     entry: join(repoRoot, "src/coordinator_worker.ts"),
     out: coordinatorOut,
     importMap: importMapPath,
   });
   // Classic coordinator: import.meta is a syntax error. WorkerHost only
-  // uses it to resolve ./worker_bootstrap.ts; location.href is the same.
+  // uses it to resolve ./worker_bootstrap.js; location.href is the same.
   await Deno.writeTextFile(
     coordinatorOut,
     (await Deno.readTextFile(coordinatorOut)).replaceAll(
@@ -46,10 +54,10 @@ async function ensureBundle(): Promise<void> {
   );
   await bundle(kernel, {
     entry: join(
-      kernel,
+      kernelPath,
       "packages/kernel-host-interface-js/kernel-host-interface/worker_bootstrap.ts",
     ),
-    out: join(repoRoot, "public/worker_bootstrap.ts"),
+    out: join(repoRoot, "public/worker_bootstrap.js"),
   });
 }
 

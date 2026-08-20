@@ -23,9 +23,29 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
   assertEquals(workflow.includes("scripts/build-kernel-wasm.sh"), true);
   assertEquals(workflow.includes("wasm32-wasip1-threads"), true);
   assertEquals(
-    workflow.includes("scripts/build-all-ports.sh --only busybox --build-only"),
+    workflow.includes(
+      "scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython --build-only",
+    ),
     true,
   );
   assertEquals(workflow.includes("YURT_PORTS_ROOT: ../yurt-ports"), true);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
+});
+
+Deno.test("deployment workflow publishes an isolated static site", async () => {
+  const workflow = await Deno.readTextFile(
+    new URL("../.github/workflows/deploy-pages.yml", import.meta.url),
+  );
+  for (
+    const value of [
+      "scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython --build-only",
+      "dist",
+      "_headers",
+      "CLOUDFLARE_API_TOKEN",
+      "CLOUDFLARE_ACCOUNT_ID",
+      "CLOUDFLARE_PROJECT_NAME",
+    ]
+  ) {
+    assertEquals(workflow.includes(value), true);
+  }
 });

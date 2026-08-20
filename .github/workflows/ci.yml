@@ -45,10 +45,10 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         id: host-python
         with:
-          python-version: "3.14.0"
+          python-version: "3.14"
           architecture: x64
       - name: Build locked Jupyter pure-Python input
         working-directory: playground
@@ -76,8 +76,9 @@ jobs:
         env:
           YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
           YURT_JUPYTER_STAGE: ${{ github.workspace }}/playground/artifacts/jupyter-site-packages
+          HOST_PYTHON: python
         run: |
-          scripts/build-all-ports.sh --only busybox --build-only
+          scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython --build-only
           ports/playground-image/scripts/package.sh
       - name: fmt
         working-directory: playground

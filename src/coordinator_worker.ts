@@ -67,7 +67,13 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   try {
     await bootPlayground({
       isolated: msg.isolated,
-      fetchBytes: fetchPlaygroundBytes,
+      fetchBytes: (path) =>
+        fetchPlaygroundBytes(path, (progress) => {
+          const percent = progress.total === undefined
+            ? `${progress.loaded} bytes`
+            : `${Math.round(progress.loaded / progress.total * 100)}%`;
+          post({ type: "status", text: `loading ${path}: ${percent}` });
+        }),
       show: (text) => post({ type: "status", text }),
       term: workerTerm({ cols: msg.cols, rows: msg.rows }),
     });

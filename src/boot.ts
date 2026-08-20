@@ -11,6 +11,11 @@ import {
   type PtyTransport,
   type SessionController,
 } from "./session_controller.ts";
+import {
+  type ArtifactProgress,
+  fetchPinnedArtifact,
+} from "./artifact_fetch.ts";
+import { parsePins, type Pins } from "./pins.ts";
 
 export type PlaygroundTerm = {
   cols: number;
@@ -50,12 +55,36 @@ const DEFAULT_ENV: Record<string, string> = {
   TERM: "xterm-256color",
 };
 
-export async function fetchPlaygroundBytes(path: string): Promise<Uint8Array> {
-  const response = await fetch(path);
-  if (!response.ok) {
-    throw new Error(`fetch ${path} failed: ${response.status}`);
+let pinsPromise: Promise<Pins> | undefined;
+
+async function browserPins(): Promise<Pins> {
+  pinsPromise ??= fetch("./pins.json").then(async (response) => {
+    if (!response.ok) {
+      throw new Error(`fetch ./pins.json failed: ${response.status}`);
+    }
+    return parsePins(await response.json());
+  });
+  try {
+    return await pinsPromise;
+  } catch (error) {
+    pinsPromise = undefined;
+    throw error;
   }
-  return new Uint8Array(await response.arrayBuffer());
+}
+
+export async function fetchPlaygroundBytes(
+  path: string,
+  onProgress?: (progress: ArtifactProgress) => void,
+): Promise<Uint8Array> {
+  const pins = await browserPins();
+  const pin = path.includes("yurt_kernel.wasm") ? pins.kernelWasm : pins.image;
+  const cacheStorage = typeof caches === "undefined" ? undefined : caches;
+  return await fetchPinnedArtifact(pin, {
+    url: path,
+    cacheName: "yurt-playground-artifacts-v1",
+    cacheStorage,
+    onProgress,
+  });
 }
 
 export async function bootPlayground(

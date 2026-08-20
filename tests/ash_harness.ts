@@ -62,6 +62,7 @@ let markerSeq = 0;
 export async function typeCommand(
   term: MemoryTerm,
   command: string,
+  timeoutMs = 10_000,
 ): Promise<string> {
   const marker = `__YURT_${++markerSeq}__`;
   const before = term.output().length;
@@ -75,11 +76,14 @@ export async function typeCommand(
     `marker ${marker} after ${JSON.stringify(command)} in ${
       JSON.stringify(term.output())
     }`,
+    timeoutMs,
   );
   return term.output().slice(before);
 }
 
-export async function resolvePlaygroundArtifacts(): Promise<boolean> {
+export async function resolvePlaygroundArtifacts(
+  requireArtifacts = false,
+): Promise<boolean> {
   const artifactsDir = join(repoRoot, "artifacts");
   try {
     await resolveArtifacts({
@@ -91,7 +95,9 @@ export async function resolvePlaygroundArtifacts(): Promise<boolean> {
     });
     return true;
   } catch (error) {
-    if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS") === "1") {
+    if (
+      requireArtifacts || Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS") === "1"
+    ) {
       throw error;
     }
     console.log(
@@ -109,8 +115,16 @@ export type AshSession = {
   stop: () => void;
 };
 
-export async function bootAshSession(): Promise<AshSession | undefined> {
-  if (!await resolvePlaygroundArtifacts()) return undefined;
+export type AshSessionOptions = {
+  requireArtifacts?: boolean;
+};
+
+export async function bootAshSession(
+  options: AshSessionOptions = {},
+): Promise<AshSession | undefined> {
+  if (!await resolvePlaygroundArtifacts(options.requireArtifacts)) {
+    return undefined;
+  }
   const term = memoryTerm();
   let shown = "";
   const session = await bootPlayground({

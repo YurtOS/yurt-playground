@@ -1,0 +1,83 @@
+name: Deploy playground
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: playground
+      - name: Read pins
+        id: pins
+        working-directory: playground
+        run: |
+          echo "kernel_rev=$(jq -r .kernelWasm.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
+          echo "ports_rev=$(jq -r .image.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: YurtOS/yurtos-kernel
+          ref: ${{ steps.pins.outputs.kernel_rev }}
+          path: yurtos-kernel
+      - uses: actions/checkout@v7
+        with:
+          repository: YurtOS/yurt-ports
+          ref: ${{ steps.pins.outputs.ports_rev }}
+          path: yurt-ports
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32-wasip1,wasm32-wasip1-threads
+          components: rust-src
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Build pinned kernel wasm
+        working-directory: yurtos-kernel
+        run: scripts/build-kernel-wasm.sh
+      - name: Materialize pinned playground image
+        working-directory: yurt-ports
+        env:
+          YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
+        run: |
+          scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython --build-only
+          ports/playground-image/scripts/package.sh
+      - name: Pin artifacts
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+          YURT_PORTS_ROOT: ../yurt-ports
+        run: deno task pin
+      - name: Verify playground
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+          YURT_PORTS_ROOT: ../yurt-ports
+        run: |
+          deno fmt --check
+          deno lint
+          deno check '**/*.ts'
+          deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
+      - name: Build static site
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+        run: |
+          deno task build-static
+          test -f dist/_headers
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: ${{ secrets.CLOUDFLARE_PROJECT_NAME }}
+          directory: playground/dist
