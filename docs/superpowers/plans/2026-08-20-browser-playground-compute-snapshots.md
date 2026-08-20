@@ -112,11 +112,12 @@
 - `deno.json` imports `playwright` at the exact version used by `tests/playground_e2e.ts`; CI installs that version's Chromium browser before the browser job.
 
 - [ ] **Step 1: Add red layout/pin tests.** Assert the workflow checks out all three sibling repositories, provisions CPython 3.14.0, builds NumPy dependencies, materializes yurt-jupyter, and verifies every digest.
-- [ ] **Step 2: Extend `src/pins.ts` and strict pin resolution.** Add typed fields for the yurt-jupyter source, lock, materializer, serializer, normalized tree, and package digests; reject absent, non-64-lowercase-hex, or mismatched source and generated artifacts.
+- [ ] **Step 2: Extend `src/pins.ts` and strict pin resolution.** Add typed fields for the yurt-jupyter source, lock, materializer, serializer, normalized tree, and final image digests; keep `package` as the declared package path; reject absent, non-64-lowercase-hex, or mismatched source and generated artifacts.
 - [ ] **Step 3: Update CI with exact checkout revisions and explicit Python setup.**
 - [ ] **Step 4: Run layout, pin, formatting, lint, type-check, and clean artifact materialization tests.**
-- [ ] **Step 5: Add the browser runner job.** Provision Chromium with the pinned Playwright package, download the pinned kernel/image artifacts produced by the materialization job, start `deno task serve`, and run `deno test --no-check --allow-all tests/playground_e2e.ts` against the local COOP/COEP server.
-- [ ] **Step 6: Commit CI/pin changes and verify the hosted workflow exercises integration tests rather than skipping them.**
+- [ ] **Step 5: Publish the materialized runtime from the producing job.** Add `actions/upload-artifact@v4` with `if-no-files-found: error` for `yurtos-kernel/target/kernel-wasm/release/yurt_kernel.wasm` and `yurt-ports/ports/playground-image/build/dist/playground.yurtimg`, under the artifact name `playground-pinned-runtime`.
+- [ ] **Step 6: Add the browser runner job.** Make it depend on the producing job, use `actions/download-artifact@v4` for `playground-pinned-runtime`, provision Chromium with the pinned Playwright package, start `deno task serve`, and run `deno test --no-check --allow-all tests/playground_e2e.ts` against the local COOP/COEP server.
+- [ ] **Step 7: Commit CI/pin changes and verify the hosted workflow exercises integration tests rather than skipping them.**
 
 ### Task 5: Introduce the playground session controller
 
