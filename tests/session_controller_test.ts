@@ -4,19 +4,25 @@ import {
   type SessionTransportSet,
 } from "../src/session_controller.ts";
 
-function transport(name: string): SessionTransportSet["pty"] & { name: string } {
-  return {
+type TestTransport = SessionTransportSet["pty"] & {
+  name: string;
+  writes: Uint8Array[];
+  closed: boolean;
+};
+
+function transport(name: string): TestTransport {
+  const result: TestTransport = {
     name,
     writes: [],
-    async write(bytes) {
-      this.writes.push(bytes);
+    closed: false,
+    async write(bytes: Uint8Array) {
+      result.writes.push(bytes);
     },
     close() {
-      this.closed = true;
+      result.closed = true;
     },
-    writes: [] as Uint8Array[],
-    closed: false,
-  } as never;
+  };
+  return result;
 }
 
 Deno.test("session controller retains the old transport until commit", async () => {
@@ -31,7 +37,7 @@ Deno.test("session controller retains the old transport until commit", async () 
   await controller.commitTransportSwap({ pty: nextPty });
   assertEquals(controller.state, "ready");
   assertEquals(controller.current.pty, nextPty);
-  assertEquals((oldPty as typeof oldPty & { closed: boolean }).closed, true);
+  assertEquals(oldPty.closed, true);
 });
 
 Deno.test("session controller rolls back to the old transport", async () => {
@@ -42,7 +48,7 @@ Deno.test("session controller rolls back to the old transport", async () => {
   await controller.rollback();
   assertEquals(controller.state, "ready");
   assertEquals(controller.current.pty, oldPty);
-  assertEquals((oldPty as typeof oldPty & { closed: boolean }).closed, false);
+  assertEquals(oldPty.closed, false);
 });
 
 Deno.test("session controller rejects a swap before quiescence", async () => {

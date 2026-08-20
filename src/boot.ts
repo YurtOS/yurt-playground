@@ -36,6 +36,7 @@ const LOGIN_HOME = "/home/user";
 const DEFAULT_ENV: Record<string, string> = {
   HOME: LOGIN_HOME,
   PATH: "/bin:/usr/bin:/usr/local/bin",
+  PYTHONHOME: "/usr/local",
   PWD: LOGIN_HOME,
   USER: LOGIN_USER,
   LOGNAME: LOGIN_USER,
