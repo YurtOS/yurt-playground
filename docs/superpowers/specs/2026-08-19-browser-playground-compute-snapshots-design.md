@@ -38,26 +38,25 @@ image composition. The `yurt-jupyter` repository is consumed unchanged.
 
 ### Image and Python
 
-The pinned playground image is rebuilt from the ports revision that contains
-the existing NumPy extension port. NumPy's compiled modules are baked into
+The pinned playground image is rebuilt from the ports revision that contains the
+existing NumPy extension port. NumPy's compiled modules are baked into
 `cpython3.wasm` by the ports pipeline and its Python tree is staged into the
-image. The existing Python 3 aliases remain `python` and `python3`; Python 2
-is not supported.
+image. The existing Python 3 aliases remain `python` and `python3`; Python 2 is
+not supported.
 
-The same image stages the versioned pure-Python payload from `yurt-jupyter`.
-The payload remains responsible for ipykernel and its Python dependencies; the
-playground only starts and connects to it. The source is pinned for this arc
-to:
+The same image stages the versioned pure-Python payload from `yurt-jupyter`. The
+payload remains responsible for ipykernel and its Python dependencies; the
+playground only starts and connects to it. The source is pinned for this arc to:
 
 - repository: `YurtOS/yurt-jupyter`;
 - git revision: `c30f1073c244aab166c67dc3b9b1ff1048def0d4`;
 - SHA-256 of the canonical `git archive --format=tar` at that revision:
   `c4290ab8a682b76645fb09b5981255b7615429b757825301088a4e7774b8159d`.
 
-CI checks out that exact revision, verifies the archive hash, stages the
-payload through the existing yurt-jupyter packaging script, and passes the
-result into the ports image build. The Jupyter entry in `artifacts/pins.json`
-is machine-readable and has this shape, with the concrete values above:
+CI checks out that exact revision, verifies the archive hash, stages the payload
+through the existing yurt-jupyter packaging script, and passes the result into
+the ports image build. The Jupyter entry in `artifacts/pins.json` is
+machine-readable and has this shape, with the concrete values above:
 
 ```json
 "jupyter": {
@@ -81,25 +80,24 @@ is machine-readable and has this shape, with the concrete values above:
 }
 ```
 
-The lock file is checked in and lists every pure-Python dependency with an
-exact version, source URL, and SHA-256. `materialize-jupyter.ts` runs under
-the exact CPython 3.14.0 x86_64 runtime provisioned by CI. CI must verify
+The lock file is checked in and lists every pure-Python dependency with an exact
+version, source URL, and SHA-256. `materialize-jupyter.ts` runs under the exact
+CPython 3.14.0 x86_64 runtime provisioned by CI. CI must verify
 `sys.implementation.name`, `sys.version_info == (3, 14, 0)`, and the expected
 architecture before it invokes the materializer; the system `python` is not an
-acceptable fallback. The materializer installs with hash checking and no
-binary extensions, applies the existing yurt-jupyter exclusions (`zmq`,
-`psutil`, compiled files), normalizes ownership/timestamps/order, and emits
-the package input tree. The four digest fields above are required pins, not
-optional annotations: the implementation PR must replace each schema marker
-with a concrete lowercase SHA-256 before changing the image pin. The lock
-digest covers the exact lock-file bytes, the materializer digest covers the
-exact materializer script bytes, the serializer digest covers the exact
-serializer script bytes, and the normalized-tree digest covers a canonical
-tar of the generated tree. `pin-artifacts` and CI fail closed if any field is absent,
-not 64 lowercase hex characters, or does not match the checked-in input. The
-image pinning step also hashes the final image. A clean runner must never
-obtain the payload from an unpinned working tree or an implicit package-manager
-install.
+acceptable fallback. The materializer installs with hash checking and no binary
+extensions, applies the existing yurt-jupyter exclusions (`zmq`, `psutil`,
+compiled files), normalizes ownership/timestamps/order, and emits the package
+input tree. The four digest fields above are required pins, not optional
+annotations: the implementation PR must replace each schema marker with a
+concrete lowercase SHA-256 before changing the image pin. The lock digest covers
+the exact lock-file bytes, the materializer digest covers the exact materializer
+script bytes, the serializer digest covers the exact serializer script bytes,
+and the normalized-tree digest covers a canonical tar of the generated tree.
+`pin-artifacts` and CI fail closed if any field is absent, not 64 lowercase hex
+characters, or does not match the checked-in input. The image pinning step also
+hashes the final image. A clean runner must never obtain the payload from an
+unpinned working tree or an implicit package-manager install.
 
 The normalized-tree digest uses a repository-owned serializer, not the host's
 `tar` command. `scripts/canonical-tree-tar.ts` emits exactly one POSIX USTAR
@@ -114,20 +112,19 @@ and exactly two zero 512-byte end blocks. The serialization rules are:
   path is stored in `name` and `prefix` is empty; otherwise, consider only `/`
   boundaries whose prefix is at most 155 bytes and whose final component is at
   most 100 bytes, and choose the rightmost fitting boundary; paths with no
-  fitting boundary are rejected rather than encoded with PAX or GNU
-  extensions;
+  fitting boundary are rejected rather than encoded with PAX or GNU extensions;
 - all numeric fields use NUL-terminated octal ASCII in the POSIX USTAR field
   widths; the checksum field uses six octal digits, NUL, and a trailing space;
 - directories use type `5`, mode `0755`, size zero, and an empty link target;
 - regular files use type `0`, mode `0755` when any execute bit is present and
   `0644` otherwise, with their exact bytes and no transformation;
 - symlinks use type `2`, mode `0777`, size zero, and their exact UTF-8 link
-  target in the USTAR link-name field; targets containing NUL, invalid UTF-8,
-  or more than 100 UTF-8 bytes are rejected, and symlink targets are never
+  target in the USTAR link-name field; targets containing NUL, invalid UTF-8, or
+  more than 100 UTF-8 bytes are rejected, and symlink targets are never
   followed;
-- uid, gid, device numbers, user/group names, and atime/ctime/mtime are zero
-  or empty; USTAR magic/version, checksum spacing, and numeric field encoding
-  are fixed by the serializer and are not delegated to a platform utility.
+- uid, gid, device numbers, user/group names, and atime/ctime/mtime are zero or
+  empty; USTAR magic/version, checksum spacing, and numeric field encoding are
+  fixed by the serializer and are not delegated to a platform utility.
 
 The digest is SHA-256 over those emitted bytes. The same serializer and rules
 run in local pinning and CI, and the serializer source is covered by its own
@@ -145,13 +142,13 @@ Jupyter acceptance test.
 The guest starts the real ipykernel using the image's Python 3 executable. The
 page uses the kernel host's `dialSandboxPort` mechanism to reach the guest's
 Jupyter transport. Any HTTP, WebSocket, or ZMQ adaptation required by the
-existing kernel host is implemented at that host boundary, not by opening a
-host operating-system socket from the page.
+existing kernel host is implemented at that host boundary, not by opening a host
+operating-system socket from the page.
 
 The page owns a deliberately small notebook surface: cell input, execute,
-output, and basic status/error reporting. It is a client of the standard
-Jupyter messages, not a replacement for ipykernel. The terminal and notebook
-share the same guest VFS and process environment.
+output, and basic status/error reporting. It is a client of the standard Jupyter
+messages, not a replacement for ipykernel. The terminal and notebook share the
+same guest VFS and process environment.
 
 ### Snapshot lifecycle
 
@@ -169,16 +166,16 @@ host-interface contract with all of the following properties:
   unchanged and returns a structured error.
 
 The JS host wrapper must expose this contract to the playground as paired
-capture/restore operations, rather than making the page call raw wasm exports
-or guess how to rebuild a live fd. Until that contract and its kernel/JS tests
+capture/restore operations, rather than making the page call raw wasm exports or
+guess how to rebuild a live fd. Until that contract and its kernel/JS tests
 exist, the active-session round-trip acceptance tests are blocked and no
 snapshot button should be presented as working. A separately scoped
 filesystem-only export would be a different feature and is not substituted
 silently.
 
-The page exposes Save snapshot and Restore snapshot controls above the
-terminal. A session controller owns the lifecycle so terminal and Jupyter
-clients do not independently race snapshot operations.
+The page exposes Save snapshot and Restore snapshot controls above the terminal.
+A session controller owns the lifecycle so terminal and Jupyter clients do not
+independently race snapshot operations.
 
 Capture:
 
@@ -194,27 +191,26 @@ Restore:
 1. Read the selected file into an immutable byte array.
 2. Validate its snapshot version and complete resource graph before mutation.
 3. Disable terminal, notebook, and snapshot controls.
-4. Ask the host interface to prepare the restored kernel and replacement PTY
-   and Jupyter resources while the current transports remain attached.
+4. Ask the host interface to prepare the restored kernel and replacement PTY and
+   Jupyter resources while the current transports remain attached.
 5. Enter the checkpoint barrier without destroying the current pumps, then
    commit the kernel/resource swap as one host transaction.
 6. Only after the commit acknowledgement, atomically hand the terminal and
    notebook clients their replacement transport handles.
 7. End the barrier, re-enable controls, and report success.
 
-There is no detach-first path. The current pumps and resource handles remain
-the rollback set until the host transaction commits. Any validation,
-preparation, barrier, restore, or replacement-transport failure before that
-acknowledgement aborts the transaction and resumes the original pumps against
-the unchanged sandbox. If a failure occurs after the acknowledgement, the
-host contract must provide an atomic rollback to that same rollback set before
-the UI reports failure; otherwise the commit operation itself must not expose
-success.
+There is no detach-first path. The current pumps and resource handles remain the
+rollback set until the host transaction commits. Any validation, preparation,
+barrier, restore, or replacement-transport failure before that acknowledgement
+aborts the transaction and resumes the original pumps against the unchanged
+sandbox. If a failure occurs after the acknowledgement, the host contract must
+provide an atomic rollback to that same rollback set before the UI reports
+failure; otherwise the commit operation itself must not expose success.
 
 If validation, host-resource admission, or restore fails, the current sandbox
-must remain usable and the UI must report the failure. In particular, an
-active PTY or Jupyter socket may not be silently replaced by a dead or local
-stand-in. The implementation must follow the completed kernel contract in
+must remain usable and the UI must report the failure. In particular, an active
+PTY or Jupyter socket may not be silently replaced by a dead or local stand-in.
+The implementation must follow the completed kernel contract in
 yurtos-kernel#2289.
 
 ## Interfaces and ownership
