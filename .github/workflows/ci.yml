@@ -78,7 +78,7 @@ jobs:
           YURT_JUPYTER_STAGE: ${{ github.workspace }}/playground/artifacts/jupyter-site-packages
           HOST_PYTHON: python
         run: |
-          scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython --build-only
+          scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only
           ports/playground-image/scripts/package.sh
       - name: fmt
         working-directory: playground
