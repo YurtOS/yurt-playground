@@ -3,6 +3,7 @@
   "imports": {
     "@std/assert": "jsr:@std/assert@^1",
     "@xterm/xterm": "npm:@xterm/xterm@5.5.0",
+    "playwright": "npm:playwright@1.55.0",
     "fzstd": "npm:fzstd@0.1.1",
     "@yurt/kernel-host-interface-js": "../yurtos-kernel/packages/kernel-host-interface-js/mod.ts",
     "@yurt/tar-image": "../yurtos-kernel/packages/runner/src/vfs/tar-image-root-provider.ts"

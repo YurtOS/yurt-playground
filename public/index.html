@@ -18,14 +18,31 @@
         padding: 8px 12px;
       }
       #term {
-        position: absolute;
-        inset: 32px 0 0;
+        height: 45vh;
+      }
+      #notebook {
+        border-top: 1px solid #444;
+        padding: 12px;
+      }
+      #notebook-input {
+        display: block;
+        width: min(720px, 95vw);
+        min-height: 80px;
+        margin-bottom: 8px;
+        background: #222;
+        color: #eee;
+        font: inherit;
+      }
+      #notebook-output {
+        min-height: 1.2em;
       }
     </style>
   </head>
   <body>
     <pre id="status">checking isolation</pre>
     <div id="term"></div>
+    <section id="notebook" aria-label="Jupyter notebook" data-testid="notebook">
+    </section>
     <script type="module">
       const status = document.getElementById("status");
       if (globalThis.crossOriginIsolated !== true) {
