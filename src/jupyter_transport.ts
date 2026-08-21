@@ -169,11 +169,16 @@ export async function openZmtpTransport(
   conn: SandboxPortConn,
   socketType: ZmtpSocketType = "DEALER",
 ): Promise<ZmtpTransport> {
-  await conn.write(encodeZmtpGreeting(false));
-  await readExactly(conn, 64);
-  await conn.write(encodeZmtpReady(socketType));
-  await readZmtpCommand(conn, "READY");
-  return new RawZmtpTransport(conn);
+  try {
+    await conn.write(encodeZmtpGreeting(false));
+    await readExactly(conn, 64);
+    await conn.write(encodeZmtpReady(socketType));
+    await readZmtpCommand(conn, "READY");
+    return new RawZmtpTransport(conn);
+  } catch (error) {
+    await conn.close().catch(() => {});
+    throw error;
+  }
 }
 
 class RawZmtpTransport implements ZmtpTransport {

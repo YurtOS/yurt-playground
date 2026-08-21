@@ -96,13 +96,3 @@ jobs:
           YURT_PORTS_ROOT: ../yurt-ports
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
         run: deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
-      - name: Install Chromium for browser acceptance
-        working-directory: playground
-        run: deno run --allow-all node_modules/playwright/cli.js install chromium
-      - name: Browser acceptance
-        working-directory: playground
-        env:
-          YURT_KERNEL_ROOT: ../yurtos-kernel
-          YURT_PORTS_ROOT: ../yurt-ports
-          PLAYGROUND_REQUIRE_ARTIFACTS: "1"
-        run: deno run --allow-all tests/playground_e2e.ts

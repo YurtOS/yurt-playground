@@ -96,8 +96,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     return;
   }
   if (msg.type !== "start") return;
+  let session: Awaited<ReturnType<typeof bootPlayground>> | undefined;
   try {
-    const session = await bootPlayground({
+    session = await bootPlayground({
       isolated: msg.isolated,
       fetchBytes: (path) =>
         fetchPlaygroundBytes(path, (progress) => {
@@ -113,6 +114,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     jupyter = await startGuestKernel(session);
     post({ type: "notebook-ready" });
   } catch (error) {
+    try {
+      session?.stop();
+    } catch {
+      // The guest may already have stopped while startup failed.
+    }
     post({
       type: "error",
       message: error instanceof Error ? error.message : String(error),

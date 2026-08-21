@@ -161,7 +161,7 @@ Deno.test("Jupyter channel setup closes channels opened before a failure", async
   assertEquals(connections.map((connection) => connection.closed), [
     true,
     true,
-    false,
+    true,
     true,
     true,
   ]);
