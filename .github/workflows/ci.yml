@@ -96,10 +96,13 @@ jobs:
           YURT_PORTS_ROOT: ../yurt-ports
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
         run: deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
+      # Enable after the pinned kernel provides the worker-backed Jupyter path.
       - name: Install Chromium for browser acceptance
+        if: vars.YURT_JUPYTER_E2E == 'true'
         working-directory: playground
         run: deno run --allow-all node_modules/playwright/cli.js install chromium
       - name: Browser acceptance
+        if: vars.YURT_JUPYTER_E2E == 'true'
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
