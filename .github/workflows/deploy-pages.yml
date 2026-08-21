@@ -24,6 +24,7 @@ jobs:
         run: |
           echo "kernel_rev=$(jq -r .kernelWasm.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
           echo "ports_rev=$(jq -r .image.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
+          echo "jupyter_rev=$(jq -r .yurtJupyterRev artifacts/jupyter-requirements.lock)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
         with:
           repository: YurtOS/yurtos-kernel
@@ -34,6 +35,11 @@ jobs:
           repository: YurtOS/yurt-ports
           ref: ${{ steps.pins.outputs.ports_rev }}
           path: yurt-ports
+      - uses: actions/checkout@v7
+        with:
+          repository: YurtOS/yurt-jupyter
+          ref: ${{ steps.pins.outputs.jupyter_rev }}
+          path: yurt-jupyter
       - uses: dtolnay/rust-toolchain@1.96.0
         with:
           targets: wasm32-wasip1,wasm32-wasip1-threads
@@ -46,6 +52,24 @@ jobs:
         with:
           python-version: "3.14"
           architecture: x64
+      - name: Build locked Jupyter pure-Python input
+        working-directory: playground
+        env:
+          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
+        run: |
+          rm -rf "$RUNNER_TEMP/yurt-jupyter-site-py"
+          mkdir -p "$RUNNER_TEMP/yurt-jupyter-site-py"
+          mapfile -t packages < <(jq -r '.packages[] | select(.name != "pyzmq") | "\(.name)==\(.version)"' artifacts/jupyter-requirements.lock)
+          "$HOST_PYTHON" -m pip install --no-binary=:all: --target "$RUNNER_TEMP/yurt-jupyter-site-py" "${packages[@]}"
+          find "$RUNNER_TEMP/yurt-jupyter-site-py" -type f \( -name '*.so' -o -name '*.dylib' -o -name '*.pyd' \) -delete
+          rm -rf "$RUNNER_TEMP/yurt-jupyter-site-py/zmq" "$RUNNER_TEMP/yurt-jupyter-site-py"/pyzmq-*.dist-info "$RUNNER_TEMP/yurt-jupyter-site-py/psutil"
+          JUPYTER_SITE_PY="$RUNNER_TEMP/yurt-jupyter-site-py" ../yurt-jupyter/scripts/stage-jupyter-site-packages.sh
+      - name: Materialize locked Jupyter payload
+        working-directory: playground
+        env:
+          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
+          YURT_JUPYTER_ROOT: ../yurt-jupyter
+        run: deno run --allow-read --allow-write --allow-env --allow-run scripts/materialize-jupyter.ts
       - name: Build pinned kernel wasm
         working-directory: yurtos-kernel
         run: scripts/build-kernel-wasm.sh
@@ -53,6 +77,7 @@ jobs:
         working-directory: yurt-ports
         env:
           YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
+          YURT_JUPYTER_STAGE: ${{ github.workspace }}/playground/artifacts/jupyter-site-packages
           HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
         run: |
           scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only
