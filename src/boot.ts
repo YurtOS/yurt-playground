@@ -38,6 +38,10 @@ export type PlaygroundSession = {
   stop: () => void;
   controller: SessionController;
   terminal: PtyTransport;
+  dialSandboxPort: (
+    port: number,
+  ) => ReturnType<KernelHostInterface["dialSandboxPort"]>;
+  onOutput: (handler: (bytes: Uint8Array) => void) => () => void;
 };
 
 const LOGIN_USER = "user";
@@ -126,7 +130,11 @@ export async function bootPlayground(
   const pty = mk.attachHostPty(user.pid);
   mk.ptySetWinsize(pty, env.term.rows, env.term.cols);
   const encoder = new TextEncoder();
-  const stopPump = pumpPtyMaster(mk, pty, (bytes) => env.term.write(bytes));
+  const outputHandlers = new Set<(bytes: Uint8Array) => void>();
+  const stopPump = pumpPtyMaster(mk, pty, (bytes) => {
+    env.term.write(bytes);
+    for (const handler of outputHandlers) handler(bytes);
+  });
   const terminal: PtyTransport = {
     write(bytes) {
       mk.ptyMasterWrite(pty, bytes);
@@ -163,5 +171,14 @@ export async function bootPlayground(
   }).finally(stop);
 
   env.show("");
-  return { stop, controller, terminal };
+  return {
+    stop,
+    controller,
+    terminal,
+    dialSandboxPort: (port) => mk.dialSandboxPort(port),
+    onOutput(handler) {
+      outputHandlers.add(handler);
+      return () => outputHandlers.delete(handler);
+    },
+  };
 }

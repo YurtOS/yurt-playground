@@ -1,15 +1,21 @@
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
+import { mountNotebook } from "./notebook.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
+import type { JupyterReply } from "./jupyter.ts";
 
 type FromWorker =
   | { type: "status"; text: string }
   | { type: "out"; bytes: number[] }
-  | { type: "error"; message: string };
-
+  | { type: "error"; message: string }
+  | { type: "notebook-ready" }
+  | { type: "cell-result"; id: string; result: JupyterReply }
+  | { type: "cell-error"; id: string; message: string };
 function runPage(): void {
   const status = document.getElementById("status");
   const termHost = document.getElementById("term");
+  const notebookHost = document.getElementById("notebook");
   if (termHost === null) throw new Error("missing #term");
+  if (notebookHost === null) throw new Error("missing #notebook");
   if (globalThis.crossOriginIsolated !== true) {
     if (status) status.textContent = "need COOP/COEP";
     throw new Error("not crossOriginIsolated");
@@ -19,11 +25,17 @@ function runPage(): void {
   // A classic coordinator can spawn the module guest bootstrap.
   const worker = new Worker("/coordinator.bundle.js");
   attachGuestWorkerFactory(worker);
+  const notebook = mountNotebook(notebookHost, (id, code) => {
+    worker.postMessage({ type: "cell", id, code });
+  });
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
     if (msg.type === "status" && status) status.textContent = msg.text;
     if (msg.type === "error" && status) status.textContent = msg.message;
     if (msg.type === "out") term.write(new Uint8Array(msg.bytes));
+    if (msg.type === "notebook-ready") notebook.ready();
+    if (msg.type === "cell-result") notebook.result(msg.id, msg.result);
+    if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
   };
   worker.onerror = (event) => {
     if (status) {

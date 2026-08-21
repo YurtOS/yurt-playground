@@ -79,7 +79,11 @@ async function sign(
     false,
     ["sign"],
   );
-  const signature = await crypto.subtle.sign("HMAC", cryptoKey, material);
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    cryptoKey,
+    material.slice().buffer as ArrayBuffer,
+  );
   return [...new Uint8Array(signature)].map((byte) =>
     byte.toString(16).padStart(2, "0")
   ).join("");

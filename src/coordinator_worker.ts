@@ -8,18 +8,30 @@ import {
   fetchPlaygroundBytes,
   type PlaygroundTerm,
 } from "./boot.ts";
+import { executeCell, startGuestKernel } from "./jupyter.ts";
+import type { JupyterTransport } from "./jupyter_transport.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 
 installCoordinatorWorkerProxy();
 type ToWorker =
   | { type: "start"; cols: number; rows: number; isolated: boolean }
   | { type: "in"; text: string }
-  | { type: "resize"; rows: number; cols: number };
+  | { type: "resize"; rows: number; cols: number }
+  | { type: "cell"; id: string; code: string };
 
 type FromWorker =
   | { type: "status"; text: string }
   | { type: "out"; bytes: number[] }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "notebook-ready" }
+  | {
+    type: "cell-result";
+    id: string;
+    result: Awaited<ReturnType<typeof executeCell>>;
+  }
+  | { type: "cell-error"; id: string; message: string };
+
+let jupyter: JupyterTransport | undefined;
 
 function post(msg: FromWorker): void {
   self.postMessage(msg);
@@ -63,9 +75,29 @@ function workerTerm(init: { cols: number; rows: number }): PlaygroundTerm {
 
 self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
+  if (msg.type === "cell") {
+    if (jupyter === undefined) {
+      post({ type: "error", message: "Jupyter is not ready" });
+      return;
+    }
+    try {
+      post({
+        type: "cell-result",
+        id: msg.id,
+        result: await executeCell(jupyter, msg.code),
+      });
+    } catch (error) {
+      post({
+        type: "cell-error",
+        id: msg.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return;
+  }
   if (msg.type !== "start") return;
   try {
-    await bootPlayground({
+    const session = await bootPlayground({
       isolated: msg.isolated,
       fetchBytes: (path) =>
         fetchPlaygroundBytes(path, (progress) => {
@@ -77,6 +109,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       show: (text) => post({ type: "status", text }),
       term: workerTerm({ cols: msg.cols, rows: msg.rows }),
     });
+    post({ type: "status", text: "starting Jupyter" });
+    jupyter = await startGuestKernel(session);
+    post({ type: "notebook-ready" });
   } catch (error) {
     post({
       type: "error",
