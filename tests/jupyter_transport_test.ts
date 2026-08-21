@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { encodeJupyterMessage } from "../src/jupyter_protocol.ts";
 import {
   createJupyterTransport,
@@ -137,10 +137,44 @@ Deno.test("Jupyter IOPub decoding removes the topic frame", async () => {
   assertEquals(decoded, { ...message, buffers: [] });
 });
 
+Deno.test("Jupyter channel setup closes channels opened before a failure", async () => {
+  const ports = [5555, 5556, 5557, 5558, 5559];
+  const connections = ports.map((_, index) =>
+    index === 2
+      ? new FakeConn(new Uint8Array())
+      : new FakeConn(concat([encodeZmtpGreeting(true), encodeZmtpReady()]))
+  );
+
+  await assertRejects(() =>
+    createJupyterTransport(
+      (port) => connections[ports.indexOf(port)],
+      {
+        key: "yurt",
+        shell: ports[0],
+        iopub: ports[1],
+        stdin: ports[2],
+        control: ports[3],
+        heartbeat: ports[4],
+      },
+    )
+  );
+  assertEquals(connections.map((connection) => connection.closed), [
+    true,
+    true,
+    false,
+    true,
+    true,
+  ]);
+});
+
 class FakeConn {
   readonly writes: Uint8Array[] = [];
   #incoming: Uint8Array;
   #closed = false;
+
+  get closed(): boolean {
+    return this.#closed;
+  }
 
   constructor(incoming: Uint8Array) {
     this.#incoming = incoming;

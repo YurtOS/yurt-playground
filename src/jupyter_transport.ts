@@ -119,13 +119,26 @@ export async function createJupyterTransport(
   dial: (port: number) => SandboxPortConn,
   config: JupyterConfig,
 ): Promise<JupyterTransport> {
-  const channels = await Promise.all([
+  const results = await Promise.allSettled([
     openZmtpTransport(dial(config.shell), "DEALER"),
     openZmtpTransport(dial(config.iopub), "SUB"),
     openZmtpTransport(dial(config.stdin), "DEALER"),
     openZmtpTransport(dial(config.control), "DEALER"),
     openZmtpTransport(dial(config.heartbeat), "REQ"),
   ]);
+  const opened = results
+    .filter((result): result is PromiseFulfilledResult<ZmtpTransport> =>
+      result.status === "fulfilled"
+    )
+    .map((result) => result.value);
+  const failure = results.find((result) => result.status === "rejected") as
+    | PromiseRejectedResult
+    | undefined;
+  if (failure) {
+    await Promise.all(opened.map((channel) => channel.close()));
+    throw failure.reason;
+  }
+  const channels = opened;
   await channels[1].sendCommand("SUBSCRIBE");
   const listeners = new Set<(message: JupyterMessage) => void>();
   let closed = false;
