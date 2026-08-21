@@ -81,6 +81,7 @@ export function decodeZmtpFrames(bytes: Uint8Array): Uint8Array[] {
 
 export type ZmtpTransport = {
   send(frames: readonly Uint8Array[]): Promise<void>;
+  sendCommand(name: string, payload?: Uint8Array): Promise<void>;
   receive(): Promise<Uint8Array[]>;
   close(): Promise<void>;
 };
@@ -125,7 +126,7 @@ export async function createJupyterTransport(
     openZmtpTransport(dial(config.control), "DEALER"),
     openZmtpTransport(dial(config.heartbeat), "REQ"),
   ]);
-  await channels[1].send([new Uint8Array()]);
+  await channels[1].sendCommand("SUBSCRIBE");
   const listeners = new Set<(message: JupyterMessage) => void>();
   let closed = false;
   for (const [index, channel] of channels.slice(0, 4).entries()) {
@@ -167,6 +168,12 @@ class RawZmtpTransport implements ZmtpTransport {
 
   async send(frames: readonly Uint8Array[]): Promise<void> {
     await this.conn.write(encodeZmtpMessage(frames));
+  }
+
+  async sendCommand(name: string, payload = new Uint8Array()): Promise<void> {
+    const nameBytes = encoder.encode(name);
+    const body = Uint8Array.of(nameBytes.length, ...nameBytes, ...payload);
+    await this.conn.write(Uint8Array.of(4, body.length, ...body));
   }
 
   async receive(): Promise<Uint8Array[]> {

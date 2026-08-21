@@ -162,6 +162,15 @@ export async function executeCell(
   const output = { stdout: "", display: "", traceback: [] as string[] };
   let unsubscribe: (() => void) | undefined;
   const result = new Promise<JupyterReply>((resolve, reject) => {
+    let gotReply = false;
+    let gotIdle = false;
+    let replyStatus: "ok" | "error" = "error";
+    const finish = () => {
+      if (!gotReply || !gotIdle) return;
+      unsubscribe?.();
+      unsubscribe = undefined;
+      resolve({ status: replyStatus, ...output });
+    };
     unsubscribe = transport.subscribe((message) => {
       if (message.parent_header.msg_id !== msgId) return;
       if (message.header.msg_type === "stream") {
@@ -174,10 +183,15 @@ export async function executeCell(
       } else if (message.header.msg_type === "error") {
         output.traceback.push(...asStrings(message.content.traceback));
       } else if (message.header.msg_type === "execute_reply") {
-        unsubscribe?.();
-        unsubscribe = undefined;
-        const status = message.content.status === "ok" ? "ok" : "error";
-        resolve({ status, ...output });
+        gotReply = true;
+        replyStatus = message.content.status === "ok" ? "ok" : "error";
+        finish();
+      } else if (
+        message.header.msg_type === "status" &&
+        message.content.execution_state === "idle"
+      ) {
+        gotIdle = true;
+        finish();
       }
     });
     void transport.send({

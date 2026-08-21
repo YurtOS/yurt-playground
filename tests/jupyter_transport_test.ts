@@ -112,7 +112,7 @@ Deno.test("Jupyter channels use their required ZMTP socket types", async () => {
   assertEquals(socketTypeFromReady(connections[2].writes[1]), "DEALER");
   assertEquals(socketTypeFromReady(connections[3].writes[1]), "DEALER");
   assertEquals(socketTypeFromReady(connections[4].writes[1]), "REQ");
-  assertEquals(connections[1].writes[2], encodeZmtpMessage([new Uint8Array()]));
+  assertEquals(connections[1].writes[2], encodeZmtpCommand("SUBSCRIBE"));
   await transport.close();
 });
 
@@ -191,4 +191,9 @@ function socketTypeFromReady(ready: Uint8Array): string {
   return new TextDecoder().decode(
     body.slice(valueLengthOffset + 4, valueLengthOffset + 4 + valueLength),
   );
+}
+
+function encodeZmtpCommand(name: string): Uint8Array {
+  const nameBytes = new TextEncoder().encode(name);
+  return Uint8Array.of(4, nameBytes.length + 1, nameBytes.length, ...nameBytes);
 }

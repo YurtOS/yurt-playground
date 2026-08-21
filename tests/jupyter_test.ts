@@ -10,6 +10,18 @@ Deno.test("executeCell collects standard Jupyter stream, result, and reply messa
       const parent = { msg_id: message.header.msg_id };
       listener?.({
         header: {
+          msg_id: "reply-1",
+          username: "user",
+          session: message.header.session,
+          msg_type: "execute_reply",
+          version: "5.3",
+        },
+        parent_header: parent,
+        metadata: {},
+        content: { status: "ok" },
+      });
+      listener?.({
+        header: {
           msg_id: "stream-1",
           username: "user",
           session: message.header.session,
@@ -34,15 +46,15 @@ Deno.test("executeCell collects standard Jupyter stream, result, and reply messa
       });
       listener?.({
         header: {
-          msg_id: "reply-1",
+          msg_id: "status-1",
           username: "user",
           session: message.header.session,
-          msg_type: "execute_reply",
+          msg_type: "status",
           version: "5.3",
         },
         parent_header: parent,
         metadata: {},
-        content: { status: "ok" },
+        content: { execution_state: "idle" },
       });
       return Promise.resolve();
     },
@@ -82,14 +94,15 @@ Deno.test("kernel readiness retries close each failed transport", async () => {
   await assertRejects(
     () =>
       connectJupyterWithRetries(
-        () => Promise.resolve({
-          send: () => Promise.resolve(),
-          subscribe: () => () => {},
-          close: () => {
-            closed++;
-            return Promise.resolve();
-          },
-        }),
+        () =>
+          Promise.resolve({
+            send: () => Promise.resolve(),
+            subscribe: () => () => {},
+            close: () => {
+              closed++;
+              return Promise.resolve();
+            },
+          }),
         () => Promise.reject(new Error("not ready")),
         { attempts: 2, delayMs: 0 },
       ),
