@@ -18,12 +18,21 @@ export function encodeZmtpGreeting(asServer: boolean): Uint8Array {
   return greeting;
 }
 
-export function encodeZmtpReady(): Uint8Array {
-  const body = new Uint8Array(41);
+export type ZmtpSocketType = "DEALER" | "SUB" | "REQ";
+
+export function encodeZmtpReady(
+  socketType: ZmtpSocketType = "DEALER",
+): Uint8Array {
+  const body = new Uint8Array(35 + socketType.length);
   body[0] = 5;
   body.set(encoder.encode("READY"), 1);
   let offset = 6;
-  offset = writeProperty(body, offset, "Socket-Type", encoder.encode("DEALER"));
+  offset = writeProperty(
+    body,
+    offset,
+    "Socket-Type",
+    encoder.encode(socketType),
+  );
   writeProperty(body, offset, "Identity", new Uint8Array());
   return Uint8Array.of(4, body.length, ...body);
 }
@@ -34,7 +43,7 @@ export function encodeZmtpMessage(frames: readonly Uint8Array[]): Uint8Array {
   for (let index = 0; index < frames.length; index++) {
     const frame = frames[index];
     if (frame.length > 255) {
-      const header = new Uint8Array(10);
+      const header = new Uint8Array(9);
       header[0] = index + 1 < frames.length ? 3 : 2;
       new DataView(header.buffer).setBigUint64(1, BigInt(frame.length), false);
       encoded.push(header, frame);
@@ -96,12 +105,13 @@ export async function createJupyterTransport(
   config: JupyterConfig,
 ): Promise<JupyterTransport> {
   const channels = await Promise.all([
-    openZmtpTransport(dial(config.shell)),
-    openZmtpTransport(dial(config.iopub)),
-    openZmtpTransport(dial(config.stdin)),
-    openZmtpTransport(dial(config.control)),
-    openZmtpTransport(dial(config.heartbeat)),
+    openZmtpTransport(dial(config.shell), "DEALER"),
+    openZmtpTransport(dial(config.iopub), "SUB"),
+    openZmtpTransport(dial(config.stdin), "DEALER"),
+    openZmtpTransport(dial(config.control), "DEALER"),
+    openZmtpTransport(dial(config.heartbeat), "REQ"),
   ]);
+  await channels[1].send([new Uint8Array()]);
   const listeners = new Set<(message: JupyterMessage) => void>();
   let closed = false;
   for (const channel of channels.slice(0, 4)) {
@@ -129,10 +139,11 @@ export async function createJupyterTransport(
 
 export async function openZmtpTransport(
   conn: SandboxPortConn,
+  socketType: ZmtpSocketType = "DEALER",
 ): Promise<ZmtpTransport> {
   await conn.write(encodeZmtpGreeting(false));
   await readExactly(conn, 64);
-  await conn.write(encodeZmtpReady());
+  await conn.write(encodeZmtpReady(socketType));
   await readZmtpCommand(conn, "READY");
   return new RawZmtpTransport(conn);
 }
@@ -145,25 +156,15 @@ class RawZmtpTransport implements ZmtpTransport {
   }
 
   async receive(): Promise<Uint8Array[]> {
-    const first = await readExactOrShort(this.conn, 2);
-    const flags = first[0];
-    let length: number;
-    if (flags & 2) {
-      length = readLongLength(await readExactly(this.conn, 8), 0);
-    } else {
-      length = first[1];
-    }
-    const frames = [await readExactly(this.conn, length)];
-    while (flags & 1) {
-      const header = await readExactly(this.conn, 2);
-      const nextFlags = header[0];
-      const nextLength = nextFlags & 2
+    const frames: Uint8Array[] = [];
+    for (;;) {
+      const flags = (await readExactly(this.conn, 1))[0];
+      const length = flags & 2
         ? readLongLength(await readExactly(this.conn, 8), 0)
-        : header[1];
-      frames.push(await readExactly(this.conn, nextLength));
-      if ((nextFlags & 1) === 0) break;
+        : (await readExactly(this.conn, 1))[0];
+      frames.push(await readExactly(this.conn, length));
+      if ((flags & 1) === 0) return frames;
     }
-    return frames;
   }
 
   close(): Promise<void> {
@@ -233,13 +234,6 @@ async function readExactly(
     offset += chunk.length;
   }
   return result;
-}
-
-async function readExactOrShort(
-  conn: SandboxPortConn,
-  length: number,
-): Promise<Uint8Array> {
-  return await readExactly(conn, length);
 }
 
 function concat(parts: readonly Uint8Array[]): Uint8Array {

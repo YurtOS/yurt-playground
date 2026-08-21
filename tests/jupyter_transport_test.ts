@@ -1,5 +1,6 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  createJupyterTransport,
   decodeZmtpFrames,
   encodeZmtpGreeting,
   encodeZmtpMessage,
@@ -35,6 +36,16 @@ Deno.test("ZMTP READY advertises a DEALER socket", () => {
   assertEquals(new TextDecoder().decode(ready.slice(24, 30)), "DEALER");
 });
 
+Deno.test("ZMTP READY advertises the requested socket type", () => {
+  for (const socketType of ["SUB", "REQ"] as const) {
+    const ready = encodeZmtpReady(socketType);
+    assertEquals(
+      new TextDecoder().decode(ready.slice(24, 24 + socketType.length)),
+      socketType,
+    );
+  }
+});
+
 Deno.test("ZMTP multipart message marks every non-final frame with MORE", () => {
   const encoded = encodeZmtpMessage([
     new Uint8Array([1]),
@@ -61,6 +72,45 @@ Deno.test("ZMTP transport completes the NULL greeting handshake", async () => {
   assertEquals(conn.writes.length, 2);
   assertEquals(conn.writes[0], encodeZmtpGreeting(false));
   assertEquals(conn.writes[1], encodeZmtpReady());
+  await transport.close();
+});
+
+Deno.test("ZMTP transport preserves long frame lengths", async () => {
+  const payload = Uint8Array.from({ length: 300 }, (_, index) => index & 0xff);
+  const incoming = concat([
+    encodeZmtpGreeting(true),
+    encodeZmtpReady(),
+    encodeZmtpMessage([payload]),
+  ]);
+  const conn = new FakeConn(incoming);
+  const transport = await openZmtpTransport(conn);
+  assertEquals(await transport.receive(), [payload]);
+  await transport.close();
+});
+
+Deno.test("Jupyter channels use their required ZMTP socket types", async () => {
+  const ports = [5555, 5556, 5557, 5558, 5559];
+  const connections = ports.map(() =>
+    new FakeConn(concat([encodeZmtpGreeting(true), encodeZmtpReady()]))
+  );
+  const transport = await createJupyterTransport(
+    (port) => connections[ports.indexOf(port)],
+    {
+      key: "yurt",
+      shell: ports[0],
+      iopub: ports[1],
+      stdin: ports[2],
+      control: ports[3],
+      heartbeat: ports[4],
+    },
+  );
+
+  assertEquals(socketTypeFromReady(connections[0].writes[1]), "DEALER");
+  assertEquals(socketTypeFromReady(connections[1].writes[1]), "SUB");
+  assertEquals(socketTypeFromReady(connections[2].writes[1]), "DEALER");
+  assertEquals(socketTypeFromReady(connections[3].writes[1]), "DEALER");
+  assertEquals(socketTypeFromReady(connections[4].writes[1]), "REQ");
+  assertEquals(connections[1].writes[2], encodeZmtpMessage([new Uint8Array()]));
   await transport.close();
 });
 
@@ -103,4 +153,19 @@ function concat(parts: readonly Uint8Array[]): Uint8Array {
     offset += part.length;
   }
   return result;
+}
+
+function socketTypeFromReady(ready: Uint8Array): string {
+  const bodyLength = ready[1];
+  const body = ready.slice(2, 2 + bodyLength);
+  const nameLength = body[6];
+  const valueLengthOffset = 7 + nameLength;
+  const valueLength = new DataView(
+    body.buffer,
+    body.byteOffset,
+    body.byteLength,
+  ).getUint32(valueLengthOffset, false);
+  return new TextDecoder().decode(
+    body.slice(valueLengthOffset + 4, valueLengthOffset + 4 + valueLength),
+  );
 }
