@@ -51,18 +51,36 @@ export async function startGuestKernel(
     control: connection.control_port,
     heartbeat: connection.hb_port,
   };
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 50; attempt++) {
-    try {
-      const transport = await createJupyterTransport(
+  return await connectJupyterWithRetries(
+    () =>
+      createJupyterTransport(
         (port) => session.dialSandboxPort(port),
         config,
-      );
-      await waitForKernelInfo(transport);
+      ),
+    waitForKernelInfo,
+  );
+}
+
+export async function connectJupyterWithRetries(
+  createTransport: () => Promise<JupyterTransport>,
+  waitForReady: (transport: JupyterTransport) => Promise<void>,
+  options: { attempts?: number; delayMs?: number } = {},
+): Promise<JupyterTransport> {
+  const attempts = options.attempts ?? 50;
+  const delayMs = options.delayMs ?? 100;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let transport: JupyterTransport | undefined;
+    try {
+      transport = await createTransport();
+      await waitForReady(transport);
       return transport;
     } catch (error) {
       lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await transport?.close().catch(() => {});
+      if (attempt + 1 < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
   }
   throw new Error("Jupyter kernel did not become ready", { cause: lastError });
@@ -138,11 +156,13 @@ async function readConnectionFile(
 export async function executeCell(
   transport: JupyterTransport,
   code: string,
+  timeoutMs = 15_000,
 ): Promise<JupyterReply> {
   const msgId = crypto.randomUUID();
   const output = { stdout: "", display: "", traceback: [] as string[] };
+  let unsubscribe: (() => void) | undefined;
   const result = new Promise<JupyterReply>((resolve, reject) => {
-    const unsubscribe = transport.subscribe((message) => {
+    unsubscribe = transport.subscribe((message) => {
       if (message.parent_header.msg_id !== msgId) return;
       if (message.header.msg_type === "stream") {
         output.stdout += String(message.content.text ?? "");
@@ -154,7 +174,8 @@ export async function executeCell(
       } else if (message.header.msg_type === "error") {
         output.traceback.push(...asStrings(message.content.traceback));
       } else if (message.header.msg_type === "execute_reply") {
-        unsubscribe();
+        unsubscribe?.();
+        unsubscribe = undefined;
         const status = message.content.status === "ok" ? "ok" : "error";
         resolve({ status, ...output });
       }
@@ -178,22 +199,30 @@ export async function executeCell(
         stop_on_error: true,
       },
     }).catch((error) => {
-      unsubscribe();
+      unsubscribe?.();
+      unsubscribe = undefined;
       reject(error);
     });
   });
-  return await withTimeout(result, 15_000, "Jupyter execute timed out");
+  try {
+    return await withTimeout(result, timeoutMs, "Jupyter execute timed out");
+  } finally {
+    unsubscribe?.();
+    unsubscribe = undefined;
+  }
 }
 
 async function waitForKernelInfo(transport: JupyterTransport): Promise<void> {
   const msgId = crypto.randomUUID();
+  let unsubscribe: (() => void) | undefined;
   const result = new Promise<void>((resolve, reject) => {
-    const unsubscribe = transport.subscribe((message) => {
+    unsubscribe = transport.subscribe((message) => {
       if (
         message.parent_header.msg_id === msgId &&
         message.header.msg_type === "kernel_info_reply"
       ) {
-        unsubscribe();
+        unsubscribe?.();
+        unsubscribe = undefined;
         resolve();
       }
     });
@@ -209,11 +238,17 @@ async function waitForKernelInfo(transport: JupyterTransport): Promise<void> {
       metadata: {},
       content: {},
     }).catch((error) => {
-      unsubscribe();
+      unsubscribe?.();
+      unsubscribe = undefined;
       reject(error);
     });
   });
-  await withTimeout(result, 15_000, "Jupyter kernel-info timed out");
+  try {
+    await withTimeout(result, 15_000, "Jupyter kernel-info timed out");
+  } finally {
+    unsubscribe?.();
+    unsubscribe = undefined;
+  }
 }
 
 function displayText(data: unknown): string {

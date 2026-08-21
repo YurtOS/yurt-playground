@@ -100,6 +100,20 @@ export type JupyterTransport = {
   close(): Promise<void>;
 };
 
+export async function decodeJupyterChannelMessage(
+  frames: readonly Uint8Array[],
+  key: string,
+): Promise<JupyterMessage> {
+  const delimiter = encoder.encode("<IDS|MSG>");
+  const delimiterIndex = frames.findIndex((frame) =>
+    bytesEqual(frame, delimiter)
+  );
+  if (delimiterIndex < 0) {
+    throw new Error("Jupyter message is missing the identity delimiter");
+  }
+  return await decodeJupyterMessage(frames.slice(delimiterIndex), key);
+}
+
 export async function createJupyterTransport(
   dial: (port: number) => SandboxPortConn,
   config: JupyterConfig,
@@ -114,8 +128,8 @@ export async function createJupyterTransport(
   await channels[1].send([new Uint8Array()]);
   const listeners = new Set<(message: JupyterMessage) => void>();
   let closed = false;
-  for (const channel of channels.slice(0, 4)) {
-    void readMessages(channel, config.key, listeners).catch(() => {
+  for (const [index, channel] of channels.slice(0, 4).entries()) {
+    void readMessages(channel, config.key, listeners, index === 1).catch(() => {
       // The next request or close observes a disconnected channel.
     });
   }
@@ -214,9 +228,13 @@ async function readMessages(
   channel: ZmtpTransport,
   key: string,
   listeners: Set<(message: JupyterMessage) => void>,
+  isIopub: boolean,
 ): Promise<void> {
   for (;;) {
-    const message = await decodeJupyterMessage(await channel.receive(), key);
+    const frames = await channel.receive();
+    const message = isIopub
+      ? await decodeJupyterChannelMessage(frames, key)
+      : await decodeJupyterMessage(frames, key);
     for (const listener of listeners) listener(message);
   }
 }
@@ -234,6 +252,11 @@ async function readExactly(
     offset += chunk.length;
   }
   return result;
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length &&
+    left.every((byte, index) => byte === right[index]);
 }
 
 function concat(parts: readonly Uint8Array[]): Uint8Array {

@@ -1,6 +1,8 @@
 import { assertEquals, assertThrows } from "@std/assert";
+import { encodeJupyterMessage } from "../src/jupyter_protocol.ts";
 import {
   createJupyterTransport,
+  decodeJupyterChannelMessage,
   decodeZmtpFrames,
   encodeZmtpGreeting,
   encodeZmtpMessage,
@@ -112,6 +114,27 @@ Deno.test("Jupyter channels use their required ZMTP socket types", async () => {
   assertEquals(socketTypeFromReady(connections[4].writes[1]), "REQ");
   assertEquals(connections[1].writes[2], encodeZmtpMessage([new Uint8Array()]));
   await transport.close();
+});
+
+Deno.test("Jupyter IOPub decoding removes the topic frame", async () => {
+  const message = {
+    header: {
+      msg_id: "msg-1",
+      username: "user",
+      session: "session-1",
+      msg_type: "stream",
+      version: "5.3",
+    },
+    parent_header: {},
+    metadata: {},
+    content: { name: "stdout", text: "hello" },
+  };
+  const encoded = await encodeJupyterMessage(message, "yurt");
+  const decoded = await decodeJupyterChannelMessage(
+    [new TextEncoder().encode("stream.stdout"), ...encoded],
+    "yurt",
+  );
+  assertEquals(decoded, { ...message, buffers: [] });
 });
 
 class FakeConn {

@@ -1,5 +1,5 @@
-import { assertEquals } from "@std/assert";
-import { executeCell } from "../src/jupyter.ts";
+import { assertEquals, assertRejects } from "@std/assert";
+import { connectJupyterWithRetries, executeCell } from "../src/jupyter.ts";
 import type { JupyterMessage } from "../src/jupyter_protocol.ts";
 import type { JupyterTransport } from "../src/jupyter_transport.ts";
 
@@ -60,4 +60,39 @@ Deno.test("executeCell collects standard Jupyter stream, result, and reply messa
     display: "2",
     traceback: [],
   });
+});
+
+Deno.test("executeCell removes its listener after a timeout", async () => {
+  let subscriptions = 0;
+  const transport: JupyterTransport = {
+    send: () => Promise.resolve(),
+    subscribe() {
+      subscriptions++;
+      return () => subscriptions--;
+    },
+    close: () => Promise.resolve(),
+  };
+
+  await assertRejects(() => executeCell(transport, "1+1", 0));
+  assertEquals(subscriptions, 0);
+});
+
+Deno.test("kernel readiness retries close each failed transport", async () => {
+  let closed = 0;
+  await assertRejects(
+    () =>
+      connectJupyterWithRetries(
+        () => Promise.resolve({
+          send: () => Promise.resolve(),
+          subscribe: () => () => {},
+          close: () => {
+            closed++;
+            return Promise.resolve();
+          },
+        }),
+        () => Promise.reject(new Error("not ready")),
+        { attempts: 2, delayMs: 0 },
+      ),
+  );
+  assertEquals(closed, 2);
 });
