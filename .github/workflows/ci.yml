@@ -97,6 +97,13 @@ jobs:
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
         run: deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
       # Enable after the pinned kernel provides the worker-backed Jupyter path.
+      - name: Materialize pinned browser artifacts
+        if: vars.YURT_JUPYTER_E2E == 'true'
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+          YURT_PORTS_ROOT: ../yurt-ports
+        run: deno run --allow-all scripts/pin-artifacts.ts
       - name: Install Chromium for browser acceptance
         if: vars.YURT_JUPYTER_E2E == 'true'
         working-directory: playground
