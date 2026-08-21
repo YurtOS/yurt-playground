@@ -16,7 +16,14 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
   );
   assertEquals(workflow.includes("repository: YurtOS/yurt-ports"), true);
   assertEquals(workflow.includes("repository: YurtOS/yurt-jupyter"), true);
+  assertEquals(workflow.includes("jupyter_rev"), true);
   assertEquals(workflow.includes("actions/setup-python@v6"), true);
+  assertEquals(
+    workflow.includes(
+      "HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}",
+    ),
+    true,
+  );
   assertEquals(workflow.includes("scripts/materialize-jupyter.ts"), true);
   assertEquals(workflow.includes("YURT_JUPYTER_STAGE"), true);
   assertEquals(workflow.includes("ports_rev"), true);
@@ -24,7 +31,7 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
   assertEquals(workflow.includes("wasm32-wasip1-threads"), true);
   assertEquals(
     workflow.includes(
-      "scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython --build-only",
+      "scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only",
     ),
     true,
   );
@@ -33,6 +40,10 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
   assertEquals(workflow.includes("playwright/cli.js install chromium"), true);
   assertEquals(workflow.includes("scripts/pin-artifacts.ts"), true);
   assertEquals(workflow.includes("tests/playground_e2e.ts"), true);
+  assertEquals(
+    workflow.includes("run: deno run --allow-all tests/playground_e2e.ts"),
+    true,
+  );
   assertEquals(
     workflow.includes("if: vars.YURT_JUPYTER_E2E == 'true'"),
     true,
@@ -53,12 +64,18 @@ Deno.test("deployment workflow publishes an isolated static site", async () => {
   );
   for (
     const value of [
-      "scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython --build-only",
+      "actions/setup-python@v6",
+      'python-version: "3.14"',
+      "HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}",
+      "scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only",
       "dist",
       "_headers",
       "CLOUDFLARE_API_TOKEN",
       "CLOUDFLARE_ACCOUNT_ID",
       "CLOUDFLARE_PROJECT_NAME",
+      "repository: YurtOS/yurt-jupyter",
+      "YURT_JUPYTER_STAGE",
+      "scripts/materialize-jupyter.ts",
     ]
   ) {
     assertEquals(workflow.includes(value), true);

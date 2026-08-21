@@ -48,6 +48,14 @@ if (import.meta.main) {
       document.querySelector<HTMLElement>("[data-testid=notebook-output]")
         ?.textContent === "2"
     );
+    await page.getByTestId("notebook-input").fill(
+      "import numpy as np; np.array([1, 2]).sum()",
+    );
+    await page.getByTestId("notebook-execute").click();
+    await page.waitForFunction(() =>
+      document.querySelector<HTMLElement>("[data-testid=notebook-output]")
+        ?.textContent === "3"
+    );
     if (!(await page.locator("#term").isVisible())) {
       throw new Error("ash terminal is not visible");
     }
