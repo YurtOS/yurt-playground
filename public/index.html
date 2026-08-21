@@ -41,7 +41,8 @@
   <body>
     <pre id="status">checking isolation</pre>
     <div id="term"></div>
-    <section id="notebook" aria-label="Jupyter notebook"></section>
+    <section id="notebook" aria-label="Jupyter notebook" data-testid="notebook">
+    </section>
     <script type="module">
       const status = document.getElementById("status");
       if (globalThis.crossOriginIsolated !== true) {

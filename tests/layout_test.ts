@@ -30,6 +30,16 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
   );
   assertEquals(workflow.includes("YURT_PORTS_ROOT: ../yurt-ports"), true);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
+  assertEquals(workflow.includes("playwright/cli.js install chromium"), true);
+  assertEquals(workflow.includes("tests/playground_e2e.ts"), true);
+});
+
+Deno.test("page exposes the real notebook execution surface", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  assertEquals(html.includes('data-testid="notebook"'), true);
+  assertEquals(html.includes('id="term"'), true);
 });
 
 Deno.test("deployment workflow publishes an isolated static site", async () => {

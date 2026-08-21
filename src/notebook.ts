@@ -14,17 +14,21 @@ export function mountNotebook(
   root.replaceChildren();
   const editor = document.createElement("textarea");
   editor.id = "notebook-input";
+  editor.dataset.testid = "notebook-input";
   editor.value = "1+1";
   editor.disabled = true;
   const button = document.createElement("button");
   button.id = "notebook-execute";
+  button.dataset.testid = "notebook-execute";
   button.textContent = "Execute";
   button.disabled = true;
   const status = document.createElement("span");
   status.id = "notebook-status";
+  status.dataset.testid = "notebook-status";
   status.textContent = "starting Jupyter";
   const output = document.createElement("pre");
   output.id = "notebook-output";
+  output.dataset.testid = "notebook-output";
   root.append(editor, button, status, output);
   const pending = new Set<string>();
   button.onclick = () => {
