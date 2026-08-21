@@ -119,50 +119,66 @@ export async function createJupyterTransport(
   dial: (port: number) => SandboxPortConn,
   config: JupyterConfig,
 ): Promise<JupyterTransport> {
-  const results = await Promise.allSettled([
-    openZmtpTransport(dial(config.shell), "DEALER"),
-    openZmtpTransport(dial(config.iopub), "SUB"),
-    openZmtpTransport(dial(config.stdin), "DEALER"),
-    openZmtpTransport(dial(config.control), "DEALER"),
-    openZmtpTransport(dial(config.heartbeat), "REQ"),
-  ]);
-  const opened = results
-    .filter((result): result is PromiseFulfilledResult<ZmtpTransport> =>
-      result.status === "fulfilled"
-    )
-    .map((result) => result.value);
-  const failure = results.find((result) => result.status === "rejected") as
-    | PromiseRejectedResult
-    | undefined;
-  if (failure) {
-    await Promise.all(opened.map((channel) => channel.close()));
-    throw failure.reason;
+  const channels: ZmtpTransport[] = [];
+  try {
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() =>
+        openZmtpTransport(dial(config.shell), "DEALER")
+      ),
+      Promise.resolve().then(() =>
+        openZmtpTransport(dial(config.iopub), "SUB")
+      ),
+      Promise.resolve().then(() =>
+        openZmtpTransport(dial(config.stdin), "DEALER")
+      ),
+      Promise.resolve().then(() =>
+        openZmtpTransport(dial(config.control), "DEALER")
+      ),
+      Promise.resolve().then(() =>
+        openZmtpTransport(dial(config.heartbeat), "REQ")
+      ),
+    ]);
+    const failure = results.find((result) => result.status === "rejected") as
+      | PromiseRejectedResult
+      | undefined;
+    channels.push(
+      ...results
+        .filter((result): result is PromiseFulfilledResult<ZmtpTransport> =>
+          result.status === "fulfilled"
+        )
+        .map((result) => result.value),
+    );
+    if (failure) throw failure.reason;
+    await channels[1].sendCommand("SUBSCRIBE");
+    const listeners = new Set<(message: JupyterMessage) => void>();
+    let closed = false;
+    for (const [index, channel] of channels.slice(0, 4).entries()) {
+      void readMessages(channel, config.key, listeners, index === 1).catch(
+        () => {
+          // The next request or close observes a disconnected channel.
+        },
+      );
+    }
+    return {
+      async send(message) {
+        if (closed) throw new Error("Jupyter transport is closed");
+        await channels[0].send(await encodeJupyterMessage(message, config.key));
+      },
+      subscribe(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      async close() {
+        if (closed) return;
+        closed = true;
+        await Promise.all(channels.map((channel) => channel.close()));
+        listeners.clear();
+      },
+    };
+  } catch (error) {
+    await Promise.all(channels.map((channel) => channel.close()));
+    throw error;
   }
-  const channels = opened;
-  await channels[1].sendCommand("SUBSCRIBE");
-  const listeners = new Set<(message: JupyterMessage) => void>();
-  let closed = false;
-  for (const [index, channel] of channels.slice(0, 4).entries()) {
-    void readMessages(channel, config.key, listeners, index === 1).catch(() => {
-      // The next request or close observes a disconnected channel.
-    });
-  }
-  return {
-    async send(message) {
-      if (closed) throw new Error("Jupyter transport is closed");
-      await channels[0].send(await encodeJupyterMessage(message, config.key));
-    },
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    async close() {
-      if (closed) return;
-      closed = true;
-      await Promise.all(channels.map((channel) => channel.close()));
-      listeners.clear();
-    },
-  };
 }
 
 export async function openZmtpTransport(

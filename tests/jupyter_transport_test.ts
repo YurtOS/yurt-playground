@@ -167,20 +167,85 @@ Deno.test("Jupyter channel setup closes channels opened before a failure", async
   ]);
 });
 
+Deno.test("Jupyter channel setup closes channels on a synchronous dial failure", async () => {
+  const ports = [5555, 5556, 5557, 5558, 5559];
+  const connections = ports.map(() =>
+    new FakeConn(concat([encodeZmtpGreeting(true), encodeZmtpReady()]))
+  );
+  await assertRejects(() =>
+    createJupyterTransport(
+      (port) => {
+        if (port === ports[2]) throw new Error("dial failed");
+        return connections[ports.indexOf(port)];
+      },
+      {
+        key: "yurt",
+        shell: ports[0],
+        iopub: ports[1],
+        stdin: ports[2],
+        control: ports[3],
+        heartbeat: ports[4],
+      },
+    )
+  );
+  assertEquals(connections.map((connection) => connection.closed), [
+    true,
+    true,
+    false,
+    true,
+    true,
+  ]);
+});
+
+Deno.test("Jupyter channel setup closes channels when subscription fails", async () => {
+  const ports = [5555, 5556, 5557, 5558, 5559];
+  const connections = ports.map((_, index) =>
+    new FakeConn(
+      concat([encodeZmtpGreeting(true), encodeZmtpReady()]),
+      index === 1 ? 2 : undefined,
+    )
+  );
+  await assertRejects(() =>
+    createJupyterTransport(
+      (port) => connections[ports.indexOf(port)],
+      {
+        key: "yurt",
+        shell: ports[0],
+        iopub: ports[1],
+        stdin: ports[2],
+        control: ports[3],
+        heartbeat: ports[4],
+      },
+    )
+  );
+  assertEquals(connections.map((connection) => connection.closed), [
+    true,
+    true,
+    true,
+    true,
+    true,
+  ]);
+});
+
 class FakeConn {
   readonly writes: Uint8Array[] = [];
   #incoming: Uint8Array;
   #closed = false;
+  readonly #failWriteAt: number | undefined;
 
   get closed(): boolean {
     return this.#closed;
   }
 
-  constructor(incoming: Uint8Array) {
+  constructor(incoming: Uint8Array, failWriteAt?: number) {
     this.#incoming = incoming;
+    this.#failWriteAt = failWriteAt;
   }
 
   write(bytes: Uint8Array): Promise<void> {
+    if (this.#failWriteAt === this.writes.length) {
+      throw new Error("write failed");
+    }
     this.writes.push(bytes.slice());
     return Promise.resolve();
   }
