@@ -76,7 +76,7 @@ jobs:
         env:
           YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
           YURT_JUPYTER_STAGE: ${{ github.workspace }}/playground/artifacts/jupyter-site-packages
-          HOST_PYTHON: python
+          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
         run: |
           scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only
           ports/playground-image/scripts/package.sh
