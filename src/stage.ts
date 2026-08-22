@@ -80,6 +80,7 @@ export async function stageYurtimg(
       path,
       provider.readFile(path),
       knownDirectories,
+      (entry.mode & 0o111) !== 0,
     );
   }
   for (const [path, entry] of Object.entries(index.entries)) {
@@ -160,6 +161,7 @@ function stageRamfsFile(
   path: string,
   bytes: Uint8Array,
   knownDirectories: Set<string>,
+  executable = false,
 ): void {
   for (const parent of parentDirectories(path)) {
     if (knownDirectories.has(parent)) continue;
@@ -167,6 +169,16 @@ function stageRamfsFile(
     knownDirectories.add(parent);
   }
   const pathBytes = s(path);
+  if (
+    executable &&
+    bytes.byteLength >= 4 &&
+    bytes[0] === 0 &&
+    bytes[1] === 0x61 &&
+    bytes[2] === 0x73 &&
+    bytes[3] === 0x6d
+  ) {
+    mk.cacheProcessModule(pathBytes, bytes);
+  }
   const scratch = typeof mk.scratchLen === "number"
     ? mk.scratchLen
     : DEFAULT_KERNEL_SCRATCH_LEN;

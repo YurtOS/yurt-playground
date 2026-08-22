@@ -68,15 +68,27 @@ normal shell I/O, rather than in the original #2341/#2354 admission race.
   `exec` reports `not found`. Rust/Wasmtime already enables exception handling,
   so this is a JS scanner/parser bug, not a kernel-wide EH limitation.
 
-## Next experiment
+## Result of the next experiment
 
-Extend or replace the JS host instruction scanner so supported exception-
-handling instructions parse correctly, add a CPython cache/exec regression, then
-return to browser acceptance.
+The JS host scanner now parses the standardized exception-handling instructions
+used by CPython, including `try_table`, and has a focused regression test. The
+WASM rewriter also now appends large sections without spreading them onto the JS
+call stack. Playground staging caches executable WASM entries, matching the
+kernel runner's process-module path without treating non-executable WASM object
+files as processes.
+
+With those changes, the focused Deno Python command prints `123`, and the full
+playground boot suite passes 6/6. This confirms the runtime and toolchain
+already support WASM exception handling; the failure was in JS host
+validation/loading.
+
+The remaining acceptance step is still real Chromium with the patched kernel
+checkout and pinned image, including Jupyter/NumPy and clean shutdown.
 
 ## Deno versus Chromium split
 
-`deno test --allow-all tests/boot_test.ts` passes all five existing boot cases
-in about one minute, but those cases do not execute Python. A focused Deno
-command reproduces `/bin/sh: python3: not found`, so the browser failure is
-downstream of a shared Deno/Chromium executable-loading gap.
+`deno test --allow-all tests/boot_test.ts` passes all 6 boot cases in about one
+minute, including staged Python execution. The focused Deno result is now green
+with the JS host and staging fixes. Chromium acceptance remains separate: it
+must consume the published patched kernel artifact rather than the temporary
+local source checkout used for this validation.
