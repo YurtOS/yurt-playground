@@ -63,9 +63,9 @@ normal shell I/O, rather than in the original #2341/#2354 admission race.
 - Tar inspection shows `/usr/local/bin/cpython3.wasm`, `python`, and `python3`
   are present, executable, and each is a 31,046,535-byte WASM image.
 - Adding host process-module caching as a probe reaches the kernel validator,
-  which rejects CPython with `unsupported opcode 0x1f`; without the cache, child
-  `exec` reports `not found`. This is a kernel-host executable-loading
-  limitation, not an artifact or Chromium-only problem.
+  which rejects CPython's exception-handling `try_table` opcode (`0x1f`);
+  without the cache, child `exec` reports `not found`. This is a kernel-host
+  executable-loading limitation, not an artifact or Chromium-only problem.
 
 ## Next experiment
 
