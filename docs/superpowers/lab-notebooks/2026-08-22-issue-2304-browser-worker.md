@@ -93,11 +93,11 @@ not return to `ash`. The same result occurs in Deno with
 redirected. `sleep 3 &` and `import ipykernel` both work, isolating the hang to
 the long-running libzmq startup path.
 
-The sibling `yurt-jupyter` README documents this boundary: ipykernel needs a
-libzmq reactor thread, while the current `CooperativeSerialBackend` is capped at
-one spawned thread. Its dry-run intentionally stops at this point. The
-playground can now stage and execute CPython, but it cannot claim the issue's
-real Jupyter/NumPy acceptance until the kernel threads backend is replaced.
+The earlier `CooperativeSerialBackend` explanation is stale and must not be used
+as the current diagnosis: the pinned kernel's JS host installs `WorkerHost` as
+the production `ThreadHost`, backed by real Workers. The remaining failure needs
+a WorkerHost-specific trace of the Jupyter startup path, including the libzmq
+worker's spawn, relay, and socket progress.
 
 ## Deno versus Chromium split
 
@@ -105,5 +105,5 @@ real Jupyter/NumPy acceptance until the kernel threads backend is replaced.
 minute, including staged Python execution. The focused Deno result is now green
 with the JS host and staging fixes. Chromium acceptance remains separate: it
 must consume the published patched kernel artifact rather than the temporary
-local source checkout used for this validation, and the current kernel still has
-the documented libzmq thread limitation.
+local source checkout used for this validation. The current Jupyter startup
+failure is unresolved; it is not evidence that the kernel lacks Worker Threads.
