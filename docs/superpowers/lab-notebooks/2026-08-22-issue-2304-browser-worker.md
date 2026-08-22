@@ -59,20 +59,23 @@ normal shell I/O, rather than in the original #2341/#2354 admission race.
   exercise this root Worker plus real PTY sequence.
 - Chromium shell smoke succeeds for `echo`, but reports both `python3` and
   `python` as `not found` from the pinned image.
-- The pinned yurt-ports source revision contains packaging checks and explicit
-  copies of `cpython3.wasm` to both command names. Therefore the current
-  matching-sha artifact is inconsistent with the source revision's recipe; this
-  is an artifact materialization/publication problem, not a Worker PTY problem.
+- The same Python failure reproduces through Deno and the CLI runner.
+- Tar inspection shows `/usr/local/bin/cpython3.wasm`, `python`, and `python3`
+  are present, executable, and each is a 31,046,535-byte WASM image.
+- Adding host process-module caching as a probe reaches the kernel validator,
+  which rejects CPython with `unsupported opcode 0x1f`; without the cache, child
+  `exec` reports `not found`. This is a kernel-host executable-loading
+  limitation, not an artifact or Chromium-only problem.
 
 ## Next experiment
 
-Rebuild/materialize the image from the pinned yurt-ports revision, verify the
-two Python command paths and NumPy tree inside the resulting image, then rerun
-the real Chromium acceptance gate.
+Reproduce the CPython executable-loading failure in the kernel host with the
+pinned image, then fix or explicitly extend the kernel module validator/loading
+path before returning to browser acceptance.
 
 ## Deno versus Chromium split
 
-`deno test --allow-all tests/boot_test.ts` passes all five boot cases in about
-one minute. The failure is therefore browser-specific: the same image and shell
-path execute under Deno, but the Chromium Worker stops during startup before
-normal PTY I/O.
+`deno test --allow-all tests/boot_test.ts` passes all five existing boot cases
+in about one minute, but those cases do not execute Python. A focused Deno
+command reproduces `/bin/sh: python3: not found`, so the browser failure is
+downstream of a shared Deno/Chromium executable-loading gap.
