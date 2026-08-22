@@ -62,16 +62,17 @@ normal shell I/O, rather than in the original #2341/#2354 admission race.
 - The same Python failure reproduces through Deno and the CLI runner.
 - Tar inspection shows `/usr/local/bin/cpython3.wasm`, `python`, and `python3`
   are present, executable, and each is a 31,046,535-byte WASM image.
-- Adding host process-module caching as a probe reaches the kernel validator,
-  which rejects CPython's exception-handling `try_table` opcode (`0x1f`);
-  without the cache, child `exec` reports `not found`. This is a kernel-host
-  executable-loading limitation, not an artifact or Chromium-only problem.
+- Adding host process-module caching as a probe reaches the JS host's
+  hand-written `validateNoDirectMemoryGrow()` scanner, which rejects CPython's
+  exception-handling `try_table` opcode (`0x1f`); without the cache, child
+  `exec` reports `not found`. Rust/Wasmtime already enables exception handling,
+  so this is a JS scanner/parser bug, not a kernel-wide EH limitation.
 
 ## Next experiment
 
-Reproduce the CPython executable-loading failure in the kernel host with the
-pinned image, then fix or explicitly extend the kernel module validator/loading
-path before returning to browser acceptance.
+Extend or replace the JS host instruction scanner so supported exception-
+handling instructions parse correctly, add a CPython cache/exec regression, then
+return to browser acceptance.
 
 ## Deno versus Chromium split
 
