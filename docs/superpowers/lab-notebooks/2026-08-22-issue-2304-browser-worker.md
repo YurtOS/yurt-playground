@@ -99,6 +99,15 @@ the production `ThreadHost`, backed by real Workers. The remaining failure needs
 a WorkerHost-specific trace of the Jupyter startup path, including the libzmq
 worker's spawn, relay, and socket progress.
 
+The Deno equivalent now reaches `IPKernelApp.initialize()` and writes a valid
+connection file with five TCP ports after roughly two minutes of startup. The
+playground readiness budget was raised accordingly to 200 seconds, and the
+Chromium gate to 240 seconds. Chromium still fails: its PTY shows the launcher
+and connection-file polling commands echoed, but no shell prompt, connection
+file, or Jupyter output. This is now a browser WorkerHost async child-process /
+job-control boundary, not a missing EH implementation, missing Worker Threads,
+or merely a short readiness timeout.
+
 ## Deno versus Chromium split
 
 `deno test --allow-all tests/boot_test.ts` passes all 6 boot cases in about one

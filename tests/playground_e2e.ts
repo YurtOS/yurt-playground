@@ -20,7 +20,7 @@ if (import.meta.main) {
     }
     await page.getByTestId("notebook-status").waitFor({
       state: "visible",
-      timeout: 30_000,
+      timeout: 240_000,
     });
     await page.waitForFunction(
       () => {
@@ -32,13 +32,18 @@ if (import.meta.main) {
           (status?.textContent ?? "").includes("failed");
       },
       undefined,
-      { timeout: 30_000 },
+      { timeout: 240_000 },
     ).catch(() => undefined);
     if (await page.getByTestId("notebook-status").textContent() !== "ready") {
       const status = await page.locator("#status").textContent();
       const notebook = await page.getByTestId("notebook-status").textContent();
+      const terminal = await page.locator(".xterm-rows").innerText().catch(() =>
+        ""
+      );
       throw new Error(
-        `Jupyter did not become ready: status=${status} notebook=${notebook}`,
+        `Jupyter did not become ready: status=${status} notebook=${notebook} terminal=${
+          JSON.stringify(terminal)
+        }`,
       );
     }
     await page.getByTestId("notebook-input").fill("1+1");

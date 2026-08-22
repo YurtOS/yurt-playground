@@ -6,6 +6,7 @@ import {
 } from "./jupyter_transport.ts";
 
 export const JUPYTER_CONNECTION_FILE = "/tmp/yurt-kernel.json";
+export const JUPYTER_STARTUP_TIMEOUT_MS = 200_000;
 const JUPYTER_KEY = "yurt";
 const encoder = new TextEncoder();
 
@@ -111,7 +112,7 @@ async function readConnectionFile(
   try {
     await session.terminal.write(
       encoder.encode(
-        `i=0; while [ ! -s ${JUPYTER_CONNECTION_FILE} ] && [ $i -lt 60 ]; do ` +
+        `i=0; while [ ! -s ${JUPYTER_CONNECTION_FILE} ] && [ $i -lt 180 ]; do ` +
           `sleep 1; i=$((i+1)); done; cat ${JUPYTER_CONNECTION_FILE}; ` +
           `echo ${marker}\n`,
       ),
@@ -119,14 +120,18 @@ async function readConnectionFile(
     if (!text.includes(marker)) {
       await withTimeout(
         new Promise<void>((resolve) => resolveOutput = resolve),
-        70_000,
+        JUPYTER_STARTUP_TIMEOUT_MS,
         "Jupyter connection file timed out",
       );
     }
     const jsonStart = text.indexOf("{");
     const jsonEnd = text.lastIndexOf("}");
     if (jsonStart < 0 || jsonEnd < jsonStart) {
-      throw new Error("Jupyter connection file was not printed");
+      throw new Error(
+        `Jupyter connection file was not printed; output=${
+          JSON.stringify(text.slice(-4000))
+        }`,
+      );
     }
     const connection = JSON.parse(
       text.slice(jsonStart, jsonEnd + 1),
