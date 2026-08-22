@@ -85,10 +85,25 @@ validation/loading.
 The remaining acceptance step is still real Chromium with the patched kernel
 checkout and pinned image, including Jupyter/NumPy and clean shutdown.
 
+## Current browser blocker
+
+The real Chromium run reaches `starting Jupyter`, but the launch command does
+not return to `ash`. The same result occurs in Deno with
+`python3 -m ipykernel_launcher`, including with stdin detached and all output
+redirected. `sleep 3 &` and `import ipykernel` both work, isolating the hang to
+the long-running libzmq startup path.
+
+The sibling `yurt-jupyter` README documents this boundary: ipykernel needs a
+libzmq reactor thread, while the current `CooperativeSerialBackend` is capped at
+one spawned thread. Its dry-run intentionally stops at this point. The
+playground can now stage and execute CPython, but it cannot claim the issue's
+real Jupyter/NumPy acceptance until the kernel threads backend is replaced.
+
 ## Deno versus Chromium split
 
 `deno test --allow-all tests/boot_test.ts` passes all 6 boot cases in about one
 minute, including staged Python execution. The focused Deno result is now green
 with the JS host and staging fixes. Chromium acceptance remains separate: it
 must consume the published patched kernel artifact rather than the temporary
-local source checkout used for this validation.
+local source checkout used for this validation, and the current kernel still has
+the documented libzmq thread limitation.
