@@ -1,10 +1,10 @@
 {
   "kernelWasm": {
     "repo": "YurtOS/yurtos-kernel",
-    "rev": "06d3200dff63d4a2e421ad69227b76f52ca266cb",
+    "rev": "0da101fe9340123f52cc0c0700a0948b64945697",
     "build": "scripts/build-kernel-wasm.sh",
     "path": "target/kernel-wasm/release/yurt_kernel.wasm",
-    "sha256": "a446d47a7467f26ec9e7672d9d928b82e9deb59874fe6b6fe83734beb7a504ad"
+    "sha256": "20fcdbccc2c975805c8c703957e112b1f7e4a28c8b309c93676d92695bbefc3b"
   },
   "image": {
     "repo": "YurtOS/yurt-ports",

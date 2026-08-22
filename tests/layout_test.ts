@@ -58,6 +58,14 @@ Deno.test("page exposes the real notebook execution surface", async () => {
   assertEquals(html.includes('id="term"'), true);
 });
 
+Deno.test("classic coordinator resolves the bundled Worker bootstrap", async () => {
+  const source = await Deno.readTextFile(
+    new URL("../scripts/serve.ts", import.meta.url),
+  );
+  assertEquals(source.includes('"./worker_bootstrap.ts"'), true);
+  assertEquals(source.includes('"./worker_bootstrap.js"'), true);
+});
+
 Deno.test("deployment workflow publishes an isolated static site", async () => {
   const workflow = await Deno.readTextFile(
     new URL("../.github/workflows/deploy-pages.yml", import.meta.url),

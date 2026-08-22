@@ -50,6 +50,9 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
     (await Deno.readTextFile(coordinatorOut)).replaceAll(
       "import.meta.url",
       "self.location.href",
+    ).replaceAll(
+      "./worker_bootstrap.ts",
+      "./worker_bootstrap.js",
     ),
   );
   await bundle(kernel, {
