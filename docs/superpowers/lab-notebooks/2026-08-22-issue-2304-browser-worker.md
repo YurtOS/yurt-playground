@@ -2,9 +2,8 @@
 
 ## Acceptance contract
 
-The real browser path must boot the pinned image through a Worker-hosted
-kernel, run Jupyter, evaluate `1+1` and NumPy array arithmetic, and shut down
-cleanly.
+The real browser path must boot the pinned image through a Worker-hosted kernel,
+run Jupyter, evaluate `1+1` and NumPy array arithmetic, and shut down cleanly.
 
 ## Verified baseline
 
@@ -15,8 +14,8 @@ cleanly.
 - Playground focused checks: format, lint, type-check, and 5 layout tests pass.
 - Deno boot integration tests: 5 passed, 0 failed, including ash command
   execution, fresh second boot, and command-history behavior.
-- Branch has the two existing commits updating the kernel pin and browser
-  Worker bootstrap URL materialization; no new fix is committed here.
+- Branch has the two existing commits updating the kernel pin and browser Worker
+  bootstrap URL materialization; no new fix is committed here.
 
 ## Browser reproduction
 
@@ -58,17 +57,22 @@ normal shell I/O, rather than in the original #2341/#2354 admission race.
   gate.
 - The focused Deno suite is not evidence of browser acceptance; it does not
   exercise this root Worker plus real PTY sequence.
+- Chromium shell smoke succeeds for `echo`, but reports both `python3` and
+  `python` as `not found` from the pinned image.
+- The pinned yurt-ports source revision contains packaging checks and explicit
+  copies of `cpython3.wasm` to both command names. Therefore the current
+  matching-sha artifact is inconsistent with the source revision's recipe; this
+  is an artifact materialization/publication problem, not a Worker PTY problem.
 
 ## Next experiment
 
-Build a minimal browser reproduction that starts `/bin/sh` without Jupyter,
-captures the first post-startup Worker event, and compares it with a trivial
-non-shell executable. The result will distinguish shell/guest startup CPU
-progress from the Worker host's PTY integration.
+Rebuild/materialize the image from the pinned yurt-ports revision, verify the
+two Python command paths and NumPy tree inside the resulting image, then rerun
+the real Chromium acceptance gate.
 
 ## Deno versus Chromium split
 
 `deno test --allow-all tests/boot_test.ts` passes all five boot cases in about
-one minute. The failure is therefore browser-specific: the same image and
-shell path execute under Deno, but the Chromium Worker stops during startup
-before normal PTY I/O.
+one minute. The failure is therefore browser-specific: the same image and shell
+path execute under Deno, but the Chromium Worker stops during startup before
+normal PTY I/O.
