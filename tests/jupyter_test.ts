@@ -3,6 +3,7 @@ import {
   connectJupyterWithRetries,
   executeCell,
   shutdownGuestKernel,
+  waitForGuestKernelExit,
 } from "../src/jupyter.ts";
 import type { JupyterMessage } from "../src/jupyter_protocol.ts";
 import type { JupyterTransport } from "../src/jupyter_transport.ts";
@@ -130,6 +131,25 @@ Deno.test("shutdownGuestKernel sends a control shutdown request", async () => {
   await shutdownGuestKernel(transport);
   assertEquals(sent?.header.msg_type, "shutdown_request");
   assertEquals(sent?.content, { restart: false });
+});
+
+Deno.test("waitForGuestKernelExit observes the guest exit marker", async () => {
+  const handlers = new Set<(bytes: Uint8Array) => void>();
+  const session = {
+    terminal: {
+      write: () => {
+        const bytes = new TextEncoder().encode("YURT_JUPYTER_EXITED\n");
+        for (const handler of handlers) handler(bytes);
+        return Promise.resolve();
+      },
+    },
+    onOutput(handler: (bytes: Uint8Array) => void) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+  };
+
+  await waitForGuestKernelExit(session);
 });
 
 Deno.test("kernel readiness retries close each failed transport", async () => {

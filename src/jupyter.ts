@@ -6,6 +6,7 @@ import {
 } from "./jupyter_transport.ts";
 
 export const JUPYTER_CONNECTION_FILE = "/tmp/yurt-kernel.json";
+export const JUPYTER_PID_FILE = "/tmp/yurt-jupyter.pid";
 export const JUPYTER_STARTUP_TIMEOUT_MS = 200_000;
 const JUPYTER_KEY = "yurt";
 const encoder = new TextEncoder();
@@ -40,7 +41,8 @@ export async function startGuestKernel(
 ): Promise<JupyterTransport> {
   await session.terminal.write(
     encoder.encode(
-      `${buildKernelLaunchCommand()} >/tmp/yurt-jupyter.log 2>&1 &\n`,
+      `${buildKernelLaunchCommand()} >/tmp/yurt-jupyter.log 2>&1 & ` +
+        `echo $! >${JUPYTER_PID_FILE}\n`,
     ),
   );
   const connection = await readConnectionFile(session);
@@ -260,6 +262,43 @@ export async function shutdownGuestKernel(
     await withTimeout(reply, 15_000, "Jupyter shutdown timed out");
   } finally {
     unsubscribe?.();
+  }
+}
+
+export async function waitForGuestKernelExit(
+  session: Pick<JupyterLaunchSession, "terminal" | "onOutput">,
+): Promise<void> {
+  const marker = "YURT_JUPYTER_EXITED";
+  const failed = "YURT_JUPYTER_EXIT_TIMEOUT";
+  let output = "";
+  let resolveOutput: (() => void) | undefined;
+  const remove = session.onOutput((chunk) => {
+    output += new TextDecoder().decode(chunk);
+    if (output.includes(marker) || output.includes(failed)) {
+      resolveOutput?.();
+    }
+  });
+  try {
+    await session.terminal.write(
+      encoder.encode(
+        `i=0; while kill -0 "$(cat ${JUPYTER_PID_FILE})" 2>/dev/null && ` +
+          `[ $i -lt 30 ]; do sleep 1; i=$((i+1)); done; ` +
+          `if kill -0 "$(cat ${JUPYTER_PID_FILE})" 2>/dev/null; then ` +
+          `echo ${failed}; else echo ${marker}; fi\n`,
+      ),
+    );
+    if (!output.includes(marker) && !output.includes(failed)) {
+      await withTimeout(
+        new Promise<void>((resolve) => resolveOutput = resolve),
+        35_000,
+        "Jupyter process exit timed out",
+      );
+    }
+    if (output.includes(failed)) {
+      throw new Error("Jupyter process did not exit");
+    }
+  } finally {
+    remove();
   }
 }
 

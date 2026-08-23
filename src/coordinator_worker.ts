@@ -12,6 +12,7 @@ import {
   executeCell,
   shutdownGuestKernel,
   startGuestKernel,
+  waitForGuestKernelExit,
 } from "./jupyter.ts";
 import type { JupyterTransport } from "./jupyter_transport.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
@@ -98,6 +99,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         throw new Error("Jupyter is not ready");
       }
       await shutdownGuestKernel(jupyter);
+      await waitForGuestKernelExit(session);
       await jupyter.close();
       jupyter = undefined;
       session.stop();
