@@ -7,6 +7,7 @@ import {
 
 export const JUPYTER_CONNECTION_FILE = "/tmp/yurt-kernel.json";
 export const JUPYTER_PID_FILE = "/tmp/yurt-jupyter.pid";
+export const JUPYTER_START_FILE = "/tmp/yurt-jupyter.start";
 export const JUPYTER_STARTUP_TIMEOUT_MS = 200_000;
 const JUPYTER_KEY = "yurt";
 const encoder = new TextEncoder();
@@ -42,7 +43,8 @@ export async function startGuestKernel(
   await session.terminal.write(
     encoder.encode(
       `${buildKernelLaunchCommand()} >/tmp/yurt-jupyter.log 2>&1 & ` +
-        `echo $! >${JUPYTER_PID_FILE}\n`,
+        `pid=$!; echo $pid >${JUPYTER_PID_FILE}; ` +
+        `cut -d ' ' -f22 /proc/$pid/stat >${JUPYTER_START_FILE}\n`,
     ),
   );
   const connection = await readConnectionFile(session);
@@ -282,11 +284,15 @@ export async function waitForGuestKernelExit(
     await session.terminal.write(
       encoder.encode(
         `pid=$(cat ${JUPYTER_PID_FILE} 2>/dev/null); ` +
-          `case "$pid" in ''|*[!0-9]*) echo ${failed};; *) ` +
+          `start=$(cat ${JUPYTER_START_FILE} 2>/dev/null); ` +
+          `case "$pid:$start" in ''|:|:*) echo ${failed};; ` +
+          `*[!0-9:]*|*:) echo ${failed};; *) ` +
           `i=0; alive=1; while [ $i -lt 30 ]; do ` +
           `state=$(cut -d ' ' -f3 /proc/$pid/stat 2>/dev/null); ` +
+          `current=$(cut -d ' ' -f22 /proc/$pid/stat 2>/dev/null); ` +
           `cmdline=$(tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null); ` +
-          `if [ -z "$state" ] || [ "$state" = Z ]; then alive=0; break; fi; ` +
+          `if [ -z "$state" ] || [ "$state" = Z ] || ` +
+          `[ "$current" != "$start" ]; then alive=0; break; fi; ` +
           `case "$cmdline" in *ipykernel_launcher*) ;; *) alive=0; break;; esac; ` +
           `sleep 1; i=$((i+1)); done; ` +
           `if [ $alive -eq 1 ]; then echo ${failed}; ` +

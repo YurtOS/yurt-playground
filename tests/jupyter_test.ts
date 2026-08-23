@@ -152,7 +152,10 @@ Deno.test("waitForGuestKernelExit observes the guest exit marker", async () => {
   };
 
   await waitForGuestKernelExit(session);
-  if (!command.includes("/proc/$pid/cmdline")) {
+  if (
+    !command.includes("/proc/$pid/cmdline") ||
+    !command.includes("/proc/$pid/stat")
+  ) {
     throw new Error("exit probe does not validate the launched process");
   }
 });
