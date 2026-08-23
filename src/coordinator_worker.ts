@@ -14,7 +14,13 @@ import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 
 installCoordinatorWorkerProxy();
 type ToWorker =
-  | { type: "start"; cols: number; rows: number; isolated: boolean }
+  | {
+    type: "start";
+    cols: number;
+    rows: number;
+    isolated: boolean;
+    mode?: string;
+  }
   | { type: "in"; text: string }
   | { type: "resize"; rows: number; cols: number }
   | { type: "cell"; id: string; code: string };
@@ -32,6 +38,11 @@ type FromWorker =
   | { type: "cell-error"; id: string; message: string };
 
 let jupyter: JupyterTransport | undefined;
+
+const TEST_BUNDLE = (globalThis as typeof globalThis & {
+  __YURT_PLAYGROUND_TEST_BUNDLE__?: boolean;
+})
+  .__YURT_PLAYGROUND_TEST_BUNDLE__ === true;
 
 function post(msg: FromWorker): void {
   self.postMessage(msg);
@@ -110,6 +121,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       show: (text) => post({ type: "status", text }),
       term: workerTerm({ cols: msg.cols, rows: msg.rows }),
     });
+    if (msg.mode === "workerhost-repro") {
+      if (!TEST_BUNDLE) throw new Error("workerhost reproduction is disabled");
+      post({ type: "status", text: "shell-ready" });
+      return;
+    }
     post({ type: "status", text: "starting Jupyter" });
     jupyter = await startGuestKernel(session);
     post({ type: "notebook-ready" });

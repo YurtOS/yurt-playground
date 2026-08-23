@@ -10,6 +10,7 @@ type FromWorker =
   | { type: "notebook-ready" }
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string };
+
 function runPage(): void {
   const status = document.getElementById("status");
   const termHost = document.getElementById("term");
@@ -51,6 +52,8 @@ function runPage(): void {
     cols: term.cols,
     rows: term.rows,
     isolated: true,
+    mode: new URL(globalThis.location.href).searchParams.get("mode") ??
+      undefined,
   });
 }
 

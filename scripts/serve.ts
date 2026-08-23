@@ -18,7 +18,10 @@ function kernelRoot(): string {
   );
 }
 
-export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
+export async function ensureBundle(
+  kernel = kernelRoot(),
+  options: { testBundle?: boolean } = {},
+): Promise<void> {
   const kernelPath = kernel;
   const importMap = {
     imports: {
@@ -55,6 +58,20 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
       "./worker_bootstrap.js",
     ),
   );
+  if (options.testBundle) {
+    for (
+      const output of [
+        join(repoRoot, "public/boot.bundle.js"),
+        coordinatorOut,
+      ]
+    ) {
+      await Deno.writeTextFile(
+        output,
+        `globalThis.__YURT_PLAYGROUND_TEST_BUNDLE__=true;\n${await Deno
+          .readTextFile(output)}`,
+      );
+    }
+  }
   await bundle(kernel, {
     entry: join(
       kernelPath,

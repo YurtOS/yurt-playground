@@ -116,3 +116,22 @@ with the JS host and staging fixes. Chromium acceptance remains separate: it
 must consume the published patched kernel artifact rather than the temporary
 local source checkout used for this validation. The current Jupyter startup
 failure is unresolved; it is not evidence that the kernel lacks Worker Threads.
+
+## 2026-08-23 execution evidence
+
+- The startup probe reached the real pinned image path. It measured `ssl` at 0
+  ms, `zmq` at roughly 5–9 s, and the `ipykernel` import checkpoint at roughly
+  63–64 s. `IPKernelApp` did not emit the initialization checkpoint on the
+  `d57e90c` verification checkout, so the probe remains intentionally red at
+  that boundary.
+- The payload does not provide `IPKernelApp.shutdown()`. The probe uses the
+  actual `app.kernel.do_shutdown(False)` hook and exits explicitly after the
+  marker; it does not claim socket teardown until the full Jupyter acceptance
+  gate observes it.
+- The tightened Chromium shell-only reproduction passed against
+  `d57e90cefa08affea6def27ce3e8f22c93b9a575`: both background markers,
+  post-marker prompts, and `PYTHON_READY` were observed. This checkout no longer
+  reproduces the shell-only WorkerHost stall.
+- The real Chromium Jupyter gate still failed after 240 s with no connection
+  file. The remaining next-phase target is the Jupyter initialization/launch
+  path, not a generic WorkerHost background-child prompt failure.
