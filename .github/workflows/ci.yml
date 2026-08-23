@@ -115,4 +115,6 @@ jobs:
           YURT_KERNEL_ROOT: ../yurtos-kernel
           YURT_PORTS_ROOT: ../yurt-ports
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
-        run: deno run --allow-all tests/playground_e2e.ts
+        run: |
+          deno run --allow-all tests/workerhost_background_child_e2e.ts --mode workerhost-repro
+          deno run --allow-all tests/playground_e2e.ts
