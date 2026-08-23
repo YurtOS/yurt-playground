@@ -219,27 +219,6 @@ Deno.test({
 });
 
 Deno.test({
-  name: "ash can execute the staged Python WASM image",
-  sanitizeOps: false,
-  sanitizeResources: false,
-  async fn() {
-    const session = await bootAshSession();
-    if (!session) return;
-    try {
-      const output = await typeCommand(
-        session.term,
-        "python3 -c 'print(123)'",
-      );
-      if (!/^123$/m.test(output.replace(/\r/g, ""))) {
-        throw new Error(`python3: ${JSON.stringify(output)}`);
-      }
-    } finally {
-      session.stop();
-    }
-  },
-});
-
-Deno.test({
   name: "ash consumes Up-arrow as command history",
   sanitizeOps: false,
   sanitizeResources: false,

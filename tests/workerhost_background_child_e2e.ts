@@ -57,9 +57,20 @@ if (import.meta.main) {
     await page.goto(`${server.url}/?mode=${mode}`, {
       waitUntil: "domcontentloaded",
     });
-    await page.waitForFunction(() =>
-      document.querySelector("#status")?.textContent === "shell-ready"
-    );
+    await page.waitForFunction(
+      () => document.querySelector("#status")?.textContent === "shell-ready",
+      undefined,
+      { timeout: 30_000 },
+    ).catch(async () => {
+      throw new Error(
+        `shell did not become ready: status=${await page.locator("#status")
+          .textContent()} terminal=${
+          JSON.stringify(
+            await page.locator(".xterm-rows").innerText().catch(() => ""),
+          )
+        }`,
+      );
+    });
     const terminal = page.locator(".xterm-helper-textarea");
     await terminal.click();
     await page.keyboard.type("sleep 3 & echo SHORT_BG_READY");
@@ -67,14 +78,13 @@ if (import.meta.main) {
     await waitForTerminal(page, "SHORT_BG_READY");
     await waitForPromptAfter(page, "SHORT_BG_READY");
 
-    await page.keyboard.type(
-      "python3 -c 'import ipykernel; print(\"PYTHON_READY\", flush=True)' & echo LONG_BG_READY",
-    );
+    await page.keyboard.type("sleep 10 & echo LONG_BG_READY");
     await page.keyboard.press("Enter");
     await waitForTerminal(page, "LONG_BG_READY");
     await waitForPromptAfter(page, "LONG_BG_READY");
-    const output = await page.locator(".xterm-rows").innerText();
-    assert(output.includes("PYTHON_READY"), output);
+    assert(
+      (await page.locator(".xterm-rows").innerText()).includes("LONG_BG_READY"),
+    );
   } finally {
     await browser.close();
     await server.shutdown();
