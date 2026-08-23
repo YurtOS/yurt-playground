@@ -36,6 +36,7 @@ export type PlaygroundEnv = {
 
 export type PlaygroundSession = {
   stop: () => void;
+  waitForExit: Promise<void>;
   controller: SessionController;
   terminal: PtyTransport;
   dialSandboxPort: (
@@ -163,16 +164,17 @@ export async function bootPlayground(
     }
   };
 
-  void user.runStartAsync().catch((error) => {
+  const waitForExit = user.runStartAsync().catch((error) => {
     if (!stopped) {
       const message = error instanceof Error ? error.message : String(error);
       env.show(message);
     }
-  }).finally(stop);
+  }).finally(stop).then(() => undefined);
 
   env.show("");
   return {
     stop,
+    waitForExit,
     controller,
     terminal,
     dialSandboxPort: (port) => mk.dialSandboxPort(port),

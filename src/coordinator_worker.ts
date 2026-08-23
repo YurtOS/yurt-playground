@@ -101,6 +101,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       await jupyter.close();
       jupyter = undefined;
       session.stop();
+      await session.waitForExit;
       post({ type: "status", text: "shutdown-complete" });
     } catch (error) {
       post({
