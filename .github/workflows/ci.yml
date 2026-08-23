@@ -96,7 +96,6 @@ jobs:
           YURT_PORTS_ROOT: ../yurt-ports
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
         run: deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
-      # Enable after the pinned kernel provides the worker-backed Jupyter path.
       - name: Materialize pinned browser artifacts
         working-directory: playground
         env:
@@ -114,7 +113,6 @@ jobs:
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
         run: deno run --allow-all tests/workerhost_background_child_e2e.ts --mode workerhost-repro
       - name: Browser acceptance
-        if: vars.YURT_JUPYTER_E2E == 'true'
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel

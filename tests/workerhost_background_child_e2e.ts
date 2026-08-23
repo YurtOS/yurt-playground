@@ -78,10 +78,13 @@ if (import.meta.main) {
     await waitForTerminal(page, "SHORT_BG_READY");
     await waitForPromptAfter(page, "SHORT_BG_READY");
 
-    await page.keyboard.type("sleep 10 & echo LONG_BG_READY");
+    await page.keyboard.type(
+      `python3 -c 'import ipykernel; print("PYTHON_READY", flush=True)' & echo LONG_BG_READY`,
+    );
     await page.keyboard.press("Enter");
     await waitForTerminal(page, "LONG_BG_READY");
     await waitForPromptAfter(page, "LONG_BG_READY");
+    await waitForTerminal(page, "PYTHON_READY");
     assert(
       (await page.locator(".xterm-rows").innerText()).includes("LONG_BG_READY"),
     );

@@ -11,6 +11,13 @@ type FromWorker =
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string };
 
+declare global {
+  var __YURT_PLAYGROUND_TEST_BUNDLE__: boolean | undefined;
+  var __YURT_PLAYGROUND_SHUTDOWN__: (() => void) | undefined;
+}
+
+const TEST_BUNDLE = globalThis.__YURT_PLAYGROUND_TEST_BUNDLE__ === true;
+
 function runPage(): void {
   const status = document.getElementById("status");
   const termHost = document.getElementById("term");
@@ -29,6 +36,10 @@ function runPage(): void {
   const notebook = mountNotebook(notebookHost, (id, code) => {
     worker.postMessage({ type: "cell", id, code });
   });
+  if (TEST_BUNDLE) {
+    globalThis.__YURT_PLAYGROUND_SHUTDOWN__ = () =>
+      worker.postMessage({ type: "shutdown" });
+  }
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
     if (msg.type === "status" && status) status.textContent = msg.text;

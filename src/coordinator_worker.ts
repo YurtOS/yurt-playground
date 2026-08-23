@@ -8,7 +8,11 @@ import {
   fetchPlaygroundBytes,
   type PlaygroundTerm,
 } from "./boot.ts";
-import { executeCell, startGuestKernel } from "./jupyter.ts";
+import {
+  executeCell,
+  shutdownGuestKernel,
+  startGuestKernel,
+} from "./jupyter.ts";
 import type { JupyterTransport } from "./jupyter_transport.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 
@@ -23,7 +27,8 @@ type ToWorker =
   }
   | { type: "in"; text: string }
   | { type: "resize"; rows: number; cols: number }
-  | { type: "cell"; id: string; code: string };
+  | { type: "cell"; id: string; code: string }
+  | { type: "shutdown" };
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -38,6 +43,7 @@ type FromWorker =
   | { type: "cell-error"; id: string; message: string };
 
 let jupyter: JupyterTransport | undefined;
+let session: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 
 const TEST_BUNDLE = (globalThis as typeof globalThis & {
   __YURT_PLAYGROUND_TEST_BUNDLE__?: boolean;
@@ -86,6 +92,24 @@ function workerTerm(init: { cols: number; rows: number }): PlaygroundTerm {
 
 self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
+  if (msg.type === "shutdown") {
+    try {
+      if (jupyter === undefined || session === undefined) {
+        throw new Error("Jupyter is not ready");
+      }
+      await shutdownGuestKernel(jupyter);
+      await jupyter.close();
+      jupyter = undefined;
+      session.stop();
+      post({ type: "status", text: "shutdown-complete" });
+    } catch (error) {
+      post({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return;
+  }
   if (msg.type === "cell") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });
@@ -107,7 +131,6 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     return;
   }
   if (msg.type !== "start") return;
-  let session: Awaited<ReturnType<typeof bootPlayground>> | undefined;
   try {
     session = await bootPlayground({
       isolated: msg.isolated,

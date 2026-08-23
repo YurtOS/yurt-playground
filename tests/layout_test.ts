@@ -46,7 +46,7 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
   );
   assertEquals(
     workflow.includes("if: vars.YURT_JUPYTER_E2E == 'true'"),
-    true,
+    false,
   );
 });
 

@@ -1,5 +1,9 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import { connectJupyterWithRetries, executeCell } from "../src/jupyter.ts";
+import {
+  connectJupyterWithRetries,
+  executeCell,
+  shutdownGuestKernel,
+} from "../src/jupyter.ts";
 import type { JupyterMessage } from "../src/jupyter_protocol.ts";
 import type { JupyterTransport } from "../src/jupyter_transport.ts";
 
@@ -58,6 +62,7 @@ Deno.test("executeCell collects standard Jupyter stream, result, and reply messa
       });
       return Promise.resolve();
     },
+    sendControl: () => Promise.resolve(),
     subscribe(next) {
       listener = next;
       return () => listener = undefined;
@@ -78,6 +83,7 @@ Deno.test("executeCell removes its listener after a timeout", async () => {
   let subscriptions = 0;
   const transport: JupyterTransport = {
     send: () => Promise.resolve(),
+    sendControl: () => Promise.resolve(),
     subscribe() {
       subscriptions++;
       return () => subscriptions--;
@@ -89,6 +95,43 @@ Deno.test("executeCell removes its listener after a timeout", async () => {
   assertEquals(subscriptions, 0);
 });
 
+Deno.test("shutdownGuestKernel sends a control shutdown request", async () => {
+  let sent: JupyterMessage | undefined;
+  let listener: ((message: JupyterMessage) => void) | undefined;
+  const transport: JupyterTransport = {
+    send: () => {
+      return Promise.resolve();
+    },
+    sendControl: (message) => {
+      sent = message;
+      queueMicrotask(() =>
+        listener?.({
+          header: {
+            msg_id: "reply",
+            username: "user",
+            session: message.header.session,
+            msg_type: "shutdown_reply",
+            version: "5.3",
+          },
+          parent_header: { msg_id: message.header.msg_id },
+          metadata: {},
+          content: { restart: false },
+        })
+      );
+      return Promise.resolve();
+    },
+    subscribe: (next) => {
+      listener = next;
+      return () => listener = undefined;
+    },
+    close: () => Promise.resolve(),
+  };
+
+  await shutdownGuestKernel(transport);
+  assertEquals(sent?.header.msg_type, "shutdown_request");
+  assertEquals(sent?.content, { restart: false });
+});
+
 Deno.test("kernel readiness retries close each failed transport", async () => {
   let closed = 0;
   await assertRejects(
@@ -97,6 +140,7 @@ Deno.test("kernel readiness retries close each failed transport", async () => {
         () =>
           Promise.resolve({
             send: () => Promise.resolve(),
+            sendControl: () => Promise.resolve(),
             subscribe: () => () => {},
             close: () => {
               closed++;

@@ -97,6 +97,7 @@ export type JupyterConfig = {
 
 export type JupyterTransport = {
   send(message: JupyterMessage): Promise<void>;
+  sendControl(message: JupyterMessage): Promise<void>;
   subscribe(listener: (message: JupyterMessage) => void): () => void;
   close(): Promise<void>;
 };
@@ -163,6 +164,10 @@ export async function createJupyterTransport(
       async send(message) {
         if (closed) throw new Error("Jupyter transport is closed");
         await channels[0].send(await encodeJupyterMessage(message, config.key));
+      },
+      async sendControl(message) {
+        if (closed) throw new Error("Jupyter transport is closed");
+        await channels[3].send(await encodeJupyterMessage(message, config.key));
       },
       subscribe(listener) {
         listeners.add(listener);

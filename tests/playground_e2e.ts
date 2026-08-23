@@ -9,6 +9,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 if (import.meta.main) {
   await ensureBundle(
     Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel"),
+    { testBundle: true },
   );
   const server = startPlaygroundServer(0);
   const browser = await chromium.launch();
@@ -64,6 +65,14 @@ if (import.meta.main) {
     if (!(await page.locator("#term").isVisible())) {
       throw new Error("ash terminal is not visible");
     }
+    await page.evaluate(() => globalThis.__YURT_PLAYGROUND_SHUTDOWN__?.());
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#status")?.textContent ===
+          "shutdown-complete",
+      undefined,
+      { timeout: 30_000 },
+    );
   } finally {
     await browser.close();
     await server.shutdown();

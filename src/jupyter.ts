@@ -231,6 +231,38 @@ export async function executeCell(
   }
 }
 
+export async function shutdownGuestKernel(
+  transport: JupyterTransport,
+): Promise<void> {
+  const msgId = crypto.randomUUID();
+  let unsubscribe: (() => void) | undefined;
+  const reply = new Promise<void>((resolve, reject) => {
+    unsubscribe = transport.subscribe((message) => {
+      if (
+        message.parent_header.msg_id === msgId &&
+        message.header.msg_type === "shutdown_reply"
+      ) resolve();
+    });
+    void transport.sendControl({
+      header: {
+        msg_id: msgId,
+        username: "user",
+        session: msgId,
+        msg_type: "shutdown_request",
+        version: "5.3",
+      },
+      parent_header: {},
+      metadata: {},
+      content: { restart: false },
+    }).catch(reject);
+  });
+  try {
+    await withTimeout(reply, 15_000, "Jupyter shutdown timed out");
+  } finally {
+    unsubscribe?.();
+  }
+}
+
 async function waitForKernelInfo(transport: JupyterTransport): Promise<void> {
   const msgId = crypto.randomUUID();
   let unsubscribe: (() => void) | undefined;
