@@ -135,11 +135,13 @@ Deno.test("shutdownGuestKernel sends a control shutdown request", async () => {
 
 Deno.test("waitForGuestKernelExit observes the guest exit marker", async () => {
   const handlers = new Set<(bytes: Uint8Array) => void>();
+  let command = "";
   const session = {
     terminal: {
-      write: () => {
-        const bytes = new TextEncoder().encode("YURT_JUPYTER_EXITED\n");
-        for (const handler of handlers) handler(bytes);
+      write: (input: Uint8Array) => {
+        command = new TextDecoder().decode(input);
+        const output = new TextEncoder().encode("YURT_JUPYTER_EXITED\n");
+        for (const handler of handlers) handler(output);
         return Promise.resolve();
       },
     },
@@ -150,6 +152,9 @@ Deno.test("waitForGuestKernelExit observes the guest exit marker", async () => {
   };
 
   await waitForGuestKernelExit(session);
+  if (!command.includes("/proc/$pid/cmdline")) {
+    throw new Error("exit probe does not validate the launched process");
+  }
 });
 
 Deno.test("kernel readiness retries close each failed transport", async () => {

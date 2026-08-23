@@ -281,10 +281,16 @@ export async function waitForGuestKernelExit(
   try {
     await session.terminal.write(
       encoder.encode(
-        `i=0; while kill -0 "$(cat ${JUPYTER_PID_FILE})" 2>/dev/null && ` +
-          `[ $i -lt 30 ]; do sleep 1; i=$((i+1)); done; ` +
-          `if kill -0 "$(cat ${JUPYTER_PID_FILE})" 2>/dev/null; then ` +
-          `echo ${failed}; else echo ${marker}; fi\n`,
+        `pid=$(cat ${JUPYTER_PID_FILE} 2>/dev/null); ` +
+          `case "$pid" in ''|*[!0-9]*) echo ${failed};; *) ` +
+          `i=0; alive=1; while [ $i -lt 30 ]; do ` +
+          `state=$(cut -d ' ' -f3 /proc/$pid/stat 2>/dev/null); ` +
+          `cmdline=$(tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null); ` +
+          `if [ -z "$state" ] || [ "$state" = Z ]; then alive=0; break; fi; ` +
+          `case "$cmdline" in *ipykernel_launcher*) ;; *) alive=0; break;; esac; ` +
+          `sleep 1; i=$((i+1)); done; ` +
+          `if [ $alive -eq 1 ]; then echo ${failed}; ` +
+          `else echo ${marker}; fi;; esac\n`,
       ),
     );
     if (!output.includes(marker) && !output.includes(failed)) {
