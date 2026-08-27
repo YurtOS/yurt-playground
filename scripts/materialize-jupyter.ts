@@ -214,6 +214,8 @@ async function existingPayloadRoot(root: string): Promise<string> {
   throw new Error("yurt-jupyter staged payload is missing");
 }
 
+const FORBIDDEN_PACKAGES = /^(zmq|psutil)(-.*\.dist-info)?$/;
+
 function rejectForbiddenPackages(root: string): void {
   for (const entry of walk(root)) {
     if (entry.endsWith(".so") || entry.endsWith(".dylib")) {
@@ -221,10 +223,16 @@ function rejectForbiddenPackages(root: string): void {
         `yurt-jupyter payload contains compiled extension ${entry}`,
       );
     }
-    const name = basename(entry);
-    if (name === "zmq" || name === "psutil") {
+    // Only an importable top-level module duplicates what the guest provides.
+    // Matching the basename at any depth also rejected jedi's typeshed stubs
+    // (.../jedi/third_party/typeshed/stubs/psutil) and the psutil.py shim the
+    // staging script installs on purpose.
+    if (
+      basename(dirname(entry)) === "site-packages" &&
+      FORBIDDEN_PACKAGES.test(basename(entry))
+    ) {
       throw new Error(
-        `yurt-jupyter payload duplicates forbidden package ${name}`,
+        `yurt-jupyter payload duplicates forbidden package ${entry}`,
       );
     }
   }
