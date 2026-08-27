@@ -60,6 +60,30 @@ Deno.test("materializer rejects a non-CPython 3.14 interpreter", async () => {
   });
 });
 
+Deno.test("materializer accepts any CPython 3.14 patch release", async () => {
+  // setup-python resolves "3.14" to the newest patch (3.14.7 today), and the
+  // guest CPython in yurt-ports is 3.14.4. Only the minor version has to match:
+  // the payload is pure Python staged under python3.14.
+  await withTempDir(async (root) => {
+    await Deno.writeTextFile(`${root}/requirements.lock`, VALID_LOCK);
+    const stub = `${root}/python-3.14.7`;
+    await Deno.writeTextFile(
+      stub,
+      "#!/bin/sh\necho 'cpython (3, 14, 7) x86_64'\n",
+    );
+    await Deno.chmod(stub, 0o755);
+    const failure = await materializeJupyter({
+      repoRoot: root,
+      lockPath: `${root}/requirements.lock`,
+      python: stub,
+      outputDir: `${root}/out`,
+    }).then(() => undefined, (error: unknown) => String(error));
+    // It still fails — there is no yurt-jupyter checkout here — but never on
+    // the interpreter version.
+    assertEquals(failure?.includes("requires CPython"), false);
+  });
+});
+
 Deno.test("materializer requires the pinned yurt-jupyter revision", async () => {
   await withTempDir(async (root) => {
     await Deno.writeTextFile(
