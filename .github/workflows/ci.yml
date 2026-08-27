@@ -10,10 +10,12 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # The playground-only gate. It needs no sibling checkout, so it is the one
-  # signal that survives a missing cross-repo token.
+  # The playground-only gate. fmt and lint need no sibling checkout, so this is
+  # the one signal that survives a missing cross-repo token. deno check is not
+  # here: it resolves @yurt/* into the kernel checkout, so it belongs to the
+  # integration job.
   checks:
-    name: fmt / lint / check
+    name: fmt / lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -27,8 +29,6 @@ jobs:
         run: deno fmt --check
       - name: lint
         run: deno lint
-      - name: check
-        run: deno check "**/*.ts"
 
   # yurtos-kernel, yurt-ports, and yurt-jupyter are PRIVATE, and the default
   # GITHUB_TOKEN cannot read another private repository. Without a PAT stored as
@@ -143,6 +143,9 @@ jobs:
         run: |
           scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only
           ports/playground-image/scripts/package.sh
+      - name: check
+        working-directory: playground
+        run: deno check "**/*.ts"
       - name: test
         working-directory: playground
         env:
