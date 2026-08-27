@@ -17,7 +17,9 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
   assertEquals(workflow.includes("repository: YurtOS/yurt-ports"), true);
   assertEquals(workflow.includes("repository: YurtOS/yurt-jupyter"), true);
   assertEquals(workflow.includes("jupyter_rev"), true);
-  assertEquals(workflow.includes("actions/setup-python@v6"), true);
+  // Version-agnostic: dependabot bumps the major, and these assertions pin the
+  // shape of the workflow (a host python is provisioned), not the action tag.
+  assertEquals(/actions\/setup-python@v\d+/.test(workflow), true);
   assertEquals(
     workflow.includes(
       "HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}",
@@ -83,9 +85,9 @@ Deno.test("deployment workflow publishes an isolated static site", async () => {
   const workflow = await Deno.readTextFile(
     new URL("../.github/workflows/deploy-pages.yml", import.meta.url),
   );
+  assertEquals(/actions\/setup-python@v\d+/.test(workflow), true);
   for (
     const value of [
-      "actions/setup-python@v6",
       'python-version: "3.14"',
       "HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}",
       "scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only",
