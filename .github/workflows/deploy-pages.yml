@@ -108,18 +108,15 @@ jobs:
           # dist-info — and a floating patch silently breaks it.
           python-version: "3.14.0"
           architecture: x64
-      - name: Build locked Jupyter pure-Python input
+      # Same rule as ci.yml: the staged payload is not reproducible, so it is
+      # published once and fetched. Rebuilding it here would re-derive a tree
+      # the lock's payloadTreeSha256 cannot match.
+      - name: Install the Jupyter payload from its release
         working-directory: playground
         env:
-          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
-        run: |
-          rm -rf "$RUNNER_TEMP/yurt-jupyter-site-py"
-          mkdir -p "$RUNNER_TEMP/yurt-jupyter-site-py"
-          mapfile -t packages < <(jq -r '.packages[] | select(.name != "pyzmq") | "\(.name)==\(.version)"' artifacts/jupyter-requirements.lock)
-          "$HOST_PYTHON" -m pip install --no-binary=:all: --target "$RUNNER_TEMP/yurt-jupyter-site-py" "${packages[@]}"
-          find "$RUNNER_TEMP/yurt-jupyter-site-py" -type f \( -name '*.so' -o -name '*.dylib' -o -name '*.pyd' \) -delete
-          rm -rf "$RUNNER_TEMP/yurt-jupyter-site-py/zmq" "$RUNNER_TEMP/yurt-jupyter-site-py"/pyzmq-*.dist-info "$RUNNER_TEMP/yurt-jupyter-site-py/psutil"
-          JUPYTER_SITE_PY="$RUNNER_TEMP/yurt-jupyter-site-py" ../yurt-jupyter/scripts/stage-jupyter-site-packages.sh
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          YURT_JUPYTER_ROOT: ../yurt-jupyter
+        run: scripts/install-jupyter-payload.sh
       - name: Materialize locked Jupyter payload
         working-directory: playground
         env:
