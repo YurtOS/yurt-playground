@@ -1,0 +1,84 @@
+name: Regenerate Jupyter payload
+
+# The staged yurt-jupyter payload is NOT reproducible: pip installs every
+# package from sdist under --no-binary=:all:, resolving build backends from
+# PyPI at build time, and five consecutive builds with identical pins produced
+# five different trees. So it is built deliberately, here, and published once —
+# CI consumes those bytes rather than re-deriving them.
+#
+# Run this when artifacts/jupyter-requirements.lock changes. Then:
+#   1. download the jupyter-payload artifact from this run
+#   2. gh release create <tag> --repo YurtOS/yurt-packages jupyter-payload.tar.zst{,.sha256}
+#   3. record the printed tree hash as payloadTreeSha256 in the lock
+
+on:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: build and pack the payload
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: playground
+      - name: Read the yurt-jupyter pin
+        id: pins
+        working-directory: playground
+        run: echo "jupyter_rev=$(jq -r .yurtJupyterRev artifacts/jupyter-requirements.lock)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: YurtOS/yurt-jupyter
+          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          ref: ${{ steps.pins.outputs.jupyter_rev }}
+          path: yurt-jupyter
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.7.14
+      - uses: actions/setup-python@v7
+        id: host-python
+        with:
+          # The payload is built once and published, so this pin no longer has
+          # to reproduce anything — it just records what built the bytes.
+          python-version: "3.14.0"
+          architecture: x64
+      - name: Build the locked pure-Python input
+        working-directory: playground
+        env:
+          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          "$HOST_PYTHON" -m pip install --disable-pip-version-check "pip==26.2.1"
+          rm -rf "$RUNNER_TEMP/yurt-jupyter-site-py"
+          mkdir -p "$RUNNER_TEMP/yurt-jupyter-site-py"
+          mapfile -t packages < <(jq -r '.packages[] | select(.name != "pyzmq") | "\(.name)==\(.version)"' artifacts/jupyter-requirements.lock)
+          "$HOST_PYTHON" -m pip install --no-binary=:all: --target "$RUNNER_TEMP/yurt-jupyter-site-py" "${packages[@]}"
+          find "$RUNNER_TEMP/yurt-jupyter-site-py" -type f \( -name '*.so' -o -name '*.dylib' -o -name '*.pyd' \) -delete
+          rm -rf "$RUNNER_TEMP/yurt-jupyter-site-py/zmq" "$RUNNER_TEMP/yurt-jupyter-site-py"/pyzmq-*.dist-info "$RUNNER_TEMP/yurt-jupyter-site-py/psutil"
+      - name: Stage it into the yurt-jupyter tree
+        working-directory: playground
+        env:
+          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
+        run: JUPYTER_SITE_PY="$RUNNER_TEMP/yurt-jupyter-site-py" ../yurt-jupyter/scripts/stage-jupyter-site-packages.sh
+      - name: Pack and hash
+        working-directory: playground
+        env:
+          YURT_JUPYTER_ROOT: ../yurt-jupyter
+        run: |
+          set -euo pipefail
+          tar -C ../yurt-jupyter -cf - stage | zstd -19 -T0 -o "$RUNNER_TEMP/jupyter-payload.tar.zst"
+          sha256sum "$RUNNER_TEMP/jupyter-payload.tar.zst" | cut -d' ' -f1 \
+            > "$RUNNER_TEMP/jupyter-payload.tar.zst.sha256"
+          echo "payloadTreeSha256 for the lock:"
+          deno run --allow-read --allow-write --allow-env scripts/update-jupyter-lock-hash.ts
+      - name: Upload the payload and the updated lock
+        uses: actions/upload-artifact@v4
+        with:
+          name: jupyter-payload
+          path: |
+            ${{ runner.temp }}/jupyter-payload.tar.zst
+            ${{ runner.temp }}/jupyter-payload.tar.zst.sha256
+            playground/artifacts/jupyter-requirements.lock
