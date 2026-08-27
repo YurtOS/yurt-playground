@@ -144,6 +144,52 @@ Deno.test("materializer rejects duplicate compiled-package trees", async () => {
   });
 });
 
+Deno.test("materializer allows a nested path merely named psutil", async () => {
+  // The real payload carries two of these: jedi ships typeshed stubs under
+  // .../jedi/third_party/typeshed/stubs/psutil/, and the staging script
+  // deliberately installs usr/share/yurt-jupyter/psutil.py as the shim that
+  // shadows the guest package. Neither duplicates a site-packages module.
+  await withTempDir(async (root) => {
+    await Deno.writeTextFile(`${root}/requirements.lock`, VALID_LOCK);
+    await Deno.mkdir(`${root}/yurt-jupyter`, { recursive: true });
+    await Deno.writeTextFile(
+      `${root}/yurt-jupyter/REVISION`,
+      "c30f1073c244aab166c67dc3b9b1ff1048def0d4\n",
+    );
+    const site =
+      `${root}/yurt-jupyter/stage/usr/local/lib/python3.14/site-packages`;
+    await Deno.mkdir(
+      `${site}/jedi/third_party/typeshed/stubs/psutil/psutil`,
+      { recursive: true },
+    );
+    await Deno.writeTextFile(
+      `${site}/jedi/third_party/typeshed/stubs/psutil/psutil/__init__.pyi`,
+      "",
+    );
+    await Deno.mkdir(`${root}/yurt-jupyter/stage/usr/share/yurt-jupyter`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      `${root}/yurt-jupyter/stage/usr/share/yurt-jupyter/psutil.py`,
+      "",
+    );
+    const fakePython = `${root}/python3.14`;
+    await Deno.writeTextFile(
+      fakePython,
+      '#!/bin/sh\nif [ "$1" = "-c" ]; then echo "cpython (3, 14, 0) x86_64"; fi\n',
+    );
+    await Deno.chmod(fakePython, 0o755);
+    const failure = await materializeJupyter({
+      repoRoot: root,
+      lockPath: `${root}/requirements.lock`,
+      python: fakePython,
+      outputDir: `${root}/out`,
+    }).then(() => undefined, (error: unknown) => String(error));
+    // It still fails on the lock hashes; it must not fail on psutil.
+    assertEquals(failure?.includes("forbidden package"), false);
+  });
+});
+
 Deno.test("materializer copies only a payload matching every lock hash", async () => {
   await withTempDir(async (root) => {
     const stage = join(root, "yurt-jupyter/stage");
