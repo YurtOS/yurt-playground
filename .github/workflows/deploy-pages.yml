@@ -94,7 +94,7 @@ jobs:
           # (public/index.html reindents), so a floating formatter turns CI red
           # with no code change and disagrees with what developers run locally.
           deno-version: v2.7.14
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         id: host-python
         with:
           python-version: "3.14"
