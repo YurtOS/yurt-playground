@@ -173,6 +173,25 @@ jobs:
           HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
         run: |
           JUPYTER_SITE_PY="$RUNNER_TEMP/yurt-jupyter-site-py" ../yurt-jupyter/scripts/stage-jupyter-site-packages.sh
+      # The staged payload is what payloadTreeSha256 hashes, and pip cannot
+      # reproduce it byte-for-byte across runs. Publishing these exact bytes as
+      # a yurt-packages release is what makes the hash pin something real, so
+      # every run has to be able to hand them out.
+      - name: Pack the staged Jupyter payload
+        working-directory: playground
+        run: |
+          set -euo pipefail
+          tar -C ../yurt-jupyter -cf - stage | zstd -19 -T0 -o "$RUNNER_TEMP/jupyter-payload.tar.zst"
+          sha256sum "$RUNNER_TEMP/jupyter-payload.tar.zst" | cut -d' ' -f1 \
+            > "$RUNNER_TEMP/jupyter-payload.tar.zst.sha256"
+      - name: Upload the staged Jupyter payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: jupyter-payload-${{ steps.payload-key.outputs.digest }}
+          path: |
+            ${{ runner.temp }}/jupyter-payload.tar.zst
+            ${{ runner.temp }}/jupyter-payload.tar.zst.sha256
+          retention-days: 7
       - name: Materialize locked Jupyter payload
         working-directory: playground
         env:
