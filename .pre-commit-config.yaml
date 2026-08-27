@@ -1,0 +1,74 @@
+# yurt-playground pre-commit config
+# Local hooks orchestrated by https://pre-commit.com.
+# Install: scripts/install-hooks.sh
+#
+# Adapted from yurt-pkg/.pre-commit-config.yaml. The differences are all from
+# this repo being a Deno page rather than a Rust workspace:
+#
+#   - No cargo hooks. There is no Rust here; the kernel wasm and the ports are
+#     built by their own repos and consumed as pinned blobs.
+#   - `deno check` and the bundle hook need ../yurtos-kernel, because @yurt/*
+#     resolves into that checkout. They are skipped, loudly, when it is absent
+#     rather than failing a commit for a missing sibling.
+#   - The pre-push tier excludes the two artifact-backed test files. They call
+#     bootAshSession({ requireArtifacts: true }) on purpose, so they fail
+#     rather than pass vacuously when the blobs are absent — correct for CI,
+#     wrong as a commit gate.
+default_install_hook_types: [pre-commit, pre-push]
+fail_fast: false
+
+repos:
+  # Generic hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-json
+        files: ^(artifacts/.*\.json|deno\.json)$
+      - id: check-yaml
+        files: ^\.(github|pre-commit-config).*\.(yml|yaml)$
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+
+  # Local hooks (no upstream repo for these tools)
+  - repo: local
+    hooks:
+      - id: deno-fmt
+        name: deno fmt --check
+        entry: deno fmt --check
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: deno-lint
+        name: deno lint
+        entry: deno lint
+        language: system
+        types_or: [ts, javascript]
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: deno-check
+        name: deno check (needs ../yurtos-kernel)
+        entry: scripts/hooks/deno-check.sh
+        language: system
+        types_or: [ts]
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: deno-test-fast
+        name: deno test (no artifacts needed)
+        entry: scripts/hooks/test-fast.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      # Pre-push only: bundling spawns three `deno bundle` subprocesses.
+      - id: bundle
+        name: bundle the page (needs ../yurtos-kernel)
+        entry: scripts/hooks/bundle-check.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
