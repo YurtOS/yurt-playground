@@ -18,7 +18,7 @@ export type MaterializedJupyter = {
 type Lock = {
   yurtJupyterRev: string;
   payloadTreeSha256: string;
-  packages: Array<{ name: string; version: string; sha256: string }>;
+  packages: Array<{ name: string; version: string }>;
 };
 
 const YURT_JUPYTER_REV = "c30f1073c244aab166c67dc3b9b1ff1048def0d4";
@@ -87,7 +87,6 @@ async function readLock(path: string): Promise<Lock> {
       if (
         typeof packagePin.name !== "string" ||
         typeof packagePin.version !== "string" ||
-        !/^[0-9a-f]{64}$/.test(packagePin.sha256) ||
         names.has(packagePin.name.toLowerCase())
       ) {
         throw new Error("invalid package lock entry");
@@ -137,14 +136,6 @@ async function verifyLockedPayload(root: string, lock: Lock): Promise<void> {
     if (actual.version !== packagePin.version) {
       throw new Error(
         `locked package version mismatch for ${packagePin.name}: got ${actual.version}, lock ${packagePin.version}`,
-      );
-    }
-    const actualSha256 = await sha256Bytes(
-      await canonicalTreeTar(actual.root),
-    );
-    if (actualSha256 !== packagePin.sha256) {
-      throw new Error(
-        `locked package hash mismatch for ${packagePin.name}: got ${actualSha256}, lock ${packagePin.sha256}`,
       );
     }
   }

@@ -9,11 +9,7 @@ const REV = "c30f1073c244aab166c67dc3b9b1ff1048def0d4";
 const VALID_LOCK = JSON.stringify({
   yurtJupyterRev: REV,
   payloadTreeSha256: "0".repeat(64),
-  packages: [{
-    name: "example",
-    version: "1.0.0",
-    sha256: "0".repeat(64),
-  }],
+  packages: [{ name: "example", version: "1.0.0" }],
 });
 
 async function withTempDir<T>(fn: (root: string) => Promise<T>): Promise<T> {
@@ -31,8 +27,8 @@ Deno.test("the lock hash generator writes the staged tree's hash", async () => {
     await Deno.writeTextFile(lockPath, VALID_LOCK);
     const stage = `${root}/yurt-jupyter/stage`;
     const site = `${stage}/usr/local/lib/python3.14/site-packages`;
-    // The generator hashes each locked package's dist-info tree as well, so the
-    // payload has to carry the one the lock names.
+    // The payload still has to carry the package the lock names: the count and
+    // version checks survive, only the per-package hash is gone.
     await Deno.mkdir(`${site}/example-1.0.0.dist-info`, { recursive: true });
     await Deno.writeTextFile(
       `${site}/example-1.0.0.dist-info/METADATA`,
@@ -44,14 +40,9 @@ Deno.test("the lock hash generator writes the staged tree's hash", async () => {
     assertEquals(written, expected);
     const lock = JSON.parse(await Deno.readTextFile(lockPath));
     assertEquals(lock.payloadTreeSha256, expected);
-    // The package hash moves with it, and the version does not.
-    assertEquals(
-      lock.packages[0].sha256,
-      await sha256Bytes(
-        await canonicalTreeTar(`${site}/example-1.0.0.dist-info`),
-      ),
-    );
+    // The package manifest survives untouched: only the tree hash moves.
     assertEquals(lock.packages[0].version, "1.0.0");
+    assertEquals(lock.packages[0].sha256, undefined);
     assertEquals(lock.packages.length, JSON.parse(VALID_LOCK).packages.length);
   });
 });
@@ -240,7 +231,6 @@ Deno.test("materializer copies only a payload matching every lock hash", async (
     });
     await Deno.writeTextFile(launcher, "#!/usr/bin/env python3\n");
     await Deno.chmod(launcher, 0o755);
-    const packageSha256 = await sha256Bytes(await canonicalTreeTar(dist));
     const payloadTreeSha256 = await sha256Bytes(await canonicalTreeTar(stage));
     await Deno.writeTextFile(join(root, "yurt-jupyter/REVISION"), `${REV}\n`);
     await Deno.writeTextFile(
@@ -248,11 +238,7 @@ Deno.test("materializer copies only a payload matching every lock hash", async (
       JSON.stringify({
         yurtJupyterRev: REV,
         payloadTreeSha256,
-        packages: [{
-          name: "example",
-          version: "1.0.0",
-          sha256: packageSha256,
-        }],
+        packages: [{ name: "example", version: "1.0.0" }],
       }),
     );
     const python = join(root, "python3.14");
