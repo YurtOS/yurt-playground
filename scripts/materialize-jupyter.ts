@@ -168,12 +168,16 @@ async function verifyInterpreter(python: string): Promise<void> {
       `unable to execute pinned Python 3.14 interpreter: ${error}`,
     );
   }
+  // The minor version is what has to match: the payload is pure Python staged
+  // under python3.14, the guest CPython is 3.14.x, and setup-python resolves
+  // "3.14" to whatever patch is newest. Pinning a patch here pinned nothing
+  // real and broke CI the day the runner moved off 3.14.0.
   if (
-    !/cpython\s*\(3,\s*14,\s*0\)/i.test(output) &&
-    !/cpython\s+3\.14\.0/i.test(output)
+    !/cpython\s*\(3,\s*14,\s*\d+\)/i.test(output) &&
+    !/cpython\s+3\.14\.\d+/i.test(output)
   ) {
     throw new Error(
-      `materializer requires CPython 3.14.0, got: ${output.trim()}`,
+      `materializer requires CPython 3.14.x, got: ${output.trim()}`,
     );
   }
   if (!/x86_64|amd64/i.test(output)) {
