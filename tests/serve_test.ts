@@ -5,7 +5,7 @@ import {
   handlePlaygroundRequest,
   resolvePlaygroundPath,
 } from "../src/serve.ts";
-import { resolveKernelRoot } from "../scripts/serve.ts";
+import { kernelImportMap, resolveKernelRoot } from "../scripts/serve.ts";
 
 const isolation = {
   coop: "same-origin",
@@ -21,6 +21,21 @@ Deno.test("relative YURT_KERNEL_ROOT resolves from the repository root", () => {
     ),
     "/workspace/yurtos-kernel",
   );
+});
+
+Deno.test("the bundle import map resolves a relative kernel root", () => {
+  // CI passes YURT_KERNEL_ROOT=../yurtos-kernel. A relative specifier in
+  // public/import-map.json resolves against public/, not the repo root, so
+  // it has to be absolute by the time it is written.
+  const { imports } = kernelImportMap("../yurtos-kernel");
+  for (const key of ["@yurt/kernel-host-interface-js", "@yurt/tar-image"]) {
+    const specifier = imports[key];
+    assertEquals(
+      specifier.startsWith(resolveKernelRoot("../yurtos-kernel")),
+      true,
+      `${key} is not an absolute kernel path: ${specifier}`,
+    );
+  }
 });
 
 Deno.test("playground HTTP responses carry COOP/COEP", async () => {
