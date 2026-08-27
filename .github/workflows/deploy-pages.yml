@@ -102,7 +102,11 @@ jobs:
       - uses: actions/setup-python@v7
         id: host-python
         with:
-          python-version: "3.14"
+          # Exact, not "3.14": the payload tree hash in
+          # artifacts/jupyter-requirements.lock is only reproducible from the
+          # interpreter that produced it — pip writes interpreter-dependent
+          # dist-info — and a floating patch silently breaks it.
+          python-version: "3.14.0"
           architecture: x64
       - name: Build locked Jupyter pure-Python input
         working-directory: playground

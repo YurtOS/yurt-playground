@@ -104,7 +104,10 @@ async function verifyLockedPayload(root: string, lock: Lock): Promise<void> {
   const actualTreeSha256 = await sha256Bytes(await canonicalTreeTar(root));
   if (actualTreeSha256 !== lock.payloadTreeSha256) {
     throw new Error(
-      `Jupyter payload tree hash mismatch: got ${actualTreeSha256}, lock ${lock.payloadTreeSha256}`,
+      `Jupyter payload tree hash mismatch: got ${actualTreeSha256}, ` +
+        `lock ${lock.payloadTreeSha256}. The lock hashes the staged tree, which ` +
+        `is only reproducible from the interpreter that built it — pip writes ` +
+        `interpreter-dependent dist-info, so check the host Python patch.`,
     );
   }
   const metadata = new Map<string, { version: string; root: string }>();

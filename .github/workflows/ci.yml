@@ -116,7 +116,11 @@ jobs:
       - uses: actions/setup-python@v7
         id: host-python
         with:
-          python-version: "3.14"
+          # Exact, not "3.14": the payload tree hash in
+          # artifacts/jupyter-requirements.lock is only reproducible from the
+          # interpreter that produced it — pip writes interpreter-dependent
+          # dist-info — and a floating patch silently breaks it.
+          python-version: "3.14.0"
           architecture: x64
       # Every input below is pinned to a revision, so the outputs are the same
       # on every run. Building them each time cost 385s for pip alone; these
