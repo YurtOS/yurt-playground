@@ -30,19 +30,28 @@ Deno.test("the lock hash generator writes the staged tree's hash", async () => {
     const lockPath = `${root}/requirements.lock`;
     await Deno.writeTextFile(lockPath, VALID_LOCK);
     const stage = `${root}/yurt-jupyter/stage`;
-    await Deno.mkdir(`${stage}/usr/local/lib/python3.14/site-packages`, {
-      recursive: true,
-    });
+    const site = `${stage}/usr/local/lib/python3.14/site-packages`;
+    // The generator hashes each locked package's dist-info tree as well, so the
+    // payload has to carry the one the lock names.
+    await Deno.mkdir(`${site}/example-1.0.0.dist-info`, { recursive: true });
     await Deno.writeTextFile(
-      `${stage}/usr/local/lib/python3.14/site-packages/ipykernel.py`,
-      "x",
+      `${site}/example-1.0.0.dist-info/METADATA`,
+      "Name: example\nVersion: 1.0.0\n",
     );
+    await Deno.writeTextFile(`${site}/ipykernel.py`, "x");
     const written = await updateLockHash(lockPath, `${root}/yurt-jupyter`);
     const expected = await sha256Bytes(await canonicalTreeTar(stage));
     assertEquals(written, expected);
     const lock = JSON.parse(await Deno.readTextFile(lockPath));
     assertEquals(lock.payloadTreeSha256, expected);
-    // The rest of the lock survives the rewrite.
+    // The package hash moves with it, and the version does not.
+    assertEquals(
+      lock.packages[0].sha256,
+      await sha256Bytes(
+        await canonicalTreeTar(`${site}/example-1.0.0.dist-info`),
+      ),
+    );
+    assertEquals(lock.packages[0].version, "1.0.0");
     assertEquals(lock.packages.length, JSON.parse(VALID_LOCK).packages.length);
   });
 });
