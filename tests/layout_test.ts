@@ -50,6 +50,27 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
   );
 });
 
+Deno.test("workflows authenticate every private sibling checkout", async () => {
+  // The default GITHUB_TOKEN cannot read a *different* private repository, so
+  // each YurtOS sibling checkout needs an explicit token. Without one the job
+  // dies at "remote: Repository not found" before any step runs.
+  for (const file of ["ci.yml", "deploy-pages.yml"]) {
+    const workflow = await Deno.readTextFile(
+      new URL(`../.github/workflows/${file}`, import.meta.url),
+    );
+    const siblings = workflow.match(/repository: YurtOS\/\S+/g) ?? [];
+    assertEquals(siblings.length > 0, true, `${file} checks out no sibling`);
+    const tokens =
+      workflow.match(/token: \$\{\{ secrets\.KERNEL_CHECKOUT_TOKEN \}\}/g) ??
+        [];
+    assertEquals(
+      tokens.length,
+      siblings.length,
+      `${file}: ${siblings.length} sibling checkouts but ${tokens.length} tokens`,
+    );
+  }
+});
+
 Deno.test("page exposes the real notebook execution surface", async () => {
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
