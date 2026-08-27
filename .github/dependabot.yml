@@ -6,6 +6,15 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    ignore:
+      # The Rust toolchain is not ours to choose: it has to match
+      # yurtos-kernel/rust-toolchain.toml, and this action's tag *is* the
+      # toolchain version. A dependabot bump here installs the targets for a
+      # toolchain the kernel build then switches away from — and it cannot be
+      # caught in review, because the job that uses it skips on dependabot PRs
+      # (they receive no secrets, so the private siblings cannot be checked
+      # out). Bump it by hand when the kernel pin moves.
+      - dependency-name: dtolnay/rust-toolchain
     groups:
       actions-minor-patch:
         update-types:

@@ -73,6 +73,23 @@ Deno.test("workflows authenticate every private sibling checkout", async () => {
   }
 });
 
+Deno.test("both workflows select the same Rust toolchain", async () => {
+  // The tag of dtolnay/rust-toolchain *is* the toolchain version, and it has
+  // to match yurtos-kernel/rust-toolchain.toml. Nothing in this repo can check
+  // it against the kernel, but the two workflows drifting apart is a bug we
+  // can catch: they build the same artifacts.
+  const versions = new Set<string>();
+  for (const file of ["ci.yml", "deploy-pages.yml"]) {
+    const workflow = await Deno.readTextFile(
+      new URL(`../.github/workflows/${file}`, import.meta.url),
+    );
+    const match = workflow.match(/dtolnay\/rust-toolchain@(\S+)/);
+    assertEquals(match !== null, true, `${file} pins no Rust toolchain`);
+    versions.add(match![1]);
+  }
+  assertEquals(versions.size, 1, `toolchains differ: ${[...versions]}`);
+});
+
 Deno.test("page exposes the real notebook execution surface", async () => {
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),

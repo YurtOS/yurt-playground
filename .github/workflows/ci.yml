@@ -98,7 +98,12 @@ jobs:
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
           ref: ${{ steps.pins.outputs.jupyter_rev }}
           path: yurt-jupyter
-      - uses: dtolnay/rust-toolchain@1.100.0
+      # Must track yurtos-kernel/rust-toolchain.toml (1.97.1): this action
+      # installs the targets and rust-src for the toolchain it selects, and the
+      # kernel wasm build then switches to the version that file pins. Bumping
+      # it independently installs them for the wrong toolchain — and @1.100.0
+      # supplies no default toolchain at all, so the step fails outright.
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           targets: wasm32-wasip1,wasm32-wasip1-threads
           components: rust-src
