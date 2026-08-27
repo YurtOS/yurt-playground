@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { canonicalTreeTar } from "../scripts/canonical-tree-tar.ts";
 import { materializeJupyter } from "../scripts/materialize-jupyter.ts";
 import { sha256Bytes } from "../scripts/materialize-jupyter.ts";
+import { updateLockHash } from "../scripts/update-jupyter-lock-hash.ts";
 
 const REV = "c30f1073c244aab166c67dc3b9b1ff1048def0d4";
 const VALID_LOCK = JSON.stringify({
@@ -23,6 +24,28 @@ async function withTempDir<T>(fn: (root: string) => Promise<T>): Promise<T> {
     await Deno.remove(root, { recursive: true });
   }
 }
+
+Deno.test("the lock hash generator writes the staged tree's hash", async () => {
+  await withTempDir(async (root) => {
+    const lockPath = `${root}/requirements.lock`;
+    await Deno.writeTextFile(lockPath, VALID_LOCK);
+    const stage = `${root}/yurt-jupyter/stage`;
+    await Deno.mkdir(`${stage}/usr/local/lib/python3.14/site-packages`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      `${stage}/usr/local/lib/python3.14/site-packages/ipykernel.py`,
+      "x",
+    );
+    const written = await updateLockHash(lockPath, `${root}/yurt-jupyter`);
+    const expected = await sha256Bytes(await canonicalTreeTar(stage));
+    assertEquals(written, expected);
+    const lock = JSON.parse(await Deno.readTextFile(lockPath));
+    assertEquals(lock.payloadTreeSha256, expected);
+    // The rest of the lock survives the rewrite.
+    assertEquals(lock.packages.length, JSON.parse(VALID_LOCK).packages.length);
+  });
+});
 
 Deno.test("materializer rejects a missing lock file", async () => {
   await withTempDir(async (root) => {

@@ -206,7 +206,7 @@ function findJupyterRoot(repoRoot: string): string {
   throw new Error("yurt-jupyter checkout is missing");
 }
 
-async function existingPayloadRoot(root: string): Promise<string> {
+export async function existingPayloadRoot(root: string): Promise<string> {
   for (const candidate of [join(root, "stage"), join(root, "site-packages")]) {
     try {
       if ((await Deno.stat(candidate)).isDirectory) return candidate;
