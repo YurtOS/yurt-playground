@@ -21,9 +21,17 @@ export async function updateLockHash(
 ): Promise<string> {
   const payload = await existingPayloadRoot(jupyterRoot);
   const treeSha256 = await sha256Bytes(await canonicalTreeTar(payload));
-  const lock = JSON.parse(await Deno.readTextFile(lockPath));
-  lock.payloadTreeSha256 = treeSha256;
-  await Deno.writeTextFile(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+  // Replace just the value: re-serialising the whole lock reformats 29
+  // package entries and buries a one-field change in a 150-line diff.
+  const text = await Deno.readTextFile(lockPath);
+  const updated = text.replace(
+    /("payloadTreeSha256"\s*:\s*")[0-9a-f]{64}(")/,
+    `$1${treeSha256}$2`,
+  );
+  if (updated === text && !text.includes(treeSha256)) {
+    throw new Error(`no payloadTreeSha256 field to update in ${lockPath}`);
+  }
+  await Deno.writeTextFile(lockPath, updated);
   return treeSha256;
 }
 

@@ -1,6 +1,6 @@
 {
   "yurtJupyterRev": "c30f1073c244aab166c67dc3b9b1ff1048def0d4",
-  "payloadTreeSha256": "837a7a092e3514a885d4a416aeac8459a48fd2741efdbc3aab983176d776f7c0",
+  "payloadTreeSha256": "1ccadfb96f9b2e40aa3c67c65fff7d8322ad84beba994cd0bb10cbf8bac6b8ba",
   "packages": [
     {"name":"appnope","version":"0.1.4","sha256":"68096b772ce154557270f16d42d6030ed0003d19de67ea8ea867152921589a78"},
     {"name":"asttokens","version":"3.0.1","sha256":"8db9fda9d93b0ef3b9e1d3d9d069ad57a76ae84d089a1e159430b1053db41130"},
