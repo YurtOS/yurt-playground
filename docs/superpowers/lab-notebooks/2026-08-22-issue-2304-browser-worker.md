@@ -135,3 +135,49 @@ failure is unresolved; it is not evidence that the kernel lacks Worker Threads.
 - The real Chromium Jupyter gate still failed after 240 s with no connection
   file. The remaining next-phase target is the Jupyter initialization/launch
   path, not a generic WorkerHost background-child prompt failure.
+
+## 2026-08-27 pairing evidence: the guest cannot exec a child
+
+Three configurations, one image (`playground.yurtimg` built locally 2026-08-27
+08:11, sha256 `4f34b46c…` — _not_ the pinned `5d87601b…`):
+
+1. kernel `main` (`a95c8571b`) wasm + `main` JS host,
+2. kernel `9c205ec7d` wasm (this branch's pin) + `main` JS host,
+3. kernel `9c205ec7d` wasm + `9c205ec7d` JS host, via a scratch copy of this
+   repo whose `deno.json` points at a worktree of that revision.
+
+All three fail identically, so **neither the pinned kernel wasm nor the pinned
+JS host is the variable**.
+
+The failure is child-process execution, not boot:
+
+- `deno test tests/boot_test.ts` — `echo hi` (a shell builtin) returns its
+  marker; `uname` (an exec of the busybox applet) never does and times out at 10
+  s, failing `ash session: login, owners, redirects, and touch` and
+  `a second ash boot is a fresh sandbox` at 13 s each.
+- `ash consumes Up-arrow as command history` passes in 3 s — it exercises line
+  editing and never execs.
+- `tests/python_test.ts` — both cases fail at ~63 s waiting for the Python
+  prompt, which is the same exec path.
+- Chromium (`tests/playground_e2e.ts`) fails harder and earlier:
+  `kernel_spawn_process failed: rc=-5` with an empty terminal and no console
+  output. `notebook-status: starting Jupyter` in that failure is the literal
+  default `mountNotebook` sets at mount; it is not evidence that Jupyter began.
+
+Two facts that block re-deriving the 2026-08-23 green Deno result:
+
+- `d57e90cefa08affea6def27ce3e8f22c93b9a575`, the checkout that produced it,
+  **does not exist in `yurtos-kernel`** — `git log` reports `bad object`. The
+  validation cannot be reproduced from published history.
+- Kernel wasm builds are **not byte-reproducible across machines**. Rebuilding
+  `9c205ec7d` here yields sha256 `f43bd3d6…`, while `artifacts/pins.json`
+  records `99374d14…` for that same commit. Since `pin-artifacts.ts` verifies
+  the sha and exits 2 on a mismatch, a locally rebuilt artifact can never
+  satisfy a pin recorded elsewhere — an image or wasm has to travel as a blob,
+  not as a build recipe.
+
+Next discriminator, not yet run: rebuild `playground.yurtimg` from `yurt-ports`
+at the pinned `f0fd628` with today's guest toolchain and repeat configuration 1.
+If exec still hangs, the regression is in the guest toolchain or the kernel's
+spawn path rather than in this image; if it passes, this image is stale and the
+gate needs a blob it can trust.

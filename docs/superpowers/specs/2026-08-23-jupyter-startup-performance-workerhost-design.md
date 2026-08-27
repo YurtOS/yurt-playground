@@ -3,9 +3,9 @@
 ## Goal
 
 Reduce the measured cold-start cost of the Deno Jupyter path and fix the
-browser-only background-child stall so the unchanged yurt-jupyter payload reaches
-the real Chromium acceptance test: `1+1`, NumPy array arithmetic, and clean
-shutdown.
+browser-only background-child stall so the unchanged yurt-jupyter payload
+reaches the real Chromium acceptance test: `1+1`, NumPy array arithmetic, and
+clean shutdown.
 
 ## Current evidence
 
@@ -33,8 +33,8 @@ the guest payload. Measure:
 6. `IPKernelApp.initialize()` and connection-file publication.
 
 Record cold and warm runs. If the dominant cost is guest filesystem traversal,
-count the relevant `stat`, `open`, `read`, and path-resolution operations. If the
-dominant cost is process-module compilation or Worker startup, measure those
+count the relevant `stat`, `open`, `read`, and path-resolution operations. If
+the dominant cost is process-module compilation or Worker startup, measure those
 boundaries separately. Optimize only the measured dominant path, preserving the
 unchanged yurt-jupyter payload and the shared-VFS contract.
 
