@@ -18,9 +18,18 @@ function kernelRoot(): string {
   );
 }
 
-export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
-  const kernelPath = kernel;
-  const importMap = {
+/**
+ * The import map is written to public/, so a relative kernel root would resolve
+ * against public/ rather than the repo root. Resolve it here, once, for every
+ * caller — the e2e entry points pass the raw YURT_KERNEL_ROOT, and CI sets it
+ * to ../yurtos-kernel.
+ */
+export function kernelImportMap(
+  kernelRootInput: string,
+): { kernelPath: string; imports: Record<string, string> } {
+  const kernelPath = resolveKernelRoot(kernelRootInput);
+  return {
+    kernelPath,
     imports: {
       "@yurt/kernel-host-interface-js":
         `${kernelPath}/packages/kernel-host-interface-js/mod.ts`,
@@ -30,6 +39,11 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
       fzstd: "npm:fzstd@0.1.1",
     },
   };
+}
+
+export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
+  const { kernelPath, imports } = kernelImportMap(kernel);
+  const importMap = { imports };
   const importMapPath = join(repoRoot, "public/import-map.json");
   await Deno.writeTextFile(importMapPath, JSON.stringify(importMap, null, 2));
   await bundle(kernelPath, {
@@ -52,7 +66,7 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
       "self.location.href",
     ),
   );
-  await bundle(kernel, {
+  await bundle(kernelPath, {
     entry: join(
       kernelPath,
       "packages/kernel-host-interface-js/kernel-host-interface/worker_bootstrap.ts",
