@@ -113,7 +113,7 @@ Deno.test("deployment workflow publishes an isolated static site", async () => {
   assertEquals(/actions\/setup-python@v\d+/.test(workflow), true);
   for (
     const value of [
-      'python-version: "3.14"',
+      'python-version: "3.14.0"',
       "HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}",
       "scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only",
       "dist",

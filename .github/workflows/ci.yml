@@ -116,47 +116,34 @@ jobs:
       - uses: actions/setup-python@v7
         id: host-python
         with:
-          python-version: "3.14"
+          # Exact, not "3.14": the payload tree hash in
+          # artifacts/jupyter-requirements.lock is only reproducible from the
+          # interpreter that produced it — pip writes interpreter-dependent
+          # dist-info — and a floating patch silently breaks it.
+          python-version: "3.14.0"
           architecture: x64
-      # Every input below is pinned to a revision, so the outputs are the same
-      # on every run. Building them each time cost 385s for pip alone; these
-      # caches are keyed on exactly what the output depends on.
-      - name: Cache the locked Jupyter pure-Python input
-        id: jupyter-input
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/yurt-jupyter-site-py
-          key: jupyter-site-py-${{ runner.os }}-py${{ steps.host-python.outputs.python-version }}-${{ hashFiles('playground/artifacts/jupyter-requirements.lock') }}
-      - name: Build locked Jupyter pure-Python input
-        if: steps.jupyter-input.outputs.cache-hit != 'true'
+      # The staged payload is not reproducible — pip resolves build backends
+      # from PyPI at build time, and five builds with identical pins produced
+      # five different trees — so it is published once and fetched, never
+      # rebuilt here. Regenerate with the "Regenerate Jupyter payload"
+      # workflow, which publishes to yurt-packages.
+      - name: Install the Jupyter payload from its release
         working-directory: playground
         env:
-          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
-        run: |
-          rm -rf "$RUNNER_TEMP/yurt-jupyter-site-py"
-          mkdir -p "$RUNNER_TEMP/yurt-jupyter-site-py"
-          mapfile -t packages < <(jq -r '.packages[] | select(.name != "pyzmq") | "\(.name)==\(.version)"' artifacts/jupyter-requirements.lock)
-          "$HOST_PYTHON" -m pip install --no-binary=:all: --target "$RUNNER_TEMP/yurt-jupyter-site-py" "${packages[@]}"
-          find "$RUNNER_TEMP/yurt-jupyter-site-py" -type f \( -name '*.so' -o -name '*.dylib' -o -name '*.pyd' \) -delete
-          rm -rf "$RUNNER_TEMP/yurt-jupyter-site-py/zmq" "$RUNNER_TEMP/yurt-jupyter-site-py"/pyzmq-*.dist-info "$RUNNER_TEMP/yurt-jupyter-site-py/psutil"
-      # Staging reads the yurt-jupyter checkout, so it runs on a cache hit too.
-      - name: Stage the locked Jupyter site-packages
-        working-directory: playground
-        env:
-          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
-        run: |
-          JUPYTER_SITE_PY="$RUNNER_TEMP/yurt-jupyter-site-py" ../yurt-jupyter/scripts/stage-jupyter-site-packages.sh
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          YURT_JUPYTER_ROOT: ../yurt-jupyter
+        run: scripts/install-jupyter-payload.sh
+      # kernel.wasm is a pure function of the pinned kernel revision and the
+      # toolchain that builds it.
       - name: Materialize locked Jupyter payload
         working-directory: playground
         env:
           HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
           YURT_JUPYTER_ROOT: ../yurt-jupyter
         run: deno run --allow-read --allow-write --allow-env --allow-run scripts/materialize-jupyter.ts
-      # kernel.wasm is a pure function of the pinned kernel revision and the
-      # toolchain that builds it.
-      - name: Cache the pinned kernel wasm
+      - name: Restore the pinned kernel wasm
         id: kernel-wasm
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: yurtos-kernel/target/kernel-wasm/release/yurt_kernel.wasm
           key: kernel-wasm-${{ runner.os }}-${{ steps.pins.outputs.kernel_rev }}-rust1.97.1
@@ -164,11 +151,17 @@ jobs:
         if: steps.kernel-wasm.outputs.cache-hit != 'true'
         working-directory: yurtos-kernel
         run: scripts/build-kernel-wasm.sh
+      - name: Save the pinned kernel wasm
+        if: steps.kernel-wasm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: yurtos-kernel/target/kernel-wasm/release/yurt_kernel.wasm
+          key: ${{ steps.kernel-wasm.outputs.cache-primary-key }}
       # The image is a function of the ports recipes, the kernel that builds the
       # guests, and the Jupyter payload staged into it.
-      - name: Cache the pinned playground image
+      - name: Restore the pinned playground image
         id: playground-image
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: yurt-ports/ports/playground-image/build/dist/playground.yurtimg
           key: playground-image-${{ runner.os }}-${{ steps.pins.outputs.ports_rev }}-${{ steps.pins.outputs.kernel_rev }}-${{ hashFiles('playground/artifacts/jupyter-requirements.lock') }}
@@ -182,6 +175,12 @@ jobs:
         run: |
           scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only
           ports/playground-image/scripts/package.sh
+      - name: Save the pinned playground image
+        if: steps.playground-image.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: yurt-ports/ports/playground-image/build/dist/playground.yurtimg
+          key: ${{ steps.playground-image.outputs.cache-primary-key }}
       - name: check
         working-directory: playground
         run: deno check "**/*.ts"

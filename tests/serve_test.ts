@@ -25,8 +25,8 @@ Deno.test("relative YURT_KERNEL_ROOT resolves from the repository root", () => {
 
 Deno.test("the bundle import map resolves a relative kernel root", () => {
   // CI passes YURT_KERNEL_ROOT=../yurtos-kernel. A relative specifier in
-  // public/import-map.json resolves against public/, not the repo root, so
-  // it has to be absolute by the time it is written.
+  // public/import-map.json resolves against public/, not the repo root, so it
+  // has to be absolute by the time it is written.
   const { imports } = kernelImportMap("../yurtos-kernel");
   for (const key of ["@yurt/kernel-host-interface-js", "@yurt/tar-image"]) {
     const specifier = imports[key];

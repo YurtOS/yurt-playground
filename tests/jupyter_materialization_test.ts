@@ -3,16 +3,13 @@ import { join } from "node:path";
 import { canonicalTreeTar } from "../scripts/canonical-tree-tar.ts";
 import { materializeJupyter } from "../scripts/materialize-jupyter.ts";
 import { sha256Bytes } from "../scripts/materialize-jupyter.ts";
+import { updateLockHash } from "../scripts/update-jupyter-lock-hash.ts";
 
 const REV = "c30f1073c244aab166c67dc3b9b1ff1048def0d4";
 const VALID_LOCK = JSON.stringify({
   yurtJupyterRev: REV,
   payloadTreeSha256: "0".repeat(64),
-  packages: [{
-    name: "example",
-    version: "1.0.0",
-    sha256: "0".repeat(64),
-  }],
+  packages: [{ name: "example", version: "1.0.0" }],
 });
 
 async function withTempDir<T>(fn: (root: string) => Promise<T>): Promise<T> {
@@ -23,6 +20,32 @@ async function withTempDir<T>(fn: (root: string) => Promise<T>): Promise<T> {
     await Deno.remove(root, { recursive: true });
   }
 }
+
+Deno.test("the lock hash generator writes the staged tree's hash", async () => {
+  await withTempDir(async (root) => {
+    const lockPath = `${root}/requirements.lock`;
+    await Deno.writeTextFile(lockPath, VALID_LOCK);
+    const stage = `${root}/yurt-jupyter/stage`;
+    const site = `${stage}/usr/local/lib/python3.14/site-packages`;
+    // The payload still has to carry the package the lock names: the count and
+    // version checks survive, only the per-package hash is gone.
+    await Deno.mkdir(`${site}/example-1.0.0.dist-info`, { recursive: true });
+    await Deno.writeTextFile(
+      `${site}/example-1.0.0.dist-info/METADATA`,
+      "Name: example\nVersion: 1.0.0\n",
+    );
+    await Deno.writeTextFile(`${site}/ipykernel.py`, "x");
+    const written = await updateLockHash(lockPath, `${root}/yurt-jupyter`);
+    const expected = await sha256Bytes(await canonicalTreeTar(stage));
+    assertEquals(written, expected);
+    const lock = JSON.parse(await Deno.readTextFile(lockPath));
+    assertEquals(lock.payloadTreeSha256, expected);
+    // The package manifest survives untouched: only the tree hash moves.
+    assertEquals(lock.packages[0].version, "1.0.0");
+    assertEquals(lock.packages[0].sha256, undefined);
+    assertEquals(lock.packages.length, JSON.parse(VALID_LOCK).packages.length);
+  });
+});
 
 Deno.test("materializer rejects a missing lock file", async () => {
   await withTempDir(async (root) => {
@@ -144,6 +167,52 @@ Deno.test("materializer rejects duplicate compiled-package trees", async () => {
   });
 });
 
+Deno.test("materializer allows a nested path merely named psutil", async () => {
+  // The real payload carries two of these: jedi ships typeshed stubs under
+  // .../jedi/third_party/typeshed/stubs/psutil/, and the staging script
+  // deliberately installs usr/share/yurt-jupyter/psutil.py as the shim that
+  // shadows the guest package. Neither duplicates a site-packages module.
+  await withTempDir(async (root) => {
+    await Deno.writeTextFile(`${root}/requirements.lock`, VALID_LOCK);
+    await Deno.mkdir(`${root}/yurt-jupyter`, { recursive: true });
+    await Deno.writeTextFile(
+      `${root}/yurt-jupyter/REVISION`,
+      "c30f1073c244aab166c67dc3b9b1ff1048def0d4\n",
+    );
+    const site =
+      `${root}/yurt-jupyter/stage/usr/local/lib/python3.14/site-packages`;
+    await Deno.mkdir(
+      `${site}/jedi/third_party/typeshed/stubs/psutil/psutil`,
+      { recursive: true },
+    );
+    await Deno.writeTextFile(
+      `${site}/jedi/third_party/typeshed/stubs/psutil/psutil/__init__.pyi`,
+      "",
+    );
+    await Deno.mkdir(`${root}/yurt-jupyter/stage/usr/share/yurt-jupyter`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      `${root}/yurt-jupyter/stage/usr/share/yurt-jupyter/psutil.py`,
+      "",
+    );
+    const fakePython = `${root}/python3.14`;
+    await Deno.writeTextFile(
+      fakePython,
+      '#!/bin/sh\nif [ "$1" = "-c" ]; then echo "cpython (3, 14, 0) x86_64"; fi\n',
+    );
+    await Deno.chmod(fakePython, 0o755);
+    const failure = await materializeJupyter({
+      repoRoot: root,
+      lockPath: `${root}/requirements.lock`,
+      python: fakePython,
+      outputDir: `${root}/out`,
+    }).then(() => undefined, (error: unknown) => String(error));
+    // It still fails on the lock hashes; it must not fail on psutil.
+    assertEquals(failure?.includes("forbidden package"), false);
+  });
+});
+
 Deno.test("materializer copies only a payload matching every lock hash", async () => {
   await withTempDir(async (root) => {
     const stage = join(root, "yurt-jupyter/stage");
@@ -162,7 +231,6 @@ Deno.test("materializer copies only a payload matching every lock hash", async (
     });
     await Deno.writeTextFile(launcher, "#!/usr/bin/env python3\n");
     await Deno.chmod(launcher, 0o755);
-    const packageSha256 = await sha256Bytes(await canonicalTreeTar(dist));
     const payloadTreeSha256 = await sha256Bytes(await canonicalTreeTar(stage));
     await Deno.writeTextFile(join(root, "yurt-jupyter/REVISION"), `${REV}\n`);
     await Deno.writeTextFile(
@@ -170,11 +238,7 @@ Deno.test("materializer copies only a payload matching every lock hash", async (
       JSON.stringify({
         yurtJupyterRev: REV,
         payloadTreeSha256,
-        packages: [{
-          name: "example",
-          version: "1.0.0",
-          sha256: packageSha256,
-        }],
+        packages: [{ name: "example", version: "1.0.0" }],
       }),
     );
     const python = join(root, "python3.14");

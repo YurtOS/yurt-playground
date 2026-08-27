@@ -19,9 +19,10 @@ function kernelRoot(): string {
 }
 
 /**
- * The import map is written to public/, so a relative kernel root would
- * resolve against public/ rather than the repo root. Resolve it here, once,
- * for every caller — the e2e entry points pass the raw YURT_KERNEL_ROOT.
+ * The import map is written to public/, so a relative kernel root would resolve
+ * against public/ rather than the repo root. Resolve it here, once, for every
+ * caller — the e2e entry points pass the raw YURT_KERNEL_ROOT, and CI sets it
+ * to ../yurtos-kernel.
  */
 export function kernelImportMap(
   kernelRootInput: string,

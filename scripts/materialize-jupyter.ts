@@ -18,7 +18,7 @@ export type MaterializedJupyter = {
 type Lock = {
   yurtJupyterRev: string;
   payloadTreeSha256: string;
-  packages: Array<{ name: string; version: string; sha256: string }>;
+  packages: Array<{ name: string; version: string }>;
 };
 
 const YURT_JUPYTER_REV = "c30f1073c244aab166c67dc3b9b1ff1048def0d4";
@@ -87,7 +87,6 @@ async function readLock(path: string): Promise<Lock> {
       if (
         typeof packagePin.name !== "string" ||
         typeof packagePin.version !== "string" ||
-        !/^[0-9a-f]{64}$/.test(packagePin.sha256) ||
         names.has(packagePin.name.toLowerCase())
       ) {
         throw new Error("invalid package lock entry");
@@ -104,7 +103,10 @@ async function verifyLockedPayload(root: string, lock: Lock): Promise<void> {
   const actualTreeSha256 = await sha256Bytes(await canonicalTreeTar(root));
   if (actualTreeSha256 !== lock.payloadTreeSha256) {
     throw new Error(
-      `Jupyter payload tree hash mismatch: got ${actualTreeSha256}, lock ${lock.payloadTreeSha256}`,
+      `Jupyter payload tree hash mismatch: got ${actualTreeSha256}, ` +
+        `lock ${lock.payloadTreeSha256}. The lock hashes the staged tree, which ` +
+        `is only reproducible from the interpreter that built it — pip writes ` +
+        `interpreter-dependent dist-info, so check the host Python patch.`,
     );
   }
   const metadata = new Map<string, { version: string; root: string }>();
@@ -134,14 +136,6 @@ async function verifyLockedPayload(root: string, lock: Lock): Promise<void> {
     if (actual.version !== packagePin.version) {
       throw new Error(
         `locked package version mismatch for ${packagePin.name}: got ${actual.version}, lock ${packagePin.version}`,
-      );
-    }
-    const actualSha256 = await sha256Bytes(
-      await canonicalTreeTar(actual.root),
-    );
-    if (actualSha256 !== packagePin.sha256) {
-      throw new Error(
-        `locked package hash mismatch for ${packagePin.name}: got ${actualSha256}, lock ${packagePin.sha256}`,
       );
     }
   }
@@ -203,7 +197,7 @@ function findJupyterRoot(repoRoot: string): string {
   throw new Error("yurt-jupyter checkout is missing");
 }
 
-async function existingPayloadRoot(root: string): Promise<string> {
+export async function existingPayloadRoot(root: string): Promise<string> {
   for (const candidate of [join(root, "stage"), join(root, "site-packages")]) {
     try {
       if ((await Deno.stat(candidate)).isDirectory) return candidate;
@@ -214,6 +208,8 @@ async function existingPayloadRoot(root: string): Promise<string> {
   throw new Error("yurt-jupyter staged payload is missing");
 }
 
+const FORBIDDEN_PACKAGES = /^(zmq|psutil)(-.*\.dist-info)?$/;
+
 function rejectForbiddenPackages(root: string): void {
   for (const entry of walk(root)) {
     if (entry.endsWith(".so") || entry.endsWith(".dylib")) {
@@ -221,10 +217,16 @@ function rejectForbiddenPackages(root: string): void {
         `yurt-jupyter payload contains compiled extension ${entry}`,
       );
     }
-    const name = basename(entry);
-    if (name === "zmq" || name === "psutil") {
+    // Only an importable top-level module duplicates what the guest provides.
+    // Matching the basename at any depth also rejected jedi's typeshed stubs
+    // (.../jedi/third_party/typeshed/stubs/psutil) and the psutil.py shim the
+    // staging script installs on purpose.
+    if (
+      basename(dirname(entry)) === "site-packages" &&
+      FORBIDDEN_PACKAGES.test(basename(entry))
+    ) {
       throw new Error(
-        `yurt-jupyter payload duplicates forbidden package ${name}`,
+        `yurt-jupyter payload duplicates forbidden package ${entry}`,
       );
     }
   }
