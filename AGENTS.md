@@ -40,6 +40,31 @@ Kernel primitives stay in `yurtos-kernel`. Image composition stays in
 - Pins are git SHA + sha256 in `artifacts/pins.json`. Blobs (`*.wasm`,
   `*.yurtimg`) are gitignored.
 
+## KISS: the simplest thing that works
+
+Prefer the simplest implementation that satisfies the plan and passes the gates.
+Complexity has to be earned by a locked decision, a failing test, or a measured
+number — never by anticipation.
+
+- **Solve the case in front of you.** No configuration knobs, options bags, or
+  abstraction layers added for a caller that doesn't exist yet. This is one page
+  booting one sandbox; when a second consumer appears, generalize then.
+- **Fewest moving parts.** No framework, bundler, or state-management layer
+  where a module and the DOM will do. Prefer a direct call into the kernel's JS
+  host over a wrapper of our own, and one more function over one more module —
+  unless the larger structure is what makes the code readable.
+- **No defensive paths for states that cannot occur.** If an invariant holds,
+  throw on its violation instead of inventing a recovery path nothing exercises.
+  A silent `catch` that hides a broken boot is worse than a loud failure.
+- **Optimize on evidence.** Caching, prefetching, and worker tricks require a
+  measurement that demonstrates the win.
+- **Simplify before review.** Delete the debug flag, the dead branch, and the
+  helper that ended up with one caller. Reviewers read the diff you leave, so a
+  smaller one is a faster merge.
+
+Simple is not terse or clever: clear names, obvious control flow, and a comment
+that says _why_ beat a compact expression that has to be decoded.
+
 ## The bar: CI green = done
 
 `.github/workflows/ci.yml` is the gate: `deno fmt --check`, `deno lint`,
