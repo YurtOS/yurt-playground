@@ -185,7 +185,10 @@ jobs:
         if: steps.playground-image.outputs.cache-hit != 'true'
         working-directory: playground
         env:
-          GH_TOKEN: ${{ github.token }}
+          # yurt-packages is private, and the default github.token is scoped to
+          # this repo only -- it 404s there. Same PAT the Jupyter payload fetch
+          # above already uses against the same release repo.
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
         run: |
           scripts/install-playground-image.sh \
             "${{ github.workspace }}/yurt-ports/ports/playground-image/build/dist/playground.yurtimg" \

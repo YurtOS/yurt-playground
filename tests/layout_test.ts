@@ -52,6 +52,25 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
     workflow.includes("jq -r .image.sha256 artifacts/pins.json"),
     true,
   );
+  // The image fetch needs the cross-repo PAT: yurt-packages is private and the
+  // default github.token 404s there. Assert the fetch step does not fall back
+  // to github.token -- CI failed exactly that way once.
+  const fetchStep = workflow.slice(
+    workflow.indexOf("- name: Fetch pinned playground image"),
+    workflow.indexOf("- name: Save the pinned playground image"),
+  );
+  assertEquals(
+    fetchStep.includes("GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}"),
+    true,
+    "the image fetch must use the PAT that can read the private release repo",
+  );
+  // Match the assignment, not the word: the step's comment explains why
+  // github.token is wrong, and prose must not fail the test.
+  assertEquals(
+    /GH_TOKEN:\s*\$\{\{\s*github\.token/.test(fetchStep),
+    false,
+    "github.token cannot read the private release repo",
+  );
   assertEquals(
     workflow.includes("scripts/build-all-ports.sh"),
     false,

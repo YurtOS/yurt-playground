@@ -29,8 +29,16 @@ cache=$(mktemp -d "${TMPDIR:-/tmp}/yurt-playground-image.XXXXXX")
 trap 'rm -rf "$cache"' EXIT HUP INT TERM
 
 if [[ -z "$tag" ]]; then
-  tag=$(gh api "repos/$repo/releases" --paginate \
-    --jq "[.[] | select(.draft | not) | select(.tag_name | startswith(\"$pattern\"))] | first | .tag_name")
+  # A bare "gh: Not Found (HTTP 404)" here reads as a missing release but is
+  # almost always a token that cannot see this private repo, so say both.
+  if ! releases=$(gh api "repos/$repo/releases" --paginate \
+    --jq "[.[] | select(.draft | not) | select(.tag_name | startswith(\"$pattern\"))] | first | .tag_name" 2>&1); then
+    echo "install-playground-image: cannot list releases in $repo" >&2
+    echo "  $releases" >&2
+    echo "  $repo is private; GH_TOKEN must be a token scoped to it" >&2
+    exit 1
+  fi
+  tag=$releases
   [[ -n "$tag" && "$tag" != "null" ]] || {
     echo "no $pattern release in $repo" >&2
     exit 1
