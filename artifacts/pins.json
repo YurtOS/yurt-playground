@@ -4,7 +4,12 @@
     "rev": "9c205ec7d7b37bc7bdc92912e7b230788fb7a3f4",
     "build": "scripts/build-kernel-wasm.sh",
     "path": "target/kernel-wasm/release/yurt_kernel.wasm",
-    "sha256": "99374d14da39829ed2c5688fbcad989281451ef1d95060cd75fae960331cdf7f"
+    "sha256": "b0e161a098d7287ceaef737197614061e3a2a12722d9d97bec8712883ea0a2b4",
+    "release": {
+      "repo": "YurtOS/yurt-packages",
+      "tag": "kernel-wasm-v0.0.1",
+      "asset": "kernel-wasm.wasm"
+    }
   },
   "image": {
     "repo": "YurtOS/yurt-ports",

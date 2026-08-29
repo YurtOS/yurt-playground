@@ -15,12 +15,6 @@ name: Publish kernel wasm
 
 on:
   workflow_dispatch:
-  # TEMPORARY: workflow_dispatch only works once this file is on the default
-  # branch, and the release has to exist before CI can fetch it. Removed in the
-  # commit that records the published sha.
-  pull_request:
-    paths:
-      - .github/workflows/publish-kernel-wasm.yml
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
