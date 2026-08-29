@@ -8,9 +8,14 @@
   },
   "image": {
     "repo": "YurtOS/yurt-ports",
-    "rev": "f0fd62824a680fd929b28aae2eb6d67306214203",
+    "rev": "29f7f8be5139d0a06fe410cdcec1665e753d9038",
     "build": "ports/playground-image/scripts/package.sh",
     "path": "ports/playground-image/build/dist/playground.yurtimg",
-    "sha256": "5d87601b517326495c3ab8933faac97e50db4add74f0edac166e6b7811b6a822"
+    "sha256": "6352e5b5f1a8df836d3ab283441c1ab7fb6f3959412fe88f59b314b5ec9cf814",
+    "release": {
+      "repo": "YurtOS/yurt-packages",
+      "tag": "playground-image-v0.0.2",
+      "asset": "playground-image.yurtimg"
+    }
   }
 }

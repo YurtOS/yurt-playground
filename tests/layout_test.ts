@@ -27,15 +27,35 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
     true,
   );
   assertEquals(workflow.includes("scripts/materialize-jupyter.ts"), true);
-  assertEquals(workflow.includes("YURT_JUPYTER_STAGE"), true);
+  // YURT_JUPYTER_STAGE is deliberately absent now. It fed the image BUILD,
+  // staging the locked payload into the rootfs; the workflow fetches a
+  // published image that already carries it. Asserting its absence keeps the
+  // two from silently drifting back apart -- a stage variable reappearing here
+  // would mean something started rebuilding the image again.
+  assertEquals(
+    workflow.includes("YURT_JUPYTER_STAGE"),
+    false,
+    "the fetched image already carries the locked payload; nothing should stage it",
+  );
   assertEquals(workflow.includes("ports_rev"), true);
   assertEquals(workflow.includes("scripts/build-kernel-wasm.sh"), true);
   assertEquals(workflow.includes("wasm32-wasip1-threads"), true);
+  // The image is FETCHED, not rebuilt. Building it ran the pinned kernel's
+  // `make -C abi lib`, which needs a wasi-sdk this workflow never installed, so
+  // every cache miss failed. Pin the fetch and the sha check rather than the
+  // build command this replaced.
   assertEquals(
-    workflow.includes(
-      "scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only",
-    ),
+    workflow.includes("scripts/install-playground-image.sh"),
     true,
+  );
+  assertEquals(
+    workflow.includes("jq -r .image.sha256 artifacts/pins.json"),
+    true,
+  );
+  assertEquals(
+    workflow.includes("scripts/build-all-ports.sh"),
+    false,
+    "playground CI must not rebuild ports; it consumes the published image",
   );
   assertEquals(workflow.includes("YURT_PORTS_ROOT: ../yurt-ports"), true);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
