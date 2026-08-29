@@ -78,6 +78,7 @@ jobs:
         working-directory: playground
         run: |
           echo "kernel_rev=$(jq -r .kernelWasm.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
+          echo "kernel_sha=$(jq -r .kernelWasm.sha256 artifacts/pins.json)" >> "$GITHUB_OUTPUT"
           echo "ports_rev=$(jq -r .image.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
           echo "image_sha=$(jq -r .image.sha256 artifacts/pins.json)" >> "$GITHUB_OUTPUT"
           echo "jupyter_rev=$(jq -r .yurtJupyterRev artifacts/jupyter-requirements.lock)" >> "$GITHUB_OUTPUT"
@@ -147,7 +148,11 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: yurtos-kernel/target/kernel-wasm/release/yurt_kernel.wasm
-          key: kernel-wasm-${{ runner.os }}-${{ steps.pins.outputs.kernel_rev }}-rust1.97.1
+          # The pinned sha is part of the key: the cached blob must be the blob the
+          # pin names. Keyed on the rev alone, a cache entry whose bytes do not match
+          # the pin is served forever and the rebuild never runs -- the job then fails
+          # in the resolver instead, which reads as a bad pin rather than a bad cache.
+          key: kernel-wasm-${{ runner.os }}-${{ steps.pins.outputs.kernel_rev }}-${{ steps.pins.outputs.kernel_sha }}-rust1.97.1
       - name: Build pinned kernel wasm
         if: steps.kernel-wasm.outputs.cache-hit != 'true'
         working-directory: yurtos-kernel
