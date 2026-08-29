@@ -104,9 +104,9 @@ jobs:
           # dist-info — and a floating patch silently breaks it.
           python-version: "3.14.0"
           architecture: x64
-      # The staged payload is not reproducible — pip resolves build backends from
-      # PyPI at build time — so the deploy fetches the same published bytes CI
-      # tested rather than re-deriving a tree no test ever saw.
+      # Same rule as ci.yml: the staged payload is not reproducible, so it is
+      # published once and fetched. Rebuilding it here would re-derive a tree
+      # the lock's payloadTreeSha256 cannot match.
       - name: Install the Jupyter payload from its release
         working-directory: playground
         env:
