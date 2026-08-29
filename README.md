@@ -26,14 +26,29 @@ Plan:
 
 ## Run locally
 
-Sibling checkouts, kernel wasm already built, playground image already packaged:
+The two blobs the page boots are published artifacts, not local builds. Fetch
+the pair the pins name, then serve:
 
 ```bash
+scripts/install-kernel-wasm.sh \
+  ../yurtos-kernel/target/kernel-wasm/release/yurt_kernel.wasm \
+  "$(jq -r .kernelWasm.sha256 artifacts/pins.json)"
+scripts/install-playground-image.sh \
+  ../yurt-ports/ports/playground-image/build/dist/playground.yurtimg \
+  "$(jq -r .image.sha256 artifacts/pins.json)"
 YURT_KERNEL_ROOT=../yurtos-kernel \
 YURT_PORTS_ROOT=../yurt-ports \
   deno task pin
 deno task serve
 ```
+
+Both scripts need `gh` authenticated against the private `yurt-packages`.
+
+A kernel wasm you built yourself will not satisfy the pin, and that is not a
+bug: the build is deterministic on a given host but not across hosts, so the
+recorded sha only ever matches the machine that produced it. To move the pin to
+a different kernel rev, run the "Publish kernel wasm" workflow and record the
+sha it prints — see the header of `.github/workflows/publish-kernel-wasm.yml`.
 
 Then open `http://127.0.0.1:4173/`. The server sets
 `Cross-Origin-Opener-Policy: same-origin` and
@@ -42,10 +57,10 @@ Reload is a fresh sandbox.
 
 ## Deploy
 
-The GitHub Actions workflow builds the pinned kernel and playground image,
-bundles the static page, and deploys `dist/` to Cloudflare Pages. Cloudflare
-Pages is used for the runtime because the playground needs COOP/COEP response
-headers; a plain `github.io` site cannot provide them.
+The GitHub Actions workflow fetches the pinned kernel wasm, playground image,
+and Jupyter payload, bundles the static page, and deploys `dist/` to Cloudflare
+Pages. Cloudflare Pages is used for the runtime because the playground needs
+COOP/COEP response headers; a plain `github.io` site cannot provide them.
 
 Create a Cloudflare Pages project and add these repository secrets:
 
