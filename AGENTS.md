@@ -39,6 +39,14 @@ Kernel primitives stay in `yurtos-kernel`. Image composition stays in
   Pages (or equivalent) can.
 - Pins are git SHA + sha256 in `artifacts/pins.json`. Blobs (`*.wasm`,
   `*.yurtimg`) are gitignored.
+- Every pinned blob is **fetched from a published release, never rebuilt** by a
+  consumer: kernel wasm, playground image, and Jupyter payload all come from
+  `yurt-packages` via `scripts/install-*.sh`, which verify the pinned sha before
+  moving the file into place. None of the three is reproducible by a consumer —
+  the payload resolves build backends from PyPI at build time, the image needs a
+  wasi-sdk CI does not install, and the kernel wasm is deterministic on a given
+  host but not across hosts. To move a pin, run the workflow that publishes that
+  artifact and record the sha it prints.
 
 ## KISS: the simplest thing that works
 
