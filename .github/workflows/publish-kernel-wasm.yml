@@ -1,0 +1,69 @@
+name: Publish kernel wasm
+
+# The kernel wasm is deterministic on a given host but NOT reproducible across
+# hosts: artifacts/pins.json carried 99374d14..., built on a maintainer's
+# machine, while ubuntu-latest built the same pinned rev twice and produced
+# b0e161a0... both times. Every consumer that rebuilt it failed the pin check.
+# So it is built deliberately, here, and published once — CI and the deploy
+# consume those bytes rather than re-deriving them.
+#
+# Run this when artifacts/pins.json changes .kernelWasm.rev. Then:
+#   1. download the kernel-wasm artifact from this run
+#   2. gh release create <tag> --repo YurtOS/yurt-packages kernel-wasm.wasm{,.sha256}
+#   3. record the printed sha256 as .kernelWasm.sha256 in artifacts/pins.json,
+#      and the tag under .kernelWasm.release.tag
+
+on:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: build and hash the kernel wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: playground
+      - name: Read the kernel pin
+        id: pins
+        working-directory: playground
+        run: echo "kernel_rev=$(jq -r .kernelWasm.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          repository: YurtOS/yurtos-kernel
+          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          ref: ${{ steps.pins.outputs.kernel_rev }}
+          path: yurtos-kernel
+      # Must track yurtos-kernel/rust-toolchain.toml (1.97.1): this action
+      # installs the targets and rust-src for the toolchain it selects, and the
+      # kernel wasm build then switches to the version that file pins. Bumping
+      # it independently installs them for the wrong toolchain — and @1.100.0
+      # supplies no default toolchain at all, so the step fails outright.
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: wasm32-wasip1,wasm32-wasip1-threads
+          components: rust-src
+      - name: Build the pinned kernel wasm
+        working-directory: yurtos-kernel
+        run: scripts/build-kernel-wasm.sh
+      - name: Name and hash it
+        run: |
+          set -euo pipefail
+          src=yurtos-kernel/target/kernel-wasm/release/yurt_kernel.wasm
+          # Published under the tag prefix install-kernel-wasm.sh resolves, not
+          # under the in-tree build name.
+          cp "$src" "$RUNNER_TEMP/kernel-wasm.wasm"
+          sha256sum "$RUNNER_TEMP/kernel-wasm.wasm" | cut -d' ' -f1 \
+            > "$RUNNER_TEMP/kernel-wasm.wasm.sha256"
+          echo "kernelWasm.sha256 for artifacts/pins.json:"
+          cat "$RUNNER_TEMP/kernel-wasm.wasm.sha256"
+      - name: Upload the kernel wasm
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-wasm
+          path: |
+            ${{ runner.temp }}/kernel-wasm.wasm
+            ${{ runner.temp }}/kernel-wasm.wasm.sha256

@@ -38,8 +38,34 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
     "the fetched image already carries the locked payload; nothing should stage it",
   );
   assertEquals(workflow.includes("ports_rev"), true);
-  assertEquals(workflow.includes("scripts/build-kernel-wasm.sh"), true);
-  assertEquals(workflow.includes("wasm32-wasip1-threads"), true);
+  // The kernel wasm is FETCHED, not rebuilt. Its build is deterministic on a
+  // given host but not across hosts: the pin recorded a maintainer's bytes and
+  // ubuntu-latest reproducibly built different ones, so every run failed the pin
+  // check. Assert the fetch and the sha check rather than the build it replaced.
+  assertEquals(workflow.includes("scripts/install-kernel-wasm.sh"), true);
+  assertEquals(
+    workflow.includes("jq -r .kernelWasm.sha256 artifacts/pins.json"),
+    true,
+  );
+  assertEquals(
+    workflow.includes("scripts/build-kernel-wasm.sh"),
+    false,
+    "playground CI must not rebuild the kernel; it consumes the published wasm",
+  );
+  const kernelFetch = workflow.slice(
+    workflow.indexOf("- name: Fetch pinned kernel wasm"),
+    workflow.indexOf("- name: Save the pinned kernel wasm"),
+  );
+  assertEquals(
+    kernelFetch.includes("GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}"),
+    true,
+    "the kernel wasm fetch must use the PAT that can read the private release repo",
+  );
+  assertEquals(
+    /GH_TOKEN:\s*\$\{\{\s*github\.token/.test(kernelFetch),
+    false,
+    "github.token cannot read the private release repo",
+  );
   // The image is FETCHED, not rebuilt. Building it ran the pinned kernel's
   // `make -C abi lib`, which needs a wasi-sdk this workflow never installed, so
   // every cache miss failed. Pin the fetch and the sha check rather than the
@@ -112,21 +138,35 @@ Deno.test("workflows authenticate every private sibling checkout", async () => {
   }
 });
 
-Deno.test("both workflows select the same Rust toolchain", async () => {
-  // The tag of dtolnay/rust-toolchain *is* the toolchain version, and it has
-  // to match yurtos-kernel/rust-toolchain.toml. Nothing in this repo can check
-  // it against the kernel, but the two workflows drifting apart is a bug we
-  // can catch: they build the same artifacts.
-  const versions = new Set<string>();
+Deno.test("only the publishing workflow builds Rust", async () => {
+  // There used to be two Rust builds here and a test that they agreed on a
+  // toolchain. Both were consumers rebuilding an artifact they could not
+  // reproduce. Now exactly one workflow builds the kernel wasm and publishes
+  // it; a toolchain reappearing in a consumer means someone started rebuilding
+  // it again, which is the failure this replaced.
   for (const file of ["ci.yml", "deploy-pages.yml"]) {
     const workflow = await Deno.readTextFile(
       new URL(`../.github/workflows/${file}`, import.meta.url),
     );
-    const match = workflow.match(/dtolnay\/rust-toolchain@(\S+)/);
-    assertEquals(match !== null, true, `${file} pins no Rust toolchain`);
-    versions.add(match![1]);
+    assertEquals(
+      /uses:\s*dtolnay\/rust-toolchain@/.test(workflow),
+      false,
+      `${file} installs a Rust toolchain; it consumes published artifacts`,
+    );
   }
-  assertEquals(versions.size, 1, `toolchains differ: ${[...versions]}`);
+  const publisher = await Deno.readTextFile(
+    new URL("../.github/workflows/publish-kernel-wasm.yml", import.meta.url),
+  );
+  // The tag of dtolnay/rust-toolchain *is* the toolchain version, and it has to
+  // match yurtos-kernel/rust-toolchain.toml. Nothing here can check it against
+  // the kernel, but an unpinned one we can catch.
+  assertEquals(
+    /uses:\s*dtolnay\/rust-toolchain@\d+\.\d+\.\d+/.test(publisher),
+    true,
+    "the publisher must pin an exact Rust toolchain",
+  );
+  assertEquals(publisher.includes("scripts/build-kernel-wasm.sh"), true);
+  assertEquals(publisher.includes("wasm32-wasip1-threads"), true);
 });
 
 Deno.test("page exposes the real notebook execution surface", async () => {
@@ -154,17 +194,37 @@ Deno.test("deployment workflow publishes an isolated static site", async () => {
     const value of [
       'python-version: "3.14.0"',
       "HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}",
-      "scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only",
       "dist",
       "_headers",
       "CLOUDFLARE_API_TOKEN",
       "CLOUDFLARE_ACCOUNT_ID",
       "CLOUDFLARE_PROJECT_NAME",
       "repository: YurtOS/yurt-jupyter",
-      "YURT_JUPYTER_STAGE",
       "scripts/materialize-jupyter.ts",
+      // The deploy ships the same three published artifacts CI tested, fetched
+      // by the same scripts. Building them here was what turned it red: the
+      // image build needs a wasi-sdk this workflow never installed.
+      "scripts/install-kernel-wasm.sh",
+      "scripts/install-playground-image.sh",
+      "scripts/install-jupyter-payload.sh",
     ]
   ) {
-    assertEquals(workflow.includes(value), true);
+    assertEquals(workflow.includes(value), true, `deploy lacks ${value}`);
+  }
+  for (
+    const value of [
+      "scripts/build-kernel-wasm.sh",
+      "scripts/build-all-ports.sh",
+      // Fed the image BUILD, staging the locked payload into the rootfs. The
+      // fetched image already carries it; a stage variable reappearing here
+      // would mean something started rebuilding the image again.
+      "YURT_JUPYTER_STAGE",
+    ]
+  ) {
+    assertEquals(
+      workflow.includes(value),
+      false,
+      `deploy still rebuilds an artifact it should fetch: ${value}`,
+    );
   }
 });

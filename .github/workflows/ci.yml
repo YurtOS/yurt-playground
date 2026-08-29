@@ -100,15 +100,9 @@ jobs:
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
           ref: ${{ steps.pins.outputs.jupyter_rev }}
           path: yurt-jupyter
-      # Must track yurtos-kernel/rust-toolchain.toml (1.97.1): this action
-      # installs the targets and rust-src for the toolchain it selects, and the
-      # kernel wasm build then switches to the version that file pins. Bumping
-      # it independently installs them for the wrong toolchain — and @1.100.0
-      # supplies no default toolchain at all, so the step fails outright.
-      - uses: dtolnay/rust-toolchain@1.97.1
-        with:
-          targets: wasm32-wasip1,wasm32-wasip1-threads
-          components: rust-src
+      # No Rust toolchain here on purpose. This job consumes published
+      # artifacts; the only Rust build left in the repo is
+      # publish-kernel-wasm.yml, which produces them.
       - uses: denoland/setup-deno@v2
         with:
           # Pinned, not v2.x: deno fmt's output changed between 2.x releases
@@ -135,8 +129,6 @@ jobs:
           GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
           YURT_JUPYTER_ROOT: ../yurt-jupyter
         run: scripts/install-jupyter-payload.sh
-      # kernel.wasm is a pure function of the pinned kernel revision and the
-      # toolchain that builds it.
       - name: Materialize locked Jupyter payload
         working-directory: playground
         env:
@@ -148,15 +140,33 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: yurtos-kernel/target/kernel-wasm/release/yurt_kernel.wasm
-          # The pinned sha is part of the key: the cached blob must be the blob the
-          # pin names. Keyed on the rev alone, a cache entry whose bytes do not match
-          # the pin is served forever and the rebuild never runs -- the job then fails
-          # in the resolver instead, which reads as a bad pin rather than a bad cache.
-          key: kernel-wasm-${{ runner.os }}-${{ steps.pins.outputs.kernel_rev }}-${{ steps.pins.outputs.kernel_sha }}-rust1.97.1
-      - name: Build pinned kernel wasm
+          # Keyed on the pinned sha, not the kernel rev: the step below fetches a
+          # published artifact, so the sha is what identifies it. Keyed on the rev,
+          # a cache entry whose bytes do not match the pin would be served forever
+          # and the fetch would never run -- the job then fails in the resolver,
+          # which reads as a bad pin rather than a bad cache.
+          key: kernel-wasm-${{ runner.os }}-${{ steps.pins.outputs.kernel_sha }}
+      # Fetched, not rebuilt. The build is deterministic on a given host but not
+      # across hosts: the pin recorded 99374d14... from a maintainer's machine,
+      # and ubuntu-latest built the same rev twice and produced b0e161a0... both
+      # times, so every CI run failed the pin check no matter how the cache was
+      # keyed. Same move as the Jupyter payload and the playground image: consume
+      # published bytes rather than re-derive them.
+      #
+      # The sha from artifacts/pins.json is passed in and checked before the wasm
+      # is moved into place, so a wrong or corrupt asset fails here rather than
+      # later as a kernel that will not instantiate.
+      - name: Fetch pinned kernel wasm
         if: steps.kernel-wasm.outputs.cache-hit != 'true'
-        working-directory: yurtos-kernel
-        run: scripts/build-kernel-wasm.sh
+        working-directory: playground
+        env:
+          # yurt-packages is private, and the default github.token is scoped to
+          # this repo only -- it 404s there.
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+        run: |
+          scripts/install-kernel-wasm.sh \
+            "${{ github.workspace }}/yurtos-kernel/target/kernel-wasm/release/yurt_kernel.wasm" \
+            "$(jq -r .kernelWasm.sha256 artifacts/pins.json)"
       - name: Save the pinned kernel wasm
         if: steps.kernel-wasm.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4

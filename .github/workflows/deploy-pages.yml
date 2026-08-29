@@ -64,7 +64,9 @@ jobs:
         working-directory: playground
         run: |
           echo "kernel_rev=$(jq -r .kernelWasm.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
+          echo "kernel_sha=$(jq -r .kernelWasm.sha256 artifacts/pins.json)" >> "$GITHUB_OUTPUT"
           echo "ports_rev=$(jq -r .image.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
+          echo "image_sha=$(jq -r .image.sha256 artifacts/pins.json)" >> "$GITHUB_OUTPUT"
           echo "jupyter_rev=$(jq -r .yurtJupyterRev artifacts/jupyter-requirements.lock)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
         with:
@@ -84,15 +86,9 @@ jobs:
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
           ref: ${{ steps.pins.outputs.jupyter_rev }}
           path: yurt-jupyter
-      # Must track yurtos-kernel/rust-toolchain.toml (1.97.1): this action
-      # installs the targets and rust-src for the toolchain it selects, and the
-      # kernel wasm build then switches to the version that file pins. Bumping
-      # it independently installs them for the wrong toolchain — and @1.100.0
-      # supplies no default toolchain at all, so the step fails outright.
-      - uses: dtolnay/rust-toolchain@1.97.1
-        with:
-          targets: wasm32-wasip1,wasm32-wasip1-threads
-          components: rust-src
+      # No Rust toolchain here on purpose. The deploy consumes the same three
+      # published artifacts CI does; the only Rust build left in the repo is
+      # publish-kernel-wasm.yml, which produces one of them.
       - uses: denoland/setup-deno@v2
         with:
           # Pinned, not v2.x: deno fmt's output changed between 2.x releases
@@ -108,36 +104,49 @@ jobs:
           # dist-info — and a floating patch silently breaks it.
           python-version: "3.14.0"
           architecture: x64
-      - name: Build locked Jupyter pure-Python input
+      # The staged payload is not reproducible — pip resolves build backends from
+      # PyPI at build time — so the deploy fetches the same published bytes CI
+      # tested rather than re-deriving a tree no test ever saw.
+      - name: Install the Jupyter payload from its release
         working-directory: playground
         env:
-          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
-        run: |
-          rm -rf "$RUNNER_TEMP/yurt-jupyter-site-py"
-          mkdir -p "$RUNNER_TEMP/yurt-jupyter-site-py"
-          mapfile -t packages < <(jq -r '.packages[] | select(.name != "pyzmq") | "\(.name)==\(.version)"' artifacts/jupyter-requirements.lock)
-          "$HOST_PYTHON" -m pip install --no-binary=:all: --target "$RUNNER_TEMP/yurt-jupyter-site-py" "${packages[@]}"
-          find "$RUNNER_TEMP/yurt-jupyter-site-py" -type f \( -name '*.so' -o -name '*.dylib' -o -name '*.pyd' \) -delete
-          rm -rf "$RUNNER_TEMP/yurt-jupyter-site-py/zmq" "$RUNNER_TEMP/yurt-jupyter-site-py"/pyzmq-*.dist-info "$RUNNER_TEMP/yurt-jupyter-site-py/psutil"
-          JUPYTER_SITE_PY="$RUNNER_TEMP/yurt-jupyter-site-py" ../yurt-jupyter/scripts/stage-jupyter-site-packages.sh
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          YURT_JUPYTER_ROOT: ../yurt-jupyter
+        run: scripts/install-jupyter-payload.sh
       - name: Materialize locked Jupyter payload
         working-directory: playground
         env:
           HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
           YURT_JUPYTER_ROOT: ../yurt-jupyter
         run: deno run --allow-read --allow-write --allow-env --allow-run scripts/materialize-jupyter.ts
-      - name: Build pinned kernel wasm
-        working-directory: yurtos-kernel
-        run: scripts/build-kernel-wasm.sh
-      - name: Materialize pinned playground image
-        working-directory: yurt-ports
+      # Fetched, not rebuilt — and for two separate reasons.
+      #
+      # The kernel wasm build is deterministic on a given host but not across
+      # hosts, so a rebuild here can never match the pin a maintainer recorded.
+      # The image build runs the pinned kernel's `make -C abi lib`, which builds
+      # musl and needs a wasi-sdk this workflow never installed; that is what
+      # turned this deploy red with "no wasi-sdk can compile for
+      # wasm32-linux-muslwali".
+      #
+      # Both shas come from artifacts/pins.json and are checked before the file
+      # is moved into place, so the deploy ships exactly the bytes CI tested.
+      - name: Fetch pinned kernel wasm
+        working-directory: playground
         env:
-          YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
-          YURT_JUPYTER_STAGE: ${{ github.workspace }}/playground/artifacts/jupyter-site-packages
-          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
+          # yurt-packages is private, and the default github.token 404s there.
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
         run: |
-          scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only
-          ports/playground-image/scripts/package.sh
+          scripts/install-kernel-wasm.sh \
+            "${{ github.workspace }}/yurtos-kernel/target/kernel-wasm/release/yurt_kernel.wasm" \
+            "${{ steps.pins.outputs.kernel_sha }}"
+      - name: Fetch pinned playground image
+        working-directory: playground
+        env:
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+        run: |
+          scripts/install-playground-image.sh \
+            "${{ github.workspace }}/yurt-ports/ports/playground-image/build/dist/playground.yurtimg" \
+            "${{ steps.pins.outputs.image_sha }}"
       - name: Pin artifacts
         working-directory: playground
         env:
