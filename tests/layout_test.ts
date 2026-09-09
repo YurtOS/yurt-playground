@@ -31,6 +31,7 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
   assertEquals(workflow.includes("YURT_PORTS_ROOT: ../yurt-ports"), true);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
   assertEquals(workflow.includes("playwright/cli.js install chromium"), true);
+  assertEquals(workflow.includes("scripts/pin-artifacts.ts"), true);
   assertEquals(workflow.includes("tests/playground_e2e.ts"), true);
   assertEquals(
     workflow.includes("if: vars.YURT_JUPYTER_E2E == 'true'"),
