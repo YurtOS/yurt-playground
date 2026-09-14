@@ -1,3 +1,4 @@
+import { guestWorkerStart } from "./guest_worker.ts";
 export const CREATE_GUEST_WORKER = "yurt-create-guest-worker";
 export const TERMINATE_GUEST_WORKER = "yurt-terminate";
 export const GUEST_WORKER_ERROR = "yurt-guest-worker-error";
@@ -84,7 +85,13 @@ export function attachGuestWorkerFactory(coordinator: Worker): void {
     const request = msg as CreateGuestWorkerMessage;
     const port = event.ports[0];
     if (port === undefined) return;
-    const guest = new Worker(request.url, request.options);
+    // WorkerHost names its bootstrap by source path (`./worker_bootstrap.ts`
+    // relative to the coordinator bundle); the page serves the bundled
+    // `/worker_bootstrap.js` instead, so a guest Worker that starts at the
+    // raw URL 404s and every spawn fails with EIO.
+    const guest = new Worker(
+      ...guestWorkerStart(request.url, self.location.origin),
+    );
     guest.onmessage = (guestEvent) => {
       port.postMessage(guestEvent.data, [...guestEvent.ports]);
     };
