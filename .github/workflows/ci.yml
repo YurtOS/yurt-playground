@@ -129,6 +129,21 @@ jobs:
       # produce, and the image needs the guest toolchain plus hours of port
       # builds. To move a pin, publish the artifact and record the sha256 the
       # release carries (see scripts/install-pinned-artifacts.sh).
+      # The Jupyter Notebook / Lab interface: JupyterLite's frontend with the
+      # Yurt kernel plugin (jupyterlite/). node builds the plugin, the host
+      # python already provisioned above builds the site. Output: public/jupyter.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: playground/jupyterlite/yurt-kernel/package-lock.json
+      - name: Build the JupyterLite site
+        working-directory: playground
+        env:
+          JUPYTERLITE_PYTHON: ${{ steps.host-python.outputs.python-path }}
+        run: |
+          "$JUPYTERLITE_PYTHON" -m pip install --disable-pip-version-check -q -r jupyterlite/requirements.txt
+          jupyterlite/build.sh
       - name: Install the pinned kernel wasm and playground image
         working-directory: playground
         env:

@@ -1,0 +1,39 @@
+{
+  "name": "@yurt/jupyterlite-yurt-kernel",
+  "version": "0.1.0",
+  "description": "JupyterLite kernel plugin that drives the real ipykernel running inside the Yurt sandbox on the page",
+  "private": true,
+  "license": "MIT",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "style": "style/index.css",
+  "files": [
+    "lib/**/*.{js,d.ts}",
+    "style/**/*.css"
+  ],
+  "scripts": {
+    "build": "tsc && jupyter labextension build .",
+    "clean": "rimraf lib yurt_jupyterlite_kernel"
+  },
+  "dependencies": {
+    "@jupyterlab/application": "^4.6.0",
+    "@jupyterlab/services": "^7.6.0",
+    "@jupyterlite/services": "^0.8.3",
+    "@lumino/signaling": "^2.1.0"
+  },
+  "devDependencies": {
+    "@jupyter/builder": "^1.2.0",
+    "rimraf": "^5.0.0",
+    "typescript": "~5.9.0"
+  },
+  "jupyterlab": {
+    "extension": true,
+    "outputDir": "yurt_jupyterlite_kernel/labextension",
+    "sharedPackages": {
+      "@jupyterlite/services": {
+        "bundled": false,
+        "singleton": true
+      }
+    }
+  }
+}

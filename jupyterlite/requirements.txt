@@ -1,0 +1,5 @@
+# Builds the JupyterLite site (jupyter lite build) and the Yurt kernel
+# labextension (jupyter labextension build). Pinned: the site is deployed
+# from CI, and the kernel plugin is compiled against these frontends.
+jupyterlite-core==0.8.3
+jupyterlab==4.6.3

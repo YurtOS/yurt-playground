@@ -1,0 +1,17 @@
+{
+  "LiteBuildConfig": {
+    "apps": [
+      "lab",
+      "notebooks"
+    ],
+    "no_sourcemaps": true,
+    "contents": [
+      "files"
+    ]
+  },
+  "FederatedExtensionAddon": {
+    "extra_labextensions_path": [
+      "ext"
+    ]
+  }
+}

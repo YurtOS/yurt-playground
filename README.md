@@ -10,7 +10,19 @@ preinstalled CPython, then the existing `yurt-jupyter` stack with `!` as
 ordinary guest `/bin/sh`. The page loads `kernel.wasm` through
 `kernel-host-interface-js`. xterm talks to a host-owned PTY. Jupyter JS dials a
 port the guest is already listening on. There is no hosted
-`yurt-runtime-wasmtime`, no JupyterLite/Pyodide, and no guest egress.
+`yurt-runtime-wasmtime`, no in-browser Python (Pyodide), and no guest egress.
+
+Two interfaces share that design, chosen from the home page (`/`):
+
+- `terminal.html`: the ash terminal plus a single Jupyter cell.
+- `jupyter/`: the Jupyter Notebook and JupyterLab interfaces. This is
+  JupyterLite's frontend and browser-side server API with exactly one kernel,
+  `yurt` (`jupyterlite/yurt-kernel`), which relays every message to the real
+  `ipykernel` in the sandbox through `public/playground-bridge.js`. None of
+  JupyterLite's own kernels ship; nothing executes in the browser. Build it with
+  `deno task build-lite` (node plus `jupyterlite/requirements.txt`).
+
+Phones are sent to `unsupported.html`: the sandbox needs a desktop-class tab.
 
 ## Status — ash in a tab (Task 4)
 
@@ -32,6 +44,7 @@ imported from it), plus the two published blobs:
 ```bash
 scripts/install-pinned-artifacts.sh   # needs gh access to YurtOS/yurt-packages
 deno task pin
+deno task build-lite                  # the Jupyter Notebook interface
 deno task serve
 ```
 
@@ -62,6 +75,7 @@ To build the same output locally:
 ```bash
 scripts/install-pinned-artifacts.sh
 deno task pin
+deno task build-lite
 deno task build-static
 ```
 

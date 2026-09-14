@@ -35,6 +35,9 @@ Kernel primitives stay in `yurtos-kernel`. Image composition stays in
 - One sandbox, one VFS. xterm talks to a host-owned PTY.
 - Jupyter JS dials a port the guest is already listening on (`dialSandboxPort`).
   No `Deno.connect`, no host OS TCP, no guest egress.
+- The Notebook/Lab interface is JupyterLite's frontend and server shim with one
+  kernel, `yurt`, relaying to the guest `ipykernel`. JupyterLite's own kernels
+  (Pyodide, xeus) never ship: the kernel is not replaced, only fronted.
 - GitHub Pages cannot set COOP/COEP. Local `scripts/serve.ts` and Cloudflare
   Pages (or equivalent) can.
 - Pins are git SHA + sha256 in `artifacts/pins.json`. Blobs (`*.wasm`,

@@ -22,7 +22,7 @@ Deno.test("static build emits isolated playground deployment", async () => {
   }
 });
 
-Deno.test("static build writes every file index.html and the page need", async () => {
+Deno.test("static build writes every file the pages need", async () => {
   // The script used to copy public/xterm.css, which never existed: the dev
   // server maps /xterm.css to the npm package. Exercise the build itself so a
   // missing input fails here, not in the deploy job.
@@ -49,6 +49,8 @@ Deno.test("static build writes every file index.html and the page need", async (
   for (
     const file of [
       "index.html",
+      "terminal.html",
+      "unsupported.html",
       "boot.bundle.js",
       "coordinator.bundle.js",
       "worker_bootstrap.js",
@@ -61,6 +63,10 @@ Deno.test("static build writes every file index.html and the page need", async (
   ) {
     const stat = await Deno.stat(new URL(`dist/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/${file} is empty`);
+  }
+  for (const file of ["index.html", "notebooks/index.html", "lab/index.html"]) {
+    const stat = await Deno.stat(new URL(`dist/jupyter/${file}`, repoRoot));
+    if (stat.size === 0) throw new Error(`dist/jupyter/${file} is empty`);
   }
   // Cloudflare Pages refuses any file over 25 MiB (deploy run 34841044263
   // died on the 86.9 MB image), so the image ships in parts that add back
