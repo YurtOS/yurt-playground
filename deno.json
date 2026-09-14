@@ -65,6 +65,7 @@
       "public/worker_bootstrap.js",
       "public/playground-bridge.js",
       "artifacts/jupyter-site-packages",
+      "jupyterlite/files",
       "public/jupyter",
       "jupyterlite/yurt-kernel/node_modules",
       "jupyterlite/yurt-kernel/lib",
