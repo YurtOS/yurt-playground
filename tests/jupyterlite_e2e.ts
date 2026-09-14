@@ -8,7 +8,7 @@
  * Run: deno run --allow-all tests/jupyterlite_e2e.ts (needs the pinned blobs
  * in artifacts/ and the site from jupyterlite/build.sh in public/jupyter/).
  */
-import { chromium, devices } from "playwright";
+import { chromium, devices, type Page } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
@@ -19,6 +19,36 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function fail(message: string): never {
   throw new Error(message);
+}
+
+/** Insert a cell below the active one, type `code` into it, and run it. */
+async function runNewCell(page: Page, code: string): Promise<void> {
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("b");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type(code);
+  await page.keyboard.press("Shift+Enter");
+}
+
+/** Wait until the notebook's last output area contains `text` and no cell
+ * is still running. */
+async function waitForLastOutput(
+  page: Page,
+  text: string,
+  timeout: number,
+): Promise<void> {
+  await page.waitForFunction(
+    (want) => {
+      const outputs = [...document.querySelectorAll(".jp-OutputArea-output")];
+      const last = outputs.at(-1)?.textContent ?? "";
+      const prompts = [...document.querySelectorAll(".jp-InputPrompt")]
+        .map((node) => node.textContent ?? "");
+      return last.includes(want) &&
+        prompts.every((prompt) => !prompt.includes("*"));
+    },
+    text,
+    { timeout },
+  );
 }
 
 if (import.meta.main) {
@@ -125,6 +155,39 @@ if (import.meta.main) {
     );
     csp();
     console.log("jupyterlite e2e: notebook executed on the guest ipykernel");
+
+    // Interrupt reaches the guest: a busy loop ends with KeyboardInterrupt
+    // once the toolbar's stop button is pressed (#31).
+    await runNewCell(page, "while True: pass");
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll(".jp-InputPrompt")].some((node) =>
+        node.textContent?.includes("*")
+      )
+    );
+    await page.waitForTimeout(1_000);
+    await page.locator('[data-jp-item-name="interrupt"] button').click();
+    await waitForLastOutput(page, "KeyboardInterrupt", 60_000);
+    console.log("jupyterlite e2e: interrupt stopped a busy loop");
+
+    // Restart reaches the guest: a variable defined before the restart is
+    // gone after it, because the ipykernel process was replaced (#31).
+    await runNewCell(page, "x = 1");
+    await runNewCell(page, "x");
+    await waitForLastOutput(page, "1", 60_000);
+    await page.locator('[data-jp-item-name="restart"] button').click();
+    await page.locator(".jp-Dialog button.jp-mod-accept").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".jp-Toolbar-kernelName")?.textContent
+            ?.includes("Yurt") === true &&
+        document.querySelector(".jp-Notebook-ExecutionIndicator")
+            ?.getAttribute("data-status") === "idle",
+      undefined,
+      { timeout: 420_000 },
+    );
+    await runNewCell(page, "x");
+    await waitForLastOutput(page, "NameError", 120_000);
+    console.log("jupyterlite e2e: restart replaced the guest kernel");
   } finally {
     await browser.close();
     await server.shutdown();

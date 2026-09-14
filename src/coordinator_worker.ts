@@ -8,7 +8,11 @@ import {
   fetchPlaygroundBytes,
   type PlaygroundTerm,
 } from "./boot.ts";
-import { executeCell, startGuestKernel } from "./jupyter.ts";
+import {
+  executeCell,
+  restartGuestKernel,
+  startGuestKernel,
+} from "./jupyter.ts";
 import type {
   JupyterChannel,
   JupyterRequestChannel,
@@ -30,7 +34,10 @@ type ToWorker =
     type: "jupyter-send";
     message: JupyterMessage;
     channel: JupyterRequestChannel;
-  };
+  }
+  // Replace the guest kernel with a fresh process (a frontend restart, or a
+  // shutdown followed by a start). Answered by `jupyter-restarted`.
+  | { type: "jupyter-restart" };
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -47,9 +54,19 @@ type FromWorker =
     type: "jupyter-message";
     message: JupyterMessage;
     channel: JupyterChannel;
-  };
+  }
+  | { type: "jupyter-restarted" };
 
 let jupyter: JupyterTransport | undefined;
+let launchSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
+/** Restarts are serialised: a second request waits for the first. */
+let restarting: Promise<void> = Promise.resolve();
+
+function subscribeJupyter(transport: JupyterTransport): void {
+  transport.subscribe((message, channel) => {
+    post({ type: "jupyter-message", message, channel });
+  });
+}
 
 function post(msg: FromWorker): void {
   self.postMessage(msg);
@@ -108,6 +125,29 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     }
     return;
   }
+  if (msg.type === "jupyter-restart") {
+    restarting = restarting.then(async () => {
+      if (launchSession === undefined) {
+        post({ type: "error", message: "Jupyter is not ready" });
+        return;
+      }
+      const previous = jupyter;
+      jupyter = undefined;
+      try {
+        post({ type: "status", text: "restarting Jupyter" });
+        jupyter = await restartGuestKernel(launchSession, previous);
+        subscribeJupyter(jupyter);
+        post({ type: "jupyter-restarted" });
+      } catch (error) {
+        post({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+    await restarting;
+    return;
+  }
   if (msg.type === "cell") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });
@@ -144,10 +184,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       term: workerTerm({ cols: msg.cols, rows: msg.rows }),
     });
     post({ type: "status", text: "starting Jupyter" });
+    launchSession = session;
     jupyter = await startGuestKernel(session);
-    jupyter.subscribe((message, channel) => {
-      post({ type: "jupyter-message", message, channel });
-    });
+    subscribeJupyter(jupyter);
     post({ type: "notebook-ready" });
   } catch (error) {
     try {
