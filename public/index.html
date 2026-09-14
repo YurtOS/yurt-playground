@@ -77,16 +77,35 @@
   </head>
   <body>
     <script>
-      // The sandbox needs a desktop-class tab: SharedArrayBuffer (COOP/COEP,
-      // `crossOriginIsolated`), Web Workers that keep running, and ~1 GB of
-      // memory. Phones and tablets get the explanation instead of a boot that
-      // dies partway.
+      // The sandbox needs a desktop-class tab: Web Workers that keep running
+      // and ~1 GB of memory (SharedArrayBuffer itself is fine on mobile
+      // browsers under COOP/COEP). Phones and tablets get the explanation
+      // instead of a boot that dies partway.
+      // The unsupported page offers a "try anyway" link (`?force=1`) for
+      // tablets; the choice is kept for the session so the terminal page
+      // honours it too.
+      const forced = new URLSearchParams(globalThis.location.search).has(
+        "force",
+      );
+      try {
+        if (forced) sessionStorage.setItem("yurt-playground-force", "1");
+      } catch {
+        // A blocked sessionStorage only loses the choice across pages.
+      }
+      let remembered = false;
+      try {
+        remembered = sessionStorage.getItem("yurt-playground-force") === "1";
+      } catch {
+        // See above.
+      }
       const uaData = navigator.userAgentData;
       const mobile = uaData?.mobile === true ||
         /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent) ||
         (globalThis.matchMedia("(pointer: coarse)").matches &&
           globalThis.innerWidth < 900);
-      if (mobile) globalThis.location.replace("./unsupported.html");
+      if (mobile && !forced && !remembered) {
+        globalThis.location.replace("./unsupported.html");
+      }
       if (globalThis.crossOriginIsolated !== true) {
         document.addEventListener("DOMContentLoaded", () => {
           const warning = document.getElementById("isolation-warning");

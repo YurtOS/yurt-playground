@@ -34,6 +34,12 @@ if (import.meta.main) {
     const phonePage = await phone.newPage();
     await phonePage.goto(`${server.url}/`, { waitUntil: "load" });
     await phonePage.getByTestId("unsupported").waitFor({ timeout: 10_000 });
+    // "Try anyway" gets the same phone to the home page, and the choice
+    // sticks for the terminal page too.
+    await phonePage.getByTestId("try-anyway").click();
+    await phonePage.getByTestId("choose-notebook").waitFor({ timeout: 10_000 });
+    await phonePage.goto(`${server.url}/terminal.html`, { waitUntil: "load" });
+    await phonePage.locator("#term").waitFor({ timeout: 10_000 });
     await phone.close();
 
     const page = await browser.newPage();

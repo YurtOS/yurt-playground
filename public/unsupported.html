@@ -33,15 +33,24 @@
   </head>
   <body>
     <main data-testid="unsupported">
-      <h1>Not supported on this device</h1>
+      <h1>Probably not supported on this device</h1>
       <p>
         The Yurt playground boots a whole Linux sandbox inside the browser tab:
         a kernel, a filesystem, CPython and Jupyter, running on several
-        <code>SharedArrayBuffer</code>-backed Web Workers with about a gigabyte
-        of memory. Phones and tablets do not give a tab that much, and mobile
-        browsers stop background workers, so the sandbox cannot run there.
+        <code>SharedArrayBuffer</code>-backed Web Workers. The browser side is
+        fine: Safari has supported <code>SharedArrayBuffer</code> on iOS since
+        15.2 on cross-origin isolated pages like this one, and Chrome and
+        Firefox for Android do too. What phones lack is the rest: a tab that can
+        hold around a gigabyte of memory, and workers that keep running while
+        the page is in the background.
       </p>
-      <p>Open this page on a desktop or laptop browser instead.</p>
+      <p>
+        Open this page on a desktop or laptop browser for the full experience.
+        On a recent tablet you can
+        <a href="./index.html?force=1" data-testid="try-anyway">try anyway</a>;
+        if the sandbox runs out of memory the tab reloads or the boot stalls
+        partway, and nothing else on the device is affected.
+      </p>
     </main>
   </body>
 </html>

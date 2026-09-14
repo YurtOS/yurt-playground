@@ -128,6 +128,13 @@ Deno.test("home page offers the terminal and the Jupyter Notebook", async () => 
     new URL("../public/unsupported.html", import.meta.url),
   );
   assertEquals(unsupported.includes('data-testid="unsupported"'), true);
+  // Tablets can opt in; the home and terminal pages both honour the choice.
+  assertEquals(unsupported.includes('href="./index.html?force=1"'), true);
+  assertEquals(html.includes("yurt-playground-force"), true);
+  const terminal = await Deno.readTextFile(
+    new URL("../public/terminal.html", import.meta.url),
+  );
+  assertEquals(terminal.includes("yurt-playground-force"), true);
 });
 
 Deno.test("deployment workflow publishes an isolated static site", async () => {
