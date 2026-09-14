@@ -2,6 +2,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "./serve.ts";
+import { XTERM_CSS_PATH } from "../src/serve.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -13,7 +14,6 @@ const STATIC_FILES = [
   "boot.bundle.js",
   "coordinator.bundle.js",
   "worker_bootstrap.js",
-  "xterm.css",
 ];
 
 const ISOLATION_HEADERS = `/*
@@ -41,6 +41,8 @@ export async function buildStaticSite(): Promise<void> {
   await Deno.remove(distDir, { recursive: true }).catch(() => {});
   await Deno.mkdir(distDir, { recursive: true });
   await copyFiles(STATIC_FILES, publicDir, distDir);
+  // index.html links ./xterm.css; the dev server maps it to the npm package.
+  await Deno.copyFile(XTERM_CSS_PATH, join(distDir, "xterm.css"));
   await copyFiles(
     ["yurt_kernel.wasm", "playground.yurtimg"],
     artifactsDir,
