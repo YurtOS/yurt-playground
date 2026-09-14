@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  # The deploy needs the private YurtOS siblings (kernel, ports, jupyter) and a
+  # The deploy needs the private YurtOS siblings (kernel, jupyter) and a
   # Cloudflare Pages project. The default GITHUB_TOKEN cannot read another
   # private repository, so without these secrets the job cannot deploy at all —
   # it says so instead of failing at "Repository not found" or at the upload.
@@ -64,7 +64,6 @@ jobs:
         working-directory: playground
         run: |
           echo "kernel_rev=$(jq -r .kernelWasm.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
-          echo "ports_rev=$(jq -r .image.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
           echo "jupyter_rev=$(jq -r .yurtJupyterRev artifacts/jupyter-requirements.lock)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
         with:
@@ -74,25 +73,10 @@ jobs:
           path: yurtos-kernel
       - uses: actions/checkout@v7
         with:
-          repository: YurtOS/yurt-ports
-          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-          ref: ${{ steps.pins.outputs.ports_rev }}
-          path: yurt-ports
-      - uses: actions/checkout@v7
-        with:
           repository: YurtOS/yurt-jupyter
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
           ref: ${{ steps.pins.outputs.jupyter_rev }}
           path: yurt-jupyter
-      # Must track yurtos-kernel/rust-toolchain.toml (1.97.1): this action
-      # installs the targets and rust-src for the toolchain it selects, and the
-      # kernel wasm build then switches to the version that file pins. Bumping
-      # it independently installs them for the wrong toolchain — and @1.100.0
-      # supplies no default toolchain at all, so the step fails outright.
-      - uses: dtolnay/rust-toolchain@1.97.1
-        with:
-          targets: wasm32-wasip1,wasm32-wasip1-threads
-          components: rust-src
       - uses: denoland/setup-deno@v2
         with:
           # Pinned, not v2.x: deno fmt's output changed between 2.x releases
@@ -123,29 +107,21 @@ jobs:
           HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
           YURT_JUPYTER_ROOT: ../yurt-jupyter
         run: deno run --allow-read --allow-write --allow-env --allow-run scripts/materialize-jupyter.ts
-      - name: Build pinned kernel wasm
-        working-directory: yurtos-kernel
-        run: scripts/build-kernel-wasm.sh
-      - name: Materialize pinned playground image
-        working-directory: yurt-ports
+      # Published once and fetched, never rebuilt here; see ci.yml.
+      - name: Install the pinned kernel wasm and playground image
+        working-directory: playground
         env:
-          YURT_KERNEL_ROOT: ${{ github.workspace }}/yurtos-kernel
-          YURT_JUPYTER_STAGE: ${{ github.workspace }}/playground/artifacts/jupyter-site-packages
-          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
-        run: |
-          scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only
-          ports/playground-image/scripts/package.sh
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+        run: scripts/install-pinned-artifacts.sh
       - name: Pin artifacts
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
-          YURT_PORTS_ROOT: ../yurt-ports
         run: deno task pin
       - name: Verify playground
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
-          YURT_PORTS_ROOT: ../yurt-ports
         run: |
           deno fmt --check
           deno lint
