@@ -37,6 +37,7 @@ if (import.meta.main) {
     await phone.close();
 
     const page = await browser.newPage();
+    const started = Date.now();
     await page.goto(`${server.url}/`, { waitUntil: "domcontentloaded" });
     if (await page.evaluate(() => globalThis.crossOriginIsolated !== true)) {
       fail("browser page is not cross-origin isolated");
@@ -54,8 +55,14 @@ if (import.meta.main) {
         document.querySelector(".jp-Notebook-ExecutionIndicator")
             ?.getAttribute("data-status") === "idle",
       undefined,
-      // Measured 2026-09-14: ~50 s on an M-series laptop.
-      { timeout: 240_000 },
+      // Measured 2026-09-14: ~50 s on an M-series laptop; a 2-vCPU CI
+      // runner needs several times that.
+      { timeout: 420_000 },
+    );
+    console.log(
+      `jupyterlite e2e: kernel idle after ${
+        Math.round((Date.now() - started) / 1000)
+      } s`,
     );
 
     // Run the welcome notebook's two code cells with Shift+Enter.

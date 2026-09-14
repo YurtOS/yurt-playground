@@ -14,6 +14,7 @@ if (import.meta.main) {
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
+    const started = Date.now();
     await page.goto(`${server.url}/terminal.html`, {
       waitUntil: "domcontentloaded",
     });
@@ -35,16 +36,24 @@ if (import.meta.main) {
       },
       undefined,
       // Measured 2026-09-14: ~30 s from page load to ready on an M-series
-      // laptop (cold import of ipykernel + pyzmq in the browser JIT).
-      { timeout: 120_000 },
+      // laptop (cold import of ipykernel + pyzmq in the browser JIT); a
+      // 2-vCPU CI runner needs several times that.
+      { timeout: 300_000 },
     ).catch(() => undefined);
     if (await page.getByTestId("notebook-status").textContent() !== "ready") {
       const status = await page.locator("#status").textContent();
       const notebook = await page.getByTestId("notebook-status").textContent();
       throw new Error(
-        `Jupyter did not become ready: status=${status} notebook=${notebook}`,
+        `Jupyter did not become ready after ${
+          Math.round((Date.now() - started) / 1000)
+        } s: status=${status} notebook=${notebook}`,
       );
     }
+    console.log(
+      `playground e2e: Jupyter ready after ${
+        Math.round((Date.now() - started) / 1000)
+      } s`,
+    );
     await page.getByTestId("notebook-input").fill("1+1");
     await page.getByTestId("notebook-execute").click();
     await page.getByTestId("notebook-output").waitFor({ state: "visible" });
