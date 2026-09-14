@@ -1,6 +1,11 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  contentSecurityPolicy,
+  documentPolicy,
+  inlineScriptHashes,
+} from "./csp.ts";
+import {
   imagePartIndex,
   imagePartRange,
   imagePartsManifest,
@@ -16,6 +21,9 @@ export const ISOLATION_HEADERS = {
   "Cross-Origin-Embedder-Policy": "require-corp",
   // Nested module workers (guest WorkerHost) are COEP subresources.
   "Cross-Origin-Resource-Policy": "same-origin",
+  // Non-document responses carry the policy too: a worker script's own CSP
+  // is what governs the worker.
+  "Content-Security-Policy": contentSecurityPolicy(),
 };
 
 /** xterm's stylesheet, served from the npm package rather than copied into
@@ -155,12 +163,20 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   try {
     const file = await Deno.readFile(filePath);
     const path = url.pathname === "/" ? "/index.html" : url.pathname;
-    return new Response(file, {
-      headers: {
-        ...ISOLATION_HEADERS,
-        "content-type": contentType(path),
-      },
-    });
+    const headers: Record<string, string> = {
+      ...ISOLATION_HEADERS,
+      "content-type": contentType(path),
+    };
+    if (path.endsWith(".html")) {
+      // A document's policy allows its own inline scripts by hash, computed
+      // from the file being served so a rebuilt JupyterLite site needs no
+      // restart.
+      headers["Content-Security-Policy"] = documentPolicy(
+        path,
+        await inlineScriptHashes(new TextDecoder().decode(file)),
+      );
+    }
+    return new Response(file, { headers });
   } catch {
     return notFound();
   }

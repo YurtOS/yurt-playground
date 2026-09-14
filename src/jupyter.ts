@@ -6,6 +6,9 @@ import {
 } from "./jupyter_transport.ts";
 
 export const JUPYTER_CONNECTION_FILE = "/tmp/yurt-kernel.json";
+export const JUPYTER_LOG_FILE = "/tmp/yurt-jupyter.log";
+/** How long the guest waits for ipykernel to write its connection file. */
+export const CONNECTION_FILE_WAIT_SECONDS = 240;
 const JUPYTER_KEY = "yurt";
 const encoder = new TextEncoder();
 
@@ -39,7 +42,7 @@ export async function startGuestKernel(
 ): Promise<JupyterTransport> {
   await session.terminal.write(
     encoder.encode(
-      `${buildKernelLaunchCommand()} >/tmp/yurt-jupyter.log 2>&1 &\n`,
+      `${buildKernelLaunchCommand()} >${JUPYTER_LOG_FILE} 2>&1 &\n`,
     ),
   );
   const connection = await readConnectionFile(session);
@@ -112,24 +115,32 @@ async function readConnectionFile(
     if (text.includes(marker)) resolveOutput?.();
   });
   try {
+    // ipykernel writes the file once ipykernel + pyzmq are imported, which
+    // is JIT-bound: ~30 s on a laptop, well past 60 s on a 2-vCPU CI runner.
+    // Bounded, so a kernel that never starts still fails, and its log is
+    // printed in that case so the failure names itself.
     await session.terminal.write(
       encoder.encode(
-        `i=0; while [ ! -s ${JUPYTER_CONNECTION_FILE} ] && [ $i -lt 60 ]; do ` +
-          `sleep 1; i=$((i+1)); done; cat ${JUPYTER_CONNECTION_FILE}; ` +
+        `i=0; while [ ! -s ${JUPYTER_CONNECTION_FILE} ] && [ $i -lt ${CONNECTION_FILE_WAIT_SECONDS} ]; do ` +
+          `sleep 1; i=$((i+1)); done; if [ -s ${JUPYTER_CONNECTION_FILE} ]; then ` +
+          `cat ${JUPYTER_CONNECTION_FILE}; else echo KERNEL_LOG; tail -n 30 ${JUPYTER_LOG_FILE}; fi; ` +
           `echo ${typedMarker}\n`,
       ),
     );
     if (!text.includes(marker)) {
       await withTimeout(
         new Promise<void>((resolve) => resolveOutput = resolve),
-        70_000,
+        (CONNECTION_FILE_WAIT_SECONDS + 10) * 1000,
         "Jupyter connection file timed out",
       );
     }
     const jsonStart = text.indexOf("{");
     const jsonEnd = text.lastIndexOf("}");
     if (jsonStart < 0 || jsonEnd < jsonStart) {
-      throw new Error("Jupyter connection file was not printed");
+      const log = text.slice(text.indexOf("KERNEL_LOG"), text.indexOf(marker));
+      throw new Error(
+        `Jupyter connection file was not written within ${CONNECTION_FILE_WAIT_SECONDS} s; kernel log:\n${log}`,
+      );
     }
     const connection = JSON.parse(
       text.slice(jsonStart, jsonEnd + 1),
@@ -156,10 +167,15 @@ async function readConnectionFile(
   }
 }
 
+/** Bound on one cell of the terminal page's demo notebook. The first
+ * execute after boot is JIT-bound like the boot itself: ~2 s on a laptop,
+ * tens of seconds on a 2-vCPU CI runner. */
+export const EXECUTE_TIMEOUT_MS = 120_000;
+
 export async function executeCell(
   transport: JupyterTransport,
   code: string,
-  timeoutMs = 15_000,
+  timeoutMs = EXECUTE_TIMEOUT_MS,
 ): Promise<JupyterReply> {
   const msgId = crypto.randomUUID();
   const output = { stdout: "", display: "", traceback: [] as string[] };

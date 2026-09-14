@@ -62,14 +62,22 @@ async function fetchBytes(name) {
 // rows are checked against the pin as well.
 async function publishedPins() {
   try {
-    const pins = await (await fetch("./pins.json", { cache: "no-store" }))
-      .json();
+    const response = await fetch("./pins.json", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`fetch pins.json failed: ${response.status}`);
+    }
+    const pins = await response.json();
+    const kernel = pins.kernelWasm?.sha256;
+    const image = pins.image?.sha256;
+    if (typeof kernel !== "string" || typeof image !== "string") {
+      throw new Error("pins.json is missing required release hashes");
+    }
     return {
-      "yurt_kernel.wasm": pins.kernelWasm?.sha256,
-      "playground.yurtimg": pins.image?.sha256,
+      "yurt_kernel.wasm": kernel,
+      "playground.yurtimg": image,
     };
   } catch {
-    return {};
+    return null;
   }
 }
 
@@ -127,7 +135,9 @@ async function verify() {
       } catch {
         // The row says so.
       }
-      const pinned = pins[name];
+      const pinRequired = name === "yurt_kernel.wasm" ||
+        name === "playground.yurtimg";
+      const pinned = pinRequired ? pins?.[name] ?? null : undefined;
       if (
         actual === manifest.files[name] &&
         (pinned === undefined || pinned === actual)

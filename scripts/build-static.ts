@@ -2,7 +2,8 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "./serve.ts";
-import { XTERM_CSS_PATH } from "../src/serve.ts";
+import { ISOLATION_HEADERS, XTERM_CSS_PATH } from "../src/serve.ts";
+import { headersFile, inlineScriptHashes } from "../src/csp.ts";
 import { imagePartRange, imagePartsManifest } from "../src/image_parts.ts";
 import { IMAGE_NAME, integrityManifest } from "../src/integrity.ts";
 
@@ -23,12 +24,6 @@ const STATIC_FILES = [
 ];
 /** The JupyterLite site (jupyterlite/build.sh); served under /jupyter/. */
 const JUPYTER_DIR = "jupyter";
-
-const ISOLATION_HEADERS = `/*
-  Cross-Origin-Opener-Policy: same-origin
-  Cross-Origin-Embedder-Policy: require-corp
-  Cross-Origin-Resource-Policy: same-origin
-`;
 
 function kernelRoot(): string {
   return Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel");
@@ -87,7 +82,6 @@ export async function buildStaticSite(): Promise<void> {
   await copyFiles(["pins.json", "yurt_kernel.wasm"], artifactsDir, distDir);
   // Cloudflare Pages refuses files over 25 MiB; the image ships in parts.
   await writeImageParts(IMAGE_NAME);
-  await Deno.writeTextFile(join(distDir, "_headers"), ISOLATION_HEADERS);
   // The "check the bytes" card hashes what it downloaded against this. dist/
   // holds the image only as parts; hash the file they were sliced from.
   await Deno.writeTextFile(
@@ -103,6 +97,48 @@ export async function buildStaticSite(): Promise<void> {
       null,
       2,
     ) + "\n",
+  );
+  await Deno.writeTextFile(join(distDir, "_headers"), await siteHeaders());
+}
+
+/** Hash the inline scripts of every HTML file under `dir` (recursively). */
+async function scriptHashesUnder(dir: string): Promise<string[]> {
+  const hashes = new Set<string>();
+  for await (const entry of Deno.readDir(dir)) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory) {
+      for (const hash of await scriptHashesUnder(path)) hashes.add(hash);
+    } else if (entry.name.endsWith(".html")) {
+      for (
+        const hash of await inlineScriptHashes(await Deno.readTextFile(path))
+      ) {
+        hashes.add(hash);
+      }
+    }
+  }
+  return [...hashes].sort();
+}
+
+/** The `_headers` file: isolation plus the CSP, with the inline scripts the
+ * built pages actually carry allowed by hash. */
+export async function siteHeaders(): Promise<string> {
+  const { "Content-Security-Policy": _csp, ...isolation } = ISOLATION_HEADERS;
+  const site = new Set<string>();
+  for await (const entry of Deno.readDir(distDir)) {
+    if (entry.isFile && entry.name.endsWith(".html")) {
+      for (
+        const hash of await inlineScriptHashes(
+          await Deno.readTextFile(join(distDir, entry.name)),
+        )
+      ) {
+        site.add(hash);
+      }
+    }
+  }
+  return headersFile(
+    isolation,
+    [...site].sort(),
+    await scriptHashesUnder(join(distDir, JUPYTER_DIR)),
   );
 }
 

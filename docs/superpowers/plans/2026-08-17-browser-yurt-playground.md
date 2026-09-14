@@ -140,7 +140,7 @@ git checkout feat/js-host-port-pingpong && git rebase origin/main
 - [ ] **Step 2: Re-run the two test files**
 
 ```bash
-CARGO_TARGET_DIR=/Users/sunny/work/yurtos/yurtos-kernel/target \
+CARGO_TARGET_DIR=~/work/yurtos/yurtos-kernel/target \
   deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run \
   packages/kernel-host-interface-js/__tests__/kernel-host-interface/pty_attach.ts \
   packages/kernel-host-interface-js/__tests__/kernel-host-interface/port_pingpong.ts

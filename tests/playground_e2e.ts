@@ -3,6 +3,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
+import { EXECUTE_TIMEOUT_MS } from "../src/jupyter.ts";
+import { watchCspViolations } from "./csp_watch.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -14,6 +16,8 @@ if (import.meta.main) {
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
+    const started = Date.now();
+    const csp = watchCspViolations(page);
     await page.goto(`${server.url}/terminal.html`, {
       waitUntil: "domcontentloaded",
     });
@@ -35,22 +39,49 @@ if (import.meta.main) {
       },
       undefined,
       // Measured 2026-09-14: ~30 s from page load to ready on an M-series
-      // laptop (cold import of ipykernel + pyzmq in the browser JIT).
-      { timeout: 120_000 },
+      // laptop (cold import of ipykernel + pyzmq in the browser JIT); a
+      // 2-vCPU CI runner needs several times that.
+      { timeout: 300_000 },
     ).catch(() => undefined);
     if (await page.getByTestId("notebook-status").textContent() !== "ready") {
       const status = await page.locator("#status").textContent();
       const notebook = await page.getByTestId("notebook-status").textContent();
       throw new Error(
-        `Jupyter did not become ready: status=${status} notebook=${notebook}`,
+        `Jupyter did not become ready after ${
+          Math.round((Date.now() - started) / 1000)
+        } s: status=${status} notebook=${notebook}`,
       );
     }
+    console.log(
+      `playground e2e: Jupyter ready after ${
+        Math.round((Date.now() - started) / 1000)
+      } s`,
+    );
     await page.getByTestId("notebook-input").fill("1+1");
     await page.getByTestId("notebook-execute").click();
     await page.getByTestId("notebook-output").waitFor({ state: "visible" });
-    await page.waitForFunction(() =>
-      document.querySelector<HTMLElement>("[data-testid=notebook-output]")
-        ?.textContent === "2"
+    // A cell error lands in the same element, so a wrong answer fails fast
+    // instead of waiting out the timeout.
+    const cellDone = (expected: string) =>
+      page.waitForFunction(
+        (want) => {
+          const text = document.querySelector<HTMLElement>(
+            "[data-testid=notebook-output]",
+          )?.textContent ?? "";
+          if (text === want) return true;
+          if (/timed out|Error|Traceback/.test(text)) {
+            throw new Error(`cell failed: ${text}`);
+          }
+          return false;
+        },
+        expected,
+        { timeout: EXECUTE_TIMEOUT_MS + 10_000 },
+      );
+    await cellDone("2");
+    console.log(
+      `playground e2e: first cell done after ${
+        Math.round((Date.now() - started) / 1000)
+      } s`,
     );
     // The proof the home page advertises: with the network gone, the next
     // cell still runs, and the page says so.
@@ -65,10 +96,7 @@ if (import.meta.main) {
       "import numpy as np; int(np.array([1, 2]).sum())",
     );
     await page.getByTestId("notebook-execute").click();
-    await page.waitForFunction(() =>
-      document.querySelector<HTMLElement>("[data-testid=notebook-output]")
-        ?.textContent === "3"
-    );
+    await cellDone("3");
     await page.context().setOffline(false);
     await page.waitForFunction(() =>
       document.querySelector("[data-testid=net]")?.getAttribute(
@@ -78,6 +106,7 @@ if (import.meta.main) {
     if (!(await page.locator("#term").isVisible())) {
       throw new Error("ash terminal is not visible");
     }
+    csp();
   } finally {
     await browser.close();
     await server.shutdown();

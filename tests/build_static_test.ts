@@ -1,5 +1,6 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { INTEGRITY_FILES, sha256Hex } from "../src/integrity.ts";
+import { inlineScriptHashes } from "../src/csp.ts";
 
 Deno.test("static build emits isolated playground deployment", async () => {
   const script = await Deno.readTextFile(
@@ -14,9 +15,8 @@ Deno.test("static build emits isolated playground deployment", async () => {
       '"yurt_kernel.wasm"',
       "IMAGE_NAME",
       '"worker_bootstrap.js"',
-      "Cross-Origin-Opener-Policy",
-      "Cross-Origin-Embedder-Policy",
-      "Cross-Origin-Resource-Policy",
+      "ISOLATION_HEADERS",
+      "headersFile",
     ]
   ) {
     assertStringIncludes(script, value);
@@ -85,6 +85,38 @@ Deno.test("static build writes every file the pages need", async () => {
       await sha256Hex(await Deno.readFile(new URL(`${dir}/${name}`, repoRoot))),
       name,
     );
+  }
+  // The deployed headers carry the isolation trio and both CSP rules, with
+  // every built page's inline scripts allowed by hash (the JupyterLite
+  // bootstraps change hash with each build, so they are derived, not typed).
+  const headers = await Deno.readTextFile(new URL("dist/_headers", repoRoot));
+  for (
+    const value of [
+      "Cross-Origin-Opener-Policy: same-origin",
+      "Cross-Origin-Embedder-Policy: require-corp",
+      "Cross-Origin-Resource-Policy: same-origin",
+      "connect-src 'self'",
+      "/jupyter/*\n  ! Content-Security-Policy\n  Content-Security-Policy: ",
+    ]
+  ) {
+    assertStringIncludes(headers, value);
+  }
+  const [siteRule, jupyterRule] = headers.split("/jupyter/*");
+  assertEquals(siteRule.includes("'unsafe-eval'"), false);
+  assertEquals(jupyterRule.includes("'unsafe-eval'"), true);
+  for (
+    const [rule, file] of [
+      [siteRule, "dist/index.html"],
+      [siteRule, "dist/terminal.html"],
+      [jupyterRule, "dist/jupyter/notebooks/index.html"],
+      [jupyterRule, "dist/jupyter/lab/index.html"],
+    ] as const
+  ) {
+    const hashes = await inlineScriptHashes(
+      await Deno.readTextFile(new URL(file, repoRoot)),
+    );
+    assertEquals(hashes.length > 0, true, `${file} has no inline script`);
+    for (const hash of hashes) assertStringIncludes(rule, hash);
   }
   // Cloudflare Pages refuses any file over 25 MiB (deploy run 34841044263
   // died on the 86.9 MB image), so the image ships in parts that add back
