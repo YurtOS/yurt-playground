@@ -5,7 +5,7 @@ import {
   imagePartRange,
   imagePartsManifest,
 } from "./image_parts.ts";
-import { integrityManifest } from "./integrity.ts";
+import { IMAGE_NAME, integrityManifest } from "./integrity.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -69,8 +69,6 @@ function notFound(): Response {
     headers: ISOLATION_HEADERS,
   });
 }
-
-const IMAGE_NAME = "playground.yurtimg";
 
 /** The image parts the static build publishes, sliced from the single
  * artifacts/ file so the page's fetch path is the same here and deployed. */

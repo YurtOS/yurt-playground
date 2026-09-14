@@ -155,15 +155,25 @@
         border-collapse: collapse;
         margin: 12px 0 0;
         width: 100%;
-        font-size: 0.85rem;
+        font-size: 0.75rem;
       }
       #verify-results td {
         padding: 4px 6px 4px 0;
         color: #bbb;
         white-space: nowrap;
       }
-      #verify-results td:last-child {
+      #verify-results {
+        overflow-x: auto;
+      }
+      #verify-results td:nth-child(3) {
         color: #777;
+      }
+      #verify-results td:last-child {
+        padding-left: 6px;
+        color: #8e8;
+      }
+      #verify-results tr.bad td:last-child {
+        color: #f99;
       }
       #verify-results tr.ok td:first-child {
         color: #8e8;
@@ -295,9 +305,11 @@
           <article class="check">
             <h3>Check the bytes</h3>
             <p>
-              The site publishes the SHA-256 of every file the sandbox runs on.
-              This button fetches them again and hashes them here, in your
-              browser.
+              The site publishes the SHA-256 of every file the sandbox runs on,
+              the 87 MB guest filesystem included. This button fetches them
+              again and hashes them here, in your browser; the kernel and the
+              image are also checked against the hash their release was
+              published with.
             </p>
             <button id="verify-files" type="button" data-testid="verify-files">
               Verify downloaded files

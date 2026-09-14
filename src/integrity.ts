@@ -8,13 +8,21 @@
  * compare either against a build of their own.
  */
 
-/** The files the sandbox runs on, in the order the home page lists them. */
+/** The guest filesystem image: BusyBox, Python, everything the guest runs. */
+export const IMAGE_NAME = "playground.yurtimg";
+
+/**
+ * The files the sandbox runs on, in the order the home page lists them. The
+ * image's hash is of the whole file; the static site serves it in parts
+ * (image_parts.ts), and the page hashes them reassembled.
+ */
 export const INTEGRITY_FILES = [
   "boot.bundle.js",
   "coordinator.bundle.js",
   "worker_bootstrap.js",
   "playground-bridge.js",
   "yurt_kernel.wasm",
+  IMAGE_NAME,
 ] as const;
 
 export type IntegrityManifest = {

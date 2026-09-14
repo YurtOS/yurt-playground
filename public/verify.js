@@ -2,6 +2,9 @@
 // each file it names the way the sandbox does, hash it here in the browser,
 // and show whether the bytes match. Everything is same-origin; the page's
 // Content Security Policy allows nothing else.
+//
+// This file is served as-is, not bundled, so it cannot import
+// src/image_parts.ts; the parts reassembly below mirrors partsFetch there.
 const button = document.getElementById("verify-files");
 const results = document.getElementById("verify-results");
 const commitLine = document.getElementById("verify-commit");
@@ -13,14 +16,73 @@ async function sha256Hex(bytes) {
     .join("");
 }
 
-function row(name, expected, actual) {
+// The image is published in parts (Cloudflare Pages' 25 MiB file cap) and
+// hashed whole, so fetch the parts manifest and lay them end to end, the way
+// the sandbox's loader does.
+async function fetchParts(name) {
+  const manifestResponse = await fetch(`./${name}.parts.json`);
+  if (!manifestResponse.ok) {
+    throw new Error(
+      `fetch ${name}.parts.json failed: ${manifestResponse.status}`,
+    );
+  }
+  const manifest = await manifestResponse.json();
+  const bytes = new Uint8Array(manifest.size);
+  let offset = 0;
+  for (const part of manifest.parts) {
+    const response = await fetch(`./${part}`);
+    if (!response.ok) {
+      throw new Error(`fetch ${part} failed: ${response.status}`);
+    }
+    const chunk = new Uint8Array(await response.arrayBuffer());
+    if (offset + chunk.byteLength > bytes.byteLength) {
+      throw new Error(`${name} parts exceed the manifest size`);
+    }
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  if (offset !== bytes.byteLength) {
+    throw new Error(
+      `${name} parts add up to ${offset}, not ${bytes.byteLength}`,
+    );
+  }
+  return bytes;
+}
+
+async function fetchBytes(name) {
+  if (name.endsWith(".yurtimg")) return await fetchParts(name);
+  const response = await fetch(`./${name}`);
+  if (!response.ok) throw new Error(`fetch ${name} failed: ${response.status}`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+// integrity.json comes from the same build as the files it describes. The
+// kernel and the image also have a hash that does not: artifacts/pins.json
+// records the sha256 each was published with in its release, so those two
+// rows are checked against the pin as well.
+async function publishedPins() {
+  try {
+    const pins = await (await fetch("./pins.json", { cache: "no-store" }))
+      .json();
+    return {
+      "yurt_kernel.wasm": pins.kernelWasm?.sha256,
+      "playground.yurtimg": pins.image?.sha256,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function row(name, expected, actual, pinned) {
   const tr = document.createElement("tr");
-  const ok = expected === actual;
+  const ok = expected === actual && (pinned === undefined || pinned === actual);
   tr.className = ok ? "ok" : "bad";
   const cells = [
     ok ? "✓" : "✗",
     name,
-    actual ? `${actual.slice(0, 12)}…` : "(fetch failed)",
+    actual ? `${actual.slice(0, 8)}…` : "(fetch failed)",
+    // Whether the release pin (artifacts/pins.json) agrees too.
+    pinned === undefined ? "" : pinned === actual ? "pin ✓" : "pin ✗",
   ];
   for (const text of cells) {
     const td = document.createElement("td");
@@ -52,6 +114,7 @@ async function verify() {
     } else {
       commitLine.textContent = "Local build; no commit recorded.";
     }
+    const pins = await publishedPins();
     const table = document.createElement("table");
     results.append(table);
     const names = Object.keys(manifest.files);
@@ -60,13 +123,18 @@ async function verify() {
       summary.textContent = `hashing ${name}…`;
       let actual = null;
       try {
-        const bytes = await (await fetch(`./${name}`)).arrayBuffer();
-        actual = await sha256Hex(bytes);
+        actual = await sha256Hex(await fetchBytes(name));
       } catch {
         // The row says so.
       }
-      if (actual === manifest.files[name]) matched += 1;
-      table.append(row(name, manifest.files[name], actual));
+      const pinned = pins[name];
+      if (
+        actual === manifest.files[name] &&
+        (pinned === undefined || pinned === actual)
+      ) {
+        matched += 1;
+      }
+      table.append(row(name, manifest.files[name], actual, pinned));
     }
     summary.textContent = `${matched} of ${names.length} files match.`;
     summary.className = matched === names.length ? "ok" : "bad";

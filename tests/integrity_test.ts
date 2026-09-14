@@ -21,6 +21,12 @@ Deno.test("the manifest names every file the sandbox runs on", async () => {
   );
   assertEquals(manifest.commit, "abc123");
   assertEquals(Object.keys(manifest.files), [...INTEGRITY_FILES]);
+  // The guest filesystem image is most of what runs: BusyBox, Python, the
+  // whole userland. A check that skips it proves only the loader.
+  assertEquals(
+    (INTEGRITY_FILES as readonly string[]).includes("playground.yurtimg"),
+    true,
+  );
   assertEquals(
     manifest.files["yurt_kernel.wasm"],
     await sha256Hex(new TextEncoder().encode("yurt_kernel.wasm")),

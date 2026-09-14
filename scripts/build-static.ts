@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { ensureBundle } from "./serve.ts";
 import { XTERM_CSS_PATH } from "../src/serve.ts";
 import { imagePartRange, imagePartsManifest } from "../src/image_parts.ts";
-import { integrityManifest } from "../src/integrity.ts";
+import { IMAGE_NAME, integrityManifest } from "../src/integrity.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -86,14 +86,18 @@ export async function buildStaticSite(): Promise<void> {
   // The page reads the pins for its hash checks, then the blobs.
   await copyFiles(["pins.json", "yurt_kernel.wasm"], artifactsDir, distDir);
   // Cloudflare Pages refuses files over 25 MiB; the image ships in parts.
-  await writeImageParts("playground.yurtimg");
+  await writeImageParts(IMAGE_NAME);
   await Deno.writeTextFile(join(distDir, "_headers"), ISOLATION_HEADERS);
-  // The "check the bytes" card hashes what it downloaded against this.
+  // The "check the bytes" card hashes what it downloaded against this. dist/
+  // holds the image only as parts; hash the file they were sliced from.
   await Deno.writeTextFile(
     join(distDir, "integrity.json"),
     JSON.stringify(
       await integrityManifest(
-        (name) => Deno.readFile(join(distDir, name)),
+        (name) =>
+          Deno.readFile(
+            join(name === IMAGE_NAME ? artifactsDir : distDir, name),
+          ),
         Deno.env.get("GITHUB_SHA") ?? null,
       ),
       null,
