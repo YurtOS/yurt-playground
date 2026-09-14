@@ -17,7 +17,8 @@
     "worktrees",
     "public/boot.bundle.js",
     "public/coordinator.bundle.js",
-    "public/worker_bootstrap.js"
+    "public/worker_bootstrap.js",
+    "artifacts/jupyter-site-packages"
   ],
   "lint": {
     "exclude": [
@@ -25,7 +26,8 @@
       "worktrees",
       "public/boot.bundle.js",
       "public/coordinator.bundle.js",
-      "public/worker_bootstrap.js"
+      "public/worker_bootstrap.js",
+      "artifacts/jupyter-site-packages"
     ],
     "rules": {
       "exclude": ["no-sloppy-imports"]
@@ -37,7 +39,8 @@
       "worktrees",
       "public/boot.bundle.js",
       "public/coordinator.bundle.js",
-      "public/worker_bootstrap.js"
+      "public/worker_bootstrap.js",
+      "artifacts/jupyter-site-packages"
     ]
   },
   "tasks": {
