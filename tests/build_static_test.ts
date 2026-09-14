@@ -1,4 +1,4 @@
-import { assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 
 Deno.test("static build emits isolated playground deployment", async () => {
   const script = await Deno.readTextFile(
@@ -53,12 +53,45 @@ Deno.test("static build writes every file index.html and the page need", async (
       "coordinator.bundle.js",
       "worker_bootstrap.js",
       "xterm.css",
+      "pins.json",
       "yurt_kernel.wasm",
-      "playground.yurtimg",
+      "playground.yurtimg.parts.json",
       "_headers",
     ]
   ) {
     const stat = await Deno.stat(new URL(`dist/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/${file} is empty`);
+  }
+  // Cloudflare Pages refuses any file over 25 MiB (deploy run 34841044263
+  // died on the 86.9 MB image), so the image ships in parts that add back
+  // up to the pinned blob byte for byte.
+  const manifest = JSON.parse(
+    await Deno.readTextFile(
+      new URL("dist/playground.yurtimg.parts.json", repoRoot),
+    ),
+  ) as { size: number; parts: string[] };
+  const image = await Deno.readFile(
+    new URL("artifacts/playground.yurtimg", repoRoot),
+  );
+  assertEquals(manifest.size, image.byteLength);
+  let offset = 0;
+  for (const part of manifest.parts) {
+    const bytes = await Deno.readFile(new URL(`dist/${part}`, repoRoot));
+    assertEquals(
+      bytes.byteLength <= 25 * 1024 * 1024,
+      true,
+      `${part} exceeds the Pages cap`,
+    );
+    assertEquals(bytes, image.subarray(offset, offset + bytes.byteLength));
+    offset += bytes.byteLength;
+  }
+  assertEquals(offset, image.byteLength);
+  for await (const entry of Deno.readDir(new URL("dist", repoRoot))) {
+    const stat = await Deno.stat(new URL(`dist/${entry.name}`, repoRoot));
+    assertEquals(
+      stat.size <= 25 * 1024 * 1024,
+      true,
+      `dist/${entry.name} exceeds the Pages cap`,
+    );
   }
 });

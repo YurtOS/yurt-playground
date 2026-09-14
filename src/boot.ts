@@ -15,6 +15,7 @@ import {
   type ArtifactProgress,
   fetchPinnedArtifact,
 } from "./artifact_fetch.ts";
+import { partsFetch } from "./image_parts.ts";
 import { parsePins, type Pins } from "./pins.ts";
 
 export type PlaygroundTerm = {
@@ -81,12 +82,14 @@ export async function fetchPlaygroundBytes(
   onProgress?: (progress: ArtifactProgress) => void,
 ): Promise<Uint8Array> {
   const pins = await browserPins();
-  const pin = path.includes("yurt_kernel.wasm") ? pins.kernelWasm : pins.image;
+  const isKernel = path.includes("yurt_kernel.wasm");
   const cacheStorage = typeof caches === "undefined" ? undefined : caches;
-  return await fetchPinnedArtifact(pin, {
+  return await fetchPinnedArtifact(isKernel ? pins.kernelWasm : pins.image, {
     url: path,
     cacheName: "yurt-playground-artifacts-v1",
     cacheStorage,
+    // The image is published in parts (Cloudflare Pages' 25 MiB file cap).
+    fetch: isKernel ? undefined : partsFetch(),
     onProgress,
   });
 }
