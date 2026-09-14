@@ -12,11 +12,18 @@ export const ISOLATION_HEADERS = {
   "Cross-Origin-Resource-Policy": "same-origin",
 };
 
+/** xterm's stylesheet, served from the npm package rather than copied into
+ * public/. The static build copies it from here too. */
+export const XTERM_CSS_PATH = join(
+  repoRoot,
+  "node_modules/@xterm/xterm/css/xterm.css",
+);
+
 const ARTIFACT_FILES: Record<string, string> = {
   "/pins.json": join(artifactsDir, "pins.json"),
   "/yurt_kernel.wasm": join(artifactsDir, "yurt_kernel.wasm"),
   "/playground.yurtimg": join(artifactsDir, "playground.yurtimg"),
-  "/xterm.css": join(repoRoot, "node_modules/@xterm/xterm/css/xterm.css"),
+  "/xterm.css": XTERM_CSS_PATH,
 };
 
 export function resolvePlaygroundPath(pathname: string): string | null {
