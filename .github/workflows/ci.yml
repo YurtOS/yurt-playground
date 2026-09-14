@@ -175,4 +175,6 @@ jobs:
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
-        run: deno run --allow-all tests/playground_e2e.ts
+        run: |
+          deno run --allow-all tests/playground_e2e.ts
+          deno run --allow-all tests/jupyterlite_e2e.ts

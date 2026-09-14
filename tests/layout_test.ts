@@ -42,7 +42,12 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   assertEquals(workflow.includes("scripts/pin-artifacts.ts"), true);
   assertEquals(workflow.includes("tests/playground_e2e.ts"), true);
   assertEquals(
-    workflow.includes("run: deno run --allow-all tests/playground_e2e.ts"),
+    workflow.includes("deno run --allow-all tests/playground_e2e.ts"),
+    true,
+  );
+  // The notebook interface is accepted in the same browser step.
+  assertEquals(
+    workflow.includes("deno run --allow-all tests/jupyterlite_e2e.ts"),
     true,
   );
   assertEquals(
