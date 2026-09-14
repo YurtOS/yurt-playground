@@ -75,7 +75,7 @@ jobs:
           echo "payloadTreeSha256 for the lock:"
           deno run --allow-read --allow-write --allow-env scripts/update-jupyter-lock-hash.ts
       - name: Upload the payload and the updated lock
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jupyter-payload
           path: |
