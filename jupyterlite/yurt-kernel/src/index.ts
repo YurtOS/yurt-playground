@@ -71,6 +71,11 @@ class YurtKernel implements IKernel {
         this._fromKernel(message, channel)
       );
       await b.ready;
+      if (this._isDisposed) {
+        this._unsubscribe?.();
+        this._unsubscribe = undefined;
+        return;
+      }
       this._bridge = b;
     });
   }
@@ -111,7 +116,10 @@ class YurtKernel implements IKernel {
     this._unsubscribe?.();
     for (const pending of this._pending.values()) pending();
     this._pending.clear();
-    if (this._bridge !== undefined) {
+    // The bridge is shared by every JupyterLite kernel on this page. A
+    // shutdown of one client must not replace the guest out from under the
+    // others; the last client is the only one that can safely restart it.
+    if (this._bridge !== undefined && kernels.size === 0) {
       this._bridge.restart().catch(() => {
         // The next kernel's `ready` reports the failure.
       });
@@ -126,6 +134,7 @@ class YurtKernel implements IKernel {
    */
   async interrupt(): Promise<void> {
     await this.ready;
+    if (this._isDisposed) return;
     const msgId = crypto.randomUUID();
     this._internal.add(msgId);
     const request = {
@@ -166,6 +175,7 @@ class YurtKernel implements IKernel {
    */
   async handleMessage(msg: KernelMessage.IMessage): Promise<void> {
     await this.ready;
+    if (this._isDisposed) return;
     const b = this._bridge!;
     const channel = msg.channel as RequestChannel;
     const msgId = msg.header.msg_id;

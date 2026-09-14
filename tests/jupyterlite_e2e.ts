@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
+import { watchCspViolations } from "./csp_watch.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -63,9 +64,11 @@ if (import.meta.main) {
     // A phone is not blocked: it reaches the home page and gets a note.
     const phone = await browser.newContext({ ...devices["iPhone 13"] });
     const phonePage = await phone.newPage();
+    const phoneCsp = watchCspViolations(phonePage);
     await phonePage.goto(`${server.url}/`, { waitUntil: "load" });
     await phonePage.getByTestId("choose-notebook").waitFor({ timeout: 10_000 });
     await phonePage.getByTestId("mobile-note").waitFor({ timeout: 10_000 });
+    phoneCsp();
     await phone.close();
 
     // A page served without COOP/COEP is the one thing that cannot work: the
@@ -87,9 +90,25 @@ if (import.meta.main) {
     await plain.close();
 
     const page = await browser.newPage();
+    const started = Date.now();
+    const csp = watchCspViolations(page);
     await page.goto(`${server.url}/`, { waitUntil: "domcontentloaded" });
     if (await page.evaluate(() => globalThis.crossOriginIsolated !== true)) {
       fail("browser page is not cross-origin isolated");
+    }
+    // "Check the bytes": the page re-hashes what it downloaded and every
+    // file matches integrity.json, the 87 MB image included.
+    await page.getByTestId("verify-files").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector("[data-testid=verify-summary]")?.textContent
+          ?.endsWith("files match.") === true,
+      undefined,
+      { timeout: 60_000 },
+    );
+    const summary = await page.getByTestId("verify-summary").textContent();
+    if (summary !== "6 of 6 files match.") {
+      fail(`verification did not pass: ${summary}`);
     }
     await page.getByTestId("choose-notebook").click();
     await page.waitForURL(/\/jupyter\/notebooks\/index\.html/);
@@ -104,8 +123,14 @@ if (import.meta.main) {
         document.querySelector(".jp-Notebook-ExecutionIndicator")
             ?.getAttribute("data-status") === "idle",
       undefined,
-      // Measured 2026-09-14: ~50 s on an M-series laptop.
-      { timeout: 240_000 },
+      // Measured 2026-09-14: ~50 s on an M-series laptop; a 2-vCPU CI
+      // runner needs several times that.
+      { timeout: 420_000 },
+    );
+    console.log(
+      `jupyterlite e2e: kernel idle after ${
+        Math.round((Date.now() - started) / 1000)
+      } s`,
     );
 
     // Run the welcome notebook's two code cells with Shift+Enter.
@@ -128,6 +153,7 @@ if (import.meta.main) {
       undefined,
       { timeout: 180_000 },
     );
+    csp();
     console.log("jupyterlite e2e: notebook executed on the guest ipykernel");
 
     // Interrupt reaches the guest: a busy loop ends with KeyboardInterrupt

@@ -42,7 +42,7 @@ acceptance tests.
 
 ### Task 1: Land the kernel prerequisites
 
-**Repository:** `/Users/sunny/work/yurtos/yurtos-kernel`
+**Repository:** `~/work/yurtos/yurtos-kernel`
 
 **Files:**
 
@@ -83,7 +83,7 @@ acceptance tests.
 
 ### Task 2: Make the Jupyter payload reproducible
 
-**Repository:** `/Users/sunny/work/yurtos/yurt-playground`
+**Repository:** `~/work/yurtos/yurt-playground`
 
 **Files:**
 
@@ -127,7 +127,7 @@ acceptance tests.
 
 ### Task 3: Compose the pinned ports image
 
-**Repository:** `/Users/sunny/work/yurtos/yurt-ports`
+**Repository:** `~/work/yurtos/yurt-ports`
 
 **Files:**
 
@@ -164,7 +164,7 @@ acceptance tests.
 
 ### Task 4: Make CI materialize every pinned input
 
-**Repository:** `/Users/sunny/work/yurtos/yurt-playground`
+**Repository:** `~/work/yurtos/yurt-playground`
 
 **Files:**
 
@@ -216,7 +216,7 @@ acceptance tests.
 
 ### Task 5: Introduce the playground session controller
 
-**Repository:** `/Users/sunny/work/yurtos/yurt-playground`
+**Repository:** `~/work/yurtos/yurt-playground`
 
 **Files:**
 
@@ -243,7 +243,7 @@ acceptance tests.
 
 ### Task 6: Add the real Jupyter client and notebook pane
 
-**Repository:** `/Users/sunny/work/yurtos/yurt-playground`
+**Repository:** `~/work/yurtos/yurt-playground`
 
 **Files:**
 
@@ -272,7 +272,7 @@ acceptance tests.
 
 ### Task 7: Add snapshot capture and in-place restore
 
-**Repository:** `/Users/sunny/work/yurtos/yurt-playground`
+**Repository:** `~/work/yurtos/yurt-playground`
 
 **Files:**
 
@@ -309,7 +309,7 @@ acceptance tests.
 
 ### Task 8: Add browser end-to-end acceptance
 
-**Repository:** `/Users/sunny/work/yurtos/yurt-playground`
+**Repository:** `~/work/yurtos/yurt-playground`
 
 **Files:**
 
@@ -340,7 +340,7 @@ acceptance tests.
 
 ### Task 9: Run the complete gates and publish
 
-**Repository:** `/Users/sunny/work/yurtos/yurt-playground`
+**Repository:** `~/work/yurtos/yurt-playground`
 
 **Files:**
 

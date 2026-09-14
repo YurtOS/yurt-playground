@@ -68,7 +68,14 @@ Create a Cloudflare Pages project and add these repository secrets:
 
 Pushes to `main` and manual workflow runs publish the site. The output directory
 is `dist/`; the generated `_headers` file applies the required cross-origin
-isolation headers.
+isolation headers and a Content Security Policy (`src/csp.ts`). The policy keeps
+every request the browser makes from a playground page on the site's own origin,
+so "nothing leaves the page" is enforced, not just true of the guest. The
+JupyterLite pages additionally get `'unsafe-eval'` (JupyterLab compiles its
+settings schemas with `new Function`), and each page's inline scripts are
+allowed by hash, derived from the built files. The browser acceptance tests fail
+on any policy violation Chromium reports, so a directive that is too tight shows
+up there.
 
 To build the same output locally:
 
