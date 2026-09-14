@@ -103,9 +103,34 @@ if (import.meta.main) {
         "data-online",
       ) === "true"
     );
+    // Not here: `!echo hi`. IPython's `!` needs the `resource` module
+    // (yurt-ports#77) and Python cannot fork or posix_spawn on the JS host
+    // (yurtos-kernel#2771); it stays the open item of #4.
+    // The cell and the ash terminal share one VFS: a file written by Python
+    // is read back by the shell in the xterm (#4).
+    await page.getByTestId("notebook-input").fill(
+      "open('/tmp/from-cell', 'w').write('cell wrote this')",
+    );
+    await page.getByTestId("notebook-execute").click();
+    await page.waitForFunction(() =>
+      document.querySelector<HTMLElement>("[data-testid=notebook-output]")
+        ?.textContent?.trim() === "15"
+    );
     if (!(await page.locator("#term").isVisible())) {
       throw new Error("ash terminal is not visible");
     }
+    await page.locator("#term").click();
+    await page.keyboard.type("cat /tmp/from-cell; echo __VFS_DONE__\n");
+    await page.waitForFunction(
+      () => {
+        const rows = document.querySelector("#term .xterm-rows")?.textContent ??
+          "";
+        return rows.includes("cell wrote this") &&
+          rows.includes("__VFS_DONE__");
+      },
+      undefined,
+      { timeout: 60_000 },
+    );
     csp();
   } finally {
     await browser.close();
