@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
+import { EXECUTE_TIMEOUT_MS } from "../src/jupyter.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -57,19 +58,35 @@ if (import.meta.main) {
     await page.getByTestId("notebook-input").fill("1+1");
     await page.getByTestId("notebook-execute").click();
     await page.getByTestId("notebook-output").waitFor({ state: "visible" });
-    await page.waitForFunction(() =>
-      document.querySelector<HTMLElement>("[data-testid=notebook-output]")
-        ?.textContent === "2"
+    // A cell error lands in the same element, so a wrong answer fails fast
+    // instead of waiting out the timeout.
+    const cellDone = (expected: string) =>
+      page.waitForFunction(
+        (want) => {
+          const text = document.querySelector<HTMLElement>(
+            "[data-testid=notebook-output]",
+          )?.textContent ?? "";
+          if (text === want) return true;
+          if (/timed out|Error|Traceback/.test(text)) {
+            throw new Error(`cell failed: ${text}`);
+          }
+          return false;
+        },
+        expected,
+        { timeout: EXECUTE_TIMEOUT_MS + 10_000 },
+      );
+    await cellDone("2");
+    console.log(
+      `playground e2e: first cell done after ${
+        Math.round((Date.now() - started) / 1000)
+      } s`,
     );
     // `int(...)`: numpy 2 displays its scalars as `np.int32(3)`.
     await page.getByTestId("notebook-input").fill(
       "import numpy as np; int(np.array([1, 2]).sum())",
     );
     await page.getByTestId("notebook-execute").click();
-    await page.waitForFunction(() =>
-      document.querySelector<HTMLElement>("[data-testid=notebook-output]")
-        ?.textContent === "3"
-    );
+    await cellDone("3");
     if (!(await page.locator("#term").isVisible())) {
       throw new Error("ash terminal is not visible");
     }

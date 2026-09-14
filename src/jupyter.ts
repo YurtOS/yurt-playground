@@ -167,10 +167,15 @@ async function readConnectionFile(
   }
 }
 
+/** Bound on one cell of the terminal page's demo notebook. The first
+ * execute after boot is JIT-bound like the boot itself: ~2 s on a laptop,
+ * tens of seconds on a 2-vCPU CI runner. */
+export const EXECUTE_TIMEOUT_MS = 120_000;
+
 export async function executeCell(
   transport: JupyterTransport,
   code: string,
-  timeoutMs = 15_000,
+  timeoutMs = EXECUTE_TIMEOUT_MS,
 ): Promise<JupyterReply> {
   const msgId = crypto.randomUUID();
   const output = { stdout: "", display: "", traceback: [] as string[] };
