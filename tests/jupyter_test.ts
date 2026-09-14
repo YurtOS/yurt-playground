@@ -1,3 +1,8 @@
+import {
+  buildKernelStopCommand,
+  JUPYTER_CONNECTION_FILE,
+  JUPYTER_PID_FILE,
+} from "../src/jupyter.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import { connectJupyterWithRetries, executeCell } from "../src/jupyter.ts";
 import type { JupyterMessage } from "../src/jupyter_protocol.ts";
@@ -113,4 +118,19 @@ Deno.test("kernel readiness retries close each failed transport", async () => {
       ),
   );
   assertEquals(closed, 2);
+});
+
+Deno.test("the stop command kills the recorded kernel and clears both files", () => {
+  const command = buildKernelStopCommand();
+  // SIGKILL by recorded pid: a kernel being restarted may be wedged, and
+  // nothing else in the guest may be killed.
+  assertEquals(command.includes(`kill -KILL $(cat ${JUPYTER_PID_FILE})`), true);
+  assertEquals(command.includes(`wait $(cat ${JUPYTER_PID_FILE})`), true);
+  // Both files go, so the relaunch cannot read a stale connection file.
+  assertEquals(
+    command.includes(`rm -f ${JUPYTER_CONNECTION_FILE} ${JUPYTER_PID_FILE}`),
+    true,
+  );
+  // No pid file means nothing to kill, not a shell error.
+  assertEquals(command.startsWith(`if [ -s ${JUPYTER_PID_FILE} ]`), true);
 });

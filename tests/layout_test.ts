@@ -17,9 +17,12 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   assertEquals(workflow.includes("repository: YurtOS/yurtos-kernel"), true);
   assertEquals(workflow.includes("repository: YurtOS/yurt-jupyter"), true);
   assertEquals(workflow.includes("jupyter_rev"), true);
-  // Version-agnostic: dependabot bumps the major, and these assertions pin the
-  // shape of the workflow (a host python is provisioned), not the action tag.
-  assertEquals(/actions\/setup-python@v\d+/.test(workflow), true);
+  // Version-agnostic: dependabot bumps the pin, and these assertions pin the
+  // shape of the workflow (a host python is provisioned), not the action rev.
+  assertEquals(
+    /actions\/setup-python@[0-9a-f]{40} # v\d+/.test(workflow),
+    true,
+  );
   assertEquals(
     workflow.includes(
       "HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}",
@@ -30,7 +33,7 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   // The Jupyter Notebook interface is built into public/jupyter before the
   // artifact-backed tests and the static build.
   assertEquals(workflow.includes("jupyterlite/build.sh"), true);
-  assertEquals(/actions\/setup-node@v\d+/.test(workflow), true);
+  assertEquals(/actions\/setup-node@[0-9a-f]{40} # v\d+/.test(workflow), true);
   // The two blobs are fetched from their releases, never rebuilt by CI.
   assertEquals(workflow.includes("scripts/install-pinned-artifacts.sh"), true);
   assertEquals(workflow.includes("repository: YurtOS/yurt-ports"), false);
@@ -50,10 +53,40 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
     workflow.includes("deno run --allow-all tests/jupyterlite_e2e.ts"),
     true,
   );
-  assertEquals(
-    workflow.includes("if: vars.YURT_JUPYTER_E2E == 'true'"),
-    true,
-  );
+  // Browser acceptance is a required step, not a repository-variable opt-in:
+  // it is the only check that proves the deployed pages boot the sandbox.
+  assertEquals(workflow.includes("YURT_JUPYTER_E2E"), false);
+});
+
+Deno.test("every action is pinned to a commit and no checkout keeps its credentials", async () => {
+  // A moved tag runs someone else's code with the deploy secrets; a commit
+  // does not move. And a checkout's token otherwise stays in .git/config for
+  // every later step, including scripts a pull request can edit.
+  for (
+    const entry of Deno.readDirSync(
+      new URL("../.github/workflows", import.meta.url),
+    )
+  ) {
+    const workflow = await Deno.readTextFile(
+      new URL(`../.github/workflows/${entry.name}`, import.meta.url),
+    );
+    const uses = workflow.match(/uses: \S+/g) ?? [];
+    assertEquals(uses.length > 0, true, `${entry.name} uses no action`);
+    for (const use of uses) {
+      assertEquals(
+        /^uses: [\w.-]+\/[\w.-]+@[0-9a-f]{40}$/.test(use),
+        true,
+        `${entry.name}: ${use} is not pinned to a commit`,
+      );
+    }
+    const checkouts = uses.filter((use) => use.includes("actions/checkout@"));
+    const persisted = workflow.match(/persist-credentials: false/g) ?? [];
+    assertEquals(
+      persisted.length,
+      checkouts.length,
+      `${entry.name}: ${checkouts.length} checkouts, ${persisted.length} drop credentials`,
+    );
+  }
 });
 
 Deno.test("workflows authenticate every private sibling checkout", async () => {
@@ -122,6 +155,15 @@ Deno.test("home page offers the terminal and the Jupyter Notebook", async () => 
     true,
   );
   assertEquals(html.includes('href="./jupyter/lab/index.html"'), true);
+  // The "is this really in your browser" section and its live check.
+  assertEquals(html.includes('data-testid="proof"'), true);
+  assertEquals(html.includes('data-testid="verify-files"'), true);
+  assertEquals(html.includes('src="./verify.js"'), true);
+  assertEquals(
+    (await Deno.readTextFile(new URL("../public/verify.js", import.meta.url)))
+      .includes("integrity.json"),
+    true,
+  );
   // The only hard gate is cross-origin isolation; phones get a note.
   assertEquals(html.includes("./unsupported.html"), true);
   assertEquals(html.includes('data-testid="mobile-note"'), true);
@@ -134,13 +176,18 @@ Deno.test("home page offers the terminal and the Jupyter Notebook", async () => 
     new URL("../public/terminal.html", import.meta.url),
   );
   assertEquals(terminal.includes("./unsupported.html"), true);
+  // The terminal page shows its network state, for the offline check.
+  assertEquals(terminal.includes('data-testid="net"'), true);
 });
 
 Deno.test("deployment workflow publishes an isolated static site", async () => {
   const workflow = await Deno.readTextFile(
     new URL("../.github/workflows/deploy-pages.yml", import.meta.url),
   );
-  assertEquals(/actions\/setup-python@v\d+/.test(workflow), true);
+  assertEquals(
+    /actions\/setup-python@[0-9a-f]{40} # v\d+/.test(workflow),
+    true,
+  );
   for (
     const value of [
       'python-version: "3.14.0"',
@@ -157,5 +204,25 @@ Deno.test("deployment workflow publishes an isolated static site", async () => {
     ]
   ) {
     assertEquals(workflow.includes(value), true);
+  }
+});
+
+Deno.test("every workflow restricts its token to reading the repository", async () => {
+  // Nothing here pushes or writes to the repository, and a public repository
+  // runs these on pull requests from strangers. The cross-repo and Cloudflare
+  // credentials are named secrets, not the workflow token.
+  for (
+    const entry of Deno.readDirSync(
+      new URL("../.github/workflows", import.meta.url),
+    )
+  ) {
+    const workflow = await Deno.readTextFile(
+      new URL(`../.github/workflows/${entry.name}`, import.meta.url),
+    );
+    assertEquals(
+      workflow.includes("\npermissions:\n  contents: read\n"),
+      true,
+      `${entry.name} does not restrict the workflow token to contents: read`,
+    );
   }
 });
