@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
+import { watchCspViolations } from "./csp_watch.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -33,9 +34,11 @@ if (import.meta.main) {
     // A phone is not blocked: it reaches the home page and gets a note.
     const phone = await browser.newContext({ ...devices["iPhone 13"] });
     const phonePage = await phone.newPage();
+    const phoneCsp = watchCspViolations(phonePage);
     await phonePage.goto(`${server.url}/`, { waitUntil: "load" });
     await phonePage.getByTestId("choose-notebook").waitFor({ timeout: 10_000 });
     await phonePage.getByTestId("mobile-note").waitFor({ timeout: 10_000 });
+    phoneCsp();
     await phone.close();
 
     // A page served without COOP/COEP is the one thing that cannot work: the
@@ -58,6 +61,7 @@ if (import.meta.main) {
 
     const page = await browser.newPage();
     const started = Date.now();
+    const csp = watchCspViolations(page);
     await page.goto(`${server.url}/`, { waitUntil: "domcontentloaded" });
     if (await page.evaluate(() => globalThis.crossOriginIsolated !== true)) {
       fail("browser page is not cross-origin isolated");
@@ -105,6 +109,7 @@ if (import.meta.main) {
       undefined,
       { timeout: 180_000 },
     );
+    csp();
     console.log("jupyterlite e2e: notebook executed on the guest ipykernel");
   } finally {
     await browser.close();

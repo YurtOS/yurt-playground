@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
 import { EXECUTE_TIMEOUT_MS } from "../src/jupyter.ts";
+import { watchCspViolations } from "./csp_watch.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -16,6 +17,7 @@ if (import.meta.main) {
   try {
     const page = await browser.newPage();
     const started = Date.now();
+    const csp = watchCspViolations(page);
     await page.goto(`${server.url}/terminal.html`, {
       waitUntil: "domcontentloaded",
     });
@@ -90,6 +92,7 @@ if (import.meta.main) {
     if (!(await page.locator("#term").isVisible())) {
       throw new Error("ash terminal is not visible");
     }
+    csp();
   } finally {
     await browser.close();
     await server.shutdown();
