@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "./serve.ts";
 import { XTERM_CSS_PATH } from "../src/serve.ts";
+import { imagePartRange, imagePartsManifest } from "../src/image_parts.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -36,6 +37,19 @@ async function copyFiles(
   }
 }
 
+async function writeImageParts(name: string): Promise<void> {
+  const image = await Deno.readFile(join(artifactsDir, name));
+  const manifest = imagePartsManifest(name, image.byteLength);
+  for (const [index, part] of manifest.parts.entries()) {
+    const [start, end] = imagePartRange(index, image.byteLength)!;
+    await Deno.writeFile(join(distDir, part), image.subarray(start, end));
+  }
+  await Deno.writeTextFile(
+    join(distDir, `${name}.parts.json`),
+    JSON.stringify(manifest),
+  );
+}
+
 export async function buildStaticSite(): Promise<void> {
   await ensureBundle(kernelRoot());
   await Deno.remove(distDir, { recursive: true }).catch(() => {});
@@ -43,11 +57,10 @@ export async function buildStaticSite(): Promise<void> {
   await copyFiles(STATIC_FILES, publicDir, distDir);
   // index.html links ./xterm.css; the dev server maps it to the npm package.
   await Deno.copyFile(XTERM_CSS_PATH, join(distDir, "xterm.css"));
-  await copyFiles(
-    ["yurt_kernel.wasm", "playground.yurtimg"],
-    artifactsDir,
-    distDir,
-  );
+  // The page reads the pins for its hash checks, then the blobs.
+  await copyFiles(["pins.json", "yurt_kernel.wasm"], artifactsDir, distDir);
+  // Cloudflare Pages refuses files over 25 MiB; the image ships in parts.
+  await writeImageParts("playground.yurtimg");
   await Deno.writeTextFile(join(distDir, "_headers"), ISOLATION_HEADERS);
 }
 

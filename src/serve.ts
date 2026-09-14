@@ -1,5 +1,10 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  imagePartIndex,
+  imagePartRange,
+  imagePartsManifest,
+} from "./image_parts.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -64,6 +69,55 @@ function notFound(): Response {
   });
 }
 
+const IMAGE_NAME = "playground.yurtimg";
+
+/** The image parts the static build publishes, sliced from the single
+ * artifacts/ file so the page's fetch path is the same here and deployed. */
+async function handleImagePart(pathname: string): Promise<Response | null> {
+  const relative = pathname.replace(/^\/+/, "");
+  const isManifest = relative === `${IMAGE_NAME}.parts.json`;
+  const index = imagePartIndex(relative, IMAGE_NAME);
+  if (!isManifest && index === undefined) return null;
+  let file: Deno.FsFile;
+  try {
+    file = await Deno.open(ARTIFACT_FILES[`/${IMAGE_NAME}`]);
+  } catch {
+    return notFound();
+  }
+  try {
+    const size = (await file.stat()).size;
+    if (isManifest) {
+      return new Response(
+        JSON.stringify(imagePartsManifest(IMAGE_NAME, size)),
+        {
+          headers: {
+            ...ISOLATION_HEADERS,
+            "Content-Type": "application/json; charset=utf-8",
+          },
+        },
+      );
+    }
+    const range = imagePartRange(index!, size);
+    if (range === undefined) return notFound();
+    const bytes = new Uint8Array(range[1] - range[0]);
+    await file.seek(range[0], Deno.SeekMode.Start);
+    let read = 0;
+    while (read < bytes.byteLength) {
+      const n = await file.read(bytes.subarray(read));
+      if (n === null) break;
+      read += n;
+    }
+    return new Response(bytes.subarray(0, read), {
+      headers: {
+        ...ISOLATION_HEADERS,
+        "Content-Type": "application/octet-stream",
+      },
+    });
+  } finally {
+    file.close();
+  }
+}
+
 export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
   let pathname: string;
@@ -72,6 +126,8 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   } catch {
     return notFound();
   }
+  const part = await handleImagePart(pathname);
+  if (part !== null) return part;
   const filePath = resolvePlaygroundPath(pathname);
   if (filePath === null) return notFound();
   try {
