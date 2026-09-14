@@ -14,8 +14,11 @@ import type {
 } from "./jupyter_transport.ts";
 
 export type PlaygroundKernelBridge = {
-  /** Resolves once the guest ipykernel answered kernel_info. */
-  ready: Promise<void>;
+  /** Resolves once the current guest ipykernel answered kernel_info: the
+   * first boot, or the latest restart. */
+  readonly ready: Promise<void>;
+  /** Replace the guest kernel with a fresh process; `ready` follows it. */
+  restart(): Promise<void>;
   send(message: JupyterMessage, channel: JupyterRequestChannel): void;
   onMessage(
     listener: (message: JupyterMessage, channel: JupyterChannel) => void,
@@ -28,6 +31,7 @@ type FromWorker =
   | { type: "out"; bytes: number[] }
   | { type: "error"; message: string }
   | { type: "notebook-ready" }
+  | { type: "jupyter-restarted" }
   | {
     type: "jupyter-message";
     message: JupyterMessage;
@@ -52,12 +56,16 @@ export function startPlaygroundKernel(
     (message: JupyterMessage, channel: JupyterChannel) => void
   >();
   const statusListeners = new Set<(text: string) => void>();
+  // `ready` is the boot at first and the latest restart afterwards; each is
+  // settled by the coordinator's next ready/restarted or error message.
   let resolveReady: () => void = () => {};
   let rejectReady: (error: Error) => void = () => {};
-  const ready = new Promise<void>((resolve, reject) => {
-    resolveReady = resolve;
-    rejectReady = reject;
-  });
+  const arm = (): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+    });
+  let ready = arm();
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
     if (msg.type === "status") {
@@ -65,7 +73,9 @@ export function startPlaygroundKernel(
     } else if (msg.type === "error") {
       for (const listener of statusListeners) listener(msg.message);
       rejectReady(new Error(msg.message));
-    } else if (msg.type === "notebook-ready") {
+    } else if (
+      msg.type === "notebook-ready" || msg.type === "jupyter-restarted"
+    ) {
       resolveReady();
     } else if (msg.type === "jupyter-message") {
       for (const listener of messageListeners) {
@@ -78,7 +88,19 @@ export function startPlaygroundKernel(
   };
   worker.postMessage({ type: "start", cols: 80, rows: 24, isolated: true });
   bridge = {
-    ready,
+    get ready() {
+      return ready;
+    },
+    restart() {
+      // Chain on the previous state so a restart requested during boot or
+      // during another restart waits its turn instead of racing it.
+      ready = ready.catch(() => {}).then(() => {
+        const next = arm();
+        worker.postMessage({ type: "jupyter-restart" });
+        return next;
+      });
+      return ready;
+    },
     send(message, channel) {
       worker.postMessage({ type: "jupyter-send", message, channel });
     },

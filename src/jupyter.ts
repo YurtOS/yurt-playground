@@ -6,6 +6,8 @@ import {
 } from "./jupyter_transport.ts";
 
 export const JUPYTER_CONNECTION_FILE = "/tmp/yurt-kernel.json";
+/** The launched ipykernel's pid, so a restart can kill exactly that process. */
+export const JUPYTER_PID_FILE = "/tmp/yurt-kernel.pid";
 const JUPYTER_KEY = "yurt";
 const encoder = new TextEncoder();
 
@@ -34,12 +36,75 @@ export function buildKernelLaunchCommand(
   ].join(" ");
 }
 
+/** The shell line that stops a kernel started by `startGuestKernel` and
+ * clears its files, so the next launch cannot read a stale connection file.
+ * SIGKILL, not TERM: a kernel that is being restarted may be wedged. */
+export function buildKernelStopCommand(
+  connectionFile = JUPYTER_CONNECTION_FILE,
+  pidFile = JUPYTER_PID_FILE,
+): string {
+  return `if [ -s ${pidFile} ]; then kill -KILL $(cat ${pidFile}) 2>/dev/null; ` +
+    `wait $(cat ${pidFile}) 2>/dev/null; fi; rm -f ${connectionFile} ${pidFile}`;
+}
+
+/** Run one shell line in the guest and wait for its echo marker. */
+async function runShell(
+  session: JupyterLaunchSession,
+  command: string,
+  timeoutMs: number,
+): Promise<void> {
+  // The PTY echoes the typed command, so the marker must not appear in it:
+  // the shell joins the two halves, the echo shows them quoted apart.
+  const marker = `YURT_SHELL_DONE_${Math.random().toString(36).slice(2, 8)}`;
+  const typedMarker = marker.replace("DONE_", 'DONE_""');
+  let text = "";
+  let resolveOutput: (() => void) | undefined;
+  const remove = session.onOutput((chunk) => {
+    text += new TextDecoder().decode(chunk);
+    if (text.includes(marker)) resolveOutput?.();
+  });
+  try {
+    await session.terminal.write(
+      encoder.encode(`${command}; echo ${typedMarker}\n`),
+    );
+    if (!text.includes(marker)) {
+      await withTimeout(
+        new Promise<void>((resolve) => resolveOutput = resolve),
+        timeoutMs,
+        `guest shell did not finish: ${command}`,
+      );
+    }
+  } finally {
+    remove();
+  }
+}
+
+/** Kill the running guest kernel, if any, and drop its files. */
+export async function stopGuestKernel(
+  session: JupyterLaunchSession,
+): Promise<void> {
+  await runShell(session, buildKernelStopCommand(), 30_000);
+}
+
+/** Replace the guest kernel with a fresh process: what a frontend's restart
+ * means. The old transport is closed first so nothing reads from a socket
+ * whose peer is being killed. */
+export async function restartGuestKernel(
+  session: JupyterLaunchSession,
+  previous: JupyterTransport | undefined,
+): Promise<JupyterTransport> {
+  await previous?.close().catch(() => {});
+  await stopGuestKernel(session);
+  return await startGuestKernel(session);
+}
+
 export async function startGuestKernel(
   session: JupyterLaunchSession,
 ): Promise<JupyterTransport> {
   await session.terminal.write(
     encoder.encode(
-      `${buildKernelLaunchCommand()} >/tmp/yurt-jupyter.log 2>&1 &\n`,
+      `${buildKernelLaunchCommand()} >/tmp/yurt-jupyter.log 2>&1 & ` +
+        `echo $! > ${JUPYTER_PID_FILE}\n`,
     ),
   );
   const connection = await readConnectionFile(session);

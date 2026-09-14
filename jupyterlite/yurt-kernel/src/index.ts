@@ -13,7 +13,7 @@ import {
   JupyterFrontEndPlugin,
 } from "@jupyterlab/application";
 import type { KernelMessage } from "@jupyterlab/services";
-import { IKernel, IKernelSpecs } from "@jupyterlite/services";
+import { IKernel, IKernelClient, IKernelSpecs } from "@jupyterlite/services";
 import { ISignal, Signal } from "@lumino/signaling";
 
 type RequestChannel = "shell" | "control" | "stdin";
@@ -21,7 +21,10 @@ type Channel = RequestChannel | "iopub";
 
 /** Shape of `/playground-bridge.js` (see `src/lite_bridge.ts`). */
 type PlaygroundKernelBridge = {
-  ready: Promise<void>;
+  /** The first boot, then the latest restart. */
+  readonly ready: Promise<void>;
+  /** Replace the guest ipykernel with a fresh process. */
+  restart(): Promise<void>;
   send(message: KernelMessage.IMessage, channel: RequestChannel): void;
   onMessage(
     listener: (message: KernelMessage.IMessage, channel: Channel) => void,
@@ -35,6 +38,13 @@ type BridgeModule = {
 
 const BRIDGE_URL = "/playground-bridge.js";
 const MAX_TRACKED_REQUESTS = 4096;
+/** ipykernel answers interrupt_request from its control thread even while
+ * a cell runs, so a missing reply means a wedged kernel; do not hang the
+ * frontend on it. */
+const INTERRUPT_REPLY_TIMEOUT_MS = 10_000;
+
+/** Live kernels by id, so the client's interrupt can reach the right one. */
+const kernels = new Map<string, YurtKernel>();
 
 let bridgePromise: Promise<PlaygroundKernelBridge> | undefined;
 
@@ -87,13 +97,65 @@ class YurtKernel implements IKernel {
     return this._isDisposed;
   }
 
+  /**
+   * JupyterLite disposes a kernel for both restart and shutdown, and starts
+   * a new one afterwards on restart. Either way the guest process this
+   * kernel talked to is finished: it is replaced by a fresh one, which kills
+   * a running cell and drops every variable, and the next kernel's `ready`
+   * waits for the replacement.
+   */
   dispose(): void {
     if (this._isDisposed) return;
     this._isDisposed = true;
+    kernels.delete(this._id);
     this._unsubscribe?.();
     for (const pending of this._pending.values()) pending();
     this._pending.clear();
+    if (this._bridge !== undefined) {
+      this._bridge.restart().catch(() => {
+        // The next kernel's `ready` reports the failure.
+      });
+    }
     this._disposed.emit(void 0);
+  }
+
+  /**
+   * Interrupt the running cell: an `interrupt_request` on the control
+   * channel, which ipykernel answers by sending itself SIGINT, raising
+   * KeyboardInterrupt in the cell. Resolves on the reply or after a bound.
+   */
+  async interrupt(): Promise<void> {
+    await this.ready;
+    const msgId = crypto.randomUUID();
+    this._internal.add(msgId);
+    const request = {
+      channel: "control",
+      header: {
+        msg_id: msgId,
+        session: this._lastSession ?? this._id,
+        username: "yurt",
+        msg_type: "interrupt_request",
+        version: "5.3",
+        date: new Date().toISOString(),
+      },
+      parent_header: {},
+      metadata: {},
+      content: {},
+      buffers: [],
+    } as unknown as KernelMessage.IMessage;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.handleMessage(request),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, INTERRUPT_REPLY_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+      this._internal.delete(msgId);
+      this._pending.delete(msgId);
+    }
   }
 
   /**
@@ -152,12 +214,16 @@ class YurtKernel implements IKernel {
       return;
     }
     if (clientSession === undefined) return;
-    const routed = {
-      ...message,
-      channel,
-      header: { ...message.header, session: clientSession },
-    };
-    this._sendMessage(routed as KernelMessage.IMessage);
+    if (!this._internal.has(parentId!)) {
+      // A reply to something this plugin sent on its own (interrupt) has no
+      // frontend future waiting for it; only the pending resolve below.
+      const routed = {
+        ...message,
+        channel,
+        header: { ...message.header, session: clientSession },
+      };
+      this._sendMessage(routed as KernelMessage.IMessage);
+    }
     const resolve = this._pending.get(parentId!);
     if (resolve !== undefined) {
       this._pending.delete(parentId!);
@@ -173,6 +239,7 @@ class YurtKernel implements IKernel {
   private _unsubscribe: (() => void) | undefined;
   private _pending = new Map<string, () => void>();
   private _sessions = new Map<string, string>();
+  private _internal = new Set<string>();
   private _lastSession: string | undefined;
   private _isDisposed = false;
   private _disposed = new Signal<this, void>(this);
@@ -181,8 +248,21 @@ class YurtKernel implements IKernel {
 const plugin: JupyterFrontEndPlugin<void> = {
   id: "@yurt/jupyterlite-yurt-kernel:plugin",
   autoStart: true,
-  requires: [IKernelSpecs],
-  activate: (_app: JupyterFrontEnd, kernelspecs: IKernelSpecs) => {
+  requires: [IKernelSpecs, IKernelClient],
+  activate: (
+    _app: JupyterFrontEnd,
+    kernelspecs: IKernelSpecs,
+    client: IKernelClient,
+  ) => {
+    // JupyterLite's kernel client implements interrupt by cancelling the
+    // cells it has queued; the kernel itself is never told. The frontend's
+    // KernelConnection calls this method, so wrap it: the guest kernel
+    // gets its interrupt_request first, then the queue is cancelled.
+    const cancelQueued = client.interrupt.bind(client);
+    client.interrupt = async (kernelId: string): Promise<void> => {
+      await kernels.get(kernelId)?.interrupt();
+      await cancelQueued(kernelId);
+    };
     kernelspecs.register({
       spec: {
         name: "yurt",
@@ -195,7 +275,9 @@ const plugin: JupyterFrontEndPlugin<void> = {
         },
       },
       create: async (options: IKernel.IOptions): Promise<IKernel> => {
-        return new YurtKernel(options);
+        const kernel = new YurtKernel(options);
+        kernels.set(options.id, kernel);
+        return kernel;
       },
     });
   },
