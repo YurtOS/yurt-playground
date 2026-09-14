@@ -57,31 +57,10 @@
     <section id="notebook" aria-label="Jupyter notebook" data-testid="notebook">
     </section>
     <script type="module">
-      const forced = new URLSearchParams(globalThis.location.search).has(
-        "force",
-      );
-      try {
-        if (forced) sessionStorage.setItem("yurt-playground-force", "1");
-      } catch {
-        // A blocked sessionStorage only loses the choice across pages.
-      }
-      let remembered = false;
-      try {
-        remembered = sessionStorage.getItem("yurt-playground-force") === "1";
-      } catch {
-        // See above.
-      }
-      const uaData = navigator.userAgentData;
-      if (
-        !forced && !remembered &&
-        (uaData?.mobile === true ||
-          /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent))
-      ) {
-        globalThis.location.replace("./unsupported.html");
-      }
       const status = document.getElementById("status");
       if (globalThis.crossOriginIsolated !== true) {
         status.textContent = "need COOP/COEP";
+        globalThis.location.replace("./unsupported.html");
         throw new Error("not crossOriginIsolated");
       }
       status.textContent = "booting";

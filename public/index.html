@@ -55,7 +55,7 @@
         color: #bbb;
         line-height: 1.4;
       }
-      #isolation-warning {
+      #mobile-note {
         border: 1px solid #c66;
         color: #f99;
         padding: 12px;
@@ -77,46 +77,33 @@
   </head>
   <body>
     <script>
-      // The sandbox needs a desktop-class tab: Web Workers that keep running
-      // and ~1 GB of memory (SharedArrayBuffer itself is fine on mobile
-      // browsers under COOP/COEP). Phones and tablets get the explanation
-      // instead of a boot that dies partway.
-      // The unsupported page offers a "try anyway" link (`?force=1`) for
-      // tablets; the choice is kept for the session so the terminal page
-      // honours it too.
-      const forced = new URLSearchParams(globalThis.location.search).has(
-        "force",
-      );
-      try {
-        if (forced) sessionStorage.setItem("yurt-playground-force", "1");
-      } catch {
-        // A blocked sessionStorage only loses the choice across pages.
-      }
-      let remembered = false;
-      try {
-        remembered = sessionStorage.getItem("yurt-playground-force") === "1";
-      } catch {
-        // See above.
+      // The only hard requirement is cross-origin isolation (COOP/COEP
+      // headers), which gives the Workers a SharedArrayBuffer; every current
+      // browser, mobile Safari included, has it under those headers. A page
+      // served without them cannot boot the sandbox at all and goes to the
+      // explanation. Phones are not blocked: they get a note, since the
+      // sandbox usually needs more memory than a mobile tab is allowed.
+      if (globalThis.crossOriginIsolated !== true) {
+        globalThis.location.replace("./unsupported.html");
       }
       const uaData = navigator.userAgentData;
       const mobile = uaData?.mobile === true ||
         /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent) ||
         (globalThis.matchMedia("(pointer: coarse)").matches &&
           globalThis.innerWidth < 900);
-      if (mobile && !forced && !remembered) {
-        globalThis.location.replace("./unsupported.html");
-      }
-      if (globalThis.crossOriginIsolated !== true) {
+      if (mobile) {
         document.addEventListener("DOMContentLoaded", () => {
-          const warning = document.getElementById("isolation-warning");
-          if (warning) warning.hidden = false;
+          const note = document.getElementById("mobile-note");
+          if (note) note.hidden = false;
         });
       }
     </script>
     <main>
-      <p id="isolation-warning" hidden>
-        This host is not serving the page cross-origin isolated (COOP/COEP
-        headers); the sandbox will not boot here.
+      <p id="mobile-note" data-testid="mobile-note" hidden>
+        This looks like a phone or tablet. The sandbox needs around a gigabyte
+        of memory and workers that keep running in the background; mobile
+        browsers often allow neither, so the boot may stall or the tab may
+        reload. A desktop browser is the safe choice.
       </p>
       <h1>Yurt playground</h1>
       <p class="lead">

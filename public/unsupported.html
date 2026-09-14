@@ -33,23 +33,21 @@
   </head>
   <body>
     <main data-testid="unsupported">
-      <h1>Probably not supported on this device</h1>
+      <h1>This page cannot boot the sandbox</h1>
       <p>
-        The Yurt playground boots a whole Linux sandbox inside the browser tab:
-        a kernel, a filesystem, CPython and Jupyter, running on several
-        <code>SharedArrayBuffer</code>-backed Web Workers. The browser side is
-        fine: Safari has supported <code>SharedArrayBuffer</code> on iOS since
-        15.2 on cross-origin isolated pages like this one, and Chrome and
-        Firefox for Android do too. What phones lack is the rest: a tab that can
-        hold around a gigabyte of memory, and workers that keep running while
-        the page is in the background.
+        The Yurt playground runs a whole Linux sandbox inside the browser tab on
+        <code>SharedArrayBuffer</code>-backed Web Workers. Browsers only allow
+        that on a cross-origin isolated page, and this one is not: the server
+        did not send
+        <code>Cross-Origin-Opener-Policy: same-origin</code> and
+        <code>Cross-Origin-Embedder-Policy: require-corp</code>, or the page is
+        embedded somewhere that strips them.
       </p>
       <p>
-        Open this page on a desktop or laptop browser for the full experience.
-        On a recent tablet you can
-        <a href="./index.html?force=1" data-testid="try-anyway">try anyway</a>;
-        if the sandbox runs out of memory the tab reloads or the boot stalls
-        partway, and nothing else on the device is affected.
+        Every current browser supports this, phones included (Safari since iOS
+        15.2). Open the playground from its own address on a server that sends
+        those headers; the static build ships them in
+        <code>_headers</code>.
       </p>
     </main>
   </body>

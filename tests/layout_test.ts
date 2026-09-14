@@ -122,19 +122,18 @@ Deno.test("home page offers the terminal and the Jupyter Notebook", async () => 
     true,
   );
   assertEquals(html.includes('href="./jupyter/lab/index.html"'), true);
-  // Phones get an explanation instead of a boot that dies partway.
+  // The only hard gate is cross-origin isolation; phones get a note.
   assertEquals(html.includes("./unsupported.html"), true);
+  assertEquals(html.includes('data-testid="mobile-note"'), true);
   const unsupported = await Deno.readTextFile(
     new URL("../public/unsupported.html", import.meta.url),
   );
   assertEquals(unsupported.includes('data-testid="unsupported"'), true);
-  // Tablets can opt in; the home and terminal pages both honour the choice.
-  assertEquals(unsupported.includes('href="./index.html?force=1"'), true);
-  assertEquals(html.includes("yurt-playground-force"), true);
+  assertEquals(unsupported.includes("Cross-Origin-Embedder-Policy"), true);
   const terminal = await Deno.readTextFile(
     new URL("../public/terminal.html", import.meta.url),
   );
-  assertEquals(terminal.includes("yurt-playground-force"), true);
+  assertEquals(terminal.includes("./unsupported.html"), true);
 });
 
 Deno.test("deployment workflow publishes an isolated static site", async () => {
