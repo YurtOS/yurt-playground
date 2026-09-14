@@ -6,6 +6,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# The workflow token can read the repository and nothing else; the
+# cross-repo and Cloudflare credentials come from named secrets.
+permissions:
+  contents: read
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 

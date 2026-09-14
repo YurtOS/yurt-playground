@@ -195,3 +195,23 @@ Deno.test("deployment workflow publishes an isolated static site", async () => {
     assertEquals(workflow.includes(value), true);
   }
 });
+
+Deno.test("every workflow restricts its token to reading the repository", async () => {
+  // Nothing here pushes or writes to the repository, and a public repository
+  // runs these on pull requests from strangers. The cross-repo and Cloudflare
+  // credentials are named secrets, not the workflow token.
+  for (
+    const entry of Deno.readDirSync(
+      new URL("../.github/workflows", import.meta.url),
+    )
+  ) {
+    const workflow = await Deno.readTextFile(
+      new URL(`../.github/workflows/${entry.name}`, import.meta.url),
+    );
+    assertEquals(
+      workflow.includes("\npermissions:\n  contents: read\n"),
+      true,
+      `${entry.name} does not restrict the workflow token to contents: read`,
+    );
+  }
+});
