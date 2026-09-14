@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { ensureBundle } from "./serve.ts";
 import { XTERM_CSS_PATH } from "../src/serve.ts";
 import { imagePartRange, imagePartsManifest } from "../src/image_parts.ts";
+import { integrityManifest } from "../src/integrity.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -18,6 +19,7 @@ const STATIC_FILES = [
   "coordinator.bundle.js",
   "worker_bootstrap.js",
   "playground-bridge.js",
+  "verify.js",
 ];
 /** The JupyterLite site (jupyterlite/build.sh); served under /jupyter/. */
 const JUPYTER_DIR = "jupyter";
@@ -86,6 +88,18 @@ export async function buildStaticSite(): Promise<void> {
   // Cloudflare Pages refuses files over 25 MiB; the image ships in parts.
   await writeImageParts("playground.yurtimg");
   await Deno.writeTextFile(join(distDir, "_headers"), ISOLATION_HEADERS);
+  // The "check the bytes" card hashes what it downloaded against this.
+  await Deno.writeTextFile(
+    join(distDir, "integrity.json"),
+    JSON.stringify(
+      await integrityManifest(
+        (name) => Deno.readFile(join(distDir, name)),
+        Deno.env.get("GITHUB_SHA") ?? null,
+      ),
+      null,
+      2,
+    ) + "\n",
+  );
 }
 
 if (import.meta.main) await buildStaticSite();

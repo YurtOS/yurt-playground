@@ -73,6 +73,122 @@
         color: #777;
         font-size: 0.85rem;
       }
+      /* "Is this really running in your browser?" */
+      #proof {
+        margin-top: 56px;
+        padding-top: 32px;
+        border-top: 1px solid #333;
+      }
+      #proof h2 {
+        font-size: 1.25rem;
+        margin: 0 0 8px;
+      }
+      #proof > p {
+        color: #aaa;
+        margin: 0 0 24px;
+        line-height: 1.5;
+      }
+      .checks {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        counter-reset: check;
+      }
+      .check {
+        padding: 20px;
+        border: 1px solid #333;
+        border-radius: 8px;
+        background: #161616;
+        line-height: 1.45;
+      }
+      .check h3 {
+        margin: 0 0 8px;
+        font-size: 1rem;
+        color: #eee;
+      }
+      .check h3::before {
+        counter-increment: check;
+        content: counter(check);
+        display: inline-block;
+        width: 1.6em;
+        height: 1.6em;
+        margin-right: 10px;
+        border-radius: 50%;
+        background: #9cf;
+        color: #111;
+        text-align: center;
+        line-height: 1.6em;
+        font-size: 0.85rem;
+      }
+      .check p {
+        margin: 0 0 8px;
+        color: #bbb;
+      }
+      .check p:last-child {
+        margin-bottom: 0;
+      }
+      .check a {
+        color: #9cf;
+      }
+      .check kbd,
+      .check code {
+        background: #222;
+        border: 1px solid #333;
+        border-radius: 4px;
+        padding: 1px 5px;
+        font-size: 0.9em;
+      }
+      .check button {
+        font: inherit;
+        color: #111;
+        background: #9cf;
+        border: 0;
+        border-radius: 6px;
+        padding: 8px 14px;
+        cursor: pointer;
+      }
+      .check button:disabled {
+        opacity: 0.6;
+        cursor: wait;
+      }
+      #verify-results table {
+        border-collapse: collapse;
+        margin: 12px 0 0;
+        width: 100%;
+        font-size: 0.85rem;
+      }
+      #verify-results td {
+        padding: 4px 6px 4px 0;
+        color: #bbb;
+        white-space: nowrap;
+      }
+      #verify-results td:last-child {
+        color: #777;
+      }
+      #verify-results tr.ok td:first-child {
+        color: #8e8;
+      }
+      #verify-results tr.bad td:first-child,
+      #verify-results tr.bad td {
+        color: #f99;
+      }
+      #verify-results p {
+        margin: 12px 0 0;
+      }
+      #verify-results p.ok {
+        color: #8e8;
+      }
+      #verify-results p.bad {
+        color: #f99;
+      }
+      #verify-commit {
+        margin: 8px 0 0;
+        color: #777;
+        font-size: 0.85rem;
+      }
+      #verify-commit a {
+        color: #9cf;
+      }
     </style>
   </head>
   <body>
@@ -136,10 +252,66 @@
         >JupyterLab</a>
         on the same sandbox.
       </p>
+      <section id="proof" aria-labelledby="proof-title" data-testid="proof">
+        <h2 id="proof-title">Is this really running in your browser?</h2>
+        <p>
+          No badge can prove it, so here is what a server-backed fake could not
+          survive. Each check takes under a minute in Chrome.
+        </p>
+        <div class="checks">
+          <article class="check">
+            <h3>Go offline, keep computing</h3>
+            <p>
+              Open the <a href="./terminal.html">terminal</a> and wait for
+              <code>ready</code>. Then turn off Wi-Fi, or in DevTools pick
+              <kbd>Network</kbd> &rarr; <kbd>Offline</kbd>. Run another cell.
+            </p>
+            <p>
+              It still answers. The page shows <code>offline</code> next to its
+              status while you do it.
+            </p>
+          </article>
+          <article class="check">
+            <h3>Watch the tab work</h3>
+            <p>
+              Open Chrome's Task Manager with <kbd>Shift</kbd>+<kbd>Esc</kbd>
+              (or the Window menu). This tab's memory climbs by hundreds of MB
+              as the sandbox boots, and its CPU spikes when a cell runs.
+            </p>
+            <p>A thin client stays flat.</p>
+          </article>
+          <article class="check">
+            <h3>See the workers</h3>
+            <p>
+              Visit <code>chrome://inspect/#workers</code> while a page is
+              running. The coordinator and the sandbox's guest Workers are
+              listed with their script URLs, and you can attach a debugger.
+            </p>
+            <p>
+              In DevTools <kbd>Network</kbd>, nothing moves while a cell runs.
+              The page's security policy forbids talking to any other origin.
+            </p>
+          </article>
+          <article class="check">
+            <h3>Check the bytes</h3>
+            <p>
+              The site publishes the SHA-256 of every file the sandbox runs on.
+              This button fetches them again and hashes them here, in your
+              browser.
+            </p>
+            <button id="verify-files" type="button" data-testid="verify-files">
+              Verify downloaded files
+            </button>
+            <div id="verify-results" hidden></div>
+            <p id="verify-commit"></p>
+          </article>
+        </div>
+      </section>
       <footer>
         Nothing leaves the page: the kernel, the filesystem and Python all run
         in this tab.
       </footer>
     </main>
+    <script type="module" src="./verify.js"></script>
   </body>
 </html>

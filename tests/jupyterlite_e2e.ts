@@ -61,6 +61,20 @@ if (import.meta.main) {
     if (await page.evaluate(() => globalThis.crossOriginIsolated !== true)) {
       fail("browser page is not cross-origin isolated");
     }
+    // "Check the bytes": the page re-hashes what it downloaded and every
+    // file matches integrity.json.
+    await page.getByTestId("verify-files").click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector("[data-testid=verify-summary]")?.textContent
+          ?.endsWith("files match.") === true,
+      undefined,
+      { timeout: 60_000 },
+    );
+    const summary = await page.getByTestId("verify-summary").textContent();
+    if (summary !== "5 of 5 files match.") {
+      fail(`verification did not pass: ${summary}`);
+    }
     await page.getByTestId("choose-notebook").click();
     await page.waitForURL(/\/jupyter\/notebooks\/index\.html/);
     await page.locator(".jp-Notebook").first().waitFor({ timeout: 60_000 });

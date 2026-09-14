@@ -122,6 +122,15 @@ Deno.test("home page offers the terminal and the Jupyter Notebook", async () => 
     true,
   );
   assertEquals(html.includes('href="./jupyter/lab/index.html"'), true);
+  // The "is this really in your browser" section and its live check.
+  assertEquals(html.includes('data-testid="proof"'), true);
+  assertEquals(html.includes('data-testid="verify-files"'), true);
+  assertEquals(html.includes('src="./verify.js"'), true);
+  assertEquals(
+    (await Deno.readTextFile(new URL("../public/verify.js", import.meta.url)))
+      .includes("integrity.json"),
+    true,
+  );
   // The only hard gate is cross-origin isolation; phones get a note.
   assertEquals(html.includes("./unsupported.html"), true);
   assertEquals(html.includes('data-testid="mobile-note"'), true);
@@ -134,6 +143,8 @@ Deno.test("home page offers the terminal and the Jupyter Notebook", async () => 
     new URL("../public/terminal.html", import.meta.url),
   );
   assertEquals(terminal.includes("./unsupported.html"), true);
+  // The terminal page shows its network state, for the offline check.
+  assertEquals(terminal.includes('data-testid="net"'), true);
 });
 
 Deno.test("deployment workflow publishes an isolated static site", async () => {

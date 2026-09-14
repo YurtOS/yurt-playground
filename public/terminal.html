@@ -25,6 +25,13 @@
         color: #9cf;
         margin-right: 16px;
       }
+      #net {
+        float: right;
+        color: #777;
+      }
+      #net[data-online="false"] {
+        color: #fc6;
+      }
       #term {
         height: 45vh;
       }
@@ -51,12 +58,28 @@
       <a href="./">Home</a>
       <a href="./jupyter/notebooks/index.html?path=welcome.ipynb"
       >Jupyter Notebook</a>
+      <span
+        id="net"
+        data-testid="net"
+        data-online="true"
+        title="This tab's network state. The sandbox keeps working without it."
+      >online</span>
     </nav>
     <pre id="status">checking isolation</pre>
     <div id="term"></div>
     <section id="notebook" aria-label="Jupyter notebook" data-testid="notebook">
     </section>
     <script type="module">
+      // The proof that nothing leaves the page: go offline and keep going.
+      const net = document.getElementById("net");
+      const showNet = () => {
+        const online = navigator.onLine;
+        net.dataset.online = String(online);
+        net.textContent = online ? "online" : "offline, still running";
+      };
+      globalThis.addEventListener("online", showNet);
+      globalThis.addEventListener("offline", showNet);
+      showNet();
       const status = document.getElementById("status");
       if (globalThis.crossOriginIsolated !== true) {
         status.textContent = "need COOP/COEP";

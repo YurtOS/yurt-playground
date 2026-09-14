@@ -1,4 +1,5 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { INTEGRITY_FILES, sha256Hex } from "../src/integrity.ts";
 
 Deno.test("static build emits isolated playground deployment", async () => {
   const script = await Deno.readTextFile(
@@ -59,6 +60,8 @@ Deno.test("static build writes every file the pages need", async () => {
       "yurt_kernel.wasm",
       "playground.yurtimg.parts.json",
       "_headers",
+      "verify.js",
+      "integrity.json",
     ]
   ) {
     const stat = await Deno.stat(new URL(`dist/${file}`, repoRoot));
@@ -67,6 +70,18 @@ Deno.test("static build writes every file the pages need", async () => {
   for (const file of ["index.html", "notebooks/index.html", "lab/index.html"]) {
     const stat = await Deno.stat(new URL(`dist/jupyter/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/jupyter/${file} is empty`);
+  }
+  // integrity.json hashes the files as they sit in dist/.
+  const integrity = JSON.parse(
+    await Deno.readTextFile(new URL("dist/integrity.json", repoRoot)),
+  );
+  assertEquals(Object.keys(integrity.files), [...INTEGRITY_FILES]);
+  for (const name of INTEGRITY_FILES) {
+    assertEquals(
+      integrity.files[name],
+      await sha256Hex(await Deno.readFile(new URL(`dist/${name}`, repoRoot))),
+      name,
+    );
   }
   // Cloudflare Pages refuses any file over 25 MiB (deploy run 34841044263
   // died on the 86.9 MB image), so the image ships in parts that add back
