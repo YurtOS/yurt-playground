@@ -73,6 +73,12 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
     ),
     out: join(repoRoot, "public/worker_bootstrap.js"),
   });
+  // The JupyterLite Yurt kernel imports this at runtime (see jupyterlite/).
+  await bundle(kernelPath, {
+    entry: join(repoRoot, "src/lite_bridge.ts"),
+    out: join(repoRoot, "public/playground-bridge.js"),
+    importMap: importMapPath,
+  });
 }
 
 async function bundle(

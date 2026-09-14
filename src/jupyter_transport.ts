@@ -95,11 +95,35 @@ export type JupyterConfig = {
   heartbeat: number;
 };
 
+/** The kernel-facing sockets a client writes to. */
+export type JupyterRequestChannel = "shell" | "control" | "stdin";
+/** Every socket the kernel writes to. */
+export type JupyterChannel = JupyterRequestChannel | "iopub";
+
 export type JupyterTransport = {
-  send(message: JupyterMessage): Promise<void>;
-  subscribe(listener: (message: JupyterMessage) => void): () => void;
+  send(
+    message: JupyterMessage,
+    channel?: JupyterRequestChannel,
+  ): Promise<void>;
+  subscribe(
+    listener: (message: JupyterMessage, channel: JupyterChannel) => void,
+  ): () => void;
   close(): Promise<void>;
 };
+
+/** Index into the socket list `createJupyterTransport` opens. */
+const CHANNEL_INDEX: Record<JupyterChannel, number> = {
+  shell: 0,
+  iopub: 1,
+  stdin: 2,
+  control: 3,
+};
+const CHANNEL_OF_INDEX: JupyterChannel[] = [
+  "shell",
+  "iopub",
+  "stdin",
+  "control",
+];
 
 export async function decodeJupyterChannelMessage(
   frames: readonly Uint8Array[],
@@ -150,19 +174,26 @@ export async function createJupyterTransport(
     );
     if (failure) throw failure.reason;
     await channels[1].sendCommand("SUBSCRIBE");
-    const listeners = new Set<(message: JupyterMessage) => void>();
+    const listeners = new Set<
+      (message: JupyterMessage, channel: JupyterChannel) => void
+    >();
     let closed = false;
     for (const [index, channel] of channels.slice(0, 4).entries()) {
-      void readMessages(channel, config.key, listeners, index === 1).catch(
-        () => {
-          // The next request or close observes a disconnected channel.
-        },
-      );
+      void readMessages(
+        channel,
+        CHANNEL_OF_INDEX[index],
+        config.key,
+        listeners,
+      ).catch(() => {
+        // The next request or close observes a disconnected channel.
+      });
     }
     return {
-      async send(message) {
+      async send(message, channel = "shell") {
         if (closed) throw new Error("Jupyter transport is closed");
-        await channels[0].send(await encodeJupyterMessage(message, config.key));
+        await channels[CHANNEL_INDEX[channel]].send(
+          await encodeJupyterMessage(message, config.key),
+        );
       },
       subscribe(listener) {
         listeners.add(listener);
@@ -266,17 +297,17 @@ async function readZmtpCommand(
 }
 
 async function readMessages(
-  channel: ZmtpTransport,
+  socket: ZmtpTransport,
+  channel: JupyterChannel,
   key: string,
-  listeners: Set<(message: JupyterMessage) => void>,
-  isIopub: boolean,
+  listeners: Set<(message: JupyterMessage, channel: JupyterChannel) => void>,
 ): Promise<void> {
   for (;;) {
-    const frames = await channel.receive();
-    const message = isIopub
+    const frames = await socket.receive();
+    const message = channel === "iopub"
       ? await decodeJupyterChannelMessage(frames, key)
       : await decodeJupyterMessage(frames, key);
-    for (const listener of listeners) listener(message);
+    for (const listener of listeners) listener(message, channel);
   }
 }
 
