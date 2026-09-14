@@ -1,10 +1,16 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  contentSecurityPolicy,
+  documentPolicy,
+  inlineScriptHashes,
+} from "./csp.ts";
+import {
   imagePartIndex,
   imagePartRange,
   imagePartsManifest,
 } from "./image_parts.ts";
+import { IMAGE_NAME, integrityManifest } from "./integrity.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -15,6 +21,9 @@ export const ISOLATION_HEADERS = {
   "Cross-Origin-Embedder-Policy": "require-corp",
   // Nested module workers (guest WorkerHost) are COEP subresources.
   "Cross-Origin-Resource-Policy": "same-origin",
+  // Non-document responses carry the policy too: a worker script's own CSP
+  // is what governs the worker.
+  "Content-Security-Policy": contentSecurityPolicy(),
 };
 
 /** xterm's stylesheet, served from the npm package rather than copied into
@@ -69,8 +78,6 @@ function notFound(): Response {
   });
 }
 
-const IMAGE_NAME = "playground.yurtimg";
-
 /** The image parts the static build publishes, sliced from the single
  * artifacts/ file so the page's fetch path is the same here and deployed. */
 async function handleImagePart(pathname: string): Promise<Response | null> {
@@ -118,6 +125,22 @@ async function handleImagePart(pathname: string): Promise<Response | null> {
   }
 }
 
+/** The dev-server counterpart of the static build's integrity.json,
+ * computed from the files being served so it is never stale. */
+async function handleIntegrity(): Promise<Response> {
+  const manifest = await integrityManifest((name) => {
+    const path = resolvePlaygroundPath(`/${name}`);
+    if (path === null) throw new Error(`no such file: ${name}`);
+    return Deno.readFile(path);
+  }, null);
+  return new Response(JSON.stringify(manifest, null, 2), {
+    headers: {
+      ...ISOLATION_HEADERS,
+      "Content-Type": "application/json; charset=utf-8",
+    },
+  });
+}
+
 export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
   let pathname: string;
@@ -126,6 +149,13 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   } catch {
     return notFound();
   }
+  if (pathname === "/integrity.json") {
+    try {
+      return await handleIntegrity();
+    } catch {
+      return notFound();
+    }
+  }
   const part = await handleImagePart(pathname);
   if (part !== null) return part;
   const filePath = resolvePlaygroundPath(pathname);
@@ -133,12 +163,20 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   try {
     const file = await Deno.readFile(filePath);
     const path = url.pathname === "/" ? "/index.html" : url.pathname;
-    return new Response(file, {
-      headers: {
-        ...ISOLATION_HEADERS,
-        "content-type": contentType(path),
-      },
-    });
+    const headers: Record<string, string> = {
+      ...ISOLATION_HEADERS,
+      "content-type": contentType(path),
+    };
+    if (path.endsWith(".html")) {
+      // A document's policy allows its own inline scripts by hash, computed
+      // from the file being served so a rebuilt JupyterLite site needs no
+      // restart.
+      headers["Content-Security-Policy"] = documentPolicy(
+        path,
+        await inlineScriptHashes(new TextDecoder().decode(file)),
+      );
+    }
+    return new Response(file, { headers });
   } catch {
     return notFound();
   }

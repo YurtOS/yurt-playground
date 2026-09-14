@@ -54,8 +54,8 @@ repository tooling, TypeScript/Deno, browser Cache API, PTY acceptance tests.
       not already indexed.**
 
 ```bash
-git -C /Users/sunny/work/yurtos/yurt-packages worktree add /Users/sunny/work/yurtos/yurt-packages/.worktrees/feat/cpython-package -b feat/cpython-package origin/main
-rg -n 'cpython' /Users/sunny/work/yurtos/yurt-packages/.worktrees/feat/cpython-package/index.json /Users/sunny/work/yurtos/yurt-packages/.worktrees/feat/cpython-package/packages || true
+git -C ~/work/yurtos/yurt-packages worktree add ~/work/yurtos/yurt-packages/.worktrees/feat/cpython-package -b feat/cpython-package origin/main
+rg -n 'cpython' ~/work/yurtos/yurt-packages/.worktrees/feat/cpython-package/index.json ~/work/yurtos/yurt-packages/.worktrees/feat/cpython-package/packages || true
 ```
 
 Expected: the worktree is clean and no published CPython entry exists.
@@ -63,8 +63,8 @@ Expected: the worktree is clean and no published CPython entry exists.
 - [ ] **Step 2: Publish the existing artifact locally and run metadata tests.**
 
 ```bash
-cargo run --manifest-path /Users/sunny/work/yurtos/yurt-pkg/Cargo.toml -p yurt-repo-ci -- publish-local --repo-root /Users/sunny/work/yurtos/yurt-packages/.worktrees/feat/cpython-package --artifact /Users/sunny/work/yurtos/yurt-ports/ports/cpython/build/dist/cpython-3.14.4-yurt_0.yurtpkg --manifest /Users/sunny/work/yurtos/yurt-ports/ports/cpython/yurt-pack.toml --generated-at 2026-08-18T00:00:00Z --reject-existing
-cargo test --manifest-path /Users/sunny/work/yurtos/yurt-pkg/Cargo.toml -p yurt-repo-ci
+cargo run --manifest-path ~/work/yurtos/yurt-pkg/Cargo.toml -p yurt-repo-ci -- publish-local --repo-root ~/work/yurtos/yurt-packages/.worktrees/feat/cpython-package --artifact ~/work/yurtos/yurt-ports/ports/cpython/build/dist/cpython-3.14.4-yurt_0.yurtpkg --manifest ~/work/yurtos/yurt-ports/ports/cpython/yurt-pack.toml --generated-at 2026-08-18T00:00:00Z --reject-existing
+cargo test --manifest-path ~/work/yurtos/yurt-pkg/Cargo.toml -p yurt-repo-ci
 ```
 
 Expected: the cpython package entry, artifact, placeholder bundle, and index are
@@ -86,7 +86,7 @@ git commit -m "chore: publish cpython package"
 **Files:**
 
 - Modify:
-  `/Users/sunny/work/yurtos/yurt-ports/.worktrees/playground-image/ports/playground-image/scripts/build.sh`
+  `~/work/yurtos/yurt-ports/.worktrees/playground-image/ports/playground-image/scripts/build.sh`
 - Modify: `.../ports/playground-image/scripts/test.sh`
 - Modify: `.../ports/playground-image/README.md`
 

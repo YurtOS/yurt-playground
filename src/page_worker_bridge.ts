@@ -78,20 +78,42 @@ export function installCoordinatorWorkerProxy(): void {
   } as unknown as typeof Worker;
 }
 
+/** The create request, or `undefined` for anything else on the channel. */
+export function parseCreateGuestWorkerMessage(
+  data: unknown,
+): CreateGuestWorkerMessage | undefined {
+  if (data === null || typeof data !== "object") return undefined;
+  const { type, url } = data as { type?: unknown; url?: unknown };
+  if (type !== CREATE_GUEST_WORKER || typeof url !== "string") {
+    return undefined;
+  }
+  return { type: CREATE_GUEST_WORKER, url };
+}
+
 export function attachGuestWorkerFactory(coordinator: Worker): void {
   coordinator.addEventListener("message", (event: MessageEvent) => {
-    const msg = event.data as CreateGuestWorkerMessage | { type?: string };
-    if (msg?.type !== CREATE_GUEST_WORKER) return;
-    const request = msg as CreateGuestWorkerMessage;
+    const request = parseCreateGuestWorkerMessage(event.data);
+    if (request === undefined) return;
     const port = event.ports[0];
     if (port === undefined) return;
-    // WorkerHost names its bootstrap by source path (`./worker_bootstrap.ts`
-    // relative to the coordinator bundle); the page serves the bundled
-    // `/worker_bootstrap.js` instead, so a guest Worker that starts at the
-    // raw URL 404s and every spawn fails with EIO.
-    const guest = new Worker(
-      ...guestWorkerStart(request.url, self.location.origin),
-    );
+    // The page creates the Worker the coordinator asked for, but only the
+    // one it is allowed to ask for: the same-origin bootstrap. A refusal is
+    // reported over the reply port as a worker error, so the requesting
+    // WorkerHost sees a failed spawn rather than silence.
+    let start: [string, WorkerOptions];
+    try {
+      start = guestWorkerStart(request.url, self.location.origin);
+    } catch (error) {
+      port.postMessage(
+        {
+          type: GUEST_WORKER_ERROR,
+          message: error instanceof Error ? error.message : String(error),
+        } satisfies GuestWorkerErrorMessage,
+      );
+      port.close();
+      return;
+    }
+    const guest = new Worker(...start);
     guest.onmessage = (guestEvent) => {
       port.postMessage(guestEvent.data, [...guestEvent.ports]);
     };

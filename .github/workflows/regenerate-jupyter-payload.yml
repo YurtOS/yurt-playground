@@ -14,6 +14,11 @@ name: Regenerate Jupyter payload
 on:
   workflow_dispatch:
 
+# The workflow token can read the repository and nothing else; the
+# cross-repo and Cloudflare credentials come from named secrets.
+permissions:
+  contents: read
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -22,23 +27,25 @@ jobs:
     name: build and pack the payload
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           path: playground
       - name: Read the yurt-jupyter pin
         id: pins
         working-directory: playground
         run: echo "jupyter_rev=$(jq -r .yurtJupyterRev artifacts/jupyter-requirements.lock)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           repository: YurtOS/yurt-jupyter
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
           ref: ${{ steps.pins.outputs.jupyter_rev }}
           path: yurt-jupyter
-      - uses: denoland/setup-deno@v2
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.7.14
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         id: host-python
         with:
           # The payload is built once and published, so this pin no longer has
@@ -75,7 +82,7 @@ jobs:
           echo "payloadTreeSha256 for the lock:"
           deno run --allow-read --allow-write --allow-env scripts/update-jupyter-lock-hash.ts
       - name: Upload the payload and the updated lock
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: jupyter-payload
           path: |
