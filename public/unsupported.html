@@ -33,15 +33,22 @@
   </head>
   <body>
     <main data-testid="unsupported">
-      <h1>Not supported on this device</h1>
+      <h1>This page cannot boot the sandbox</h1>
       <p>
-        The Yurt playground boots a whole Linux sandbox inside the browser tab:
-        a kernel, a filesystem, CPython and Jupyter, running on several
-        <code>SharedArrayBuffer</code>-backed Web Workers with about a gigabyte
-        of memory. Phones and tablets do not give a tab that much, and mobile
-        browsers stop background workers, so the sandbox cannot run there.
+        The Yurt playground runs a whole Linux sandbox inside the browser tab on
+        <code>SharedArrayBuffer</code>-backed Web Workers. Browsers only allow
+        that on a cross-origin isolated page, and this one is not: the server
+        did not send
+        <code>Cross-Origin-Opener-Policy: same-origin</code> and
+        <code>Cross-Origin-Embedder-Policy: require-corp</code>, or the page is
+        embedded somewhere that strips them.
       </p>
-      <p>Open this page on a desktop or laptop browser instead.</p>
+      <p>
+        Every current browser supports this, phones included (Safari since iOS
+        15.2). Open the playground from its own address on a server that sends
+        those headers; the static build ships them in
+        <code>_headers</code>.
+      </p>
     </main>
   </body>
 </html>

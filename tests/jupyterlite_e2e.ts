@@ -1,8 +1,9 @@
 /**
  * Browser acceptance for the Jupyter Notebook interface: the JupyterLite
  * frontend at /jupyter/ drives the real ipykernel inside the sandbox through
- * the Yurt kernel plugin. Also checks the home page's routing (a phone lands
- * on the unsupported page; a desktop gets the choices).
+ * the Yurt kernel plugin. Also checks the home page's gating: a phone gets
+ * the choices plus a note, and a page served without COOP/COEP lands on the
+ * unsupported page.
  *
  * Run: deno run --allow-all tests/jupyterlite_e2e.ts (needs the pinned blobs
  * in artifacts/ and the site from jupyterlite/build.sh in public/jupyter/).
@@ -30,14 +31,33 @@ if (import.meta.main) {
   const server = startPlaygroundServer(0);
   const browser = await chromium.launch();
   try {
-    // A phone is sent to the unsupported page from the home page.
+    // A phone is not blocked: it reaches the home page and gets a note.
     const phone = await browser.newContext({ ...devices["iPhone 13"] });
     const phonePage = await phone.newPage();
     const phoneCsp = watchCspViolations(phonePage);
     await phonePage.goto(`${server.url}/`, { waitUntil: "load" });
-    await phonePage.getByTestId("unsupported").waitFor({ timeout: 10_000 });
+    await phonePage.getByTestId("choose-notebook").waitFor({ timeout: 10_000 });
+    await phonePage.getByTestId("mobile-note").waitFor({ timeout: 10_000 });
     phoneCsp();
     await phone.close();
+
+    // A page served without COOP/COEP is the one thing that cannot work: the
+    // home and terminal pages both send it to the explanation.
+    const plain = await browser.newContext();
+    await plain.route("**/*", async (route) => {
+      const response = await route.fetch();
+      const headers = { ...response.headers() };
+      delete headers["cross-origin-opener-policy"];
+      delete headers["cross-origin-embedder-policy"];
+      await route.fulfill({ response, headers });
+    });
+    for (const path of ["/", "/terminal.html"]) {
+      const plainPage = await plain.newPage();
+      await plainPage.goto(`${server.url}${path}`, { waitUntil: "load" });
+      await plainPage.getByTestId("unsupported").waitFor({ timeout: 10_000 });
+      await plainPage.close();
+    }
+    await plain.close();
 
     const page = await browser.newPage();
     const csp = watchCspViolations(page);

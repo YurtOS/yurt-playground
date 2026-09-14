@@ -57,16 +57,10 @@
     <section id="notebook" aria-label="Jupyter notebook" data-testid="notebook">
     </section>
     <script type="module">
-      const uaData = navigator.userAgentData;
-      if (
-        uaData?.mobile === true ||
-        /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent)
-      ) {
-        globalThis.location.replace("./unsupported.html");
-      }
       const status = document.getElementById("status");
       if (globalThis.crossOriginIsolated !== true) {
         status.textContent = "need COOP/COEP";
+        globalThis.location.replace("./unsupported.html");
         throw new Error("not crossOriginIsolated");
       }
       status.textContent = "booting";
