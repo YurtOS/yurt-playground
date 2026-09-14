@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Yurt playground: terminal</title>
+    <link rel="stylesheet" href="./xterm.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #111;
+        color: #eee;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      #status {
+        margin: 0;
+        padding: 8px 12px;
+      }
+      #links {
+        padding: 8px 12px;
+        border-bottom: 1px solid #444;
+      }
+      #links a {
+        color: #9cf;
+        margin-right: 16px;
+      }
+      #term {
+        height: 45vh;
+      }
+      #notebook {
+        border-top: 1px solid #444;
+        padding: 12px;
+      }
+      #notebook-input {
+        display: block;
+        width: min(720px, 95vw);
+        min-height: 80px;
+        margin-bottom: 8px;
+        background: #222;
+        color: #eee;
+        font: inherit;
+      }
+      #notebook-output {
+        min-height: 1.2em;
+      }
+    </style>
+  </head>
+  <body>
+    <nav id="links" aria-label="interfaces">
+      <a href="./">Home</a>
+      <a href="./jupyter/notebooks/index.html?path=welcome.ipynb"
+      >Jupyter Notebook</a>
+    </nav>
+    <pre id="status">checking isolation</pre>
+    <div id="term"></div>
+    <section id="notebook" aria-label="Jupyter notebook" data-testid="notebook">
+    </section>
+    <script type="module">
+      const uaData = navigator.userAgentData;
+      if (
+        uaData?.mobile === true ||
+        /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent)
+      ) {
+        globalThis.location.replace("./unsupported.html");
+      }
+      const status = document.getElementById("status");
+      if (globalThis.crossOriginIsolated !== true) {
+        status.textContent = "need COOP/COEP";
+        throw new Error("not crossOriginIsolated");
+      }
+      status.textContent = "booting";
+      await import("./boot.bundle.js");
+    </script>
+  </body>
+</html>

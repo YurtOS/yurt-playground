@@ -9,7 +9,12 @@ import {
   type PlaygroundTerm,
 } from "./boot.ts";
 import { executeCell, startGuestKernel } from "./jupyter.ts";
-import type { JupyterTransport } from "./jupyter_transport.ts";
+import type {
+  JupyterChannel,
+  JupyterRequestChannel,
+  JupyterTransport,
+} from "./jupyter_transport.ts";
+import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 
 installCoordinatorWorkerProxy();
@@ -17,7 +22,15 @@ type ToWorker =
   | { type: "start"; cols: number; rows: number; isolated: boolean }
   | { type: "in"; text: string }
   | { type: "resize"; rows: number; cols: number }
-  | { type: "cell"; id: string; code: string };
+  | { type: "cell"; id: string; code: string }
+  // Raw Jupyter wire-protocol passthrough for a real frontend (JupyterLite's
+  // Yurt kernel plugin): messages go to the guest kernel as sent, and every
+  // message the kernel emits comes back with the socket it arrived on.
+  | {
+    type: "jupyter-send";
+    message: JupyterMessage;
+    channel: JupyterRequestChannel;
+  };
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -29,7 +42,12 @@ type FromWorker =
     id: string;
     result: Awaited<ReturnType<typeof executeCell>>;
   }
-  | { type: "cell-error"; id: string; message: string };
+  | { type: "cell-error"; id: string; message: string }
+  | {
+    type: "jupyter-message";
+    message: JupyterMessage;
+    channel: JupyterChannel;
+  };
 
 let jupyter: JupyterTransport | undefined;
 
@@ -75,6 +93,21 @@ function workerTerm(init: { cols: number; rows: number }): PlaygroundTerm {
 
 self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
+  if (msg.type === "jupyter-send") {
+    if (jupyter === undefined) {
+      post({ type: "error", message: "Jupyter is not ready" });
+      return;
+    }
+    try {
+      await jupyter.send(msg.message, msg.channel);
+    } catch (error) {
+      post({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return;
+  }
   if (msg.type === "cell") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });
@@ -112,6 +145,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     });
     post({ type: "status", text: "starting Jupyter" });
     jupyter = await startGuestKernel(session);
+    jupyter.subscribe((message, channel) => {
+      post({ type: "jupyter-message", message, channel });
+    });
     post({ type: "notebook-ready" });
   } catch (error) {
     try {

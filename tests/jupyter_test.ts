@@ -1,10 +1,15 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { connectJupyterWithRetries, executeCell } from "../src/jupyter.ts";
 import type { JupyterMessage } from "../src/jupyter_protocol.ts";
-import type { JupyterTransport } from "../src/jupyter_transport.ts";
+import type {
+  JupyterChannel,
+  JupyterTransport,
+} from "../src/jupyter_transport.ts";
 
 Deno.test("executeCell collects standard Jupyter stream, result, and reply messages", async () => {
-  let listener: ((message: JupyterMessage) => void) | undefined;
+  let listener:
+    | ((message: JupyterMessage, channel: JupyterChannel) => void)
+    | undefined;
   const transport: JupyterTransport = {
     send(message) {
       const parent = { msg_id: message.header.msg_id };
@@ -19,7 +24,7 @@ Deno.test("executeCell collects standard Jupyter stream, result, and reply messa
         parent_header: parent,
         metadata: {},
         content: { status: "ok" },
-      });
+      }, "shell");
       listener?.({
         header: {
           msg_id: "stream-1",
@@ -31,7 +36,7 @@ Deno.test("executeCell collects standard Jupyter stream, result, and reply messa
         parent_header: parent,
         metadata: {},
         content: { name: "stdout", text: "hello\n" },
-      });
+      }, "iopub");
       listener?.({
         header: {
           msg_id: "result-1",
@@ -43,7 +48,7 @@ Deno.test("executeCell collects standard Jupyter stream, result, and reply messa
         parent_header: parent,
         metadata: {},
         content: { data: { "text/plain": "2" } },
-      });
+      }, "iopub");
       listener?.({
         header: {
           msg_id: "status-1",
@@ -55,7 +60,7 @@ Deno.test("executeCell collects standard Jupyter stream, result, and reply messa
         parent_header: parent,
         metadata: {},
         content: { execution_state: "idle" },
-      });
+      }, "iopub");
       return Promise.resolve();
     },
     subscribe(next) {

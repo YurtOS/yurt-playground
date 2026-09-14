@@ -27,6 +27,10 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
     true,
   );
   assertEquals(workflow.includes("scripts/materialize-jupyter.ts"), true);
+  // The Jupyter Notebook interface is built into public/jupyter before the
+  // artifact-backed tests and the static build.
+  assertEquals(workflow.includes("jupyterlite/build.sh"), true);
+  assertEquals(/actions\/setup-node@v\d+/.test(workflow), true);
   // The two blobs are fetched from their releases, never rebuilt by CI.
   assertEquals(workflow.includes("scripts/install-pinned-artifacts.sh"), true);
   assertEquals(workflow.includes("repository: YurtOS/yurt-ports"), false);
@@ -38,7 +42,12 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   assertEquals(workflow.includes("scripts/pin-artifacts.ts"), true);
   assertEquals(workflow.includes("tests/playground_e2e.ts"), true);
   assertEquals(
-    workflow.includes("run: deno run --allow-all tests/playground_e2e.ts"),
+    workflow.includes("deno run --allow-all tests/playground_e2e.ts"),
+    true,
+  );
+  // The notebook interface is accepted in the same browser step.
+  assertEquals(
+    workflow.includes("deno run --allow-all tests/jupyterlite_e2e.ts"),
     true,
   );
   assertEquals(
@@ -95,12 +104,30 @@ Deno.test("both workflows fetch the pinned blobs, neither builds them", async ()
   }
 });
 
-Deno.test("page exposes the real notebook execution surface", async () => {
+Deno.test("terminal page exposes the real notebook execution surface", async () => {
   const html = await Deno.readTextFile(
-    new URL("../public/index.html", import.meta.url),
+    new URL("../public/terminal.html", import.meta.url),
   );
   assertEquals(html.includes('data-testid="notebook"'), true);
   assertEquals(html.includes('id="term"'), true);
+});
+
+Deno.test("home page offers the terminal and the Jupyter Notebook", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  assertEquals(html.includes('href="./terminal.html"'), true);
+  assertEquals(
+    html.includes('href="./jupyter/notebooks/index.html?path=welcome.ipynb"'),
+    true,
+  );
+  assertEquals(html.includes('href="./jupyter/lab/index.html"'), true);
+  // Phones get an explanation instead of a boot that dies partway.
+  assertEquals(html.includes("./unsupported.html"), true);
+  const unsupported = await Deno.readTextFile(
+    new URL("../public/unsupported.html", import.meta.url),
+  );
+  assertEquals(unsupported.includes('data-testid="unsupported"'), true);
 });
 
 Deno.test("deployment workflow publishes an isolated static site", async () => {
@@ -113,6 +140,7 @@ Deno.test("deployment workflow publishes an isolated static site", async () => {
       'python-version: "3.14.0"',
       "HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}",
       "scripts/install-pinned-artifacts.sh",
+      "jupyterlite/build.sh",
       "dist",
       "_headers",
       "CLOUDFLARE_API_TOKEN",

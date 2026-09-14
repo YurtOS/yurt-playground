@@ -14,7 +14,9 @@ if (import.meta.main) {
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
-    await page.goto(server.url, { waitUntil: "domcontentloaded" });
+    await page.goto(`${server.url}/terminal.html`, {
+      waitUntil: "domcontentloaded",
+    });
     if (await page.evaluate(() => globalThis.crossOriginIsolated !== true)) {
       throw new Error("browser page is not cross-origin isolated");
     }

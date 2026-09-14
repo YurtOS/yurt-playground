@@ -5,7 +5,9 @@ import { handlePlaygroundRequest } from "../src/serve.ts";
 // in boot_test.ts via bootPlayground (same kernel + image + PTY).
 
 Deno.test("ash page is served with isolation headers", async () => {
-  const res = await handlePlaygroundRequest(new Request("http://playground/"));
+  const res = await handlePlaygroundRequest(
+    new Request("http://playground/terminal.html"),
+  );
   assertEquals(res.headers.get("Cross-Origin-Opener-Policy"), "same-origin");
   assertEquals(
     res.headers.get("Cross-Origin-Embedder-Policy"),

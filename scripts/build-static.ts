@@ -12,10 +12,15 @@ const distDir = join(repoRoot, "dist");
 
 const STATIC_FILES = [
   "index.html",
+  "terminal.html",
+  "unsupported.html",
   "boot.bundle.js",
   "coordinator.bundle.js",
   "worker_bootstrap.js",
+  "playground-bridge.js",
 ];
+/** The JupyterLite site (jupyterlite/build.sh); served under /jupyter/. */
+const JUPYTER_DIR = "jupyter";
 
 const ISOLATION_HEADERS = `/*
   Cross-Origin-Opener-Policy: same-origin
@@ -37,6 +42,16 @@ async function copyFiles(
   }
 }
 
+async function copyTree(source: string, target: string): Promise<void> {
+  await Deno.mkdir(target, { recursive: true });
+  for await (const entry of Deno.readDir(source)) {
+    const from = join(source, entry.name);
+    const to = join(target, entry.name);
+    if (entry.isDirectory) await copyTree(from, to);
+    else await Deno.copyFile(from, to);
+  }
+}
+
 async function writeImageParts(name: string): Promise<void> {
   const image = await Deno.readFile(join(artifactsDir, name));
   const manifest = imagePartsManifest(name, image.byteLength);
@@ -55,8 +70,17 @@ export async function buildStaticSite(): Promise<void> {
   await Deno.remove(distDir, { recursive: true }).catch(() => {});
   await Deno.mkdir(distDir, { recursive: true });
   await copyFiles(STATIC_FILES, publicDir, distDir);
-  // index.html links ./xterm.css; the dev server maps it to the npm package.
+  // terminal.html links ./xterm.css; the dev server maps it to the npm package.
   await Deno.copyFile(XTERM_CSS_PATH, join(distDir, "xterm.css"));
+  const jupyter = join(publicDir, JUPYTER_DIR);
+  try {
+    await Deno.stat(join(jupyter, "index.html"));
+  } catch {
+    throw new Error(
+      `JupyterLite site missing at ${jupyter}; run jupyterlite/build.sh`,
+    );
+  }
+  await copyTree(jupyter, join(distDir, JUPYTER_DIR));
   // The page reads the pins for its hash checks, then the blobs.
   await copyFiles(["pins.json", "yurt_kernel.wasm"], artifactsDir, distDir);
   // Cloudflare Pages refuses files over 25 MiB; the image ships in parts.
