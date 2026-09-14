@@ -55,10 +55,13 @@ Deno.test("playground runs an interactive Python 3 REPL", async () => {
     let replStarted = false;
     try {
       term.type("python3\n");
+      // The first CPython launch in a fresh sandbox pays the module's cold
+      // compile: ~25 s on an M-series laptop, ~90 s on ubuntu-latest
+      // (measured 2026-09-14, CI run 34835655313 timed out at 60 s).
       await waitFor(
         () => term.output().slice(before).includes(">>> "),
         "python prompt",
-        60_000,
+        180_000,
       );
       replStarted = true;
       term.type("1+2\n");

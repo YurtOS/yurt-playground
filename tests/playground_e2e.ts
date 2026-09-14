@@ -32,7 +32,9 @@ if (import.meta.main) {
           (status?.textContent ?? "").includes("failed");
       },
       undefined,
-      { timeout: 30_000 },
+      // Measured 2026-09-14: ~30 s from page load to ready on an M-series
+      // laptop (cold import of ipykernel + pyzmq in the browser JIT).
+      { timeout: 120_000 },
     ).catch(() => undefined);
     if (await page.getByTestId("notebook-status").textContent() !== "ready") {
       const status = await page.locator("#status").textContent();
@@ -48,8 +50,9 @@ if (import.meta.main) {
       document.querySelector<HTMLElement>("[data-testid=notebook-output]")
         ?.textContent === "2"
     );
+    // `int(...)`: numpy 2 displays its scalars as `np.int32(3)`.
     await page.getByTestId("notebook-input").fill(
-      "import numpy as np; np.array([1, 2]).sum()",
+      "import numpy as np; int(np.array([1, 2]).sum())",
     );
     await page.getByTestId("notebook-execute").click();
     await page.waitForFunction(() =>

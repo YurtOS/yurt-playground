@@ -10,11 +10,11 @@ Deno.test("deno.json exposes the fmt/lint/check/test tasks", () => {
   assertEquals(typeof deno.tasks.test, "string");
 });
 
-Deno.test("CI materializes the pinned playground image for integration tests", async () => {
+Deno.test("CI fetches the pinned kernel wasm and playground image for integration tests", async () => {
   const workflow = await Deno.readTextFile(
     new URL("../.github/workflows/ci.yml", import.meta.url),
   );
-  assertEquals(workflow.includes("repository: YurtOS/yurt-ports"), true);
+  assertEquals(workflow.includes("repository: YurtOS/yurtos-kernel"), true);
   assertEquals(workflow.includes("repository: YurtOS/yurt-jupyter"), true);
   assertEquals(workflow.includes("jupyter_rev"), true);
   // Version-agnostic: dependabot bumps the major, and these assertions pin the
@@ -27,17 +27,12 @@ Deno.test("CI materializes the pinned playground image for integration tests", a
     true,
   );
   assertEquals(workflow.includes("scripts/materialize-jupyter.ts"), true);
-  assertEquals(workflow.includes("YURT_JUPYTER_STAGE"), true);
-  assertEquals(workflow.includes("ports_rev"), true);
-  assertEquals(workflow.includes("scripts/build-kernel-wasm.sh"), true);
-  assertEquals(workflow.includes("wasm32-wasip1-threads"), true);
-  assertEquals(
-    workflow.includes(
-      "scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only",
-    ),
-    true,
-  );
-  assertEquals(workflow.includes("YURT_PORTS_ROOT: ../yurt-ports"), true);
+  // The two blobs are fetched from their releases, never rebuilt by CI.
+  assertEquals(workflow.includes("scripts/install-pinned-artifacts.sh"), true);
+  assertEquals(workflow.includes("repository: YurtOS/yurt-ports"), false);
+  assertEquals(workflow.includes("scripts/build-kernel-wasm.sh"), false);
+  assertEquals(workflow.includes("scripts/build-all-ports.sh"), false);
+  assertEquals(workflow.includes("dtolnay/rust-toolchain"), false);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
   assertEquals(workflow.includes("playwright/cli.js install chromium"), true);
   assertEquals(workflow.includes("scripts/pin-artifacts.ts"), true);
@@ -73,21 +68,31 @@ Deno.test("workflows authenticate every private sibling checkout", async () => {
   }
 });
 
-Deno.test("both workflows select the same Rust toolchain", async () => {
-  // The tag of dtolnay/rust-toolchain *is* the toolchain version, and it has
-  // to match yurtos-kernel/rust-toolchain.toml. Nothing in this repo can check
-  // it against the kernel, but the two workflows drifting apart is a bug we
-  // can catch: they build the same artifacts.
-  const versions = new Set<string>();
+Deno.test("both workflows fetch the pinned blobs, neither builds them", async () => {
+  // The kernel wasm is deterministic on a host but not across hosts, and the
+  // image needs the guest toolchain plus hours of port builds, so a workflow
+  // that rebuilt either could never satisfy artifacts/pins.json. Both consume
+  // the published releases through the same script.
   for (const file of ["ci.yml", "deploy-pages.yml"]) {
     const workflow = await Deno.readTextFile(
       new URL(`../.github/workflows/${file}`, import.meta.url),
     );
-    const match = workflow.match(/dtolnay\/rust-toolchain@(\S+)/);
-    assertEquals(match !== null, true, `${file} pins no Rust toolchain`);
-    versions.add(match![1]);
+    assertEquals(
+      workflow.includes("scripts/install-pinned-artifacts.sh"),
+      true,
+      `${file} does not fetch the pinned blobs`,
+    );
+    for (
+      const build of [
+        "dtolnay/rust-toolchain",
+        "scripts/build-kernel-wasm.sh",
+        "scripts/build-all-ports.sh",
+        "repository: YurtOS/yurt-ports",
+      ]
+    ) {
+      assertEquals(workflow.includes(build), false, `${file} has ${build}`);
+    }
   }
-  assertEquals(versions.size, 1, `toolchains differ: ${[...versions]}`);
 });
 
 Deno.test("page exposes the real notebook execution surface", async () => {
@@ -107,14 +112,13 @@ Deno.test("deployment workflow publishes an isolated static site", async () => {
     const value of [
       'python-version: "3.14.0"',
       "HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}",
-      "scripts/build-all-ports.sh --only zlib openssl sqlite libcxx libzmq busybox cpython numpy pyzmq --build-only",
+      "scripts/install-pinned-artifacts.sh",
       "dist",
       "_headers",
       "CLOUDFLARE_API_TOKEN",
       "CLOUDFLARE_ACCOUNT_ID",
       "CLOUDFLARE_PROJECT_NAME",
       "repository: YurtOS/yurt-jupyter",
-      "YURT_JUPYTER_STAGE",
       "scripts/materialize-jupyter.ts",
     ]
   ) {

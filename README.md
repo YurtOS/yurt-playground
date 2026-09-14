@@ -26,12 +26,12 @@ Plan:
 
 ## Run locally
 
-Sibling checkouts, kernel wasm already built, playground image already packaged:
+A `yurtos-kernel` sibling checkout at the pinned rev (the page's JS host is
+imported from it), plus the two published blobs:
 
 ```bash
-YURT_KERNEL_ROOT=../yurtos-kernel \
-YURT_PORTS_ROOT=../yurt-ports \
-  deno task pin
+scripts/install-pinned-artifacts.sh   # needs gh access to YurtOS/yurt-packages
+deno task pin
 deno task serve
 ```
 
@@ -42,7 +42,7 @@ Reload is a fresh sandbox.
 
 ## Deploy
 
-The GitHub Actions workflow builds the pinned kernel and playground image,
+The GitHub Actions workflow fetches the pinned kernel wasm and playground image,
 bundles the static page, and deploys `dist/` to Cloudflare Pages. Cloudflare
 Pages is used for the runtime because the playground needs COOP/COEP response
 headers; a plain `github.io` site cannot provide them.
@@ -57,18 +57,21 @@ Pushes to `main` and manual workflow runs publish the site. The output directory
 is `dist/`; the generated `_headers` file applies the required cross-origin
 isolation headers.
 
-To build the same output locally after materializing matching pinned artifacts:
+To build the same output locally:
 
 ```bash
-YURT_KERNEL_ROOT=../yurtos-kernel \
-YURT_PORTS_ROOT=../yurt-ports \
-  deno task pin
+scripts/install-pinned-artifacts.sh
+deno task pin
 deno task build-static
 ```
 
-`scripts/pin-artifacts.ts` never rebuilds. It copies matching blobs from
-`artifacts/`, sibling checkouts, or `PLAYGROUND_*_URL`, and exits 2 if none
-match `artifacts/pins.json`.
+Neither blob is rebuilt by a consumer: the kernel wasm is deterministic on a
+host but not across hosts, and the image needs the guest toolchain plus hours of
+port builds. Each is published once to `YurtOS/yurt-packages` (the `release` tag
+in `artifacts/pins.json`) and fetched. To move a pin, publish the new blob and
+record the sha256 it carries. `scripts/pin-artifacts.ts` only verifies: it
+accepts matching blobs from `artifacts/`, sibling checkouts, or
+`PLAYGROUND_*_URL`, and exits 2 if none match `artifacts/pins.json`.
 
 ## Layout
 

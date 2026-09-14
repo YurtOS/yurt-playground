@@ -99,7 +99,10 @@ type KernelConnection = {
 async function readConnectionFile(
   session: JupyterLaunchSession,
 ): Promise<KernelConnection> {
+  // The PTY echoes the typed command, so the marker must not appear in it:
+  // the shell joins the two halves, the echo shows them quoted apart.
   const marker = "YURT_JUPYTER_CONNECTION_READY";
+  const typedMarker = 'YURT_JUPYTER_CONNECTION_""READY';
   const bytes: number[] = [];
   let text = "";
   let resolveOutput: (() => void) | undefined;
@@ -113,7 +116,7 @@ async function readConnectionFile(
       encoder.encode(
         `i=0; while [ ! -s ${JUPYTER_CONNECTION_FILE} ] && [ $i -lt 60 ]; do ` +
           `sleep 1; i=$((i+1)); done; cat ${JUPYTER_CONNECTION_FILE}; ` +
-          `echo ${marker}\n`,
+          `echo ${typedMarker}\n`,
       ),
     );
     if (!text.includes(marker)) {
