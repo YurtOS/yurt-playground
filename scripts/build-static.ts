@@ -5,6 +5,7 @@ import { ensureBundle } from "./serve.ts";
 import { ISOLATION_HEADERS, XTERM_CSS_PATH } from "../src/serve.ts";
 import { headersFile, inlineScriptHashes } from "../src/csp.ts";
 import { imagePartRange, imagePartsManifest } from "../src/image_parts.ts";
+import { IMAGE_NAME, integrityManifest } from "../src/integrity.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -19,6 +20,7 @@ const STATIC_FILES = [
   "coordinator.bundle.js",
   "worker_bootstrap.js",
   "playground-bridge.js",
+  "verify.js",
 ];
 /** The JupyterLite site (jupyterlite/build.sh); served under /jupyter/. */
 const JUPYTER_DIR = "jupyter";
@@ -79,7 +81,23 @@ export async function buildStaticSite(): Promise<void> {
   // The page reads the pins for its hash checks, then the blobs.
   await copyFiles(["pins.json", "yurt_kernel.wasm"], artifactsDir, distDir);
   // Cloudflare Pages refuses files over 25 MiB; the image ships in parts.
-  await writeImageParts("playground.yurtimg");
+  await writeImageParts(IMAGE_NAME);
+  // The "check the bytes" card hashes what it downloaded against this. dist/
+  // holds the image only as parts; hash the file they were sliced from.
+  await Deno.writeTextFile(
+    join(distDir, "integrity.json"),
+    JSON.stringify(
+      await integrityManifest(
+        (name) =>
+          Deno.readFile(
+            join(name === IMAGE_NAME ? artifactsDir : distDir, name),
+          ),
+        Deno.env.get("GITHUB_SHA") ?? null,
+      ),
+      null,
+      2,
+    ) + "\n",
+  );
   await Deno.writeTextFile(join(distDir, "_headers"), await siteHeaders());
 }
 

@@ -10,6 +10,7 @@ import {
   imagePartRange,
   imagePartsManifest,
 } from "./image_parts.ts";
+import { IMAGE_NAME, integrityManifest } from "./integrity.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -77,8 +78,6 @@ function notFound(): Response {
   });
 }
 
-const IMAGE_NAME = "playground.yurtimg";
-
 /** The image parts the static build publishes, sliced from the single
  * artifacts/ file so the page's fetch path is the same here and deployed. */
 async function handleImagePart(pathname: string): Promise<Response | null> {
@@ -126,6 +125,22 @@ async function handleImagePart(pathname: string): Promise<Response | null> {
   }
 }
 
+/** The dev-server counterpart of the static build's integrity.json,
+ * computed from the files being served so it is never stale. */
+async function handleIntegrity(): Promise<Response> {
+  const manifest = await integrityManifest((name) => {
+    const path = resolvePlaygroundPath(`/${name}`);
+    if (path === null) throw new Error(`no such file: ${name}`);
+    return Deno.readFile(path);
+  }, null);
+  return new Response(JSON.stringify(manifest, null, 2), {
+    headers: {
+      ...ISOLATION_HEADERS,
+      "Content-Type": "application/json; charset=utf-8",
+    },
+  });
+}
+
 export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
   let pathname: string;
@@ -133,6 +148,13 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
     pathname = decodeURIComponent(url.pathname);
   } catch {
     return notFound();
+  }
+  if (pathname === "/integrity.json") {
+    try {
+      return await handleIntegrity();
+    } catch {
+      return notFound();
+    }
   }
   const part = await handleImagePart(pathname);
   if (part !== null) return part;

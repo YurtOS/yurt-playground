@@ -83,12 +83,26 @@ if (import.meta.main) {
         Math.round((Date.now() - started) / 1000)
       } s`,
     );
+    // The proof the home page advertises: with the network gone, the next
+    // cell still runs, and the page says so.
+    await page.context().setOffline(true);
+    await page.waitForFunction(() =>
+      document.querySelector("[data-testid=net]")?.getAttribute(
+        "data-online",
+      ) === "false"
+    );
     // `int(...)`: numpy 2 displays its scalars as `np.int32(3)`.
     await page.getByTestId("notebook-input").fill(
       "import numpy as np; int(np.array([1, 2]).sum())",
     );
     await page.getByTestId("notebook-execute").click();
     await cellDone("3");
+    await page.context().setOffline(false);
+    await page.waitForFunction(() =>
+      document.querySelector("[data-testid=net]")?.getAttribute(
+        "data-online",
+      ) === "true"
+    );
     if (!(await page.locator("#term").isVisible())) {
       throw new Error("ash terminal is not visible");
     }

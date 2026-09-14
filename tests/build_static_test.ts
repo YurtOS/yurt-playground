@@ -1,4 +1,5 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { INTEGRITY_FILES, sha256Hex } from "../src/integrity.ts";
 import { inlineScriptHashes } from "../src/csp.ts";
 
 Deno.test("static build emits isolated playground deployment", async () => {
@@ -12,7 +13,7 @@ Deno.test("static build emits isolated playground deployment", async () => {
       '"artifacts"',
       '"_headers"',
       '"yurt_kernel.wasm"',
-      '"playground.yurtimg"',
+      "IMAGE_NAME",
       '"worker_bootstrap.js"',
       "ISOLATION_HEADERS",
       "headersFile",
@@ -59,6 +60,8 @@ Deno.test("static build writes every file the pages need", async () => {
       "yurt_kernel.wasm",
       "playground.yurtimg.parts.json",
       "_headers",
+      "verify.js",
+      "integrity.json",
     ]
   ) {
     const stat = await Deno.stat(new URL(`dist/${file}`, repoRoot));
@@ -67,6 +70,21 @@ Deno.test("static build writes every file the pages need", async () => {
   for (const file of ["index.html", "notebooks/index.html", "lab/index.html"]) {
     const stat = await Deno.stat(new URL(`dist/jupyter/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/jupyter/${file} is empty`);
+  }
+  // integrity.json hashes the files as they sit in dist/; the image is the
+  // exception, published in parts, and the parts check below proves those add
+  // back up to the artifact this hash is taken over.
+  const integrity = JSON.parse(
+    await Deno.readTextFile(new URL("dist/integrity.json", repoRoot)),
+  );
+  assertEquals(Object.keys(integrity.files), [...INTEGRITY_FILES]);
+  for (const name of INTEGRITY_FILES) {
+    const dir = name === "playground.yurtimg" ? "artifacts" : "dist";
+    assertEquals(
+      integrity.files[name],
+      await sha256Hex(await Deno.readFile(new URL(`${dir}/${name}`, repoRoot))),
+      name,
+    );
   }
   // The deployed headers carry the isolation trio and both CSP rules, with
   // every built page's inline scripts allowed by hash (the JupyterLite
