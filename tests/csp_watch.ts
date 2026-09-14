@@ -9,7 +9,11 @@ export function watchCspViolations(page: Page): () => void {
   const violations: string[] = [];
   page.on("console", (message) => {
     const text = message.text();
-    if (/Content Security Policy/i.test(text)) violations.push(text);
+    if (!/Content Security Policy/i.test(text)) return;
+    violations.push(text);
+    // Also to stderr as it happens: a run that dies on a timeout never
+    // reaches the check below, and the refusal is usually the reason.
+    console.error(`[csp] ${text}`);
   });
   return () => {
     if (violations.length > 0) {
