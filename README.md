@@ -1,5 +1,9 @@
 # yurt-playground
 
+**Try it: <https://yurt-playground.pages.dev>** — a Linux sandbox with Python
+and Jupyter that boots inside the browser tab, and a desktop app that runs the
+same playground natively on your machine (download links on the page).
+
 In-browser [Yurt](https://github.com/YurtOS) playground. Sibling of
 [`yurtos-kernel`](https://github.com/YurtOS/yurtos-kernel),
 [`yurt-ports`](https://github.com/YurtOS/yurt-ports), and
