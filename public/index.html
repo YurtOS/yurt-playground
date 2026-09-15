@@ -125,6 +125,9 @@
         color: #777;
         font-size: 0.85rem;
       }
+      footer a {
+        color: #9cf;
+      }
       /* "Is this really running in your browser?" */
       #proof {
         margin-top: 56px;
@@ -430,7 +433,11 @@
       </section>
       <footer>
         Nothing leaves the page: the kernel, the filesystem and Python all run
-        in this tab.
+        in this tab. Source, issues and releases:
+        <a
+          href="https://github.com/YurtOS/yurt-playground"
+          data-testid="repo-link"
+        >github.com/YurtOS/yurt-playground</a>.
       </footer>
     </main>
     <script type="module" src="./verify.js"></script>
