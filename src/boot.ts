@@ -43,7 +43,38 @@ export type PlaygroundSession = {
     port: number,
   ) => ReturnType<KernelHostInterface["dialSandboxPort"]>;
   onOutput: (handler: (bytes: Uint8Array) => void) => () => void;
+  /** Keep the shell's output off the screen until `show(tail)`: what the
+   * page types into the user's shell on its own behalf (the Jupyter
+   * launch) is not for the user to read. `tail` is written as the display
+   * resumes. */
+  hushOutput: () => { show(tail: Uint8Array): void };
 };
+
+/** The shell's output goes to the screen and to whoever asked to see it
+ * (the Jupyter launch reads its connection file from here). */
+export function outputFanout(term: PlaygroundTerm) {
+  const handlers = new Set<(bytes: Uint8Array) => void>();
+  let hushed = false;
+  return {
+    push(bytes: Uint8Array) {
+      if (!hushed) term.write(bytes);
+      for (const handler of handlers) handler(bytes);
+    },
+    onOutput(handler: (bytes: Uint8Array) => void) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+    hushOutput() {
+      hushed = true;
+      return {
+        show(tail: Uint8Array) {
+          hushed = false;
+          term.write(tail);
+        },
+      };
+    },
+  };
+}
 
 const LOGIN_USER = "user";
 const LOGIN_UID = 1000;
@@ -133,11 +164,8 @@ export async function bootPlayground(
   const pty = mk.attachHostPty(user.pid);
   mk.ptySetWinsize(pty, env.term.rows, env.term.cols);
   const encoder = new TextEncoder();
-  const outputHandlers = new Set<(bytes: Uint8Array) => void>();
-  const stopPump = pumpPtyMaster(mk, pty, (bytes) => {
-    env.term.write(bytes);
-    for (const handler of outputHandlers) handler(bytes);
-  });
+  const output = outputFanout(env.term);
+  const stopPump = pumpPtyMaster(mk, pty, output.push);
   const terminal: PtyTransport = {
     write(bytes) {
       mk.ptyMasterWrite(pty, bytes);
@@ -179,9 +207,7 @@ export async function bootPlayground(
     controller,
     terminal,
     dialSandboxPort: (port) => mk.dialSandboxPort(port),
-    onOutput(handler) {
-      outputHandlers.add(handler);
-      return () => outputHandlers.delete(handler);
-    },
+    onOutput: output.onOutput,
+    hushOutput: output.hushOutput,
   };
 }

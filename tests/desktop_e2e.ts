@@ -62,7 +62,7 @@ if (import.meta.main) {
       throw new Error(`native boot took ${desktop.bootMs} ms`);
     }
     console.log(`desktop e2e: native sandbox booted in ${desktop.bootMs} ms`);
-    await page.goto(`${app.url}terminal.html`, {
+    await page.goto(`${app.url}?start=1`, {
       waitUntil: "domcontentloaded",
     });
     await page.getByTestId("notebook-status").waitFor({

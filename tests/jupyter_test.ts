@@ -4,7 +4,11 @@ import {
   JUPYTER_PID_FILE,
 } from "../src/jupyter.ts";
 import { assertEquals, assertRejects } from "@std/assert";
-import { connectJupyterWithRetries, executeCell } from "../src/jupyter.ts";
+import {
+  connectJupyterWithRetries,
+  executeCell,
+  hushUntil,
+} from "../src/jupyter.ts";
 import type { JupyterMessage } from "../src/jupyter_protocol.ts";
 import type {
   JupyterChannel,
@@ -133,4 +137,50 @@ Deno.test("the stop command kills the recorded kernel and clears both files", ()
   );
   // No pid file means nothing to kill, not a shell error.
   assertEquals(command.startsWith(`if [ -s ${JUPYTER_PID_FILE} ]`), true);
+});
+
+Deno.test("the launch is kept off the screen; the prompt after the marker is shown", () => {
+  const handlers = new Set<(bytes: Uint8Array) => void>();
+  const shown: string[] = [];
+  const session = {
+    terminal: { write: () => Promise.resolve() },
+    dialSandboxPort: () => {
+      throw new Error("not dialed");
+    },
+    onOutput(handler: (bytes: Uint8Array) => void) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+    hushOutput: () => ({
+      show(tail: Uint8Array) {
+        shown.push(new TextDecoder().decode(tail));
+      },
+    }),
+  };
+  const emit = (text: string) => {
+    for (const handler of handlers) handler(new TextEncoder().encode(text));
+  };
+  const release = hushUntil(session, "MARK");
+  emit("python3 -m ipykernel_launcher ...\r\n{ json }\r\n");
+  assertEquals(shown, []);
+  // The marker and the shell's next prompt in one chunk: the prompt
+  // survives, on a cleared line; the marker line does not.
+  emit("MA");
+  emit("RK\r\n$ ");
+  assertEquals(shown, ["\r\x1b[2K$ "]);
+  release();
+  assertEquals(shown.length, 1);
+  assertEquals(handlers.size, 0);
+
+  // Released without the marker (the launch failed): the screen resumes
+  // with nothing pending.
+  const failed = hushUntil(session, "MARK");
+  emit("no marker here\r\n");
+  failed();
+  assertEquals(shown, ["\r\x1b[2K$ ", "\r\x1b[2K"]);
+
+  // A session that cannot hush (a plain transport) shows everything.
+  const { hushOutput: _, ...plain } = session;
+  hushUntil(plain, "MARK")();
+  assertEquals(shown.length, 2);
 });

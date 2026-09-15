@@ -1,4 +1,4 @@
-import { chromium } from "playwright";
+import { chromium, type Page } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
@@ -7,6 +7,46 @@ import { EXECUTE_TIMEOUT_MS } from "../src/jupyter.ts";
 import { watchCspViolations } from "./csp_watch.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** "Run it on your machine" is a radio group behind four labels: Tab lands
+ * on the chosen one, the arrow keys move the choice and the panel with it,
+ * and the ring shows on the label of the focused radio. */
+async function installChoicesWorkByKeyboard(page: Page): Promise<void> {
+  const shown = () =>
+    page.evaluate(() => {
+      const panel = [
+        ...document.querySelectorAll<HTMLElement>("#install .panel"),
+      ]
+        .find((p) => getComputedStyle(p).display !== "none");
+      const focused = document.activeElement as HTMLInputElement | null;
+      const label = focused?.id
+        ? document.querySelector<HTMLElement>(`label[for="${focused.id}"]`)
+        : null;
+      return {
+        panel: panel?.className.replace("panel ", ""),
+        focused: focused?.id,
+        ringed: label ? getComputedStyle(label).outlineStyle !== "none" : false,
+      };
+    });
+  await page.locator("#install-app-mac").focus();
+  // A pointer focus draws no ring; the keyboard's does.
+  await page.keyboard.press("ArrowDown");
+  const order = ["app-linux", "cli-mac", "cli-linux", "app-mac"];
+  for (const expected of order) {
+    const state = await shown();
+    if (
+      state.panel !== expected || state.focused !== `install-${expected}` ||
+      !state.ringed
+    ) {
+      throw new Error(
+        `install choice by keyboard: want ${expected} focused, shown and ringed, got ${
+          JSON.stringify(state)
+        }`,
+      );
+    }
+    await page.keyboard.press("ArrowDown");
+  }
+}
 
 if (import.meta.main) {
   await ensureBundle(
@@ -18,12 +58,15 @@ if (import.meta.main) {
     const page = await browser.newPage();
     const started = Date.now();
     const csp = watchCspViolations(page);
-    await page.goto(`${server.url}/terminal.html`, {
-      waitUntil: "domcontentloaded",
-    });
+    // The primary flow: the home page, and the one action on it.
+    await page.goto(`${server.url}/`, { waitUntil: "domcontentloaded" });
     if (await page.evaluate(() => globalThis.crossOriginIsolated !== true)) {
       throw new Error("browser page is not cross-origin isolated");
     }
+    await installChoicesWorkByKeyboard(page);
+    await page.getByTestId("start-sandbox").click();
+    // The button yields to the boot; the cell is part of the workspace.
+    await page.getByTestId("start-sandbox").waitFor({ state: "hidden" });
     await page.getByTestId("notebook-status").waitFor({
       state: "visible",
       timeout: 30_000,

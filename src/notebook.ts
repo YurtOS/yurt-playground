@@ -12,24 +12,39 @@ export function mountNotebook(
   execute: (id: string, code: string) => void,
 ): NotebookView {
   root.replaceChildren();
-  const editor = document.createElement("textarea");
-  editor.id = "notebook-input";
-  editor.dataset.testid = "notebook-input";
-  editor.value = "1+1";
-  editor.disabled = true;
-  const button = document.createElement("button");
-  button.id = "notebook-execute";
-  button.dataset.testid = "notebook-execute";
-  button.textContent = "Execute";
-  button.disabled = true;
+  // The pane's bar: what this is, and where the kernel stands.
+  const bar = document.createElement("div");
+  bar.className = "bar";
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = "Python";
   const status = document.createElement("span");
   status.id = "notebook-status";
   status.dataset.testid = "notebook-status";
-  status.textContent = "starting Jupyter";
+  status.textContent = "waiting for the sandbox";
+  bar.append(name, status);
+  const editor = document.createElement("textarea");
+  editor.id = "notebook-input";
+  editor.dataset.testid = "notebook-input";
+  editor.setAttribute("aria-label", "Python cell");
+  editor.value = "1+1";
+  editor.disabled = true;
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const button = document.createElement("button");
+  button.id = "notebook-execute";
+  button.dataset.testid = "notebook-execute";
+  button.type = "button";
+  button.textContent = "Run";
+  button.disabled = true;
+  const hint = document.createElement("span");
+  hint.textContent = "one cell, on a real ipykernel in the sandbox";
+  hint.style.color = "var(--muted)";
+  actions.append(button, hint);
   const output = document.createElement("pre");
   output.id = "notebook-output";
   output.dataset.testid = "notebook-output";
-  root.append(editor, button, status, output);
+  root.append(bar, editor, actions, output);
   const pending = new Set<string>();
   button.onclick = () => {
     const id = crypto.randomUUID();

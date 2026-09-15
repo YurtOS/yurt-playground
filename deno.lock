@@ -3,6 +3,7 @@
   "specifiers": {
     "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/internal@^1.0.12": "1.0.14",
+    "npm:@xterm/addon-fit@0.10.0": "0.10.0_@xterm+xterm@5.5.0",
     "npm:@xterm/xterm@5.5.0": "5.5.0",
     "npm:fzstd@0.1.1": "0.1.1",
     "npm:playwright@1.55.0": "1.55.0"
@@ -19,6 +20,12 @@
     }
   },
   "npm": {
+    "@xterm/addon-fit@0.10.0_@xterm+xterm@5.5.0": {
+      "integrity": "sha512-UFYkDm4HUahf2lnEyHvio51TNGiLK66mqP2JoATy7hRZeXaGMRDr00JiSF7m63vR5WKATF605yEggJKsw0JpMQ==",
+      "dependencies": [
+        "@xterm/xterm"
+      ]
+    },
     "@xterm/xterm@5.5.0": {
       "integrity": "sha512-hqJHYaQb5OptNunnyAnkHyM8aCjZ1MEIDTQu1iIbbTD/xops91NB5yq1ZK/dC2JDbVWtF23zUtl9JE2NqwT87A=="
     },
@@ -48,6 +55,7 @@
   "workspace": {
     "dependencies": [
       "jsr:@std/assert@1",
+      "npm:@xterm/addon-fit@0.10.0",
       "npm:@xterm/xterm@5.5.0",
       "npm:fzstd@0.1.1",
       "npm:playwright@1.55.0"

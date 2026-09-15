@@ -4,81 +4,295 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Yurt playground</title>
+    <link rel="stylesheet" href="./xterm.css" />
     <style>
+      :root {
+        --ground: #161a21;
+        --pane: #1c212a;
+        --rule: #2c3340;
+        --text: #e6e1d7;
+        --muted: #9a948a;
+        --ochre: #e0a458;
+        --sky: #8fb4d9;
+        --moss: #9fc79a;
+        --ember: #e08a7a;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        --serif:
+          "Iowan Old Style",
+          "Palatino Linotype",
+          Palatino,
+          Georgia,
+          serif;
+      }
       html,
       body {
         margin: 0;
         min-height: 100%;
-        background: #111;
-        color: #eee;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: var(--ground);
+        color: var(--text);
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.5;
       }
-      main {
-        max-width: 720px;
+      a {
+        color: var(--sky);
+      }
+      a:focus-visible,
+      button:focus-visible,
+      summary:focus-visible,
+      textarea:focus-visible {
+        outline: 2px solid var(--ochre);
+        outline-offset: 2px;
+      }
+      code,
+      kbd {
+        font-family: var(--mono);
+        background: var(--pane);
+        border: 1px solid var(--rule);
+        border-radius: 4px;
+        padding: 0 4px;
+      }
+      .wrap {
+        max-width: 1040px;
         margin: 0 auto;
-        padding: 48px 16px;
+        padding: 0 16px;
       }
-      h1 {
-        font-size: 1.6rem;
-        margin: 0 0 8px;
+
+      /* Masthead: the name, one sentence, the ways in. */
+      header.mast {
+        display: flex;
+        align-items: baseline;
+        gap: 20px;
+        flex-wrap: wrap;
+        padding: 20px 0 14px;
       }
-      p.lead {
-        color: #aaa;
-        margin: 0 0 32px;
-      }
-      .choices {
-        display: grid;
-        gap: 16px;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      }
-      a.choice {
-        display: block;
-        padding: 20px;
-        border: 1px solid #444;
-        border-radius: 8px;
-        color: inherit;
-        text-decoration: none;
-        background: #1a1a1a;
-      }
-      a.choice:hover,
-      a.choice:focus {
-        border-color: #9cf;
-        outline: none;
-      }
-      a.choice h2 {
-        margin: 0 0 8px;
-        font-size: 1.1rem;
-        color: #9cf;
-      }
-      a.choice p {
+      header.mast h1 {
+        font-family: var(--serif);
+        font-weight: 400;
+        font-size: 1.9rem;
+        letter-spacing: 0.01em;
         margin: 0;
-        color: #bbb;
-        line-height: 1.4;
       }
+      header.mast .lead {
+        font-family: var(--serif);
+        font-size: 1.05rem;
+        color: var(--muted);
+        margin: 0;
+        flex: 1 1 320px;
+      }
+      header.mast nav {
+        display: flex;
+        gap: 18px;
+      }
+      header.mast nav a {
+        text-decoration: none;
+        border-bottom: 1px solid transparent;
+        padding-bottom: 1px;
+      }
+      header.mast nav a:hover {
+        border-bottom-color: var(--sky);
+      }
+
       #mobile-note {
-        border: 1px solid #c66;
-        color: #f99;
-        padding: 12px;
-        margin: 0 0 24px;
+        border-left: 3px solid var(--ember);
+        background: var(--pane);
+        color: var(--text);
+        padding: 12px 14px;
+        margin: 0 0 16px;
       }
-      p.alt {
-        margin: 16px 0 0;
-        color: #bbb;
+
+      /* The workspace: two panes, one machine. */
+      .pane {
+        background: var(--pane);
+        border: 1px solid var(--rule);
+        border-radius: 6px;
+        overflow: hidden;
       }
-      p.alt a {
-        color: #9cf;
+      .pane + .pane {
+        margin-top: 12px;
       }
-      /* Beyond the tab: the desktop app and the command line, one choice per
-         platform down the left, CSS only (radio + label). */
+      .pane .bar {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 6px 12px;
+        border-bottom: 1px solid var(--rule);
+        color: var(--muted);
+        min-height: 20px;
+      }
+      .pane .bar .name {
+        color: var(--text);
+      }
+      .pane .bar .grow {
+        flex: 1;
+      }
+      #status {
+        margin: 0;
+        font: inherit;
+        white-space: pre-wrap;
+      }
+      #net[data-online="false"] {
+        color: var(--ember);
+      }
+      #term-wrap {
+        position: relative;
+        height: 50vh;
+        min-height: 300px;
+      }
+      #term {
+        position: absolute;
+        inset: 0;
+        padding: 8px 0 0 10px;
+      }
+      /* Before the boot: a prompt and the one action. */
+      #start {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: flex-start;
+        gap: 18px;
+        padding: 18px 16px;
+        background: var(--pane);
+      }
+      #start[hidden] {
+        display: none;
+      }
+      #start .prompt {
+        color: var(--ochre);
+        font-size: 15px;
+      }
+      #start .prompt::after {
+        content: "\2588";
+        margin-left: 2px;
+        animation: blink 1.1s steps(1) infinite;
+      }
+      @keyframes blink {
+        50% {
+          opacity: 0;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #start .prompt::after {
+          animation: none;
+        }
+        #proof summary h2::before {
+          transition: none;
+        }
+      }
+      #start button {
+        font: inherit;
+        font-size: 15px;
+        color: #161a21;
+        background: var(--ochre);
+        border: 0;
+        border-radius: 6px;
+        padding: 10px 18px;
+        cursor: pointer;
+      }
+      #start button:hover {
+        filter: brightness(1.08);
+      }
+      #start p {
+        margin: 0;
+        color: var(--muted);
+        max-width: 60ch;
+      }
+
+      /* The cell: one Python cell on the same kernel. */
+      #notebook {
+        padding: 0;
+      }
+      #notebook-input {
+        display: block;
+        width: 100%;
+        box-sizing: border-box;
+        min-height: 72px;
+        resize: vertical;
+        margin: 0;
+        padding: 10px 12px;
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        font-size: 14px;
+        border: 0;
+        border-bottom: 1px solid var(--rule);
+      }
+      #notebook-input:disabled {
+        color: var(--muted);
+      }
+      #notebook .actions {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 8px 12px;
+      }
+      #notebook-execute {
+        font: inherit;
+        color: #161a21;
+        background: var(--sky);
+        border: 0;
+        border-radius: 6px;
+        padding: 6px 14px;
+        cursor: pointer;
+      }
+      #notebook-execute:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      #notebook-status {
+        color: var(--muted);
+      }
+      #notebook-output {
+        margin: 0;
+        padding: 0 12px 12px;
+        min-height: 1.5em;
+        white-space: pre-wrap;
+        font: inherit;
+        font-size: 14px;
+      }
+      #notebook-output:not(:empty) {
+        border-top: 1px solid var(--rule);
+        padding-top: 10px;
+      }
+
+      /* Secondary: quieter than the panes, below the fold. */
+      .strip {
+        margin-top: 28px;
+        border-top: 1px solid var(--rule);
+        padding-top: 18px;
+      }
+      .strip h2 {
+        font-family: var(--serif);
+        font-weight: 400;
+        font-size: 1.25rem;
+        margin: 0 0 4px;
+      }
+      .strip > p {
+        color: var(--muted);
+        margin: 0 0 14px;
+        max-width: 70ch;
+      }
+
+      /* Run it on your machine: one choice per platform down the left. */
       #install {
-        margin-top: 32px;
-        border: 1px solid #333;
-        border-radius: 8px;
+        position: relative;
+        border: 1px solid var(--rule);
+        border-radius: 6px;
         display: flex;
         overflow: hidden;
       }
+      /* The choice is a radio group: Tab reaches the chosen one, the arrow
+       * keys move it. The radios themselves are hidden; their labels are
+       * the tabs, and the focus ring lands on the focused radio's label. */
       #install > input {
         position: absolute;
+        top: 0;
+        left: 0;
+        width: 1px;
+        height: 1px;
+        margin: 0;
         opacity: 0;
         pointer-events: none;
       }
@@ -86,39 +300,42 @@
         display: flex;
         flex-direction: column;
         flex: 0 0 200px;
-        background: #1a1a1a;
-        border-right: 1px solid #333;
+        border-right: 1px solid var(--rule);
+        padding: 8px 0;
       }
       #install .tabs .group {
-        padding: 12px 16px 4px;
-        color: #777;
-        font-size: 0.8rem;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
+        padding: 8px 16px 2px;
+        color: var(--muted);
       }
       #install .tabs label {
-        padding: 8px 16px 8px 24px;
-        color: #999;
+        padding: 6px 16px 6px 26px;
+        color: var(--muted);
         cursor: pointer;
         border-left: 3px solid transparent;
       }
       #install .tabs label:hover {
-        color: #ddd;
+        color: var(--text);
       }
       #install-app-mac:checked ~ .tabs label[for="install-app-mac"],
       #install-app-linux:checked ~ .tabs label[for="install-app-linux"],
       #install-cli-mac:checked ~ .tabs label[for="install-cli-mac"],
       #install-cli-linux:checked ~ .tabs label[for="install-cli-linux"] {
-        color: #fff;
-        border-left-color: #9cf;
-        background: #222;
+        color: var(--text);
+        border-left-color: var(--ochre);
+        background: var(--pane);
+      }
+      #install-app-mac:focus-visible ~ .tabs label[for="install-app-mac"],
+      #install-app-linux:focus-visible ~ .tabs label[for="install-app-linux"],
+      #install-cli-mac:focus-visible ~ .tabs label[for="install-cli-mac"],
+      #install-cli-linux:focus-visible ~ .tabs label[for="install-cli-linux"] {
+        outline: 2px solid var(--ochre);
+        outline-offset: -2px;
       }
       #install .panel {
         display: none;
         flex: 1 1 auto;
-        padding: 16px 20px 18px;
-        color: #bbb;
         min-width: 0;
+        padding: 14px 18px 16px;
       }
       #install-app-mac:checked ~ .panel.app-mac,
       #install-app-linux:checked ~ .panel.app-linux,
@@ -127,188 +344,177 @@
         display: block;
       }
       #install .panel h3 {
-        margin: 0 0 10px;
+        margin: 0 0 8px;
         font-size: 1rem;
-        color: #ddd;
+        font-weight: 600;
       }
       #install .panel p {
         margin: 0 0 10px;
+        color: var(--muted);
+        max-width: 70ch;
       }
       #install .panel p:last-child {
         margin-bottom: 0;
       }
-      #install .panel a {
-        color: #9cf;
-      }
-      #install .panel code {
-        color: #ddd;
-      }
       #install .panel pre {
         margin: 0 0 10px;
         padding: 10px 12px;
-        background: #111;
-        border: 1px solid #333;
+        background: var(--ground);
+        border: 1px solid var(--rule);
         border-radius: 6px;
         overflow-x: auto;
-        color: #ddd;
+        color: var(--text);
       }
-      @media (max-width: 640px) {
+
+      /* The proof, on demand. */
+      #proof summary {
+        cursor: pointer;
+        list-style: none;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px 12px;
+      }
+      #proof summary::-webkit-details-marker {
+        display: none;
+      }
+      #proof summary h2 {
+        margin: 0;
+      }
+      /* The one sign it opens: a small triangle in the accent, turning. */
+      #proof summary h2::before {
+        content: "";
+        display: inline-block;
+        width: 0;
+        height: 0;
+        margin-right: 10px;
+        vertical-align: 2px;
+        border: 5px solid transparent;
+        border-left: 7px solid var(--ochre);
+        border-right: 0;
+        transition: transform 120ms ease-out;
+      }
+      #proof[open] summary h2::before {
+        transform: rotate(90deg);
+      }
+      #proof summary .hint {
+        color: var(--muted);
+      }
+      #proof[open] summary .hint {
+        display: none;
+      }
+      /* Four checks, two by two: they are parallel, none comes first. */
+      #proof .checks {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        margin-top: 14px;
+      }
+      #proof .check {
+        border: 1px solid var(--rule);
+        border-radius: 6px;
+        padding: 12px 14px;
+      }
+      #proof .check h3 {
+        margin: 0 0 8px;
+        font-size: 1rem;
+        font-weight: 600;
+      }
+      #proof .check p {
+        margin: 0 0 8px;
+        color: var(--muted);
+      }
+      #proof .check p:last-child {
+        margin-bottom: 0;
+      }
+      #proof .check button {
+        font: inherit;
+        color: #161a21;
+        background: var(--sky);
+        border: 0;
+        border-radius: 6px;
+        padding: 6px 14px;
+        cursor: pointer;
+      }
+      #proof .check button:disabled {
+        opacity: 0.6;
+        cursor: wait;
+      }
+      #verify-results {
+        overflow-x: auto;
+      }
+      #verify-results table {
+        border-collapse: collapse;
+        margin: 12px 0 0;
+        width: 100%;
+      }
+      #verify-results td {
+        padding: 3px 6px 3px 0;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      #verify-results td:last-child {
+        padding-left: 6px;
+        color: var(--moss);
+      }
+      #verify-results tr.ok td:first-child {
+        color: var(--moss);
+      }
+      #verify-results tr.bad td {
+        color: var(--ember);
+      }
+      #verify-results p {
+        margin: 12px 0 0;
+      }
+      #verify-results p.ok {
+        color: var(--moss);
+      }
+      #verify-results p.bad {
+        color: var(--ember);
+      }
+      #verify-commit {
+        margin: 8px 0 0;
+        color: var(--muted);
+      }
+
+      footer {
+        margin: 28px 0 32px;
+        color: var(--muted);
+      }
+
+      @media (max-width: 720px) {
+        header.mast {
+          gap: 8px 16px;
+          padding-top: 14px;
+        }
+        header.mast h1 {
+          font-size: 1.6rem;
+        }
+        #term-wrap {
+          height: 40vh;
+          min-height: 240px;
+        }
         #install {
           flex-direction: column;
         }
         #install .tabs {
           flex-basis: auto;
           border-right: 0;
-          border-bottom: 1px solid #333;
+          border-bottom: 1px solid var(--rule);
         }
-      }
-      footer {
-        margin-top: 32px;
-        color: #777;
-        font-size: 0.85rem;
-      }
-      footer a {
-        color: #9cf;
-      }
-      /* "Is this really running in your browser?" */
-      #proof {
-        margin-top: 56px;
-        padding-top: 32px;
-        border-top: 1px solid #333;
-      }
-      #proof h2 {
-        font-size: 1.25rem;
-        margin: 0 0 8px;
-      }
-      #proof > p {
-        color: #aaa;
-        margin: 0 0 24px;
-        line-height: 1.5;
-      }
-      .checks {
-        display: grid;
-        gap: 16px;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-        counter-reset: check;
-      }
-      .check {
-        padding: 20px;
-        border: 1px solid #333;
-        border-radius: 8px;
-        background: #161616;
-        line-height: 1.45;
-      }
-      .check h3 {
-        margin: 0 0 8px;
-        font-size: 1rem;
-        color: #eee;
-      }
-      .check h3::before {
-        counter-increment: check;
-        content: counter(check);
-        display: inline-block;
-        width: 1.6em;
-        height: 1.6em;
-        margin-right: 10px;
-        border-radius: 50%;
-        background: #9cf;
-        color: #111;
-        text-align: center;
-        line-height: 1.6em;
-        font-size: 0.85rem;
-      }
-      .check p {
-        margin: 0 0 8px;
-        color: #bbb;
-      }
-      .check p:last-child {
-        margin-bottom: 0;
-      }
-      .check a {
-        color: #9cf;
-      }
-      .check kbd,
-      .check code {
-        background: #222;
-        border: 1px solid #333;
-        border-radius: 4px;
-        padding: 1px 5px;
-        font-size: 0.9em;
-      }
-      .check button {
-        font: inherit;
-        color: #111;
-        background: #9cf;
-        border: 0;
-        border-radius: 6px;
-        padding: 8px 14px;
-        cursor: pointer;
-      }
-      .check button:disabled {
-        opacity: 0.6;
-        cursor: wait;
-      }
-      #verify-results table {
-        border-collapse: collapse;
-        margin: 12px 0 0;
-        width: 100%;
-        font-size: 0.75rem;
-      }
-      #verify-results td {
-        padding: 4px 6px 4px 0;
-        color: #bbb;
-        white-space: nowrap;
-      }
-      #verify-results {
-        overflow-x: auto;
-      }
-      #verify-results td:nth-child(3) {
-        color: #777;
-      }
-      #verify-results td:last-child {
-        padding-left: 6px;
-        color: #8e8;
-      }
-      #verify-results tr.bad td:last-child {
-        color: #f99;
-      }
-      #verify-results tr.ok td:first-child {
-        color: #8e8;
-      }
-      #verify-results tr.bad td:first-child,
-      #verify-results tr.bad td {
-        color: #f99;
-      }
-      #verify-results p {
-        margin: 12px 0 0;
-      }
-      #verify-results p.ok {
-        color: #8e8;
-      }
-      #verify-results p.bad {
-        color: #f99;
-      }
-      #verify-commit {
-        margin: 8px 0 0;
-        color: #777;
-        font-size: 0.85rem;
-      }
-      #verify-commit a {
-        color: #9cf;
+        #proof .checks {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
   <body>
     <script>
-      // The only hard requirement is cross-origin isolation (COOP/COEP
-      // headers), which gives the Workers a SharedArrayBuffer; every current
-      // browser, mobile Safari included, has it under those headers. A page
-      // served without them cannot boot the sandbox at all and goes to the
-      // explanation. Phones are not blocked: they get a note, since the
-      // sandbox usually needs more memory than a mobile tab is allowed.
-      if (globalThis.crossOriginIsolated !== true) {
-        globalThis.location.replace("./unsupported.html");
-      }
+      // Phones are not blocked: they get a note, since the sandbox usually
+      // needs more memory than a mobile tab is allowed. The isolation gate
+      // (COOP/COEP for the in-tab kernel) is applied when the sandbox is
+      // started, in boot.bundle.js, so the desktop app's page — which needs
+      // no isolation — is not sent away.
       const uaData = navigator.userAgentData;
       const mobile = uaData?.mobile === true ||
         /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent) ||
@@ -321,180 +527,208 @@
         });
       }
     </script>
-    <main>
+    <main class="wrap">
+      <header class="mast">
+        <h1>Yurt</h1>
+        <p class="lead">
+          A Linux sandbox that runs inside this browser tab: a shell, Python
+          3.14, NumPy, Jupyter. Nothing leaves the page.
+        </p>
+        <nav aria-label="interfaces">
+          <a
+            href="./jupyter/notebooks/index.html?path=welcome.ipynb"
+            data-testid="choose-notebook"
+          >Notebook</a>
+          <a href="./jupyter/lab/index.html" data-testid="choose-lab"
+          >JupyterLab</a>
+          <a
+            href="https://github.com/YurtOS/yurt-playground"
+            data-testid="repo-link"
+          >Source</a>
+        </nav>
+      </header>
+
       <p id="mobile-note" data-testid="mobile-note" hidden>
         This looks like a phone or tablet. The sandbox needs around a gigabyte
         of memory and workers that keep running in the background; mobile
         browsers often allow neither, so the boot may stall or the tab may
         reload. A desktop browser is the safe choice.
       </p>
-      <h1>Yurt playground</h1>
-      <p class="lead">
-        A Linux sandbox that boots inside this browser tab. Pick an interface;
-        each page starts its own sandbox.
-      </p>
-      <div class="choices">
-        <a class="choice" href="./terminal.html" data-testid="choose-terminal">
-          <h2>Linux terminal + Jupyter cell</h2>
-          <p>
-            BusyBox <code>ash</code> on a PTY, with CPython 3.14 and a
-            single-cell Jupyter pane driven by the same kernel.
-          </p>
-        </a>
-        <a
-          class="choice"
-          href="./jupyter/notebooks/index.html?path=welcome.ipynb"
-          data-testid="choose-notebook"
-        >
-          <h2>Jupyter Notebook</h2>
-          <p>
-            The Jupyter Notebook interface, running on a real
-            <code>ipykernel</code> inside the sandbox.
-          </p>
-        </a>
-      </div>
-      <p class="alt">
-        Prefer the full IDE? Open
-        <a href="./jupyter/lab/index.html" data-testid="choose-lab"
-        >JupyterLab</a>
-        on the same sandbox.
-      </p>
-      <section
-        id="install"
-        aria-label="Beyond the browser tab"
-        data-testid="download-mac"
-      >
-        <input type="radio" name="install" id="install-app-mac" checked>
-        <input type="radio" name="install" id="install-app-linux">
-        <input type="radio" name="install" id="install-cli-mac">
-        <input type="radio" name="install" id="install-cli-linux">
-        <div class="tabs">
-          <div class="group">Desktop app</div>
-          <label for="install-app-mac">macOS</label>
-          <label for="install-app-linux">Linux</label>
-          <div class="group">Command line</div>
-          <label for="install-cli-mac">macOS</label>
-          <label for="install-cli-linux">Linux</label>
+
+      <section class="pane" aria-label="terminal">
+        <div class="bar">
+          <span class="name">Terminal</span>
+          <pre id="status"></pre>
+          <span class="grow"></span>
+          <span
+            id="net"
+            data-testid="net"
+            data-online="true"
+            title="This tab's network state. The sandbox keeps working without it."
+          >online</span>
         </div>
-        <div class="panel app-mac">
-          <h3>The playground as a Mac app</h3>
-          <p>
-            The same pages, with the sandbox running natively on your Mac: it
-            has network access and boots in seconds.
-          </p>
-          <p>
-            Download for
-            <a
-              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-apple-darwin.dmg"
-            >Apple Silicon</a>
-            or
-            <a
-              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-x86_64-apple-darwin.dmg"
-            >Intel</a>, open the disk image and drag <em>Yurt Playground</em> to
-            Applications.
-          </p>
-          <p>
-            It is not notarized, so macOS blocks the first open: allow it under
-            <em>System Settings &rarr; Privacy &amp; Security &rarr; Open
-              Anyway</em> (or run
-            <code>xattr -dr com.apple.quarantine "/Applications/Yurt
-              Playground.app"</code>), then open it again.
-          </p>
-        </div>
-        <div class="panel app-linux">
-          <h3>The playground as a Linux app</h3>
-          <p>
-            The same pages, with the sandbox running natively on your machine:
-            it has network access and boots in seconds.
-          </p>
-          <p>
-            Download the package for
-            <a
-              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-x86_64-unknown-linux-gnu.deb"
-            >x86_64</a>
-            or
-            <a
-              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-unknown-linux-gnu.deb"
-            >arm64</a>
-            (Debian, Ubuntu), then:
-          </p>
-          <pre>sudo apt install ./Yurt-Playground-*.deb
-yurt-playground</pre>
-          <p>It opens in your browser; Ctrl-C stops it.</p>
-        </div>
-        <div class="panel cli-mac">
-          <h3>
-            <code>yurt</code>: sandboxes from the command line, docker-style
-          </h3>
-          <p>
-            <code>run</code>, <code>exec</code>, <code>ps</code>,
-            <code>rm</code>, <code>images</code>, <code>pull</code>,
-            <code>build</code> — with ports, environment and an interactive
-            terminal. Download for
-            <a
-              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-aarch64-apple-darwin.tar.gz"
-            >Apple Silicon</a>
-            or
-            <a
-              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-x86_64-apple-darwin.tar.gz"
-            >Intel</a>, then:
-          </p>
-          <pre>tar -xzf yurt-*.tar.gz &amp;&amp; sudo yurt/install.sh
-yurt pull playground
-yurt run -it playground                    # a shell in the sandbox
-yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
-curl http://127.0.0.1:8080/</pre>
-          <p>
-            Everything the command needs is in the package; the daemon starts
-            itself. <code>yurt --help</code> lists the verbs.
-          </p>
-        </div>
-        <div class="panel cli-linux">
-          <h3>
-            <code>yurt</code>: sandboxes from the command line, docker-style
-          </h3>
-          <p>
-            <code>run</code>, <code>exec</code>, <code>ps</code>,
-            <code>rm</code>, <code>images</code>, <code>pull</code>,
-            <code>build</code> — with ports, environment and an interactive
-            terminal. Download the package for
-            <a
-              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-x86_64-unknown-linux-gnu.deb"
-            >x86_64</a>
-            or
-            <a
-              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-aarch64-unknown-linux-gnu.deb"
-            >arm64</a>
-            (Debian, Ubuntu), then:
-          </p>
-          <pre>sudo apt install ./yurt-*.deb
-yurt pull playground
-yurt run -it playground                    # a shell in the sandbox
-yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
-curl http://127.0.0.1:8080/</pre>
-          <p>
-            Everything the command needs is in the package; the daemon starts
-            itself. <code>yurt --help</code> lists the verbs.
-          </p>
+        <div id="term-wrap">
+          <div id="term"></div>
+          <div id="start">
+            <div class="prompt">$</div>
+            <button
+              type="button"
+              id="start-sandbox"
+              data-testid="start-sandbox"
+            >
+              Start the sandbox
+            </button>
+            <p>
+              BusyBox <code>ash</code> on a real PTY, on the Yurt kernel
+              compiled to WebAssembly. Loads about 90 MB once, then boots here
+              in the tab; the cell below starts a Jupyter kernel on the same
+              machine.
+            </p>
+          </div>
         </div>
       </section>
-      <section id="proof" aria-labelledby="proof-title" data-testid="proof">
-        <h2 id="proof-title">Is this really running in your browser?</h2>
+
+      <section
+        class="pane"
+        id="notebook"
+        aria-label="Jupyter notebook"
+        data-testid="notebook"
+      >
+      </section>
+
+      <section class="strip" aria-labelledby="install-title">
+        <h2 id="install-title">Run it on your machine</h2>
+        <p>
+          The same playground with the sandbox running natively: network access,
+          and a boot measured in seconds. Or the sandbox from a shell, the way
+          you would use <code>docker</code>.
+        </p>
+        <div id="install" data-testid="download-mac">
+          <input type="radio" name="install" id="install-app-mac" checked>
+          <input type="radio" name="install" id="install-app-linux">
+          <input type="radio" name="install" id="install-cli-mac">
+          <input type="radio" name="install" id="install-cli-linux">
+          <div class="tabs">
+            <div class="group">Desktop app</div>
+            <label for="install-app-mac">macOS</label>
+            <label for="install-app-linux">Linux</label>
+            <div class="group">Command line</div>
+            <label for="install-cli-mac">macOS</label>
+            <label for="install-cli-linux">Linux</label>
+          </div>
+          <div class="panel app-mac">
+            <h3>The playground as a Mac app</h3>
+            <p>
+              Download for
+              <a
+                href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-apple-darwin.dmg"
+              >Apple Silicon</a>
+              or
+              <a
+                href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-x86_64-apple-darwin.dmg"
+              >Intel</a>, open the disk image and drag <em>Yurt Playground</em>
+              to Applications.
+            </p>
+            <p>
+              It is not notarized, so macOS blocks the first open: allow it
+              under
+              <em>System Settings &rarr; Privacy &amp; Security &rarr; Open
+                Anyway</em> (or run
+              <code>xattr -dr com.apple.quarantine "/Applications/Yurt
+                Playground.app"</code>), then open it again.
+            </p>
+          </div>
+          <div class="panel app-linux">
+            <h3>The playground as a Linux app</h3>
+            <p>
+              Download the package for
+              <a
+                href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-x86_64-unknown-linux-gnu.deb"
+              >x86_64</a>
+              or
+              <a
+                href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-unknown-linux-gnu.deb"
+              >arm64</a>
+              (Debian, Ubuntu), then:
+            </p>
+            <pre>sudo apt install ./Yurt-Playground-*.deb
+yurt-playground</pre>
+            <p>It opens in your browser; Ctrl-C stops it.</p>
+          </div>
+          <div class="panel cli-mac">
+            <h3><code>yurt</code> on macOS</h3>
+            <p>
+              <code>run</code>, <code>exec</code>, <code>ps</code>,
+              <code>rm</code>, <code>images</code>, <code>pull</code>,
+              <code>build</code> — with ports, environment and an interactive
+              terminal. Download for
+              <a
+                href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-aarch64-apple-darwin.tar.gz"
+              >Apple Silicon</a>
+              or
+              <a
+                href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-x86_64-apple-darwin.tar.gz"
+              >Intel</a>, then:
+            </p>
+            <pre>tar -xzf yurt-*.tar.gz &amp;&amp; sudo yurt/install.sh
+yurt pull playground
+yurt run -it playground                    # a shell in the sandbox
+yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
+curl http://127.0.0.1:8080/</pre>
+            <p>
+              Everything the command needs is in the package; the daemon starts
+              itself. <code>yurt --help</code> lists the verbs.
+            </p>
+          </div>
+          <div class="panel cli-linux">
+            <h3><code>yurt</code> on Linux</h3>
+            <p>
+              <code>run</code>, <code>exec</code>, <code>ps</code>,
+              <code>rm</code>, <code>images</code>, <code>pull</code>,
+              <code>build</code> — with ports, environment and an interactive
+              terminal. Download the package for
+              <a
+                href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-x86_64-unknown-linux-gnu.deb"
+              >x86_64</a>
+              or
+              <a
+                href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-aarch64-unknown-linux-gnu.deb"
+              >arm64</a>
+              (Debian, Ubuntu), then:
+            </p>
+            <pre>sudo apt install ./yurt-*.deb
+yurt pull playground
+yurt run -it playground                    # a shell in the sandbox
+yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
+curl http://127.0.0.1:8080/</pre>
+            <p>
+              Everything the command needs is in the package; the daemon starts
+              itself. <code>yurt --help</code> lists the verbs.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <details class="strip" id="proof" data-testid="proof">
+        <summary data-testid="proof-toggle">
+          <h2 id="proof-title">Is this really running in your browser?</h2>
+          <span class="hint">Four checks you can do yourself</span>
+        </summary>
         <p>
           No badge can prove it, so here is what a server-backed fake could not
-          survive. Each check takes under a minute in Chrome.
+          survive. Each takes under a minute in Chrome.
         </p>
         <div class="checks">
           <article class="check">
             <h3>Go offline, keep computing</h3>
             <p>
-              Open the <a href="./terminal.html">terminal</a> and wait for
-              <code>ready</code>. Then turn off Wi-Fi, or in DevTools pick
-              <kbd>Network</kbd> &rarr; <kbd>Offline</kbd>. Run another cell.
+              Start the sandbox and wait for the cell to say <code>ready</code>.
+              Then turn off Wi-Fi, or in DevTools pick <kbd>Network</kbd>
+              &rarr; <kbd>Offline</kbd>. Run another cell.
             </p>
             <p>
-              It still answers. The page shows <code>offline</code> next to its
-              status while you do it.
+              It still answers. The terminal's bar shows <code>offline</code>
+              while you do it.
             </p>
           </article>
           <article class="check">
@@ -509,9 +743,9 @@ curl http://127.0.0.1:8080/</pre>
           <article class="check">
             <h3>See the workers</h3>
             <p>
-              Visit <code>chrome://inspect/#workers</code> while a page is
-              running. The coordinator and the sandbox's guest Workers are
-              listed with their script URLs, and you can attach a debugger.
+              Visit <code>chrome://inspect/#workers</code> while the sandbox
+              runs. The coordinator and the guest workers are listed with their
+              script URLs, and you can attach a debugger.
             </p>
             <p>
               In DevTools <kbd>Network</kbd>, nothing moves while a cell runs.
@@ -522,10 +756,9 @@ curl http://127.0.0.1:8080/</pre>
             <h3>Check the bytes</h3>
             <p>
               The site publishes the SHA-256 of every file the sandbox runs on,
-              the 87 MB guest filesystem included. This button fetches them
-              again and hashes them here, in your browser; the kernel and the
-              image are also checked against the hash their release was
-              published with.
+              the 87 MB guest filesystem included. This fetches them again and
+              hashes them here, in your browser; the kernel and the image are
+              also checked against the hash their release was published with.
             </p>
             <button id="verify-files" type="button" data-testid="verify-files">
               Verify downloaded files
@@ -534,16 +767,15 @@ curl http://127.0.0.1:8080/</pre>
             <p id="verify-commit"></p>
           </article>
         </div>
-      </section>
+      </details>
+
       <footer>
-        Nothing leaves the page: the kernel, the filesystem and Python all run
-        in this tab. Source, issues and releases:
-        <a
-          href="https://github.com/YurtOS/yurt-playground"
-          data-testid="repo-link"
+        Yurt is a Linux kernel for WebAssembly. Source, issues and releases:
+        <a href="https://github.com/YurtOS/yurt-playground"
         >github.com/YurtOS/yurt-playground</a>.
       </footer>
     </main>
     <script type="module" src="./verify.js"></script>
+    <script type="module" src="./boot.bundle.js"></script>
   </body>
 </html>

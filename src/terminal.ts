@@ -1,4 +1,5 @@
 import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import type { PlaygroundTerm } from "./boot.ts";
 
 export function createPlaygroundTerminal(host: unknown): PlaygroundTerm {
@@ -6,9 +7,20 @@ export function createPlaygroundTerminal(host: unknown): PlaygroundTerm {
     cursorBlink: true,
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
     fontSize: 14,
-    theme: { background: "#111111", foreground: "#eeeeee" },
+    theme: {
+      background: "#1c212a",
+      foreground: "#e6e1d7",
+      cursor: "#e0a458",
+      selectionBackground: "#2c3340",
+    },
   });
+  // The terminal fills its pane, and follows it: the guest sees the real
+  // size through the resize handler below.
+  const fit = new FitAddon();
+  term.loadAddon(fit);
   term.open(host as HTMLElement);
+  fit.fit();
+  new ResizeObserver(() => fit.fit()).observe(host as HTMLElement);
   term.focus();
   return {
     get cols() {
