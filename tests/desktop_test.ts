@@ -125,7 +125,7 @@ Deno.test("home page links the macOS app the merge workflow releases", async () 
     new URL("../public/index.html", import.meta.url),
   );
   const workflow = await Deno.readTextFile(
-    new URL("../.github/workflows/desktop.yml", import.meta.url),
+    new URL("../.github/workflows/ci.yml", import.meta.url),
   );
   // `releases/latest/download/<asset>` is the one URL that survives every
   // release, so the page can link it before the release exists.
