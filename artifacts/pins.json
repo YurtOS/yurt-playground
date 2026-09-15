@@ -9,11 +9,11 @@
   },
   "image": {
     "repo": "YurtOS/yurt-ports",
-    "rev": "b4eae3e8f9865995550b18fa1b4756b39c16493d",
-    "release": "playground-image-v0.0.4",
+    "rev": "d349f9de4096ba06690c9ed48893343b478ddf4a",
+    "release": "playground-image-v0.0.5",
     "build": "ports/playground-image/scripts/package.sh",
     "path": "ports/playground-image/build/dist/playground.yurtimg",
-    "sha256": "6a9578f4e8c364c25ae78a8e7c490eb6da341dbb8ad7aa44c1e3d1263731aa10"
+    "sha256": "11f458ce953bc04ba6b7af3de4630409c4f120dd94cba602c38c14c2e01308ba"
   },
   "desktopHost": {
     "repo": "YurtOS/yurt-sandbox",
