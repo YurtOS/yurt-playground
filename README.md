@@ -101,10 +101,27 @@ The playground on your own machine, with the sandbox running **natively** on
 Jupyter is ready a few seconds later, and the guest has real network access (TLS
 verified against the bundled CA store). The browser is only the display.
 
+**Install.** From the home page's download links (a GitHub release):
+
+- macOS: open `Yurt-Playground-<arch>-apple-darwin.dmg`, drag _Yurt Playground_
+  to Applications, then right-click → Open the first time (it is not notarized).
+  A terminal window opens with the server; close it to stop.
+- Debian/Ubuntu:
+  `sudo apt install ./Yurt-Playground-<arch>-unknown-linux-gnu.deb`, then
+  `yurt-playground` from a terminal (or the _Yurt Playground_ desktop entry).
+  Ctrl-C stops it.
+
+Either way the launcher prints `Yurt playground: http://127.0.0.1:<port>/` and
+opens it in the default browser — any browser: native mode needs no cross-origin
+isolation. The page is the hosted playground: the ash terminal, the single
+Jupyter cell, Jupyter Notebook and JupyterLab.
+
+**What is inside.**
+
 ```
-Yurt Playground.app / yurt-playground/
+Yurt Playground.app/Contents/Resources   or   /usr/lib/yurt-playground
 ├── yurt-playground        the launcher (this repo, compiled with deno)
-├── dist/                  the site, as deployed
+├── dist/                  the site, as deployed, minus the in-tab blobs
 └── runtime/               the native sandbox, pinned in artifacts/pins.json
     ├── yurt-desktop-host      the sidecar: boots the image, relays a PTY and
     │                          the kernel ports over WebSockets (private repo)
@@ -113,15 +130,8 @@ Yurt Playground.app / yurt-playground/
     └── playground.yurtimg
 ```
 
-Open the app (macOS: right-click → Open the first time; it is not notarized) or
-run `yurt-playground/yurt-playground` from a terminal (Linux). The launcher
-starts the sidecar, prints `Yurt playground: http://127.0.0.1:<port>/` and opens
-it in the default browser; close the terminal window to stop everything. The
-page is the hosted playground: the ash terminal, the single Jupyter cell,
-Jupyter Notebook and JupyterLab. `GET /desktop.json` is how the page knows it is
-in the app (`src/native.ts` then talks to `/ws/tty` and `/ws/port/<n>` instead
-of booting a kernel in a worker).
-
+`GET /desktop.json` is how the page knows it is in the app (`src/native.ts` then
+talks to `/ws/tty` and `/ws/port/<n>` instead of booting a kernel in a worker).
 What the sidecar does is `docker run`, shaped for this image: the image is the
 same `playground.yurtimg` the site boots in the tab, built from the port stages
 by `yurt-ports/ports/playground-image` (BusyBox init + `inittab`, the session
@@ -131,7 +141,7 @@ loopback ports mapped into the guest for ipykernel. The runtime's protocol stays
 inside the sidecar; this repo sees two WebSocket endpoints, documented in the
 sandbox repo's `docs/desktop-host-api.md`.
 
-Build it here:
+**Build it here.**
 
 ```bash
 scripts/install-pinned-artifacts.sh          # kernel wasm + image → artifacts/
@@ -145,8 +155,9 @@ deno run --allow-read --allow-net --allow-run scripts/desktop.ts   # from the ch
 
 CI's `desktop` job builds both architectures of each OS from the `dist/` the
 integration job produced and the pinned runtime, runs `tests/desktop_e2e.ts` on
-the runner's own, and a merge to `main` publishes the bundles as a GitHub
-release, which the home page links through `releases/latest/download/`.
+the runner's own (and installs the `.deb` on Linux), and a merge to `main`
+publishes the installers as a GitHub release, which the home page links through
+`releases/latest/download/`.
 
 ## Layout
 

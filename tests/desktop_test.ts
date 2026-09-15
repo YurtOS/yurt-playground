@@ -117,7 +117,9 @@ Deno.test("desktop build ships the launcher with dist/ and runtime/ in the bundl
       "Contents/Resources/runtime",
       "install-desktop-host.sh",
       "x86_64-unknown-linux-gnu",
-      "tar -czf",
+      "hdiutil create",
+      "debian-binary",
+      "/usr/bin/yurt-playground",
     ]
   ) {
     assertStringIncludes(script, value);
@@ -139,10 +141,10 @@ Deno.test("home page links the desktop bundles the merge workflow releases", asy
     (href) => href.startsWith(prefix),
   );
   const assets = [
-    "Yurt-Playground-aarch64-apple-darwin.zip",
-    "Yurt-Playground-x86_64-apple-darwin.zip",
-    "Yurt-Playground-x86_64-unknown-linux-gnu.tar.gz",
-    "Yurt-Playground-aarch64-unknown-linux-gnu.tar.gz",
+    "Yurt-Playground-aarch64-apple-darwin.dmg",
+    "Yurt-Playground-x86_64-apple-darwin.dmg",
+    "Yurt-Playground-x86_64-unknown-linux-gnu.deb",
+    "Yurt-Playground-aarch64-unknown-linux-gnu.deb",
   ];
   assertEquals(links.length, assets.length, `download links: ${links}`);
   for (const asset of assets) {

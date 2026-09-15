@@ -267,17 +267,27 @@ jobs:
           deno run --allow-all node_modules/playwright/cli.js install chromium
       - name: App acceptance
         run: deno run --allow-all tests/desktop_e2e.ts
+      # The .deb as dpkg sees it: valid, installable, and the installed
+      # launcher finds its site and runtime.
+      - name: Check the .deb
+        if: runner.os == 'Linux'
+        run: |
+          dpkg-deb --info dist-desktop/Yurt-Playground-x86_64-unknown-linux-gnu.deb
+          sudo apt-get install -y ./dist-desktop/Yurt-Playground-x86_64-unknown-linux-gnu.deb
+          test -x /usr/lib/yurt-playground/yurt-playground
+          test -f /usr/lib/yurt-playground/runtime/yurt-desktop-host
+          command -v yurt-playground
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Yurt-Playground-${{ runner.os }}
           path: |
-            dist-desktop/*.zip
-            dist-desktop/*.tar.gz
+            dist-desktop/*.dmg
+            dist-desktop/*.deb
           if-no-files-found: error
 
-  # A merge to main publishes the bundles as the GitHub release the home
-  # page's download links resolve to (releases/latest/download/). A full
-  # release, never a prerelease: "latest" ignores prereleases.
+  # A merge to main publishes the installers as the GitHub release the
+  # home page's download links resolve to (releases/latest/download/). A
+  # full release, never a prerelease: "latest" ignores prereleases.
   release:
     needs: desktop
     if: github.event_name != 'pull_request'
@@ -305,8 +315,8 @@ jobs:
           gh release create "$tag" \
             --target "$SHA" \
             --title "Yurt Playground desktop ($tag)" \
-            --notes "Built from ${SHA:0:7} with kernel $kernel and image $image. macOS: not notarized, right-click the app and choose Open the first time. Linux: unpack and run yurt-playground/yurt-playground." \
-            release/Yurt-Playground-aarch64-apple-darwin.zip \
-            release/Yurt-Playground-x86_64-apple-darwin.zip \
-            release/Yurt-Playground-x86_64-unknown-linux-gnu.tar.gz \
-            release/Yurt-Playground-aarch64-unknown-linux-gnu.tar.gz
+            --notes "Built from ${SHA:0:7} with kernel $kernel and image $image. The sandbox runs natively on your machine. macOS: open the .dmg, drag the app to Applications; not notarized, so right-click the app and choose Open the first time. Debian/Ubuntu: sudo apt install ./Yurt-Playground-<arch>.deb, then run yurt-playground." \
+            release/Yurt-Playground-aarch64-apple-darwin.dmg \
+            release/Yurt-Playground-x86_64-apple-darwin.dmg \
+            release/Yurt-Playground-x86_64-unknown-linux-gnu.deb \
+            release/Yurt-Playground-aarch64-unknown-linux-gnu.deb

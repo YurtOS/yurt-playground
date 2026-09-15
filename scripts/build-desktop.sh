@@ -8,19 +8,26 @@
 # validates). Run the bundle and the playground opens in the default
 # browser.
 #
-#   macOS   "Yurt Playground.app" with dist/ in Contents/Resources, zipped.
-#           Not signed or notarized, so Gatekeeper asks on first open
+#   macOS   "Yurt Playground.app" with dist/ and runtime/ in
+#           Contents/Resources, on a .dmg with an Applications shortcut. Not
+#           signed or notarized, so Gatekeeper asks on first open
 #           (right-click → Open).
-#   Linux   yurt-playground/ with the binary and dist/ side by side, as a
-#           tarball; run ./yurt-playground from a terminal.
+#   Linux   a .deb installing /usr/lib/yurt-playground/ (the binary, dist/
+#           and runtime/ side by side), /usr/bin/yurt-playground and a
+#           desktop entry.
+#
+# The bundled dist/ omits the kernel wasm and image parts: the page never
+# fetches them in native mode, and runtime/ carries both.
 #
 # Usage: scripts/build-desktop.sh [--target <target>]
 #   Targets: aarch64-apple-darwin x86_64-apple-darwin
 #            x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
-#   Output: dist-desktop/<target>/ (the bundle) and
-#           dist-desktop/Yurt-Playground-<target>.{zip,tar.gz}
+#   Output: dist-desktop/<target>/ (the staged bundle, what the acceptance
+#           runs) and dist-desktop/Yurt-Playground-<target>.{dmg,deb}
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
+# One version for the .app, the .deb and the page; bump here.
+version=0.1.0
 target=$(deno eval 'console.log(Deno.build.target)')
 while [ $# -gt 0 ]; do
   case $1 in
@@ -30,7 +37,8 @@ while [ $# -gt 0 ]; do
 done
 case $target in
   aarch64-apple-darwin | x86_64-apple-darwin) family=macos ;;
-  x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu) family=linux ;;
+  x86_64-unknown-linux-gnu) family=linux; deb_arch=amd64 ;;
+  aarch64-unknown-linux-gnu) family=linux; deb_arch=arm64 ;;
   *) echo "build-desktop: $target is not a macOS or Linux target" >&2; exit 2 ;;
 esac
 cd "$root"
@@ -76,8 +84,55 @@ if [ "$family" = linux ]; then
   cp -R "$site/dist" "$out/yurt-playground/dist"
   cp -R "$site/runtime" "$out/yurt-playground/runtime"
   rm -rf "$site"
-  tar -czf "dist-desktop/Yurt-Playground-$target.tar.gz" -C "$out" yurt-playground
-  echo "built $out/yurt-playground/ and dist-desktop/Yurt-Playground-$target.tar.gz"
+  # A .deb is ar(debian-binary, control.tar.gz, data.tar.gz), built here with
+  # tar and ar so it needs no dpkg on the building machine; CI's Linux job
+  # checks it with dpkg-deb and installs it.
+  pkg=$out/deb
+  rm -rf "$pkg"
+  mkdir -p "$pkg/data/usr/lib" "$pkg/data/usr/bin" "$pkg/data/usr/share/applications" "$pkg/control"
+  cp -R "$out/yurt-playground" "$pkg/data/usr/lib/yurt-playground"
+  cat > "$pkg/data/usr/bin/yurt-playground" <<'WRAP'
+#!/bin/sh
+exec /usr/lib/yurt-playground/yurt-playground "$@"
+WRAP
+  chmod 0755 "$pkg/data/usr/bin/yurt-playground"
+  cat > "$pkg/data/usr/share/applications/yurt-playground.desktop" <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=Yurt Playground
+Comment=A Linux sandbox with Python and Jupyter, running natively, shown in your browser
+Exec=yurt-playground
+Terminal=true
+Categories=Development;
+DESKTOP
+  installed_kb=$(du -sk "$pkg/data" | cut -f1)
+  cat > "$pkg/control/control" <<CONTROL
+Package: yurt-playground
+Version: $version
+Section: devel
+Priority: optional
+Architecture: $deb_arch
+Installed-Size: $installed_kb
+Recommends: xdg-utils
+Maintainer: YurtOS <noreply@yurtos.org>
+Homepage: https://github.com/YurtOS/yurt-playground
+Description: Yurt playground desktop app
+ A Linux sandbox on the Yurt kernel, with CPython, NumPy and Jupyter,
+ running natively on this machine and shown in the default browser.
+ Run yurt-playground from a terminal.
+CONTROL
+  # Root-owned members, whichever tar this is (GNU or bsdtar).
+  if tar --version 2>/dev/null | grep -q GNU; then own=(--owner=0 --group=0); else own=(--uid 0 --gid 0); fi
+  tar -czf "$pkg/control.tar.gz" "${own[@]}" -C "$pkg/control" control
+  tar -czf "$pkg/data.tar.gz" "${own[@]}" -C "$pkg/data" .
+  printf '2.0\n' > "$pkg/debian-binary"
+  deb=dist-desktop/Yurt-Playground-$target.deb
+  rm -f "$deb"
+  # -S: no symbol table; macOS's ar otherwise runs ranlib and emits an
+  # archive of nothing but __.SYMDEF.
+  (cd "$pkg" && ar -r -c -S "../../../$deb" debian-binary control.tar.gz data.tar.gz)
+  rm -rf "$pkg"
+  echo "built $out/yurt-playground/ and $deb"
   exit 0
 fi
 
@@ -94,7 +149,7 @@ cat > "$app/Contents/MacOS/Yurt Playground" <<'LAUNCH'
 exec open -a Terminal "$(dirname "$0")/yurt-playground"
 LAUNCH
 chmod +x "$app/Contents/MacOS/Yurt Playground"
-cat > "$app/Contents/Info.plist" <<'PLIST'
+cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -102,19 +157,23 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>Yurt Playground</string>
   <key>CFBundleDisplayName</key><string>Yurt Playground</string>
   <key>CFBundleIdentifier</key><string>org.yurtos.playground</string>
-  <key>CFBundleVersion</key><string>0.1.0</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>$version</string>
+  <key>CFBundleShortVersionString</key><string>$version</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>Yurt Playground</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
 </dict>
 </plist>
 PLIST
-# ditto keeps the bundle's structure and executable bits; on a Linux host,
-# zip does the same for what matters.
-if command -v ditto >/dev/null; then
-  (cd "$out" && ditto -c -k --keepParent "Yurt Playground.app" "../Yurt-Playground-$target.zip")
-else
-  (cd "$out" && zip -qr "../Yurt-Playground-$target.zip" "Yurt Playground.app")
-fi
-echo "built \"$app\" and dist-desktop/Yurt-Playground-$target.zip"
+# The disk image: the app and an Applications shortcut to drag it onto.
+# hdiutil is macOS-only, which is where the macOS bundles are built.
+dmg_stage=$out/dmg
+rm -rf "$dmg_stage"
+mkdir -p "$dmg_stage"
+cp -R "$app" "$dmg_stage/"
+ln -s /Applications "$dmg_stage/Applications"
+dmg=dist-desktop/Yurt-Playground-$target.dmg
+rm -f "$dmg"
+hdiutil create -quiet -volname "Yurt Playground" -srcfolder "$dmg_stage" -ov -format UDZO "$dmg"
+rm -rf "$dmg_stage"
+echo "built \"$app\" and $dmg"

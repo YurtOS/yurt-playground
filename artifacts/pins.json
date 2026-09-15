@@ -17,14 +17,14 @@
   },
   "desktopHost": {
     "repo": "YurtOS/yurt-sandbox",
-    "rev": "f59d9d0fb8c3d3b9f24571bc00b1d1cef6a52b82",
+    "rev": "36f0d71cbc3f6ad939a59b7db6e313d7396bdf24",
     "release": "desktop-host-v0.1.0",
     "build": "scripts/build-desktop-host.sh",
     "sha256": {
-      "aarch64-apple-darwin": "",
-      "x86_64-apple-darwin": "",
-      "x86_64-unknown-linux-gnu": "",
-      "aarch64-unknown-linux-gnu": ""
+      "aarch64-apple-darwin": "aff7fc97fceb7986dd8cb37a583809dffef20c4f1581af33222249bd86c896a6",
+      "x86_64-apple-darwin": "16c43b7269c016622295520affb1765a0a1ae657f4b27fa990e7cdadcea0ba34",
+      "x86_64-unknown-linux-gnu": "8b6cb44134bfb005ee2145c6f5be079937d97372971e02c241a754dc4378940c",
+      "aarch64-unknown-linux-gnu": "31a6cef3835b514cd8e0bf4e58b6bd281857150a44867d38934463fd44048918"
     }
   }
 }
