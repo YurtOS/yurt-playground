@@ -11,6 +11,10 @@ import { join } from "node:path";
 export type DesktopHost = {
   /** `http://127.0.0.1:<port>/`, the host's own listener. */
   url: string;
+  /** From the announce line; every request to the host carries it as
+   * `?token=`. The page never sees it: that is what keeps another page on
+   * this machine from reaching the sandbox's shell through the host. */
+  token: string;
   /** shell, iopub, stdin, control, hb, from the host's /status. */
   kernelPorts: [number, number, number, number, number];
   bootMs: number;
@@ -41,26 +45,27 @@ export async function startDesktopHost(
     stdout: "piped",
     stderr: "inherit",
   }).spawn();
-  // The announce is the first and only stdout line.
+  // The announce is the first and only stdout line: `URL TOKEN`.
   const reader = child.stdout.getReader();
   const decoder = new TextDecoder();
   let text = "";
-  let url: string | undefined;
-  while (url === undefined) {
+  let announce: RegExpMatchArray | null = null;
+  while (announce === null) {
     const { value, done } = await reader.read();
     if (done) {
       throw new Error("yurt-desktop-host exited before announcing its URL");
     }
     text += decoder.decode(value, { stream: true });
-    const line = text.match(
-      /^yurt-desktop-host: (http:\/\/127\.0\.0\.1:\d+\/)$/m,
+    announce = text.match(
+      /^yurt-desktop-host: (http:\/\/127\.0\.0\.1:\d+\/) ([0-9a-f]+)$/m,
     );
-    if (line) url = line[1];
   }
   reader.cancel().catch(() => undefined);
-  const status = await (await fetch(`${url}status`)).json();
+  const [, url, token] = announce;
+  const status = await (await fetch(`${url}status?token=${token}`)).json();
   return {
     url,
+    token,
     kernelPorts: status.kernelPorts,
     bootMs: status.bootMs,
     stop() {
@@ -76,7 +81,7 @@ export function proxyWebSocket(req: Request, host: DesktopHost): Response {
   const path = new URL(req.url).pathname;
   const upstreamUrl = `${host.url.replace(/^http/, "ws")}${
     path.replace(/^\//, "")
-  }`;
+  }?token=${host.token}`;
   const { socket, response } = Deno.upgradeWebSocket(req);
   const upstream = new WebSocket(upstreamUrl);
   socket.binaryType = "arraybuffer";

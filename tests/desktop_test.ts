@@ -160,6 +160,8 @@ Deno.test("the launcher tells the page the sandbox is native and relays /ws", as
   const upstream = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen() {} },
     (req) => {
+      // The host takes the launcher's token on every request.
+      assertEquals(new URL(req.url).searchParams.get("token"), "deadbeef");
       const { socket, response } = Deno.upgradeWebSocket(req);
       socket.onmessage = (event) => socket.send(`echo:${event.data}`);
       return response;
@@ -168,6 +170,7 @@ Deno.test("the launcher tells the page the sandbox is native and relays /ws", as
   const addr = upstream.addr as Deno.NetAddr;
   const host = {
     url: `http://127.0.0.1:${addr.port}/`,
+    token: "deadbeef",
     kernelPorts: [1, 2, 3, 4, 5] as [number, number, number, number, number],
     bootMs: 1234,
     stop() {},
@@ -186,6 +189,10 @@ Deno.test("the launcher tells the page the sandbox is native and relays /ws", as
       ws.onopen = () => ws.send("hi");
       ws.onmessage = (event) => resolve(String(event.data));
       ws.onerror = () => reject(new Error("proxied socket failed"));
+      ws.onclose = (event) =>
+        reject(
+          new Error(`proxied socket closed: ${event.code} ${event.reason}`),
+        );
     });
     assertEquals(reply, "echo:hi");
     ws.close();
