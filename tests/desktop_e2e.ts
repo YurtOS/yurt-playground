@@ -1,8 +1,8 @@
-// The desktop app, end to end: the compiled binary inside the .app
-// (scripts/build-desktop.sh) serves the site it carries, the page is
-// cross-origin isolated in a real browser, and Jupyter runs a cell. Run it
-// after the build; it is the acceptance for the shipped artifact, not the
-// source tree.
+// The desktop app, end to end: the compiled binary inside the bundle built
+// for this machine (scripts/build-desktop.sh) serves the site it carries,
+// the page is cross-origin isolated in a real browser, and Jupyter runs a
+// cell. Run it after the build; it is the acceptance for the shipped
+// artifact, not the source tree.
 import { chromium } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,11 +10,14 @@ import { EXECUTE_TIMEOUT_MS } from "../src/jupyter.ts";
 import { watchCspViolations } from "./csp_watch.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+/** The binary inside the bundle built for this machine. */
 const binary = join(
   repoRoot,
   "dist-desktop",
   Deno.build.target,
-  "Yurt Playground.app/Contents/MacOS/yurt-playground",
+  Deno.build.os === "darwin"
+    ? "Yurt Playground.app/Contents/MacOS/yurt-playground"
+    : "yurt-playground/yurt-playground",
 );
 
 /** Start the binary with stdout piped (so it does not open a browser) and

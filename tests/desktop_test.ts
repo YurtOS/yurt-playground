@@ -111,16 +111,18 @@ Deno.test("desktop build ships the binary with dist/ in the app bundle", async (
     const value of [
       "deno compile",
       "scripts/desktop.ts",
-      "--allow-run=open",
+      "--allow-run=open,xdg-open",
       "Info.plist",
       "Contents/Resources/dist",
+      "x86_64-unknown-linux-gnu",
+      "tar -czf",
     ]
   ) {
     assertStringIncludes(script, value);
   }
 });
 
-Deno.test("home page links the macOS app the merge workflow releases", async () => {
+Deno.test("home page links the desktop bundles the merge workflow releases", async () => {
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
   );
@@ -134,11 +136,16 @@ Deno.test("home page links the macOS app the merge workflow releases", async () 
   const links = [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1]).filter(
     (href) => href.startsWith(prefix),
   );
-  assertEquals(links.length, 2, `download links in index.html: ${links}`);
-  for (const target of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) {
-    const asset = `Yurt-Playground-${target}.zip`;
+  const assets = [
+    "Yurt-Playground-aarch64-apple-darwin.zip",
+    "Yurt-Playground-x86_64-apple-darwin.zip",
+    "Yurt-Playground-x86_64-unknown-linux-gnu.tar.gz",
+    "Yurt-Playground-aarch64-unknown-linux-gnu.tar.gz",
+  ];
+  assertEquals(links.length, assets.length, `download links: ${links}`);
+  for (const asset of assets) {
     assertEquals(links.includes(prefix + asset), true, asset);
-    // The workflow zips under exactly that name and attaches it.
+    // The workflow packages under exactly that name and attaches it.
     assertStringIncludes(workflow, asset);
   }
   // A merge to main publishes the release the links resolve to.

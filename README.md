@@ -94,26 +94,31 @@ record the sha256 it carries. `scripts/pin-artifacts.ts` only verifies: it
 accepts matching blobs from `artifacts/`, sibling checkouts, or
 `PLAYGROUND_*_URL`, and exits 2 if none match `artifacts/pins.json`.
 
-## Desktop app (macOS)
+## Desktop app (macOS, Linux)
 
-The same site, shipped as a double-clickable app: `Yurt Playground.app` is a
-compiled Deno server (`scripts/desktop.ts`) with `dist/` beside it in
-`Contents/Resources`. Opening it starts the server on a loopback port with the
-isolation headers and opens the page in the default browser; everything runs in
-that tab exactly as on the hosted site. Nothing is downloaded at run time.
+The same site, shipped to run on your machine: a compiled Deno server
+(`scripts/desktop.ts`) with `dist/` beside it. Starting it serves the site on a
+loopback port with the isolation headers and opens the page in the default
+browser; everything runs in that tab exactly as on the hosted site. Nothing is
+downloaded at run time.
+
+- macOS: `Yurt Playground.app` (the site in `Contents/Resources`). Not signed or
+  notarized, so Gatekeeper asks on first open (right-click → Open).
+- Linux: a `yurt-playground/` directory with the binary and `dist/`; run
+  `./yurt-playground` from a terminal (it opens the browser with `xdg-open`).
 
 ```bash
 deno task build-static
-deno task build-desktop        # --target x86_64-apple-darwin for Intel Macs
+deno task build-desktop        # this machine; --target for another, e.g.
+                               # x86_64-unknown-linux-gnu, aarch64-apple-darwin
 open "dist-desktop/$(deno eval 'console.log(Deno.build.target)')/Yurt Playground.app"
-deno run --allow-all tests/desktop_e2e.ts   # the built app, in Chromium
+deno run --allow-all tests/desktop_e2e.ts   # the bundle for this machine, in Chromium
 ```
 
-The app is not signed or notarized: Gatekeeper asks on first open (right-click →
-Open). CI's `desktop` job builds both architectures from the `dist/` the
-integration job produced and runs `tests/desktop_e2e.ts` against the result; a
-merge to `main` publishes the zipped bundles as a GitHub release, which the home
-page links through `releases/latest/download/`.
+CI's `desktop` job builds both architectures of each OS from the `dist/` the
+integration job produced and runs `tests/desktop_e2e.ts` on the runner's own; a
+merge to `main` publishes the bundles as a GitHub release, which the home page
+links through `releases/latest/download/`.
 
 ## Layout
 

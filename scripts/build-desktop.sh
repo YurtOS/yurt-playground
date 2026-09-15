@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
 # build-desktop.sh — compile the built site (dist/) plus a local
-# isolation-header server into one macOS executable, and wrap it as a
-# double-clickable .app.
+# isolation-header server into a desktop bundle for one target, and package
+# it for release.
 #
-# The binary is the local server; the site travels beside it as the .app's
-# Contents/Resources/dist (deno compile cannot embed the kernel wasm: its
-# --include parser rejects a module V8 validates). Open the .app and the
-# playground opens in the default browser. It is not signed or notarized, so
-# Gatekeeper asks on first open (right-click → Open).
+# The binary is the local server; the site travels beside it (deno compile
+# cannot embed the kernel wasm: its --include parser rejects a module V8
+# validates). Run the bundle and the playground opens in the default
+# browser.
 #
-# Usage: scripts/build-desktop.sh [--target aarch64-apple-darwin|x86_64-apple-darwin]
-#   Output: dist-desktop/<target>/"Yurt Playground.app" (and the bare
-#   yurt-playground binary, which serves a dist/ found beside the repository).
+#   macOS   "Yurt Playground.app" with dist/ in Contents/Resources, zipped.
+#           Not signed or notarized, so Gatekeeper asks on first open
+#           (right-click → Open).
+#   Linux   yurt-playground/ with the binary and dist/ side by side, as a
+#           tarball; run ./yurt-playground from a terminal.
+#
+# Usage: scripts/build-desktop.sh [--target <target>]
+#   Targets: aarch64-apple-darwin x86_64-apple-darwin
+#            x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+#   Output: dist-desktop/<target>/ (the bundle) and
+#           dist-desktop/Yurt-Playground-<target>.{zip,tar.gz}
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 target=$(deno eval 'console.log(Deno.build.target)')
@@ -22,8 +29,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 case $target in
-  aarch64-apple-darwin | x86_64-apple-darwin) ;;
-  *) echo "build-desktop: $target is not a macOS target" >&2; exit 2 ;;
+  aarch64-apple-darwin | x86_64-apple-darwin) family=macos ;;
+  x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu) family=linux ;;
+  *) echo "build-desktop: $target is not a macOS or Linux target" >&2; exit 2 ;;
 esac
 cd "$root"
 test -f dist/index.html || {
@@ -31,16 +39,30 @@ test -f dist/index.html || {
   exit 1
 }
 out=dist-desktop/$target
-rm -rf "$out"
+rm -rf "$out" "dist-desktop/Yurt-Playground-$target".*
 mkdir -p "$out"
 
+# Linux: the binary and dist/ side by side in a directory the tarball
+# unpacks to. macOS: the bare binary, then the .app around it.
+if [ "$family" = linux ]; then
+  binary="$out/yurt-playground/yurt-playground"
+else
+  binary="$out/yurt-playground"
+fi
 # Permissions are fixed at compile time: reading the site, the loopback
-# listener, and `open` for the browser. Nothing else.
+# listener, and the platform's opener for the browser. Nothing else.
 deno compile \
   --target "$target" \
-  --allow-read --allow-net=127.0.0.1 --allow-run=open \
-  --output "$out/yurt-playground" \
+  --allow-read --allow-net=127.0.0.1 --allow-run=open,xdg-open \
+  --output "$binary" \
   scripts/desktop.ts
+
+if [ "$family" = linux ]; then
+  cp -R dist "$out/yurt-playground/dist"
+  tar -czf "dist-desktop/Yurt-Playground-$target.tar.gz" -C "$out" yurt-playground
+  echo "built $out/yurt-playground/ and dist-desktop/Yurt-Playground-$target.tar.gz"
+  exit 0
+fi
 
 app="$out/Yurt Playground.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -69,4 +91,11 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
-echo "built $out/yurt-playground and \"$app\""
+# ditto keeps the bundle's structure and executable bits; on a Linux host,
+# zip does the same for what matters.
+if command -v ditto >/dev/null; then
+  (cd "$out" && ditto -c -k --keepParent "Yurt Playground.app" "../Yurt-Playground-$target.zip")
+else
+  (cd "$out" && zip -qr "../Yurt-Playground-$target.zip" "Yurt Playground.app")
+fi
+echo "built \"$app\" and dist-desktop/Yurt-Playground-$target.zip"
