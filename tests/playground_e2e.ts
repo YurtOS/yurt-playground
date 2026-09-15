@@ -18,7 +18,7 @@ if (import.meta.main) {
     const page = await browser.newPage();
     const started = Date.now();
     const csp = watchCspViolations(page);
-    await page.goto(`${server.url}/terminal.html`, {
+    await page.goto(`${server.url}/?start=1`, {
       waitUntil: "domcontentloaded",
     });
     if (await page.evaluate(() => globalThis.crossOriginIsolated !== true)) {
