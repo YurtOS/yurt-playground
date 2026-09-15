@@ -110,8 +110,10 @@ deno run --allow-all tests/desktop_e2e.ts   # the built app, in Chromium
 ```
 
 The app is not signed or notarized: Gatekeeper asks on first open (right-click →
-Open). The _Desktop app_ workflow builds both architectures and attaches the
-zipped bundles to its run.
+Open). The _Desktop app_ workflow builds both architectures on every pull
+request and runs `tests/desktop_e2e.ts` against the result; a merge to `main`
+publishes the zipped bundles as a GitHub release, which the home page links
+through `releases/latest/download/`.
 
 ## Layout
 

@@ -119,3 +119,29 @@ Deno.test("desktop build ships the binary with dist/ in the app bundle", async (
     assertStringIncludes(script, value);
   }
 });
+
+Deno.test("home page links the macOS app the merge workflow releases", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const workflow = await Deno.readTextFile(
+    new URL("../.github/workflows/desktop.yml", import.meta.url),
+  );
+  // `releases/latest/download/<asset>` is the one URL that survives every
+  // release, so the page can link it before the release exists.
+  const prefix =
+    "https://github.com/YurtOS/yurt-playground/releases/latest/download/";
+  const links = [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1]).filter(
+    (href) => href.startsWith(prefix),
+  );
+  assertEquals(links.length, 2, `download links in index.html: ${links}`);
+  for (const target of ["aarch64-apple-darwin", "x86_64-apple-darwin"]) {
+    const asset = `Yurt-Playground-${target}.zip`;
+    assertEquals(links.includes(prefix + asset), true, asset);
+    // The workflow zips under exactly that name and attaches it.
+    assertStringIncludes(workflow, asset);
+  }
+  // A merge to main publishes the release the links resolve to.
+  assertStringIncludes(workflow, "branches: [main]");
+  assertStringIncludes(workflow, "gh release create");
+});

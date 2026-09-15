@@ -1,19 +1,16 @@
 name: Desktop app
 
 # The macOS app (scripts/build-desktop.sh): the built site plus a compiled
-# local server, zipped per architecture and attached to the run. On demand,
-# and on pull requests that touch the app itself (a macOS runner is dear;
-# the site is deploy-pages.yml's job). workflow_dispatch only works once
-# this file is on main.
+# local server, zipped per architecture. Every pull request builds it and
+# runs the app acceptance; a merge to main also publishes the zips as a
+# GitHub release, which the home page links through
+# releases/latest/download/. workflow_dispatch only works once this file is
+# on main.
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - .github/workflows/desktop.yml
-      - scripts/build-desktop.sh
-      - scripts/desktop.ts
-      - src/desktop.ts
-      - tests/desktop_e2e.ts
+  push:
+    branches: [main]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -141,3 +138,35 @@ jobs:
           name: Yurt-Playground-macos
           path: dist-desktop/*.zip
           if-no-files-found: error
+
+  # The release the home page's download links resolve to. A full release,
+  # never a prerelease: releases/latest/download/ ignores prereleases.
+  release:
+    needs: desktop
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Yurt-Playground-macos
+          path: release
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="desktop-$(date -u +%Y%m%d)-${SHA:0:7}"
+          kernel=$(jq -r .kernelWasm.release artifacts/pins.json)
+          image=$(jq -r .image.release artifacts/pins.json)
+          gh release create "$tag" \
+            --target "$SHA" \
+            --title "Yurt Playground for macOS ($tag)" \
+            --notes "Built from ${SHA:0:7} with kernel $kernel and image $image. Not notarized: right-click the app and choose Open the first time." \
+            release/Yurt-Playground-aarch64-apple-darwin.zip \
+            release/Yurt-Playground-x86_64-apple-darwin.zip
