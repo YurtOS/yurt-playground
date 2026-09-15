@@ -26,5 +26,16 @@
       "x86_64-unknown-linux-gnu": "8b6cb44134bfb005ee2145c6f5be079937d97372971e02c241a754dc4378940c",
       "aarch64-unknown-linux-gnu": "31a6cef3835b514cd8e0bf4e58b6bd281857150a44867d38934463fd44048918"
     }
+  },
+  "yurtCli": {
+    "repo": "YurtOS/yurt-sandbox",
+    "release": "yurt-cli-v0.1.0",
+    "build": "scripts/build-yurt-cli.sh",
+    "assets": {
+      "aarch64-apple-darwin": "yurt-aarch64-apple-darwin.tar.gz",
+      "x86_64-apple-darwin": "yurt-x86_64-apple-darwin.tar.gz",
+      "x86_64-unknown-linux-gnu": "yurt_0.1.0_amd64.deb",
+      "aarch64-unknown-linux-gnu": "yurt_0.1.0_arm64.deb"
+    }
   }
 }

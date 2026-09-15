@@ -127,7 +127,7 @@ Deno.test("desktop build ships the launcher with dist/ and runtime/ in the bundl
   }
 });
 
-Deno.test("home page links the desktop bundles the merge workflow releases", async () => {
+Deno.test("home page links the installers and CLI packages the merge workflow releases", async () => {
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
   );
@@ -146,6 +146,12 @@ Deno.test("home page links the desktop bundles the merge workflow releases", asy
     "Yurt-Playground-x86_64-apple-darwin.dmg",
     "Yurt-Playground-x86_64-unknown-linux-gnu.deb",
     "Yurt-Playground-aarch64-unknown-linux-gnu.deb",
+    // The command line, mirrored into the same release from the pinned
+    // yurt-packages release (artifacts/pins.json yurtCli).
+    "yurt-aarch64-apple-darwin.tar.gz",
+    "yurt-x86_64-apple-darwin.tar.gz",
+    "yurt-x86_64-unknown-linux-gnu.deb",
+    "yurt-aarch64-unknown-linux-gnu.deb",
   ];
   assertEquals(links.length, assets.length, `download links: ${links}`);
   for (const asset of assets) {
