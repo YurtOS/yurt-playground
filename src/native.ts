@@ -7,7 +7,11 @@
  * the ipykernel launch through the shell, the ZMTP framing — is unchanged.
  */
 import type { SandboxPortConn } from "@yurt/kernel-host-interface-js";
-import type { PlaygroundEnv, PlaygroundSession } from "./boot.ts";
+import {
+  outputFanout,
+  type PlaygroundEnv,
+  type PlaygroundSession,
+} from "./boot.ts";
 import { createSessionController } from "./session_controller.ts";
 
 /** What the launcher serves at `/desktop.json`; absent on the hosted site. */
@@ -122,11 +126,9 @@ export async function bootNativePlayground(
   env.show("connecting to the sandbox");
   const ws = await openSocket("/ws/tty");
   const encoder = new TextEncoder();
-  const outputHandlers = new Set<(bytes: Uint8Array) => void>();
+  const output = outputFanout(env.term);
   ws.onmessage = (event: MessageEvent) => {
-    const bytes = new Uint8Array(event.data as ArrayBuffer);
-    env.term.write(bytes);
-    for (const handler of outputHandlers) handler(bytes);
+    output.push(new Uint8Array(event.data as ArrayBuffer));
   };
   const resize = (rows: number, cols: number) =>
     ws.send(JSON.stringify({ resize: { rows, cols } }));
@@ -162,9 +164,7 @@ export async function bootNativePlayground(
     controller,
     terminal,
     dialSandboxPort: dialNativePort,
-    onOutput(handler) {
-      outputHandlers.add(handler);
-      return () => outputHandlers.delete(handler);
-    },
+    onOutput: output.onOutput,
+    hushOutput: output.hushOutput,
   };
 }

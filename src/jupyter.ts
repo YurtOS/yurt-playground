@@ -18,7 +18,40 @@ export type JupyterLaunchSession = {
   terminal: { write(bytes: Uint8Array): Promise<void> };
   dialSandboxPort(port: number): SandboxPortConn;
   onOutput(handler: (bytes: Uint8Array) => void): () => void;
+  /** See PlaygroundSession.hushOutput; a session without one shows all. */
+  hushOutput?(): { show(tail: Uint8Array): void };
 };
+
+/** The page types into the user's shell on its own behalf here (the
+ * Jupyter launch, its stop); none of that is for the user to read. The
+ * screen stays as it is until `marker` comes back, then whatever followed
+ * the marker (the shell's next prompt) is shown on a cleared line. The
+ * returned release shows the prompt-less state on failure; it is safe to
+ * call twice. */
+export function hushUntil(
+  session: JupyterLaunchSession,
+  marker: string,
+): () => void {
+  const hush = session.hushOutput?.();
+  if (hush === undefined) return () => {};
+  const decoder = new TextDecoder();
+  let text = "";
+  let released = false;
+  const release = (tail = "") => {
+    if (released) return;
+    released = true;
+    remove();
+    hush.show(encoder.encode(`\r\x1b[2K${tail}`));
+  };
+  const remove = session.onOutput((chunk) => {
+    text += decoder.decode(chunk, { stream: true });
+    const at = text.indexOf(marker);
+    if (at >= 0) {
+      release(text.slice(at + marker.length).replace(/^\r?\n/, ""));
+    }
+  });
+  return () => release();
+}
 
 export type JupyterReply = {
   status: "ok" | "error";
@@ -79,6 +112,7 @@ async function runShell(
   const typedMarker = marker.replace("DONE_", 'DONE_""');
   let text = "";
   let resolveOutput: (() => void) | undefined;
+  const release = hushUntil(session, marker);
   const remove = session.onOutput((chunk) => {
     text += new TextDecoder().decode(chunk);
     if (text.includes(marker)) resolveOutput?.();
@@ -96,6 +130,7 @@ async function runShell(
     }
   } finally {
     remove();
+    release();
   }
 }
 
@@ -117,19 +152,30 @@ export async function restartGuestKernel(
   return await startGuestKernel(session, ports);
 }
 
+// The PTY echoes the typed command, so the marker must not appear in it:
+// the shell joins the two halves, the echo shows them quoted apart.
+const CONNECTION_MARKER = "YURT_JUPYTER_CONNECTION_READY";
+const TYPED_CONNECTION_MARKER = 'YURT_JUPYTER_CONNECTION_""READY';
+
 export async function startGuestKernel(
   session: JupyterLaunchSession,
   ports?: KernelPorts,
 ): Promise<JupyterTransport> {
-  await session.terminal.write(
-    encoder.encode(
-      `${
-        buildKernelLaunchCommand(JUPYTER_CONNECTION_FILE, ports)
-      } >${JUPYTER_LOG_FILE} 2>&1 & ` +
-        `echo $! > ${JUPYTER_PID_FILE}\n`,
-    ),
-  );
-  const connection = await readConnectionFile(session);
+  const release = hushUntil(session, CONNECTION_MARKER);
+  let connection: KernelConnection;
+  try {
+    await session.terminal.write(
+      encoder.encode(
+        `${
+          buildKernelLaunchCommand(JUPYTER_CONNECTION_FILE, ports)
+        } >${JUPYTER_LOG_FILE} 2>&1 & ` +
+          `echo $! > ${JUPYTER_PID_FILE}\n`,
+      ),
+    );
+    connection = await readConnectionFile(session);
+  } finally {
+    release();
+  }
   const config: JupyterConfig = {
     key: connection.key,
     shell: connection.shell_port,
@@ -186,10 +232,8 @@ type KernelConnection = {
 async function readConnectionFile(
   session: JupyterLaunchSession,
 ): Promise<KernelConnection> {
-  // The PTY echoes the typed command, so the marker must not appear in it:
-  // the shell joins the two halves, the echo shows them quoted apart.
-  const marker = "YURT_JUPYTER_CONNECTION_READY";
-  const typedMarker = 'YURT_JUPYTER_CONNECTION_""READY';
+  const marker = CONNECTION_MARKER;
+  const typedMarker = TYPED_CONNECTION_MARKER;
   const bytes: number[] = [];
   let text = "";
   let resolveOutput: (() => void) | undefined;
