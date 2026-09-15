@@ -43,9 +43,9 @@ export function kernelImportMap(
 
 /**
  * Write via a temp file and rename, so a concurrent reader never sees a
- * half-written bundle: the e2e scripts each call ensureBundle and CI runs
- * them side by side. Every writer produces the same bytes; the rename only
- * decides which identical copy wins.
+ * half-written bundle: the e2e scripts and the dev server each call
+ * ensureBundle and may overlap. Every writer produces the same bytes; the
+ * rename only decides which identical copy wins.
  */
 async function writeAtomic(path: string, text: string): Promise<void> {
   const tmp = `${path}.${crypto.randomUUID()}.tmp`;
