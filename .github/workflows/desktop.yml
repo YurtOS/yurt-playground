@@ -1,10 +1,19 @@
 name: Desktop app
 
 # The macOS app (scripts/build-desktop.sh): the built site plus a compiled
-# local server, zipped per architecture and attached to the run. On demand
-# only; the hosted site is deploy-pages.yml.
+# local server, zipped per architecture and attached to the run. On demand,
+# and on pull requests that touch the app itself (a macOS runner is dear;
+# the site is deploy-pages.yml's job). workflow_dispatch only works once
+# this file is on main.
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/desktop.yml
+      - scripts/build-desktop.sh
+      - scripts/desktop.ts
+      - src/desktop.ts
+      - tests/desktop_e2e.ts
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
