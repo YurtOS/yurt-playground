@@ -36,6 +36,7 @@ export function kernelImportMap(
       "@yurt/tar-image":
         `${kernelPath}/packages/runner/src/vfs/tar-image-root-provider.ts`,
       "@xterm/xterm": "npm:@xterm/xterm@5.5.0",
+      "@xterm/addon-fit": "npm:@xterm/addon-fit@0.10.0",
       fzstd: "npm:fzstd@0.1.1",
     },
   };

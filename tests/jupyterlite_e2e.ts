@@ -97,7 +97,9 @@ if (import.meta.main) {
       fail("browser page is not cross-origin isolated");
     }
     // "Check the bytes": the page re-hashes what it downloaded and every
-    // file matches integrity.json, the 87 MB image included.
+    // file matches integrity.json, the 87 MB image included. The proof is a
+    // disclosure below the workspace; open it first.
+    await page.getByTestId("proof-toggle").click();
     await page.getByTestId("verify-files").click();
     await page.waitForFunction(
       () =>

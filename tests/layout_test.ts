@@ -137,19 +137,34 @@ Deno.test("both workflows fetch the pinned blobs, neither builds them", async ()
   }
 });
 
-Deno.test("terminal page exposes the real notebook execution surface", async () => {
-  const html = await Deno.readTextFile(
-    new URL("../public/terminal.html", import.meta.url),
-  );
-  assertEquals(html.includes('data-testid="notebook"'), true);
-  assertEquals(html.includes('id="term"'), true);
-});
-
-Deno.test("home page offers the terminal and the Jupyter Notebook", async () => {
+Deno.test("the home page is the workspace: terminal, cell, one action to start", async () => {
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
   );
-  assertEquals(html.includes('href="./terminal.html"'), true);
+  assertEquals(html.includes('id="term"'), true);
+  assertEquals(html.includes('data-testid="notebook"'), true);
+  assertEquals(html.includes('data-testid="start-sandbox"'), true);
+  // The terminal's bar shows the network state, for the offline check.
+  assertEquals(html.includes('data-testid="net"'), true);
+  assertEquals(html.includes('src="./boot.bundle.js"'), true);
+  // The old terminal address keeps working and starts straight away.
+  const terminal = await Deno.readTextFile(
+    new URL("../public/terminal.html", import.meta.url),
+  );
+  assertEquals(terminal.includes("url=./?start=1"), true);
+  // The page boots on the action, or on ?start; and the isolation gate
+  // (only for the in-tab kernel) sends an unisolated page to the explanation.
+  const page = await Deno.readTextFile(
+    new URL("../src/page.ts", import.meta.url),
+  );
+  assertEquals(page.includes('searchParams.has("start")'), true);
+  assertEquals(page.includes("./unsupported.html"), true);
+});
+
+Deno.test("home page offers the Notebook, JupyterLab, the source and the proof", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
   assertEquals(
     html.includes('href="./jupyter/notebooks/index.html?path=welcome.ipynb"'),
     true,
@@ -160,8 +175,9 @@ Deno.test("home page offers the terminal and the Jupyter Notebook", async () => 
     html.includes('href="https://github.com/YurtOS/yurt-playground"'),
     true,
   );
-  // The "is this really in your browser" section and its live check.
+  // The "is this really in your browser" disclosure and its live check.
   assertEquals(html.includes('data-testid="proof"'), true);
+  assertEquals(html.includes('data-testid="proof-toggle"'), true);
   assertEquals(html.includes('data-testid="verify-files"'), true);
   assertEquals(html.includes('src="./verify.js"'), true);
   assertEquals(
@@ -169,20 +185,13 @@ Deno.test("home page offers the terminal and the Jupyter Notebook", async () => 
       .includes("integrity.json"),
     true,
   );
-  // The only hard gate is cross-origin isolation; phones get a note.
-  assertEquals(html.includes("./unsupported.html"), true);
+  // Phones get a note, not a wall.
   assertEquals(html.includes('data-testid="mobile-note"'), true);
   const unsupported = await Deno.readTextFile(
     new URL("../public/unsupported.html", import.meta.url),
   );
   assertEquals(unsupported.includes('data-testid="unsupported"'), true);
   assertEquals(unsupported.includes("Cross-Origin-Embedder-Policy"), true);
-  const terminal = await Deno.readTextFile(
-    new URL("../public/terminal.html", import.meta.url),
-  );
-  assertEquals(terminal.includes("./unsupported.html"), true);
-  // The terminal page shows its network state, for the offline check.
-  assertEquals(terminal.includes('data-testid="net"'), true);
 });
 
 Deno.test("deployment workflow publishes an isolated static site", async () => {

@@ -3,91 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <title>Yurt playground: terminal</title>
-    <link rel="stylesheet" href="./xterm.css" />
-    <style>
-      html,
-      body {
-        margin: 0;
-        height: 100%;
-        background: #111;
-        color: #eee;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      }
-      #status {
-        margin: 0;
-        padding: 8px 12px;
-      }
-      #links {
-        padding: 8px 12px;
-        border-bottom: 1px solid #444;
-      }
-      #links a {
-        color: #9cf;
-        margin-right: 16px;
-      }
-      #net {
-        float: right;
-        color: #777;
-      }
-      #net[data-online="false"] {
-        color: #fc6;
-      }
-      #term {
-        height: 45vh;
-      }
-      #notebook {
-        border-top: 1px solid #444;
-        padding: 12px;
-      }
-      #notebook-input {
-        display: block;
-        width: min(720px, 95vw);
-        min-height: 80px;
-        margin-bottom: 8px;
-        background: #222;
-        color: #eee;
-        font: inherit;
-      }
-      #notebook-output {
-        min-height: 1.2em;
-      }
-    </style>
+    <!-- The workspace lives on the home page now; this address keeps working
+         and starts the sandbox straight away. -->
+    <meta http-equiv="refresh" content="0; url=./?start=1" />
   </head>
   <body>
-    <nav id="links" aria-label="interfaces">
-      <a href="./">Home</a>
-      <a href="./jupyter/notebooks/index.html?path=welcome.ipynb"
-      >Jupyter Notebook</a>
-      <span
-        id="net"
-        data-testid="net"
-        data-online="true"
-        title="This tab's network state. The sandbox keeps working without it."
-      >online</span>
-    </nav>
-    <pre id="status">checking isolation</pre>
-    <div id="term"></div>
-    <section id="notebook" aria-label="Jupyter notebook" data-testid="notebook">
-    </section>
-    <script type="module">
-      // The proof that nothing leaves the page: go offline and keep going.
-      const net = document.getElementById("net");
-      const showNet = () => {
-        const online = navigator.onLine;
-        net.dataset.online = String(online);
-        net.textContent = online ? "online" : "offline, still running";
-      };
-      globalThis.addEventListener("online", showNet);
-      globalThis.addEventListener("offline", showNet);
-      showNet();
-      const status = document.getElementById("status");
-      if (globalThis.crossOriginIsolated !== true) {
-        status.textContent = "need COOP/COEP";
-        globalThis.location.replace("./unsupported.html");
-        throw new Error("not crossOriginIsolated");
-      }
-      status.textContent = "booting";
-      await import("./boot.bundle.js");
-    </script>
+    <a href="./?start=1">Yurt playground: the terminal</a>
   </body>
 </html>

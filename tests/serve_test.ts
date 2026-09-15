@@ -49,8 +49,10 @@ Deno.test("playground HTTP responses carry COOP/COEP", async () => {
     res.headers.get("Cross-Origin-Resource-Policy"),
     isolation.corp,
   );
+  // The workspace page: the terminal, and the one action that boots it.
   const html = await res.text();
-  assertEquals(html.includes("crossOriginIsolated"), true);
+  assertEquals(html.includes('id="term"'), true);
+  assertEquals(html.includes('data-testid="start-sandbox"'), true);
 });
 
 Deno.test("path resolver rejects a .. segment", () => {

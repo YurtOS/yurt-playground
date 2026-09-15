@@ -107,7 +107,6 @@ Deno.test("static build writes every file the pages need", async () => {
   for (
     const [rule, file] of [
       [siteRule, "dist/index.html"],
-      [siteRule, "dist/terminal.html"],
       [jupyterRule, "dist/jupyter/notebooks/index.html"],
       [jupyterRule, "dist/jupyter/lab/index.html"],
     ] as const
