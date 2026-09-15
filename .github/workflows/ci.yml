@@ -182,16 +182,9 @@ jobs:
       - name: Install Chromium for browser acceptance
         working-directory: playground
         run: deno run --allow-all node_modules/playwright/cli.js install chromium
-      - name: Browser acceptance
-        working-directory: playground
-        env:
-          YURT_KERNEL_ROOT: ../yurtos-kernel
-          PLAYGROUND_REQUIRE_ARTIFACTS: "1"
-        run: |
-          deno run --allow-all tests/playground_e2e.ts
-          deno run --allow-all tests/jupyterlite_e2e.ts
-      # The deployable site, built once from the inputs above; the desktop
-      # job packages it rather than rebuilding it.
+      # The deployable site, built once from the inputs above and uploaded
+      # before the acceptance below, so the desktop job packages it while
+      # the browsers here are still booting sandboxes.
       - name: Build static site
         working-directory: playground
         env:
@@ -202,6 +195,21 @@ jobs:
           name: dist
           path: playground/dist
           if-no-files-found: error
+      # Each script boots its own sandbox (~150 s on this runner, one busy
+      # core each); side by side on the 4-vCPU runner they finish in the
+      # time of the longer one. Both must pass, and both get to finish.
+      - name: Browser acceptance
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+          PLAYGROUND_REQUIRE_ARTIFACTS: "1"
+        run: |
+          deno run --allow-all tests/playground_e2e.ts & playground=$!
+          deno run --allow-all tests/jupyterlite_e2e.ts & lite=$!
+          status=0
+          wait "$playground" || { echo "::error::playground_e2e failed"; status=1; }
+          wait "$lite" || { echo "::error::jupyterlite_e2e failed"; status=1; }
+          exit "$status"
 
   # The macOS app (scripts/build-desktop.sh): the site from the integration
   # job plus a compiled local server, zipped per architecture. Every pull
