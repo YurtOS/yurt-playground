@@ -40,8 +40,7 @@
       a:focus-visible,
       button:focus-visible,
       summary:focus-visible,
-      textarea:focus-visible,
-      label:focus-visible {
+      textarea:focus-visible {
         outline: 2px solid var(--ochre);
         outline-offset: 2px;
       }
@@ -278,13 +277,22 @@
 
       /* Run it on your machine: one choice per platform down the left. */
       #install {
+        position: relative;
         border: 1px solid var(--rule);
         border-radius: 6px;
         display: flex;
         overflow: hidden;
       }
+      /* The choice is a radio group: Tab reaches the chosen one, the arrow
+       * keys move it. The radios themselves are hidden; their labels are
+       * the tabs, and the focus ring lands on the focused radio's label. */
       #install > input {
         position: absolute;
+        top: 0;
+        left: 0;
+        width: 1px;
+        height: 1px;
+        margin: 0;
         opacity: 0;
         pointer-events: none;
       }
@@ -315,6 +323,13 @@
         color: var(--text);
         border-left-color: var(--ochre);
         background: var(--pane);
+      }
+      #install-app-mac:focus-visible ~ .tabs label[for="install-app-mac"],
+      #install-app-linux:focus-visible ~ .tabs label[for="install-app-linux"],
+      #install-cli-mac:focus-visible ~ .tabs label[for="install-cli-mac"],
+      #install-cli-linux:focus-visible ~ .tabs label[for="install-cli-linux"] {
+        outline: 2px solid var(--ochre);
+        outline-offset: -2px;
       }
       #install .panel {
         display: none;
@@ -595,11 +610,11 @@
           <input type="radio" name="install" id="install-cli-linux">
           <div class="tabs">
             <div class="group">Desktop app</div>
-            <label for="install-app-mac" tabindex="0">macOS</label>
-            <label for="install-app-linux" tabindex="0">Linux</label>
+            <label for="install-app-mac">macOS</label>
+            <label for="install-app-linux">Linux</label>
             <div class="group">Command line</div>
-            <label for="install-cli-mac" tabindex="0">macOS</label>
-            <label for="install-cli-linux" tabindex="0">Linux</label>
+            <label for="install-cli-mac">macOS</label>
+            <label for="install-cli-linux">Linux</label>
           </div>
           <div class="panel app-mac">
             <h3>The playground as a Mac app</h3>
