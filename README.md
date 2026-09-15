@@ -1,205 +1,98 @@
-# yurt-playground
+# Yurt playground
 
-**Try it: <https://yurt-playground.pages.dev>** — a Linux sandbox with Python
-and Jupyter that boots inside the browser tab, and a desktop app that runs the
-same playground natively on your machine (download links on the page).
+**Try it: <https://yurt-playground.pages.dev>**
 
-In-browser [Yurt](https://github.com/YurtOS) playground. Sibling of
-[`yurtos-kernel`](https://github.com/YurtOS/yurtos-kernel),
-[`yurt-ports`](https://github.com/YurtOS/yurt-ports), and
-[`yurt-jupyter`](https://github.com/YurtOS/yurt-jupyter).
+A Linux sandbox that boots inside your browser tab — a BusyBox shell, CPython
+3.14 with NumPy, and Jupyter (Notebook and JupyterLab) on a real `ipykernel` —
+running on the [Yurt](https://github.com/YurtOS) kernel compiled to WebAssembly.
+Nothing runs on a server: the kernel, the filesystem and Python all execute in
+the tab, and the page keeps working with the network off.
 
-A static page boots a real Yurt sandbox in the tab: first BusyBox/`ash`, then
-preinstalled CPython, then the existing `yurt-jupyter` stack with `!` as
-ordinary guest `/bin/sh`. The page loads `kernel.wasm` through
-`kernel-host-interface-js`. xterm talks to a host-owned PTY. Jupyter JS dials a
-port the guest is already listening on. There is no hosted
-`yurt-runtime-wasmtime`, no in-browser Python (Pyodide), and no guest egress.
+The same playground is also a **desktop app** for macOS and Linux, where the
+sandbox runs natively on your machine instead of in the tab: it boots in
+seconds, and the guest has real network access. Download links are on the home
+page.
 
-Two interfaces share that design, chosen from the home page (`/`):
+## What you get
 
-- `terminal.html`: the ash terminal plus a single Jupyter cell.
-- `jupyter/`: the Jupyter Notebook and JupyterLab interfaces. This is
-  JupyterLite's frontend and browser-side server API with exactly one kernel,
-  `yurt` (`jupyterlite/yurt-kernel`), which relays every message to the real
-  `ipykernel` in the sandbox through `public/playground-bridge.js`. None of
-  JupyterLite's own kernels ship; nothing executes in the browser. Build it with
-  `deno task build-lite` (node plus `jupyterlite/requirements.txt`).
+|                                                              | Browser                                                                       | Desktop app                                                |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Terminal (`ash`), Python 3.14, NumPy, Jupyter Notebook / Lab | ✓                                                                             | ✓                                                          |
+| Runs in                                                      | the tab (WebAssembly, no server)                                              | the native Yurt runtime on your machine                    |
+| Boot                                                         | ~30–60 s (compiles in the tab)                                                | ~12 s                                                      |
+| Network from inside the sandbox                              | none, by design                                                               | yes (TLS verified)                                         |
+| Works offline                                                | yes                                                                           | yes                                                        |
+| Needs                                                        | a desktop browser with cross-origin isolation (Chrome, Edge, Firefox, Safari) | any browser to display; nothing to install besides the app |
 
-Phones are sent to `unsupported.html`: the sandbox needs a desktop-class tab.
+## Desktop app
 
-## Status — ash in a tab (Task 4)
+**macOS.** Open `Yurt-Playground-<arch>-apple-darwin.dmg` and drag _Yurt
+Playground_ to Applications. The app is not notarized yet, so macOS blocks the
+first open: allow it under _System Settings → Privacy & Security → Open Anyway_
+(or run `xattr -dr com.apple.quarantine "/Applications/Yurt
+Playground.app"`),
+then open it again. A terminal window shows the server; close it to stop.
 
-Tracking is [#1](https://github.com/YurtOS/yurt-playground/issues/1). This slice
-is [#2](https://github.com/YurtOS/yurt-playground/issues/2): load pinned
-`kernel.wasm` + `playground.yurtimg`, attach a host PTY, pump it into xterm.
-
-Python and Jupyter are later slices. The image recipe lives in
-[`yurt-ports#53`](https://github.com/YurtOS/yurt-ports/pull/53).
-
-Plan:
-[`docs/superpowers/plans/2026-08-17-browser-yurt-playground.md`](./docs/superpowers/plans/2026-08-17-browser-yurt-playground.md).
-
-## Run locally
-
-A `yurtos-kernel` sibling checkout at the pinned rev (the page's JS host is
-imported from it), plus the two published blobs:
-
-```bash
-scripts/install-pinned-artifacts.sh   # needs gh access to YurtOS/yurt-packages
-deno task pin
-deno task build-lite                  # the Jupyter Notebook interface
-deno task serve
-```
-
-Then open `http://127.0.0.1:4173/`. The server sets
-`Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: require-corp`. GitHub Pages cannot host this.
-Reload is a fresh sandbox.
-
-## Deploy
-
-The GitHub Actions workflow fetches the pinned kernel wasm and playground image,
-bundles the static page, and deploys `dist/` to Cloudflare Pages. Cloudflare
-Pages is used for the runtime because the playground needs COOP/COEP response
-headers; a plain `github.io` site cannot provide them.
-
-Create a Cloudflare Pages project and add these repository secrets:
-
-- `CLOUDFLARE_API_TOKEN` — an API token allowed to deploy the Pages project.
-- `CLOUDFLARE_ACCOUNT_ID` — the Cloudflare account containing the project.
-- `CLOUDFLARE_PROJECT_NAME` — the Pages project name.
-
-Pushes to `main` and manual workflow runs publish the site. The output directory
-is `dist/`; the generated `_headers` file applies the required cross-origin
-isolation headers and a Content Security Policy (`src/csp.ts`). The policy keeps
-every request the browser makes from a playground page on the site's own origin,
-so "nothing leaves the page" is enforced, not just true of the guest. The
-JupyterLite pages additionally get `'unsafe-eval'` (JupyterLab compiles its
-settings schemas with `new Function`), and each page's inline scripts are
-allowed by hash, derived from the built files. The browser acceptance tests fail
-on any policy violation Chromium reports, so a directive that is too tight shows
-up there.
-
-To build the same output locally:
-
-```bash
-scripts/install-pinned-artifacts.sh
-deno task pin
-deno task build-lite
-deno task build-static
-```
-
-Neither blob is rebuilt by a consumer: the kernel wasm is deterministic on a
-host but not across hosts, and the image needs the guest toolchain plus hours of
-port builds. Each is published once to `YurtOS/yurt-packages` (the `release` tag
-in `artifacts/pins.json`) and fetched. To move a pin, publish the new blob and
-record the sha256 it carries. `scripts/pin-artifacts.ts` only verifies: it
-accepts matching blobs from `artifacts/`, sibling checkouts, or
-`PLAYGROUND_*_URL`, and exits 2 if none match `artifacts/pins.json`.
-
-## Desktop app (macOS, Linux)
-
-The playground on your own machine, with the sandbox running **natively** on
-`yurt-runtime-wasmtime` instead of inside the tab: it boots in about 12 s,
-Jupyter is ready a few seconds later, and the guest has real network access (TLS
-verified against the bundled CA store). The browser is only the display.
-
-**Install.** From the home page's download links (a GitHub release):
-
-- macOS: open `Yurt-Playground-<arch>-apple-darwin.dmg`, drag _Yurt Playground_
-  to Applications. It is not notarized, so the first open is blocked; allow it
-  under _System Settings → Privacy & Security → Open Anyway_ (or
-  `xattr -dr com.apple.quarantine "/Applications/Yurt Playground.app"`) and open
-  it again. A terminal window opens with the server; close it to stop.
-- Debian/Ubuntu:
-  `sudo apt install ./Yurt-Playground-<arch>-unknown-linux-gnu.deb`, then
-  `yurt-playground` from a terminal (or the _Yurt Playground_ desktop entry).
-  Ctrl-C stops it.
+**Debian / Ubuntu.**
+`sudo apt install ./Yurt-Playground-<arch>-unknown-linux-gnu.deb`, then run
+`yurt-playground` (or the _Yurt Playground_ desktop entry). Ctrl-C stops it.
 
 Either way the launcher prints `Yurt playground: http://127.0.0.1:<port>/` and
-opens it in the default browser — any browser: native mode needs no cross-origin
-isolation. The page is the hosted playground: the ash terminal, the single
-Jupyter cell, Jupyter Notebook and JupyterLab.
+opens it in your default browser.
 
-**What is inside.**
+Inside the app: the launcher (this repo, compiled with Deno), the site as
+deployed, and the native sandbox — `yurt-desktop-host`, the Yurt runtime, the
+kernel and the playground image — as pinned in `artifacts/pins.json`. The
+launcher starts the host, which boots the image with a public network interface,
+your resolvers and a few mapped ports, and relays the terminal and the Jupyter
+kernel to the page over WebSockets on the launcher's own origin.
 
-```
-Yurt Playground.app/Contents/Resources   or   /usr/lib/yurt-playground
-├── yurt-playground        the launcher (this repo, compiled with deno)
-├── dist/                  the site, as deployed, minus the in-tab blobs
-└── runtime/               the native sandbox, pinned in artifacts/pins.json
-    ├── yurt-desktop-host      the sidecar: boots the image, relays a PTY and
-    │                          the kernel ports over WebSockets (private repo)
-    ├── yurt-runtime-wasmtime  the runtime, built at the kernel wasm's rev
-    ├── yurt_kernel.wasm
-    └── playground.yurtimg
-```
+## How the browser version works
 
-`GET /desktop.json` is how the page knows it is in the app (`src/native.ts` then
-talks to `/ws/tty` and `/ws/port/<n>` instead of booting a kernel in a worker).
-What the sidecar does is `docker run`, shaped for this image: the image is the
-same `playground.yurtimg` the site boots in the tab, built from the port stages
-by `yurt-ports/ports/playground-image` (BusyBox init + `inittab`, the session
-broker, a CA bundle); it is started with an environment (`PATH`, `PYTHONHOME`,
-`HOME`…), a public network interface and the host's resolvers, and five free
-loopback ports mapped into the guest for ipykernel. The runtime's protocol stays
-inside the sidecar; this repo sees two WebSocket endpoints, documented in the
-sandbox repo's `docs/desktop-host-api.md`.
+A static page loads `kernel.wasm` and the playground image, boots the kernel in
+web workers, spawns `ash` on a host-side PTY that xterm.js talks to, and
+launches `ipykernel` inside the sandbox. The Jupyter Notebook and JupyterLab
+interfaces are JupyterLite's frontend with one kernel plugin that relays every
+message to that real `ipykernel` — none of JupyterLite's own kernels ship, and
+no Python runs in the browser itself. The page needs cross-origin isolation
+(COOP/COEP headers) for the shared memory the workers use, which is why it is
+hosted on Cloudflare Pages; phones are told the sandbox needs a desktop-class
+tab.
 
-**Build it here.**
+The "Is this really running in your browser?" section on the home page has
+checks you can do yourself, including re-hashing every file the page downloaded
+against the published pins.
+
+## Developing
+
+Deno 2.7. The kernel's JavaScript host is imported from a sibling
+`yurtos-kernel` checkout at the pinned revision, and the two large blobs — the
+kernel wasm and the image — are fetched from their releases rather than built:
 
 ```bash
-scripts/install-pinned-artifacts.sh          # kernel wasm + image → artifacts/
-scripts/install-desktop-host.sh              # host + runtime → runtime/<this target>/
+scripts/install-pinned-artifacts.sh   # kernel wasm + image → artifacts/
+deno task pin                         # verify them against artifacts/pins.json
+deno task build-lite                  # the JupyterLite site (node + python)
+deno task serve                       # http://127.0.0.1:4173/, with the isolation headers
+```
+
+The desktop app, from a checkout:
+
+```bash
+scripts/install-desktop-host.sh       # the native sandbox → runtime/<this target>/
 deno task build-static
-deno task build-desktop                      # --target for another; needs its runtime/<target>/
-open "dist-desktop/$(deno eval 'console.log(Deno.build.target)')/Yurt Playground.app"
-deno run --allow-all tests/desktop_e2e.ts    # the built app: native boot, a cell, HTTPS from the guest
-deno run --allow-read --allow-net --allow-run scripts/desktop.ts   # from the checkout, no bundle
+deno task build-desktop               # dist-desktop/<target>/: the .app or the .deb
+deno run --allow-all tests/desktop_e2e.ts   # the built app: native boot, a cell, HTTPS from the guest
 ```
 
-CI's `desktop` job builds both architectures of each OS from the `dist/` the
-integration job produced and the pinned runtime, runs `tests/desktop_e2e.ts` on
-the runner's own (and installs the `.deb` on Linux), and a merge to `main`
-publishes the installers as a GitHub release, which the home page links through
-`releases/latest/download/`.
+Gates, all run by CI: `deno fmt --check`, `deno lint`, `deno check '**/*.ts'`,
+`deno test`, then Playwright acceptance of the site and of the built app on
+macOS and Linux. A merge to `main` deploys the site and publishes the desktop
+installers as a release, which the home page links.
 
-## Layout
-
-```
-~/work/yurtos/
-├── yurtos-kernel/      # kernel.wasm + JS host APIs
-├── yurt-ports/         # playground.yurtimg recipe
-├── yurt-packages/      # published BusyBox / later CPython
-├── yurt-jupyter/       # Jupyter payload
-└── yurt-playground/    # this repo — the page
-```
-
-```
-yurt-playground/
-  public/               # static page (Task 4)
-  src/                  # boot, terminal, later network/jupyter
-  scripts/              # serve.ts, pin-artifacts.ts
-  artifacts/pins.json   # git SHA + sha256; blobs gitignored
-  tests/                # Playwright + Deno
-```
-
-## What this repo does not own
-
-- Kernel syscalls, PTY attach, `dialSandboxPort` — `yurtos-kernel`
-- Image composition — `yurt-ports/ports/playground-image`
-- Published packages — `yurt-packages`
-- The Jupyter site-packages tree — `yurt-jupyter`
-
-## Local gates
-
-```bash
-deno fmt --check
-deno lint
-deno check '**/*.ts'
-deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
-```
+What this repo owns is the page, the launcher, the pins and the acceptance. The
+kernel, the runtime, the image recipe and the Jupyter payload live in their own
+repositories; the pins name the exact releases this page runs.
 
 ## License
 
