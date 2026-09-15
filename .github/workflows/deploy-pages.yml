@@ -19,6 +19,7 @@ jobs:
   secrets-present:
     name: deploy secrets
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       present: ${{ steps.check.outputs.present }}
     steps:
@@ -55,6 +56,7 @@ jobs:
     needs: secrets-present
     if: needs.secrets-present.outputs.present == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -120,6 +122,7 @@ jobs:
           cache: npm
           cache-dependency-path: playground/jupyterlite/yurt-kernel/package-lock.json
       - name: Build the JupyterLite site
+        timeout-minutes: 5
         working-directory: playground
         env:
           JUPYTERLITE_PYTHON: ${{ steps.host-python.outputs.python-path }}
@@ -137,6 +140,7 @@ jobs:
           YURT_KERNEL_ROOT: ../yurtos-kernel
         run: deno task pin
       - name: Verify playground
+        timeout-minutes: 12
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
