@@ -1,6 +1,6 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "node:path";
-import { handleDistRequest } from "../src/desktop.ts";
+import { handleDistRequest, startDesktopServer } from "../src/desktop.ts";
 import { inlineScriptHashes } from "../src/csp.ts";
 
 const isolation = {
@@ -103,7 +103,7 @@ Deno.test("desktop server 404s carry the isolation headers and stay in dist/", a
   }
 });
 
-Deno.test("desktop build ships the binary with dist/ in the app bundle", async () => {
+Deno.test("desktop build ships the launcher with dist/ and runtime/ in the bundle", async () => {
   const script = await Deno.readTextFile(
     new URL("../scripts/build-desktop.sh", import.meta.url),
   );
@@ -111,9 +111,11 @@ Deno.test("desktop build ships the binary with dist/ in the app bundle", async (
     const value of [
       "deno compile",
       "scripts/desktop.ts",
-      "--allow-run=open,xdg-open",
+      "--allow-run",
       "Info.plist",
       "Contents/Resources/dist",
+      "Contents/Resources/runtime",
+      "install-desktop-host.sh",
       "x86_64-unknown-linux-gnu",
       "tar -czf",
     ]
@@ -151,4 +153,46 @@ Deno.test("home page links the desktop bundles the merge workflow releases", asy
   // A merge to main publishes the release the links resolve to.
   assertStringIncludes(workflow, "branches: [main]");
   assertStringIncludes(workflow, "gh release create");
+});
+
+Deno.test("the launcher tells the page the sandbox is native and relays /ws", async () => {
+  // A stand-in host: what src/desktop_host.ts would have spawned.
+  const upstream = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen() {} },
+    (req) => {
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (event) => socket.send(`echo:${event.data}`);
+      return response;
+    },
+  );
+  const addr = upstream.addr as Deno.NetAddr;
+  const host = {
+    url: `http://127.0.0.1:${addr.port}/`,
+    kernelPorts: [1, 2, 3, 4, 5] as [number, number, number, number, number],
+    bootMs: 1234,
+    stop() {},
+  };
+  const dist = await fakeDist();
+  const server = startDesktopServer(dist, host);
+  try {
+    const info = await (await fetch(`${server.url}desktop.json`)).json();
+    assertEquals(info, {
+      native: true,
+      kernelPorts: [1, 2, 3, 4, 5],
+      bootMs: 1234,
+    });
+    const ws = new WebSocket(`${server.url.replace("http", "ws")}ws/tty`);
+    const reply = await new Promise<string>((resolve, reject) => {
+      ws.onopen = () => ws.send("hi");
+      ws.onmessage = (event) => resolve(String(event.data));
+      ws.onerror = () => reject(new Error("proxied socket failed"));
+    });
+    assertEquals(reply, "echo:hi");
+    ws.close();
+    await new Promise((resolve) => (ws.onclose = resolve));
+  } finally {
+    await server.shutdown();
+    await upstream.shutdown();
+    await Deno.remove(dist, { recursive: true });
+  }
 });

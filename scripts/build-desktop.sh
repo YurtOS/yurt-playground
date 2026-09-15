@@ -38,9 +38,23 @@ test -f dist/index.html || {
   echo "build-desktop: no dist/index.html; run: deno task build-static" >&2
   exit 1
 }
+runtime=runtime/$target
+for file in yurt-desktop-host yurt-runtime-wasmtime yurt_kernel.wasm playground.yurtimg; do
+  test -f "$runtime/$file" || {
+    echo "build-desktop: no $runtime/$file; run: scripts/install-desktop-host.sh --target $target" >&2
+    exit 1
+  }
+done
 out=dist-desktop/$target
 rm -rf "$out" "dist-desktop/Yurt-Playground-$target".*
 mkdir -p "$out"
+
+# The site without the in-tab blobs, and the runtime beside it.
+site=$out/site
+mkdir -p "$site/dist"
+cp -R dist/. "$site/dist/"
+rm -f "$site/dist/yurt_kernel.wasm" "$site/dist"/playground.yurtimg.*
+cp -R "$runtime" "$site/runtime"
 
 # Linux: the binary and dist/ side by side in a directory the tarball
 # unpacks to. macOS: the bare binary, then the .app around it.
@@ -49,16 +63,19 @@ if [ "$family" = linux ]; then
 else
   binary="$out/yurt-playground"
 fi
-# Permissions are fixed at compile time: reading the site, the loopback
-# listener, and the platform's opener for the browser. Nothing else.
+# Permissions are fixed at compile time: reading the bundle, the loopback
+# listener, and running the host beside it and the platform's browser
+# opener. Nothing else.
 deno compile \
   --target "$target" \
-  --allow-read --allow-net=127.0.0.1 --allow-run=open,xdg-open \
+  --allow-read --allow-net=127.0.0.1 --allow-run \
   --output "$binary" \
   scripts/desktop.ts
 
 if [ "$family" = linux ]; then
-  cp -R dist "$out/yurt-playground/dist"
+  cp -R "$site/dist" "$out/yurt-playground/dist"
+  cp -R "$site/runtime" "$out/yurt-playground/runtime"
+  rm -rf "$site"
   tar -czf "dist-desktop/Yurt-Playground-$target.tar.gz" -C "$out" yurt-playground
   echo "built $out/yurt-playground/ and dist-desktop/Yurt-Playground-$target.tar.gz"
   exit 0
@@ -67,7 +84,9 @@ fi
 app="$out/Yurt Playground.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$out/yurt-playground" "$app/Contents/MacOS/yurt-playground"
-cp -R dist "$app/Contents/Resources/dist"
+cp -R "$site/dist" "$app/Contents/Resources/dist"
+cp -R "$site/runtime" "$app/Contents/Resources/runtime"
+rm -rf "$site"
 # Finder launches a bundle without a terminal; the launcher opens one so the
 # server has a window whose closing stops it.
 cat > "$app/Contents/MacOS/Yurt Playground" <<'LAUNCH'

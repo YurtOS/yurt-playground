@@ -207,10 +207,11 @@ jobs:
           deno run --allow-all tests/jupyterlite_e2e.ts
 
   # The desktop bundles (scripts/build-desktop.sh): the site from the
-  # integration job plus a compiled local server, packaged per target. Each
+  # integration job, the launcher, and the native sandbox (the pinned
+  # desktop host, runtime, kernel wasm and image), packaged per target. Each
   # runner builds both architectures of its own OS and runs the app
-  # acceptance on the one it can execute; the other is built the same way
-  # from the same inputs.
+  # acceptance — a native boot, a cell, HTTPS from the guest — on the one it
+  # can execute; the other is built the same way from the same inputs.
   desktop:
     needs: deno
     strategy:
@@ -235,6 +236,20 @@ jobs:
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.7.14
+      # The native sandbox for each target: the pinned kernel wasm and image
+      # (artifacts/), and the pinned desktop host + runtime (runtime/<target>/).
+      - name: Install the pinned kernel wasm and playground image
+        env:
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+        run: scripts/install-pinned-artifacts.sh
+      - name: Install the pinned desktop host for each target
+        env:
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          for target in $TARGETS; do
+            scripts/install-desktop-host.sh --target "$target"
+          done
       - name: Build the bundles
         env:
           TARGETS: ${{ matrix.targets }}

@@ -1,8 +1,8 @@
 /**
  * The desktop playground: the deployed site (`dist/`, see
  * scripts/build-static.ts) served from a local port with the same isolation
- * headers Cloudflare Pages applies from `_headers`, so the page is
- * crossOriginIsolated in the user's own browser with nothing hosted.
+ * headers Cloudflare Pages applies from `_headers`, plus the native sandbox
+ * behind `/desktop.json` and `/ws/*` when the bundle carries a runtime.
  *
  * Unlike the dev server (src/serve.ts) this serves the built tree as-is: the
  * image is already in parts, integrity.json is already written, nothing is
@@ -10,6 +10,7 @@
  */
 import { join } from "node:path";
 import { documentPolicy, inlineScriptHashes } from "./csp.ts";
+import { type DesktopHost, proxyWebSocket } from "./desktop_host.ts";
 import { contentType, ISOLATION_HEADERS } from "./serve.ts";
 
 function notFound(): Response {
@@ -84,13 +85,41 @@ export function handleDistRequest(
   };
 }
 
-/** Serve `distDir` on a free loopback port. */
+/** Serve `distDir` on a free loopback port. With a native host, the page
+ * learns so from `/desktop.json` and its `/ws/*` sockets are relayed to it
+ * (src/desktop_host.ts). */
 export function startDesktopServer(
   distDir: string,
+  host?: DesktopHost,
 ): { url: string; shutdown: () => Promise<void> } {
+  const files = handleDistRequest(distDir);
+  const handle = host === undefined ? files : (req: Request) => {
+    const path = new URL(req.url).pathname;
+    if (path === "/desktop.json") {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            native: true,
+            kernelPorts: host.kernelPorts,
+            bootMs: host.bootMs,
+          }),
+          {
+            headers: {
+              ...ISOLATION_HEADERS,
+              "content-type": "application/json; charset=utf-8",
+            },
+          },
+        ),
+      );
+    }
+    if (path.startsWith("/ws/")) {
+      return Promise.resolve(proxyWebSocket(req, host));
+    }
+    return files(req);
+  };
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
-    handleDistRequest(distDir),
+    handle,
   );
   const addr = server.addr;
   if (!("port" in addr)) {

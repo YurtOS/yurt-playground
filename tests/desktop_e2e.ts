@@ -1,8 +1,8 @@
-// The desktop app, end to end: the compiled binary inside the bundle built
-// for this machine (scripts/build-desktop.sh) serves the site it carries,
-// the page is cross-origin isolated in a real browser, and Jupyter runs a
-// cell. Run it after the build; it is the acceptance for the shipped
-// artifact, not the source tree.
+// The desktop app, end to end: the launcher inside the bundle built for
+// this machine (scripts/build-desktop.sh) boots the native sandbox it
+// carries, serves the site, and in a real browser Jupyter runs a cell and
+// reaches the internet from the guest. Run it after the build; it is the
+// acceptance for the shipped artifact, not the source tree.
 import { chromium } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,12 +52,19 @@ if (import.meta.main) {
     const page = await browser.newPage();
     const started = Date.now();
     const csp = watchCspViolations(page);
+    // The app runs the sandbox natively: the launcher says so, and the boot
+    // it reports is seconds, not the tab's minutes.
+    const desktop = await (await fetch(`${app.url}desktop.json`)).json();
+    if (desktop.native !== true) {
+      throw new Error(`desktop.json is not native: ${JSON.stringify(desktop)}`);
+    }
+    if (typeof desktop.bootMs !== "number" || desktop.bootMs > 60_000) {
+      throw new Error(`native boot took ${desktop.bootMs} ms`);
+    }
+    console.log(`desktop e2e: native sandbox booted in ${desktop.bootMs} ms`);
     await page.goto(`${app.url}terminal.html`, {
       waitUntil: "domcontentloaded",
     });
-    if (await page.evaluate(() => globalThis.crossOriginIsolated !== true)) {
-      throw new Error("desktop page is not cross-origin isolated");
-    }
     await page.getByTestId("notebook-status").waitFor({
       state: "visible",
       timeout: 30_000,
@@ -84,25 +91,38 @@ if (import.meta.main) {
         } s: status=${status}`,
       );
     }
+    const cellDone = (expected: string) =>
+      page.waitForFunction(
+        (want) => {
+          const text = document.querySelector<HTMLElement>(
+            "[data-testid=notebook-output]",
+          )?.textContent ?? "";
+          if (text === want) return true;
+          if (/timed out|Error|Traceback/.test(text)) {
+            throw new Error(`cell failed: ${text}`);
+          }
+          return false;
+        },
+        expected,
+        { timeout: EXECUTE_TIMEOUT_MS + 10_000 },
+      );
     await page.getByTestId("notebook-input").fill("1+1");
     await page.getByTestId("notebook-execute").click();
-    await page.waitForFunction(
-      () => {
-        const text = document.querySelector<HTMLElement>(
-          "[data-testid=notebook-output]",
-        )?.textContent ?? "";
-        if (text === "2") return true;
-        if (/timed out|Error|Traceback/.test(text)) {
-          throw new Error(`cell failed: ${text}`);
-        }
-        return false;
-      },
-      undefined,
-      { timeout: EXECUTE_TIMEOUT_MS + 10_000 },
+    await cellDone("2");
+    console.log(
+      `desktop e2e: first cell done after ${
+        Math.round((Date.now() - started) / 1000)
+      } s`,
     );
+    // What the native app is for: the guest reaches the internet, over TLS.
+    await page.getByTestId("notebook-input").fill(
+      "import urllib.request; urllib.request.urlopen('https://example.com', timeout=30).status",
+    );
+    await page.getByTestId("notebook-execute").click();
+    await cellDone("200");
     csp();
     console.log(
-      `desktop e2e: Jupyter cell ran after ${
+      `desktop e2e: Jupyter cells ran after ${
         Math.round((Date.now() - started) / 1000)
       } s`,
     );

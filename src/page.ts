@@ -2,6 +2,7 @@ import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import { mountNotebook } from "./notebook.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import type { JupyterReply } from "./jupyter.ts";
+import { desktopInfo } from "./native.ts";
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -10,13 +11,16 @@ type FromWorker =
   | { type: "notebook-ready" }
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string };
-function runPage(): void {
+async function runPage(): Promise<void> {
   const status = document.getElementById("status");
   const termHost = document.getElementById("term");
   const notebookHost = document.getElementById("notebook");
   if (termHost === null) throw new Error("missing #term");
   if (notebookHost === null) throw new Error("missing #notebook");
-  if (globalThis.crossOriginIsolated !== true) {
+  // The desktop app runs the sandbox natively; only the in-tab kernel needs
+  // cross-origin isolation.
+  const desktop = await desktopInfo();
+  if (desktop === undefined && globalThis.crossOriginIsolated !== true) {
     if (status) status.textContent = "need COOP/COEP";
     throw new Error("not crossOriginIsolated");
   }
@@ -50,8 +54,9 @@ function runPage(): void {
     type: "start",
     cols: term.cols,
     rows: term.rows,
-    isolated: true,
+    isolated: globalThis.crossOriginIsolated === true,
+    kernelPorts: desktop?.kernelPorts,
   });
 }
 
-runPage();
+void runPage();

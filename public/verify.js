@@ -109,6 +109,18 @@ async function verify() {
   summary.dataset.testid = "verify-summary";
   summary.textContent = "fetching integrity.json…";
   results.append(summary);
+  // The desktop app runs the sandbox natively, outside the tab; its bundle
+  // carries no kernel wasm or image for the page to hash.
+  const desktop = await fetch("./desktop.json")
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null);
+  if (desktop?.native === true) {
+    summary.textContent =
+      "This is the desktop app: the sandbox runs natively on this machine, " +
+      "not in the tab, so there are no in-tab bytes to check.";
+    button.disabled = false;
+    return;
+  }
   try {
     const manifest = await (await fetch("./integrity.json", {
       cache: "no-store",

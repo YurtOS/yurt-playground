@@ -96,29 +96,57 @@ accepts matching blobs from `artifacts/`, sibling checkouts, or
 
 ## Desktop app (macOS, Linux)
 
-The same site, shipped to run on your machine: a compiled Deno server
-(`scripts/desktop.ts`) with `dist/` beside it. Starting it serves the site on a
-loopback port with the isolation headers and opens the page in the default
-browser; everything runs in that tab exactly as on the hosted site. Nothing is
-downloaded at run time.
+The playground on your own machine, with the sandbox running **natively** on
+`yurt-runtime-wasmtime` instead of inside the tab: it boots in about 12 s,
+Jupyter is ready a few seconds later, and the guest has real network access (TLS
+verified against the bundled CA store). The browser is only the display.
 
-- macOS: `Yurt Playground.app` (the site in `Contents/Resources`). Not signed or
-  notarized, so Gatekeeper asks on first open (right-click → Open).
-- Linux: a `yurt-playground/` directory with the binary and `dist/`; run
-  `./yurt-playground` from a terminal (it opens the browser with `xdg-open`).
+```
+Yurt Playground.app / yurt-playground/
+├── yurt-playground        the launcher (this repo, compiled with deno)
+├── dist/                  the site, as deployed
+└── runtime/               the native sandbox, pinned in artifacts/pins.json
+    ├── yurt-desktop-host      the sidecar: boots the image, relays a PTY and
+    │                          the kernel ports over WebSockets (private repo)
+    ├── yurt-runtime-wasmtime  the runtime, built at the kernel wasm's rev
+    ├── yurt_kernel.wasm
+    └── playground.yurtimg
+```
+
+Open the app (macOS: right-click → Open the first time; it is not notarized) or
+run `yurt-playground/yurt-playground` from a terminal (Linux). The launcher
+starts the sidecar, prints `Yurt playground: http://127.0.0.1:<port>/` and opens
+it in the default browser; close the terminal window to stop everything. The
+page is the hosted playground: the ash terminal, the single Jupyter cell,
+Jupyter Notebook and JupyterLab. `GET /desktop.json` is how the page knows it is
+in the app (`src/native.ts` then talks to `/ws/tty` and `/ws/port/<n>` instead
+of booting a kernel in a worker).
+
+What the sidecar does is `docker run`, shaped for this image: the image is the
+same `playground.yurtimg` the site boots in the tab, built from the port stages
+by `yurt-ports/ports/playground-image` (BusyBox init + `inittab`, the session
+broker, a CA bundle); it is started with an environment (`PATH`, `PYTHONHOME`,
+`HOME`…), a public network interface and the host's resolvers, and five free
+loopback ports mapped into the guest for ipykernel. The runtime's protocol stays
+inside the sidecar; this repo sees two WebSocket endpoints, documented in the
+sandbox repo's `docs/desktop-host-api.md`.
+
+Build it here:
 
 ```bash
+scripts/install-pinned-artifacts.sh          # kernel wasm + image → artifacts/
+scripts/install-desktop-host.sh              # host + runtime → runtime/<this target>/
 deno task build-static
-deno task build-desktop        # this machine; --target for another, e.g.
-                               # x86_64-unknown-linux-gnu, aarch64-apple-darwin
+deno task build-desktop                      # --target for another; needs its runtime/<target>/
 open "dist-desktop/$(deno eval 'console.log(Deno.build.target)')/Yurt Playground.app"
-deno run --allow-all tests/desktop_e2e.ts   # the bundle for this machine, in Chromium
+deno run --allow-all tests/desktop_e2e.ts    # the built app: native boot, a cell, HTTPS from the guest
+deno run --allow-read --allow-net --allow-run scripts/desktop.ts   # from the checkout, no bundle
 ```
 
 CI's `desktop` job builds both architectures of each OS from the `dist/` the
-integration job produced and runs `tests/desktop_e2e.ts` on the runner's own; a
-merge to `main` publishes the bundles as a GitHub release, which the home page
-links through `releases/latest/download/`.
+integration job produced and the pinned runtime, runs `tests/desktop_e2e.ts` on
+the runner's own, and a merge to `main` publishes the bundles as a GitHub
+release, which the home page links through `releases/latest/download/`.
 
 ## Layout
 

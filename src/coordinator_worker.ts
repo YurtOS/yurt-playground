@@ -10,9 +10,11 @@ import {
 } from "./boot.ts";
 import {
   executeCell,
+  type KernelPorts,
   restartGuestKernel,
   startGuestKernel,
 } from "./jupyter.ts";
+import { bootNativePlayground } from "./native.ts";
 import type {
   JupyterChannel,
   JupyterRequestChannel,
@@ -23,7 +25,15 @@ import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 
 installCoordinatorWorkerProxy();
 type ToWorker =
-  | { type: "start"; cols: number; rows: number; isolated: boolean }
+  // `kernelPorts` set: the desktop app's native sandbox (see native.ts),
+  // reached over WebSockets; otherwise the kernel boots in this worker.
+  | {
+    type: "start";
+    cols: number;
+    rows: number;
+    isolated: boolean;
+    kernelPorts?: KernelPorts;
+  }
   | { type: "in"; text: string }
   | { type: "resize"; rows: number; cols: number }
   | { type: "cell"; id: string; code: string }
@@ -59,6 +69,7 @@ type FromWorker =
 
 let jupyter: JupyterTransport | undefined;
 let launchSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
+let kernelPorts: KernelPorts | undefined;
 /** Restarts are serialised: a second request waits for the first. */
 let restarting: Promise<void> = Promise.resolve();
 
@@ -135,7 +146,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       jupyter = undefined;
       try {
         post({ type: "status", text: "restarting Jupyter" });
-        jupyter = await restartGuestKernel(launchSession, previous);
+        jupyter = await restartGuestKernel(
+          launchSession,
+          previous,
+          kernelPorts,
+        );
         subscribeJupyter(jupyter);
         post({ type: "jupyter-restarted" });
       } catch (error) {
@@ -171,21 +186,25 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   if (msg.type !== "start") return;
   let session: Awaited<ReturnType<typeof bootPlayground>> | undefined;
   try {
-    session = await bootPlayground({
+    kernelPorts = msg.kernelPorts;
+    const env = {
       isolated: msg.isolated,
-      fetchBytes: (path) =>
+      fetchBytes: (path: string) =>
         fetchPlaygroundBytes(path, (progress) => {
           const percent = progress.total === undefined
             ? `${progress.loaded} bytes`
             : `${Math.round(progress.loaded / progress.total * 100)}%`;
           post({ type: "status", text: `loading ${path}: ${percent}` });
         }),
-      show: (text) => post({ type: "status", text }),
+      show: (text: string) => post({ type: "status", text }),
       term: workerTerm({ cols: msg.cols, rows: msg.rows }),
-    });
+    };
+    session = kernelPorts === undefined
+      ? await bootPlayground(env)
+      : await bootNativePlayground(env);
     post({ type: "status", text: "starting Jupyter" });
     launchSession = session;
-    jupyter = await startGuestKernel(session);
+    jupyter = await startGuestKernel(session, kernelPorts);
     subscribeJupyter(jupyter);
     post({ type: "notebook-ready" });
   } catch (error) {
