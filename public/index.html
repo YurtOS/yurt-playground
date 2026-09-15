@@ -68,11 +68,13 @@
       p.alt a {
         color: #9cf;
       }
-      /* The desktop app: one tab per platform, CSS only (radio + label). */
+      /* Beyond the tab: the desktop app and the command line, one choice per
+         platform down the left, CSS only (radio + label). */
       #install {
         margin-top: 32px;
         border: 1px solid #333;
         border-radius: 8px;
+        display: flex;
         overflow: hidden;
       }
       #install > input {
@@ -82,31 +84,52 @@
       }
       #install .tabs {
         display: flex;
+        flex-direction: column;
+        flex: 0 0 200px;
         background: #1a1a1a;
-        border-bottom: 1px solid #333;
+        border-right: 1px solid #333;
+      }
+      #install .tabs .group {
+        padding: 12px 16px 4px;
+        color: #777;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
       }
       #install .tabs label {
-        padding: 10px 18px;
+        padding: 8px 16px 8px 24px;
         color: #999;
         cursor: pointer;
-        border-bottom: 2px solid transparent;
+        border-left: 3px solid transparent;
       }
       #install .tabs label:hover {
         color: #ddd;
       }
-      #install-mac:checked ~ .tabs label[for="install-mac"],
-      #install-linux:checked ~ .tabs label[for="install-linux"] {
+      #install-app-mac:checked ~ .tabs label[for="install-app-mac"],
+      #install-app-linux:checked ~ .tabs label[for="install-app-linux"],
+      #install-cli-mac:checked ~ .tabs label[for="install-cli-mac"],
+      #install-cli-linux:checked ~ .tabs label[for="install-cli-linux"] {
         color: #fff;
-        border-bottom-color: #9cf;
+        border-left-color: #9cf;
+        background: #222;
       }
       #install .panel {
         display: none;
-        padding: 14px 18px 18px;
+        flex: 1 1 auto;
+        padding: 16px 20px 18px;
         color: #bbb;
+        min-width: 0;
       }
-      #install-mac:checked ~ .panel.mac,
-      #install-linux:checked ~ .panel.linux {
+      #install-app-mac:checked ~ .panel.app-mac,
+      #install-app-linux:checked ~ .panel.app-linux,
+      #install-cli-mac:checked ~ .panel.cli-mac,
+      #install-cli-linux:checked ~ .panel.cli-linux {
         display: block;
+      }
+      #install .panel h3 {
+        margin: 0 0 10px;
+        font-size: 1rem;
+        color: #ddd;
       }
       #install .panel p {
         margin: 0 0 10px;
@@ -119,6 +142,25 @@
       }
       #install .panel code {
         color: #ddd;
+      }
+      #install .panel pre {
+        margin: 0 0 10px;
+        padding: 10px 12px;
+        background: #111;
+        border: 1px solid #333;
+        border-radius: 6px;
+        overflow-x: auto;
+        color: #ddd;
+      }
+      @media (max-width: 640px) {
+        #install {
+          flex-direction: column;
+        }
+        #install .tabs {
+          flex-basis: auto;
+          border-right: 0;
+          border-bottom: 1px solid #333;
+        }
       }
       footer {
         margin-top: 32px;
@@ -319,19 +361,26 @@
       </p>
       <section
         id="install"
-        aria-label="Install the desktop app"
+        aria-label="Beyond the browser tab"
         data-testid="download-mac"
       >
-        <input type="radio" name="install" id="install-mac" checked>
-        <input type="radio" name="install" id="install-linux">
+        <input type="radio" name="install" id="install-app-mac" checked>
+        <input type="radio" name="install" id="install-app-linux">
+        <input type="radio" name="install" id="install-cli-mac">
+        <input type="radio" name="install" id="install-cli-linux">
         <div class="tabs">
-          <label for="install-mac">macOS</label>
-          <label for="install-linux">Linux</label>
+          <div class="group">Desktop app</div>
+          <label for="install-app-mac">macOS</label>
+          <label for="install-app-linux">Linux</label>
+          <div class="group">Command line</div>
+          <label for="install-cli-mac">macOS</label>
+          <label for="install-cli-linux">Linux</label>
         </div>
-        <div class="panel mac">
+        <div class="panel app-mac">
+          <h3>The playground as a Mac app</h3>
           <p>
-            The same playground as an app, with the sandbox running natively on
-            your Mac: it has network access and boots in seconds.
+            The same pages, with the sandbox running natively on your Mac: it
+            has network access and boots in seconds.
           </p>
           <p>
             Download for
@@ -352,10 +401,11 @@
               Playground.app"</code>), then open it again.
           </p>
         </div>
-        <div class="panel linux">
+        <div class="panel app-linux">
+          <h3>The playground as a Linux app</h3>
           <p>
-            The same playground as an app, with the sandbox running natively on
-            your machine: it has network access and boots in seconds.
+            The same pages, with the sandbox running natively on your machine:
+            it has network access and boots in seconds.
           </p>
           <p>
             Download the package for
@@ -368,9 +418,63 @@
             >arm64</a>
             (Debian, Ubuntu), then:
           </p>
+          <pre>sudo apt install ./Yurt-Playground-*.deb
+yurt-playground</pre>
+          <p>It opens in your browser; Ctrl-C stops it.</p>
+        </div>
+        <div class="panel cli-mac">
+          <h3>
+            <code>yurt</code>: sandboxes from the command line, docker-style
+          </h3>
           <p>
-            <code>sudo apt install ./Yurt-Playground-*.deb</code> and
-            <code>yurt-playground</code> &mdash; it opens in your browser.
+            <code>run</code>, <code>exec</code>, <code>ps</code>,
+            <code>rm</code>, <code>images</code>, <code>pull</code>,
+            <code>build</code> — with ports, environment and an interactive
+            terminal. Download for
+            <a
+              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-aarch64-apple-darwin.tar.gz"
+            >Apple Silicon</a>
+            or
+            <a
+              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-x86_64-apple-darwin.tar.gz"
+            >Intel</a>, then:
+          </p>
+          <pre>tar -xzf yurt-*.tar.gz &amp;&amp; sudo yurt/install.sh
+yurt pull playground
+yurt run -it playground                    # a shell in the sandbox
+yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
+curl http://127.0.0.1:8080/</pre>
+          <p>
+            Everything the command needs is in the package; the daemon starts
+            itself. <code>yurt --help</code> lists the verbs.
+          </p>
+        </div>
+        <div class="panel cli-linux">
+          <h3>
+            <code>yurt</code>: sandboxes from the command line, docker-style
+          </h3>
+          <p>
+            <code>run</code>, <code>exec</code>, <code>ps</code>,
+            <code>rm</code>, <code>images</code>, <code>pull</code>,
+            <code>build</code> — with ports, environment and an interactive
+            terminal. Download the package for
+            <a
+              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-x86_64-unknown-linux-gnu.deb"
+            >x86_64</a>
+            or
+            <a
+              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-aarch64-unknown-linux-gnu.deb"
+            >arm64</a>
+            (Debian, Ubuntu), then:
+          </p>
+          <pre>sudo apt install ./yurt-*.deb
+yurt pull playground
+yurt run -it playground                    # a shell in the sandbox
+yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
+curl http://127.0.0.1:8080/</pre>
+          <p>
+            Everything the command needs is in the package; the daemon starts
+            itself. <code>yurt --help</code> lists the verbs.
           </p>
         </div>
       </section>
