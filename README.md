@@ -63,37 +63,6 @@ The "Is this really running in your browser?" section on the home page has
 checks you can do yourself, including re-hashing every file the page downloaded
 against the published pins.
 
-## Developing
-
-Deno 2.7. The kernel's JavaScript host is imported from a sibling
-`yurtos-kernel` checkout at the pinned revision, and the two large blobs — the
-kernel wasm and the image — are fetched from their releases rather than built:
-
-```bash
-scripts/install-pinned-artifacts.sh   # kernel wasm + image → artifacts/
-deno task pin                         # verify them against artifacts/pins.json
-deno task build-lite                  # the JupyterLite site (node + python)
-deno task serve                       # http://127.0.0.1:4173/, with the isolation headers
-```
-
-The desktop app, from a checkout:
-
-```bash
-scripts/install-desktop-host.sh       # the native sandbox → runtime/<this target>/
-deno task build-static
-deno task build-desktop               # dist-desktop/<target>/: the .app or the .deb
-deno run --allow-all tests/desktop_e2e.ts   # the built app: native boot, a cell, HTTPS from the guest
-```
-
-Gates, all run by CI: `deno fmt --check`, `deno lint`, `deno check '**/*.ts'`,
-`deno test`, then Playwright acceptance of the site and of the built app on
-macOS and Linux. A merge to `main` deploys the site and publishes the desktop
-installers as a release, which the home page links.
-
-What this repo owns is the page, the launcher, the pins and the acceptance. The
-kernel, the runtime, the image recipe and the Jupyter payload live in their own
-repositories; the pins name the exact releases this page runs.
-
 ## License
 
 Apache-2.0.
