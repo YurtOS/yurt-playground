@@ -41,11 +41,23 @@ export function kernelImportMap(
   };
 }
 
+/**
+ * Write via a temp file and rename, so a concurrent reader never sees a
+ * half-written bundle: the e2e scripts and the dev server each call
+ * ensureBundle and may overlap. Every writer produces the same bytes; the
+ * rename only decides which identical copy wins.
+ */
+async function writeAtomic(path: string, text: string): Promise<void> {
+  const tmp = `${path}.${crypto.randomUUID()}.tmp`;
+  await Deno.writeTextFile(tmp, text);
+  await Deno.rename(tmp, path);
+}
+
 export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
   const { kernelPath, imports } = kernelImportMap(kernel);
   const importMap = { imports };
   const importMapPath = join(repoRoot, "public/import-map.json");
-  await Deno.writeTextFile(importMapPath, JSON.stringify(importMap, null, 2));
+  await writeAtomic(importMapPath, JSON.stringify(importMap, null, 2));
   await bundle(kernelPath, {
     entry: join(repoRoot, "src/page.ts"),
     out: join(repoRoot, "public/boot.bundle.js"),
@@ -59,7 +71,7 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
   });
   // Classic coordinator: import.meta is a syntax error. WorkerHost only
   // uses it to resolve ./worker_bootstrap.js; location.href is the same.
-  await Deno.writeTextFile(
+  await writeAtomic(
     coordinatorOut,
     (await Deno.readTextFile(coordinatorOut)).replaceAll(
       "import.meta.url",
@@ -87,7 +99,9 @@ async function bundle(
 ): Promise<void> {
   const args = ["bundle", "--config", join(kernel, "deno.json")];
   if (opts.importMap) args.push("--import-map", opts.importMap);
-  args.push(opts.entry, "-o", opts.out);
+  // Bundle to a temp file and rename it into place; see writeAtomic.
+  const tmp = `${opts.out}.${crypto.randomUUID()}.tmp`;
+  args.push(opts.entry, "-o", tmp);
   const cmd = new Deno.Command(Deno.execPath(), {
     args,
     cwd: repoRoot,
@@ -96,10 +110,12 @@ async function bundle(
   });
   const { code, stderr } = await cmd.output();
   if (code !== 0) {
+    await Deno.remove(tmp).catch(() => undefined);
     throw new Error(
       `deno bundle ${opts.entry} failed:\n${new TextDecoder().decode(stderr)}`,
     );
   }
+  await Deno.rename(tmp, opts.out);
 }
 
 if (import.meta.main) {

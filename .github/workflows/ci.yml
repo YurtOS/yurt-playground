@@ -173,9 +173,30 @@ jobs:
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
         run: deno run --allow-all scripts/pin-artifacts.ts
+      # Playwright's Chromium, keyed on the pinned playwright version: a hit
+      # makes `install chromium` a no-op.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('playground/deno.json') }}
       - name: Install Chromium for browser acceptance
         working-directory: playground
         run: deno run --allow-all node_modules/playwright/cli.js install chromium
+      # The deployable site, built once from the inputs above and uploaded
+      # before the acceptance below, so the desktop job packages it while
+      # the browsers here are still booting sandboxes.
+      - name: Build static site
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+        run: deno task build-static
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: playground/dist
+          if-no-files-found: error
+      # Serial, not side by side: two sandboxes booting at once starve each
+      # other on the 4-vCPU runner (both timed out when tried, 2026-09-15).
       - name: Browser acceptance
         working-directory: playground
         env:
@@ -184,3 +205,120 @@ jobs:
         run: |
           deno run --allow-all tests/playground_e2e.ts
           deno run --allow-all tests/jupyterlite_e2e.ts
+
+  # The desktop bundles (scripts/build-desktop.sh): the site from the
+  # integration job, the launcher, and the native sandbox (the pinned
+  # desktop host, runtime, kernel wasm and image), packaged per target. Each
+  # runner builds both architectures of its own OS and runs the app
+  # acceptance — a native boot, a cell, HTTPS from the guest — on the one it
+  # can execute; the other is built the same way from the same inputs.
+  desktop:
+    needs: deno
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+            browsers: ~/Library/Caches/ms-playwright
+          - os: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+            browsers: ~/.cache/ms-playwright
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.7.14
+      # The native sandbox for each target: the pinned kernel wasm and image
+      # (artifacts/), and the pinned desktop host + runtime (runtime/<target>/).
+      - name: Install the pinned kernel wasm and playground image
+        env:
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+        run: scripts/install-pinned-artifacts.sh
+      - name: Install the pinned desktop host for each target
+        env:
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          for target in $TARGETS; do
+            scripts/install-desktop-host.sh --target "$target"
+          done
+      - name: Build the bundles
+        env:
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          for target in $TARGETS; do
+            scripts/build-desktop.sh --target "$target"
+          done
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ matrix.browsers }}
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deno.json') }}
+      - name: Install Chromium for the app acceptance
+        run: |
+          deno install
+          deno run --allow-all node_modules/playwright/cli.js install chromium
+      - name: App acceptance
+        run: deno run --allow-all tests/desktop_e2e.ts
+      # The .deb as dpkg sees it: valid, installable, and the installed
+      # launcher finds its site and runtime.
+      - name: Check the .deb
+        if: runner.os == 'Linux'
+        run: |
+          dpkg-deb --info dist-desktop/Yurt-Playground-x86_64-unknown-linux-gnu.deb
+          sudo apt-get install -y ./dist-desktop/Yurt-Playground-x86_64-unknown-linux-gnu.deb
+          test -x /usr/lib/yurt-playground/yurt-playground
+          test -f /usr/lib/yurt-playground/runtime/yurt-desktop-host
+          command -v yurt-playground
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Yurt-Playground-${{ runner.os }}
+          path: |
+            dist-desktop/*.dmg
+            dist-desktop/*.deb
+          if-no-files-found: error
+
+  # A merge to main publishes the installers as the GitHub release the
+  # home page's download links resolve to (releases/latest/download/). A
+  # full release, never a prerelease: "latest" ignores prereleases.
+  release:
+    needs: desktop
+    # Only main: a workflow_dispatch on a branch would otherwise become the
+    # "latest" release the home page links.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: Yurt-Playground-*
+          merge-multiple: true
+          path: release
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="desktop-$(date -u +%Y%m%d)-${SHA:0:7}"
+          kernel=$(jq -r .kernelWasm.release artifacts/pins.json)
+          image=$(jq -r .image.release artifacts/pins.json)
+          gh release create "$tag" \
+            --target "$SHA" \
+            --title "Yurt Playground desktop ($tag)" \
+            --notes "Built from ${SHA:0:7} with kernel $kernel and image $image. The sandbox runs natively on your machine. macOS: open the .dmg, drag the app to Applications; not notarized, so right-click the app and choose Open the first time. Debian/Ubuntu: sudo apt install ./Yurt-Playground-<arch>.deb, then run yurt-playground." \
+            release/Yurt-Playground-aarch64-apple-darwin.dmg \
+            release/Yurt-Playground-x86_64-apple-darwin.dmg \
+            release/Yurt-Playground-x86_64-unknown-linux-gnu.deb \
+            release/Yurt-Playground-aarch64-unknown-linux-gnu.deb

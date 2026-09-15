@@ -59,7 +59,7 @@ export function resolvePlaygroundPath(pathname: string): string | null {
   return resolved;
 }
 
-function contentType(path: string): string {
+export function contentType(path: string): string {
   if (path.endsWith(".html")) return "text/html; charset=utf-8";
   if (path.endsWith(".js") || path.endsWith(".ts")) {
     return "text/javascript; charset=utf-8";

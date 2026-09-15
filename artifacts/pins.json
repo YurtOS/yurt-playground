@@ -9,10 +9,22 @@
   },
   "image": {
     "repo": "YurtOS/yurt-ports",
-    "rev": "e91283ba5518f0e28764273377cf00e9584a4b7e",
-    "release": "playground-image-v0.0.3",
+    "rev": "d349f9de4096ba06690c9ed48893343b478ddf4a",
+    "release": "playground-image-v0.0.5",
     "build": "ports/playground-image/scripts/package.sh",
     "path": "ports/playground-image/build/dist/playground.yurtimg",
-    "sha256": "47983a07d03c7fe63d7a477ce9984fd94115ca03f8c3f5043a69459e12af8c79"
+    "sha256": "11f458ce953bc04ba6b7af3de4630409c4f120dd94cba602c38c14c2e01308ba"
+  },
+  "desktopHost": {
+    "repo": "YurtOS/yurt-sandbox",
+    "rev": "36f0d71cbc3f6ad939a59b7db6e313d7396bdf24",
+    "release": "desktop-host-v0.1.0",
+    "build": "scripts/build-desktop-host.sh",
+    "sha256": {
+      "aarch64-apple-darwin": "aff7fc97fceb7986dd8cb37a583809dffef20c4f1581af33222249bd86c896a6",
+      "x86_64-apple-darwin": "16c43b7269c016622295520affb1765a0a1ae657f4b27fa990e7cdadcea0ba34",
+      "x86_64-unknown-linux-gnu": "8b6cb44134bfb005ee2145c6f5be079937d97372971e02c241a754dc4378940c",
+      "aarch64-unknown-linux-gnu": "31a6cef3835b514cd8e0bf4e58b6bd281857150a44867d38934463fd44048918"
+    }
   }
 }

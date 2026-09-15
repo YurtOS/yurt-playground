@@ -27,16 +27,35 @@ export type JupyterReply = {
   traceback: string[];
 };
 
+/** shell, iopub, stdin, control, hb. */
+export type KernelPorts = [number, number, number, number, number];
+
 export function buildKernelLaunchCommand(
   connectionFile = JUPYTER_CONNECTION_FILE,
+  ports?: KernelPorts,
 ): string {
-  return [
+  const line = [
     "python3 -m ipykernel_launcher",
-    "--ip=127.0.0.1",
+    // Natively the kernel publishes a mapped port to the host only for a
+    // non-loopback bind; in the tab the dial is loopback anyway.
+    ports === undefined ? "--ip=127.0.0.1" : "--ip=0.0.0.0",
     "--transport=tcp",
     `--Session.key=${JUPYTER_KEY}`,
     `--f=${connectionFile}`,
-  ].join(" ");
+  ];
+  if (ports !== undefined) {
+    // The desktop app maps exactly these to the host; in the tab ipykernel
+    // picks its own and the connection file says which.
+    const [shell, iopub, stdin, control, hb] = ports;
+    line.push(
+      `--shell=${shell}`,
+      `--iopub=${iopub}`,
+      `--stdin=${stdin}`,
+      `--control=${control}`,
+      `--hb=${hb}`,
+    );
+  }
+  return line.join(" ");
 }
 
 /** The shell line that stops a kernel started by `startGuestKernel` and
@@ -91,18 +110,22 @@ export async function stopGuestKernel(
 export async function restartGuestKernel(
   session: JupyterLaunchSession,
   previous: JupyterTransport | undefined,
+  ports?: KernelPorts,
 ): Promise<JupyterTransport> {
   await previous?.close().catch(() => {});
   await stopGuestKernel(session);
-  return await startGuestKernel(session);
+  return await startGuestKernel(session, ports);
 }
 
 export async function startGuestKernel(
   session: JupyterLaunchSession,
+  ports?: KernelPorts,
 ): Promise<JupyterTransport> {
   await session.terminal.write(
     encoder.encode(
-      `${buildKernelLaunchCommand()} >${JUPYTER_LOG_FILE} 2>&1 & ` +
+      `${
+        buildKernelLaunchCommand(JUPYTER_CONNECTION_FILE, ports)
+      } >${JUPYTER_LOG_FILE} 2>&1 & ` +
         `echo $! > ${JUPYTER_PID_FILE}\n`,
     ),
   );

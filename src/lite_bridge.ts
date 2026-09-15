@@ -6,6 +6,7 @@
  * `jupyterlite/` extension at runtime, so every sandbox concern stays in the
  * deno-built bundles.
  */
+import { desktopInfo } from "./native.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import type {
@@ -47,9 +48,6 @@ export function startPlaygroundKernel(
   coordinatorUrl = "/coordinator.bundle.js",
 ): PlaygroundKernelBridge {
   if (bridge !== undefined) return bridge;
-  if (globalThis.crossOriginIsolated !== true) {
-    throw new Error("not crossOriginIsolated: the page needs COOP/COEP");
-  }
   const worker = new Worker(coordinatorUrl);
   attachGuestWorkerFactory(worker);
   const messageListeners = new Set<
@@ -86,7 +84,18 @@ export function startPlaygroundKernel(
   worker.onerror = (event) => {
     rejectReady(new Error(event.message || "coordinator worker failed"));
   };
-  worker.postMessage({ type: "start", cols: 80, rows: 24, isolated: true });
+  // The desktop app's launcher answers /desktop.json and the sandbox is
+  // native; on the hosted site the kernel boots in the worker, which needs
+  // the page to be cross-origin isolated and says so if it is not.
+  void desktopInfo().then((desktop) =>
+    worker.postMessage({
+      type: "start",
+      cols: 80,
+      rows: 24,
+      isolated: globalThis.crossOriginIsolated === true,
+      kernelPorts: desktop?.kernelPorts,
+    })
+  );
   bridge = {
     get ready() {
       return ready;

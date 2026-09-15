@@ -14,6 +14,8 @@ public/import-map.json
 
 # Local / generated
 /dist
+# scripts/build-desktop.sh
+/dist-desktop
 /node_modules
 node_modules/
 .DS_Store
@@ -32,3 +34,5 @@ jupyterlite/yurt-kernel/node_modules/
 jupyterlite/yurt-kernel/lib/
 jupyterlite/yurt-kernel/tsconfig.tsbuildinfo
 jupyterlite/yurt-kernel/yurt_jupyterlite_kernel/
+# The native sandbox beside dist/ (scripts/build-desktop.sh, install-pinned-artifacts)
+/runtime
