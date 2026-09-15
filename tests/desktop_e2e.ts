@@ -120,6 +120,14 @@ if (import.meta.main) {
     );
     await page.getByTestId("notebook-execute").click();
     await cellDone("200");
+    // A shell cell: IPython's `!` goes pexpect -> ptyprocess -> resource,
+    // then posix_spawn; both work on the native runtime (#4; the in-tab
+    // kernel still cannot spawn, yurtos-kernel#2771). The output is what
+    // BusyBox echo wrote, streamed as stdout.
+    await page.getByTestId("notebook-input").fill("!echo hi");
+    await page.getByTestId("notebook-execute").click();
+    await cellDone("hi\n");
+    console.log("desktop e2e: !echo hi ran in BusyBox");
     // The Notebook page too: its kernel plugin lives under /jupyter/ and must
     // find the launcher's /desktop.json from there (the bundle has no in-tab
     // kernel to fall back to).
