@@ -178,6 +178,9 @@
         #start .prompt::after {
           animation: none;
         }
+        #proof summary h2::before {
+          transition: none;
+        }
       }
       #start button {
         font: inherit;
@@ -353,8 +356,9 @@
         cursor: pointer;
         list-style: none;
         display: flex;
+        flex-wrap: wrap;
         align-items: baseline;
-        gap: 12px;
+        gap: 4px 12px;
       }
       #proof summary::-webkit-details-marker {
         display: none;
@@ -362,15 +366,32 @@
       #proof summary h2 {
         margin: 0;
       }
+      /* The one sign it opens: a small triangle in the accent, turning. */
+      #proof summary h2::before {
+        content: "";
+        display: inline-block;
+        width: 0;
+        height: 0;
+        margin-right: 10px;
+        vertical-align: 2px;
+        border: 5px solid transparent;
+        border-left: 7px solid var(--ochre);
+        border-right: 0;
+        transition: transform 120ms ease-out;
+      }
+      #proof[open] summary h2::before {
+        transform: rotate(90deg);
+      }
       #proof summary .hint {
         color: var(--muted);
       }
       #proof[open] summary .hint {
         display: none;
       }
+      /* Four checks, two by two: they are parallel, none comes first. */
       #proof .checks {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 14px;
         margin-top: 14px;
       }
@@ -465,6 +486,9 @@
           flex-basis: auto;
           border-right: 0;
           border-bottom: 1px solid var(--rule);
+        }
+        #proof .checks {
+          grid-template-columns: 1fr;
         }
       }
     </style>
