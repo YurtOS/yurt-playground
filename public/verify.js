@@ -111,8 +111,12 @@ async function verify() {
   results.append(summary);
   // The desktop app runs the sandbox natively, outside the tab; its bundle
   // carries no kernel wasm or image for the page to hash.
-  const desktop = await fetch("./desktop.json")
-    .then((r) => (r.ok ? r.json() : null))
+  const desktop = await fetch("/desktop.json")
+    .then((r) =>
+      r.ok && (r.headers.get("content-type") ?? "").includes("json")
+        ? r.json()
+        : null
+    )
     .catch(() => null);
   if (desktop?.native === true) {
     summary.textContent =

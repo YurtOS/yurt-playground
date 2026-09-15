@@ -94,7 +94,23 @@ export function startDesktopServer(
 ): { url: string; shutdown: () => Promise<void> } {
   const files = handleDistRequest(distDir);
   const handle = host === undefined ? files : (req: Request) => {
-    const path = new URL(req.url).pathname;
+    const url = new URL(req.url);
+    const path = url.pathname;
+    // Browsers apply no same-origin policy to WebSocket connects, so a page
+    // from anywhere could otherwise open a shell here; only the page this
+    // server serves (its own origin) may reach the sandbox.
+    const origin = req.headers.get("origin");
+    if (
+      (path === "/desktop.json" || path.startsWith("/ws/")) &&
+      origin !== null && origin !== url.origin
+    ) {
+      return Promise.resolve(
+        new Response("not this page", {
+          status: 403,
+          headers: ISOLATION_HEADERS,
+        }),
+      );
+    }
     if (path === "/desktop.json") {
       return Promise.resolve(
         new Response(

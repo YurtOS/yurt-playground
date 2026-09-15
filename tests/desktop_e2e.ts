@@ -120,6 +120,30 @@ if (import.meta.main) {
     );
     await page.getByTestId("notebook-execute").click();
     await cellDone("200");
+    // The Notebook page too: its kernel plugin lives under /jupyter/ and must
+    // find the launcher's /desktop.json from there (the bundle has no in-tab
+    // kernel to fall back to).
+    await page.goto(
+      `${app.url}jupyter/notebooks/index.html?path=welcome.ipynb`,
+      {
+        waitUntil: "domcontentloaded",
+      },
+    );
+    await page.locator(".jp-Notebook").first().waitFor({ timeout: 60_000 });
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".jp-Toolbar-kernelName")?.textContent
+            ?.includes("Yurt") === true &&
+        document.querySelector(".jp-Notebook-ExecutionIndicator")
+            ?.getAttribute("data-status") === "idle",
+      undefined,
+      { timeout: 120_000 },
+    );
+    console.log(
+      `desktop e2e: notebook kernel idle after ${
+        Math.round((Date.now() - started) / 1000)
+      } s`,
+    );
     csp();
     console.log(
       `desktop e2e: Jupyter cells ran after ${

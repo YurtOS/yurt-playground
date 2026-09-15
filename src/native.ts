@@ -18,14 +18,24 @@ export type DesktopInfo = {
   bootMs: number;
 };
 
+/** The launcher's answer, or `undefined` on the hosted site. Absolute, so
+ * the JupyterLite pages under /jupyter/ ask the same place; JSON only, so a
+ * host that answers every unknown path with the home page and a 200
+ * (Cloudflare Pages does) reads as "not the app"; never throws. */
 export async function desktopInfo(
   fetchJson: (path: string) => Promise<Response> = (path) => fetch(path),
 ): Promise<DesktopInfo | undefined> {
-  const response = await fetchJson("./desktop.json").catch(() => undefined);
-  if (response === undefined || !response.ok) return undefined;
-  const info = await response.json();
-  if (info?.native !== true) return undefined;
-  return info as DesktopInfo;
+  try {
+    const response = await fetchJson("/desktop.json");
+    if (!response.ok) return undefined;
+    if (!(response.headers.get("content-type") ?? "").includes("json")) {
+      return undefined;
+    }
+    const info = await response.json();
+    return info?.native === true ? (info as DesktopInfo) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function wsUrl(path: string): string {

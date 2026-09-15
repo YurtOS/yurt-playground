@@ -290,7 +290,9 @@ jobs:
   # full release, never a prerelease: "latest" ignores prereleases.
   release:
     needs: desktop
-    if: github.event_name != 'pull_request'
+    # Only main: a workflow_dispatch on a branch would otherwise become the
+    # "latest" release the home page links.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write

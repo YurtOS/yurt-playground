@@ -1,6 +1,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "node:path";
 import { handleDistRequest, startDesktopServer } from "../src/desktop.ts";
+import { desktopInfo } from "../src/native.ts";
 import { inlineScriptHashes } from "../src/csp.ts";
 
 const isolation = {
@@ -202,6 +203,63 @@ Deno.test("the launcher tells the page the sandbox is native and relays /ws", as
   } finally {
     await server.shutdown();
     await upstream.shutdown();
+    await Deno.remove(dist, { recursive: true });
+  }
+});
+
+Deno.test("desktopInfo reads as 'not the app' wherever the launcher is absent", async () => {
+  // Cloudflare Pages answers an unknown path with the home page and a 200.
+  const pagesLike = () =>
+    Promise.resolve(
+      new Response("<!doctype html><title>Yurt playground</title>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+    );
+  assertEquals(await desktopInfo(pagesLike), undefined);
+  const notFound = () => Promise.resolve(new Response("nope", { status: 404 }));
+  assertEquals(await desktopInfo(notFound), undefined);
+  const offline = () => Promise.reject(new Error("network"));
+  assertEquals(await desktopInfo(offline), undefined);
+  const app = () =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          native: true,
+          kernelPorts: [1, 2, 3, 4, 5],
+          bootMs: 7,
+        }),
+        { headers: { "content-type": "application/json; charset=utf-8" } },
+      ),
+    );
+  assertEquals((await desktopInfo(app))?.kernelPorts, [1, 2, 3, 4, 5]);
+});
+
+Deno.test("the launcher refuses other origins on the sandbox endpoints", async () => {
+  const host = {
+    url: "http://127.0.0.1:1/",
+    token: "deadbeef",
+    kernelPorts: [1, 2, 3, 4, 5] as [number, number, number, number, number],
+    bootMs: 1,
+    stop() {},
+  };
+  const dist = await fakeDist();
+  const server = startDesktopServer(dist, host);
+  try {
+    for (const path of ["desktop.json", "ws/tty", "ws/port/1"]) {
+      const res = await fetch(`${server.url}${path}`, {
+        headers: { origin: "http://evil.example" },
+      });
+      assertEquals(res.status, 403, path);
+      await res.body?.cancel();
+    }
+    // Its own origin, and no origin (the acceptance's plain fetch), are fine.
+    const own = await fetch(`${server.url}desktop.json`, {
+      headers: { origin: server.url.replace(/\/$/, "") },
+    });
+    assertEquals(own.status, 200);
+    await own.body?.cancel();
+  } finally {
+    await server.shutdown();
     await Deno.remove(dist, { recursive: true });
   }
 });
