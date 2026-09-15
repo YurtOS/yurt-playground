@@ -1,0 +1,110 @@
+// The desktop app, end to end: the compiled binary inside the .app
+// (scripts/build-desktop.sh) serves the site it carries, the page is
+// cross-origin isolated in a real browser, and Jupyter runs a cell. Run it
+// after the build; it is the acceptance for the shipped artifact, not the
+// source tree.
+import { chromium } from "playwright";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { EXECUTE_TIMEOUT_MS } from "../src/jupyter.ts";
+import { watchCspViolations } from "./csp_watch.ts";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const binary = join(
+  repoRoot,
+  "dist-desktop",
+  Deno.build.target,
+  "Yurt Playground.app/Contents/MacOS/yurt-playground",
+);
+
+/** Start the binary with stdout piped (so it does not open a browser) and
+ * read the URL it announces. */
+async function startApp(): Promise<{ url: string; stop: () => void }> {
+  const child = new Deno.Command(binary, { stdout: "piped", stderr: "inherit" })
+    .spawn();
+  const reader = child.stdout.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  while (true) {
+    const url = text.match(/^Yurt playground: (http:\/\/127\.0\.0\.1:\d+\/)$/m);
+    if (url) {
+      return {
+        url: url[1],
+        stop: () => {
+          child.kill("SIGTERM");
+          reader.cancel().catch(() => undefined);
+        },
+      };
+    }
+    const { value, done } = await reader.read();
+    if (done) throw new Error(`${binary} exited without announcing a URL`);
+    text += decoder.decode(value, { stream: true });
+  }
+}
+
+if (import.meta.main) {
+  const app = await startApp();
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    const started = Date.now();
+    const csp = watchCspViolations(page);
+    await page.goto(`${app.url}terminal.html`, {
+      waitUntil: "domcontentloaded",
+    });
+    if (await page.evaluate(() => globalThis.crossOriginIsolated !== true)) {
+      throw new Error("desktop page is not cross-origin isolated");
+    }
+    await page.getByTestId("notebook-status").waitFor({
+      state: "visible",
+      timeout: 30_000,
+    });
+    // Same budget as playground_e2e.ts: ~30 s on a laptop, several times
+    // that on a small CI runner.
+    await page.waitForFunction(
+      () => {
+        const notebook = document.querySelector<HTMLElement>(
+          "[data-testid=notebook-status]",
+        );
+        const status = document.querySelector<HTMLElement>("#status");
+        return notebook?.textContent === "ready" ||
+          (status?.textContent ?? "").includes("failed");
+      },
+      undefined,
+      { timeout: 300_000 },
+    ).catch(() => undefined);
+    if (await page.getByTestId("notebook-status").textContent() !== "ready") {
+      const status = await page.locator("#status").textContent();
+      throw new Error(
+        `Jupyter did not become ready after ${
+          Math.round((Date.now() - started) / 1000)
+        } s: status=${status}`,
+      );
+    }
+    await page.getByTestId("notebook-input").fill("1+1");
+    await page.getByTestId("notebook-execute").click();
+    await page.waitForFunction(
+      () => {
+        const text = document.querySelector<HTMLElement>(
+          "[data-testid=notebook-output]",
+        )?.textContent ?? "";
+        if (text === "2") return true;
+        if (/timed out|Error|Traceback/.test(text)) {
+          throw new Error(`cell failed: ${text}`);
+        }
+        return false;
+      },
+      undefined,
+      { timeout: EXECUTE_TIMEOUT_MS + 10_000 },
+    );
+    csp();
+    console.log(
+      `desktop e2e: Jupyter cell ran after ${
+        Math.round((Date.now() - started) / 1000)
+      } s`,
+    );
+  } finally {
+    await browser.close();
+    app.stop();
+  }
+}

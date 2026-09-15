@@ -94,6 +94,25 @@ record the sha256 it carries. `scripts/pin-artifacts.ts` only verifies: it
 accepts matching blobs from `artifacts/`, sibling checkouts, or
 `PLAYGROUND_*_URL`, and exits 2 if none match `artifacts/pins.json`.
 
+## Desktop app (macOS)
+
+The same site, shipped as a double-clickable app: `Yurt Playground.app` is a
+compiled Deno server (`scripts/desktop.ts`) with `dist/` beside it in
+`Contents/Resources`. Opening it starts the server on a loopback port with the
+isolation headers and opens the page in the default browser; everything runs in
+that tab exactly as on the hosted site. Nothing is downloaded at run time.
+
+```bash
+deno task build-static
+deno task build-desktop        # --target x86_64-apple-darwin for Intel Macs
+open "dist-desktop/$(deno eval 'console.log(Deno.build.target)')/Yurt Playground.app"
+deno run --allow-all tests/desktop_e2e.ts   # the built app, in Chromium
+```
+
+The app is not signed or notarized: Gatekeeper asks on first open (right-click →
+Open). The _Desktop app_ workflow builds both architectures and attaches the
+zipped bundles to its run.
+
 ## Layout
 
 ```

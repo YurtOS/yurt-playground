@@ -1,0 +1,103 @@
+/**
+ * The desktop playground: the deployed site (`dist/`, see
+ * scripts/build-static.ts) served from a local port with the same isolation
+ * headers Cloudflare Pages applies from `_headers`, so the page is
+ * crossOriginIsolated in the user's own browser with nothing hosted.
+ *
+ * Unlike the dev server (src/serve.ts) this serves the built tree as-is: the
+ * image is already in parts, integrity.json is already written, nothing is
+ * computed from public/ or artifacts/.
+ */
+import { join } from "node:path";
+import { documentPolicy, inlineScriptHashes } from "./csp.ts";
+import { contentType, ISOLATION_HEADERS } from "./serve.ts";
+
+function notFound(): Response {
+  return new Response("not found", {
+    status: 404,
+    headers: ISOLATION_HEADERS,
+  });
+}
+
+/** `pathname` as a file under `distDir`, or null when it would leave it. */
+export function resolveDistPath(
+  distDir: string,
+  pathname: string,
+): string | null {
+  const relative = (pathname === "/" ? "index.html" : pathname).replace(
+    /^\/+/,
+    "",
+  );
+  if (
+    relative.includes("\0") || relative.includes("\\") ||
+    relative.split("/").includes("..")
+  ) {
+    return null;
+  }
+  const resolved = join(distDir, relative);
+  if (resolved !== distDir && !resolved.startsWith(`${distDir}/`)) {
+    return null;
+  }
+  return resolved;
+}
+
+/** A request handler serving the built site under `distDir`. */
+export function handleDistRequest(
+  distDir: string,
+): (req: Request) => Promise<Response> {
+  return async (req) => {
+    const url = new URL(req.url);
+    let pathname: string;
+    try {
+      pathname = decodeURIComponent(url.pathname);
+    } catch {
+      return notFound();
+    }
+    const filePath = resolveDistPath(distDir, pathname);
+    if (filePath === null) return notFound();
+    let file: Deno.FsFile;
+    try {
+      file = await Deno.open(filePath);
+    } catch {
+      return notFound();
+    }
+    if (!(await file.stat()).isFile) {
+      file.close();
+      return notFound();
+    }
+    const path = pathname === "/" ? "/index.html" : pathname;
+    const headers: Record<string, string> = {
+      ...ISOLATION_HEADERS,
+      "content-type": contentType(path),
+    };
+    if (path.endsWith(".html")) {
+      // Same rule as the dev server and `_headers`: a document allows its own
+      // inline scripts by hash, and JupyterLite's documents may eval.
+      const html = await new Response(file.readable).text();
+      headers["Content-Security-Policy"] = documentPolicy(
+        path,
+        await inlineScriptHashes(html),
+      );
+      return new Response(html, { headers });
+    }
+    return new Response(file.readable, { headers });
+  };
+}
+
+/** Serve `distDir` on a free loopback port. */
+export function startDesktopServer(
+  distDir: string,
+): { url: string; shutdown: () => Promise<void> } {
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    handleDistRequest(distDir),
+  );
+  const addr = server.addr;
+  if (!("port" in addr)) {
+    throw new Error("desktop server did not bind a TCP port");
+  }
+  return {
+    url: `http://127.0.0.1:${addr.port}/`,
+    shutdown: () => server.shutdown(),
+  };
+}
