@@ -104,8 +104,10 @@ verified against the bundled CA store). The browser is only the display.
 **Install.** From the home page's download links (a GitHub release):
 
 - macOS: open `Yurt-Playground-<arch>-apple-darwin.dmg`, drag _Yurt Playground_
-  to Applications, then right-click → Open the first time (it is not notarized).
-  A terminal window opens with the server; close it to stop.
+  to Applications. It is not notarized, so the first open is blocked; allow it
+  under _System Settings → Privacy & Security → Open Anyway_ (or
+  `xattr -dr com.apple.quarantine "/Applications/Yurt Playground.app"`) and open
+  it again. A terminal window opens with the server; close it to stop.
 - Debian/Ubuntu:
   `sudo apt install ./Yurt-Playground-<arch>-unknown-linux-gnu.deb`, then
   `yurt-playground` from a terminal (or the _Yurt Playground_ desktop entry).

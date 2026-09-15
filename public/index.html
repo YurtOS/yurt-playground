@@ -68,6 +68,58 @@
       p.alt a {
         color: #9cf;
       }
+      /* The desktop app: one tab per platform, CSS only (radio + label). */
+      #install {
+        margin-top: 32px;
+        border: 1px solid #333;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      #install > input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+      #install .tabs {
+        display: flex;
+        background: #1a1a1a;
+        border-bottom: 1px solid #333;
+      }
+      #install .tabs label {
+        padding: 10px 18px;
+        color: #999;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+      }
+      #install .tabs label:hover {
+        color: #ddd;
+      }
+      #install-mac:checked ~ .tabs label[for="install-mac"],
+      #install-linux:checked ~ .tabs label[for="install-linux"] {
+        color: #fff;
+        border-bottom-color: #9cf;
+      }
+      #install .panel {
+        display: none;
+        padding: 14px 18px 18px;
+        color: #bbb;
+      }
+      #install-mac:checked ~ .panel.mac,
+      #install-linux:checked ~ .panel.linux {
+        display: block;
+      }
+      #install .panel p {
+        margin: 0 0 10px;
+      }
+      #install .panel p:last-child {
+        margin-bottom: 0;
+      }
+      #install .panel a {
+        color: #9cf;
+      }
+      #install .panel code {
+        color: #ddd;
+      }
       footer {
         margin-top: 32px;
         color: #777;
@@ -262,28 +314,63 @@
         >JupyterLab</a>
         on the same sandbox.
       </p>
-      <p class="alt" data-testid="download-mac">
-        Or install it: the same playground with the sandbox running natively on
-        your machine, so it has network access and boots in seconds. macOS:
-        <a
-          href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-apple-darwin.dmg"
-        >Apple Silicon</a>
-        or
-        <a
-          href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-x86_64-apple-darwin.dmg"
-        >Intel</a>
-        (not notarized: the first time, right-click the app and choose Open).
-        Debian/Ubuntu:
-        <a
-          href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-x86_64-unknown-linux-gnu.deb"
-        >x86_64</a>
-        or
-        <a
-          href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-unknown-linux-gnu.deb"
-        >arm64</a>
-        (<code>sudo apt install ./Yurt-Playground-*.deb</code>, then
-        <code>yurt-playground</code>).
-      </p>
+      <section
+        id="install"
+        aria-label="Install the desktop app"
+        data-testid="download-mac"
+      >
+        <input type="radio" name="install" id="install-mac" checked>
+        <input type="radio" name="install" id="install-linux">
+        <div class="tabs">
+          <label for="install-mac">macOS</label>
+          <label for="install-linux">Linux</label>
+        </div>
+        <div class="panel mac">
+          <p>
+            The same playground as an app, with the sandbox running natively on
+            your Mac: it has network access and boots in seconds.
+          </p>
+          <p>
+            Download for
+            <a
+              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-apple-darwin.dmg"
+            >Apple Silicon</a>
+            or
+            <a
+              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-x86_64-apple-darwin.dmg"
+            >Intel</a>, open the disk image and drag <em>Yurt Playground</em> to
+            Applications.
+          </p>
+          <p>
+            It is not notarized, so macOS blocks the first open: allow it under
+            <em>System Settings &rarr; Privacy &amp; Security &rarr; Open
+              Anyway</em> (or run
+            <code>xattr -dr com.apple.quarantine "/Applications/Yurt
+              Playground.app"</code>), then open it again.
+          </p>
+        </div>
+        <div class="panel linux">
+          <p>
+            The same playground as an app, with the sandbox running natively on
+            your machine: it has network access and boots in seconds.
+          </p>
+          <p>
+            Download the package for
+            <a
+              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-x86_64-unknown-linux-gnu.deb"
+            >x86_64</a>
+            or
+            <a
+              href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-unknown-linux-gnu.deb"
+            >arm64</a>
+            (Debian, Ubuntu), then:
+          </p>
+          <p>
+            <code>sudo apt install ./Yurt-Playground-*.deb</code> and
+            <code>yurt-playground</code> &mdash; it opens in your browser.
+          </p>
+        </div>
+      </section>
       <section id="proof" aria-labelledby="proof-title" data-testid="proof">
         <h2 id="proof-title">Is this really running in your browser?</h2>
         <p>

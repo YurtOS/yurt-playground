@@ -10,8 +10,8 @@
 #
 #   macOS   "Yurt Playground.app" with dist/ and runtime/ in
 #           Contents/Resources, on a .dmg with an Applications shortcut. Not
-#           signed or notarized, so Gatekeeper asks on first open
-#           (right-click → Open).
+#           signed or notarized, so Gatekeeper blocks the first open until
+#           allowed in System Settings → Privacy & Security.
 #   Linux   a .deb installing /usr/lib/yurt-playground/ (the binary, dist/
 #           and runtime/ side by side), /usr/bin/yurt-playground and a
 #           desktop entry.

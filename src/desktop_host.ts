@@ -43,7 +43,10 @@ export async function startDesktopHost(
     ],
     stdin: "piped",
     stdout: "piped",
+    // The host's stderr is the app's status window; the runtime's info
+    // lines are not for the user. Warnings still show.
     stderr: "inherit",
+    env: { RUST_LOG: "warn" },
   }).spawn();
   // The announce is the first and only stdout line: `URL TOKEN`.
   const reader = child.stdout.getReader();

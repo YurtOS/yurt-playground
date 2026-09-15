@@ -317,7 +317,7 @@ jobs:
           gh release create "$tag" \
             --target "$SHA" \
             --title "Yurt Playground desktop ($tag)" \
-            --notes "Built from ${SHA:0:7} with kernel $kernel and image $image. The sandbox runs natively on your machine. macOS: open the .dmg, drag the app to Applications; not notarized, so right-click the app and choose Open the first time. Debian/Ubuntu: sudo apt install ./Yurt-Playground-<arch>.deb, then run yurt-playground." \
+            --notes "Built from ${SHA:0:7} with kernel $kernel and image $image. The sandbox runs natively on your machine. macOS: open the .dmg, drag the app to Applications; not notarized, so allow the first open under System Settings → Privacy & Security → Open Anyway. Debian/Ubuntu: sudo apt install ./Yurt-Playground-<arch>.deb, then run yurt-playground." \
             release/Yurt-Playground-aarch64-apple-darwin.dmg \
             release/Yurt-Playground-x86_64-apple-darwin.dmg \
             release/Yurt-Playground-x86_64-unknown-linux-gnu.deb \
