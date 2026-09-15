@@ -155,6 +155,11 @@ Deno.test("home page offers the terminal and the Jupyter Notebook", async () => 
     true,
   );
   assertEquals(html.includes('href="./jupyter/lab/index.html"'), true);
+  // The source is public; the page says where.
+  assertEquals(
+    html.includes('href="https://github.com/YurtOS/yurt-playground"'),
+    true,
+  );
   // The "is this really in your browser" section and its live check.
   assertEquals(html.includes('data-testid="proof"'), true);
   assertEquals(html.includes('data-testid="verify-files"'), true);
