@@ -276,6 +276,11 @@ if (import.meta.main) {
       { timeout: 60_000 },
     );
     csp();
+    // The failure scenes are fresh boots on their own pages; they must not
+    // share the runner's CPU with this page's live sandbox (kernel and
+    // Jupyter workers), which on a slow runner left the phone page's
+    // `boot-failed` hidden past its 30 s wait (main run 35141812840).
+    await page.close();
     await bootFailuresAreExplained(browser, server.url);
   } finally {
     await browser.close();
