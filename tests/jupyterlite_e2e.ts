@@ -61,13 +61,14 @@ if (import.meta.main) {
   const server = startPlaygroundServer(0);
   const browser = await chromium.launch();
   try {
-    // A phone is not blocked: it reaches the home page and gets a note.
+    // A phone is not sent away: it reaches the home page and its links, and
+    // the pane in the terminal's place says why there is no Start.
     const phone = await browser.newContext({ ...devices["iPhone 13"] });
     const phonePage = await phone.newPage();
     const phoneCsp = watchCspViolations(phonePage);
     await phonePage.goto(`${server.url}/`, { waitUntil: "load" });
     await phonePage.getByTestId("choose-notebook").waitFor({ timeout: 10_000 });
-    await phonePage.getByTestId("mobile-note").waitFor({ timeout: 10_000 });
+    await phonePage.getByTestId("boot-failed").waitFor({ timeout: 10_000 });
     phoneCsp();
     await phone.close();
 
