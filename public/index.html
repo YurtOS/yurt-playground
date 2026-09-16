@@ -219,7 +219,7 @@
         color: var(--muted);
         max-width: 60ch;
       }
-      #failed code {
+      #failed-reason {
         display: block;
         margin: 0 0 12px;
         padding: 8px 10px;
@@ -229,6 +229,9 @@
         background: var(--ground);
         border: 1px solid var(--rule);
         border-radius: 3px;
+      }
+      #failed-reason[hidden] {
+        display: none;
       }
 
       /* The cell: one Python cell on the same kernel. */
@@ -540,24 +543,6 @@
     </style>
   </head>
   <body>
-    <script>
-      // Phones are not blocked: they get a note, since the sandbox usually
-      // needs more memory than a mobile tab is allowed. The isolation gate
-      // (COOP/COEP for the in-tab kernel) is applied when the sandbox is
-      // started, in boot.bundle.js, so the desktop app's page — which needs
-      // no isolation — is not sent away.
-      const uaData = navigator.userAgentData;
-      const mobile = uaData?.mobile === true ||
-        /Android|iPhone|iPad|iPod|Mobile|Silk/i.test(navigator.userAgent) ||
-        (globalThis.matchMedia("(pointer: coarse)").matches &&
-          globalThis.innerWidth < 900);
-      if (mobile) {
-        document.addEventListener("DOMContentLoaded", () => {
-          const note = document.getElementById("mobile-note");
-          if (note) note.hidden = false;
-        });
-      }
-    </script>
     <main class="wrap">
       <header class="mast">
         <h1>Yurt</h1>
@@ -580,10 +565,10 @@
       </header>
 
       <p id="mobile-note" data-testid="mobile-note" hidden>
-        This looks like a phone or tablet. The sandbox needs around a gigabyte
-        of memory and workers that keep running in the background; mobile
-        browsers often allow neither, so the boot may stall or the tab may
-        reload. A desktop browser is the safe choice.
+        This looks like a tablet. The sandbox needs around a gigabyte of memory
+        and workers that keep running in the background; mobile browsers often
+        allow neither, so the boot may stall or the tab may reload. A desktop
+        browser is the safe choice.
       </p>
 
       <section class="pane" aria-label="terminal">
@@ -618,14 +603,28 @@
           </div>
           <div id="failed" data-testid="boot-failed" hidden>
             <h2>The sandbox did not start</h2>
-            <p id="failed-device" hidden>
-              This is a phone or tablet, and mobile browsers rarely give a tab
-              the memory and background workers the sandbox needs. Open this
-              page in a desktop browser.
+            <p data-why="phone" hidden>
+              Not on a phone: the boot needs around a gigabyte of memory in one
+              tab, and a phone browser reloads the tab well before that. An
+              iPhone downloads everything and is cut off at
+              <code>starting Jupyter</code>. Open this page in a desktop
+              browser; the app and the command line below run the same sandbox
+              natively.
             </p>
-            <p>The browser reported:</p>
+            <p data-why="tablet" hidden>
+              This is a tablet, and mobile browsers rarely give a tab the memory
+              and background workers the sandbox needs. Open this page in a
+              desktop browser.
+            </p>
+            <p data-why="reloaded" hidden>
+              The browser reloaded this tab while the sandbox was starting. That
+              is what a browser does to a tab that outgrows the memory it is
+              allowed; the boot needs around a gigabyte. The last thing the page
+              said before the reload:
+            </p>
+            <p data-why="error">The browser reported:</p>
             <code id="failed-reason"></code>
-            <p>
+            <p id="failed-retry">
               Reload the page to try again. If it keeps failing in a current
               desktop browser, please
               <a href="https://github.com/YurtOS/yurt-playground/issues"

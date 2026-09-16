@@ -48,16 +48,64 @@ async function installChoicesWorkByKeyboard(page: Page): Promise<void> {
   }
 }
 
-/** A boot that dies before the shell shows anything explains itself in the
- * terminal's place: the browser's message, and on a phone the likely cause.
- * The status bar stays terse; the reason is in the pane. */
-async function bootFailureIsExplained(
+type FailurePane = {
+  status: string | null;
+  start: boolean;
+  why: string[];
+  reason: string | null;
+};
+
+function readFailurePane(page: Page): Promise<FailurePane> {
+  return page.evaluate(() => {
+    const hidden = (id: string) =>
+      document.querySelector<HTMLElement>(`#${id}`)!.hidden;
+    return {
+      status: document.querySelector("#status")!.textContent,
+      start: hidden("start"),
+      why: [...document.querySelectorAll<HTMLElement>("#failed [data-why]")]
+        .filter((p) => !p.hidden).map((p) => p.dataset.why!),
+      reason: hidden("failed-reason")
+        ? null
+        : document.querySelector("#failed-reason")!.textContent,
+    };
+  });
+}
+
+function expectPane(name: string, got: FailurePane, want: FailurePane): void {
+  if (JSON.stringify(got) !== JSON.stringify(want)) {
+    throw new Error(
+      `${name}: want ${JSON.stringify(want)}, got ${JSON.stringify(got)}`,
+    );
+  }
+}
+
+/** What the page knows before and after a boot it could not finish: a phone
+ * is refused at Start (an iPhone is reloaded at "starting Jupyter"); a boot
+ * that dies in-page explains itself in the terminal's place, with the likely
+ * cause on a tablet; and a tab the browser reloaded mid-boot says so on the
+ * next load instead of offering a fresh Start. */
+async function bootFailuresAreExplained(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   url: string,
 ): Promise<void> {
-  for (const phone of [true, false]) {
+  const failed = (page: Page) =>
+    page.getByTestId("boot-failed").waitFor({ state: "visible" });
+  const phone = await browser.newContext(devices["iPhone 13"]);
+  const phonePage = await phone.newPage();
+  await phonePage.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
+  await failed(phonePage);
+  expectPane("phone", await readFailurePane(phonePage), {
+    status: "failed",
+    start: true,
+    why: ["phone"],
+    reason: null,
+  });
+  await phone.close();
+
+  const reason = "fetch ./yurt_kernel.wasm failed: 503";
+  for (const tablet of [true, false]) {
     const context = await browser.newContext(
-      phone ? devices["iPhone 13"] : {},
+      tablet ? devices["iPad Pro 11"] : {},
     );
     const page = await context.newPage();
     await page.route(
@@ -65,28 +113,35 @@ async function bootFailureIsExplained(
       (route) => route.fulfill({ status: 503 }),
     );
     await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
-    await page.getByTestId("boot-failed").waitFor({
-      state: "visible",
-      timeout: 30_000,
+    await failed(page);
+    expectPane(tablet ? "tablet" : "desktop", await readFailurePane(page), {
+      status: "failed",
+      start: true,
+      why: [tablet ? "tablet" : "error"],
+      reason,
     });
-    const state = {
-      status: await page.locator("#status").textContent(),
-      reason: await page.locator("#failed-reason").textContent(),
-      device: await page.locator("#failed-device").isVisible(),
-    };
     await context.close();
-    if (
-      state.status !== "failed" ||
-      state.reason !== "fetch ./yurt_kernel.wasm failed: 503" ||
-      state.device !== phone
-    ) {
-      throw new Error(
-        `boot failure on ${phone ? "a phone" : "desktop"}: ${
-          JSON.stringify(state)
-        }`,
-      );
-    }
   }
+
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.goto(`${url}/`, { waitUntil: "domcontentloaded" });
+  // The boot memory a killed tab leaves behind.
+  await page.evaluate(() =>
+    sessionStorage.setItem("yurt-playground-booting", "starting Jupyter")
+  );
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await failed(page);
+  expectPane("reloaded", await readFailurePane(page), {
+    status: "failed",
+    start: true,
+    why: ["reloaded"],
+    reason: "starting Jupyter",
+  });
+  // Explained once; the next visit is a fresh Start.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.getByTestId("start-sandbox").waitFor({ state: "visible" });
+  await context.close();
 }
 
 if (import.meta.main) {
@@ -216,7 +271,7 @@ if (import.meta.main) {
       { timeout: 60_000 },
     );
     csp();
-    await bootFailureIsExplained(browser, server.url);
+    await bootFailuresAreExplained(browser, server.url);
   } finally {
     await browser.close();
     await server.shutdown();
