@@ -174,6 +174,19 @@ cp -R "$app" "$dmg_stage/"
 ln -s /Applications "$dmg_stage/Applications"
 dmg=dist-desktop/Yurt-Playground-$target.dmg
 rm -f "$dmg"
-hdiutil create -quiet -volname "Yurt Playground" -srcfolder "$dmg_stage" -ov -format UDZO "$dmg"
+# Not -quiet: it hides hdiutil's own error, and the step then fails with
+# nothing but "exit code 1" (main runs 35111653403 and 35147478125, both on
+# the second target of the loop). "Resource busy" is a known intermittent
+# on GitHub's macOS runners, so the create is retried a few times.
+attempt=1
+until hdiutil create -volname "Yurt Playground" -srcfolder "$dmg_stage" -ov -format UDZO "$dmg"; do
+  if [ "$attempt" -ge 4 ]; then
+    echo "build-desktop: hdiutil create failed $attempt times for $target" >&2
+    exit 1
+  fi
+  echo "build-desktop: hdiutil create failed (attempt $attempt), retrying" >&2
+  attempt=$((attempt + 1))
+  sleep 3
+done
 rm -rf "$dmg_stage"
 echo "built \"$app\" and $dmg"
