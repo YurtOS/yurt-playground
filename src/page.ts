@@ -198,6 +198,9 @@ async function runPage(): Promise<void> {
       return;
     }
   }
+  // The boot memory has been read (and cleared) by now; a test that plants
+  // one for the next load must wait for this, or this load consumes it.
+  document.documentElement.dataset.settled = "";
   // The workspace opens with one action; `?start` (the old terminal page's
   // redirect, and the acceptance tests) skips it.
   if (start === null || new URL(location.href).searchParams.has("start")) {
