@@ -155,6 +155,12 @@ async function bootFailuresAreExplained(
   const context = await browser.newContext();
   const page = await context.newPage();
   await page.goto(`${url}/`, { waitUntil: "domcontentloaded" });
+  // The page reads and clears the boot memory once it has asked the host
+  // whether it is the app; plant one only after that, or this load takes it
+  // and the reload finds nothing (a race CI lost, run 35144362670).
+  await page.waitForFunction(() =>
+    document.documentElement.dataset.settled !== undefined
+  );
   // The boot memory a killed tab leaves behind.
   await page.evaluate(() =>
     sessionStorage.setItem("yurt-playground-booting", "starting Jupyter")
