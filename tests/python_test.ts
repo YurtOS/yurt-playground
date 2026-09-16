@@ -49,6 +49,24 @@ Deno.test("playground runs Python 3 one-shot commands with PYTHONHOME", async ()
   });
 });
 
+// The guest has no egress by design; pip must say so, not hang (#26). On
+// kernel-wasm-v0.0.2 this call never returned; the socket layer refused
+// promptly but pip's path wedged the interpreter (fixed upstream by the
+// vfork-borrow work in yurtos-kernel#2774). pip's own import is ~20 s on this
+// host and the refused connect a few seconds more, so the bound is generous
+// but a hang still fails.
+Deno.test("playground's pip fails fast without network", async () => {
+  await withPythonSession(async ({ term }) => {
+    const out = await typeCommand(
+      term,
+      "python3 -m pip download six --retries 0 --timeout 5 --no-cache-dir -d /tmp/pip-w >/tmp/pip.log 2>&1; echo pip-rc=$?; tail -2 /tmp/pip.log",
+      180_000,
+    );
+    assertStringIncludes(out, "pip-rc=1");
+    assertStringIncludes(out, "No matching distribution found for six");
+  });
+});
+
 Deno.test("playground runs an interactive Python 3 REPL", async () => {
   await withPythonSession(async ({ term }) => {
     const before = term.output().length;

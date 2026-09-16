@@ -242,9 +242,14 @@ if (import.meta.main) {
         "data-online",
       ) === "true"
     );
-    // Not here: `!echo hi`. IPython's `!` needs the `resource` module
-    // (yurt-ports#77) and Python cannot fork or posix_spawn on the JS host
-    // (yurtos-kernel#2771); it stays the open item of #4.
+    // A shell cell, as desktop_e2e runs it: the image's yurt_shell_cells
+    // takes `!` through subprocess -> vfork, which the JS host serves since
+    // kernel-wasm-v0.0.3 (yurtos-kernel#2774; #62). `os.system`/posix_spawn
+    // still hang there (yurtos-kernel#2771), but `!` never takes that path.
+    await page.getByTestId("notebook-input").fill("!echo hi");
+    await page.getByTestId("notebook-execute").click();
+    await cellDone("hi\n");
+    console.log("playground e2e: !echo hi ran in BusyBox");
     // The cell and the ash terminal share one VFS: a file written by Python
     // is read back by the shell in the xterm (#4).
     await page.getByTestId("notebook-input").fill(
