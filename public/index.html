@@ -659,9 +659,11 @@ yurt-playground</pre>
             <h3><code>yurt</code> on macOS</h3>
             <p>
               <code>run</code>, <code>exec</code>, <code>ps</code>,
-              <code>rm</code>, <code>images</code>, <code>pull</code>,
-              <code>build</code> — with ports, environment and an interactive
-              terminal. Download for
+              <code>logs</code>, <code>cp</code>, <code>stop</code>,
+              <code>kill</code>, <code>restart</code>, <code>commit</code>,
+              <code>inspect</code>, <code>images</code>, <code>pull</code>,
+              <code>build</code> — with ports, environment, a working directory
+              and an interactive terminal. Download for
               <a
                 href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-aarch64-apple-darwin.tar.gz"
               >Apple Silicon</a>
@@ -674,7 +676,10 @@ yurt-playground</pre>
 yurt pull playground
 yurt run -it playground                    # a shell in the sandbox
 yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
-curl http://127.0.0.1:8080/</pre>
+yurt logs -f web                           # Ctrl-C leaves it running
+yurt cp ./notes.txt web:/home/user/        # curl http://127.0.0.1:8080/notes.txt
+yurt commit web my-image                   # yurt run my-image … starts from that disk
+yurt stop web</pre>
             <p>
               Everything the command needs is in the package; the daemon starts
               itself. <code>yurt --help</code> lists the verbs.
@@ -684,9 +689,11 @@ curl http://127.0.0.1:8080/</pre>
             <h3><code>yurt</code> on Linux</h3>
             <p>
               <code>run</code>, <code>exec</code>, <code>ps</code>,
-              <code>rm</code>, <code>images</code>, <code>pull</code>,
-              <code>build</code> — with ports, environment and an interactive
-              terminal. Download the package for
+              <code>logs</code>, <code>cp</code>, <code>stop</code>,
+              <code>kill</code>, <code>restart</code>, <code>commit</code>,
+              <code>inspect</code>, <code>images</code>, <code>pull</code>,
+              <code>build</code> — with ports, environment, a working directory
+              and an interactive terminal. Download the package for
               <a
                 href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-x86_64-unknown-linux-gnu.deb"
               >x86_64</a>
@@ -700,7 +707,10 @@ curl http://127.0.0.1:8080/</pre>
 yurt pull playground
 yurt run -it playground                    # a shell in the sandbox
 yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
-curl http://127.0.0.1:8080/</pre>
+yurt logs -f web                           # Ctrl-C leaves it running
+yurt cp ./notes.txt web:/home/user/        # curl http://127.0.0.1:8080/notes.txt
+yurt commit web my-image                   # yurt run my-image … starts from that disk
+yurt stop web</pre>
             <p>
               Everything the command needs is in the package; the daemon starts
               itself. <code>yurt --help</code> lists the verbs.
