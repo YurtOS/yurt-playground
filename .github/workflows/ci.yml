@@ -46,10 +46,6 @@ jobs:
           # (public/index.html reindents), so a floating formatter turns CI red
           # with no code change and disagrees with what developers run locally.
           deno-version: v2.7.14
-      - name: fmt
-        run: deno fmt --check
-      - name: lint
-        run: deno lint
       - name: Check for the cross-repo checkout token
         id: token
         env:
@@ -74,14 +70,22 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-  # yurtos-kernel and yurt-jupyter are PRIVATE, and the default
-  # GITHUB_TOKEN cannot read another private repository. Without a PAT stored as
-  # KERNEL_CHECKOUT_TOKEN the integration job cannot check them out at all, so
-  # it announces that loudly instead of dying at "Repository not found".
+      # yurtos-kernel and yurt-jupyter are PRIVATE, and the default
+      # GITHUB_TOKEN cannot read another private repository. Without a PAT stored as
+      # KERNEL_CHECKOUT_TOKEN the integration job cannot check them out at all, so
+      # it announces that loudly instead of dying at "Repository not found".
+      - name: fmt
+        run: deno fmt --check
+      - name: lint
+        run: deno lint
+
   deno:
     name: integration (cross-repo)
     needs: checks
-    if: needs.checks.outputs.present == 'true'
+    # The token step runs first in `checks`, and this gate does not wait for
+    # fmt/lint to pass: a formatting nit must not hide the integration result
+    # (review). `!cancelled()` overrides the implicit success() on `needs`.
+    if: ${{ !cancelled() && needs.checks.outputs.present == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
