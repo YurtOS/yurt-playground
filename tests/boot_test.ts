@@ -219,6 +219,41 @@ Deno.test({
 });
 
 Deno.test({
+  name: "exit at the prompt ends the shell cleanly; later keys go nowhere",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootAshSession();
+    if (!session) return;
+    try {
+      await typeCommand(session.term, "echo ready");
+      session.term.type("exit\n");
+      await waitFor(
+        () => session.shown() === "shell exited",
+        `status after exit, shown=${JSON.stringify(session.shown())}`,
+        20_000,
+      );
+      if (!session.term.output().includes("[the shell exited")) {
+        throw new Error(
+          `no exit notice in the terminal: ${
+            JSON.stringify(session.term.output())
+          }`,
+        );
+      }
+      // A key after the shell is gone is dropped, not written to a closed
+      // pty (which surfaced as "ptyMasterWrite failed: rc=-9").
+      session.term.type("ls\n");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (session.shown() !== "shell exited") {
+        throw new Error(`status changed after a key: ${session.shown()}`);
+      }
+    } finally {
+      session.stop();
+    }
+  },
+});
+
+Deno.test({
   name: "ash consumes Up-arrow as command history",
   sanitizeOps: false,
   sanitizeResources: false,
