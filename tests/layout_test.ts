@@ -185,9 +185,12 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
       .includes("integrity.json"),
     true,
   );
-  // Phones get a note, not a wall; a boot that dies gets an explanation.
+  // Tablets get a note; phones and a boot that dies get the explanation.
   assertEquals(html.includes('data-testid="mobile-note"'), true);
   assertEquals(html.includes('data-testid="boot-failed"'), true);
+  for (const why of ["phone", "tablet", "reloaded", "error"]) {
+    assertEquals(html.includes(`data-why="${why}"`), true, why);
+  }
   const unsupported = await Deno.readTextFile(
     new URL("../public/unsupported.html", import.meta.url),
   );

@@ -104,18 +104,25 @@ Deno.test("static build writes every file the pages need", async () => {
   const [siteRule, jupyterRule] = headers.split("/jupyter/*");
   assertEquals(siteRule.includes("'unsafe-eval'"), false);
   assertEquals(jupyterRule.includes("'unsafe-eval'"), true);
+  // The home page ships no inline script, so its rule carries no hash.
+  assertEquals(
+    await inlineScriptHashes(
+      await Deno.readTextFile(new URL("dist/index.html", repoRoot)),
+    ),
+    [],
+  );
+  assertEquals(siteRule.includes("'sha256-"), false);
   for (
-    const [rule, file] of [
-      [siteRule, "dist/index.html"],
-      [jupyterRule, "dist/jupyter/notebooks/index.html"],
-      [jupyterRule, "dist/jupyter/lab/index.html"],
-    ] as const
+    const file of [
+      "dist/jupyter/notebooks/index.html",
+      "dist/jupyter/lab/index.html",
+    ]
   ) {
     const hashes = await inlineScriptHashes(
       await Deno.readTextFile(new URL(file, repoRoot)),
     );
     assertEquals(hashes.length > 0, true, `${file} has no inline script`);
-    for (const hash of hashes) assertStringIncludes(rule, hash);
+    for (const hash of hashes) assertStringIncludes(jupyterRule, hash);
   }
   // Cloudflare Pages refuses any file over 25 MiB (deploy run 34841044263
   // died on the 86.9 MB image), so the image ships in parts that add back

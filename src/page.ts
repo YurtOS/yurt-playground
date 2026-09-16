@@ -32,17 +32,69 @@ function watchNetwork(net: HTMLElement): void {
 }
 
 /**
- * A boot that died before the terminal showed anything gets the explanation
- * in the terminal's place: what the browser said, and on a phone or tablet
- * (the note is already up) why that was likely. Once a shell is on screen
- * the status bar alone carries the message, so the shell stays usable.
+ * Phones get no Start: an iPhone downloads everything and Safari reloads
+ * the tab at "starting Jupyter", since the boot needs around a gigabyte in
+ * one tab. Tablets get the note and may try; iPadOS reports a Mac, so the
+ * coarse pointer on a narrow screen is what identifies one.
  */
-function showFailure(message: string, terminalEmpty: boolean): void {
-  byId("status").textContent = terminalEmpty ? "failed" : `failed: ${message}`;
-  if (!terminalEmpty) return;
-  byId("failed-reason").textContent = message;
-  byId("failed-device").hidden = byId("mobile-note").hidden;
-  byId("failed").hidden = false;
+function deviceClass(): "phone" | "tablet" | "desktop" {
+  const uaData = (navigator as { userAgentData?: { mobile?: boolean } })
+    .userAgentData;
+  const ua = navigator.userAgent;
+  if (/iPad/.test(ua)) return "tablet";
+  if (uaData?.mobile === true || /iPhone|iPod|Android.*Mobile/i.test(ua)) {
+    return "phone";
+  }
+  if (
+    /Android|Silk/i.test(ua) ||
+    (matchMedia("(pointer: coarse)").matches && innerWidth < 900)
+  ) return "tablet";
+  return "desktop";
+}
+
+/**
+ * A browser that runs out of memory mid-boot reloads the tab, and the page
+ * that could have said so is gone. The status is kept in sessionStorage
+ * from Start until the notebook is ready (or the boot fails in-page), so
+ * the reloaded page can tell a cut-off boot from a first visit.
+ */
+const BOOTING_KEY = "yurt-playground-booting";
+function rememberBooting(status: string | undefined): void {
+  try {
+    if (status === undefined) sessionStorage.removeItem(BOOTING_KEY);
+    else sessionStorage.setItem(BOOTING_KEY, status);
+  } catch {
+    // Storage blocked: the boot still runs, a cut-off one is just unexplained.
+  }
+}
+function cutOffBoot(): string | undefined {
+  try {
+    const status = sessionStorage.getItem(BOOTING_KEY) ?? undefined;
+    sessionStorage.removeItem(BOOTING_KEY);
+    return status;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The failure pane in the terminal's place: one paragraph for the known
+ * cause (`why`), the browser's own words as `reason` when there are any.
+ * A phone is refused before Start; the others come from the boot.
+ */
+function showFailure(
+  why: "phone" | "tablet" | "reloaded" | "error",
+  reason?: string,
+): void {
+  byId("start").hidden = true;
+  const failed = byId("failed");
+  for (const p of failed.querySelectorAll<HTMLElement>("[data-why]")) {
+    p.hidden = p.dataset.why !== why;
+  }
+  byId("failed-reason").hidden = reason === undefined;
+  byId("failed-reason").textContent = reason ?? "";
+  byId("failed-retry").hidden = why === "phone";
+  failed.hidden = false;
 }
 
 /** Boot the sandbox into the page: the terminal pane and the cell. */
@@ -60,12 +112,28 @@ function boot(
   execute.current = (id, code) => {
     worker.postMessage({ type: "cell", id, code });
   };
+  // A boot that dies before the shell has shown anything is explained in
+  // the terminal's place (a tablet gets its likely cause too); once a shell
+  // is on screen the status bar alone carries the message, so the shell
+  // stays usable.
   let terminalEmpty = true;
+  const fail = (message: string) => {
+    rememberBooting(undefined);
+    if (!terminalEmpty) {
+      status.textContent = `failed: ${message}`;
+      return;
+    }
+    status.textContent = "failed";
+    showFailure(deviceClass() === "tablet" ? "tablet" : "error", message);
+  };
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
     // The coordinator's empty status is "booted"; say so.
-    if (msg.type === "status") status.textContent = msg.text || "running";
-    if (msg.type === "error") showFailure(msg.message, terminalEmpty);
+    if (msg.type === "status") {
+      status.textContent = msg.text || "running";
+      rememberBooting(msg.text || "running");
+    }
+    if (msg.type === "error") fail(msg.message);
     if (msg.type === "out") {
       terminalEmpty = false;
       term.write(new Uint8Array(msg.bytes));
@@ -73,18 +141,20 @@ function boot(
     if (msg.type === "notebook-ready") {
       notebook.ready();
       status.textContent = "running";
+      rememberBooting(undefined);
     }
     if (msg.type === "cell-result") notebook.result(msg.id, msg.result);
     if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
   };
   worker.onerror = (event) => {
-    showFailure(event.message || "coordinator worker failed", terminalEmpty);
+    fail(event.message || "coordinator worker failed");
   };
   term.onData((text) => worker.postMessage({ type: "in", text }));
   term.onResize((size) =>
     worker.postMessage({ type: "resize", rows: size.rows, cols: size.cols })
   );
   status.textContent = "booting";
+  rememberBooting("booting");
   worker.postMessage({
     type: "start",
     cols: term.cols,
@@ -116,6 +186,18 @@ async function runPage(): Promise<void> {
     if (start) start.hidden = true;
     boot(notebook, execute, desktop?.kernelPorts);
   };
+  // Only the in-tab kernel has the memory problem; the desktop app's page
+  // runs the sandbox natively.
+  if (desktop === undefined) {
+    const device = deviceClass();
+    if (device === "tablet") byId("mobile-note").hidden = false;
+    const cutOff = cutOffBoot();
+    if (device === "phone" || cutOff !== undefined) {
+      byId("status").textContent = "failed";
+      showFailure(device === "phone" ? "phone" : "reloaded", cutOff);
+      return;
+    }
+  }
   // The workspace opens with one action; `?start` (the old terminal page's
   // redirect, and the acceptance tests) skips it.
   if (start === null || new URL(location.href).searchParams.has("start")) {
