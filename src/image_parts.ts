@@ -63,7 +63,14 @@ export function partsFetch(
             if (!response.ok || response.body === null) {
               throw new Error(`fetch ${part} failed: ${response.status}`);
             }
-            for await (const chunk of response.body) controller.enqueue(chunk);
+            // A reader, not `for await`: WebKit ships ReadableStream without
+            // Symbol.asyncIterator, so iterating the body there throws.
+            const reader = response.body.getReader();
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              controller.enqueue(value);
+            }
           }
           controller.close();
         } catch (error) {

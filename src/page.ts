@@ -31,6 +31,20 @@ function watchNetwork(net: HTMLElement): void {
   show();
 }
 
+/**
+ * A boot that died before the terminal showed anything gets the explanation
+ * in the terminal's place: what the browser said, and on a phone or tablet
+ * (the note is already up) why that was likely. Once a shell is on screen
+ * the status bar alone carries the message, so the shell stays usable.
+ */
+function showFailure(message: string, terminalEmpty: boolean): void {
+  byId("status").textContent = terminalEmpty ? "failed" : `failed: ${message}`;
+  if (!terminalEmpty) return;
+  byId("failed-reason").textContent = message;
+  byId("failed-device").hidden = byId("mobile-note").hidden;
+  byId("failed").hidden = false;
+}
+
 /** Boot the sandbox into the page: the terminal pane and the cell. */
 function boot(
   notebook: ReturnType<typeof mountNotebook>,
@@ -46,12 +60,16 @@ function boot(
   execute.current = (id, code) => {
     worker.postMessage({ type: "cell", id, code });
   };
+  let terminalEmpty = true;
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
     // The coordinator's empty status is "booted"; say so.
     if (msg.type === "status") status.textContent = msg.text || "running";
-    if (msg.type === "error") status.textContent = msg.message;
-    if (msg.type === "out") term.write(new Uint8Array(msg.bytes));
+    if (msg.type === "error") showFailure(msg.message, terminalEmpty);
+    if (msg.type === "out") {
+      terminalEmpty = false;
+      term.write(new Uint8Array(msg.bytes));
+    }
     if (msg.type === "notebook-ready") {
       notebook.ready();
       status.textContent = "running";
@@ -60,7 +78,7 @@ function boot(
     if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
   };
   worker.onerror = (event) => {
-    status.textContent = event.message || "coordinator worker failed";
+    showFailure(event.message || "coordinator worker failed", terminalEmpty);
   };
   term.onData((text) => worker.postMessage({ type: "in", text }));
   term.onResize((size) =>

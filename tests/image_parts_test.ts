@@ -133,3 +133,27 @@ Deno.test("the dev server slices its single image into the published parts", asy
   );
   assertEquals(beyond.status, 404);
 });
+
+Deno.test("partsFetch reads a part body that is not async-iterable (Safari)", async () => {
+  // WebKit ships ReadableStream without Symbol.asyncIterator; `for await`
+  // over a part body there throws "undefined is not a function" and the
+  // page shows that string instead of a shell.
+  const safariBody = (text: string): ReadableStream<Uint8Array> => {
+    const stream = new Blob([text]).stream();
+    Object.defineProperty(stream, Symbol.asyncIterator, { value: undefined });
+    return stream;
+  };
+  const fetchImpl = ((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith(".parts.json")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ size: 6, parts: ["img.0", "img.1"] })),
+      );
+    }
+    return Promise.resolve(
+      new Response(safariBody(url.endsWith(".0") ? "abc" : "def")),
+    );
+  }) as typeof fetch;
+  const response = await partsFetch(fetchImpl)("http://pg/img");
+  assertEquals(new TextDecoder().decode(await response.bytes()), "abcdef");
+});

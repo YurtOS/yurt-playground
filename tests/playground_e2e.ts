@@ -1,4 +1,4 @@
-import { chromium, type Page } from "playwright";
+import { chromium, devices, type Page } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
@@ -45,6 +45,47 @@ async function installChoicesWorkByKeyboard(page: Page): Promise<void> {
       );
     }
     await page.keyboard.press("ArrowDown");
+  }
+}
+
+/** A boot that dies before the shell shows anything explains itself in the
+ * terminal's place: the browser's message, and on a phone the likely cause.
+ * The status bar stays terse; the reason is in the pane. */
+async function bootFailureIsExplained(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  url: string,
+): Promise<void> {
+  for (const phone of [true, false]) {
+    const context = await browser.newContext(
+      phone ? devices["iPhone 13"] : {},
+    );
+    const page = await context.newPage();
+    await page.route(
+      "**/yurt_kernel.wasm",
+      (route) => route.fulfill({ status: 503 }),
+    );
+    await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
+    await page.getByTestId("boot-failed").waitFor({
+      state: "visible",
+      timeout: 30_000,
+    });
+    const state = {
+      status: await page.locator("#status").textContent(),
+      reason: await page.locator("#failed-reason").textContent(),
+      device: await page.locator("#failed-device").isVisible(),
+    };
+    await context.close();
+    if (
+      state.status !== "failed" ||
+      state.reason !== "fetch ./yurt_kernel.wasm failed: 503" ||
+      state.device !== phone
+    ) {
+      throw new Error(
+        `boot failure on ${phone ? "a phone" : "desktop"}: ${
+          JSON.stringify(state)
+        }`,
+      );
+    }
   }
 }
 
@@ -175,6 +216,7 @@ if (import.meta.main) {
       { timeout: 60_000 },
     );
     csp();
+    await bootFailureIsExplained(browser, server.url);
   } finally {
     await browser.close();
     await server.shutdown();

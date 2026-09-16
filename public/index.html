@@ -199,6 +199,37 @@
         color: var(--muted);
         max-width: 60ch;
       }
+      #failed {
+        position: absolute;
+        inset: 0;
+        overflow: auto;
+        padding: 18px 16px;
+        background: var(--pane);
+        border-left: 3px solid var(--ember);
+      }
+      #failed[hidden] {
+        display: none;
+      }
+      #failed h2 {
+        font: 400 1.25rem/1.3 var(--serif);
+        margin: 0 0 10px;
+      }
+      #failed p {
+        margin: 0 0 12px;
+        color: var(--muted);
+        max-width: 60ch;
+      }
+      #failed code {
+        display: block;
+        margin: 0 0 12px;
+        padding: 8px 10px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: var(--ember);
+        background: var(--ground);
+        border: 1px solid var(--rule);
+        border-radius: 3px;
+      }
 
       /* The cell: one Python cell on the same kernel. */
       #notebook {
@@ -583,6 +614,22 @@
               compiled to WebAssembly. Loads about 90 MB once, then boots here
               in the tab; the cell below starts a Jupyter kernel on the same
               machine.
+            </p>
+          </div>
+          <div id="failed" data-testid="boot-failed" hidden>
+            <h2>The sandbox did not start</h2>
+            <p id="failed-device" hidden>
+              This is a phone or tablet, and mobile browsers rarely give a tab
+              the memory and background workers the sandbox needs. Open this
+              page in a desktop browser.
+            </p>
+            <p>The browser reported:</p>
+            <code id="failed-reason"></code>
+            <p>
+              Reload the page to try again. If it keeps failing in a current
+              desktop browser, please
+              <a href="https://github.com/YurtOS/yurt-playground/issues"
+              >open an issue</a> with the line above.
             </p>
           </div>
         </div>
