@@ -8,6 +8,14 @@ on:
 
 # The workflow token can read the repository and nothing else; the
 # cross-repo and Cloudflare credentials come from named secrets.
+# A push on top of a push runs the newest tree only: the superseded run's
+# integration job (15 min) and both desktop bundles (one on a macOS runner)
+# are cancelled. Pushes to main are keyed by commit and never cancel each
+# other.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -23,6 +31,11 @@ jobs:
     name: fmt / lint
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Also decides whether the integration job can run: a job is billed by
+    # the minute rounded up, so the ten-second token check rides here rather
+    # than on a runner of its own.
+    outputs:
+      present: ${{ steps.token.outputs.present }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,18 +50,6 @@ jobs:
         run: deno fmt --check
       - name: lint
         run: deno lint
-
-  # yurtos-kernel and yurt-jupyter are PRIVATE, and the default
-  # GITHUB_TOKEN cannot read another private repository. Without a PAT stored as
-  # KERNEL_CHECKOUT_TOKEN the integration job cannot check them out at all, so
-  # it announces that loudly instead of dying at "Repository not found".
-  kernel-access:
-    name: cross-repo checkout token
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      present: ${{ steps.token.outputs.present }}
-    steps:
       - name: Check for the cross-repo checkout token
         id: token
         env:
@@ -73,10 +74,14 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  # yurtos-kernel and yurt-jupyter are PRIVATE, and the default
+  # GITHUB_TOKEN cannot read another private repository. Without a PAT stored as
+  # KERNEL_CHECKOUT_TOKEN the integration job cannot check them out at all, so
+  # it announces that loudly instead of dying at "Repository not found".
   deno:
     name: integration (cross-repo)
-    needs: kernel-access
-    if: needs.kernel-access.outputs.present == 'true'
+    needs: checks
+    if: needs.checks.outputs.present == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
