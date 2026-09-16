@@ -1,11 +1,11 @@
 {
   "kernelWasm": {
     "repo": "YurtOS/yurtos-kernel",
-    "rev": "74eae1434114f2f1705aa80dca93b017a3aa7f01",
-    "release": "kernel-wasm-v0.0.2",
+    "rev": "db397d7ed205352b415d8374019ff0e4e23c9a1f",
+    "release": "kernel-wasm-v0.0.3",
     "build": "scripts/build-kernel-wasm.sh",
     "path": "target/kernel-wasm/release/yurt_kernel.wasm",
-    "sha256": "92de567da56af07a0cd120e762e2ab262b23de16db2e5e539cd4ba8adb0f8b16"
+    "sha256": "b3a20d411482069f9fd2238b0d7ee758db3490f589ab1b93dddc8c22462ff4a5"
   },
   "image": {
     "repo": "YurtOS/yurt-ports",
@@ -17,25 +17,25 @@
   },
   "desktopHost": {
     "repo": "YurtOS/yurt-sandbox",
-    "rev": "36f0d71cbc3f6ad939a59b7db6e313d7396bdf24",
-    "release": "desktop-host-v0.1.0",
+    "rev": "5c13da768a4e433519fd874ae9243a51aa1eb7dc",
+    "release": "desktop-host-v0.1.1",
     "build": "scripts/build-desktop-host.sh",
     "sha256": {
-      "aarch64-apple-darwin": "aff7fc97fceb7986dd8cb37a583809dffef20c4f1581af33222249bd86c896a6",
-      "x86_64-apple-darwin": "16c43b7269c016622295520affb1765a0a1ae657f4b27fa990e7cdadcea0ba34",
-      "x86_64-unknown-linux-gnu": "8b6cb44134bfb005ee2145c6f5be079937d97372971e02c241a754dc4378940c",
-      "aarch64-unknown-linux-gnu": "31a6cef3835b514cd8e0bf4e58b6bd281857150a44867d38934463fd44048918"
+      "aarch64-apple-darwin": "8707ba274427b2a233f3f1e1764aa4a35fe7099cab8a63a72160b0f12fa10cb5",
+      "x86_64-apple-darwin": "f15839d227a973724d478f47cdd91fb8e500a7f9969e1a9885ae3349d13a1767",
+      "x86_64-unknown-linux-gnu": "3dfd67371c976624ec160468483ae0065a3282227303e8693b65e280ff872e4b",
+      "aarch64-unknown-linux-gnu": "5e283226c1503d7c09752378eb2b5134b83dc7873d10f55e2b45bf4b3d067132"
     }
   },
   "yurtCli": {
     "repo": "YurtOS/yurt-sandbox",
-    "release": "yurt-cli-v0.1.2",
+    "release": "yurt-cli-v0.1.3",
     "build": "scripts/build-yurt-cli.sh",
     "assets": {
       "aarch64-apple-darwin": "yurt-aarch64-apple-darwin.tar.gz",
       "x86_64-apple-darwin": "yurt-x86_64-apple-darwin.tar.gz",
-      "x86_64-unknown-linux-gnu": "yurt_0.1.2_amd64.deb",
-      "aarch64-unknown-linux-gnu": "yurt_0.1.2_arm64.deb"
+      "x86_64-unknown-linux-gnu": "yurt_0.1.3_amd64.deb",
+      "aarch64-unknown-linux-gnu": "yurt_0.1.3_arm64.deb"
     }
   }
 }
