@@ -24,11 +24,27 @@ Deno.test("playground's shell edits a file with vi", async () => {
       "vi screen",
       60_000,
     );
-    term.type(`ihello from busybox vi${ESC}`);
+    const typed = term.output().length;
+    term.type("ihello from busybox vi");
+    // vi echoes the inserted text as it consumes the keystrokes.
+    await waitFor(
+      () => term.output().slice(typed).includes("hello from busybox vi"),
+      "vi to echo the inserted text",
+      60_000,
+    );
     // ESC alone vs. ESC starting an arrow-key sequence is disambiguated by a
     // read gap, so `:wq` must not land in the same read as the ESC that
-    // leaves insert mode -- as it never does from a human's keystrokes.
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    // leaves insert mode -- as it never does from a human's keystrokes. A
+    // fixed pause is not a gap on a slow host (CI coalesced them and vi went
+    // silent), so wait for the proof that vi consumed the ESC: its status
+    // line leaves insert mode and reports the buffer as modified.
+    const left = term.output().length;
+    term.type(ESC);
+    await waitFor(
+      () => term.output().slice(left).includes("[Modified]"),
+      "vi to leave insert mode",
+      60_000,
+    );
     term.type(":wq\n");
     await waitFor(
       () => /\$ $/.test(term.output().slice(before)),
