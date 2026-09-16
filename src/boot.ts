@@ -176,13 +176,15 @@ export async function bootPlayground(
     },
   };
   const controller = createSessionController({ pty: terminal });
+  let stopped = false;
   env.term.onData((data) => {
-    if (controller.state !== "ready") return;
+    // Keys after the shell has gone have nowhere to go; the pty is closed
+    // and a write to it is an error, not a keystroke.
+    if (stopped || controller.state !== "ready") return;
     void controller.current.pty.write(encoder.encode(data));
   });
   env.term.onResize(({ rows, cols }) => mk.ptySetWinsize(pty, rows, cols));
 
-  let stopped = false;
   const stop = () => {
     if (stopped) return;
     stopped = true;
@@ -194,7 +196,17 @@ export async function bootPlayground(
     }
   };
 
-  void user.runStartAsync().catch((error) => {
+  void user.runStartAsync().then(() => {
+    // `exit` at the prompt: the shell is done, the sandbox is still there
+    // (the notebook's kernel keeps answering). Say so where the prompt
+    // was, and in the status, instead of failing the next keystroke.
+    if (!stopped) {
+      env.term.write(
+        "\r\n[the shell exited; reload the page for a new one]\r\n",
+      );
+      env.show("shell exited");
+    }
+  }).catch((error) => {
     if (!stopped) {
       const message = error instanceof Error ? error.message : String(error);
       env.show(message);
