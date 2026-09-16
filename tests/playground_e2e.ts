@@ -88,8 +88,37 @@ async function bootFailuresAreExplained(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   url: string,
 ): Promise<void> {
-  const failed = (page: Page) =>
-    page.getByTestId("boot-failed").waitFor({ state: "visible" });
+  // On a timeout, say what the page was doing: its status line, where it
+  // is, and what it logged — a hidden pane alone does not tell fetch from
+  // redirect from a script that never ran.
+  const failed = async (page: Page) => {
+    const logs: string[] = [];
+    const onConsole = (m: { type: () => string; text: () => string }) =>
+      logs.push(`${m.type()}: ${m.text()}`);
+    const onError = (e: Error) => logs.push(`pageerror: ${e.message}`);
+    page.on("console", onConsole);
+    page.on("pageerror", onError);
+    try {
+      await page.getByTestId("boot-failed").waitFor({ state: "visible" });
+    } catch (error) {
+      const state = await page.evaluate(() => ({
+        href: location.href,
+        readyState: document.readyState,
+        status: document.querySelector("#status")?.textContent,
+        isolated: globalThis.crossOriginIsolated,
+        ua: navigator.userAgent,
+      })).catch((e) => `evaluate failed: ${e}`);
+      throw new Error(
+        `boot-failed never showed; page ${JSON.stringify(state)}; console ${
+          JSON.stringify(logs)
+        }`,
+        { cause: error },
+      );
+    } finally {
+      page.off("console", onConsole);
+      page.off("pageerror", onError);
+    }
+  };
   const phone = await browser.newContext(devices["iPhone 13"]);
   const phonePage = await phone.newPage();
   await phonePage.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
