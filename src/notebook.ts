@@ -7,6 +7,12 @@ export type NotebookView = {
   dispose(): void;
 };
 
+/** `text` without ANSI escape sequences (CSI and simple two-byte ones). */
+export function stripAnsi(text: string): string {
+  // deno-lint-ignore no-control-regex
+  return text.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b[@-Z\\-_]/g, "");
+}
+
 export function mountNotebook(
   root: HTMLElement,
   execute: (id: string, code: string) => void,
@@ -63,9 +69,23 @@ export function mountNotebook(
       if (!pending.delete(id)) return;
       button.disabled = false;
       status.textContent = reply.status;
-      output.textContent = `${reply.stdout}${reply.display}${
-        reply.traceback.join("\n")
-      }`;
+      // One element per stream, so a driver reading the cell can tell a
+      // warning from a result; the traceback without the colour codes
+      // ipykernel puts in it, which a <pre> would show as `[31m`.
+      const streams: Array<[string, string]> = [
+        ["stdout", reply.stdout],
+        ["stderr", reply.stderr],
+        ["display", reply.display],
+        ["traceback", stripAnsi(reply.traceback.join("\n"))],
+      ];
+      output.replaceChildren(
+        ...streams.filter(([, text]) => text !== "").map(([stream, text]) => {
+          const span = document.createElement("span");
+          span.dataset.stream = stream;
+          span.textContent = text;
+          return span;
+        }),
+      );
     },
     error(id, message) {
       if (!pending.delete(id)) return;

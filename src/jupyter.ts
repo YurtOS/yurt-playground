@@ -56,6 +56,9 @@ export function hushUntil(
 export type JupyterReply = {
   status: "ok" | "error";
   stdout: string;
+  /** The `stderr` stream, apart from stdout: a driver reading the cell's
+   * output needs to tell a warning from a result (yurt-playground#83). */
+  stderr: string;
   display: string;
   traceback: string[];
 };
@@ -89,6 +92,23 @@ export function buildKernelLaunchCommand(
     );
   }
   return line.join(" ");
+}
+
+/** The shell line that starts the kernel in the background and records
+ * its pid, run in a subshell: typed at the prompt as `cmd &`, ipykernel
+ * would be job [1] of the user's own interactive shell, and the ordinary
+ * `sleep 30 & … kill %1` would kill Jupyter instead of the user's job
+ * (yurt-playground#82). A subshell's background child is not in the
+ * parent's job table; `$!` inside it is still the kernel's pid. */
+export function buildKernelStartLine(
+  ports?: KernelPorts,
+  connectionFile = JUPYTER_CONNECTION_FILE,
+  logFile = JUPYTER_LOG_FILE,
+  pidFile = JUPYTER_PID_FILE,
+): string {
+  return `( ${
+    buildKernelLaunchCommand(connectionFile, ports)
+  } >${logFile} 2>&1 & echo $! > ${pidFile} )`;
 }
 
 /** The shell line that stops a kernel started by `startGuestKernel` and
@@ -165,12 +185,7 @@ export async function startGuestKernel(
   let connection: KernelConnection;
   try {
     await session.terminal.write(
-      encoder.encode(
-        `${
-          buildKernelLaunchCommand(JUPYTER_CONNECTION_FILE, ports)
-        } >${JUPYTER_LOG_FILE} 2>&1 & ` +
-          `echo $! > ${JUPYTER_PID_FILE}\n`,
-      ),
+      encoder.encode(`${buildKernelStartLine(ports)}\n`),
     );
     connection = await readConnectionFile(session);
   } finally {
@@ -306,7 +321,12 @@ export async function executeCell(
   timeoutMs = EXECUTE_TIMEOUT_MS,
 ): Promise<JupyterReply> {
   const msgId = crypto.randomUUID();
-  const output = { stdout: "", display: "", traceback: [] as string[] };
+  const output = {
+    stdout: "",
+    stderr: "",
+    display: "",
+    traceback: [] as string[],
+  };
   let unsubscribe: (() => void) | undefined;
   const result = new Promise<JupyterReply>((resolve, reject) => {
     let gotReply = false;
@@ -321,7 +341,9 @@ export async function executeCell(
     unsubscribe = transport.subscribe((message) => {
       if (message.parent_header.msg_id !== msgId) return;
       if (message.header.msg_type === "stream") {
-        output.stdout += String(message.content.text ?? "");
+        const text = String(message.content.text ?? "");
+        if (message.content.name === "stderr") output.stderr += text;
+        else output.stdout += text;
       } else if (
         message.header.msg_type === "display_data" ||
         message.header.msg_type === "execute_result"
