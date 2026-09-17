@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yurt playground: not here</title>
+    <style>
+      :root {
+        --ground: #161a21;
+        --pane: #1c212a;
+        --rule: #2c3340;
+        --text: #e6e1d7;
+        --muted: #9a948a;
+        --ochre: #e0a458;
+        --sky: #8fb4d9;
+        --serif: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--ground);
+        color: var(--text);
+        font: 13px/1.6 var(--mono);
+      }
+      main {
+        max-width: 620px;
+        margin: 0 auto;
+        padding: 28px 16px 48px;
+      }
+      .wordmark {
+        font: 400 1.9rem/1 var(--serif);
+        color: var(--text);
+        text-decoration: none;
+      }
+      .pane {
+        margin-top: 24px;
+        border: 1px solid var(--rule);
+        border-left: 3px solid var(--ochre);
+        border-radius: 6px;
+        background: var(--pane);
+        padding: 16px 18px;
+      }
+      h1 {
+        font: 400 1.25rem/1.3 var(--serif);
+        margin: 0 0 10px;
+      }
+      p {
+        margin: 0 0 12px;
+        color: var(--muted);
+      }
+      p:last-child {
+        margin-bottom: 0;
+      }
+      code {
+        font-family: var(--mono);
+        color: var(--text);
+        background: var(--ground);
+        border: 1px solid var(--rule);
+        border-radius: 3px;
+        padding: 0 4px;
+      }
+      a {
+        color: var(--sky);
+      }
+      a:focus-visible {
+        outline: 2px solid var(--ochre);
+        outline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <main data-testid="not-found">
+      <a class="wordmark" href="/">Yurt</a>
+      <section class="pane">
+        <h1>There is no page at this address</h1>
+        <p>
+          The playground is the <a href="/">home page</a>, a
+          <a href="/terminal.html">terminal</a>, and the Jupyter
+          <a href="/jupyter/notebooks/index.html?path=welcome.ipynb"
+          >Notebook</a> and <a href="/jupyter/lab/index.html">Lab</a>
+          interfaces. Nothing else is served here; a link that lands on this
+          page is stale or was never built.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

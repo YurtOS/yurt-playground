@@ -67,10 +67,27 @@ Deno.test("static build writes every file the pages need", async () => {
     const stat = await Deno.stat(new URL(`dist/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/${file} is empty`);
   }
-  for (const file of ["index.html", "notebooks/index.html", "lab/index.html"]) {
+  // Notebook 7's commands open tree/, consoles/ and edit/ in new tabs; each is
+  // an app the JupyterLite build must emit, or Pages answers with the home
+  // page at the wrong path and a Start button that does nothing (#73).
+  for (
+    const file of [
+      "index.html",
+      "notebooks/index.html",
+      "lab/index.html",
+      "tree/index.html",
+      "consoles/index.html",
+      "edit/index.html",
+    ]
+  ) {
     const stat = await Deno.stat(new URL(`dist/jupyter/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/jupyter/${file} is empty`);
   }
+  // A 404.html stops Pages' SPA fallback, so a path the site does not have
+  // says so instead of serving a broken copy of the home page (#73).
+  const notFound = await Deno.readTextFile(new URL("dist/404.html", repoRoot));
+  assertStringIncludes(notFound, 'href="/"');
+  assertEquals(await inlineScriptHashes(notFound), []);
   // integrity.json hashes the files as they sit in dist/; the image is the
   // exception, published in parts, and the parts check below proves those add
   // back up to the artifact this hash is taken over.

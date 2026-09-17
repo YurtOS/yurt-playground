@@ -11,7 +11,7 @@
 import { join } from "node:path";
 import { documentPolicy, inlineScriptHashes } from "./csp.ts";
 import { type DesktopHost, proxyWebSocket } from "./desktop_host.ts";
-import { contentType, ISOLATION_HEADERS } from "./serve.ts";
+import { contentType, directoryRule, ISOLATION_HEADERS } from "./serve.ts";
 
 function notFound(): Response {
   return new Response("not found", {
@@ -54,8 +54,11 @@ export function handleDistRequest(
     } catch {
       return notFound();
     }
-    const filePath = resolveDistPath(distDir, pathname);
+    let filePath = resolveDistPath(distDir, pathname);
     if (filePath === null) return notFound();
+    const directory = await directoryRule(filePath, url);
+    if (directory instanceof Response) return directory;
+    if (directory !== null) filePath = directory;
     let file: Deno.FsFile;
     try {
       file = await Deno.open(filePath);
@@ -66,7 +69,12 @@ export function handleDistRequest(
       file.close();
       return notFound();
     }
-    const path = pathname === "/" ? "/index.html" : pathname;
+    // The document's policy keys on the path served (`/jupyter/…` may eval).
+    const path = directory !== null
+      ? `${pathname}index.html`
+      : pathname === "/"
+      ? "/index.html"
+      : pathname;
     const headers: Record<string, string> = {
       ...ISOLATION_HEADERS,
       "content-type": contentType(path),

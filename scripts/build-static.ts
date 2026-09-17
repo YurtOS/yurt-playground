@@ -16,6 +16,9 @@ const STATIC_FILES = [
   "index.html",
   "terminal.html",
   "unsupported.html",
+  // Its presence stops Cloudflare Pages' SPA fallback: an unknown path gets
+  // this and a 404 instead of the home page with assets that do not resolve.
+  "404.html",
   "boot.bundle.js",
   "coordinator.bundle.js",
   "worker_bootstrap.js",

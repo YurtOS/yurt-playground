@@ -78,6 +78,30 @@ function notFound(): Response {
   });
 }
 
+/** Cloudflare Pages' directory rule, which both local servers follow so a
+ * link works the same everywhere: `/dir` is sent to `/dir/` with the query
+ * kept, and `/dir/` serves `dir/index.html`. Notebook 7 opens "New Console
+ * for Notebook" at `consoles?path=…`, and the app's assets are relative, so
+ * only the slash form can serve it (#73). Returns the redirect, the index
+ * file to serve, or null when `resolved` is not a directory. */
+export async function directoryRule(
+  resolved: string,
+  url: URL,
+): Promise<Response | string | null> {
+  const stat = await Deno.stat(resolved).catch(() => null);
+  if (stat === null || !stat.isDirectory) return null;
+  if (!url.pathname.endsWith("/")) {
+    return new Response(null, {
+      status: 308,
+      headers: {
+        ...ISOLATION_HEADERS,
+        location: `${url.pathname}/${url.search}`,
+      },
+    });
+  }
+  return join(resolved, "index.html");
+}
+
 /** The image parts the static build publishes, sliced from the single
  * artifacts/ file so the page's fetch path is the same here and deployed. */
 async function handleImagePart(pathname: string): Promise<Response | null> {
@@ -158,11 +182,19 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   }
   const part = await handleImagePart(pathname);
   if (part !== null) return part;
-  const filePath = resolvePlaygroundPath(pathname);
+  let filePath = resolvePlaygroundPath(pathname);
   if (filePath === null) return notFound();
+  const directory = await directoryRule(filePath, url);
+  if (directory instanceof Response) return directory;
+  if (directory !== null) filePath = directory;
   try {
     const file = await Deno.readFile(filePath);
-    const path = url.pathname === "/" ? "/index.html" : url.pathname;
+    // The document's policy keys on the path served (`/jupyter/…` may eval).
+    const path = directory !== null
+      ? `${url.pathname}index.html`
+      : url.pathname === "/"
+      ? "/index.html"
+      : url.pathname;
     const headers: Record<string, string> = {
       ...ISOLATION_HEADERS,
       "content-type": contentType(path),

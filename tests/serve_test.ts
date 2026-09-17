@@ -100,3 +100,17 @@ Deno.test("handler 404s also carry isolation headers", async () => {
   );
   await res.body?.cancel();
 });
+
+Deno.test("dev server applies Pages' directory rule to the Jupyter apps", async () => {
+  // Same rule as the desktop server (#73): `/jupyter/<app>` redirects to its
+  // slash form with the query kept, and the slash form serves the index.
+  // The JupyterLite site may not be built here; the rule is checked on
+  // public/ itself, whose index.html is always present.
+  const bare = await handlePlaygroundRequest(
+    new Request("http://playground/jupyter?path=welcome.ipynb"),
+  );
+  assertEquals(bare.status, 308);
+  assertEquals(bare.headers.get("location"), "/jupyter/?path=welcome.ipynb");
+  assertEquals(bare.headers.get("Cross-Origin-Opener-Policy"), isolation.coop);
+  await bare.body?.cancel();
+});

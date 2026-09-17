@@ -2,7 +2,10 @@
   "LiteBuildConfig": {
     "apps": [
       "lab",
-      "notebooks"
+      "notebooks",
+      "tree",
+      "consoles",
+      "edit"
     ],
     "no_sourcemaps": true,
     "contents": [
