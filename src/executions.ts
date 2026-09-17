@@ -18,25 +18,26 @@ export type Exit = {
   timedOut: boolean;
 };
 
-export type Output = {
-  stdout: string;
-  stderr: string;
+type Streams<T> = {
+  stdout: T;
+  stderr: T;
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
 };
+export type Output = Streams<string>;
+/** The same with the bytes: what `fs.read` needs. */
+export type RawOutput = Streams<Uint8Array>;
 
 /** The deadline sent the kill and the process has not exited. */
-export type Stuck = Output & {
-  timedOut: true;
-  killAttempted: true;
-  stillRunning: true;
-};
+type StuckState = { timedOut: true; killAttempted: true; stillRunning: true };
+export type Stuck = Output & StuckState;
 
 /** What `wait` resolves to. */
 export type Result = (Exit & Output) | Stuck;
+export type RawResult = (Exit & RawOutput) | (RawOutput & StuckState);
 
 export type ExecOptions = {
-  /** Fed after the process starts, alongside output draining, then closed. */
+  /** The command's standard input, then end-of-file. */
   stdin?: string | Uint8Array;
   timeoutMs?: number;
   /** Per stream; capture stops there and the flag says so. */
@@ -60,14 +61,23 @@ export type SpawnedProcess = {
   pid: number;
   /** Resolves with the exit status once the process is done. */
   exited: Promise<number>;
-  feedStdin(bytes: Uint8Array): void;
-  closeStdin(): void;
   /** Bytes produced since the last take, drained. */
   takeStdout(): Uint8Array;
   takeStderr(): Uint8Array;
 };
 
-export type Spawner = (line: string) => Promise<SpawnedProcess>;
+/** Start `line` with `stdin` as its input (at end-of-file when absent),
+ * capturing at most `maxOutputBytes` (+1, so the caller can tell a cut)
+ * per stream. How the streams travel is the host's: the native session
+ * attaches pipes and feeds stdin while output drains; the in-tab host
+ * keeps host stdio per pid, so a forked child's output is grouped after
+ * its parent's and host-fed stdin never reaches a pipeline element
+ * (yurtos-kernel#2817) -- that adapter redirects all three streams
+ * through guest files instead. */
+export type Spawner = (
+  line: string,
+  io: { stdin?: Uint8Array; maxOutputBytes: number },
+) => Promise<SpawnedProcess>;
 
 export type ExecutionState = "running" | "exited" | "stuck";
 
@@ -174,12 +184,6 @@ type Execution = {
   read: boolean;
 };
 
-/** `Result` with the bytes instead of text: what `fs.read` needs. */
-export type RawResult = Omit<Result, "stdout" | "stderr"> & {
-  stdout: Uint8Array;
-  stderr: Uint8Array;
-};
-
 export class ExecutionRegistry {
   #executions = new Map<string, Execution>();
   #next = 1;
@@ -216,9 +220,14 @@ export class ExecutionRegistry {
       );
     }
     const line = buildExecLine(cmd, opts);
-    const process = await this.spawner(line);
-    const id = `x${this.#next++}-${process.pid}`;
+    const stdin = opts.stdin === undefined
+      ? undefined
+      : typeof opts.stdin === "string"
+      ? encoder.encode(opts.stdin)
+      : opts.stdin;
     const limit = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    const process = await this.spawner(line, { stdin, maxOutputBytes: limit });
+    const id = `x${this.#next++}-${process.pid}`;
     const execution: Execution = {
       record: { id, state: "running", startedAt: Date.now() },
       process,
@@ -243,16 +252,6 @@ export class ExecutionRegistry {
 
   async #run(execution: Execution, opts: ExecOptions): Promise<Result> {
     const { process, stdout, stderr } = execution;
-    // stdin after the start, in one go alongside the drain: the kernel's
-    // stdin buffer takes what the reader has not consumed, so this cannot
-    // block on the pipe the way a pre-start write into a full pipe would.
-    if (opts.stdin !== undefined) {
-      const bytes = typeof opts.stdin === "string"
-        ? encoder.encode(opts.stdin)
-        : opts.stdin;
-      if (bytes.byteLength > 0) process.feedStdin(bytes);
-    }
-    process.closeStdin();
     let exited = false;
     let code = 0;
     const exit = process.exited.then((c) => {
@@ -353,11 +352,25 @@ export class ExecutionRegistry {
     const result = await execution.done;
     execution.read = true;
     if (execution.record.state === "exited") this.#executions.delete(id);
-    const { stdout: _s, stderr: _e, ...outcome } = result;
-    return {
-      ...outcome,
+    const raw: RawOutput = {
       stdout: execution.stdout.bytes(),
       stderr: execution.stderr.bytes(),
+      stdoutTruncated: execution.stdout.truncated,
+      stderrTruncated: execution.stderr.truncated,
+    };
+    if ("stillRunning" in result) {
+      return {
+        ...raw,
+        timedOut: true,
+        killAttempted: true,
+        stillRunning: true,
+      };
+    }
+    return {
+      ...raw,
+      code: result.code,
+      signal: result.signal,
+      timedOut: result.timedOut,
     };
   }
 

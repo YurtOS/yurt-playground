@@ -11,18 +11,13 @@ import {
 class FakeProcess implements SpawnedProcess {
   static next = 100;
   pid = FakeProcess.next++;
-  stdinFed: Uint8Array[] = [];
-  stdinClosed = false;
+  stdin: Uint8Array | undefined;
   #out: Uint8Array[] = [];
   #err: Uint8Array[] = [];
   #resolve!: (code: number) => void;
   exited: Promise<number> = new Promise((resolve) => this.#resolve = resolve);
-  constructor(readonly line: string) {}
-  feedStdin(bytes: Uint8Array) {
-    this.stdinFed.push(bytes);
-  }
-  closeStdin() {
-    this.stdinClosed = true;
+  constructor(readonly line: string, stdin?: Uint8Array) {
+    this.stdin = stdin;
   }
   say(text: string, stream: "out" | "err" = "out") {
     (stream === "out" ? this.#out : this.#err).push(
@@ -55,8 +50,8 @@ function registry(options: { killExits?: boolean } = {}) {
   const spawned: FakeProcess[] = [];
   const signals: Array<[number, number]> = [];
   const reg = new ExecutionRegistry(
-    (line) => {
-      const p = new FakeProcess(line);
+    (line, io) => {
+      const p = new FakeProcess(line, io.stdin);
       spawned.push(p);
       return Promise.resolve(p);
     },
@@ -88,12 +83,11 @@ Deno.test("the exec line carries cwd, a merged env with removals, and the comman
   );
 });
 
-Deno.test("exec collects both streams, the status, and feeds then closes stdin", async () => {
+Deno.test("exec collects both streams, the status, and hands stdin to the spawner", async () => {
   const { reg, spawned } = registry();
   const id = await reg.spawn("cat", { stdin: "hello" });
   const p = spawned[0];
-  assertEquals(new TextDecoder().decode(p.stdinFed[0]), "hello");
-  assertEquals(p.stdinClosed, true);
+  assertEquals(new TextDecoder().decode(p.stdin!), "hello");
   p.say("hello");
   p.say("warn\n", "err");
   p.exit(3);

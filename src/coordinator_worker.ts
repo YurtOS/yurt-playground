@@ -15,6 +15,13 @@ import {
   startGuestKernel,
 } from "./jupyter.ts";
 import { bootNativePlayground } from "./native.ts";
+import {
+  type ExecOptions,
+  type ExecutionRecord,
+  ExecutionRegistry,
+  type RawResult,
+  type Result,
+} from "./executions.ts";
 import type {
   JupyterChannel,
   JupyterRequestChannel,
@@ -47,7 +54,13 @@ type ToWorker =
   }
   // Replace the guest kernel with a fresh process (a frontend restart, or a
   // shutdown followed by a start). Answered by `jupyter-restarted`.
-  | { type: "jupyter-restart" };
+  | { type: "jupyter-restart" }
+  // A driver's commands (window.yurt, src/agent_api.ts): every request
+  // carries a `req` the reply echoes.
+  | { type: "yurt-spawn"; req: number; cmd: string; opts: ExecOptions }
+  | { type: "yurt-wait"; req: number; id: string; raw: boolean }
+  | { type: "yurt-kill"; req: number; id: string; signal?: string }
+  | { type: "yurt-list"; req: number };
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -65,10 +78,60 @@ type FromWorker =
     message: JupyterMessage;
     channel: JupyterChannel;
   }
-  | { type: "jupyter-restarted" };
+  | { type: "jupyter-restarted" }
+  | {
+    type: "yurt-reply";
+    req: number;
+    ok: boolean;
+    value?: string | Result | RawResult | ExecutionRecord[] | null;
+    error?: string;
+  };
 
 let jupyter: JupyterTransport | undefined;
 let launchSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
+let executions: ExecutionRegistry | undefined;
+
+async function serveYurt(msg: ToWorker): Promise<void> {
+  if (
+    msg.type !== "yurt-spawn" && msg.type !== "yurt-wait" &&
+    msg.type !== "yurt-kill" && msg.type !== "yurt-list"
+  ) return;
+  const reply = (ok: boolean, value?: unknown, error?: string) =>
+    post({
+      type: "yurt-reply",
+      req: msg.req,
+      ok,
+      value: value as never,
+      error,
+    });
+  if (executions === undefined) {
+    reply(false, undefined, "the sandbox is not running");
+    return;
+  }
+  try {
+    if (msg.type === "yurt-spawn") {
+      reply(true, await executions.spawn(msg.cmd, msg.opts));
+    } else if (msg.type === "yurt-wait") {
+      reply(
+        true,
+        msg.raw
+          ? await executions.waitRaw(msg.id)
+          : await executions.wait(msg.id),
+      );
+    } else if (msg.type === "yurt-kill") {
+      await executions.kill(msg.id, msg.signal);
+      reply(true, null);
+    } else {
+      reply(true, executions.list());
+    }
+  } catch (error) {
+    reply(
+      false,
+      undefined,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
 let kernelPorts: KernelPorts | undefined;
 /** Restarts are serialised: a second request waits for the first. */
 let restarting: Promise<void> = Promise.resolve();
@@ -121,6 +184,7 @@ function workerTerm(init: { cols: number; rows: number }): PlaygroundTerm {
 
 self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
+  await serveYurt(msg);
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });
@@ -202,6 +266,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     session = kernelPorts === undefined
       ? await bootPlayground(env)
       : await bootNativePlayground(env);
+    if (session.process !== undefined && session.signal !== undefined) {
+      executions = new ExecutionRegistry(session.process, session.signal);
+    }
     post({ type: "status", text: "starting Jupyter" });
     launchSession = session;
     // ipykernel's imports are JIT-bound: ~30 s on a laptop, minutes on a
