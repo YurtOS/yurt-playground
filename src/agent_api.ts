@@ -50,13 +50,27 @@ export type Yurt = {
   list(): Promise<ExecutionRecord[]>;
 };
 
-/** What the page hands this module: a way to ask the worker. */
+/** What the page hands this module: a way to ask the worker (or, on the
+ * desktop, the launcher). A transport with `files` moves file bytes its
+ * own way (the launcher's `/api/fs/*`, binary on the wire); without it,
+ * `fs` is made of commands. */
 export type YurtTransport = {
   spawn(cmd: string, opts: ExecOptions): Promise<string>;
   wait(id: string): Promise<Result>;
   waitRaw(id: string): Promise<RawResult>;
   kill(id: string, signal?: string): Promise<void>;
   list(): Promise<ExecutionRecord[]>;
+  files?: FilesTransport;
+};
+
+export type FilesTransport = {
+  read(path: string): Promise<Uint8Array>;
+  write(
+    path: string,
+    bytes: Uint8Array,
+    opts: { mode?: number; atomic?: boolean },
+  ): Promise<void>;
+  list(path: string): Promise<DirEntry[]>;
 };
 
 /** A typed error for a path this API does not carry. */
@@ -157,6 +171,8 @@ export function createYurt(
   const fs: Yurt["fs"] = {
     async read(path) {
       checkPath(path);
+      const direct = transport.files;
+      if (direct !== undefined) return direct.read(path);
       const result = await execRaw(`cat -- ${quoted(path)}`, {
         maxOutputBytes: 64 * 1024 * 1024,
       });
@@ -173,6 +189,8 @@ export function createYurt(
       const bytes = typeof data === "string"
         ? new TextEncoder().encode(data)
         : data;
+      const direct = transport.files;
+      if (direct !== undefined) return direct.write(path, bytes, opts);
       const mode = opts.mode === undefined
         ? ""
         : ` && chmod ${opts.mode.toString(8)} -- ${quoted(path)}`;
@@ -188,6 +206,8 @@ export function createYurt(
     },
     async list(path) {
       checkPath(path);
+      const direct = transport.files;
+      if (direct !== undefined) return direct.list(path);
       const result = await execRaw(buildListLine(path));
       if (!("code" in result) || result.code !== 0) {
         throw failed(result, `list ${path}`);

@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run --allow-read --allow-net --allow-run
+#!/usr/bin/env -S deno run --allow-read --allow-write --allow-env=HOME,USERPROFILE --allow-net --allow-run
 // The desktop playground entry point: serve the built site (dist/) from a
 // loopback port and open it in the default browser. The site sits beside
 // the binary: Contents/Resources/dist in the macOS app, dist/ next to it in
@@ -6,6 +6,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  freshApiToken,
   LAUNCHER_USAGE,
   parseLauncherArgs,
   startDesktopServer,
@@ -73,9 +74,10 @@ try {
   Deno.exit(1);
 }
 console.error(`sandbox up in ${(host.bootMs / 1000).toFixed(1)} s`);
+const apiToken = freshApiToken();
 let url: string;
 try {
-  url = startDesktopServer(distDir, host, { port: args.port }).url;
+  url = startDesktopServer(distDir, host, { port: args.port, apiToken }).url;
 } catch (error) {
   host.stop();
   console.error(
@@ -86,6 +88,30 @@ try {
   Deno.exit(1);
 }
 console.log(`Yurt playground: ${url}`);
+// A program on this machine drives the sandbox through /api/* with this
+// token (README, "Driving the desktop app"); it is also left where a
+// script finds it without the terminal, readable by this user alone.
+console.log(`API token: ${apiToken}`);
+const tokenFile = join(
+  Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ".",
+  ".yurt",
+  "playground.json",
+);
+try {
+  await Deno.mkdir(dirname(tokenFile), { recursive: true, mode: 0o700 });
+  await Deno.writeTextFile(
+    tokenFile,
+    JSON.stringify({ url, apiToken, pid: Deno.pid }) + "\n",
+    { mode: 0o600 },
+  );
+  await Deno.chmod(tokenFile, 0o600).catch(() => undefined);
+} catch (error) {
+  console.error(
+    `yurt-playground: could not write ${tokenFile}: ${
+      (error as Error).message
+    }`,
+  );
+}
 console.log("Close this window to stop it.");
 // From a terminal window: hand the URL to the default browser. The page's
 // own support gate says so if that browser cannot run the sandbox. A caller

@@ -21,8 +21,10 @@ const binary = join(
 );
 
 /** Start the binary with stdout piped (so it does not open a browser) and
- * read the URL it announces. */
-async function startApp(): Promise<{ url: string; stop: () => void }> {
+ * read the URL and the API token it announces. */
+async function startApp(): Promise<
+  { url: string; apiToken: string; stop: () => void }
+> {
   const child = new Deno.Command(binary, { stdout: "piped", stderr: "inherit" })
     .spawn();
   const reader = child.stdout.getReader();
@@ -30,9 +32,11 @@ async function startApp(): Promise<{ url: string; stop: () => void }> {
   let text = "";
   while (true) {
     const url = text.match(/^Yurt playground: (http:\/\/127\.0\.0\.1:\d+\/)$/m);
-    if (url) {
+    const token = text.match(/^API token: ([0-9a-f]+)$/m);
+    if (url && token) {
       return {
         url: url[1],
+        apiToken: token[1],
         stop: () => {
           child.kill("SIGTERM");
           reader.cancel().catch(() => undefined);
@@ -45,8 +49,127 @@ async function startApp(): Promise<{ url: string; stop: () => void }> {
   }
 }
 
+/** The first yurt-desktop-host with the session and file routes the API
+ * is built on (yurt-sandbox#264). With an older pin the API scenes are
+ * skipped, loudly; from this release on they are required, so the pin
+ * bump arms them by itself. */
+const API_HOST_RELEASE = [0, 1, 3];
+
+async function apiExpected(): Promise<boolean> {
+  const pins = JSON.parse(
+    await Deno.readTextFile(join(repoRoot, "artifacts", "pins.json")),
+  );
+  const version = String(pins.desktopHost?.release ?? "").match(
+    /v(\d+)\.(\d+)\.(\d+)$/,
+  );
+  if (version === null) return true;
+  const pinned = version.slice(1).map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (pinned[i] !== API_HOST_RELEASE[i]) {
+      return pinned[i] > API_HOST_RELEASE[i];
+    }
+  }
+  return true;
+}
+
+/** The launcher's /api/* as a program on the machine uses it: the token
+ * from the announce, a command with its streams and status, a pipeline
+ * the deadline kills whole, a file both ways (README, "Driving the
+ * sandbox from a program"). False when the bundled host predates it. */
+async function driveApi(
+  app: { url: string; apiToken: string },
+): Promise<boolean> {
+  const api = async (path: string, init: RequestInit = {}) => {
+    const response = await fetch(`${app.url}api${path}`, {
+      ...init,
+      headers: { ...init.headers, authorization: `Bearer ${app.apiToken}` },
+    });
+    return response;
+  };
+  const exec = async (body: Record<string, unknown>) => {
+    const started = await api("/executions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (started.status !== 201) {
+      throw new Error(
+        `POST /api/executions: ${started.status} ${await started.text()}`,
+      );
+    }
+    const { id } = await started.json();
+    return await (await api(`/executions/${id}?wait=1`)).json();
+  };
+  const noToken = await fetch(`${app.url}api/status`);
+  if (noToken.status !== 401) throw new Error(`no token: ${noToken.status}`);
+  await noToken.body?.cancel();
+  const statusResponse = await api("/status");
+  const status = await statusResponse.json();
+  if (statusResponse.status === 503 && status.code === "HostTooOld") {
+    if (await apiExpected()) {
+      throw new Error(
+        `the bundled host has no session routes: ${status.error}`,
+      );
+    }
+    console.log(
+      "desktop e2e: SKIPPING /api/* and window.yurt: the pinned yurt-desktop-host predates the session routes",
+    );
+    return false;
+  }
+  if (status.native !== true || status.status !== "running") {
+    throw new Error(`/api/status: ${JSON.stringify(status)}`);
+  }
+  const result = await exec({
+    cmd: "pwd; tr a-z A-Z; echo err >&2; exit 7",
+    stdin: "abc\n",
+  });
+  if (
+    result.code !== 7 || result.stdout !== "/home/user\nABC\n" ||
+    result.stderr !== "err\n"
+  ) {
+    throw new Error(`exec: ${JSON.stringify(result)}`);
+  }
+  const started = Date.now();
+  const killed = await exec({ cmd: "sleep 60 | sleep 60", timeoutMs: 1500 });
+  if (killed.signal !== "SIGKILL" || killed.timedOut !== true) {
+    throw new Error(`timeout: ${JSON.stringify(killed)}`);
+  }
+  if (Date.now() - started > 20_000) {
+    throw new Error(`the deadline took ${Date.now() - started} ms`);
+  }
+  const left = await exec({ cmd: "pgrep sleep | wc -l" });
+  if (left.stdout.trim() !== "0") {
+    throw new Error(`sleeps survived the kill: ${JSON.stringify(left)}`);
+  }
+  const bytes = new Uint8Array([0, 255, 10, 65]);
+  const put = await api("/fs/content?path=/home/user/api.bin", {
+    method: "PUT",
+    headers: { "x-yurt-mode": "600" },
+    body: bytes,
+  });
+  if (put.status !== 204) {
+    throw new Error(`PUT: ${put.status} ${await put.text()}`);
+  }
+  const back = new Uint8Array(
+    await (await api("/fs/content?path=/home/user/api.bin")).arrayBuffer(),
+  );
+  if (back.join(",") !== bytes.join(",")) {
+    throw new Error(`fs round trip: ${back}`);
+  }
+  const entries = await (await api("/fs/entries?path=/home/user")).json();
+  const entry = entries.find((e: { name: string }) => e.name === "api.bin");
+  if (entry?.size !== 4 || entry?.mode !== 0o600) {
+    throw new Error(`fs/entries: ${JSON.stringify(entries)}`);
+  }
+  console.log(
+    "desktop e2e: /api/* ran a command, killed a pipeline, moved a file",
+  );
+  return true;
+}
+
 if (import.meta.main) {
   const app = await startApp();
+  const apiPresent = await driveApi(app);
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
@@ -136,6 +259,39 @@ if (import.meta.main) {
     await page.getByTestId("notebook-execute").click();
     await cellDone("hi\n");
     console.log("desktop e2e: !echo hi ran in BusyBox");
+    // window.yurt on the native page: the launcher's registry, reached
+    // with the token /desktop.json gave the page; bytes through /api/fs.
+    const driven = !apiPresent ? undefined : await page.evaluate(async () => {
+      const yurt = (globalThis as unknown as {
+        yurt: {
+          exec: (
+            cmd: string,
+            opts?: Record<string, unknown>,
+          ) => Promise<Record<string, unknown>>;
+          fs: {
+            write: (
+              path: string,
+              data: Uint8Array,
+              opts?: Record<string, unknown>,
+            ) => Promise<void>;
+            read: (path: string) => Promise<Uint8Array>;
+          };
+        };
+      }).yurt;
+      const result = await yurt.exec("tr a-z A-Z; exit 3", { stdin: "abc" });
+      await yurt.fs.write("/home/user/page.bin", new Uint8Array([0, 255]));
+      const back = Array.from(await yurt.fs.read("/home/user/page.bin"));
+      return { result, back };
+    });
+    if (driven !== undefined) {
+      if (driven.result.code !== 3 || driven.result.stdout !== "ABC") {
+        throw new Error(`window.yurt.exec: ${JSON.stringify(driven.result)}`);
+      }
+      if (driven.back.join(",") !== "0,255") {
+        throw new Error(`window.yurt.fs: ${driven.back}`);
+      }
+      console.log("desktop e2e: window.yurt drove the native sandbox");
+    }
     // The Notebook page too: its kernel plugin lives under /jupyter/ and must
     // find the launcher's /desktop.json from there (the bundle has no in-tab
     // kernel to fall back to).

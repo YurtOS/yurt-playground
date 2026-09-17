@@ -82,8 +82,11 @@ export type SpawnedProcess = {
   takeStderr(): Uint8Array;
   /** What the process has written so far, without draining: for the
    * report on one that is stuck. Optional; a host without it reports
-   * what the takes had. */
-  peek?(): { stdout: Uint8Array; stderr: Uint8Array };
+   * what the takes had. May be asynchronous (a native host reads a
+   * file). */
+  peek?():
+    | { stdout: Uint8Array; stderr: Uint8Array }
+    | Promise<{ stdout: Uint8Array; stderr: Uint8Array }>;
 };
 
 /** Start `line` with `stdin` as its input (at end-of-file when absent),
@@ -323,7 +326,7 @@ export class ExecutionRegistry {
         Date.now() >= execution.killedAt + KILL_GRACE_MS
       ) {
         execution.record.state = "stuck";
-        const peeked = process.peek?.();
+        const peeked = await process.peek?.();
         if (peeked !== undefined) {
           stdout.push(peeked.stdout.subarray(stdout.length));
           stderr.push(peeked.stderr.subarray(stderr.length));

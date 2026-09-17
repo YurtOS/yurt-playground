@@ -188,17 +188,48 @@ Deno.test("the launcher tells the page the sandbox is native and relays /ws", as
     token: "deadbeef",
     kernelPorts: [1, 2, 3, 4, 5] as [number, number, number, number, number],
     bootMs: 1234,
+    request: () => Promise.reject(new Error("not asked in this test")),
+    sessions: true,
     stop() {},
   };
   const dist = await fakeDist();
-  const server = startDesktopServer(dist, host);
+  const server = startDesktopServer(dist, host, { apiToken: "s3cret" });
   try {
     const info = await (await fetch(`${server.url}desktop.json`)).json();
     assertEquals(info, {
       native: true,
       kernelPorts: [1, 2, 3, 4, 5],
       bootMs: 1234,
+      apiToken: "s3cret",
     });
+    // /api/* is the same token, as a bearer; the page's own origin may.
+    let response = await fetch(`${server.url}api/status`);
+    assertEquals(response.status, 401);
+    await response.body?.cancel();
+    response = await fetch(`${server.url}api/status`, {
+      headers: {
+        authorization: "Bearer s3cret",
+        origin: server.url.replace(/\/$/, ""),
+      },
+    });
+    assertEquals(response.status, 200);
+    assertEquals((await response.json()).bootMs, 1234);
+    // A host from before the routes: the page gets no token, a driver a
+    // reason.
+    const old = startDesktopServer(dist, { ...host, sessions: false }, {
+      apiToken: "s3cret",
+    });
+    try {
+      const info = await (await fetch(`${old.url}desktop.json`)).json();
+      assertEquals(info.apiToken, undefined);
+      response = await fetch(`${old.url}api/status`, {
+        headers: { authorization: "Bearer s3cret" },
+      });
+      assertEquals(response.status, 503);
+      assertEquals((await response.json()).code, "HostTooOld");
+    } finally {
+      await old.shutdown();
+    }
     const ws = new WebSocket(`${server.url.replace("http", "ws")}ws/tty`);
     const reply = await new Promise<string>((resolve, reject) => {
       ws.onopen = () => ws.send("hi");
@@ -252,6 +283,8 @@ Deno.test("the launcher refuses other origins on the sandbox endpoints", async (
     token: "deadbeef",
     kernelPorts: [1, 2, 3, 4, 5] as [number, number, number, number, number],
     bootMs: 1,
+    request: () => Promise.reject(new Error("not asked in this test")),
+    sessions: true,
     stop() {},
   };
   const dist = await fakeDist();

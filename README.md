@@ -48,6 +48,48 @@ launcher starts the host, which boots the image with a public network interface,
 your resolvers and a few mapped ports, and relays the terminal and the Jupyter
 kernel to the page over WebSockets on the launcher's own origin.
 
+## Driving the sandbox from a program
+
+The page exposes `window.yurt` for a driver -- an agent, a test -- on the hosted
+site and in the desktop app alike: `await yurt.ready`, then
+`yurt.exec(cmd, { stdin, timeoutMs, maxOutputBytes, cwd, env })` for a result
+with `stdout`, `stderr`, `code` or `signal`, `timedOut` and the truncation
+flags; `yurt.spawn` for a handle with `wait()` and `kill(signal)`;
+`yurt.fs.read/write/list/download`; `yurt.status` and `<html data-yurt-status>`
+for "idle", "booting", "running" or "failed". Every command is a process of the
+page's own, not a keystroke in the terminal.
+
+The desktop app also serves the same thing over HTTP for a program on the
+machine, on the launcher's loopback port under `/api/`. The token is printed
+once (`API token: …`) and left in `~/.yurt/playground.json` (mode 0600), and
+every request carries it as `Authorization: Bearer <token>`:
+
+```sh
+T=$(jq -r .apiToken ~/.yurt/playground.json); U=$(jq -r .url ~/.yurt/playground.json)
+curl -H "Authorization: Bearer $T" ${U}api/status
+ID=$(curl -s -H "Authorization: Bearer $T" -H 'content-type: application/json' \
+  -d '{"cmd":"python3 -c \"print(6*7)\"","timeoutMs":60000}' ${U}api/executions | jq -r .id)
+curl -H "Authorization: Bearer $T" "${U}api/executions/$ID?wait=1"
+curl -H "Authorization: Bearer $T" -X PUT --data-binary @data.csv "${U}api/fs/content?path=/home/user/data.csv"
+```
+
+| Route                                                                                         | Does                                                                                              |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `GET /api/status`                                                                             | `{native, status, bootMs, executions: {active, limit}}`                                           |
+| `POST /api/executions` `{cmd, stdin?, stdinBase64?, timeoutMs?, maxOutputBytes?, cwd?, env?}` | `201 {id}`; `429` past 16 active                                                                  |
+| `GET /api/executions`                                                                         | every execution still held                                                                        |
+| `GET /api/executions/{id}`                                                                    | its state; with `?wait=1` the result, read once                                                   |
+| `DELETE /api/executions/{id}` `{signal?}`                                                     | signal it (SIGKILL by default)                                                                    |
+| `GET` / `PUT /api/fs/content?path=`                                                           | a file's bytes, `application/octet-stream`; `PUT` takes `X-Yurt-Mode: 644` and `X-Yurt-Atomic: 0` |
+| `GET /api/fs/entries?path=`                                                                   | `[{name, type, size, mode}]`                                                                      |
+
+Results are JSON, so a command's output is text there; binary output goes
+through a file. A process running as you on this machine is you: that is the
+whole of the access model. Errors are `{error, code}`; an `Origin` other than
+the launcher's own is refused, so no web page can reach it. The page's
+`window.yurt` and a `curl` share one registry: at most 16 running or stuck
+executions per sandbox, results kept ten minutes or until read.
+
 ## How the browser version works
 
 A static page loads `kernel.wasm` and the playground image, boots the kernel in

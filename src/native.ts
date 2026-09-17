@@ -12,6 +12,8 @@ import {
   type PlaygroundEnv,
   type PlaygroundSession,
 } from "./boot.ts";
+import type { YurtTransport } from "./agent_api.ts";
+import type { RawResult, Result } from "./executions.ts";
 import { createSessionController } from "./session_controller.ts";
 
 /** What the launcher serves at `/desktop.json`; absent on the hosted site. */
@@ -20,7 +22,106 @@ export type DesktopInfo = {
   /** shell, iopub, stdin, control, hb: the ports ipykernel is launched on. */
   kernelPorts: [number, number, number, number, number];
   bootMs: number;
+  /** Opens the launcher's `/api/*` (src/desktop_api.ts) to this page's
+   * `window.yurt`; served to this origin only, never in a URL. Absent
+   * from a launcher older than the API. */
+  apiToken?: string;
 };
+
+/** `window.yurt`'s transport on the desktop page: the launcher's
+ * `/api/*`, where the registry lives (a `curl` on the machine sees the
+ * same executions). Results are JSON, text on the wire; `waitRaw`
+ * encodes them, and `files` moves bytes as bytes. */
+export function nativeYurtTransport(
+  token: string,
+  fetchApi: typeof fetch = (input, init) => fetch(input, init),
+): YurtTransport {
+  const call = async (
+    path: string,
+    init: RequestInit = {},
+  ): Promise<Response> => {
+    const response = await fetchApi(`/api${path}`, {
+      ...init,
+      headers: { ...init.headers, authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      let message = `${init.method ?? "GET"} /api${path}: ${response.status}`;
+      try {
+        const body = await response.json();
+        if (typeof body.error === "string") message = body.error;
+      } catch {
+        // not JSON: the status is the message
+      }
+      throw new Error(message);
+    }
+    return response;
+  };
+  const json = (path: string, init?: RequestInit) =>
+    call(path, init).then((r) => r.json());
+  const post = (path: string, body: unknown, method = "POST") =>
+    json(path, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const encoder = new TextEncoder();
+  const base64 = (bytes: Uint8Array) => {
+    let text = "";
+    for (const b of bytes) text += String.fromCharCode(b);
+    return btoa(text);
+  };
+  return {
+    async spawn(cmd, opts) {
+      const { stdin, ...rest } = opts;
+      const body: Record<string, unknown> = { cmd, ...rest };
+      if (stdin instanceof Uint8Array) body.stdinBase64 = base64(stdin);
+      else if (stdin !== undefined) body.stdin = stdin;
+      return (await post("/executions", body)).id;
+    },
+    wait: (id) => json(`/executions/${encodeURIComponent(id)}?wait=1`),
+    async waitRaw(id) {
+      const result: Result = await json(
+        `/executions/${encodeURIComponent(id)}?wait=1`,
+      );
+      return {
+        ...result,
+        stdout: encoder.encode(result.stdout),
+        stderr: encoder.encode(result.stderr),
+      } as RawResult;
+    },
+    async kill(id, signal) {
+      await call(`/executions/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(signal === undefined ? {} : { signal }),
+      });
+    },
+    list: () => json("/executions"),
+    files: {
+      async read(path) {
+        const response = await call(
+          `/fs/content?path=${encodeURIComponent(path)}`,
+        );
+        return new Uint8Array(await response.arrayBuffer());
+      },
+      async write(path, bytes, opts) {
+        const headers: Record<string, string> = {
+          "content-type": "application/octet-stream",
+        };
+        if (opts.mode !== undefined) {
+          headers["x-yurt-mode"] = opts.mode.toString(8);
+        }
+        if (opts.atomic === false) headers["x-yurt-atomic"] = "0";
+        await call(`/fs/content?path=${encodeURIComponent(path)}`, {
+          method: "PUT",
+          headers,
+          body: bytes as BodyInit,
+        });
+      },
+      list: (path) => json(`/fs/entries?path=${encodeURIComponent(path)}`),
+    },
+  };
+}
 
 /** The launcher's answer, or `undefined` on the hosted site. Absolute, so
  * the JupyterLite pages under /jupyter/ ask the same place; JSON only, so a

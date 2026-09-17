@@ -73,11 +73,14 @@ else
   binary="$out/yurt-playground"
 fi
 # Permissions are fixed at compile time: reading the bundle, the loopback
-# listener, and running the host beside it and the platform's browser
-# opener. Nothing else.
+# listener, running the host beside it and the platform's browser opener,
+# and writing the API token to ~/.yurt/playground.json (the home is not
+# known here, so the write is not narrowed; the launcher writes that one
+# file). Nothing else.
 deno compile \
   --target "$target" \
-  --allow-read --allow-net=127.0.0.1 --allow-run \
+  --allow-read --allow-write --allow-env=HOME,USERPROFILE \
+  --allow-net=127.0.0.1 --allow-run \
   --output "$binary" \
   scripts/desktop.ts
 

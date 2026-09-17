@@ -10,6 +10,7 @@
  */
 import { join } from "node:path";
 import { documentPolicy, inlineScriptHashes } from "./csp.ts";
+import { createDesktopApi, hostClient } from "./desktop_api.ts";
 import { type DesktopHost, proxyWebSocket } from "./desktop_host.ts";
 import { contentType, directoryRule, ISOLATION_HEADERS } from "./serve.ts";
 
@@ -136,18 +137,40 @@ export function parseLauncherArgs(argv: string[]): LauncherArgs {
   return args;
 }
 
+/** A token for this launch's `/api/*`: 128 random bits, hex. */
+export function freshApiToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /** Serve `distDir` on a loopback port (a free one unless `port` says).
  * With a native host, the page learns so from `/desktop.json` and its
- * `/ws/*` sockets are relayed to it (src/desktop_host.ts). */
+ * `/ws/*` sockets are relayed to it (src/desktop_host.ts), and `/api/*`
+ * runs commands and moves files for a driver (src/desktop_api.ts) --
+ * behind `apiToken`, which `/desktop.json` hands the page. */
 export function startDesktopServer(
   distDir: string,
   host?: DesktopHost,
-  options: { port?: number } = {},
+  options: { port?: number; apiToken?: string } = {},
 ): { url: string; shutdown: () => Promise<void> } {
   const files = handleDistRequest(distDir);
+  const apiToken = options.apiToken ?? freshApiToken();
+  // The origin is known once the port is: the API is made lazily, on the
+  // first request, and the server's own address names it.
+  let api: ReturnType<typeof createDesktopApi> | undefined;
   const handle = host === undefined ? files : (req: Request) => {
     const url = new URL(req.url);
     const path = url.pathname;
+    if (path === "/api" || path.startsWith("/api/")) {
+      api ??= createDesktopApi({
+        host: hostClient(host.request),
+        token: apiToken,
+        origin: url.origin,
+        bootMs: host.bootMs,
+        available: host.sessions,
+      });
+      return api.handle(req) ?? files(req);
+    }
     // Browsers apply no same-origin policy to WebSocket connects, so a page
     // from anywhere could otherwise open a shell here; only the page this
     // server serves (its own origin) may reach the sandbox.
@@ -170,6 +193,9 @@ export function startDesktopServer(
             native: true,
             kernelPorts: host.kernelPorts,
             bootMs: host.bootMs,
+            // The page's window.yurt goes through /api/*; a host without
+            // the routes leaves the page with no token and the notice.
+            ...(host.sessions ? { apiToken } : {}),
           }),
           {
             headers: {
