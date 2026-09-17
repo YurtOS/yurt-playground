@@ -46,6 +46,10 @@ jobs:
           # (public/index.html reindents), so a floating formatter turns CI red
           # with no code change and disagrees with what developers run locally.
           deno-version: v2.7.14
+      # yurtos-kernel and yurt-jupyter are PRIVATE, and the default
+      # GITHUB_TOKEN cannot read another private repository. Without a PAT stored as
+      # KERNEL_CHECKOUT_TOKEN the integration job cannot check them out at all, so
+      # it announces that loudly instead of dying at "Repository not found".
       - name: Check for the cross-repo checkout token
         id: token
         env:
@@ -70,10 +74,6 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      # yurtos-kernel and yurt-jupyter are PRIVATE, and the default
-      # GITHUB_TOKEN cannot read another private repository. Without a PAT stored as
-      # KERNEL_CHECKOUT_TOKEN the integration job cannot check them out at all, so
-      # it announces that loudly instead of dying at "Repository not found".
       - name: fmt
         run: deno fmt --check
       - name: lint
@@ -229,6 +229,10 @@ jobs:
   # can execute; the other is built the same way from the same inputs.
   desktop:
     needs: deno
+    # `success()` is transitive over `needs`, and `deno` now hangs off
+    # `checks`; the bundles must not be hidden by a fmt/lint nit any more
+    # than the integration job is.
+    if: ${{ !cancelled() && needs.deno.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -310,7 +314,7 @@ jobs:
     needs: desktop
     # Only main: a workflow_dispatch on a branch would otherwise become the
     # "latest" release the home page links.
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && needs.desktop.result == 'success' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
