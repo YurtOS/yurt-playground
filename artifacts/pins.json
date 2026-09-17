@@ -1,35 +1,35 @@
 {
   "kernelWasm": {
     "repo": "YurtOS/yurtos-kernel",
-    "rev": "db397d7ed205352b415d8374019ff0e4e23c9a1f",
-    "release": "kernel-wasm-v0.0.3",
+    "rev": "be75f0c2692d49e1f973e55deddbc5266de7880e",
+    "release": "kernel-wasm-v0.0.4",
     "build": "scripts/build-kernel-wasm.sh",
     "path": "target/kernel-wasm/release/yurt_kernel.wasm",
-    "sha256": "b3a20d411482069f9fd2238b0d7ee758db3490f589ab1b93dddc8c22462ff4a5"
+    "sha256": "5b548b1dadf8c9d567f6fe0db6fbd09caa28da7256c8222b4f81d4135fe2be3c"
   },
   "image": {
     "repo": "YurtOS/yurt-ports",
-    "rev": "3d80d13491140528ef1c15195f44450cf9f446a7",
-    "release": "playground-image-v0.0.7",
+    "rev": "f876776193b203335345aa19b9c2a6df04196990",
+    "release": "playground-image-v0.0.8",
     "build": "ports/playground-image/scripts/package.sh",
     "path": "ports/playground-image/build/dist/playground.yurtimg",
-    "sha256": "5de432096828a6bcb085f4ec2a449c2bf92bfbd6c4ad49b75a9e39e5af15e844"
+    "sha256": "d8e4091d76784d65e84fca26fd36f12b15edeab301b8ebf6f0beed9eb319fd0d"
   },
   "desktopHost": {
     "repo": "YurtOS/yurt-sandbox",
-    "rev": "5c13da768a4e433519fd874ae9243a51aa1eb7dc",
-    "release": "desktop-host-v0.1.1",
+    "rev": "be75f0c2692d49e1f973e55deddbc5266de7880e",
+    "release": "desktop-host-v0.1.2",
     "build": "scripts/build-desktop-host.sh",
     "sha256": {
-      "aarch64-apple-darwin": "8707ba274427b2a233f3f1e1764aa4a35fe7099cab8a63a72160b0f12fa10cb5",
-      "x86_64-apple-darwin": "f15839d227a973724d478f47cdd91fb8e500a7f9969e1a9885ae3349d13a1767",
-      "x86_64-unknown-linux-gnu": "3dfd67371c976624ec160468483ae0065a3282227303e8693b65e280ff872e4b",
-      "aarch64-unknown-linux-gnu": "5e283226c1503d7c09752378eb2b5134b83dc7873d10f55e2b45bf4b3d067132"
+      "aarch64-apple-darwin": "e4e7652300657a7a75ffb37fae55c443f5d4d006eb2a4faf6f63616ef45240b6",
+      "x86_64-apple-darwin": "425927fa18e301c44bf2e4628ab9beaac6ab9c322e19ec7dc700b9ac2016f282",
+      "x86_64-unknown-linux-gnu": "75497236aca2d03fddd53396c1df3848352f6c8743fda66f7bf881b6cc2eee5f",
+      "aarch64-unknown-linux-gnu": "1f1516dd1a147eb0c443f3fe7932448d4ba0e5a0a1202eef83bf0ac43c32b446"
     }
   },
   "yurtCli": {
     "repo": "YurtOS/yurt-sandbox",
-    "release": "yurt-cli-v0.1.3",
+    "release": "yurt-cli-v0.1.4",
     "build": "scripts/build-yurt-cli.sh",
     "assets": {
       "aarch64-apple-darwin": "yurt-aarch64-apple-darwin.tar.gz",
