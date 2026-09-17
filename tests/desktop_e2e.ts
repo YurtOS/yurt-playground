@@ -69,6 +69,14 @@ if (import.meta.main) {
       state: "visible",
       timeout: 30_000,
     });
+    // The header says where the sandbox is (yurt-playground#89).
+    const lead = await page.locator("#lead").textContent();
+    if (!(lead ?? "").includes("natively")) {
+      throw new Error(`the native page still claims the tab: ${lead}`);
+    }
+    if (await page.locator("#offline-note").isVisible()) {
+      throw new Error("the native page still says the sandbox has no network");
+    }
     // Same budget as playground_e2e.ts: ~30 s on a laptop, several times
     // that on a small CI runner.
     await page.waitForFunction(

@@ -83,7 +83,64 @@ Deno.test("executeCell collects standard Jupyter stream, result, and reply messa
   assertEquals(await executeCell(transport, "1+1"), {
     status: "ok",
     stdout: "hello\n",
+    stderr: "",
     display: "2",
+    traceback: [],
+  });
+});
+
+Deno.test("executeCell keeps stderr apart from stdout", async () => {
+  // The one machine-readable execution surface mixed a warning into the
+  // result text (yurt-playground#83); a driver needs to tell them apart.
+  let listener:
+    | ((message: JupyterMessage, channel: JupyterChannel) => void)
+    | undefined;
+  const transport: JupyterTransport = {
+    send(message) {
+      const parent = message.header;
+      const iopub = (msg_type: string, content: Record<string, unknown>) =>
+        listener?.({
+          header: {
+            msg_id: `${msg_type}-1`,
+            username: "user",
+            session: message.header.session,
+            msg_type,
+            version: "5.3",
+          },
+          parent_header: parent,
+          metadata: {},
+          content,
+        }, "iopub");
+      iopub("stream", { name: "stdout", text: "out\n" });
+      iopub("stream", { name: "stderr", text: "warn\n" });
+      iopub("status", { execution_state: "idle" });
+      listener?.({
+        header: {
+          msg_id: "reply-1",
+          username: "user",
+          session: message.header.session,
+          msg_type: "execute_reply",
+          version: "5.3",
+        },
+        parent_header: parent,
+        metadata: {},
+        content: { status: "ok" },
+      }, "shell");
+      return Promise.resolve();
+    },
+    subscribe(next) {
+      listener = next;
+      return () => listener = undefined;
+    },
+    close() {
+      return Promise.resolve();
+    },
+  };
+  assertEquals(await executeCell(transport, "print('out')"), {
+    status: "ok",
+    stdout: "out\n",
+    stderr: "warn\n",
+    display: "",
     traceback: [],
   });
 });

@@ -546,7 +546,7 @@
     <main class="wrap">
       <header class="mast">
         <h1>Yurt</h1>
-        <p class="lead">
+        <p class="lead" id="lead">
           A Linux sandbox that runs inside this browser tab: a shell, Python
           3.14, NumPy, Jupyter. Nothing leaves the page.
         </p>
@@ -599,6 +599,10 @@
               compiled to WebAssembly. Loads about 90 MB once, then boots here
               in the tab; the cell below starts a Jupyter kernel on the same
               machine.
+              <span id="offline-note"
+              >The sandbox has no network:
+                <code>pip install</code> and <code>wget</code> fail by design
+                (the desktop app below has both).</span>
             </p>
           </div>
           <div id="failed" data-testid="boot-failed" hidden>

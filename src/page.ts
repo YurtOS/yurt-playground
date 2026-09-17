@@ -170,6 +170,14 @@ async function runPage(): Promise<void> {
   // cross-origin isolation, and a page served without it cannot boot at all
   // and goes to the explanation.
   const desktop = await desktopInfo();
+  // The page's own claim is about the tab; the desktop app's sandbox is on
+  // this machine and on the network, and the header should say which.
+  if (desktop !== undefined) {
+    byId("lead").textContent =
+      "A Linux sandbox running natively on this machine, shown in this tab: " +
+      "a shell, Python 3.14, NumPy, Jupyter, with network access.";
+    byId("offline-note").hidden = true;
+  }
   if (desktop === undefined && globalThis.crossOriginIsolated !== true) {
     byId("status").textContent = "need COOP/COEP";
     globalThis.location.replace("./unsupported.html");
