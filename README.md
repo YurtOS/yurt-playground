@@ -20,7 +20,7 @@ page.
 | Terminal (`ash`), Python 3.14, NumPy, Jupyter Notebook / Lab | ✓                                                                             | ✓                                                          |
 | Runs in                                                      | the tab (WebAssembly, no server)                                              | the native Yurt runtime on your machine                    |
 | Boot                                                         | ~30–60 s (compiles in the tab)                                                | ~12 s                                                      |
-| Network from inside the sandbox                              | none, by design                                                               | yes (TLS verified)                                         |
+| Network from inside the sandbox                              | none, by design                                                               | yes (Python verifies TLS; BusyBox `wget` does not)         |
 | Works offline                                                | yes                                                                           | yes                                                        |
 | Needs                                                        | a desktop browser with cross-origin isolation (Chrome, Edge, Firefox, Safari) | any browser to display; nothing to install besides the app |
 
