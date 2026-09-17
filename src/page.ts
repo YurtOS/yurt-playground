@@ -64,11 +64,13 @@ const yurtState = (() => {
   });
   return {
     set,
+    isRunning: () => status === "running",
     running() {
       set("running");
       resolveReady();
     },
     failed(message: string) {
+      if (status === "failed") return;
       set("failed");
       rejectReady(new Error(message));
     },
@@ -229,7 +231,10 @@ function boot(
     }
     if (msg.type === "error") {
       fail(msg.message);
-      yurtState.failed(msg.message);
+      // Only a boot failure is the sandbox's failure: an error once the
+      // shell is up ("Jupyter is not ready", a restart that failed) leaves
+      // exec working, and the status says so.
+      if (!yurtState.isRunning()) yurtState.failed(msg.message);
     }
     if (msg.type === "out") {
       terminalEmpty = false;
@@ -251,8 +256,12 @@ function boot(
     if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
   };
   worker.onerror = (event) => {
-    fail(event.message || "coordinator worker failed");
-    yurtState.failed(event.message || "coordinator worker failed");
+    const message = event.message || "coordinator worker failed";
+    fail(message);
+    yurtState.failed(message);
+    // Nothing will answer them now.
+    for (const waiter of pending.values()) waiter.reject(new Error(message));
+    pending.clear();
   };
   term.onData((text) => worker.postMessage({ type: "in", text }));
   term.onResize((size) =>

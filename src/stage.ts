@@ -154,6 +154,36 @@ function registerRamfsSymlink(
   }
 }
 
+/** Write `bytes` to `path` from the host, in scratch-sized chunks when
+ * large: binary-safe and without a guest process (what a driver's stdin is
+ * staged with, src/boot.ts). The file is the kernel's (root-owned, 0644),
+ * which a reader needs and a writer does not get. */
+export function writeRamfsFile(
+  mk: KernelHostInterface,
+  path: string,
+  bytes: Uint8Array,
+): void {
+  const pathBytes = s(path);
+  const scratch = typeof mk.scratchLen === "number"
+    ? mk.scratchLen
+    : DEFAULT_KERNEL_SCRATCH_LEN;
+  if (4 + pathBytes.byteLength + bytes.byteLength <= scratch) {
+    mk.registerRamfsFile(pathBytes, bytes);
+    return;
+  }
+  const chunkSize = scratch - REGISTER_FILE_CHUNK_HEADER_BYTES -
+    pathBytes.byteLength;
+  if (chunkSize <= 0) {
+    throw new Error(`kernel scratch buffer is too small to write ${path}`);
+  }
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const chunk = bytes.subarray(offset, offset + chunkSize);
+    mk.registerRamfsFileChunk(pathBytes, offset, chunk);
+    offset += chunk.byteLength;
+  }
+}
+
 function stageRamfsFile(
   mk: KernelHostInterface,
   host: Map<string, Uint8Array>,

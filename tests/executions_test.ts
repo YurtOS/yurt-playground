@@ -143,9 +143,12 @@ Deno.test("a process that ignores the kill is reported stuck, kept, and released
   assertEquals(reg.active(), 1);
   spawned[0].exit(137);
   await new Promise((r) => setTimeout(r, 10));
-  // Its result was read while it was stuck; the exit releases it.
-  assertEquals(reg.list(), []);
+  // The Stuck report was not the result; the exit is, and it waits to be
+  // read.
+  assertEquals(reg.list().map((r) => r.state), ["exited"]);
   assertEquals(reg.active(), 0);
+  await reg.wait(id);
+  assertEquals(reg.list(), []);
 });
 
 Deno.test("no more than the active limit; a kill by name resolves to its number", async () => {
@@ -165,5 +168,77 @@ Deno.test("no more than the active limit; a kill by name resolves to its number"
     if (i === 0) continue;
     spawned[i].exit(0);
     await reg.wait(id);
+  }
+});
+
+Deno.test("a caller's TERM leaves the deadline in place; a trap that exits cleanly is a clean exit", async () => {
+  const { reg, spawned, signals } = registry({ killExits: false });
+  const id = await reg.spawn("trap 'exit 0' TERM; sleep 100", {
+    timeoutMs: 200,
+  });
+  await reg.kill(id, "TERM");
+  // The process handles TERM in its own time and exits 0 before the deadline.
+  await new Promise((r) => setTimeout(r, 30));
+  spawned[0].exit(0);
+  const result = await reg.wait(id);
+  assertEquals("code" in result ? result.code : "stuck", 0);
+  assertEquals(result.timedOut, false);
+  assertEquals(signals, [[spawned[0].pid, 15]]);
+});
+
+Deno.test("a caller's TERM that is ignored still meets the deadline's SIGKILL", async () => {
+  const { reg, spawned, signals } = registry({ killExits: false });
+  const id = await reg.spawn("sleep 100", { timeoutMs: 100 });
+  await reg.kill(id, "TERM");
+  const waited = reg.wait(id);
+  await new Promise((r) => setTimeout(r, 150));
+  assertEquals(signals.map(([, n]) => n), [15, 9]);
+  spawned[0].exit(137);
+  const result = await waited;
+  assertEquals("signal" in result ? result.signal : "stuck", "SIGKILL");
+  assertEquals(result.timedOut, true);
+});
+
+Deno.test("a stuck execution that later exits reports that exit from wait, once", async () => {
+  const { reg, spawned } = registry({ killExits: false });
+  const id = await reg.spawn("spin", { timeoutMs: 10 });
+  const stuck = await reg.wait(id);
+  assertEquals("stillRunning" in stuck && stuck.stillRunning, true);
+  spawned[0].say("late words");
+  spawned[0].exit(137);
+  await new Promise((r) => setTimeout(r, 10));
+  assertEquals(reg.list().map((r) => r.state), ["exited"]);
+  const late = await reg.wait(id);
+  assertEquals("signal" in late ? late.signal : "stuck", "SIGKILL");
+  assertEquals(late.stdout, "late words");
+  assertEquals(reg.list(), []);
+});
+
+Deno.test("a zero timeout kills at once and does not leak the slot", async () => {
+  const { reg } = registry();
+  const id = await reg.spawn("sleep 100", { timeoutMs: 0 });
+  const result = await reg.wait(id);
+  assertEquals(result.timedOut, true);
+  assertEquals(reg.active(), 0);
+});
+
+Deno.test("concurrent spawns cannot exceed the active limit", async () => {
+  const { reg, spawned } = registry();
+  const attempts = await Promise.allSettled(
+    Array.from(
+      { length: MAX_ACTIVE_EXECUTIONS + 4 },
+      () => reg.spawn("sleep 1"),
+    ),
+  );
+  assertEquals(
+    attempts.filter((a) => a.status === "fulfilled").length,
+    MAX_ACTIVE_EXECUTIONS,
+  );
+  assertEquals(spawned.length, MAX_ACTIVE_EXECUTIONS);
+  for (const [i, a] of attempts.entries()) {
+    if (a.status !== "fulfilled") continue;
+    spawned.find((p) => a.value.endsWith(`-${p.pid}`))!.exit(0);
+    await reg.wait(a.value);
+    void i;
   }
 });

@@ -5,7 +5,7 @@ import {
   pumpPtyMaster,
   s,
 } from "@yurt/kernel-host-interface-js";
-import { setPidCredentials, stageYurtimg } from "./stage.ts";
+import { setPidCredentials, stageYurtimg, writeRamfsFile } from "./stage.ts";
 import {
   createSessionController,
   type PtyTransport,
@@ -310,19 +310,18 @@ export async function bootPlayground(
       const tag = crypto.randomUUID();
       const path = (name: string) => `/tmp/.yurt-exec-${tag}.${name}`;
       const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-      const single = async (command: string, stdin?: Uint8Array) => {
+      const single = async (command: string) => {
         const p = await spawnShell(["/bin/sh", "-c", command]);
-        if (stdin !== undefined && stdin.byteLength > 0) p.feedStdin(stdin);
         p.closeStdin();
-        const rc = await p.runStartAsync();
-        return { rc, stdout: p.capturedStdout() };
+        await p.runStartAsync();
       };
       let stdinRedirect = "< /dev/null";
       if (io.stdin !== undefined) {
-        const staged = await single(`exec cat > ${q(path("in"))}`, io.stdin);
-        if (staged.rc !== 0) {
-          throw new Error(`staging stdin failed: exit ${staged.rc}`);
-        }
+        // From the host, not through a process: host-fed stdin passes the
+        // console line discipline (ICRNL, VEOF, VERASE, ISIG) and a 64 KiB
+        // buffer, so bytes would be altered or dropped; a file written by
+        // the kernel is exact at any size.
+        writeRamfsFile(mk, path("in"), io.stdin);
         stdinRedirect = `< ${q(path("in"))}`;
       }
       const process = await spawnShell([
@@ -360,15 +359,24 @@ export async function bootPlayground(
         exited,
         takeStdout: () => take("out"),
         takeStderr: () => take("err"),
+        // The files are readable while the command runs: what a stuck
+        // process has written so far.
+        peek: () => ({
+          stdout: readGuestFile(mk, user.pid, path("out"), cap),
+          stderr: readGuestFile(mk, user.pid, path("err"), cap),
+        }),
       };
     },
     async signal(pid, signal) {
       // A process of the page's own, not the user's shell: `kill` is
-      // BusyBox's, and the login user may signal its own processes.
+      // BusyBox's, and the login user may signal its own processes. The
+      // command's children (a pipeline, a background job) share its
+      // process group, so the group goes first; the pid itself after, in
+      // case it is not a group leader on this host.
       const process = await spawnShell([
         "/bin/sh",
         "-c",
-        `kill -${signal} ${pid}`,
+        `kill -${signal} -- -${pid} 2>/dev/null; kill -${signal} ${pid} 2>/dev/null; true`,
       ]);
       process.closeStdin();
       await process.runStartAsync();

@@ -327,10 +327,40 @@ if (import.meta.main) {
         "cd /home/user && mkdir drv && printf x > 'drv/with space' && printf ab > \"drv/new\nline\"",
       );
       const list = await y.fs.list("/home/user/drv");
+      // Bytes the console line discipline would eat or act on (CR, VEOF,
+      // VERASE, VKILL, NUL, VQUIT, VSUSP), and a file past any single
+      // buffer, both exact.
+      const ctl = new Uint8Array([13, 10, 3, 4, 127, 21, 0, 28, 26, 255]);
+      const ctlBack = (await y.exec("od -c", { stdin: ctl })).stdout;
+      const big = new Uint8Array(200_000);
+      for (let i = 0; i < big.length; i++) big[i] = (i * 7 + 3) & 255;
+      await y.fs.write("/home/user/big.bin", big);
+      const bigBack = await y.fs.read("/home/user/big.bin");
+      const bigExact = bigBack.length === big.length &&
+        bigBack.every((b, i) => b === big[i]);
       const t0 = Date.now();
-      const timed = await y.exec("sleep 60", { timeoutMs: 1000 });
+      // A pipeline: the deadline must take the whole process group.
+      const timed = await y.exec("sleep 60 | sleep 60; echo never", {
+        timeoutMs: 1000,
+      });
       const ms = Date.now() - t0;
-      return { status, attr, both, piped, bounded, read, list, timed, ms };
+      const survivors = (await y.exec(
+        'for p in $(ps | awk \'$4=="sleep" && $5=="60" {print $1}\'); do kill -0 $p 2>/dev/null && echo alive $p; done; echo checked',
+      )).stdout;
+      return {
+        status,
+        attr,
+        both,
+        piped,
+        bounded,
+        read,
+        list,
+        timed,
+        ms,
+        ctlBack,
+        bigExact,
+        survivors,
+      };
     });
     const expect = (what: string, ok: boolean, got: unknown) => {
       if (!ok) throw new Error(`window.yurt ${what}: ${JSON.stringify(got)}`);
@@ -368,10 +398,22 @@ if (import.meta.main) {
       driven.list,
     );
     expect(
-      "timeout kills",
+      "binary stdin",
+      (driven.ctlBack as string).replace(/\s+/g, " ").includes(
+        "\\r \\n 003 004 177 025 \\0 034 032 377",
+      ),
+      driven.ctlBack,
+    );
+    expect(
+      "a 200 KB file round trip",
+      driven.bigExact === true,
+      driven.bigExact,
+    );
+    expect(
+      "timeout kills the whole pipeline",
       driven.timed.timedOut === true && driven.timed.signal === "SIGKILL" &&
-        driven.ms < 10000,
-      driven.timed,
+        driven.ms < 10000 && driven.survivors === "checked\n",
+      { timed: driven.timed, survivors: driven.survivors },
     );
     console.log(
       `playground e2e: window.yurt drove the sandbox (timeout in ${driven.ms} ms)`,

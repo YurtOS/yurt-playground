@@ -28,12 +28,28 @@ export type Output = Streams<string>;
 /** The same with the bytes: what `fs.read` needs. */
 export type RawOutput = Streams<Uint8Array>;
 
-/** The deadline sent the kill and the process has not exited. */
-type StuckState = { timedOut: true; killAttempted: true; stillRunning: true };
+/** A SIGKILL went out (the deadline's, or a caller's) and the process has
+ * not exited within the grace period. */
+type StuckState = {
+  timedOut: boolean;
+  killAttempted: true;
+  stillRunning: true;
+};
 export type Stuck = Output & StuckState;
 
-/** What `wait` resolves to. */
-export type Result = (Exit & Output) | Stuck;
+/** What `wait` resolves to. `error` is set when the machinery failed
+ * (the host could not signal or read), not the command. */
+export type Result = ((Exit & Output) | Stuck) & { error?: string };
+
+const EMPTY_RESULT: Result = {
+  code: null,
+  signal: null,
+  timedOut: false,
+  stdout: "",
+  stderr: "",
+  stdoutTruncated: false,
+  stderrTruncated: false,
+};
 export type RawResult = (Exit & RawOutput) | (RawOutput & StuckState);
 
 export type ExecOptions = {
@@ -64,6 +80,10 @@ export type SpawnedProcess = {
   /** Bytes produced since the last take, drained. */
   takeStdout(): Uint8Array;
   takeStderr(): Uint8Array;
+  /** What the process has written so far, without draining: for the
+   * report on one that is stuck. Optional; a host without it reports
+   * what the takes had. */
+  peek?(): { stdout: Uint8Array; stderr: Uint8Array };
 };
 
 /** Start `line` with `stdin` as its input (at end-of-file when absent),
@@ -141,6 +161,9 @@ class BoundedCapture {
   #length = 0;
   truncated = false;
   constructor(readonly limit: number) {}
+  get length(): number {
+    return this.#length;
+  }
   push(bytes: Uint8Array): void {
     if (bytes.byteLength === 0) return;
     const room = this.limit - this.#length;
@@ -173,10 +196,17 @@ type Execution = {
   process: SpawnedProcess;
   stdout: BoundedCapture;
   stderr: BoundedCapture;
-  /** Settled once the drain has stopped and the outcome is known. */
+  /** Settled once the drain has stopped and the outcome is known: an
+   * exit, or the Stuck report. */
   done: Promise<Result>;
-  /** Set when a kill was sent (by the deadline or a caller). */
+  /** The exit of a process that was reported stuck and then died. */
+  late?: Result;
+  /** The last signal sent (by the deadline or a caller), for the report. */
   killed?: string;
+  /** When SIGKILL went out: the grace period for the Stuck report runs
+   * from here, and only from here -- a caller's TERM is the process's to
+   * handle. */
+  killedAt?: number;
   timedOut: boolean;
   /** When the result may be dropped from the registry. */
   expiresAt?: number;
@@ -188,6 +218,9 @@ export class ExecutionRegistry {
   #executions = new Map<string, Execution>();
   #next = 1;
   #pollMs: number;
+  /** Spawns in flight: counted against the limit before their process
+   * exists, so concurrent calls cannot slip past it. */
+  #starting = 0;
 
   constructor(
     private readonly spawner: Spawner,
@@ -205,7 +238,7 @@ export class ExecutionRegistry {
   }
 
   active(): number {
-    let n = 0;
+    let n = this.#starting;
     for (const e of this.#executions.values()) {
       if (e.record.state !== "exited") n++;
     }
@@ -226,27 +259,38 @@ export class ExecutionRegistry {
       ? encoder.encode(opts.stdin)
       : opts.stdin;
     const limit = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-    const process = await this.spawner(line, { stdin, maxOutputBytes: limit });
+    this.#starting++;
+    let process: SpawnedProcess;
+    try {
+      process = await this.spawner(line, { stdin, maxOutputBytes: limit });
+    } finally {
+      this.#starting--;
+    }
     const id = `x${this.#next++}-${process.pid}`;
     const execution: Execution = {
       record: { id, state: "running", startedAt: Date.now() },
       process,
       stdout: new BoundedCapture(limit),
       stderr: new BoundedCapture(limit),
-      done: Promise.resolve({
-        code: null,
-        signal: null,
-        timedOut: false,
-        stdout: "",
-        stderr: "",
-        stdoutTruncated: false,
-        stderrTruncated: false,
-      }),
+      done: Promise.resolve(EMPTY_RESULT),
       timedOut: false,
       read: false,
     };
-    execution.done = this.#run(execution, opts);
+    // In the map before the run starts: the run's first tick may kill
+    // (a zero timeout), which looks the execution up by id.
     this.#executions.set(id, execution);
+    execution.done = this.#run(execution, opts).catch((error) => {
+      // A failure of the machinery (the signaller, the host), not of the
+      // command: the execution is over as far as this registry can tell.
+      this.#finish(execution);
+      return {
+        ...this.#output(execution),
+        code: null,
+        signal: null,
+        timedOut: execution.timedOut,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    });
     return id;
   }
 
@@ -263,34 +307,50 @@ export class ExecutionRegistry {
     });
     const tick = new Tick();
     const deadline = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    let killDeadline: number | undefined;
     while (!exited) {
       stdout.push(process.takeStdout());
       stderr.push(process.takeStderr());
       const now = Date.now();
-      if (execution.killed === undefined && now >= deadline) {
+      // The deadline sends SIGKILL once, whatever a caller sent before;
+      // the grace period runs from that SIGKILL (a caller's own SIGKILL
+      // starts it too).
+      if (!execution.timedOut && now >= deadline) {
         execution.timedOut = true;
         await this.kill(execution.record.id, "SIGKILL");
       }
-      if (execution.killed !== undefined) {
-        killDeadline ??= Date.now() + KILL_GRACE_MS;
-        if (Date.now() >= killDeadline) {
-          execution.record.state = "stuck";
-          const stuck: Stuck = {
-            ...this.#output(execution),
-            timedOut: true,
-            killAttempted: true,
-            stillRunning: true,
-          };
-          tick.cancel();
-          // Keep watching: it may still die, and then it is an exit.
-          exit.then(() => {
-            stdout.push(process.takeStdout());
-            stderr.push(process.takeStderr());
-            this.#finish(execution);
-          });
-          return stuck;
+      if (
+        execution.killedAt !== undefined &&
+        Date.now() >= execution.killedAt + KILL_GRACE_MS
+      ) {
+        execution.record.state = "stuck";
+        const peeked = process.peek?.();
+        if (peeked !== undefined) {
+          stdout.push(peeked.stdout.subarray(stdout.length));
+          stderr.push(peeked.stderr.subarray(stderr.length));
         }
+        const stuck: Stuck = {
+          ...this.#output(execution),
+          timedOut: execution.timedOut,
+          killAttempted: true,
+          stillRunning: true,
+        };
+        tick.cancel();
+        // Keep watching: it may still die, and then it is an exit, which
+        // `wait` reports from then on.
+        exit.then(() => {
+          stdout.push(process.takeStdout());
+          stderr.push(process.takeStderr());
+          this.#finish(execution);
+          execution.late = {
+            ...this.#output(execution),
+            code: execution.killed === undefined || code === 0 ? code : null,
+            signal: execution.killed === undefined || code === 0
+              ? null
+              : execution.killed,
+            timedOut: execution.timedOut,
+          };
+        });
+        return stuck;
       }
       await Promise.race([exit, tick.wait(this.#pollMs)]);
     }
@@ -337,20 +397,24 @@ export class ExecutionRegistry {
     return execution;
   }
 
-  /** The outcome, once there is one. A result read once is released. */
+  /** The outcome, once there is one. A result read once is released. A
+   * process reported stuck that has since died reports its exit. */
   async wait(id: string): Promise<Result> {
     const execution = this.#get(id);
-    const result = await execution.done;
-    execution.read = true;
+    const result = execution.late ?? await execution.done;
+    const final = execution.late ?? result;
+    // A Stuck report is not the result: the exit, if it ever comes, is,
+    // and it is read once from then on.
+    if (!("stillRunning" in final)) execution.read = true;
     if (execution.record.state === "exited") this.#executions.delete(id);
-    return result;
+    return final;
   }
 
   /** The same, with the bytes: what `fs.read` needs. */
   async waitRaw(id: string): Promise<RawResult> {
     const execution = this.#get(id);
-    const result = await execution.done;
-    execution.read = true;
+    const result = execution.late ?? await execution.done;
+    if (!("stillRunning" in result)) execution.read = true;
     if (execution.record.state === "exited") this.#executions.delete(id);
     const raw: RawOutput = {
       stdout: execution.stdout.bytes(),
@@ -381,6 +445,7 @@ export class ExecutionRegistry {
     execution.killed = signal.toUpperCase().startsWith("SIG")
       ? signal.toUpperCase()
       : `SIG${signal.toUpperCase()}`;
+    if (number === SIGNALS.SIGKILL) execution.killedAt ??= Date.now();
     await this.signaller(execution.process.pid, number);
   }
 
