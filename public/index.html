@@ -93,7 +93,8 @@
         border-bottom-color: var(--sky);
       }
 
-      #mobile-note {
+      #mobile-note,
+      #another-tab-note {
         border-left: 3px solid var(--ember);
         background: var(--pane);
         color: var(--text);
@@ -563,6 +564,12 @@
           >Source</a>
         </nav>
       </header>
+
+      <p id="another-tab-note" data-testid="another-tab-note" hidden>
+        Another tab of this site is already running a sandbox. Two share this
+        machine's CPU, so this boot will be much slower than the first; use that
+        tab, or close it first.
+      </p>
 
       <p id="mobile-note" data-testid="mobile-note" hidden>
         This looks like a tablet. The sandbox needs around a gigabyte of memory
