@@ -53,6 +53,12 @@ rm -rf "$dest"
 mkdir -p "$dest"
 tar -xzf "$cache/$asset" -C "$cache"
 mv "$cache/yurt-desktop-host/yurt-desktop-host" "$cache/yurt-desktop-host/yurt-runtime-wasmtime" "$dest/"
+# The glibc the two binaries import, recorded by releases built from
+# yurt-sandbox#258 on: the Linux .deb depends on it (scripts/build-desktop.sh).
+rm -f "$dest/GLIBC_REQUIRED"
+if [ -f "$cache/yurt-desktop-host/GLIBC_REQUIRED" ]; then
+  mv "$cache/yurt-desktop-host/GLIBC_REQUIRED" "$dest/"
+fi
 cp "$root/artifacts/yurt_kernel.wasm" "$root/artifacts/playground.yurtimg" "$dest/"
 echo "installed $tag/$asset as runtime/$target/" >&2
 ls -l "$dest" >&2

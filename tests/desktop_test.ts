@@ -1,6 +1,10 @@
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { join } from "node:path";
-import { handleDistRequest, startDesktopServer } from "../src/desktop.ts";
+import {
+  handleDistRequest,
+  parseLauncherArgs,
+  startDesktopServer,
+} from "../src/desktop.ts";
 import { desktopInfo } from "../src/native.ts";
 import { inlineScriptHashes } from "../src/csp.ts";
 
@@ -302,5 +306,35 @@ Deno.test("desktop server applies Pages' directory rule to the Jupyter apps", as
     assertStringIncludes(await slash.text(), "window.lab = 1");
   } finally {
     await Deno.remove(dist, { recursive: true });
+  }
+});
+
+Deno.test("the launcher's command line: --help, --port, --no-open", () => {
+  // Any flag used to boot the sandbox (yurt-playground#90); a script that
+  // starts the launcher needs a fixed port and no browser.
+  assertEquals(parseLauncherArgs([]), { help: false, port: 0, open: true });
+  assertEquals(parseLauncherArgs(["--help"]).help, true);
+  assertEquals(parseLauncherArgs(["-h"]).help, true);
+  assertEquals(parseLauncherArgs(["--port", "8765"]).port, 8765);
+  assertEquals(parseLauncherArgs(["--port=8765"]).port, 8765);
+  assertEquals(parseLauncherArgs(["--no-open"]).open, false);
+  assertThrows(() => parseLauncherArgs(["--port", "zero"]), Error, "--port");
+  assertThrows(() => parseLauncherArgs(["--bogus"]), Error, "--bogus");
+});
+
+Deno.test("the desktop server binds the port it is given", async () => {
+  const dist = await Deno.makeTempDir();
+  await Deno.writeTextFile(join(dist, "index.html"), "<!doctype html>hi");
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const port = (listener.addr as Deno.NetAddr).port;
+  listener.close();
+  const server = startDesktopServer(dist, undefined, { port });
+  try {
+    assertEquals(server.url, `http://127.0.0.1:${port}/`);
+    const response = await fetch(server.url);
+    assertEquals(response.status, 200);
+    await response.body?.cancel();
+  } finally {
+    await server.shutdown();
   }
 });

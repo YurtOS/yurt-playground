@@ -93,12 +93,56 @@ export function handleDistRequest(
   };
 }
 
-/** Serve `distDir` on a free loopback port. With a native host, the page
- * learns so from `/desktop.json` and its `/ws/*` sockets are relayed to it
- * (src/desktop_host.ts). */
+/** What `yurt-playground` takes on its command line. */
+export type LauncherArgs = {
+  help: boolean;
+  /** 0: a free port, printed in the URL. */
+  port: number;
+  /** Hand the URL to the default browser (a terminal only). */
+  open: boolean;
+};
+
+export const LAUNCHER_USAGE = `usage: yurt-playground [--port N] [--no-open]
+
+Boot the sandbox natively and serve the playground on a loopback port.
+  --port N    listen on 127.0.0.1:N instead of a free port
+  --no-open   print the URL but do not open a browser
+  -h, --help  this text`;
+
+/** The launcher's command line, or an Error naming the argument. Small
+ * enough to parse by hand: three flags, and a flag nobody knows is an
+ * error rather than a boot (yurt-playground#90). */
+export function parseLauncherArgs(argv: string[]): LauncherArgs {
+  const args: LauncherArgs = { help: false, port: 0, open: true };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    const value = (flag: string): string => {
+      if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
+      const next = argv[++i];
+      if (next === undefined) throw new Error(`${flag} needs a value`);
+      return next;
+    };
+    if (arg === "-h" || arg === "--help") args.help = true;
+    else if (arg === "--no-open") args.open = false;
+    else if (arg === "--port" || arg.startsWith("--port=")) {
+      const text = value("--port");
+      const port = Number(text);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`--port ${text}: want a port number`);
+      }
+      args.port = port;
+    } else throw new Error(`unknown argument ${arg}\n${LAUNCHER_USAGE}`);
+  }
+  return args;
+}
+
+/** Serve `distDir` on a loopback port (a free one unless `port` says).
+ * With a native host, the page learns so from `/desktop.json` and its
+ * `/ws/*` sockets are relayed to it (src/desktop_host.ts). */
 export function startDesktopServer(
   distDir: string,
   host?: DesktopHost,
+  options: { port?: number } = {},
 ): { url: string; shutdown: () => Promise<void> } {
   const files = handleDistRequest(distDir);
   const handle = host === undefined ? files : (req: Request) => {
@@ -142,7 +186,7 @@ export function startDesktopServer(
     return files(req);
   };
   const server = Deno.serve(
-    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    { port: options.port ?? 0, hostname: "127.0.0.1", onListen: () => {} },
     handle,
   );
   const addr = server.addr;
