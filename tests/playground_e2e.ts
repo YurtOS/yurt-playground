@@ -285,6 +285,139 @@ if (import.meta.main) {
     await page.getByTestId("notebook-execute").click();
     await cellDone("hi\n");
     console.log("playground e2e: !echo hi ran in BusyBox");
+    // window.yurt (#79): a driver's exec with exit status and separate
+    // streams, stdin into a pipeline, a bounded capture, files in and
+    // out, a listing that survives awkward names, and a timeout that kills.
+    const driven = await page.evaluate(async () => {
+      const y = (globalThis as unknown as {
+        yurt: {
+          status: string;
+          ready: Promise<void>;
+          exec(
+            cmd: string,
+            opts?: Record<string, unknown>,
+          ): Promise<Record<string, unknown>>;
+          fs: {
+            read(p: string): Promise<Uint8Array>;
+            write(
+              p: string,
+              d: string | Uint8Array,
+              o?: Record<string, unknown>,
+            ): Promise<void>;
+            list(p: string): Promise<Array<Record<string, unknown>>>;
+          };
+        };
+      }).yurt;
+      await y.ready;
+      const status = y.status;
+      const attr = document.documentElement.dataset.yurtStatus;
+      const both = await y.exec("echo out; echo err 1>&2; exit 7");
+      const piped = await y.exec("cat | tr a-z A-Z", { stdin: "fed\n" });
+      // Not `yes | head`: a writer on a reader-less pipe gets no EPIPE in
+      // the guest yet and would spin until the timeout.
+      const bounded = await y.exec(
+        "i=0; while [ $i -lt 500 ]; do echo 0123456789; i=$((i+1)); done",
+        { maxOutputBytes: 100 },
+      );
+      await y.fs.write("/home/user/drv.txt", "driven\n", { mode: 0o600 });
+      const read = new TextDecoder().decode(
+        await y.fs.read("/home/user/drv.txt"),
+      );
+      await y.exec(
+        "cd /home/user && mkdir drv && printf x > 'drv/with space' && printf ab > \"drv/new\nline\"",
+      );
+      const list = await y.fs.list("/home/user/drv");
+      // Bytes the console line discipline would eat or act on (CR, VEOF,
+      // VERASE, VKILL, NUL, VQUIT, VSUSP), and a file past any single
+      // buffer, both exact.
+      const ctl = new Uint8Array([13, 10, 3, 4, 127, 21, 0, 28, 26, 255]);
+      const ctlBack = (await y.exec("od -c", { stdin: ctl })).stdout;
+      const big = new Uint8Array(200_000);
+      for (let i = 0; i < big.length; i++) big[i] = (i * 7 + 3) & 255;
+      await y.fs.write("/home/user/big.bin", big);
+      const bigBack = await y.fs.read("/home/user/big.bin");
+      const bigExact = bigBack.length === big.length &&
+        bigBack.every((b, i) => b === big[i]);
+      const t0 = Date.now();
+      // A pipeline: the deadline must take the whole process group.
+      const timed = await y.exec("sleep 60 | sleep 60; echo never", {
+        timeoutMs: 1000,
+      });
+      const ms = Date.now() - t0;
+      const survivors = (await y.exec(
+        'for p in $(ps | awk \'$4=="sleep" && $5=="60" {print $1}\'); do kill -0 $p 2>/dev/null && echo alive $p; done; echo checked',
+      )).stdout;
+      return {
+        status,
+        attr,
+        both,
+        piped,
+        bounded,
+        read,
+        list,
+        timed,
+        ms,
+        ctlBack,
+        bigExact,
+        survivors,
+      };
+    });
+    const expect = (what: string, ok: boolean, got: unknown) => {
+      if (!ok) throw new Error(`window.yurt ${what}: ${JSON.stringify(got)}`);
+    };
+    expect(
+      "status",
+      driven.status === "running" && driven.attr === "running",
+      driven,
+    );
+    expect(
+      "exec streams and status",
+      driven.both.stdout === "out\n" && driven.both.stderr === "err\n" &&
+        driven.both.code === 7,
+      driven.both,
+    );
+    expect(
+      "stdin into a pipeline",
+      driven.piped.stdout === "FED\n",
+      driven.piped,
+    );
+    expect(
+      "bounded capture",
+      (driven.bounded.stdout as string).length === 100 &&
+        driven.bounded.stdoutTruncated === true,
+      driven.bounded,
+    );
+    expect("fs round trip", driven.read === "driven\n", driven.read);
+    expect(
+      "listing",
+      driven.list.length === 2 &&
+        driven.list.some((e) =>
+          e.name === "with space" && e.type === "file" && e.size === 1
+        ) &&
+        driven.list.some((e) => e.name === "new\nline" && e.size === 2),
+      driven.list,
+    );
+    expect(
+      "binary stdin",
+      (driven.ctlBack as string).replace(/\s+/g, " ").includes(
+        "\\r \\n 003 004 177 025 \\0 034 032 377",
+      ),
+      driven.ctlBack,
+    );
+    expect(
+      "a 200 KB file round trip",
+      driven.bigExact === true,
+      driven.bigExact,
+    );
+    expect(
+      "timeout kills the whole pipeline",
+      driven.timed.timedOut === true && driven.timed.signal === "SIGKILL" &&
+        driven.ms < 10000 && driven.survivors === "checked\n",
+      { timed: driven.timed, survivors: driven.survivors },
+    );
+    console.log(
+      `playground e2e: window.yurt drove the sandbox (timeout in ${driven.ms} ms)`,
+    );
     // The cell and the ash terminal share one VFS: a file written by Python
     // is read back by the shell in the xterm (#4).
     await page.getByTestId("notebook-input").fill(

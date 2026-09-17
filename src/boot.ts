@@ -5,7 +5,7 @@ import {
   pumpPtyMaster,
   s,
 } from "@yurt/kernel-host-interface-js";
-import { setPidCredentials, stageYurtimg } from "./stage.ts";
+import { setPidCredentials, stageYurtimg, writeRamfsFile } from "./stage.ts";
 import {
   createSessionController,
   type PtyTransport,
@@ -17,6 +17,7 @@ import {
 } from "./artifact_fetch.ts";
 import { partsFetch } from "./image_parts.ts";
 import { parsePins, type Pins } from "./pins.ts";
+import type { Spawner } from "./executions.ts";
 
 export type PlaygroundTerm = {
   cols: number;
@@ -44,6 +45,11 @@ export type PlaygroundSession = {
    * kernel is started as, so it is no job of the user's shell. Absent on
    * the desktop app's page, which has only the terminal. */
   spawn?: (line: string) => Promise<void>;
+  /** The same, handing the process back: what a driver's `exec` runs
+   * (src/executions.ts). */
+  process?: Spawner;
+  /** Deliver a signal to a process this page started. */
+  signal?: (pid: number, signal: number) => Promise<void>;
   dialSandboxPort: (
     port: number,
   ) => ReturnType<KernelHostInterface["dialSandboxPort"]>;
@@ -128,6 +134,58 @@ export async function fetchPlaygroundBytes(
     fetch: isKernel ? undefined : partsFetch(),
     onProgress,
   });
+}
+
+/** Up to `cap` bytes of a guest file, read through the kernel host
+ * interface on behalf of `pid` (its credentials apply): the same
+ * open/read/close the worker host uses for guest modules. No guest
+ * process is involved, so what a command wrote is read back exactly. */
+function readGuestFile(
+  mk: KernelHostInterface,
+  pid: number,
+  path: string,
+  cap: number,
+): Uint8Array {
+  const pathBytes = new TextEncoder().encode(path);
+  const open = new Uint8Array(12 + pathBytes.length);
+  const view = new DataView(open.buffer);
+  view.setUint32(0, 0, true); // O_RDONLY
+  view.setUint32(4, 0, true);
+  view.setUint32(8, pathBytes.length, true);
+  open.set(pathBytes, 12);
+  const opened = mk.kernelSyscall(METHOD.KERNEL_FS_OPEN, pid, open, 0);
+  const fd = Number(opened.rc);
+  if (fd < 0) return new Uint8Array();
+  const fdRequest = new Uint8Array(4);
+  new DataView(fdRequest.buffer).setUint32(0, fd, true);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const chunkCap = Math.max(512, Math.min(cap, mk.scratchLen - 16));
+  try {
+    while (total < cap) {
+      const read = mk.kernelSyscall(
+        METHOD.KERNEL_FS_READ,
+        pid,
+        fdRequest,
+        chunkCap,
+      );
+      const count = Number(read.rc);
+      if (count <= 0) break;
+      chunks.push(
+        read.response.subarray(0, Math.min(count, cap - total)).slice(),
+      );
+      total += count;
+    }
+  } finally {
+    mk.kernelSyscall(METHOD.KERNEL_FS_CLOSE, pid, fdRequest, 0);
+  }
+  const out = new Uint8Array(Math.min(total, cap));
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return out;
 }
 
 export async function bootPlayground(
@@ -238,6 +296,90 @@ export async function bootPlayground(
         // Its exit is the kernel's business (the connection file, the log);
         // nothing here waits on it.
       });
+    },
+    async process(line, io) {
+      // The host keeps stdio per pid: a forked child's output lands in its
+      // own buffer (grouped after the parent's, not interleaved), and
+      // host-fed stdin never reaches a pipeline element
+      // (yurtos-kernel#2817). Guest files have neither problem, so the
+      // command's three streams are redirected through /tmp and the
+      // outputs read back once it has exited, bounded, by an exec'd
+      // `head` -- a single command, whose own stdout the host does
+      // capture. `line` ends in the exec of the command, so the redirects
+      // bind to the command and every child inherits them.
+      const tag = crypto.randomUUID();
+      const path = (name: string) => `/tmp/.yurt-exec-${tag}.${name}`;
+      const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+      const single = async (command: string) => {
+        const p = await spawnShell(["/bin/sh", "-c", command]);
+        p.closeStdin();
+        await p.runStartAsync();
+      };
+      let stdinRedirect = "< /dev/null";
+      if (io.stdin !== undefined) {
+        // From the host, not through a process: host-fed stdin passes the
+        // console line discipline (ICRNL, VEOF, VERASE, ISIG) and a 64 KiB
+        // buffer, so bytes would be altered or dropped; a file written by
+        // the kernel is exact at any size.
+        writeRamfsFile(mk, path("in"), io.stdin);
+        stdinRedirect = `< ${q(path("in"))}`;
+      }
+      const process = await spawnShell([
+        "/bin/sh",
+        "-c",
+        `${line} > ${q(path("out"))} 2> ${q(path("err"))} ${stdinRedirect}`,
+      ]);
+      process.closeStdin();
+      // Read back once the command has exited, one byte past the bound
+      // so the registry sees the cut and says so; the files go afterwards.
+      let done = false;
+      const sweep = () =>
+        void single(
+          `exec rm -f ${q(path("out"))} ${q(path("err"))} ${q(path("in"))}`,
+        );
+      const exited = process.runStartAsync().then((rc) => {
+        done = true;
+        return rc;
+      }, (error) => {
+        done = true;
+        throw error;
+      });
+      // The registry reads the files right after the exit; the sweep comes
+      // well after, whichever way the exit went.
+      exited.finally(() => setTimeout(sweep, 5000)).catch(() => {});
+      const cap = io.maxOutputBytes + 1;
+      const taken = { out: false, err: false };
+      const take = (stream: "out" | "err") => {
+        if (!done || taken[stream]) return new Uint8Array();
+        taken[stream] = true;
+        return readGuestFile(mk, user.pid, path(stream), cap);
+      };
+      return {
+        pid: process.pid,
+        exited,
+        takeStdout: () => take("out"),
+        takeStderr: () => take("err"),
+        // The files are readable while the command runs: what a stuck
+        // process has written so far.
+        peek: () => ({
+          stdout: readGuestFile(mk, user.pid, path("out"), cap),
+          stderr: readGuestFile(mk, user.pid, path("err"), cap),
+        }),
+      };
+    },
+    async signal(pid, signal) {
+      // A process of the page's own, not the user's shell: `kill` is
+      // BusyBox's, and the login user may signal its own processes. The
+      // command's children (a pipeline, a background job) share its
+      // process group, so the group goes first; the pid itself after, in
+      // case it is not a group leader on this host.
+      const process = await spawnShell([
+        "/bin/sh",
+        "-c",
+        `kill -${signal} -- -${pid} 2>/dev/null; kill -${signal} ${pid} 2>/dev/null; true`,
+      ]);
+      process.closeStdin();
+      await process.runStartAsync();
     },
     dialSandboxPort: (port) => mk.dialSandboxPort(port),
     onOutput: output.onOutput,

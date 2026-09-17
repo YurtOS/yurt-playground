@@ -4,17 +4,81 @@ import { createPlaygroundTerminal } from "./terminal.ts";
 import type { JupyterReply } from "./jupyter.ts";
 import { desktopInfo } from "./native.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
+import {
+  createYurt,
+  type YurtStatus,
+  type YurtTransport,
+} from "./agent_api.ts";
+import type { ExecOptions } from "./executions.ts";
 
 type FromWorker =
   | { type: "status"; text: string }
   | { type: "out"; bytes: number[] }
   | { type: "error"; message: string }
   | { type: "notebook-ready" }
+  | {
+    type: "yurt-reply";
+    req: number;
+    ok: boolean;
+    value?: unknown;
+    error?: string;
+  }
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string };
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
+
+/**
+ * window.yurt (src/agent_api.ts): a driver's view of the sandbox, present
+ * from the first script -- idle before Start, failed when the page refuses
+ * to boot -- so a driver can always read `status` and wait on `ready`.
+ * The transport is wired once the coordinator worker exists.
+ */
+const yurtState = (() => {
+  let status: YurtStatus = "idle";
+  let resolveReady: () => void = () => {};
+  let rejectReady: (e: Error) => void = () => {};
+  const ready = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  ready.catch(() => {});
+  let transport: YurtTransport | undefined;
+  const notBooted = () => Promise.reject(new Error(`the sandbox is ${status}`));
+  const proxy: YurtTransport = {
+    spawn: (cmd, opts) => transport?.spawn(cmd, opts) ?? notBooted(),
+    wait: (id) => transport?.wait(id) ?? notBooted(),
+    waitRaw: (id) => transport?.waitRaw(id) ?? notBooted(),
+    kill: (id, signal) => transport?.kill(id, signal) ?? notBooted(),
+    list: () => transport?.list() ?? notBooted(),
+  };
+  const set = (next: YurtStatus) => {
+    status = next;
+    document.documentElement.dataset.yurtStatus = next;
+  };
+  set("idle");
+  (globalThis as { yurt?: unknown }).yurt = createYurt(proxy, {
+    current: () => status,
+    ready,
+  });
+  return {
+    set,
+    isRunning: () => status === "running",
+    running() {
+      set("running");
+      resolveReady();
+    },
+    failed(message: string) {
+      if (status === "failed") return;
+      set("failed");
+      rejectReady(new Error(message));
+    },
+    connect(t: YurtTransport) {
+      transport = t;
+    },
+  };
+})();
 
 function byId(id: string): HTMLElement {
   const element = document.getElementById(id);
@@ -133,14 +197,45 @@ function boot(
     status.textContent = "failed";
     showFailure(deviceClass() === "tablet" ? "tablet" : "error", message);
   };
+  // window.yurt (src/agent_api.ts): a driver's view of the same sandbox.
+  // Requests go to the worker with a number the reply echoes.
+  const pending = new Map<
+    number,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void }
+  >();
+  let nextReq = 1;
+  const ask = <T>(message: Record<string, unknown>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const req = nextReq++;
+      pending.set(req, { resolve: resolve as (v: unknown) => void, reject });
+      worker.postMessage({ ...message, req });
+    });
+  const transport: YurtTransport = {
+    spawn: (cmd: string, opts: ExecOptions) =>
+      ask({ type: "yurt-spawn", cmd, opts }),
+    wait: (id: string) => ask({ type: "yurt-wait", id, raw: false }),
+    waitRaw: (id: string) => ask({ type: "yurt-wait", id, raw: true }),
+    kill: (id: string, signal?: string) =>
+      ask({ type: "yurt-kill", id, signal }),
+    list: () => ask({ type: "yurt-list" }),
+  };
+  yurtState.connect(transport);
+  yurtState.set("booting");
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
     // The coordinator's empty status is "booted"; say so.
     if (msg.type === "status") {
       status.textContent = msg.text || "running";
       rememberBooting(msg.text || "running");
+      if (msg.text === "") yurtState.running();
     }
-    if (msg.type === "error") fail(msg.message);
+    if (msg.type === "error") {
+      fail(msg.message);
+      // Only a boot failure is the sandbox's failure: an error once the
+      // shell is up ("Jupyter is not ready", a restart that failed) leaves
+      // exec working, and the status says so.
+      if (!yurtState.isRunning()) yurtState.failed(msg.message);
+    }
     if (msg.type === "out") {
       terminalEmpty = false;
       term.write(new Uint8Array(msg.bytes));
@@ -150,11 +245,23 @@ function boot(
       status.textContent = "running";
       rememberBooting(undefined);
     }
+    if (msg.type === "yurt-reply") {
+      const waiter = pending.get(msg.req);
+      pending.delete(msg.req);
+      if (waiter === undefined) return;
+      if (msg.ok) waiter.resolve(msg.value);
+      else waiter.reject(new Error(msg.error ?? "yurt request failed"));
+    }
     if (msg.type === "cell-result") notebook.result(msg.id, msg.result);
     if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
   };
   worker.onerror = (event) => {
-    fail(event.message || "coordinator worker failed");
+    const message = event.message || "coordinator worker failed";
+    fail(message);
+    yurtState.failed(message);
+    // Nothing will answer them now.
+    for (const waiter of pending.values()) waiter.reject(new Error(message));
+    pending.clear();
   };
   term.onData((text) => worker.postMessage({ type: "in", text }));
   term.onResize((size) =>
@@ -187,6 +294,7 @@ async function runPage(): Promise<void> {
   }
   if (desktop === undefined && globalThis.crossOriginIsolated !== true) {
     byId("status").textContent = "need COOP/COEP";
+    yurtState.failed("the page is not cross-origin isolated");
     globalThis.location.replace("./unsupported.html");
     throw new Error("not crossOriginIsolated");
   }
@@ -220,6 +328,11 @@ async function runPage(): Promise<void> {
     if (device === "phone" || cutOff !== undefined) {
       byId("status").textContent = "failed";
       showFailure(device === "phone" ? "phone" : "reloaded", cutOff);
+      yurtState.failed(
+        device === "phone"
+          ? "not on a phone"
+          : `a previous boot was cut off at ${cutOff}`,
+      );
       return;
     }
   }
