@@ -598,7 +598,9 @@
               BusyBox <code>ash</code> on a real PTY, on the Yurt kernel
               compiled to WebAssembly. Loads about 90 MB once, then boots here
               in the tab; the cell below starts a Jupyter kernel on the same
-              machine.
+              machine. The sandbox has no network: <code>pip install</code>
+              and <code>wget</code> fail by design (the desktop app below has
+              both).
             </p>
           </div>
           <div id="failed" data-testid="boot-failed" hidden>
