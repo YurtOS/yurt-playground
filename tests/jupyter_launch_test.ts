@@ -3,6 +3,8 @@ import {
   buildKernelLaunchCommand,
   buildKernelStartLine,
   JUPYTER_CONNECTION_FILE,
+  JUPYTER_LOG_FILE,
+  JUPYTER_PID_FILE,
 } from "../src/jupyter.ts";
 import { stripAnsi } from "../src/notebook.ts";
 
@@ -14,14 +16,15 @@ Deno.test("Jupyter launch uses Python 3 and a guest connection file", () => {
   );
 });
 
-Deno.test("the kernel is started outside the interactive shell's job table", () => {
-  // `cmd &` typed at the prompt makes ipykernel job [1] of the user's own
-  // shell, so the ordinary `sleep 30 & … kill %1` kills Jupyter instead of
-  // the user's job (yurt-playground#82). A subshell keeps it off the list.
+Deno.test("the kernel start line backgrounds the launch and records its pid", () => {
+  // Not in a subshell yet: on the native runtime a child is lost when its
+  // parent exits (yurtos-kernel#2816), so the kernel stays a job of the
+  // interactive shell for now (yurt-playground#82).
   const line = buildKernelStartLine();
-  assertEquals(line.startsWith("("), true, line);
-  assertEquals(line.includes(`${buildKernelLaunchCommand()} >`), true, line);
-  assertEquals(line.trimEnd().endsWith(")"), true, line);
+  assertEquals(
+    line,
+    `${buildKernelLaunchCommand()} >${JUPYTER_LOG_FILE} 2>&1 & echo $! > ${JUPYTER_PID_FILE}`,
+  );
 });
 
 Deno.test("stripAnsi removes ipykernel's colour codes from a traceback line", () => {

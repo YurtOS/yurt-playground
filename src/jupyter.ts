@@ -95,20 +95,19 @@ export function buildKernelLaunchCommand(
 }
 
 /** The shell line that starts the kernel in the background and records
- * its pid, run in a subshell: typed at the prompt as `cmd &`, ipykernel
- * would be job [1] of the user's own interactive shell, and the ordinary
- * `sleep 30 & … kill %1` would kill Jupyter instead of the user's job
- * (yurt-playground#82). A subshell's background child is not in the
- * parent's job table; `$!` inside it is still the kernel's pid. */
+ * its pid. Typed at the prompt, so ipykernel is job [1] of the user's own
+ * interactive shell and `kill %1` kills it (yurt-playground#82); a subshell
+ * would keep it off the job table, but on the native runtime a child does
+ * not survive its parent's exit (yurtos-kernel#2816), so that waits. */
 export function buildKernelStartLine(
   ports?: KernelPorts,
   connectionFile = JUPYTER_CONNECTION_FILE,
   logFile = JUPYTER_LOG_FILE,
   pidFile = JUPYTER_PID_FILE,
 ): string {
-  return `( ${
+  return `${
     buildKernelLaunchCommand(connectionFile, ports)
-  } >${logFile} 2>&1 & echo $! > ${pidFile} )`;
+  } >${logFile} 2>&1 & echo $! > ${pidFile}`;
 }
 
 /** The shell line that stops a kernel started by `startGuestKernel` and

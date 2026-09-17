@@ -74,6 +74,9 @@ if (import.meta.main) {
     if (!(lead ?? "").includes("natively")) {
       throw new Error(`the native page still claims the tab: ${lead}`);
     }
+    if (await page.locator("#offline-note").isVisible()) {
+      throw new Error("the native page still says the sandbox has no network");
+    }
     // Same budget as playground_e2e.ts: ~30 s on a laptop, several times
     // that on a small CI runner.
     await page.waitForFunction(

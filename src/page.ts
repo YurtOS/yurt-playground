@@ -176,6 +176,7 @@ async function runPage(): Promise<void> {
     byId("lead").textContent =
       "A Linux sandbox running natively on this machine, shown in this tab: " +
       "a shell, Python 3.14, NumPy, Jupyter, with network access.";
+    byId("offline-note").hidden = true;
   }
   if (desktop === undefined && globalThis.crossOriginIsolated !== true) {
     byId("status").textContent = "need COOP/COEP";
