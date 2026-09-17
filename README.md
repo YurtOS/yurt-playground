@@ -38,7 +38,8 @@ then open it again. A terminal window shows the server; close it to stop.
 `yurt-playground` (or the _Yurt Playground_ desktop entry). Ctrl-C stops it.
 
 Either way the launcher prints `Yurt playground: http://127.0.0.1:<port>/` and
-opens it in your default browser.
+opens it in your default browser. `yurt-playground --port N` fixes the port and
+`--no-open` skips the browser (a headless box, a script); `--help` lists them.
 
 Inside the app: the launcher (this repo, compiled with Deno), the site as
 deployed, and the native sandbox — `yurt-desktop-host`, the Yurt runtime, the

@@ -14,7 +14,8 @@
 #           allowed in System Settings → Privacy & Security.
 #   Linux   a .deb installing /usr/lib/yurt-playground/ (the binary, dist/
 #           and runtime/ side by side), /usr/bin/yurt-playground and a
-#           desktop entry.
+#           desktop entry; it depends on the glibc runtime/GLIBC_REQUIRED
+#           names when the desktop-host release records one.
 #
 # The bundled dist/ omits the kernel wasm and image parts: the page never
 # fetches them in native mode, and runtime/ carries both.
@@ -106,6 +107,18 @@ Terminal=true
 Categories=Development;
 DESKTOP
   installed_kb=$(du -sk "$pkg/data" | cut -f1)
+  # The glibc the host and runtime import, recorded by the desktop-host
+  # release beside them (yurt-sandbox scripts/build-desktop-host.sh): what
+  # the package must depend on, or apt installs a package whose first run
+  # dies with "version GLIBC_x.y not found" (yurt-sandbox#250). A release
+  # from before that file declares nothing, as before.
+  depends=""
+  if [ -f "$runtime/GLIBC_REQUIRED" ]; then
+    depends="Depends: libc6 (>= $(cat "$runtime/GLIBC_REQUIRED"))"$'\n'
+  fi
+  # xdg-utils only opens the browser; on a headless box it dragged 243
+  # packages of X11 and Mesa in as a Recommends (#91). The launcher prints
+  # the URL either way.
   cat > "$pkg/control/control" <<CONTROL
 Package: yurt-playground
 Version: $version
@@ -113,7 +126,7 @@ Section: devel
 Priority: optional
 Architecture: $deb_arch
 Installed-Size: $installed_kb
-Recommends: xdg-utils
+${depends}Suggests: xdg-utils
 Maintainer: YurtOS <noreply@yurtos.org>
 Homepage: https://github.com/YurtOS/yurt-playground
 Description: Yurt playground desktop app
