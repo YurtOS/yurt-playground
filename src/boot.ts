@@ -39,6 +39,11 @@ export type PlaygroundSession = {
   stop: () => void;
   controller: SessionController;
   terminal: PtyTransport;
+  /** Run a shell line as a process of the page's own (`sh -c`), as the
+   * login user in the login home, with no terminal: what the Jupyter
+   * kernel is started as, so it is no job of the user's shell. Absent on
+   * the desktop app's page, which has only the terminal. */
+  spawn?: (line: string) => Promise<void>;
   dialSandboxPort: (
     port: number,
   ) => ReturnType<KernelHostInterface["dialSandboxPort"]>;
@@ -147,20 +152,27 @@ export async function bootPlayground(
     throw new Error("playground image is missing /bin/sh");
   }
 
+  /** `/bin/sh` with `argv`, as the login user in the login home. */
+  const spawnShell = async (argv: string[]) => {
+    const process = await mk.spawnUserProcessWithArgsAsync(
+      sh,
+      argv.map((arg) => s(arg)),
+      { ...DEFAULT_ENV },
+    );
+    setPidCredentials(mk, process.pid, LOGIN_UID, LOGIN_GID);
+    const { rc: chdirRc } = mk.kernelSyscall(
+      METHOD.KERNEL_FS_CHDIR,
+      process.pid,
+      s(LOGIN_HOME),
+      0,
+    );
+    if (Number(chdirRc) !== 0) {
+      throw new Error(`chdir ${LOGIN_HOME} failed: rc=${chdirRc}`);
+    }
+    return process;
+  };
   env.show("starting ash");
-  const user = await mk.spawnUserProcessWithArgsAsync(sh, [s("/bin/sh")], {
-    ...DEFAULT_ENV,
-  });
-  setPidCredentials(mk, user.pid, LOGIN_UID, LOGIN_GID);
-  const { rc: chdirRc } = mk.kernelSyscall(
-    METHOD.KERNEL_FS_CHDIR,
-    user.pid,
-    s(LOGIN_HOME),
-    0,
-  );
-  if (Number(chdirRc) !== 0) {
-    throw new Error(`chdir ${LOGIN_HOME} failed: rc=${chdirRc}`);
-  }
+  const user = await spawnShell(["/bin/sh"]);
   const pty = mk.attachHostPty(user.pid);
   mk.ptySetWinsize(pty, env.term.rows, env.term.cols);
   const encoder = new TextEncoder();
@@ -218,6 +230,15 @@ export async function bootPlayground(
     stop,
     controller,
     terminal,
+    async spawn(line) {
+      const process = await spawnShell(["/bin/sh", "-c", line]);
+      // Nothing feeds it: stdin is at end-of-file from the start.
+      process.closeStdin();
+      void process.runStartAsync().catch(() => {
+        // Its exit is the kernel's business (the connection file, the log);
+        // nothing here waits on it.
+      });
+    },
     dialSandboxPort: (port) => mk.dialSandboxPort(port),
     onOutput: output.onOutput,
     hushOutput: output.hushOutput,
