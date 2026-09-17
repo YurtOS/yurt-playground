@@ -204,7 +204,19 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       : await bootNativePlayground(env);
     post({ type: "status", text: "starting Jupyter" });
     launchSession = session;
-    jupyter = await startGuestKernel(session, kernelPorts);
+    // ipykernel's imports are JIT-bound: ~30 s on a laptop, minutes on a
+    // small or busy machine (yurt-playground#89). A count that moves is
+    // the difference between slow and stuck.
+    const started = Date.now();
+    const ticking = setInterval(() => {
+      const seconds = Math.round((Date.now() - started) / 1000);
+      post({ type: "status", text: `starting Jupyter (${seconds} s)` });
+    }, 5000);
+    try {
+      jupyter = await startGuestKernel(session, kernelPorts);
+    } finally {
+      clearInterval(ticking);
+    }
     subscribeJupyter(jupyter);
     post({ type: "notebook-ready" });
   } catch (error) {

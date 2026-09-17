@@ -3,6 +3,7 @@ import { mountNotebook } from "./notebook.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import type { JupyterReply } from "./jupyter.ts";
 import { desktopInfo } from "./native.ts";
+import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -11,6 +12,9 @@ type FromWorker =
   | { type: "notebook-ready" }
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string };
+
+/** Answers other tabs' "who has a sandbox?" while this one has one. */
+let stopAnnouncing: () => void = () => {};
 
 function byId(id: string): HTMLElement {
   const element = document.getElementById(id);
@@ -118,6 +122,9 @@ function boot(
   // stays usable.
   let terminalEmpty = true;
   const fail = (message: string) => {
+    // A tab with a failed boot has no sandbox to speak for.
+    stopAnnouncing();
+    stopAnnouncing = () => {};
     rememberBooting(undefined);
     if (!terminalEmpty) {
       status.textContent = `failed: ${message}`;
@@ -192,6 +199,16 @@ async function runPage(): Promise<void> {
   const start = document.getElementById("start");
   const begin = () => {
     if (start) start.hidden = true;
+    // Two sandboxes in one browser share the CPU (yurt-playground#84): say
+    // so before this one boots, and answer the next tab that asks. The
+    // desktop app's sandbox is native and one per launcher, so neither
+    // applies there.
+    if (desktop === undefined) {
+      void anotherSandboxRunning().then((another) => {
+        if (another) byId("another-tab-note").hidden = false;
+      });
+      stopAnnouncing = announceSandbox();
+    }
     boot(notebook, execute, desktop?.kernelPorts);
   };
   // Only the in-tab kernel has the memory problem; the desktop app's page
