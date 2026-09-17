@@ -8,6 +8,14 @@ on:
 
 # The workflow token can read the repository and nothing else; the
 # cross-repo and Cloudflare credentials come from named secrets.
+# A push on top of a push runs the newest tree only: the superseded run's
+# integration job (15 min) and both desktop bundles (one on a macOS runner)
+# are cancelled. Pushes to main are keyed by commit and never cancel each
+# other.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -23,6 +31,11 @@ jobs:
     name: fmt / lint
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Also decides whether the integration job can run: a job is billed by
+    # the minute rounded up, so the ten-second token check rides here rather
+    # than on a runner of its own.
+    outputs:
+      present: ${{ steps.token.outputs.present }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,22 +46,10 @@ jobs:
           # (public/index.html reindents), so a floating formatter turns CI red
           # with no code change and disagrees with what developers run locally.
           deno-version: v2.7.14
-      - name: fmt
-        run: deno fmt --check
-      - name: lint
-        run: deno lint
-
-  # yurtos-kernel and yurt-jupyter are PRIVATE, and the default
-  # GITHUB_TOKEN cannot read another private repository. Without a PAT stored as
-  # KERNEL_CHECKOUT_TOKEN the integration job cannot check them out at all, so
-  # it announces that loudly instead of dying at "Repository not found".
-  kernel-access:
-    name: cross-repo checkout token
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      present: ${{ steps.token.outputs.present }}
-    steps:
+      # yurtos-kernel and yurt-jupyter are PRIVATE, and the default
+      # GITHUB_TOKEN cannot read another private repository. Without a PAT stored as
+      # KERNEL_CHECKOUT_TOKEN the integration job cannot check them out at all, so
+      # it announces that loudly instead of dying at "Repository not found".
       - name: Check for the cross-repo checkout token
         id: token
         env:
@@ -73,10 +74,18 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: fmt
+        run: deno fmt --check
+      - name: lint
+        run: deno lint
+
   deno:
     name: integration (cross-repo)
-    needs: kernel-access
-    if: needs.kernel-access.outputs.present == 'true'
+    needs: checks
+    # The token step runs first in `checks`, and this gate does not wait for
+    # fmt/lint to pass: a formatting nit must not hide the integration result
+    # (review). `!cancelled()` overrides the implicit success() on `needs`.
+    if: ${{ !cancelled() && needs.checks.outputs.present == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -220,6 +229,10 @@ jobs:
   # can execute; the other is built the same way from the same inputs.
   desktop:
     needs: deno
+    # `success()` is transitive over `needs`, and `deno` now hangs off
+    # `checks`; the bundles must not be hidden by a fmt/lint nit any more
+    # than the integration job is.
+    if: ${{ !cancelled() && needs.deno.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -301,7 +314,7 @@ jobs:
     needs: desktop
     # Only main: a workflow_dispatch on a branch would otherwise become the
     # "latest" release the home page links.
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && needs.desktop.result == 'success' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
