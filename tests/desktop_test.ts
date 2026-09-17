@@ -94,6 +94,8 @@ Deno.test("desktop server 404s carry the isolation headers and stay in dist/", a
   try {
     const handle = handleDistRequest(dist);
     for (const path of ["/nope", "/../desktop_test.ts", "/%zz", "/jupyter/"]) {
+      // /jupyter/ is a directory without an index here (the real site's has
+      // one); a directory with nothing to serve is still a 404.
       const res = await handle(new Request(`http://desktop${path}`));
       assertEquals(res.status, 404, path);
       assertIsolated(res);
@@ -266,6 +268,39 @@ Deno.test("the launcher refuses other origins on the sandbox endpoints", async (
     await own.body?.cancel();
   } finally {
     await server.shutdown();
+    await Deno.remove(dist, { recursive: true });
+  }
+});
+
+Deno.test("desktop server applies Pages' directory rule to the Jupyter apps", async () => {
+  // Notebook 7 opens "New Console for Notebook" at `consoles?path=…` — no
+  // index.html, no trailing slash — and its assets are relative, so the
+  // directory must redirect to its slash form (query kept) and that form
+  // must serve the index, exactly as Cloudflare Pages does (#73).
+  const dist = await fakeDist();
+  try {
+    const handle = handleDistRequest(dist);
+    const bare = await handle(
+      new Request("http://desktop/jupyter/lab?path=welcome.ipynb"),
+    );
+    assertEquals(bare.status, 308);
+    assertEquals(
+      bare.headers.get("location"),
+      "/jupyter/lab/?path=welcome.ipynb",
+    );
+    assertIsolated(bare);
+    await bare.body?.cancel();
+    const slash = await handle(
+      new Request("http://desktop/jupyter/lab/?path=welcome.ipynb"),
+    );
+    assertEquals(slash.status, 200);
+    assertEquals(slash.headers.get("content-type"), "text/html; charset=utf-8");
+    assertStringIncludes(
+      slash.headers.get("Content-Security-Policy")!,
+      "'unsafe-eval'",
+    );
+    assertStringIncludes(await slash.text(), "window.lab = 1");
+  } finally {
     await Deno.remove(dist, { recursive: true });
   }
 });
