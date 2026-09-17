@@ -11,8 +11,13 @@ const CHANNEL = "yurt-playground-sandbox";
 
 type Presence = { type: "who" } | { type: "here" };
 
+/** A browser with cross-origin isolation but no BroadcastChannel (Safari
+ * 15.2-15.3) boots without the question; the channel is a courtesy. */
+const supported = typeof BroadcastChannel !== "undefined";
+
 /** Answer "who has a sandbox?" until the returned function is called. */
 export function announceSandbox(name = CHANNEL): () => void {
+  if (!supported) return () => {};
   const channel = new BroadcastChannel(name);
   channel.onmessage = (event: MessageEvent<Presence>) => {
     if (event.data?.type === "who") channel.postMessage({ type: "here" });
@@ -25,6 +30,7 @@ export function anotherSandboxRunning(
   timeoutMs = 300,
   name = CHANNEL,
 ): Promise<boolean> {
+  if (!supported) return Promise.resolve(false);
   return new Promise((resolve) => {
     const channel = new BroadcastChannel(name);
     const done = (answer: boolean) => {

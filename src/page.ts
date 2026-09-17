@@ -13,6 +13,9 @@ type FromWorker =
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string };
 
+/** Answers other tabs' "who has a sandbox?" while this one has one. */
+let stopAnnouncing: () => void = () => {};
+
 function byId(id: string): HTMLElement {
   const element = document.getElementById(id);
   if (element === null) throw new Error(`missing #${id}`);
@@ -119,6 +122,9 @@ function boot(
   // stays usable.
   let terminalEmpty = true;
   const fail = (message: string) => {
+    // A tab with a failed boot has no sandbox to speak for.
+    stopAnnouncing();
+    stopAnnouncing = () => {};
     rememberBooting(undefined);
     if (!terminalEmpty) {
       status.textContent = `failed: ${message}`;
@@ -193,7 +199,7 @@ async function runPage(): Promise<void> {
       void anotherSandboxRunning().then((another) => {
         if (another) byId("another-tab-note").hidden = false;
       });
-      announceSandbox();
+      stopAnnouncing = announceSandbox();
     }
     boot(notebook, execute, desktop?.kernelPorts);
   };

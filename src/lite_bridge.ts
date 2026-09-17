@@ -7,6 +7,7 @@
  * deno-built bundles.
  */
 import { desktopInfo } from "./native.ts";
+import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import type {
@@ -87,15 +88,29 @@ export function startPlaygroundKernel(
   // The desktop app's launcher answers /desktop.json and the sandbox is
   // native; on the hosted site the kernel boots in the worker, which needs
   // the page to be cross-origin isolated and says so if it is not.
-  void desktopInfo().then((desktop) =>
+  void desktopInfo().then(async (desktop) => {
+    // The Notebook and Lab pages boot a sandbox of their own, like the home
+    // page: they ask the other tabs first and answer them afterwards
+    // (yurt-playground#84). The desktop app's sandbox is native, one per
+    // launcher, so neither applies there.
+    if (desktop === undefined) {
+      if (await anotherSandboxRunning()) {
+        for (const listener of statusListeners) {
+          listener(
+            "another tab already runs a sandbox; this boot shares the CPU with it",
+          );
+        }
+      }
+      announceSandbox();
+    }
     worker.postMessage({
       type: "start",
       cols: 80,
       rows: 24,
       isolated: globalThis.crossOriginIsolated === true,
       kernelPorts: desktop?.kernelPorts,
-    })
-  );
+    });
+  });
   bridge = {
     get ready() {
       return ready;
