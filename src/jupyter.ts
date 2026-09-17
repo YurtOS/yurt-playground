@@ -16,6 +16,10 @@ const encoder = new TextEncoder();
 
 export type JupyterLaunchSession = {
   terminal: { write(bytes: Uint8Array): Promise<void> };
+  /** Run a shell line as a process of the page's own, outside the user's
+   * shell (the in-tab boot can; the desktop app's page has only the
+   * terminal). Without it the launch is typed at the prompt. */
+  spawn?(line: string): Promise<void>;
   dialSandboxPort(port: number): SandboxPortConn;
   onOutput(handler: (bytes: Uint8Array) => void): () => void;
   /** See PlaygroundSession.hushOutput; a session without one shows all. */
@@ -110,6 +114,23 @@ export function buildKernelStartLine(
   } >${logFile} 2>&1 & echo $! > ${pidFile}`;
 }
 
+/** The shell line a process of the page's own runs to become the kernel:
+ * `sh -c` notes its pid (the kernel's, once it has exec'd) for the stop
+ * command, then execs the launch with its output in the log. Typed at the
+ * prompt instead, ipykernel was job [1] of the user's interactive shell
+ * and `kill %1` killed it (yurt-playground#82); as its own process it is
+ * in no job table. */
+export function buildKernelOwnProcessLine(
+  ports?: KernelPorts,
+  connectionFile = JUPYTER_CONNECTION_FILE,
+  logFile = JUPYTER_LOG_FILE,
+  pidFile = JUPYTER_PID_FILE,
+): string {
+  return `echo $$ > ${pidFile}; exec ${
+    buildKernelLaunchCommand(connectionFile, ports)
+  } >${logFile} 2>&1`;
+}
+
 /** The shell line that stops a kernel started by `startGuestKernel` and
  * clears its files, so the next launch cannot read a stale connection file.
  * SIGKILL, not TERM: a kernel that is being restarted may be wedged. */
@@ -183,9 +204,16 @@ export async function startGuestKernel(
   const release = hushUntil(session, CONNECTION_MARKER);
   let connection: KernelConnection;
   try {
-    await session.terminal.write(
-      encoder.encode(`${buildKernelStartLine(ports)}\n`),
-    );
+    if (session.spawn !== undefined) {
+      await session.spawn(buildKernelOwnProcessLine(ports));
+    } else {
+      // The desktop app's page has only the terminal: the launch is a
+      // background job of the user's shell until the host starts the
+      // kernel itself (yurt-playground#82, yurtos-kernel#2816).
+      await session.terminal.write(
+        encoder.encode(`${buildKernelStartLine(ports)}\n`),
+      );
+    }
     connection = await readConnectionFile(session);
   } finally {
     release();

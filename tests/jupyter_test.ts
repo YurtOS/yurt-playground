@@ -8,6 +8,7 @@ import {
   connectJupyterWithRetries,
   executeCell,
   hushUntil,
+  startGuestKernel,
 } from "../src/jupyter.ts";
 import type { JupyterMessage } from "../src/jupyter_protocol.ts";
 import type {
@@ -143,6 +144,47 @@ Deno.test("executeCell keeps stderr apart from stdout", async () => {
     display: "",
     traceback: [],
   });
+});
+
+Deno.test("a session that can spawn gets the kernel as its own process, not typed", async () => {
+  const typed: string[] = [];
+  const spawned: string[] = [];
+  const handlers = new Set<(bytes: Uint8Array) => void>();
+  const session = {
+    terminal: {
+      write(bytes: Uint8Array) {
+        typed.push(new TextDecoder().decode(bytes));
+        // The connection-file read is still typed: answer it with "no
+        // file", which ends the launch right there, spawn already done.
+        if (typed.at(-1)?.includes(JUPYTER_CONNECTION_FILE)) {
+          const reply = new TextEncoder().encode(
+            "KERNEL_LOG\n(nothing)\nYURT_JUPYTER_CONNECTION_READY\n$ ",
+          );
+          for (const handler of handlers) handler(reply);
+        }
+        return Promise.resolve();
+      },
+    },
+    spawn(line: string) {
+      spawned.push(line);
+      return Promise.resolve();
+    },
+    dialSandboxPort: () => {
+      throw new Error("not dialed in this test");
+    },
+    onOutput(handler: (bytes: Uint8Array) => void) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+  };
+  await assertRejects(
+    () => startGuestKernel(session),
+    Error,
+    "connection file was not written",
+  );
+  assertEquals(spawned.length, 1);
+  assertEquals(spawned[0].includes("exec python3 -m ipykernel_launcher"), true);
+  assertEquals(typed.some((t) => t.includes("ipykernel_launcher")), false);
 });
 
 Deno.test("executeCell removes its listener after a timeout", async () => {

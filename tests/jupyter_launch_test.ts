@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert";
 import {
   buildKernelLaunchCommand,
+  buildKernelOwnProcessLine,
   buildKernelStartLine,
   JUPYTER_CONNECTION_FILE,
   JUPYTER_LOG_FILE,
@@ -33,4 +34,15 @@ Deno.test("stripAnsi removes ipykernel's colour codes from a traceback line", ()
     "--- ZeroDivisionError: division by zero",
   );
   assertEquals(stripAnsi("plain"), "plain");
+});
+
+Deno.test("as its own process the kernel records its pid and execs in place", () => {
+  // Typed at the prompt, ipykernel was job [1] of the user's own shell and
+  // `kill %1` killed it (yurt-playground#82). Spawned as the page's own
+  // `sh -c`, the shell notes its pid (the kernel's, after exec) for the
+  // stop command and becomes the kernel; no job table is involved.
+  assertEquals(
+    buildKernelOwnProcessLine(),
+    `echo $$ > ${JUPYTER_PID_FILE}; exec ${buildKernelLaunchCommand()} >${JUPYTER_LOG_FILE} 2>&1`,
+  );
 });
