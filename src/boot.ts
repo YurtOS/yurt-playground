@@ -45,6 +45,10 @@ export type PlaygroundSession = {
    * kernel is started as, so it is no job of the user's shell. Absent on
    * the desktop app's page, which has only the terminal. */
   spawn?: (line: string) => Promise<void>;
+  /** A guest file's bytes as the login shell would read them, or
+   * `undefined` when there is no such file (the Jupyter connection file,
+   * looked for without typing into the user's shell). */
+  readFile?: (path: string) => Promise<Uint8Array | undefined>;
   /** The same, handing the process back: what a driver's `exec` runs
    * (src/executions.ts). */
   process?: Spawner;
@@ -380,6 +384,13 @@ export async function bootPlayground(
       ]);
       process.closeStdin();
       await process.runStartAsync();
+    },
+    // The Jupyter connection file, looked for by the page itself: nothing is
+    // typed into the user's shell for it (yurtos-kernel#2824). Read as the
+    // login shell, whose credentials apply; a missing file is `undefined`.
+    readFile(path) {
+      const bytes = readGuestFile(mk, user.pid, path, 64 * 1024);
+      return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
     },
     dialSandboxPort: (port) => mk.dialSandboxPort(port),
     onOutput: output.onOutput,

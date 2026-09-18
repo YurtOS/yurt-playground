@@ -20,6 +20,12 @@ export type JupyterLaunchSession = {
    * shell (the in-tab boot can; the desktop app's page has only the
    * terminal). Without it the launch is typed at the prompt. */
   spawn?(line: string): Promise<void>;
+  /** A guest file's bytes, or `undefined` when it does not exist yet (the
+   * in-tab boot reads the VFS directly). Without it the connection-file
+   * wait is typed at the prompt and the user's shell is busy with it for
+   * as long as ipykernel takes to import -- twenty seconds and more in
+   * which anything the user types queues behind it (yurtos-kernel#2824). */
+  readFile?(path: string): Promise<Uint8Array | undefined>;
   dialSandboxPort(port: number): SandboxPortConn;
   onOutput(handler: (bytes: Uint8Array) => void): () => void;
   /** See PlaygroundSession.hushOutput; a session without one shows all. */
@@ -200,8 +206,15 @@ const TYPED_CONNECTION_MARKER = 'YURT_JUPYTER_CONNECTION_""READY';
 export async function startGuestKernel(
   session: JupyterLaunchSession,
   ports?: KernelPorts,
+  options: { pollMs?: number } = {},
 ): Promise<JupyterTransport> {
-  const release = hushUntil(session, CONNECTION_MARKER);
+  // Only what is typed into the user's shell needs hushing; a session that
+  // spawns the launch and reads the file itself types nothing.
+  const typesIntoShell = session.spawn === undefined ||
+    session.readFile === undefined;
+  const release = typesIntoShell
+    ? hushUntil(session, CONNECTION_MARKER)
+    : () => {};
   let connection: KernelConnection;
   try {
     if (session.spawn !== undefined) {
@@ -214,7 +227,12 @@ export async function startGuestKernel(
         encoder.encode(`${buildKernelStartLine(ports)}\n`),
       );
     }
-    connection = await readConnectionFile(session);
+    connection = session.readFile !== undefined
+      ? await pollConnectionFile(
+        session.readFile,
+        options.pollMs ?? CONNECTION_FILE_POLL_MS,
+      )
+      : await readConnectionFile(session);
   } finally {
     release();
   }
@@ -270,6 +288,40 @@ type KernelConnection = {
   key: string;
   transport: "tcp";
 };
+
+/** How often the connection file is looked for when the session can read
+ * guest files. ipykernel writes it once, late; a look is one VFS open. */
+const CONNECTION_FILE_POLL_MS = 500;
+
+/** The connection file, polled through the session's own file read: the
+ * user's shell is not involved at all. */
+async function pollConnectionFile(
+  readFile: (path: string) => Promise<Uint8Array | undefined>,
+  pollMs: number,
+): Promise<KernelConnection> {
+  const deadline = performance.now() + CONNECTION_FILE_WAIT_SECONDS * 1000;
+  const decoder = new TextDecoder();
+  while (performance.now() < deadline) {
+    const bytes = await readFile(JUPYTER_CONNECTION_FILE);
+    if (bytes !== undefined && bytes.byteLength > 0) {
+      // ipykernel writes the file in one go, but a look can land between
+      // the create and the write: an unparsable file is "not yet".
+      try {
+        return JSON.parse(decoder.decode(bytes)) as KernelConnection;
+      } catch {
+        // fall through to the next look
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  const log = await readFile(JUPYTER_LOG_FILE);
+  const tail = log === undefined
+    ? "(no log)"
+    : decoder.decode(log).split("\n").slice(-30).join("\n");
+  throw new Error(
+    `Jupyter connection file was not written within ${CONNECTION_FILE_WAIT_SECONDS} s; kernel log:\n${tail}`,
+  );
+}
 
 async function readConnectionFile(
   session: JupyterLaunchSession,
