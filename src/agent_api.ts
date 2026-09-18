@@ -45,6 +45,10 @@ export type Yurt = {
     ): Promise<void>;
     list(path: string): Promise<DirEntry[]>;
     download(path: string): Promise<void>;
+    /** Save `dir` (the login home by default) as a gzipped tar, made by a
+     * process of its own: it needs nothing from the user's shell, so it
+     * works while a foreground command spins (#81). */
+    export(dir?: string): Promise<void>;
   };
   /** Every execution the registry still holds. */
   list(): Promise<ExecutionRecord[]>;
@@ -61,6 +65,38 @@ export type YurtTransport = {
 
 /** A typed error for a path this API does not carry. */
 export class PathError extends Error {}
+
+/** The largest archive `fs.export` saves: a home, not a command's output. */
+export const EXPORT_MAX_BYTES = 256 * 1024 * 1024;
+
+/** A gzipped tar of `base` under `parent`, streamed to stdout. Python's
+ * tarfile rather than BusyBox tar: the image's BusyBox is built without
+ * tar's create side (`tar -c` is "unrecognized option"), and CPython is
+ * always there. Paths reach Python as command-line arguments, quoted for
+ * the shell like every other path this API passes. */
+export function buildExportLine(parent: string, base: string): string {
+  const program =
+    "import sys,tarfile;t=tarfile.open(fileobj=sys.stdout.buffer,mode='w|gz');" +
+    "t.add(sys.argv[1],arcname=sys.argv[2]);t.close()";
+  return `cd ${quoted(parent)} && python3 -c ${quoted(program)} ${
+    quoted(base)
+  } ${quoted(base)}`;
+}
+
+/** The directory to archive as its parent and its name; `/` has no name
+ * to tar under and is refused. */
+export function splitExportDir(dir: string): { parent: string; base: string } {
+  checkPath(dir);
+  const trimmed = dir.replace(/\/+$/, "");
+  const at = trimmed.lastIndexOf("/");
+  const base = trimmed.slice(at + 1);
+  if (base === "" || base === "." || base === "..") {
+    throw new PathError(
+      `path ${JSON.stringify(dir)} is not a directory to export`,
+    );
+  }
+  return { parent: trimmed.slice(0, at) || "/", base };
+}
 
 /** v1 speaks UTF-8 paths only, and says so rather than mangling one. */
 export function checkPath(path: string): string {
@@ -197,6 +233,21 @@ export function createYurt(
     async download(path) {
       const bytes = await fs.read(path);
       save(path.split("/").pop() || "file", bytes);
+    },
+    async export(dir = "/home/user") {
+      const { parent, base } = splitExportDir(dir);
+      const result = await execRaw(buildExportLine(parent, base), {
+        maxOutputBytes: EXPORT_MAX_BYTES,
+      });
+      if (!("code" in result) || result.code !== 0) {
+        throw failed(result, `export ${dir}`);
+      }
+      if (result.stdoutTruncated) {
+        throw new Error(
+          `export ${dir}: the archive is larger than ${EXPORT_MAX_BYTES} bytes`,
+        );
+      }
+      save(`${base}.tgz`, result.stdout);
     },
   };
   return {

@@ -137,3 +137,42 @@ Deno.test("exec is spawn + wait; status and ready come from the page", async () 
     opts: { cwd: "/tmp", timeoutMs: 5 },
   });
 });
+
+/// #81: a reload loses every file, and reload used to be the only way out
+/// of a wedged terminal. `fs.export` tars a directory (the login home by
+/// default) with a process of its own -- it needs nothing from the user's
+/// shell, so it works while a foreground command spins -- and saves it.
+Deno.test("fs.export tars a directory in a process of its own and saves the archive", async () => {
+  const saved: Array<[string, Uint8Array]> = [];
+  const archive = new Uint8Array([0x1f, 0x8b, 8, 0, 42]);
+  const { transport, asked } = fakeTransport((cmd) =>
+    cmd.includes("tarfile") ? { stdout: archive } : {}
+  );
+  const yurt = createYurt(transport, {
+    current: () => "running",
+    ready: Promise.resolve(),
+  }, (name, bytes) => {
+    saved.push([name, bytes]);
+  });
+  await yurt.fs.export();
+  const home = asked.at(-1)!;
+  assertEquals(
+    home.cmd.startsWith("cd '/home' && python3 -c "),
+    true,
+    home.cmd,
+  );
+  assertEquals(home.cmd.endsWith(" 'user' 'user'"), true, home.cmd);
+  assertEquals(home.cmd.includes("mode="), true, home.cmd);
+  assertEquals(
+    (home.opts.maxOutputBytes ?? 0) >= 256 * 1024 * 1024,
+    true,
+    "an archive of the home is not bounded like a command's output",
+  );
+  assertEquals(saved, [["user.tgz", archive]]);
+  await yurt.fs.export("/tmp/work dir");
+  assertEquals(asked.at(-1)!.cmd.startsWith("cd '/tmp' && python3 -c "), true);
+  assertEquals(asked.at(-1)!.cmd.endsWith(" 'work dir' 'work dir'"), true);
+  assertEquals(saved.at(-1)![0], "work dir.tgz");
+  await assertRejects(() => yurt.fs.export("/"), PathError);
+  await assertRejects(() => yurt.fs.export("relative"), PathError);
+});

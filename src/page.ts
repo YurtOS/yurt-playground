@@ -6,6 +6,7 @@ import { desktopInfo } from "./native.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
 import {
   createYurt,
+  type Yurt,
   type YurtStatus,
   type YurtTransport,
 } from "./agent_api.ts";
@@ -67,6 +68,7 @@ const yurtState = (() => {
     isRunning: () => status === "running",
     running() {
       set("running");
+      byId("export-home").hidden = false;
       resolveReady();
     },
     failed(message: string) {
@@ -278,8 +280,32 @@ function boot(
   });
 }
 
+/** The "Download home" control: `yurt.fs.export()` in a process of its
+ * own, so a stuck foreground command does not cost the session's files
+ * (#81). Shown once the sandbox runs; disabled while an export is in
+ * flight; a failure lands in the status line. */
+function wireExportHome(): void {
+  const button = byId("export-home") as HTMLButtonElement;
+  const status = byId("status");
+  button.addEventListener("click", async () => {
+    const yurt = (globalThis as { yurt?: Yurt }).yurt;
+    if (yurt === undefined) return;
+    button.disabled = true;
+    try {
+      await yurt.fs.export();
+    } catch (error) {
+      status.textContent = `download home failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
 async function runPage(): Promise<void> {
   watchNetwork(byId("net"));
+  wireExportHome();
   // The desktop app runs the sandbox natively; only the in-tab kernel needs
   // cross-origin isolation, and a page served without it cannot boot at all
   // and goes to the explanation.
