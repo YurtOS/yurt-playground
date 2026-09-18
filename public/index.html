@@ -731,7 +731,7 @@ yurt-playground</pre>
               >Intel</a>, then:
             </p>
             <pre>tar -xzf yurt-*.tar.gz &amp;&amp; sudo yurt/install.sh
-yurt pull playground
+yurt pull playground                       # needs GH_TOKEN (private repo) or the desktop app installed
 yurt run -it playground                    # a shell in the sandbox
 yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
 yurt logs -f web                           # Ctrl-C leaves it running
@@ -764,7 +764,7 @@ yurt stop web</pre>
               (Debian, Ubuntu), then:
             </p>
             <pre>sudo apt install ./yurt-*.deb
-yurt pull playground
+yurt pull playground                       # needs GH_TOKEN (private repo) or the desktop app installed
 yurt run -it playground                    # a shell in the sandbox
 yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
 yurt logs -f web                           # Ctrl-C leaves it running
