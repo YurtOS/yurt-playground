@@ -389,7 +389,8 @@ export async function bootPlayground(
     // typed into the user's shell for it (yurtos-kernel#2824). Read as the
     // login shell, whose credentials apply; a missing file is `undefined`.
     readFile(path) {
-      const bytes = readGuestFile(mk, user.pid, path, 64 * 1024);
+      // Enough for the kernel log the failure message tails.
+      const bytes = readGuestFile(mk, user.pid, path, 4 * 1024 * 1024);
       return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
     },
     dialSandboxPort: (port) => mk.dialSandboxPort(port),
