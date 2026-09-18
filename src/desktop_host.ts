@@ -18,8 +18,43 @@ export type DesktopHost = {
   /** shell, iopub, stdin, control, hb, from the host's /status. */
   kernelPorts: [number, number, number, number, number];
   bootMs: number;
+  /** One request to the host's HTTP routes (`sessions`, `fs/content`,
+   * ...), the token added: what the launcher's `/api/*` is built on
+   * (src/desktop_api.ts). */
+  request: HostRequest;
+  /** Whether this host has the session and file routes (desktop-host
+   * v0.1.3+); without them `/api/*` says so instead of failing each
+   * command. */
+  sessions: boolean;
   stop: () => void;
 };
+
+/** Does the host answer `/sessions/{id}` as the API expects? An older
+ * host 404s with a plain body; the routes' 404 is JSON that names the
+ * session. */
+export async function probeSessions(request: HostRequest): Promise<boolean> {
+  try {
+    const response = await request("sessions/probe");
+    const text = await response.text();
+    return response.status === 404 && text.includes("no session probe");
+  } catch {
+    return false;
+  }
+}
+
+export type HostRequest = (
+  path: string,
+  init?: RequestInit,
+) => Promise<Response>;
+
+/** `path` under `url` with `?token=` added (after a query the path has). */
+export function hostRequest(url: string, token: string): HostRequest {
+  return (path, init) => {
+    const target = new URL(path, url);
+    target.searchParams.set("token", token);
+    return fetch(target, init);
+  };
+}
 
 /** The files the bundle carries beside dist/. */
 export const RUNTIME_FILES = {
@@ -65,12 +100,15 @@ export async function startDesktopHost(
   }
   reader.cancel().catch(() => undefined);
   const [, url, token] = announce;
-  const status = await (await fetch(`${url}status?token=${token}`)).json();
+  const request = hostRequest(url, token);
+  const status = await (await request("status")).json();
   return {
     url,
     token,
     kernelPorts: status.kernelPorts,
     bootMs: status.bootMs,
+    request,
+    sessions: await probeSessions(request),
     stop() {
       // Closing its stdin is how the host is told to stop (and tear the
       // sandbox down); it exits on its own.

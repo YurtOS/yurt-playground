@@ -2,7 +2,11 @@ import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import { mountNotebook } from "./notebook.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import type { JupyterReply } from "./jupyter.ts";
-import { desktopInfo } from "./native.ts";
+import {
+  type DesktopInfo,
+  desktopInfo,
+  nativeYurtTransport,
+} from "./native.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
 import {
   createYurt,
@@ -52,6 +56,9 @@ const yurtState = (() => {
     waitRaw: (id) => transport?.waitRaw(id) ?? notBooted(),
     kill: (id, signal) => transport?.kill(id, signal) ?? notBooted(),
     list: () => transport?.list() ?? notBooted(),
+    get files() {
+      return transport?.files;
+    },
   };
   const set = (next: YurtStatus) => {
     status = next;
@@ -169,8 +176,9 @@ function showFailure(
 function boot(
   notebook: ReturnType<typeof mountNotebook>,
   execute: { current: (id: string, code: string) => void },
-  kernelPorts: [number, number, number, number, number] | undefined,
+  desktop: DesktopInfo | undefined,
 ): void {
+  const kernelPorts = desktop?.kernelPorts;
   const status = byId("status");
   const term = createPlaygroundTerminal(byId("term"));
   // Classic worker: Chrome will not start a nested *module* Worker.
@@ -210,15 +218,20 @@ function boot(
       pending.set(req, { resolve: resolve as (v: unknown) => void, reject });
       worker.postMessage({ ...message, req });
     });
-  const transport: YurtTransport = {
-    spawn: (cmd: string, opts: ExecOptions) =>
-      ask({ type: "yurt-spawn", cmd, opts }),
-    wait: (id: string) => ask({ type: "yurt-wait", id, raw: false }),
-    waitRaw: (id: string) => ask({ type: "yurt-wait", id, raw: true }),
-    kill: (id: string, signal?: string) =>
-      ask({ type: "yurt-kill", id, signal }),
-    list: () => ask({ type: "yurt-list" }),
-  };
+  // In the tab, the registry is the worker's; on the desktop it is the
+  // launcher's (/api/*, src/desktop_api.ts), shared with any program on
+  // the machine, and the token from /desktop.json opens it.
+  const transport: YurtTransport = desktop?.apiToken !== undefined
+    ? nativeYurtTransport(desktop.apiToken)
+    : {
+      spawn: (cmd: string, opts: ExecOptions) =>
+        ask({ type: "yurt-spawn", cmd, opts }),
+      wait: (id: string) => ask({ type: "yurt-wait", id, raw: false }),
+      waitRaw: (id: string) => ask({ type: "yurt-wait", id, raw: true }),
+      kill: (id: string, signal?: string) =>
+        ask({ type: "yurt-kill", id, signal }),
+      list: () => ask({ type: "yurt-list" }),
+    };
   yurtState.connect(transport);
   yurtState.set("booting");
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
@@ -317,7 +330,7 @@ async function runPage(): Promise<void> {
       });
       stopAnnouncing = announceSandbox();
     }
-    boot(notebook, execute, desktop?.kernelPorts);
+    boot(notebook, execute, desktop);
   };
   // Only the in-tab kernel has the memory problem; the desktop app's page
   // runs the sandbox natively.
