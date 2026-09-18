@@ -223,7 +223,6 @@ function api(options: { token?: string; origin?: string } = {}) {
   const desktop = createDesktopApi({
     host: fake.host,
     token,
-    origin,
     bootMs: 1200,
     pollMs: 1,
     sweepMs: 0,
@@ -242,7 +241,7 @@ function api(options: { token?: string; origin?: string } = {}) {
 }
 
 Deno.test("/api/* wants the bearer token and, if there is an Origin, the launcher's own", async () => {
-  const { request, desktop, origin } = api();
+  const { request, desktop, origin, token } = api();
   assertEquals(desktop.handle(new Request(`${origin}/index.html`)), undefined);
   let response = await request("/api/status", { auth: false });
   assertEquals(response.status, 401);
@@ -262,6 +261,16 @@ Deno.test("/api/* wants the bearer token and, if there is an Origin, the launche
   assertEquals(response.status, 403);
   response = await request("/api/status", { headers: { origin } });
   assertEquals(response.status, 200);
+  // The same page reached as localhost: its own origin, still allowed.
+  const local = desktop.handle(
+    new Request("http://localhost:4321/api/status", {
+      headers: {
+        authorization: `Bearer ${token}`,
+        origin: "http://localhost:4321",
+      },
+    }),
+  )!;
+  assertEquals((await local).status, 200);
   const status = await response.json();
   assertEquals(status.native, true);
   assertEquals(status.bootMs, 1200);

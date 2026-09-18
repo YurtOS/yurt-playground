@@ -155,8 +155,6 @@ export function startDesktopServer(
 ): { url: string; shutdown: () => Promise<void> } {
   const files = handleDistRequest(distDir);
   const apiToken = options.apiToken ?? freshApiToken();
-  // The origin is known once the port is: the API is made lazily, on the
-  // first request, and the server's own address names it.
   let api: ReturnType<typeof createDesktopApi> | undefined;
   const handle = host === undefined ? files : (req: Request) => {
     const url = new URL(req.url);
@@ -165,7 +163,6 @@ export function startDesktopServer(
       api ??= createDesktopApi({
         host: hostClient(host.request),
         token: apiToken,
-        origin: url.origin,
         bootMs: host.bootMs,
         available: host.sessions,
       });

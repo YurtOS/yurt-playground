@@ -376,8 +376,6 @@ export type DesktopApi = {
 export function createDesktopApi(options: {
   host: HostClient;
   token: string;
-  /** The launcher's own origin, `http://127.0.0.1:<port>`. */
-  origin: string;
   bootMs: number;
   /** False for a host without the session routes (desktop-host before
    * v0.1.3): every authorized request is then a 503 that says so. */
@@ -406,14 +404,18 @@ export function createDesktopApi(options: {
     throw new Error("download: not on the launcher");
   });
 
-  const authorize = (req: Request): Response | undefined => {
+  const authorize = (req: Request, url: URL): Response | undefined => {
     const auth = req.headers.get("authorization") ?? "";
     const presented = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
     if (presented === "" || !sameToken(presented, options.token)) {
       return refuse(401, "Unauthorized", "Authorization: Bearer <token>");
     }
+    // The launcher's own origin is the one this request was made to: the
+    // same page reaches it as 127.0.0.1 or as localhost, and a same-origin
+    // request names that host in both places. Anything else is a page from
+    // elsewhere.
     const origin = req.headers.get("origin");
-    if (origin !== null && origin !== options.origin) {
+    if (origin !== null && origin !== url.origin) {
       return refuse(403, "Forbidden", `not this page: ${origin}`);
     }
     if (req.headers.get("sec-fetch-site") === "cross-site") {
@@ -528,13 +530,14 @@ export function createDesktopApi(options: {
       if (url.pathname !== "/api" && !url.pathname.startsWith("/api/")) {
         return undefined;
       }
-      const refused = authorize(req) ?? (options.available === false
-        ? refuse(
-          503,
-          "HostTooOld",
-          "this yurt-desktop-host predates the session routes",
-        )
-        : undefined);
+      const refused = authorize(req, url) ??
+        (options.available === false
+          ? refuse(
+            503,
+            "HostTooOld",
+            "this yurt-desktop-host predates the session routes",
+          )
+          : undefined);
       if (refused !== undefined) {
         // The body is not read; let the connection go.
         void req.body?.cancel();
