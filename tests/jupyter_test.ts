@@ -187,6 +187,67 @@ Deno.test("a session that can spawn gets the kernel as its own process, not type
   assertEquals(typed.some((t) => t.includes("ipykernel_launcher")), false);
 });
 
+/// yurtos-kernel#2824: the "first command after boot takes ~20 s" was the
+/// page's own connection-file wait loop, typed into the user's shell and
+/// hushed -- `while [ ! -s file ]; do sleep 1; done` for as long as
+/// ipykernel takes to import. Anything the user typed meanwhile queued
+/// behind it. A session that can read guest files polls the file itself and
+/// never types into the shell.
+Deno.test("a session that can read guest files polls the connection file instead of typing the wait into the shell", async () => {
+  const typed: string[] = [];
+  const spawned: string[] = [];
+  let reads = 0;
+  const connection = JSON.stringify({
+    shell_port: 1,
+    iopub_port: 2,
+    stdin_port: 3,
+    control_port: 4,
+    hb_port: 5,
+    key: "k",
+    transport: "tcp",
+  });
+  const session = {
+    terminal: {
+      write(bytes: Uint8Array) {
+        typed.push(new TextDecoder().decode(bytes));
+        return Promise.resolve();
+      },
+    },
+    spawn(line: string) {
+      spawned.push(line);
+      return Promise.resolve();
+    },
+    readFile(path: string) {
+      reads += 1;
+      // The file appears on the third look, as ipykernel writes it late.
+      if (path === JUPYTER_CONNECTION_FILE && reads >= 3) {
+        return Promise.resolve(new TextEncoder().encode(connection));
+      }
+      return Promise.resolve(undefined);
+    },
+    dialSandboxPort: () => {
+      throw new Error("the transport is not dialed in this test");
+    },
+    onOutput() {
+      return () => {};
+    },
+  };
+  // The launch is spawned and the file polled; the dial is where this
+  // test stops: the connect retries give up on it.
+  await assertRejects(
+    () => startGuestKernel(session, undefined, { pollMs: 1 }),
+    Error,
+    "did not become ready",
+  );
+  assertEquals(spawned.length, 1);
+  assertEquals(reads >= 3, true, "the file was polled until it appeared");
+  assertEquals(
+    typed,
+    [],
+    "nothing is typed into the user's shell: no launch, no wait loop, no cat",
+  );
+});
+
 Deno.test("executeCell removes its listener after a timeout", async () => {
   let subscriptions = 0;
   const transport: JupyterTransport = {
