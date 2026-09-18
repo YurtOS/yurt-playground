@@ -135,6 +135,22 @@
       #net[data-online="false"] {
         color: var(--ember);
       }
+      .bar-action {
+        font: inherit;
+        color: var(--muted);
+        background: none;
+        border: 1px solid var(--rule);
+        border-radius: 4px;
+        padding: 1px 8px;
+        cursor: pointer;
+      }
+      .bar-action:hover,
+      .bar-action:focus-visible {
+        color: var(--text);
+      }
+      .bar-action[disabled] {
+        cursor: progress;
+      }
       #term-wrap {
         position: relative;
         height: 50vh;
@@ -583,6 +599,16 @@
           <span class="name">Terminal</span>
           <pre id="status"></pre>
           <span class="grow"></span>
+          <button
+            type="button"
+            id="export-home"
+            data-testid="export-home"
+            class="bar-action"
+            hidden
+            title="Save /home/user as a .tgz. Its own process: works while a command in the terminal is stuck."
+          >
+            Download home
+          </button>
           <span
             id="net"
             data-testid="net"

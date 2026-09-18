@@ -418,6 +418,43 @@ if (import.meta.main) {
     console.log(
       `playground e2e: window.yurt drove the sandbox (timeout in ${driven.ms} ms)`,
     );
+    // #81: "Download home" saves /home/user as a gzipped tar made by a
+    // process of its own -- while the shell is busy with something else.
+    await page.evaluate(() =>
+      (globalThis as unknown as {
+        yurt: { spawn(cmd: string): Promise<{ id: string }> };
+      }).yurt.spawn("sleep 30")
+    );
+    const [download] = await Promise.all([
+      page.waitForEvent("download", { timeout: 60_000 }).catch(async (e) => {
+        throw new Error(
+          `${e}; status=${await page.locator("#status").textContent()}`,
+        );
+      }),
+      page.getByTestId("export-home").click(),
+    ]);
+    if (download.suggestedFilename() !== "user.tgz") {
+      throw new Error(
+        `export saved ${download.suggestedFilename()}, not user.tgz`,
+      );
+    }
+    const archive = await Deno.readFile(await download.path());
+    if (archive[0] !== 0x1f || archive[1] !== 0x8b) {
+      throw new Error("the exported home is not a gzip");
+    }
+    const listing = new Deno.Command("tar", {
+      args: ["-tzf", await download.path()],
+    })
+      .outputSync();
+    const names = new TextDecoder().decode(listing.stdout);
+    if (!names.includes("user/drv.txt")) {
+      throw new Error(
+        `the exported home lacks the file written earlier:\n${names}`,
+      );
+    }
+    console.log(
+      `playground e2e: Download home saved ${archive.byteLength} bytes`,
+    );
     // The cell and the ash terminal share one VFS: a file written by Python
     // is read back by the shell in the xterm (#4).
     await page.getByTestId("notebook-input").fill(
