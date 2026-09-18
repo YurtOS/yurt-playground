@@ -256,7 +256,9 @@ if [ "$pins_only" = 1 ]; then
   exit 0
 fi
 
-# [4] the pin PR, merged on a yes
+# [4] the pin PR, merged on a yes -- on a checkout with nothing else in it
+[ -z "$(git -C "$root" status --porcelain --untracked-files=no | grep -v ' artifacts/pins.json$')" ] \
+  || die "the playground checkout has uncommitted changes; commit or stash them first"
 branch="release/$train"
 say "open the pin PR on $branch$image_rev_note"
 git -C "$root" checkout -q -B "$branch"
