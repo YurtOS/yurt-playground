@@ -106,6 +106,13 @@ The "Is this really running in your browser?" section on the home page has
 checks you can do yourself, including re-hashing every file the page downloaded
 against the published pins.
 
+A new release of all of that is one train,
+`playground-<YYYY.MM.DD>-<kernel rev>`, cut by `scripts/release-playground.sh`:
+it dispatches yurt-sandbox's release workflows from exact commits, generates
+`artifacts/pins.json` from what they published, verifies it, and asks before
+merging the pin PR that deploys the page. `--validate` builds everything and
+publishes nothing; `--pins-only` regenerates the pins from releases cut by hand.
+
 ## License
 
 Apache-2.0.
