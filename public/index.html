@@ -884,9 +884,11 @@ yurt stop web</pre>
             <h3>Try it</h3>
             <p>
               Open the <a href="./snapshot.html">demo</a>. A prime finder prints
-              one prime every quarter second, and the bar counts the seals as
-              they land in your browser's IndexedDB (about 14 MB, under 50 ms
-              each).
+              one prime every quarter second, testing each candidate against the
+              primes it has already found — its position is on the call stack,
+              its list is on the heap, and both come back. The bar counts the
+              seals as they land in your browser's IndexedDB (about 14 MB, under
+              50 ms each).
             </p>
             <p>
               Close the tab. Open the page again: it says which seal it restored
