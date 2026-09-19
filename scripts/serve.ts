@@ -112,6 +112,26 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
     out: join(repoRoot, "public/playground-bridge.js"),
     importMap: importMapPath,
   });
+  // The suspend/resume notebook kernel: its bridge (imported by the same
+  // extension for the `yurt-snapshot` spec) and its classic coordinator.
+  await bundle(kernelPath, {
+    entry: join(repoRoot, "src/snapshot_bridge.ts"),
+    out: join(repoRoot, "public/snapshot-bridge.js"),
+    importMap: importMapPath,
+  });
+  const notebookKernelOut = join(repoRoot, "public/notebook_kernel.bundle.js");
+  await bundle(kernelPath, {
+    entry: join(repoRoot, "src/notebook_kernel_worker.ts"),
+    out: notebookKernelOut,
+    importMap: importMapPath,
+  });
+  await writeAtomic(
+    notebookKernelOut,
+    (await Deno.readTextFile(notebookKernelOut)).replaceAll(
+      "import.meta.url",
+      "self.location.href",
+    ),
+  );
 }
 
 async function bundle(

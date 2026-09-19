@@ -4,7 +4,11 @@ import { fileURLToPath } from "node:url";
 import { ensureBundle } from "./serve.ts";
 import { ISOLATION_HEADERS, XTERM_CSS_PATH } from "../src/serve.ts";
 import { headersFile, inlineScriptHashes } from "../src/csp.ts";
-import { imagePartRange, imagePartsManifest } from "../src/image_parts.ts";
+import {
+  imagePartRange,
+  imagePartsManifest,
+  PYTHON_SEAL_NAME,
+} from "../src/image_parts.ts";
 import { IMAGE_NAME, integrityManifest } from "../src/integrity.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -26,6 +30,10 @@ const STATIC_FILES = [
   "snapshot_page.bundle.js",
   "snapshot.bundle.js",
   "demo/primes.wasm",
+  // The suspend/resume notebook kernel (jupyterlite/, `yurt-snapshot`).
+  "snapshot-bridge.js",
+  "notebook_kernel.bundle.js",
+  "demo/cell_server.py",
   "worker_bootstrap.js",
   "playground-bridge.js",
   "verify.js",
@@ -60,12 +68,16 @@ async function copyTree(source: string, target: string): Promise<void> {
   }
 }
 
-async function writeImageParts(name: string): Promise<void> {
-  const image = await Deno.readFile(join(artifactsDir, name));
+async function writeImageParts(
+  name: string,
+  sourceDir = artifactsDir,
+): Promise<void> {
+  const image = await Deno.readFile(join(sourceDir, name));
   const manifest = imagePartsManifest(name, image.byteLength);
+  const dir = join(distDir, name.slice(0, name.lastIndexOf("/") + 1));
   for (const [index, part] of manifest.parts.entries()) {
     const [start, end] = imagePartRange(index, image.byteLength)!;
-    await Deno.writeFile(join(distDir, part), image.subarray(start, end));
+    await Deno.writeFile(join(dir, part), image.subarray(start, end));
   }
   await Deno.writeTextFile(
     join(distDir, `${name}.parts.json`),
@@ -93,6 +105,17 @@ export async function buildStaticSite(): Promise<void> {
   await copyFiles(["pins.json", "yurt_kernel.wasm"], artifactsDir, distDir);
   // Cloudflare Pages refuses files over 25 MiB; the image ships in parts.
   await writeImageParts(IMAGE_NAME);
+  // The notebook kernel's CPython, built into public/ (51 MB): the same.
+  // Absent, the `yurt-snapshot` kernel says so at boot; the rest of the
+  // site does not need it.
+  try {
+    await Deno.stat(join(publicDir, PYTHON_SEAL_NAME));
+    await writeImageParts(PYTHON_SEAL_NAME, publicDir);
+  } catch {
+    console.warn(
+      `${PYTHON_SEAL_NAME} missing; the yurt-snapshot kernel will not boot (scripts/build-python-seal.sh)`,
+    );
+  }
   // The "check the bytes" card hashes what it downloaded against this. dist/
   // holds the image only as parts; hash the file they were sliced from.
   await Deno.writeTextFile(

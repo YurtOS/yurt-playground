@@ -1,1 +1,39 @@
-/* The Yurt kernel has no UI of its own. */
+/* The ipykernel-backed Yurt kernel has no UI of its own; the snapshot one has a panel. */
+
+/* The suspend/resume panel of the yurt-snapshot kernel. */
+.yurt-snapshot-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1000;
+  min-width: 220px;
+  max-width: 360px;
+  padding: 10px 12px;
+  border: 1px solid var(--jp-border-color1, #c0c0c0);
+  border-radius: 6px;
+  background: var(--jp-layout-color1, #fff);
+  color: var(--jp-ui-font-color1, #222);
+  font-family: var(--jp-ui-font-family, sans-serif);
+  font-size: var(--jp-ui-font-size1, 13px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+.yurt-snapshot-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.yurt-snapshot-state {
+  margin-bottom: 6px;
+}
+.yurt-snapshot-panel[data-state="suspended"] .yurt-snapshot-state {
+  color: var(--jp-warn-color1, #b36b00);
+}
+.yurt-snapshot-buttons button {
+  margin-right: 6px;
+  padding: 3px 10px;
+}
+.yurt-snapshot-status {
+  margin-top: 6px;
+  color: var(--jp-ui-font-color2, #666);
+  font-size: var(--jp-ui-font-size0, 11px);
+  white-space: pre-wrap;
+}

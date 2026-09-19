@@ -12,7 +12,10 @@ export const RESTORE_MARKER = "--- restored from snapshot ---";
 
 const DB_NAME = "yurt-snapshot-demo";
 const STORE = "images";
+/** The continuous-snapshot demo's record. */
 const KEY = "newest";
+/** The notebook kernel's record (src/notebook_kernel_worker.ts). */
+export const NOTEBOOK_KEY = "notebook";
 
 export type StoredSnapshot = {
   image: SandboxSealImage;
@@ -25,6 +28,9 @@ export type StoredSnapshot = {
    *  kernel pin bump the image is dropped rather than installed over a
    *  different build. */
   kernelSha256: string;
+  /** Host-side state the image cannot carry, for the owner of the record
+   *  to restore alongside it (the notebook kernel's cell in progress). */
+  attachments?: Record<string, unknown>;
 };
 
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
@@ -51,32 +57,37 @@ async function open(): Promise<IDBDatabase> {
   return await request(req);
 }
 
-export async function storeSnapshot(snapshot: StoredSnapshot): Promise<void> {
+export async function storeSnapshot(
+  snapshot: StoredSnapshot,
+  key = KEY,
+): Promise<void> {
   const db = await open();
   try {
     const tx = db.transaction(STORE, "readwrite");
-    await request(tx.objectStore(STORE).put(snapshot, KEY));
+    await request(tx.objectStore(STORE).put(snapshot, key));
   } finally {
     db.close();
   }
 }
 
-export async function loadSnapshot(): Promise<StoredSnapshot | undefined> {
+export async function loadSnapshot(
+  key = KEY,
+): Promise<StoredSnapshot | undefined> {
   const db = await open();
   try {
     const tx = db.transaction(STORE, "readonly");
-    const found = await request(tx.objectStore(STORE).get(KEY));
+    const found = await request(tx.objectStore(STORE).get(key));
     return (found ?? undefined) as StoredSnapshot | undefined;
   } finally {
     db.close();
   }
 }
 
-export async function clearSnapshot(): Promise<void> {
+export async function clearSnapshot(key = KEY): Promise<void> {
   const db = await open();
   try {
     const tx = db.transaction(STORE, "readwrite");
-    await request(tx.objectStore(STORE).delete(KEY));
+    await request(tx.objectStore(STORE).delete(key));
   } finally {
     db.close();
   }

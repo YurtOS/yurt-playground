@@ -9,6 +9,7 @@ import {
   imagePartIndex,
   imagePartRange,
   imagePartsManifest,
+  PYTHON_SEAL_NAME,
 } from "./image_parts.ts";
 import { IMAGE_NAME, integrityManifest } from "./integrity.ts";
 
@@ -102,16 +103,27 @@ export async function directoryRule(
   return join(resolved, "index.html");
 }
 
-/** The image parts the static build publishes, sliced from the single
- * artifacts/ file so the page's fetch path is the same here and deployed. */
+/** The files the static build publishes in parts (Cloudflare Pages' 25 MiB
+ * cap): the image, and the notebook kernel's sealable CPython. */
+const PARTED_FILES: Record<string, string> = {
+  [IMAGE_NAME]: join(artifactsDir, IMAGE_NAME),
+  [PYTHON_SEAL_NAME]: join(publicDir, PYTHON_SEAL_NAME),
+};
+
+/** The parts the static build publishes, sliced from the single file so the
+ * page's fetch path is the same here and deployed. */
 async function handleImagePart(pathname: string): Promise<Response | null> {
   const relative = pathname.replace(/^\/+/, "");
-  const isManifest = relative === `${IMAGE_NAME}.parts.json`;
-  const index = imagePartIndex(relative, IMAGE_NAME);
-  if (!isManifest && index === undefined) return null;
+  const name = Object.keys(PARTED_FILES).find((candidate) =>
+    relative === `${candidate}.parts.json` ||
+    imagePartIndex(relative, candidate) !== undefined
+  );
+  if (name === undefined) return null;
+  const isManifest = relative === `${name}.parts.json`;
+  const index = imagePartIndex(relative, name);
   let file: Deno.FsFile;
   try {
-    file = await Deno.open(ARTIFACT_FILES[`/${IMAGE_NAME}`]);
+    file = await Deno.open(PARTED_FILES[name]);
   } catch {
     return notFound();
   }
@@ -119,7 +131,7 @@ async function handleImagePart(pathname: string): Promise<Response | null> {
     const size = (await file.stat()).size;
     if (isManifest) {
       return new Response(
-        JSON.stringify(imagePartsManifest(IMAGE_NAME, size)),
+        JSON.stringify(imagePartsManifest(name, size)),
         {
           headers: {
             ...ISOLATION_HEADERS,
