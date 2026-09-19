@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # install-pinned-artifacts.sh — fetch the pinned kernel wasm and playground
-# image from their yurt-packages releases into artifacts/.
+# image from their yurt-packages releases into artifacts/, and the notebook
+# kernel's sealable CPython from its yurt-playground release into public/demo/.
 #
 # Neither blob can be rebuilt by a consumer: the kernel wasm is deterministic
 # on a host but not across hosts, and the image needs a guest toolchain and
@@ -11,7 +12,7 @@
 #
 # Needs `gh` authenticated for YurtOS/yurt-packages (GH_TOKEN in CI) and `jq`.
 set -euo pipefail
-repo=${YURT_PACKAGES_REPO:-YurtOS/yurt-packages}
+default_repo=${YURT_PACKAGES_REPO:-YurtOS/yurt-packages}
 root=$(cd "$(dirname "$0")/.." && pwd)
 pins=$root/artifacts/pins.json
 for tool in gh jq shasum; do
@@ -25,7 +26,10 @@ trap 'rm -rf "$cache"' EXIT HUP INT TERM
 
 fetch() {
   local key=$1 asset=$2 dest=$3
-  local tag expected actual
+  local tag expected actual repo
+  # A pin names where its asset is published when that is not yurt-packages
+  # (the CPython blob is a yurt-playground release).
+  repo=$(jq -r ".$key.releaseRepo // \"$default_repo\"" "$pins")
   tag=$(jq -r ".$key.release" "$pins")
   expected=$(jq -r ".$key.sha256" "$pins")
   [[ -n "$tag" && "$tag" != "null" ]] || {
@@ -39,9 +43,10 @@ fetch() {
     echo "$asset sha256 mismatch: got $actual, pin $expected" >&2
     exit 1
   fi
-  mv "$cache/$asset" "$root/artifacts/$dest"
-  echo "installed $tag/$asset as artifacts/$dest" >&2
+  mv "$cache/$asset" "$root/$dest"
+  echo "installed $tag/$asset as $dest" >&2
 }
 
-fetch kernelWasm kernel-wasm.wasm yurt_kernel.wasm
-fetch image playground-image.yurtimg playground.yurtimg
+fetch kernelWasm kernel-wasm.wasm artifacts/yurt_kernel.wasm
+fetch image playground-image.yurtimg artifacts/playground.yurtimg
+fetch pythonSeal python3-seal.wasm public/demo/python3-seal.wasm
