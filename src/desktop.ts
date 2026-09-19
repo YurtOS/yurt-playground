@@ -108,7 +108,13 @@ export const LAUNCHER_USAGE = `usage: yurt-playground [--port N] [--no-open]
 Boot the sandbox natively and serve the playground on a loopback port.
   --port N    listen on 127.0.0.1:N instead of a free port
   --no-open   print the URL but do not open a browser
-  -h, --help  this text`;
+  -h, --help  this text
+
+A program on this machine drives the sandbox through <url>/api/* with the
+bearer token the launcher prints; the token and URL are also written to
+~/.yurt/playground.json (mode 0600) for the launcher's lifetime. The page's
+window.yurt is the same API from the browser. See the README, "Driving the
+sandbox from a program".`;
 
 /** The launcher's command line, or an Error naming the argument. Small
  * enough to parse by hand: three flags, and a flag nobody knows is an
