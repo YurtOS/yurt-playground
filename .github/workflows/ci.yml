@@ -220,6 +220,7 @@ jobs:
         run: |
           deno run --allow-all tests/playground_e2e.ts
           deno run --allow-all tests/jupyterlite_e2e.ts
+          deno run --allow-all tests/snapshot_e2e.ts
 
   # The desktop bundles (scripts/build-desktop.sh): the site from the
   # integration job, the launcher, and the native sandbox (the pinned

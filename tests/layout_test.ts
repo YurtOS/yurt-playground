@@ -178,6 +178,9 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
   // The "is this really in your browser" disclosure and its live check.
   assertEquals(html.includes('data-testid="proof"'), true);
   assertEquals(html.includes('data-testid="proof-toggle"'), true);
+  assertEquals(html.includes('data-testid="snapshots"'), true);
+  assertEquals(html.includes('data-testid="snapshot-demo"'), true);
+  assertEquals(html.includes('href="./snapshot.html"'), true);
   assertEquals(html.includes('data-testid="verify-files"'), true);
   assertEquals(html.includes('src="./verify.js"'), true);
   assertEquals(
