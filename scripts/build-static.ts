@@ -113,7 +113,7 @@ export async function buildStaticSite(): Promise<void> {
     await writeImageParts(PYTHON_SEAL_NAME, publicDir);
   } catch {
     console.warn(
-      `${PYTHON_SEAL_NAME} missing; the yurt-snapshot kernel will not boot (scripts/build-python-seal.sh)`,
+      `${PYTHON_SEAL_NAME} missing; the yurt-snapshot kernel will not boot (scripts/install-pinned-artifacts.sh)`,
     );
   }
   // The "check the bytes" card hashes what it downloaded against this. dist/

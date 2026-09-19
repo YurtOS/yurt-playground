@@ -3,7 +3,7 @@
  * the sealable CPython runs `cell_server.py` over a raw pty, a cell that
  * prints primes is sealed mid-loop, the sandbox is torn down, and the restore
  * continues the loop at the next prime. Needs the pinned blobs and
- * public/demo/python3-seal.wasm (scripts/build-python-seal.sh); skips
+ * public/demo/python3-seal.wasm (scripts/install-pinned-artifacts.sh); skips
  * without them unless PLAYGROUND_REQUIRE_ARTIFACTS is set.
  */
 import { assert, assertEquals } from "@std/assert";

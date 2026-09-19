@@ -15,7 +15,7 @@ public/playground-bridge.js
 public/snapshot-bridge.js
 public/notebook_kernel.bundle.js
 public/import-map.json
-# Built by scripts/build-python-seal.sh from the cpython port (51 MB)
+# Pinned (artifacts/pins.json pythonSeal), installed by scripts/install-pinned-artifacts.sh
 public/demo/python3-seal.wasm
 
 # Local / generated

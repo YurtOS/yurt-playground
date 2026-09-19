@@ -7,7 +7,7 @@
  *
  * Run: deno run --allow-all tests/notebook_snapshot_e2e.ts (needs the pinned
  * blobs in artifacts/, public/demo/python3-seal.wasm from
- * scripts/build-python-seal.sh, and the site from jupyterlite/build.sh).
+ * scripts/install-pinned-artifacts.sh, and the site from jupyterlite/build.sh).
  * Skips without the CPython blob unless PLAYGROUND_REQUIRE_ARTIFACTS is set.
  */
 import { chromium, type Page } from "playwright";
@@ -51,7 +51,9 @@ if (import.meta.main) {
     await Deno.stat(join(repoRoot, "public", PYTHON_SEAL_NAME));
   } catch {
     if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS")) {
-      fail(`${PYTHON_SEAL_NAME} is missing; run scripts/build-python-seal.sh`);
+      fail(
+        `${PYTHON_SEAL_NAME} is missing; run scripts/install-pinned-artifacts.sh`,
+      );
     }
     console.log(`notebook snapshot e2e: skipped, no ${PYTHON_SEAL_NAME}`);
     Deno.exit(0);
