@@ -112,7 +112,9 @@ function watchSilence(mk: KernelHostInterface, pid: number): void {
     }
     post({
       type: "status",
-      text: `restored guest silent for 5 s; kernel threads: ${threads}`,
+      text: `restored guest silent for 5 s; kernel threads: ${threads}; ${
+        mk.describeLeader(pid)
+      }`,
     });
   }, 5000);
 }

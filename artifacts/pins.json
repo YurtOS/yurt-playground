@@ -1,7 +1,7 @@
 {
   "kernelWasm": {
     "repo": "YurtOS/yurtos-kernel",
-    "rev": "be75f0c2692d49e1f973e55deddbc5266de7880e",
+    "rev": "b045f5411a56d69badf9064445f992d8a16c0bcd",
     "release": "kernel-wasm-v0.0.4",
     "build": "scripts/build-kernel-wasm.sh",
     "path": "target/kernel-wasm/release/yurt_kernel.wasm",
