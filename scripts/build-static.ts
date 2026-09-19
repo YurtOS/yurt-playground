@@ -21,6 +21,11 @@ const STATIC_FILES = [
   "404.html",
   "boot.bundle.js",
   "coordinator.bundle.js",
+  // The continuous-snapshot demo.
+  "snapshot.html",
+  "snapshot_page.bundle.js",
+  "snapshot.bundle.js",
+  "demo/primes.wasm",
   "worker_bootstrap.js",
   "playground-bridge.js",
   "verify.js",
@@ -71,7 +76,7 @@ async function writeImageParts(name: string): Promise<void> {
 export async function buildStaticSite(): Promise<void> {
   await ensureBundle(kernelRoot());
   await Deno.remove(distDir, { recursive: true }).catch(() => {});
-  await Deno.mkdir(distDir, { recursive: true });
+  await Deno.mkdir(join(distDir, "demo"), { recursive: true });
   await copyFiles(STATIC_FILES, publicDir, distDir);
   // terminal.html links ./xterm.css; the dev server maps it to the npm package.
   await Deno.copyFile(XTERM_CSS_PATH, join(distDir, "xterm.css"));

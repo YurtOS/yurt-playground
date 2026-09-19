@@ -86,6 +86,26 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
     ),
     out: join(repoRoot, "public/worker_bootstrap.js"),
   });
+  // The continuous-snapshot demo (public/snapshot.html): its own page and
+  // its own classic coordinator, with the same import.meta rewrite.
+  await bundle(kernelPath, {
+    entry: join(repoRoot, "src/snapshot_page.ts"),
+    out: join(repoRoot, "public/snapshot_page.bundle.js"),
+    importMap: importMapPath,
+  });
+  const snapshotOut = join(repoRoot, "public/snapshot.bundle.js");
+  await bundle(kernelPath, {
+    entry: join(repoRoot, "src/snapshot_worker.ts"),
+    out: snapshotOut,
+    importMap: importMapPath,
+  });
+  await writeAtomic(
+    snapshotOut,
+    (await Deno.readTextFile(snapshotOut)).replaceAll(
+      "import.meta.url",
+      "self.location.href",
+    ),
+  );
   // The JupyterLite Yurt kernel imports this at runtime (see jupyterlite/).
   await bundle(kernelPath, {
     entry: join(repoRoot, "src/lite_bridge.ts"),
