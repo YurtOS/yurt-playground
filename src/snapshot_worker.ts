@@ -23,9 +23,11 @@ import {
 } from "@yurt/kernel-host-interface-js";
 import { fetchPlaygroundBytes } from "./boot.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
+import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
 import {
   clearSnapshot,
   loadSnapshot,
+  sha256Hex,
   type StoredSnapshot,
   storeSnapshot,
 } from "./snapshot_store.ts";
@@ -33,7 +35,10 @@ import {
 installCoordinatorWorkerProxy();
 
 const SEAL_INTERVAL_MS = 2000;
+const SIGKILL = 9;
 const GUEST_PATH = "./demo/primes.wasm";
+/** Its own presence channel: the main page's sandbox may run alongside. */
+const PRESENCE_CHANNEL = "yurt-snapshot-demo";
 
 export type SnapshotDemoToWorker =
   | { type: "start"; cols: number; rows: number; isolated: boolean }
@@ -67,10 +72,16 @@ type Live = {
   pty: number;
   process: UserProcess;
   stopPump: () => void;
+  kernelSha256: string;
 };
 
 let live: Live | undefined;
 let sealing = false;
+/** Set by `reset`: the seal loop is stopped and nothing is stored again
+ *  until the page reloads, so "forget" stays forgotten. */
+let forgotten = false;
+let sealTimer: number | undefined;
+let outputBytes = 0;
 
 function attachTerminal(
   mk: KernelHostInterface,
@@ -79,8 +90,31 @@ function attachTerminal(
 ): () => void {
   mk.ptySetWinsize(pty, size.rows, size.cols);
   return pumpPtyMaster(mk, pty, (bytes: Uint8Array) => {
+    outputBytes += bytes.byteLength;
     post({ type: "out", bytes: Array.from(bytes) });
   });
+}
+
+/**
+ * Diagnostic: a restored guest that stays silent is either still rewinding
+ * (kernel says runnable) or parked in a wait nobody completes (blocked); the
+ * status line says which, so a silent restore names its own failure.
+ */
+function watchSilence(mk: KernelHostInterface, pid: number): void {
+  const seen = outputBytes;
+  setTimeout(() => {
+    if (outputBytes !== seen) return;
+    let threads = "unknown";
+    try {
+      threads = mk.listThreads(pid).map((t) => `${t.tid}:${t.state}`).join(",");
+    } catch (error) {
+      threads = `listThreads failed: ${error}`;
+    }
+    post({
+      type: "status",
+      text: `restored guest silent for 5 s; kernel threads: ${threads}`,
+    });
+  }, 5000);
 }
 
 /** The guest runs forever; an exit is news, and says why the output stopped. */
@@ -99,6 +133,7 @@ function watchExit(process: UserProcess): void {
 
 async function bootFresh(
   kernel: Uint8Array,
+  kernelSha256: string,
   size: { cols: number; rows: number },
 ): Promise<Live> {
   post({ type: "status", text: "loading the guest" });
@@ -116,7 +151,7 @@ async function bootFresh(
   const stopPump = attachTerminal(mk, pty, size);
   watchExit(process);
   post({ type: "booted" });
-  return { mk, pty, process, stopPump };
+  return { mk, pty, process, stopPump, kernelSha256 };
 }
 
 async function restoreStored(
@@ -125,32 +160,72 @@ async function restoreStored(
   size: { cols: number; rows: number },
 ): Promise<Live> {
   post({ type: "status", text: "restoring the sandbox" });
+  const cursor = stored.image.processes[0]?.snapshot.cursor;
+  console.log(
+    "[snapshot] restoring: cursor nr",
+    cursor
+      ? new DataView(cursor.buffer, cursor.byteOffset).getBigInt64(0, true)
+      : "?",
+    "waits",
+    JSON.stringify(
+      stored.image.hostWaits.map((w) => ({
+        k: w.sourceKind,
+        left: String(w.remainingNs),
+      })),
+    ),
+  );
   const restored = await KernelHostInterface.restore(
     kernel,
     stored.image,
     defaultHostState(),
   );
-  const [process] = restored.processes;
-  if (process === undefined) throw new Error("the image holds no process");
-  // The pty survived inside the kernel's memory; only the pump is new.
-  const stopPump = attachTerminal(restored.host, stored.pty, size);
-  watchExit(process);
-  post({
-    type: "restored",
-    sealedAt: stored.sealedAt,
-    bytes: imageBytes(stored.image),
-  });
-  return { mk: restored.host, pty: stored.pty, process, stopPump };
+  try {
+    const [process] = restored.processes;
+    if (process === undefined) throw new Error("the image holds no process");
+    // Announced BEFORE the pump starts: the pump's first tick posts output
+    // synchronously, and the page draws its restore marker on this message.
+    post({
+      type: "restored",
+      sealedAt: stored.sealedAt,
+      bytes: imageBytes(stored.image),
+    });
+    // The pty survived inside the kernel's memory; only the pump is new.
+    const stopPump = attachTerminal(restored.host, stored.pty, size);
+    watchExit(process);
+    watchSilence(restored.host, process.pid);
+    return {
+      mk: restored.host,
+      pty: stored.pty,
+      process,
+      stopPump,
+      kernelSha256: stored.kernelSha256,
+    };
+  } catch (error) {
+    // The leaders are already running; a fresh boot must not leave them.
+    for (const process of restored.processes) {
+      try {
+        restored.host.killProcess(process.pid, SIGKILL);
+      } catch { /* already gone */ }
+    }
+    restored.host.dispose();
+    throw error;
+  }
 }
 
 async function sealOnce(current: Live): Promise<void> {
-  if (sealing) return;
+  if (sealing || forgotten) return;
   sealing = true;
   const started = performance.now();
   try {
     const image = await current.mk.sealSandbox();
     const sealedAt = Date.now();
-    await storeSnapshot({ image, pty: current.pty, sealedAt });
+    if (forgotten) return; // reset raced the seal: keep the store empty
+    await storeSnapshot({
+      image,
+      pty: current.pty,
+      sealedAt,
+      kernelSha256: current.kernelSha256,
+    });
     post({
       type: "sealed",
       sealedAt,
@@ -172,7 +247,12 @@ async function sealOnce(current: Live): Promise<void> {
 self.onmessage = async (event: MessageEvent<SnapshotDemoToWorker>) => {
   const msg = event.data;
   if (msg.type === "in") {
-    live?.mk.ptyMasterWrite(live.pty, new TextEncoder().encode(msg.text));
+    if (live === undefined) return;
+    try {
+      live.mk.ptyMasterWrite(live.pty, new TextEncoder().encode(msg.text));
+    } catch {
+      // The guest hung up its side of the pty; a keystroke has nowhere to go.
+    }
     return;
   }
   if (msg.type === "resize") {
@@ -180,10 +260,12 @@ self.onmessage = async (event: MessageEvent<SnapshotDemoToWorker>) => {
     return;
   }
   if (msg.type === "reset") {
+    forgotten = true;
+    if (sealTimer !== undefined) clearInterval(sealTimer);
     await clearSnapshot();
     post({
       type: "status",
-      text: "stored image dropped; reload to boot fresh",
+      text: "stored image dropped and sealing stopped; reload to boot fresh",
     });
     return;
   }
@@ -191,11 +273,27 @@ self.onmessage = async (event: MessageEvent<SnapshotDemoToWorker>) => {
   try {
     if (!msg.isolated) throw new Error("not crossOriginIsolated");
     const size = { cols: msg.cols, rows: msg.rows };
+    if (await anotherSandboxRunning(300, PRESENCE_CHANNEL)) {
+      // Two tabs would restore the same image and then overwrite each
+      // other's seals every two seconds; one demo per browser.
+      throw new Error("this demo is already running in another tab");
+    }
+    announceSandbox(PRESENCE_CHANNEL);
     post({ type: "status", text: "loading kernel" });
     const kernel = await fetchPlaygroundBytes("./yurt_kernel.wasm");
-    const stored = await loadSnapshot();
+    const kernelSha256 = await sha256Hex(kernel);
+    let stored = await loadSnapshot();
+    if (stored !== undefined && stored.kernelSha256 !== kernelSha256) {
+      await clearSnapshot();
+      post({
+        type: "status",
+        text:
+          "stored image was sealed under a different kernel build; booting fresh",
+      });
+      stored = undefined;
+    }
     if (stored === undefined) {
-      live = await bootFresh(kernel, size);
+      live = await bootFresh(kernel, kernelSha256, size);
     } else {
       try {
         live = await restoreStored(kernel, stored, size);
@@ -209,11 +307,11 @@ self.onmessage = async (event: MessageEvent<SnapshotDemoToWorker>) => {
           type: "status",
           text: `stored image could not be restored (${reason}); booting fresh`,
         });
-        live = await bootFresh(kernel, size);
+        live = await bootFresh(kernel, kernelSha256, size);
       }
     }
     const current = live;
-    setInterval(() => void sealOnce(current), SEAL_INTERVAL_MS);
+    sealTimer = setInterval(() => void sealOnce(current), SEAL_INTERVAL_MS);
   } catch (error) {
     post({
       type: "error",

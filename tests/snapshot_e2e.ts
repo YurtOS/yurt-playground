@@ -69,6 +69,7 @@ if (import.meta.main) {
       return began === "booted" || began === "restored";
     });
     if (await d.began() === "restored") {
+      // Reset stops the seal loop as well, so the reload below boots fresh.
       await page.locator("#reset").click();
       await d.until(
         "the reset",
@@ -94,6 +95,9 @@ if (import.meta.main) {
 
     // Second run: a new tab restores the image the first one stored.
     page = await context.newPage();
+    page.on("console", (message) => {
+      if (message.text().startsWith("[snapshot]")) console.log(message.text());
+    });
     await page.goto(url, { waitUntil: "domcontentloaded" });
     d = driver(page);
     await d.until("the restore", async () => await d.began() === "restored");

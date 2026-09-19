@@ -20,7 +20,21 @@ export type StoredSnapshot = {
    *  the pump on the page does not. */
   pty: number;
   sealedAt: number;
+  /** SHA-256 of the kernel.wasm the image was sealed under. A kernel memory
+   *  image only means something to the binary that produced it; after a
+   *  kernel pin bump the image is dropped rather than installed over a
+   *  different build. */
+  kernelSha256: string;
 };
+
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
+  return Array.from(
+    new Uint8Array(digest),
+    (b) => b.toString(16).padStart(2, "0"),
+  )
+    .join("");
+}
 
 function request<T>(req: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
