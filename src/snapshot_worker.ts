@@ -98,7 +98,8 @@ function attachTerminal(
 /**
  * Diagnostic: a restored guest that stays silent is either still rewinding
  * (kernel says runnable) or parked in a wait nobody completes (blocked); the
- * status line says which, so a silent restore names its own failure.
+ * kernel's view of its threads says which, so a silent restore names its
+ * own failure.
  */
 function watchSilence(mk: KernelHostInterface, pid: number): void {
   const seen = outputBytes;
@@ -112,9 +113,7 @@ function watchSilence(mk: KernelHostInterface, pid: number): void {
     }
     post({
       type: "status",
-      text: `restored guest silent for 5 s; kernel threads: ${threads}; ${
-        mk.describeLeader(pid)
-      }`,
+      text: `restored guest silent for 5 s; kernel threads: ${threads}`,
     });
   }, 5000);
 }
