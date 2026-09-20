@@ -39,7 +39,13 @@ export type SnapshotKernelBridge = {
   onSnapshot(listener: (state: SnapshotState) => void): () => void;
   /** The last snapshot state announced. */
   readonly snapshot: SnapshotState;
+  /** After a restore on a fresh page, the cell the guest is still running:
+   * re-running it in the notebook takes its continuation (#109). Cleared
+   * once any cell is sent. */
+  readonly pendingCell: PendingCell | undefined;
 };
+
+export type PendingCell = { code: string; executionCount: number };
 
 let bridge: SnapshotKernelBridge | undefined;
 
@@ -56,6 +62,7 @@ export function startSnapshotKernel(
   const statusListeners = new Set<(text: string) => void>();
   const snapshotListeners = new Set<(state: SnapshotState) => void>();
   let snapshot: SnapshotState = { state: "booting" };
+  let pendingCell: PendingCell | undefined;
   let resolveReady: () => void = () => {};
   let rejectReady: (error: Error) => void = () => {};
   const arm = (): Promise<void> =>
@@ -87,6 +94,15 @@ export function startSnapshotKernel(
         snapshot = msg.snapshot;
         for (const listener of snapshotListeners) listener(msg.snapshot);
         return;
+      case "pending-cell":
+        pendingCell = { code: msg.code, executionCount: msg.executionCount };
+        return;
+      case "pending-cell-cleared":
+        // Still worth re-running when the worker can answer from its
+        // record (the cell finished during the reopen: its output shows
+        // up, nothing executes twice); not when the guest died.
+        if (!msg.answerable) pendingCell = undefined;
+        return;
     }
   };
   worker.onerror = (event) => {
@@ -112,6 +128,9 @@ export function startSnapshotKernel(
       return ready;
     },
     send(message, channel) {
+      if (message.header.msg_type === "execute_request") {
+        pendingCell = undefined;
+      }
       worker.postMessage({ type: "jupyter-send", message, channel });
     },
     onMessage(listener) {
@@ -134,6 +153,9 @@ export function startSnapshotKernel(
     onSnapshot(listener) {
       snapshotListeners.add(listener);
       return () => snapshotListeners.delete(listener);
+    },
+    get pendingCell() {
+      return pendingCell;
     },
   };
   return bridge;
