@@ -98,7 +98,10 @@ export function startSnapshotKernel(
         pendingCell = { code: msg.code, executionCount: msg.executionCount };
         return;
       case "pending-cell-cleared":
-        pendingCell = undefined;
+        // Still worth re-running when the worker can answer from its
+        // record (the cell finished during the reopen: its output shows
+        // up, nothing executes twice); not when the guest died.
+        if (!msg.answerable) pendingCell = undefined;
         return;
     }
   };

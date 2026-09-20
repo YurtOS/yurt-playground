@@ -119,9 +119,12 @@ export type NotebookKernelFromWorker =
   /** A restored sandbox is mid-cell: the notebook can re-run that cell to
    *  take the continuation (see `rebind`). */
   | { type: "pending-cell"; code: string; executionCount: number }
-  /** That cell finished (or died) before anyone re-ran it: re-running it
-   *  now would execute it a second time. */
-  | { type: "pending-cell-cleared" };
+  /** That cell finished (or died) before anyone re-ran it. `answerable`:
+   *  a re-run of it is answered from the record (its output and count)
+   *  rather than executed again -- the notebook should still run it to
+   *  show that; not answerable (the guest died): re-running it would
+   *  execute it, so the notebook must not. */
+  | { type: "pending-cell-cleared"; answerable: boolean };
 
 function post(message: NotebookKernelFromWorker): void {
   self.postMessage(message);
@@ -157,11 +160,18 @@ type CellState = {
   queued: ExecuteRequest[];
   /** The tail of the guest's output that has no newline yet. */
   partialLine: string;
-  /** What the current cell has printed so far (bounded, stream by stream),
-   *  replayed into the cell a reopened notebook re-runs to take the
-   *  continuation. */
-  outputTail: { name: "stdout" | "stderr"; text: string }[];
+  /** What the current cell has produced so far (bounded; streams, results
+   *  and errors, in order), replayed into the cell a reopened notebook
+   *  re-runs to take the continuation. */
+  outputTail: OutputChunk[];
+  /** The error the cell raised, if any: what its execute_reply reports. */
+  error: { ename: string; evalue: string; traceback: string[] } | undefined;
 };
+
+type OutputChunk =
+  | { kind: "stream"; name: "stdout" | "stderr"; text: string }
+  | { kind: "result"; text: string }
+  | { kind: "error"; ename: string; evalue: string; traceback: string[] };
 
 const cells: CellState = {
   executionCount: 0,
@@ -169,6 +179,7 @@ const cells: CellState = {
   queued: [],
   partialLine: "",
   outputTail: [],
+  error: undefined,
 };
 
 /** Set when a restore brought back a cell in progress whose notebook is
@@ -184,7 +195,7 @@ let completedPending:
   | {
     code: string;
     executionCount: number;
-    outputTail: { name: "stdout" | "stderr"; text: string }[];
+    outputTail: OutputChunk[];
     error: { ename: string; evalue: string; traceback: string[] } | undefined;
   }
   | undefined;
@@ -206,7 +217,39 @@ function clearRebind(
       error: finished.error,
     };
   }
-  post({ type: "pending-cell-cleared" });
+  post({
+    type: "pending-cell-cleared",
+    answerable: completedPending !== undefined,
+  });
+}
+
+/** Send the recorded frames of a cell to `parent`, in order. */
+function replay(
+  parent: JupyterHeader,
+  chunks: OutputChunk[],
+  executionCount: number,
+): void {
+  for (const chunk of chunks) {
+    switch (chunk.kind) {
+      case "stream":
+        send(parent, "iopub", "stream", { name: chunk.name, text: chunk.text });
+        break;
+      case "result":
+        send(parent, "iopub", "execute_result", {
+          execution_count: executionCount,
+          data: { "text/plain": chunk.text },
+          metadata: {},
+        });
+        break;
+      case "error":
+        send(parent, "iopub", "error", {
+          ename: chunk.ename,
+          evalue: chunk.evalue,
+          traceback: chunk.traceback,
+        });
+        break;
+    }
+  }
 }
 
 /** Answer the crossed re-run of a cell that has already finished. */
@@ -226,10 +269,7 @@ function answerCompleted(message: JupyterMessage): boolean {
         execution_count: done.executionCount,
       });
     }
-    for (const chunk of done.outputTail) {
-      send(parent, "iopub", "stream", chunk);
-    }
-    if (done.error !== undefined) send(parent, "iopub", "error", done.error);
+    replay(parent, done.outputTail, done.executionCount);
   }
   send(parent, "shell", "execute_reply", {
     status: done.error === undefined ? "ok" : "error",
@@ -242,18 +282,30 @@ function answerCompleted(message: JupyterMessage): boolean {
   return true;
 }
 
-function rememberOutput(name: "stdout" | "stderr", text: string): void {
+function chunkSize(chunk: OutputChunk): number {
+  return chunk.kind === "error"
+    ? chunk.traceback.join("").length
+    : chunk.text.length;
+}
+
+function rememberOutput(chunk: OutputChunk): void {
   const tail = cells.outputTail;
   const last = tail.at(-1);
-  if (last !== undefined && last.name === name) last.text += text;
-  else tail.push({ name, text });
-  let total = tail.reduce((sum, chunk) => sum + chunk.text.length, 0);
+  if (
+    chunk.kind === "stream" && last?.kind === "stream" &&
+    last.name === chunk.name
+  ) {
+    last.text += chunk.text;
+  } else {
+    tail.push(chunk);
+  }
+  let total = tail.reduce((sum, item) => sum + chunkSize(item), 0);
   while (total > OUTPUT_TAIL_LIMIT && tail.length > 0) {
     const excess = total - OUTPUT_TAIL_LIMIT;
     const first = tail[0];
-    if (first.text.length <= excess) {
+    if (first.kind !== "stream" || first.text.length <= excess) {
       tail.shift();
-      total -= first.text.length;
+      total -= chunkSize(first);
     } else {
       first.text = first.text.slice(excess);
       total -= excess;
@@ -284,9 +336,7 @@ function rebind(message: JupyterMessage): boolean {
     });
   }
   if (!current.silent) {
-    for (const chunk of cells.outputTail) {
-      send(current.header, "iopub", "stream", chunk);
-    }
+    replay(current.header, cells.outputTail, cells.executionCount + 1);
   }
   return true;
 }
@@ -426,6 +476,7 @@ function runNextCell(): void {
   if (next === undefined) return;
   cells.current = next;
   cells.outputTail = [];
+  cells.error = undefined;
   startSealTicks();
   publishStatus(next.header, "busy");
   if (!next.silent && next.storeHistory) {
@@ -457,10 +508,6 @@ type GuestFrame =
   | { t: "error"; ename: string; evalue: string; traceback: string[] }
   | { t: "done"; count: number };
 
-let lastError:
-  | { ename: string; evalue: string; traceback: string[] }
-  | undefined;
-
 /** One frame from the guest: `ready` is the sandbox side's, the rest belong
  *  to the cell in progress. */
 function handleFrame(frame: GuestFrame): void {
@@ -478,12 +525,13 @@ function finishCell(frame: Exclude<GuestFrame, { t: "ready" }>): void {
   const parent = current.header;
   switch (frame.t) {
     case "stream":
-      rememberOutput(frame.name, frame.text);
+      rememberOutput({ kind: "stream", name: frame.name, text: frame.text });
       if (!current.silent) {
         send(parent, "iopub", "stream", { name: frame.name, text: frame.text });
       }
       return;
     case "result":
+      rememberOutput({ kind: "result", text: frame.text });
       if (!current.silent) {
         send(parent, "iopub", "execute_result", {
           execution_count: cells.executionCount + 1,
@@ -493,7 +541,12 @@ function finishCell(frame: Exclude<GuestFrame, { t: "ready" }>): void {
       }
       return;
     case "error":
-      lastError = frame;
+      cells.error = {
+        ename: frame.ename,
+        evalue: frame.evalue,
+        traceback: frame.traceback,
+      };
+      rememberOutput({ kind: "error", ...cells.error });
       if (!current.silent) {
         send(parent, "iopub", "error", {
           ename: frame.ename,
@@ -504,8 +557,8 @@ function finishCell(frame: Exclude<GuestFrame, { t: "ready" }>): void {
       return;
     case "done": {
       cells.executionCount = frame.count;
-      const error = lastError;
-      lastError = undefined;
+      const error = cells.error;
+      cells.error = undefined;
       send(parent, "shell", "execute_reply", {
         status: error === undefined ? "ok" : "error",
         execution_count: frame.count,
@@ -560,10 +613,22 @@ function stopSealTicks(): void {
 /** Seal the running sandbox into IndexedDB and keep it running. A cell
  *  that makes no syscall within the deadline cannot be sealed this time;
  *  the next tick tries again. */
+/** A seal asked for while one was in flight (cells finishing during a
+ *  seal) runs once it settles, so the store never stays one cell behind
+ *  what the panel says was sealed. */
+let sealRequested = false;
+
 function sealTick(): Promise<void> {
-  if (tickInFlight !== undefined) return tickInFlight;
+  if (tickInFlight !== undefined) {
+    sealRequested = true;
+    return tickInFlight;
+  }
   tickInFlight = sealOnce().finally(() => {
     tickInFlight = undefined;
+    if (sealRequested) {
+      sealRequested = false;
+      void sealTick();
+    }
   });
   return tickInFlight;
 }
@@ -641,9 +706,9 @@ function failAllCells(reason: string): void {
   cells.queued = [];
   cells.partialLine = "";
   cells.outputTail = [];
+  cells.error = undefined;
   clearRebind();
   stopSealTicks();
-  lastError = undefined;
   for (const cell of inFlight) {
     send(cell.header, "shell", "execute_reply", {
       status: "error",
@@ -787,6 +852,7 @@ async function restoreStored(
       cells.queued = saved.queued;
       cells.partialLine = saved.partialLine;
       cells.outputTail = saved.outputTail ?? [];
+      cells.error = saved.error;
     }
     const stopPump = attachGuest(restored.host, stored.pty, process);
     if (cells.current !== undefined) startSealTicks();
@@ -950,6 +1016,17 @@ async function start(isolated: boolean): Promise<void> {
         type: "snapshot",
         snapshot: { state: "running", restoredFrom },
       });
+      // Cells queued behind the running one belong to a notebook that is
+      // gone: run now, their output would go to a client that no longer
+      // exists and a re-run would execute them twice. They are dropped;
+      // the user runs them again.
+      if (cells.queued.length > 0) {
+        status(
+          `${cells.queued.length} cell(s) queued when the tab closed were ` +
+            "not run; run them again",
+        );
+        cells.queued = [];
+      }
       if (cells.current !== undefined) {
         // This page has no future for the cell's request: whoever re-runs
         // that cell takes it (`rebind`). Announced BEFORE ready, which is
