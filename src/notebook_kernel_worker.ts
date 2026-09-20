@@ -82,7 +82,7 @@ export type NotebookKernelToWorker =
   | {
     type: "start";
     isolated: boolean;
-    /** Seal this often while a cell runs (tests shorten it); 0 disables. */
+    /** Seal this often while a cell runs; 0 disables. */
     sealEveryMs?: number;
   }
   | {
@@ -118,7 +118,10 @@ export type NotebookKernelFromWorker =
   | { type: "snapshot"; snapshot: SnapshotState }
   /** A restored sandbox is mid-cell: the notebook can re-run that cell to
    *  take the continuation (see `rebind`). */
-  | { type: "pending-cell"; code: string; executionCount: number };
+  | { type: "pending-cell"; code: string; executionCount: number }
+  /** That cell finished (or died) before anyone re-ran it: re-running it
+   *  now would execute it a second time. */
+  | { type: "pending-cell-cleared" };
 
 function post(message: NotebookKernelFromWorker): void {
   self.postMessage(message);
@@ -154,9 +157,10 @@ type CellState = {
   queued: ExecuteRequest[];
   /** The tail of the guest's output that has no newline yet. */
   partialLine: string;
-  /** What the current cell has printed so far (bounded), replayed into the
-   *  cell a reopened notebook re-runs to take the continuation. */
-  outputTail: string;
+  /** What the current cell has printed so far (bounded, stream by stream),
+   *  replayed into the cell a reopened notebook re-runs to take the
+   *  continuation. */
+  outputTail: { name: "stdout" | "stderr"; text: string }[];
 };
 
 const cells: CellState = {
@@ -164,7 +168,7 @@ const cells: CellState = {
   current: undefined,
   queued: [],
   partialLine: "",
-  outputTail: "",
+  outputTail: [],
 };
 
 /** Set when a restore brought back a cell in progress whose notebook is
@@ -172,8 +176,30 @@ const cells: CellState = {
  *  bound to that cell rather than run again. */
 let rebindPending = false;
 
-function rememberOutput(text: string): void {
-  cells.outputTail = (cells.outputTail + text).slice(-OUTPUT_TAIL_LIMIT);
+/** The claim a reopened notebook could still take is gone. */
+function clearRebind(): void {
+  if (!rebindPending) return;
+  rebindPending = false;
+  post({ type: "pending-cell-cleared" });
+}
+
+function rememberOutput(name: "stdout" | "stderr", text: string): void {
+  const tail = cells.outputTail;
+  const last = tail.at(-1);
+  if (last !== undefined && last.name === name) last.text += text;
+  else tail.push({ name, text });
+  let total = tail.reduce((sum, chunk) => sum + chunk.text.length, 0);
+  while (total > OUTPUT_TAIL_LIMIT && tail.length > 0) {
+    const excess = total - OUTPUT_TAIL_LIMIT;
+    const first = tail[0];
+    if (first.text.length <= excess) {
+      tail.shift();
+      total -= first.text.length;
+    } else {
+      first.text = first.text.slice(excess);
+      total -= excess;
+    }
+  }
 }
 
 /** A reopened notebook re-runs the cell the guest never stopped running:
@@ -198,11 +224,10 @@ function rebind(message: JupyterMessage): boolean {
       execution_count: cells.executionCount + 1,
     });
   }
-  if (!current.silent && cells.outputTail !== "") {
-    send(current.header, "iopub", "stream", {
-      name: "stdout",
-      text: cells.outputTail,
-    });
+  if (!current.silent) {
+    for (const chunk of cells.outputTail) {
+      send(current.header, "iopub", "stream", chunk);
+    }
   }
   return true;
 }
@@ -341,7 +366,7 @@ function runNextCell(): void {
   const next = cells.queued.shift();
   if (next === undefined) return;
   cells.current = next;
-  cells.outputTail = "";
+  cells.outputTail = [];
   startSealTicks();
   publishStatus(next.header, "busy");
   if (!next.silent && next.storeHistory) {
@@ -394,7 +419,7 @@ function finishCell(frame: Exclude<GuestFrame, { t: "ready" }>): void {
   const parent = current.header;
   switch (frame.t) {
     case "stream":
-      rememberOutput(frame.text);
+      rememberOutput(frame.name, frame.text);
       if (!current.silent) {
         send(parent, "iopub", "stream", { name: frame.name, text: frame.text });
       }
@@ -431,8 +456,8 @@ function finishCell(frame: Exclude<GuestFrame, { t: "ready" }>): void {
       });
       publishStatus(parent, "idle");
       cells.current = undefined;
-      cells.outputTail = "";
-      rebindPending = false;
+      cells.outputTail = [];
+      clearRebind();
       // The state after the cell -- its variables -- is worth keeping too.
       stopSealTicks();
       void sealTick();
@@ -446,6 +471,15 @@ function finishCell(frame: Exclude<GuestFrame, { t: "ready" }>): void {
 
 let sealEveryMs = DEFAULT_SEAL_EVERY_MS;
 let sealTimer: number | undefined;
+/** The tick in flight, so a Suspend click waits for it instead of being
+ *  dropped (`sealing` was a double-click guard before ticks existed). */
+let tickInFlight: Promise<void> | undefined;
+/** `forget` holds until a Suspend stores again: the ticks would otherwise
+ *  write the image right back (as `snapshot_worker.ts` guards too). */
+let forgotten = false;
+/** When this sandbox came from a stored image: kept on every later state
+ *  post, so the panel keeps saying so. */
+let restoredFrom: number | undefined;
 
 function startSealTicks(): void {
   if (sealEveryMs <= 0 || sealTimer !== undefined) return;
@@ -461,15 +495,23 @@ function stopSealTicks(): void {
 /** Seal the running sandbox into IndexedDB and keep it running. A cell
  *  that makes no syscall within the deadline cannot be sealed this time;
  *  the next tick tries again. */
-async function sealTick(): Promise<void> {
+function sealTick(): Promise<void> {
+  if (tickInFlight !== undefined) return tickInFlight;
+  tickInFlight = sealOnce().finally(() => {
+    tickInFlight = undefined;
+  });
+  return tickInFlight;
+}
+
+async function sealOnce(): Promise<void> {
   const current = live;
-  if (current === undefined || sealing || sealEveryMs <= 0) return;
+  if (current === undefined || sealing || forgotten || sealEveryMs <= 0) return;
   sealing = true;
   try {
     const image = await current.mk.sealSandbox({
       deadlineMs: SEAL_DEADLINE_MS,
     });
-    if (live !== current) return;
+    if (live !== current || forgotten) return;
     const sealedAt = Date.now();
     await storeSnapshot({
       image,
@@ -478,7 +520,10 @@ async function sealTick(): Promise<void> {
       kernelSha256: current.kernelSha256,
       attachments: { cells: structuredClone(cells) },
     }, NOTEBOOK_KEY);
-    post({ type: "snapshot", snapshot: { state: "running", sealedAt } });
+    post({
+      type: "snapshot",
+      snapshot: { state: "running", restoredFrom, sealedAt },
+    });
   } catch (error) {
     status(
       `seal skipped: ${error instanceof Error ? error.message : String(error)}`,
@@ -525,8 +570,8 @@ function failAllCells(reason: string): void {
   cells.current = undefined;
   cells.queued = [];
   cells.partialLine = "";
-  cells.outputTail = "";
-  rebindPending = false;
+  cells.outputTail = [];
+  clearRebind();
   stopSealTicks();
   lastError = undefined;
   for (const cell of inFlight) {
@@ -671,7 +716,7 @@ async function restoreStored(
       cells.current = saved.current;
       cells.queued = saved.queued;
       cells.partialLine = saved.partialLine;
-      cells.outputTail = saved.outputTail ?? "";
+      cells.outputTail = saved.outputTail ?? [];
     }
     const stopPump = attachGuest(restored.host, stored.pty, process);
     if (cells.current !== undefined) startSealTicks();
@@ -702,8 +747,10 @@ function teardown(current: Live): void {
 }
 
 async function suspend(): Promise<void> {
+  if (tickInFlight !== undefined) await tickInFlight;
   const current = live;
   if (current === undefined || sealing) return;
+  forgotten = false;
   sealing = true;
   post({ type: "snapshot", snapshot: { state: "sealing" } });
   const startedAt = performance.now();
@@ -753,9 +800,10 @@ async function resume(): Promise<void> {
   post({ type: "snapshot", snapshot: { state: "resuming" } });
   try {
     live = await restoreStored(kernelBytes, stored);
+    restoredFrom = stored.sealedAt;
     post({
       type: "snapshot",
-      snapshot: { state: "running", restoredFrom: stored.sealedAt },
+      snapshot: { state: "running", restoredFrom },
     });
     // A cell queued while the guest was mid-cell waits for that cell; one
     // queued while the guest was idle starts now.
@@ -778,6 +826,11 @@ async function restart(): Promise<void> {
   try {
     current.mk.killProcess(current.process.pid, SIGKILL);
   } catch { /* already gone */ }
+  // The stored image is of the guest just killed, mid-cell as likely as
+  // not; a reopened tab must not bring it back and re-run that cell.
+  if (tickInFlight !== undefined) await tickInFlight;
+  await clearSnapshot(NOTEBOOK_KEY);
+  restoredFrom = undefined;
   try {
     const { process, pty, stopPump } = await spawnCellServer(current.mk);
     live = { ...current, process, pty, stopPump };
@@ -817,9 +870,10 @@ async function start(isolated: boolean): Promise<void> {
     status("restoring the suspended kernel");
     try {
       live = await restoreStored(kernelBytes, stored);
+      restoredFrom = stored.sealedAt;
       post({
         type: "snapshot",
-        snapshot: { state: "running", restoredFrom: stored.sealedAt },
+        snapshot: { state: "running", restoredFrom },
       });
       if (cells.current !== undefined) {
         // This page has no future for the cell's request: whoever re-runs
@@ -871,6 +925,8 @@ self.onmessage = async (event: MessageEvent<NotebookKernelToWorker>) => {
         await resume();
         return;
       case "forget":
+        forgotten = true;
+        if (tickInFlight !== undefined) await tickInFlight;
         await clearSnapshot(NOTEBOOK_KEY);
         status("stored image dropped");
         return;

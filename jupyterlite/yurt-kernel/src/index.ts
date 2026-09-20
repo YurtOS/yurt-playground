@@ -526,14 +526,17 @@ async function takePendingCell(
   if (pending === undefined || tracker === null) return;
   for (let attempt = 0; attempt < 100; attempt++) {
     if (b.pendingCell === undefined) return;
+    // Only the notebook whose session owns this kernel: a fallback to the
+    // current notebook would run the cell in the wrong one, or run it
+    // against no kernel (a silent no-op) and end the wait for good.
     const panel = tracker.find((widget) =>
       widget.sessionContext.session?.kernel?.id === kernelId
-    ) ?? tracker.currentWidget;
+    );
     const index = panel?.content.widgets.findIndex((cell) =>
       cell.model.type === "code" &&
       cell.model.sharedModel.getSource() === pending.code
     ) ?? -1;
-    if (panel !== null && panel !== undefined && index >= 0) {
+    if (panel !== undefined && index >= 0) {
       panel.content.activeCellIndex = index;
       await NotebookActions.run(panel.content, panel.sessionContext);
       return;

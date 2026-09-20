@@ -97,6 +97,9 @@ export function startSnapshotKernel(
       case "pending-cell":
         pendingCell = { code: msg.code, executionCount: msg.executionCount };
         return;
+      case "pending-cell-cleared":
+        pendingCell = undefined;
+        return;
     }
   };
   worker.onerror = (event) => {

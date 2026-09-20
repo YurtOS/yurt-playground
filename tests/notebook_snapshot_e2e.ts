@@ -77,12 +77,15 @@ if (import.meta.main) {
     await page.goto(notebookUrl, { waitUntil: "domcontentloaded" });
     await page.locator(".jp-Notebook").first().waitFor({ timeout: 60_000 });
     // The plugin boots (or restores) the sandbox; the panel says when it
-    // is running and the kernel is idle.
+    // is running and the kernel has answered (idle -- or already busy
+    // again, when a reopened notebook re-ran its cell in the same turn).
     await waitForPanelState(page, "running", 420_000);
     await page.waitForFunction(
       () =>
-        document.querySelector(".jp-Notebook-ExecutionIndicator")
-          ?.getAttribute("data-status") === "idle",
+        ["idle", "busy"].includes(
+          document.querySelector(".jp-Notebook-ExecutionIndicator")
+            ?.getAttribute("data-status") ?? "",
+        ),
       undefined,
       { timeout: 120_000 },
     );
