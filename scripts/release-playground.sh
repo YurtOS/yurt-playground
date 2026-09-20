@@ -43,10 +43,12 @@
 #                   YurtOS/yurt-packages, where the hand-cut ones live) or
 #                   `owner/repo@tag` (a previous train's, in its own repo)
 #   --train         the label (default: derived)
-#   --validate      publish=false: build everything, publish nothing, pin
-#                   nothing; the image and native runs are tested against
-#                   the kernel wasm and image releases currently pinned,
-#                   since the train's do not exist
+#   --validate      a rehearsal: the train is labelled <TRAIN>-validate and
+#                   published like any other -- as prereleases in the
+#                   builders' repositories, so every step tests against
+#                   the train's own artifacts (the pinned ones may be a
+#                   kernel rev behind the runtime) -- then the prereleases
+#                   are deleted; nothing is pinned, no PR is opened
 #   --resume        continue a train from its state file
 #   --check         dispatch nothing, write nothing: is everything up to date?
 #                   One row per pin (each repo's main vs the pinned rev, the
@@ -334,10 +336,21 @@ elif [ -z "$train" ]; then
   done
 fi
 if [ "$pins_only" = 0 ]; then
+  [[ "$train" == *-validate ]] && [ "$validate" = 0 ] && die "train label $train is a rehearsal's; pass --validate"
+  train=${train%-validate}
   [[ "$train" =~ ^playground-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7}(\.[0-9]+)?$ ]] \
     || die "train label $train does not look like playground-YYYY.MM.DD-<rev7>[.N]"
+  if [ "$validate" = 1 ]; then
+    train="$train-validate"
+    [ "$resume" = 1 ] || for repo in "$sandbox_repo" "$ports_repo"; do
+      for tag in "kernel-wasm-$train" "desktop-host-$train" "yurt-cli-$train" "playground-image-$train" "python-seal-$train"; do
+        gh release view "$tag" --repo "$repo" >/dev/null 2>&1 \
+          && die "$repo still has $tag from an earlier rehearsal; delete it (gh release delete $tag --repo $repo --yes --cleanup-tag)"
+      done
+    done
+  fi
 fi
-say "train   $train$( [ "$validate" = 1 ] && echo ' (validate: nothing is published)')"
+say "train   $train$( [ "$validate" = 1 ] && echo ' (validate: prereleases, deleted at the end)')"
 build_image=$([ -z "$image_release" ] && echo 1 || echo 0)
 kernel_wasm_repo=$(release_repo "${kernel_wasm_release:-$sandbox_repo@x}")
 kernel_wasm_release=$(release_tag "${kernel_wasm_release:-kernel-wasm-$train}")
@@ -361,7 +374,7 @@ state=$state_dir/$train.json
 if [ "$resume" = 1 ]; then
   [ -f "$state" ] || die "nothing to resume: $state"
 else
-  [ -f "$state" ] && [ "$validate" = 0 ] && die "$state exists; --resume it, or pick --train"
+  [ -f "$state" ] && die "$state exists; --resume it, or pick --train"
   jq -n --arg train "$train" --arg kernel "$kernel_sha" --arg ports "$ports_sha" --arg sandbox "$sandbox_sha" \
     --arg image "$image_release" --argjson build_image "$build_image" --argjson validate "$validate" \
     '{train:$train, kernel_sha:$kernel, ports_sha:$ports, sandbox_sha:$sandbox, image_release:$image, build_image:($build_image == 1), validate:$validate, steps:{}}' \
@@ -411,18 +424,14 @@ dispatch_and_watch() {
   fi
 }
 
-publish_flag=$([ "$validate" = 1 ] && echo false || echo true)
+# A rehearsal publishes too (prereleases, see --validate): the runs test
+# against the train's own artifacts either way.
+publish_flag=true
 
 # [1] the kernel wasm
 if [ "$(step_get kernel_wasm conclusion)" != success ]; then
   dispatch_and_watch kernel_wasm "$sandbox_repo" release-kernel-wasm.yml \
     -f "kernel_sha=$kernel_sha" -f "train=$train" -f "publish=$publish_flag"
-fi
-if [ "$validate" = 1 ]; then
-  # The train's wasm was not published: the image and native runs are
-  # tested against the release the page pins today.
-  kernel_wasm_release=$(jq -r .kernelWasm.release "$root/artifacts/pins.json")
-  kernel_wasm_repo=$(jq -r ".kernelWasm.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")
 fi
 
 # [2] the image and the sealable cpython, one run. The Jupyter payload the
@@ -446,11 +455,6 @@ if [ "$build_image" = 1 ] && [ "$(step_get image conclusion)" != success ]; then
     -f "jupyter_payload_release=$jupyter_payload" \
     -f "train=$train" -f "publish=$publish_flag"
 fi
-if [ "$validate" = 1 ] && [ "$build_image" = 1 ]; then
-  image_release=$(jq -r .image.release "$root/artifacts/pins.json")
-  image_repo=$(jq -r ".image.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")
-fi
-
 # [3] the desktop host and the CLI, one run
 if [ "$(step_get native conclusion)" != success ]; then
   dispatch_and_watch native "$sandbox_repo" release-native.yml \
@@ -461,7 +465,13 @@ if [ "$(step_get native conclusion)" != success ]; then
 fi
 
 if [ "$validate" = 1 ]; then
-  say "validated: every artifact of $train built and tested; nothing was published"
+  say "validated: every artifact of $train built and tested against the train's own artifacts"
+  say "deleting the rehearsal's prereleases"
+  for spec in "$sandbox_repo:kernel-wasm-$train" "$sandbox_repo:desktop-host-$train" "$sandbox_repo:yurt-cli-$train" \
+      "$ports_repo:playground-image-$train" "$ports_repo:python-seal-$train"; do
+    gh release delete "${spec#*:}" --repo "${spec%%:*}" --yes --cleanup-tag >/dev/null 2>&1 \
+      || say "  ${spec%%:*} ${spec#*:}: not found (never published?)"
+  done
   exit 0
 fi
 fi # pins_only
