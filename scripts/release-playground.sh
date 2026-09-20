@@ -21,6 +21,11 @@
 #   [3] native        (yurt-sandbox)  -> desktop-host-<TRAIN> + yurt-cli-<TRAIN>
 #                                        (tested against [1] and [2])
 #   [4] pins.json from the releases' sidecars, verified, PR, merge on a yes
+#                                        (the merge deploys the page)
+#   [5] desktop       (yurt-playground) -> desktop-<TRAIN>: the installers,
+#                                        built from the merge commit, the
+#                                        release the home page's download
+#                                        links resolve to
 #
 # Usage:
 #   scripts/release-playground.sh [--kernel-sha SHA] [--ports-sha SHA] \
@@ -515,3 +520,14 @@ case $answer in
   *) say "left open: $pr_url"; exit 0 ;;
 esac
 say "deploy: gh run list --repo YurtOS/yurt-playground --workflow deploy-pages.yml"
+
+# [5] the desktop installers, from the merge commit: the app for the four
+# targets with the train's CLI packages beside it, released as
+# desktop-<train> (what the home page's download links resolve to).
+merge_sha=$(gh pr view "$pr_url" --json mergeCommit --jq .mergeCommit.oid)
+[ -n "$merge_sha" ] && [ "$merge_sha" != null ] || die "could not read the merge commit of $pr_url"
+if [ "$(step_get desktop conclusion)" != success ]; then
+  dispatch_and_watch desktop YurtOS/yurt-playground release-desktop.yml \
+    -f "playground_sha=$merge_sha" -f "train=$train" -f "publish=true"
+fi
+say "released: kernel-wasm-$train, $image_release, $(jq -r .pythonSeal.release "$root/artifacts/pins.json"), desktop-host-$train, yurt-cli-$train, desktop-$train"

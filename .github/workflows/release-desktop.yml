@@ -1,0 +1,226 @@
+name: Release desktop
+
+# The playground's desktop installers (the Yurt Playground app for the
+# four targets, with the yurt CLI packages mirrored beside them), built
+# from an exact commit of this repository and published as the GitHub
+# release the home page's download links resolve to. The last step of the
+# playground release train (yurt-playground#78): scripts/release-playground.sh
+# dispatches it after the pin PR has merged, so the installers carry the
+# train's kernel, image, host and CLI.
+#
+# Dispatch only (on main, never on a pull request or a merge): these used
+# to be built and released on every merge to main, which meant two macOS
+# runners and a new "latest" release for merges that changed nothing the
+# installers carry.
+#
+#   gh workflow run release-desktop.yml \
+#     -f playground_sha=<40 hex> -f train=playground-2026.09.20-be75f0c -f publish=false
+on:
+  workflow_dispatch:
+    inputs:
+      playground_sha:
+        description: "yurt-playground commit to build (full 40-hex SHA, on main)"
+        type: string
+        required: true
+      train:
+        description: "release train label; the release is desktop-<train>"
+        type: string
+        required: true
+      publish:
+        description: "create the desktop-<train> release (else build and upload the installers only)"
+        type: boolean
+        default: false
+      correlation_id:
+        description: "the orchestrator's id for this run (shown in the run name)"
+        type: string
+        default: ""
+
+run-name: "desktop ${{ inputs.train }} ${{ inputs.correlation_id }}"
+
+concurrency:
+  group: release-desktop-${{ inputs.train }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # The site the installers ship, from the same inputs deploy-pages.yml
+  # builds from.
+  site:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Inputs are well-formed
+        run: |
+          set -euo pipefail
+          [[ "${{ inputs.playground_sha }}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::playground_sha must be a full 40-hex commit SHA"; exit 1; }
+          [[ "${{ inputs.train }}" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::train must be a release label"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.playground_sha }}
+          path: playground
+      - uses: ./playground/.github/actions/site-inputs
+        with:
+          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+      - name: Build static site
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+        run: deno task build-static
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: playground/dist
+          if-no-files-found: error
+
+  desktop:
+    needs: site
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+            browsers: ~/Library/Caches/ms-playwright
+          - os: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+            browsers: ~/.cache/ms-playwright
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.playground_sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.7.14
+      # The native sandbox for each target: the pinned kernel wasm and image
+      # (artifacts/), and the pinned desktop host + runtime (runtime/<target>/).
+      - name: Install the pinned kernel wasm and playground image
+        env:
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+        run: scripts/install-pinned-artifacts.sh
+      - name: Install the pinned desktop host for each target
+        env:
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          for target in $TARGETS; do
+            scripts/install-desktop-host.sh --target "$target"
+          done
+      - name: Build the bundles
+        timeout-minutes: 5
+        env:
+          TARGETS: ${{ matrix.targets }}
+        run: |
+          for target in $TARGETS; do
+            scripts/build-desktop.sh --target "$target"
+          done
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ matrix.browsers }}
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deno.json') }}
+      - name: Install Chromium for the app acceptance
+        run: |
+          deno install
+          deno run --allow-all node_modules/playwright/cli.js install chromium
+      - name: App acceptance
+        timeout-minutes: 8
+        run: deno run --allow-all tests/desktop_e2e.ts
+      # The .deb as dpkg sees it: valid, installable, and the installed
+      # launcher finds its site and runtime.
+      - name: Check the .deb
+        if: runner.os == 'Linux'
+        run: |
+          dpkg-deb --info dist-desktop/Yurt-Playground-x86_64-unknown-linux-gnu.deb
+          sudo apt-get install -y ./dist-desktop/Yurt-Playground-x86_64-unknown-linux-gnu.deb
+          test -x /usr/lib/yurt-playground/yurt-playground
+          test -f /usr/lib/yurt-playground/runtime/yurt-desktop-host
+          command -v yurt-playground
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Yurt-Playground-${{ runner.os }}
+          path: |
+            dist-desktop/*.dmg
+            dist-desktop/*.deb
+          if-no-files-found: error
+
+  # The installers as the GitHub release the home page's download links
+  # resolve to (releases/latest/download/). A full release, never a
+  # prerelease: "latest" ignores prereleases. Only from main: a dispatch on
+  # a branch would otherwise become the "latest" release the home page
+  # links.
+  release:
+    needs: desktop
+    if: inputs.publish && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.playground_sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: Yurt-Playground-*
+          merge-multiple: true
+          path: release
+      # The `yurt` command-line packages travel in the same release, so one
+      # releases/latest/download/ serves the app and the CLI. They are
+      # built privately (yurt-sandbox) and published to yurt-packages; the
+      # pinned release is mirrored here under stable, versionless names.
+      - name: Fetch the pinned yurt CLI packages
+        env:
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag=$(jq -r .yurtCli.release artifacts/pins.json)
+          mkdir -p cli
+          for target in $(jq -r '.yurtCli.assets | keys[]' artifacts/pins.json); do
+            asset=$(jq -r ".yurtCli.assets[\"$target\"]" artifacts/pins.json)
+            gh release download "$tag" --repo YurtOS/yurt-packages --pattern "$asset" --dir cli --clobber
+            case $asset in
+              *.deb) mv "cli/$asset" "release/yurt-$target.deb" ;;
+              *) mv "cli/$asset" "release/yurt-$target.tar.gz" ;;
+            esac
+          done
+          ls -l release
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.playground_sha }}
+          TAG: desktop-${{ inputs.train }}
+        run: |
+          set -euo pipefail
+          tag=$TAG
+          # Fail closed: a tag that already exists is another operator's train.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::$tag already exists"; exit 1
+          fi
+          kernel=$(jq -r .kernelWasm.release artifacts/pins.json)
+          image=$(jq -r .image.release artifacts/pins.json)
+          cli=$(jq -r .yurtCli.release artifacts/pins.json)
+          gh release create "$tag" \
+            --target "$SHA" \
+            --title "Yurt Playground ($tag)" \
+            --notes "Built from ${SHA:0:7} with kernel $kernel and image $image; the yurt CLI is $cli. Desktop app — macOS: open the .dmg, drag the app to Applications; not notarized, so allow the first open under System Settings → Privacy & Security → Open Anyway. Debian/Ubuntu: sudo apt install ./Yurt-Playground-<arch>.deb, then run yurt-playground. Command line — Debian/Ubuntu: sudo apt install ./yurt-<arch>.deb; macOS: tar -xzf yurt-<arch>.tar.gz && sudo yurt/install.sh; then yurt pull playground && yurt run -it playground." \
+            release/Yurt-Playground-aarch64-apple-darwin.dmg \
+            release/Yurt-Playground-x86_64-apple-darwin.dmg \
+            release/Yurt-Playground-x86_64-unknown-linux-gnu.deb \
+            release/Yurt-Playground-aarch64-unknown-linux-gnu.deb \
+            release/yurt-aarch64-apple-darwin.tar.gz \
+            release/yurt-x86_64-apple-darwin.tar.gz \
+            release/yurt-x86_64-unknown-linux-gnu.deb \
+            release/yurt-aarch64-unknown-linux-gnu.deb

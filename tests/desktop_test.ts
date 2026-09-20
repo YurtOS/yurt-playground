@@ -133,12 +133,12 @@ Deno.test("desktop build ships the launcher with dist/ and runtime/ in the bundl
   }
 });
 
-Deno.test("home page links the installers and CLI packages the merge workflow releases", async () => {
+Deno.test("home page links the installers and CLI packages the desktop release workflow publishes", async () => {
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
   );
   const workflow = await Deno.readTextFile(
-    new URL("../.github/workflows/ci.yml", import.meta.url),
+    new URL("../.github/workflows/release-desktop.yml", import.meta.url),
   );
   // `releases/latest/download/<asset>` is the one URL that survives every
   // release, so the page can link it before the release exists.
@@ -165,8 +165,10 @@ Deno.test("home page links the installers and CLI packages the merge workflow re
     // The workflow packages under exactly that name and attaches it.
     assertStringIncludes(workflow, asset);
   }
-  // A merge to main publishes the release the links resolve to.
-  assertStringIncludes(workflow, "branches: [main]");
+  // The release train publishes the release the links resolve to, from
+  // main only, on dispatch (scripts/release-playground.sh step [5]).
+  assertStringIncludes(workflow, "workflow_dispatch");
+  assertStringIncludes(workflow, "github.ref == 'refs/heads/main'");
   assertStringIncludes(workflow, "gh release create");
 });
 
