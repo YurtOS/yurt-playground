@@ -10,7 +10,7 @@
 # Usage: scripts/install-desktop-host.sh [--target <target>]
 # Needs `gh` authenticated for YurtOS/yurt-packages (GH_TOKEN in CI) and `jq`.
 set -euo pipefail
-repo=${YURT_PACKAGES_REPO:-YurtOS/yurt-packages}
+default_repo=${YURT_PACKAGES_REPO:-YurtOS/yurt-packages}
 root=$(cd "$(dirname "$0")/.." && pwd)
 pins=$root/artifacts/pins.json
 target=$(deno eval 'console.log(Deno.build.target)')
@@ -33,6 +33,9 @@ for blob in yurt_kernel.wasm playground.yurtimg; do
   }
 done
 tag=$(jq -r .desktopHost.release "$pins")
+# The pin names where its release lives (a train's is a yurt-sandbox
+# release; the hand-cut ones are in yurt-packages).
+repo=$(jq -r ".desktopHost.releaseRepo // \"$default_repo\"" "$pins")
 expected=$(jq -r ".desktopHost.sha256[\"$target\"]" "$pins")
 [[ -n "$expected" && "$expected" != "null" ]] || {
   echo "artifacts/pins.json has no desktopHost sha256 for $target" >&2

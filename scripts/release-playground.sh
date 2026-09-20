@@ -6,11 +6,13 @@
 # built and published by CI from exact commits (yurt-sandbox's
 # release-kernel-wasm.yml and release-native.yml, yurt-ports'
 # release-playground-image.yml, each dispatched on its default branch with
-# immutable inputs); this script only sequences the dispatches, resolves each
-# run by a correlation id it minted (never "the newest run"), generates
-# artifacts/pins.json from the published releases' own sha256 sidecars,
-# verifies it with scripts/install-pinned-artifacts.sh, opens the pin PR, and
-# asks before merging (the merge deploys the page).
+# immutable inputs), each as a release of the repository that built it --
+# no cross-repo write token exists; this script only sequences the
+# dispatches, resolves each run by a correlation id it minted (never "the
+# newest run"), generates artifacts/pins.json from the published releases'
+# own sha256 sidecars (every pin records its releaseRepo), verifies it with
+# scripts/install-pinned-artifacts.sh, opens the pin PR, and asks before
+# merging (the merge deploys the page).
 #
 #   [1] kernel wasm   (yurt-sandbox)  -> kernel-wasm-<TRAIN>
 #   [2] image         (yurt-ports)    -> playground-image-<TRAIN> + python-seal-<TRAIN>
@@ -34,10 +36,12 @@
 #   --kernel-sha    yurtos-kernel commit (default: origin/main of ../yurtos-kernel)
 #   --ports-sha     yurt-ports commit    (default: origin/main of ../yurt-ports)
 #   --sandbox-sha   yurt-sandbox commit  (default: origin/main of ../yurt-sandbox)
-#   --image-release pin this yurt-packages playground-image release instead
-#                   of building one ([2] is skipped; the pythonSeal pin is
-#                   carried through unchanged unless --python-seal-release
-#                   names a yurt-packages release to pin with it)
+#   --image-release pin this playground-image release instead of building
+#                   one ([2] is skipped; the pythonSeal pin is carried
+#                   through unchanged unless --python-seal-release names a
+#                   release to pin with it). A release is `tag` (in
+#                   YurtOS/yurt-packages, where the hand-cut ones live) or
+#                   `owner/repo@tag` (a previous train's, in its own repo)
 #   --train         the label (default: derived)
 #   --validate      publish=false: build everything, publish nothing, pin
 #                   nothing; the image and native runs are tested against
@@ -69,6 +73,7 @@ sandbox_dir=${YURT_SANDBOX_ROOT:-$root/../yurt-sandbox}
 ports_dir=${YURT_PORTS_ROOT:-$root/../yurt-ports}
 sandbox_repo=YurtOS/yurt-sandbox
 ports_repo=YurtOS/yurt-ports
+# The hand-cut releases; a train's are in the repositories that built them.
 packages_repo=YurtOS/yurt-packages
 state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/yurt-playground/releases
 
@@ -118,6 +123,10 @@ for tool in gh jq git; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
 done
 gh auth status >/dev/null 2>&1 || die "gh is not logged in"
+
+# A release given on the command line: `tag` (yurt-packages) or `owner/repo@tag`.
+release_repo() { case $1 in */*@*) echo "${1%%@*}" ;; *) echo "$packages_repo" ;; esac; }
+release_tag() { echo "${1##*@}"; }
 
 # ---- --check: is everything up to date? (read-only) ------------------------
 # One row per thing the train produces or consumes; exit 0 when every row is
@@ -278,9 +287,9 @@ if [ "$check" = 1 ]; then
   exit $?
 fi
 
-for given in "$image_release" "$seal_release"; do
-  [ -z "$given" ] || gh release view "$given" --repo "$packages_repo" >/dev/null 2>&1 \
-    || die "$given is not a release of $packages_repo"
+for given in "$image_release" "$seal_release" "$kernel_wasm_release" "$host_release" "$cli_release"; do
+  [ -z "$given" ] || gh release view "$(release_tag "$given")" --repo "$(release_repo "$given")" >/dev/null 2>&1 \
+    || die "$given is not a release of $(release_repo "$given")"
 done
 [ -z "$seal_release" ] || [ -n "$image_release" ] \
   || die "--python-seal-release goes with --image-release (the train builds the two together)"
@@ -319,7 +328,7 @@ elif [ -z "$train" ]; then
   base="playground-$(date -u +%Y.%m.%d)-${kernel_sha:0:7}"
   train=$base
   n=1
-  while gh release view "kernel-wasm-$train" --repo "$packages_repo" >/dev/null 2>&1; do
+  while gh release view "kernel-wasm-$train" --repo "$sandbox_repo" >/dev/null 2>&1; do
     n=$((n + 1))
     train="$base.$n"
   done
@@ -329,12 +338,22 @@ if [ "$pins_only" = 0 ]; then
     || die "train label $train does not look like playground-YYYY.MM.DD-<rev7>[.N]"
 fi
 say "train   $train$( [ "$validate" = 1 ] && echo ' (validate: nothing is published)')"
-kernel_wasm_release=${kernel_wasm_release:-kernel-wasm-$train}
 build_image=$([ -z "$image_release" ] && echo 1 || echo 0)
-image_release=${image_release:-playground-image-$train}
-[ "$build_image" = 0 ] || seal_release=python-seal-$train
-host_release=${host_release:-desktop-host-$train}
-cli_release=${cli_release:-yurt-cli-$train}
+kernel_wasm_repo=$(release_repo "${kernel_wasm_release:-$sandbox_repo@x}")
+kernel_wasm_release=$(release_tag "${kernel_wasm_release:-kernel-wasm-$train}")
+image_repo=$(release_repo "${image_release:-$ports_repo@x}")
+image_release=$(release_tag "${image_release:-playground-image-$train}")
+if [ "$build_image" = 1 ]; then
+  seal_repo=$ports_repo
+  seal_release=python-seal-$train
+elif [ -n "$seal_release" ]; then
+  seal_repo=$(release_repo "$seal_release")
+  seal_release=$(release_tag "$seal_release")
+fi
+host_repo=$(release_repo "${host_release:-$sandbox_repo@x}")
+host_release=$(release_tag "${host_release:-desktop-host-$train}")
+cli_repo=$(release_repo "${cli_release:-$sandbox_repo@x}")
+cli_release=$(release_tag "${cli_release:-yurt-cli-$train}")
 
 if [ "$pins_only" = 0 ]; then
 mkdir -p "$state_dir"
@@ -403,6 +422,7 @@ if [ "$validate" = 1 ]; then
   # The train's wasm was not published: the image and native runs are
   # tested against the release the page pins today.
   kernel_wasm_release=$(jq -r .kernelWasm.release "$root/artifacts/pins.json")
+  kernel_wasm_repo=$(jq -r ".kernelWasm.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")
 fi
 
 # [2] the image and the sealable cpython, one run. The Jupyter payload the
@@ -422,18 +442,21 @@ if [ "$build_image" = 1 ] && [ "$(step_get image conclusion)" != success ]; then
   dispatch_and_watch image "$ports_repo" release-playground-image.yml \
     -f "ports_sha=$ports_sha" -f "kernel_sha=$kernel_sha" \
     -f "yurt_cli_release=$(jq -r .yurtCli.release "$root/artifacts/pins.json")" \
+    -f "yurt_cli_repo=$(jq -r ".yurtCli.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")" \
     -f "jupyter_payload_release=$jupyter_payload" \
     -f "train=$train" -f "publish=$publish_flag"
 fi
 if [ "$validate" = 1 ] && [ "$build_image" = 1 ]; then
   image_release=$(jq -r .image.release "$root/artifacts/pins.json")
+  image_repo=$(jq -r ".image.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")
 fi
 
 # [3] the desktop host and the CLI, one run
 if [ "$(step_get native conclusion)" != success ]; then
   dispatch_and_watch native "$sandbox_repo" release-native.yml \
     -f "sandbox_sha=$sandbox_sha" -f "kernel_sha=$kernel_sha" \
-    -f "kernel_wasm_release=$kernel_wasm_release" -f "image_release=$image_release" \
+    -f "kernel_wasm_release=$kernel_wasm_release" -f "kernel_wasm_repo=$kernel_wasm_repo" \
+    -f "image_release=$image_release" -f "image_repo=$image_repo" \
     -f "train=$train" -f "publish=$publish_flag"
 fi
 
@@ -445,15 +468,15 @@ fi # pins_only
 
 # [4] pins.json from the releases' own sidecars
 sidecar_sha() {
-  local tag=$1 asset=$2 dir
+  local repo=$1 tag=$2 asset=$3 dir
   dir=$(mktemp -d "${TMPDIR:-/tmp}/yurt-sidecar.XXXXXX")
-  gh release download "$tag" --repo "$packages_repo" --pattern "$asset.sha256" --dir "$dir" --clobber >/dev/null
+  gh release download "$tag" --repo "$repo" --pattern "$asset.sha256" --dir "$dir" --clobber >/dev/null
   cut -d' ' -f1 "$dir/$asset.sha256"
   rm -rf "$dir"
 }
 say "generate artifacts/pins.json"
-kernel_sha256=$(sidecar_sha "$kernel_wasm_release" kernel-wasm.wasm)
-image_sha256=$(sidecar_sha "$image_release" playground-image.yurtimg)
+kernel_sha256=$(sidecar_sha "$kernel_wasm_repo" "$kernel_wasm_release" kernel-wasm.wasm)
+image_sha256=$(sidecar_sha "$image_repo" "$image_release" playground-image.yurtimg)
 image_rev_note=""
 if [ "$build_image" = 0 ] && [ "$image_release" != "$(jq -r .image.release "$root/artifacts/pins.json")" ]; then
   image_rev_note=" (image release changed by hand; check the ports rev)"
@@ -462,9 +485,9 @@ fi
 # a hand-cut image, the release named on the command line, or else the pin
 # carried through unchanged (it must exist: the notebook kernel needs it).
 if [ -n "$seal_release" ]; then
-  python_seal_json=$(jq -n --arg ports "$ports_sha" --arg release "$seal_release" \
-    --arg sha "$(sidecar_sha "$seal_release" python3-seal.wasm)" \
-    '{repo: "YurtOS/yurt-ports", rev: $ports, release: $release, build: "ports/cpython/scripts/build-seal.sh", sha256: $sha}')
+  python_seal_json=$(jq -n --arg ports "$ports_sha" --arg release "$seal_release" --arg repo "$seal_repo" \
+    --arg sha "$(sidecar_sha "$seal_repo" "$seal_release" python3-seal.wasm)" \
+    '{repo: "YurtOS/yurt-ports", rev: $ports, releaseRepo: $repo, release: $release, build: "ports/cpython/scripts/build-seal.sh", sha256: $sha}')
 else
   python_seal_json=$(jq -c '.pythonSeal // empty' "$root/artifacts/pins.json")
   [ -n "$python_seal_json" ] || die "artifacts/pins.json has no pythonSeal entry to carry through; pass --python-seal-release"
@@ -473,7 +496,7 @@ host_json='{}'
 cli_json='{}'
 # The CLI's package names carry its version; the release's asset list says
 # which, so the generator never guesses it.
-cli_assets=$(gh release view "$cli_release" --repo "$packages_repo" --json assets --jq '.assets[].name')
+cli_assets=$(gh release view "$cli_release" --repo "$cli_repo" --json assets --jq '.assets[].name')
 cli_asset_for() {
   case $1 in
     x86_64-unknown-linux-gnu) grep -E '^yurt_.*_amd64\.deb$' <<< "$cli_assets" ;;
@@ -482,25 +505,28 @@ cli_asset_for() {
   esac
 }
 for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-  host_json=$(jq --arg t "$target" --arg s "$(sidecar_sha "$host_release" "yurt-desktop-host-$target.tar.gz")" '. + {($t): $s}' <<< "$host_json")
+  host_json=$(jq --arg t "$target" --arg s "$(sidecar_sha "$host_repo" "$host_release" "yurt-desktop-host-$target.tar.gz")" '. + {($t): $s}' <<< "$host_json")
   asset=$(cli_asset_for "$target" | head -1)
   [ -n "$asset" ] || die "$cli_release has no package for $target"
-  cli_json=$(jq --arg t "$target" --arg a "$asset" --arg s "$(sidecar_sha "$cli_release" "$asset")" \
+  cli_json=$(jq --arg t "$target" --arg a "$asset" --arg s "$(sidecar_sha "$cli_repo" "$cli_release" "$asset")" \
     '. + {($t): {asset: $a, sha256: $s}}' <<< "$cli_json")
 done
+# `repo`/`rev` say where the source is; `releaseRepo`/`release` where the
+# bytes are (a train's in the repository that built them, a hand-cut one in
+# yurt-packages). Every consumer fetches through releaseRepo.
 jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sandbox_sha" \
-  --arg kernel_release "$kernel_wasm_release" --arg kernel_sha256 "$kernel_sha256" \
-  --arg image_release "$image_release" --arg image_sha256 "$image_sha256" --arg ports_sha "$ports_sha" \
-  --arg host_release "$host_release" --arg cli_release "$cli_release" \
+  --arg kernel_release "$kernel_wasm_release" --arg kernel_repo "$kernel_wasm_repo" --arg kernel_sha256 "$kernel_sha256" \
+  --arg image_release "$image_release" --arg image_repo "$image_repo" --arg image_sha256 "$image_sha256" --arg ports_sha "$ports_sha" \
+  --arg host_release "$host_release" --arg host_repo "$host_repo" --arg cli_release "$cli_release" --arg cli_repo "$cli_repo" \
   --argjson host "$host_json" --argjson cli "$cli_json" --argjson python_seal "$python_seal_json" '{
     train: $train,
-    kernelWasm: {repo: "YurtOS/yurtos-kernel", rev: $kernel_sha, release: $kernel_release,
+    kernelWasm: {repo: "YurtOS/yurtos-kernel", rev: $kernel_sha, releaseRepo: $kernel_repo, release: $kernel_release,
       build: "scripts/build-kernel-wasm.sh", path: "target/kernel-wasm/release/yurt_kernel.wasm", sha256: $kernel_sha256},
-    image: {repo: "YurtOS/yurt-ports", rev: $ports_sha, release: $image_release,
+    image: {repo: "YurtOS/yurt-ports", rev: $ports_sha, releaseRepo: $image_repo, release: $image_release,
       build: "scripts/build-playground-image.sh", path: "ports/playground-image/build/dist/playground.yurtimg", sha256: $image_sha256},
-    desktopHost: {repo: "YurtOS/yurt-sandbox", rev: $sandbox_sha, release: $host_release,
+    desktopHost: {repo: "YurtOS/yurt-sandbox", rev: $sandbox_sha, releaseRepo: $host_repo, release: $host_release,
       build: "scripts/build-desktop-host.sh", sha256: $host},
-    yurtCli: {repo: "YurtOS/yurt-sandbox", rev: $sandbox_sha, release: $cli_release,
+    yurtCli: {repo: "YurtOS/yurt-sandbox", rev: $sandbox_sha, releaseRepo: $cli_repo, release: $cli_release,
       build: "scripts/build-yurt-cli.sh",
       assets: ($cli | with_entries(.value = .value.asset)),
       sha256: ($cli | with_entries(.value = .value.sha256))},
