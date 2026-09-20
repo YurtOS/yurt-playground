@@ -13,6 +13,8 @@
 #
 # The playground image is not part of the train yet (no CI build of the
 # ports; #78 part A2): pass the image release to pin with --image-release.
+# The sealable CPython (pins.json pythonSeal) rides with the image and is
+# carried through unchanged for the same reason.
 #
 # Usage:
 #   scripts/release-playground.sh --image-release playground-image-v0.0.8 \
@@ -232,11 +234,17 @@ for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu 
   cli_json=$(jq --arg t "$target" --arg a "$asset" --arg s "$(sidecar_sha "$cli_release" "$asset")" \
     '. + {($t): {asset: $a, sha256: $s}}' <<< "$cli_json")
 done
+# The sealable CPython (pythonSeal) is not built by the train yet: it is
+# built beside the image from the same ports rev (#78 part A2) and released
+# by hand until then (scripts/build-python-seal.sh), so its pin is carried
+# through unchanged.
+python_seal_json=$(jq -c '.pythonSeal // empty' "$root/artifacts/pins.json")
+[ -n "$python_seal_json" ] || die "artifacts/pins.json has no pythonSeal entry to carry through"
 jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sandbox_sha" \
   --arg kernel_release "$kernel_wasm_release" --arg kernel_sha256 "$kernel_sha256" \
   --arg image_release "$image_release" --arg image_sha256 "$image_sha256" --arg image_rev "$image_rev" \
   --arg host_release "$host_release" --arg cli_release "$cli_release" \
-  --argjson host "$host_json" --argjson cli "$cli_json" '{
+  --argjson host "$host_json" --argjson cli "$cli_json" --argjson python_seal "$python_seal_json" '{
     train: $train,
     kernelWasm: {repo: "YurtOS/yurtos-kernel", rev: $kernel_sha, release: $kernel_release,
       build: "scripts/build-kernel-wasm.sh", path: "target/kernel-wasm/release/yurt_kernel.wasm", sha256: $kernel_sha256},
@@ -247,7 +255,8 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
     yurtCli: {repo: "YurtOS/yurt-sandbox", rev: $sandbox_sha, release: $cli_release,
       build: "scripts/build-yurt-cli.sh",
       assets: ($cli | with_entries(.value = .value.asset)),
-      sha256: ($cli | with_entries(.value = .value.sha256))}
+      sha256: ($cli | with_entries(.value = .value.sha256))},
+    pythonSeal: $python_seal
   }' > "$root/artifacts/pins.json"
 say "verify the pins: scripts/install-pinned-artifacts.sh"
 "$root/scripts/install-pinned-artifacts.sh"
