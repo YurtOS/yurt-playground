@@ -9,9 +9,11 @@ it here; nothing in this repository generates it.
 
 `python3-seal.wasm` (51 MB, not committed) is CPython 3.14 relinked the same way
 from the cpython port's build tree. It is pinned in `artifacts/pins.json`
-(`pythonSeal`, a yurt-playground release) and installed here by
-`scripts/install-pinned-artifacts.sh`; `scripts/build-python-seal.sh` is how a
-new one is built before it is released. The dev server and the static build
-publish it in 20 MiB parts, and the `yurt-snapshot` JupyterLite kernel runs it
-with `cell_server.py` as its cell loop. Without it that kernel reports the
-missing file at boot; the other kernel and the rest of the site do not need it.
+(`pythonSeal`) and installed here by `scripts/install-pinned-artifacts.sh`. The
+release train builds it beside the image, from the same cpython build
+(yurt-ports `ports/cpython/scripts/build-seal.sh`), and publishes it as
+`python-seal-<train>`; `scripts/build-python-seal.sh` runs that builder for a
+local one. The dev server and the static build publish it in 20 MiB parts, and
+the `yurt-snapshot` JupyterLite kernel runs it with `cell_server.py` as its cell
+loop. Without it that kernel reports the missing file at boot; the other kernel
+and the rest of the site do not need it.
