@@ -187,10 +187,11 @@ jobs:
         run: |
           set -euo pipefail
           tag=$(jq -r .yurtCli.release artifacts/pins.json)
+          repo=$(jq -r '.yurtCli.releaseRepo // "YurtOS/yurt-packages"' artifacts/pins.json)
           mkdir -p cli
           for target in $(jq -r '.yurtCli.assets | keys[]' artifacts/pins.json); do
             asset=$(jq -r ".yurtCli.assets[\"$target\"]" artifacts/pins.json)
-            gh release download "$tag" --repo YurtOS/yurt-packages --pattern "$asset" --dir cli --clobber
+            gh release download "$tag" --repo "$repo" --pattern "$asset" --dir cli --clobber
             case $asset in
               *.deb) mv "cli/$asset" "release/yurt-$target.deb" ;;
               *) mv "cli/$asset" "release/yurt-$target.tar.gz" ;;
