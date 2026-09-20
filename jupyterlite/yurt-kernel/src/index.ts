@@ -130,7 +130,7 @@ function describeSnapshot(state: SnapshotState): string {
         ? "running"
         : `running — sealed at ${
           new Date(state.sealedAt).toLocaleTimeString()
-        } (again every 10 s while a cell runs; the tab can be closed)`;
+        } (again every 10 s while a cell runs; save the notebook and the tab can be closed)`;
     case "sealing":
       return "sealing…";
     case "suspended":
@@ -172,7 +172,7 @@ function mountSnapshotPanel(b: SnapshotKernelBridge): void {
     // close (the acceptance test does).
     if (state.state === "running" && state.sealedAt !== undefined) {
       panel.dataset.sealedAt = String(state.sealedAt);
-    } else if (state.state !== "running") {
+    } else {
       delete panel.dataset.sealedAt;
     }
     suspend.disabled = state.state !== "running";
@@ -180,6 +180,9 @@ function mountSnapshotPanel(b: SnapshotKernelBridge): void {
     // A boot-time progress line ("starting Python") is stale once the
     // state moved on; only a message after that is worth keeping.
     statusLine.textContent = "";
+  };
+  panelStatus = (text) => {
+    statusLine.textContent = text;
   };
   render(b.snapshot);
   b.onSnapshot(render);
@@ -543,7 +546,18 @@ async function takePendingCell(
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
+  // The saved notebook (JupyterLite autosaves every couple of minutes)
+  // has no cell with that source, so the continuation has no cell to land
+  // in; the guest keeps running it and the next cell queues behind it.
+  const line = "the restored sandbox is still running a cell this notebook " +
+    "does not contain (edited after the last save?); its output cannot be " +
+    "shown -- Interrupt the kernel to free it";
+  console.warn(`yurt-snapshot: ${line}`);
+  panelStatus?.(line);
 }
+
+/** The panel's status line, once mounted. */
+let panelStatus: ((text: string) => void) | undefined;
 
 const plugin: JupyterFrontEndPlugin<void> = {
   id: "@yurt/jupyterlite-yurt-kernel:plugin",
@@ -596,9 +610,10 @@ const plugin: JupyterFrontEndPlugin<void> = {
       create: async (options: IKernel.IOptions): Promise<IKernel> => {
         const kernel = new YurtKernel(options, snapshotBridge);
         kernels.set(options.id, kernel);
-        void kernel.ready.then(async () => {
+        // A failed boot is reported through `ready` itself; nothing to add.
+        kernel.ready.then(async () => {
           await takePendingCell(await snapshotBridge(), tracker, options.id);
-        });
+        }).catch(() => {});
         return kernel;
       },
     });

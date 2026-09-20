@@ -176,11 +176,70 @@ const cells: CellState = {
  *  bound to that cell rather than run again. */
 let rebindPending = false;
 
+/** The pending cell finished before anyone re-ran it. The plugin is told,
+ *  but its re-run may already be on the way: an execute_request for this
+ *  code that arrives next is answered from the record -- what the cell
+ *  printed and its count -- rather than run a second time. */
+let completedPending:
+  | {
+    code: string;
+    executionCount: number;
+    outputTail: { name: "stdout" | "stderr"; text: string }[];
+    error: { ename: string; evalue: string; traceback: string[] } | undefined;
+  }
+  | undefined;
+
 /** The claim a reopened notebook could still take is gone. */
-function clearRebind(): void {
+function clearRebind(
+  finished?: {
+    executionCount: number;
+    error: { ename: string; evalue: string; traceback: string[] } | undefined;
+  },
+): void {
   if (!rebindPending) return;
   rebindPending = false;
+  if (finished !== undefined && cells.current !== undefined) {
+    completedPending = {
+      code: cells.current.code,
+      executionCount: finished.executionCount,
+      outputTail: cells.outputTail,
+      error: finished.error,
+    };
+  }
   post({ type: "pending-cell-cleared" });
+}
+
+/** Answer the crossed re-run of a cell that has already finished. */
+function answerCompleted(message: JupyterMessage): boolean {
+  const done = completedPending;
+  completedPending = undefined;
+  if (done === undefined || String(message.content.code ?? "") !== done.code) {
+    return false;
+  }
+  const parent = message.header;
+  const silent = message.content.silent === true;
+  publishStatus(parent, "busy");
+  if (!silent) {
+    if (message.content.store_history !== false) {
+      send(parent, "iopub", "execute_input", {
+        code: done.code,
+        execution_count: done.executionCount,
+      });
+    }
+    for (const chunk of done.outputTail) {
+      send(parent, "iopub", "stream", chunk);
+    }
+    if (done.error !== undefined) send(parent, "iopub", "error", done.error);
+  }
+  send(parent, "shell", "execute_reply", {
+    status: done.error === undefined ? "ok" : "error",
+    execution_count: done.executionCount,
+    user_expressions: {},
+    payload: [],
+    ...(done.error ?? {}),
+  });
+  publishStatus(parent, "idle");
+  return true;
 }
 
 function rememberOutput(name: "stdout" | "stderr", text: string): void {
@@ -347,7 +406,7 @@ function answerLocally(
 }
 
 function enqueueExecute(message: JupyterMessage): void {
-  if (rebind(message)) return;
+  if (rebind(message) || answerCompleted(message)) return;
   // Any other cell means the notebook moved on; the continuation stays
   // orphaned as before rather than hijacking an unrelated request.
   rebindPending = false;
@@ -455,9 +514,9 @@ function finishCell(frame: Exclude<GuestFrame, { t: "ready" }>): void {
         ...(error ?? {}),
       });
       publishStatus(parent, "idle");
+      clearRebind({ executionCount: frame.count, error });
       cells.current = undefined;
       cells.outputTail = [];
-      clearRebind();
       // The state after the cell -- its variables -- is worth keeping too.
       stopSealTicks();
       void sealTick();
@@ -474,6 +533,12 @@ let sealTimer: number | undefined;
 /** The tick in flight, so a Suspend click waits for it instead of being
  *  dropped (`sealing` was a double-click guard before ticks existed). */
 let tickInFlight: Promise<void> | undefined;
+/** Bumped by restart: a tick whose seal was taken of the guest just
+ *  killed must not store it. Only the store half of a tick is awaited
+ *  there; the seal half can be waiting on a compute-bound cell's next
+ *  syscall for up to the deadline. */
+let sealGeneration = 0;
+let storeInFlight: Promise<void> | undefined;
 /** `forget` holds until a Suspend stores again: the ticks would otherwise
  *  write the image right back (as `snapshot_worker.ts` guards too). */
 let forgotten = false;
@@ -507,19 +572,23 @@ async function sealOnce(): Promise<void> {
   const current = live;
   if (current === undefined || sealing || forgotten || sealEveryMs <= 0) return;
   sealing = true;
+  const generation = sealGeneration;
   try {
     const image = await current.mk.sealSandbox({
       deadlineMs: SEAL_DEADLINE_MS,
     });
-    if (live !== current || forgotten) return;
+    if (live !== current || forgotten || generation !== sealGeneration) {
+      return;
+    }
     const sealedAt = Date.now();
-    await storeSnapshot({
+    storeInFlight = storeSnapshot({
       image,
       pty: current.pty,
       sealedAt,
       kernelSha256: current.kernelSha256,
       attachments: { cells: structuredClone(cells) },
     }, NOTEBOOK_KEY);
+    await storeInFlight;
     post({
       type: "snapshot",
       snapshot: { state: "running", restoredFrom, sealedAt },
@@ -529,6 +598,7 @@ async function sealOnce(): Promise<void> {
       `seal skipped: ${error instanceof Error ? error.message : String(error)}`,
     );
   } finally {
+    storeInFlight = undefined;
     sealing = false;
   }
 }
@@ -750,7 +820,6 @@ async function suspend(): Promise<void> {
   if (tickInFlight !== undefined) await tickInFlight;
   const current = live;
   if (current === undefined || sealing) return;
-  forgotten = false;
   sealing = true;
   post({ type: "snapshot", snapshot: { state: "sealing" } });
   const startedAt = performance.now();
@@ -766,6 +835,7 @@ async function suspend(): Promise<void> {
       kernelSha256: current.kernelSha256,
       attachments: { cells: structuredClone(cells) },
     }, NOTEBOOK_KEY);
+    forgotten = false;
     live = undefined;
     stopSealTicks();
     teardown(current);
@@ -827,14 +897,19 @@ async function restart(): Promise<void> {
     current.mk.killProcess(current.process.pid, SIGKILL);
   } catch { /* already gone */ }
   // The stored image is of the guest just killed, mid-cell as likely as
-  // not; a reopened tab must not bring it back and re-run that cell.
-  if (tickInFlight !== undefined) await tickInFlight;
+  // not; a reopened tab must not bring it back and re-run that cell. A
+  // tick still sealing is told to drop its image (the generation); one
+  // already storing is waited for, so the clear lands after it.
+  sealGeneration++;
+  if (storeInFlight !== undefined) await storeInFlight.catch(() => {});
   await clearSnapshot(NOTEBOOK_KEY);
   restoredFrom = undefined;
+  completedPending = undefined;
   try {
     const { process, pty, stopPump } = await spawnCellServer(current.mk);
     live = { ...current, process, pty, stopPump };
     cells.executionCount = 0;
+    post({ type: "snapshot", snapshot: { state: "running" } });
     post({ type: "jupyter-restarted" });
   } catch (error) {
     post({
