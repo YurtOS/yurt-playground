@@ -134,7 +134,9 @@ function describeSnapshot(state: SnapshotState): string {
     case "sealing":
       return "sealing…";
     case "suspended":
-      return `suspended: ${formatBytes(state.bytes)} sealed in ${state.ms} ms, in IndexedDB`;
+      return `suspended: ${
+        formatBytes(state.bytes)
+      } sealed in ${state.ms} ms, in IndexedDB`;
     case "resuming":
       return "resuming…";
   }
@@ -544,7 +546,9 @@ async function takePendingCell(
       await NotebookActions.run(panel.content, panel.sessionContext);
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) =>
+      setTimeout(resolve, 100)
+    );
   }
   // The saved notebook (JupyterLite autosaves every couple of minutes)
   // has no cell with that source, so the continuation has no cell to land
@@ -563,12 +567,16 @@ const plugin: JupyterFrontEndPlugin<void> = {
   id: "@yurt/jupyterlite-yurt-kernel:plugin",
   autoStart: true,
   requires: [IKernelSpecs, IKernelClient],
-  optional: [INotebookTracker],
+  // INotebookTracker is NOT declared here, not even as optional: that
+  // would order this plugin's activation after the notebook tracker's,
+  // and by then the kernel-spec manager has fetched its list in some
+  // browsers (Chrome 153, not Playwright's Chromium) -- the specs
+  // registered below never showed up and the notebook offered "No
+  // Kernel". The tracker is resolved when a kernel is created instead.
   activate: (
-    _app: JupyterFrontEnd,
+    app: JupyterFrontEnd,
     kernelspecs: IKernelSpecs,
     client: IKernelClient,
-    tracker: INotebookTracker | null,
   ) => {
     // JupyterLite's kernel client implements interrupt by cancelling the
     // cells it has queued; the kernel itself is never told. The frontend's
@@ -612,6 +620,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
         kernels.set(options.id, kernel);
         // A failed boot is reported through `ready` itself; nothing to add.
         kernel.ready.then(async () => {
+          const tracker = await app.resolveOptionalService(INotebookTracker);
           await takePendingCell(await snapshotBridge(), tracker, options.id);
         }).catch(() => {});
         return kernel;

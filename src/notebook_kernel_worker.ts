@@ -849,9 +849,16 @@ async function restoreStored(
     if (saved !== undefined) {
       cells.executionCount = saved.executionCount;
       cells.current = saved.current;
-      cells.queued = saved.queued;
-      cells.partialLine = saved.partialLine;
-      cells.outputTail = saved.outputTail ?? [];
+      cells.queued = saved.queued ?? [];
+      cells.partialLine = saved.partialLine ?? "";
+      // A record from an earlier build (the tail was a string once) is
+      // restored without its tail rather than trusted: a wrong shape here
+      // throws inside the pty pump and silences the cell for good.
+      cells.outputTail = Array.isArray(saved.outputTail)
+        ? saved.outputTail.filter((chunk) =>
+          chunk !== null && typeof chunk === "object" && "kind" in chunk
+        )
+        : [];
       cells.error = saved.error;
     }
     const stopPump = attachGuest(restored.host, stored.pty, process);
