@@ -19,6 +19,7 @@ import {
   JupyterFrontEnd,
   JupyterFrontEndPlugin,
 } from "@jupyterlab/application";
+import { INotebookTracker, NotebookActions } from "@jupyterlab/notebook";
 import type { KernelMessage } from "@jupyterlab/services";
 import { IKernel, IKernelClient, IKernelSpecs } from "@jupyterlite/services";
 import { ISignal, Signal } from "@lumino/signaling";
@@ -46,7 +47,7 @@ type PlaygroundKernelBridge = {
 
 type SnapshotState =
   | { state: "booting" }
-  | { state: "running"; restoredFrom?: number }
+  | { state: "running"; restoredFrom?: number; sealedAt?: number }
   | { state: "sealing" }
   | { state: "suspended"; sealedAt: number; bytes: number; ms: number }
   | { state: "resuming" };
@@ -58,6 +59,7 @@ type SnapshotKernelBridge = PlaygroundKernelBridge & {
   forget(): void;
   onSnapshot(listener: (state: SnapshotState) => void): () => void;
   readonly snapshot: SnapshotState;
+  readonly pendingCell: { code: string; executionCount: number } | undefined;
 };
 
 type BridgeModule = {
@@ -119,11 +121,16 @@ function describeSnapshot(state: SnapshotState): string {
     case "booting":
       return "booting the sandbox…";
     case "running":
-      return state.restoredFrom === undefined
-        ? "running"
-        : `running — resumed from the image sealed at ${
+      if (state.restoredFrom !== undefined) {
+        return `running — resumed from the image sealed at ${
           new Date(state.restoredFrom).toLocaleTimeString()
         }`;
+      }
+      return state.sealedAt === undefined
+        ? "running"
+        : `running — sealed at ${
+          new Date(state.sealedAt).toLocaleTimeString()
+        } (again every 10 s while a cell runs; the tab can be closed)`;
     case "sealing":
       return "sealing…";
     case "suspended":
@@ -161,6 +168,13 @@ function mountSnapshotPanel(b: SnapshotKernelBridge): void {
   const render = (state: SnapshotState) => {
     stateLine.textContent = describeSnapshot(state);
     panel.dataset.state = state.state;
+    // The last periodic seal, for whoever wants to know the tab is safe to
+    // close (the acceptance test does).
+    if (state.state === "running" && state.sealedAt !== undefined) {
+      panel.dataset.sealedAt = String(state.sealedAt);
+    } else if (state.state !== "running") {
+      delete panel.dataset.sealedAt;
+    }
     suspend.disabled = state.state !== "running";
     resume.disabled = state.state !== "suspended";
     // A boot-time progress line ("starting Python") is stale once the
@@ -495,14 +509,49 @@ class YurtKernel implements IKernel {
   private _disposed = new Signal<this, void>(this);
 }
 
+/**
+ * A reopened notebook whose sandbox came back mid-cell (#109): find that
+ * cell -- the one whose source the guest is still running -- and run it, so
+ * its request becomes the parent of the continuation (the worker binds the
+ * request rather than running the code again, and replays what the cell had
+ * printed). The notebook attaches to its kernel a little after the kernel is
+ * ready, so this looks for it for a while.
+ */
+async function takePendingCell(
+  b: SnapshotKernelBridge,
+  tracker: INotebookTracker | null,
+  kernelId: string,
+): Promise<void> {
+  const pending = b.pendingCell;
+  if (pending === undefined || tracker === null) return;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (b.pendingCell === undefined) return;
+    const panel = tracker.find((widget) =>
+      widget.sessionContext.session?.kernel?.id === kernelId
+    ) ?? tracker.currentWidget;
+    const index = panel?.content.widgets.findIndex((cell) =>
+      cell.model.type === "code" &&
+      cell.model.sharedModel.getSource() === pending.code
+    ) ?? -1;
+    if (panel !== null && panel !== undefined && index >= 0) {
+      panel.content.activeCellIndex = index;
+      await NotebookActions.run(panel.content, panel.sessionContext);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 const plugin: JupyterFrontEndPlugin<void> = {
   id: "@yurt/jupyterlite-yurt-kernel:plugin",
   autoStart: true,
   requires: [IKernelSpecs, IKernelClient],
+  optional: [INotebookTracker],
   activate: (
     _app: JupyterFrontEnd,
     kernelspecs: IKernelSpecs,
     client: IKernelClient,
+    tracker: INotebookTracker | null,
   ) => {
     // JupyterLite's kernel client implements interrupt by cancelling the
     // cells it has queued; the kernel itself is never told. The frontend's
@@ -544,6 +593,9 @@ const plugin: JupyterFrontEndPlugin<void> = {
       create: async (options: IKernel.IOptions): Promise<IKernel> => {
         const kernel = new YurtKernel(options, snapshotBridge);
         kernels.set(options.id, kernel);
+        void kernel.ready.then(async () => {
+          await takePendingCell(await snapshotBridge(), tracker, options.id);
+        });
         return kernel;
       },
     });

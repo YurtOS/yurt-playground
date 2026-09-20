@@ -1,9 +1,10 @@
 /**
  * Browser acceptance for the suspend/resume notebook kernel: the
  * `suspend-resume.ipynb` notebook on the `yurt-snapshot` kernel prints
- * primes, Suspend seals the sandbox mid-cell into IndexedDB and tears it
- * down (the output stops), Resume brings it back and the same cell carries
- * on at the next prime.
+ * primes; the sandbox is sealed into IndexedDB every few seconds while the
+ * cell runs, so closing the tab and reopening the notebook brings the same
+ * cell back, continuing at the next prime (#109); then Suspend seals and
+ * tears down by hand (the output stops) and Resume carries on.
  *
  * Run: deno run --allow-all tests/notebook_snapshot_e2e.ts (needs the pinned
  * blobs in artifacts/, public/demo/python3-seal.wasm from
@@ -66,16 +67,17 @@ if (import.meta.main) {
   );
   const server = startPlaygroundServer(0);
   const browser = await chromium.launch();
-  try {
-    const page = await browser.newPage();
+  // One context: IndexedDB, where the sealed sandbox lives, is per context.
+  const context = await browser.newContext();
+  const notebookUrl =
+    `${server.url}/jupyter/notebooks/index.html?path=suspend-resume.ipynb`;
+  const openNotebook = async (): Promise<Page> => {
+    const page = await context.newPage();
     const started = Date.now();
-    await page.goto(
-      `${server.url}/jupyter/notebooks/index.html?path=suspend-resume.ipynb`,
-      { waitUntil: "domcontentloaded" },
-    );
+    await page.goto(notebookUrl, { waitUntil: "domcontentloaded" });
     await page.locator(".jp-Notebook").first().waitFor({ timeout: 60_000 });
-    // The plugin boots the sandbox, stages the stdlib and starts CPython;
-    // the panel says when it is running and the kernel is idle.
+    // The plugin boots (or restores) the sandbox; the panel says when it
+    // is running and the kernel is idle.
     await waitForPanelState(page, "running", 420_000);
     await page.waitForFunction(
       () =>
@@ -89,17 +91,59 @@ if (import.meta.main) {
         Math.round((Date.now() - started) / 1000)
       } s`,
     );
+    return page;
+  };
+  const primesAtLeast = (page: Page, count: number, timeout: number) =>
+    page.waitForFunction(
+      (want) =>
+        (document.querySelectorAll(".jp-CodeCell")[0]?.querySelector(
+          ".jp-OutputArea",
+        )?.textContent?.match(/prime #/g)?.length ?? 0) >= want,
+      count,
+      { timeout },
+    );
+  try {
+    let page = await openNotebook();
 
     // Run the primes cell.
     await page.locator(".jp-CodeCell").first().click();
     await page.keyboard.press("Shift+Enter");
+    await primesAtLeast(page, 5, 120_000);
+
+    // Close the tab once a periodic seal has landed; reopen the notebook:
+    // the sandbox is restored from that seal, the plugin re-runs the cell
+    // the guest never stopped running, and it continues -- numbering
+    // unbroken, the primes printed before the seal shown again first.
     await page.waitForFunction(
       () =>
-        (document.querySelectorAll(".jp-CodeCell")[0]?.querySelector(
-          ".jp-OutputArea",
-        )?.textContent?.match(/prime #/g)?.length ?? 0) >= 5,
+        document.querySelector<HTMLElement>(".yurt-snapshot-panel")?.dataset
+          .sealedAt !== undefined,
       undefined,
-      { timeout: 120_000 },
+      { timeout: 60_000 },
+    );
+    const atClose = await primesPrinted(page);
+    await page.close();
+    console.log(
+      `notebook snapshot e2e: tab closed at prime #${atClose.at(-1)}`,
+    );
+    page = await openNotebook();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".yurt-snapshot-state")?.textContent?.includes(
+          "resumed from",
+        ) === true,
+      undefined,
+      { timeout: 60_000 },
+    );
+    await primesAtLeast(page, atClose.length + 3, 120_000);
+    const afterReopen = await primesPrinted(page);
+    if (afterReopen.join(",") !== afterReopen.map((_, i) => i + 1).join(",")) {
+      fail(`the primes are not consecutive after reopening: ${afterReopen}`);
+    }
+    console.log(
+      `notebook snapshot e2e: reopened and reached prime #${
+        afterReopen.at(-1)
+      } with no button pressed`,
     );
 
     // Suspend: sealed and torn down; the cell's output stops growing.

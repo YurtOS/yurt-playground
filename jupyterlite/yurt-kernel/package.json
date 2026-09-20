@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@jupyterlab/application": "^4.6.0",
+    "@jupyterlab/notebook": "^4.6.0",
     "@jupyterlab/services": "^7.6.0",
     "@jupyterlite/services": "^0.8.3",
     "@lumino/signaling": "^2.1.0"

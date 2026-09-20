@@ -66,12 +66,25 @@ const SIGKILL = 9;
  *  lands at the guest's next syscall, and a pure compute loop never makes
  *  one. Printing progress is what makes a long cell suspendable. */
 const SEAL_DEADLINE_MS = 15_000;
+/** While a cell runs the sandbox is sealed into IndexedDB this often, and
+ *  once more when the cell finishes, so closing the tab loses at most this
+ *  much of the cell (#109). The seal does not stop the cell: the leaders
+ *  unwind at their next syscall and carry on. */
+const DEFAULT_SEAL_EVERY_MS = 10_000;
+/** How much of the running cell's output rides in the seal, so a reopened
+ *  notebook can show what the cell had printed before it continues. */
+const OUTPUT_TAIL_LIMIT = 256 * 1024;
 const PROTOCOL_VERSION = "5.3";
 /** Its own presence channel: the home page's sandbox may run alongside. */
 const PRESENCE_CHANNEL = "yurt-notebook-snapshot";
 
 export type NotebookKernelToWorker =
-  | { type: "start"; isolated: boolean }
+  | {
+    type: "start";
+    isolated: boolean;
+    /** Seal this often while a cell runs (tests shorten it); 0 disables. */
+    sealEveryMs?: number;
+  }
   | {
     type: "jupyter-send";
     message: JupyterMessage;
@@ -87,7 +100,7 @@ export type NotebookKernelToWorker =
 
 export type SnapshotState =
   | { state: "booting" }
-  | { state: "running"; restoredFrom?: number }
+  | { state: "running"; restoredFrom?: number; sealedAt?: number }
   | { state: "sealing" }
   | { state: "suspended"; sealedAt: number; bytes: number; ms: number }
   | { state: "resuming" };
@@ -102,7 +115,10 @@ export type NotebookKernelFromWorker =
     message: JupyterMessage;
     channel: JupyterChannel;
   }
-  | { type: "snapshot"; snapshot: SnapshotState };
+  | { type: "snapshot"; snapshot: SnapshotState }
+  /** A restored sandbox is mid-cell: the notebook can re-run that cell to
+   *  take the continuation (see `rebind`). */
+  | { type: "pending-cell"; code: string; executionCount: number };
 
 function post(message: NotebookKernelFromWorker): void {
   self.postMessage(message);
@@ -138,6 +154,9 @@ type CellState = {
   queued: ExecuteRequest[];
   /** The tail of the guest's output that has no newline yet. */
   partialLine: string;
+  /** What the current cell has printed so far (bounded), replayed into the
+   *  cell a reopened notebook re-runs to take the continuation. */
+  outputTail: string;
 };
 
 const cells: CellState = {
@@ -145,7 +164,48 @@ const cells: CellState = {
   current: undefined,
   queued: [],
   partialLine: "",
+  outputTail: "",
 };
+
+/** Set when a restore brought back a cell in progress whose notebook is
+ *  gone (a reopened page): the next execute_request for the same code is
+ *  bound to that cell rather than run again. */
+let rebindPending = false;
+
+function rememberOutput(text: string): void {
+  cells.outputTail = (cells.outputTail + text).slice(-OUTPUT_TAIL_LIMIT);
+}
+
+/** A reopened notebook re-runs the cell the guest never stopped running:
+ *  the new request takes over as the parent of everything the cell still
+ *  produces, and what it printed before the seal is shown again first. */
+function rebind(message: JupyterMessage): boolean {
+  const current = cells.current;
+  if (
+    !rebindPending || current === undefined ||
+    String(message.content.code ?? "") !== current.code
+  ) {
+    return false;
+  }
+  rebindPending = false;
+  current.header = message.header;
+  current.silent = message.content.silent === true;
+  current.storeHistory = message.content.store_history !== false;
+  publishStatus(current.header, "busy");
+  if (!current.silent && current.storeHistory) {
+    send(current.header, "iopub", "execute_input", {
+      code: current.code,
+      execution_count: cells.executionCount + 1,
+    });
+  }
+  if (!current.silent && cells.outputTail !== "") {
+    send(current.header, "iopub", "stream", {
+      name: "stdout",
+      text: cells.outputTail,
+    });
+  }
+  return true;
+}
 
 function header(parent: JupyterHeader, msgType: string): JupyterHeader {
   return {
@@ -262,6 +322,10 @@ function answerLocally(
 }
 
 function enqueueExecute(message: JupyterMessage): void {
+  if (rebind(message)) return;
+  // Any other cell means the notebook moved on; the continuation stays
+  // orphaned as before rather than hijacking an unrelated request.
+  rebindPending = false;
   cells.queued.push({
     header: message.header,
     code: String(message.content.code ?? ""),
@@ -277,6 +341,8 @@ function runNextCell(): void {
   const next = cells.queued.shift();
   if (next === undefined) return;
   cells.current = next;
+  cells.outputTail = "";
+  startSealTicks();
   publishStatus(next.header, "busy");
   if (!next.silent && next.storeHistory) {
     send(next.header, "iopub", "execute_input", {
@@ -328,6 +394,7 @@ function finishCell(frame: Exclude<GuestFrame, { t: "ready" }>): void {
   const parent = current.header;
   switch (frame.t) {
     case "stream":
+      rememberOutput(frame.text);
       if (!current.silent) {
         send(parent, "iopub", "stream", { name: frame.name, text: frame.text });
       }
@@ -364,9 +431,60 @@ function finishCell(frame: Exclude<GuestFrame, { t: "ready" }>): void {
       });
       publishStatus(parent, "idle");
       cells.current = undefined;
+      cells.outputTail = "";
+      rebindPending = false;
+      // The state after the cell -- its variables -- is worth keeping too.
+      stopSealTicks();
+      void sealTick();
       runNextCell();
       return;
     }
+  }
+}
+
+// ── Periodic seals ──────────────────────────────────────────────────────
+
+let sealEveryMs = DEFAULT_SEAL_EVERY_MS;
+let sealTimer: number | undefined;
+
+function startSealTicks(): void {
+  if (sealEveryMs <= 0 || sealTimer !== undefined) return;
+  sealTimer = setInterval(() => void sealTick(), sealEveryMs);
+}
+
+function stopSealTicks(): void {
+  if (sealTimer === undefined) return;
+  clearInterval(sealTimer);
+  sealTimer = undefined;
+}
+
+/** Seal the running sandbox into IndexedDB and keep it running. A cell
+ *  that makes no syscall within the deadline cannot be sealed this time;
+ *  the next tick tries again. */
+async function sealTick(): Promise<void> {
+  const current = live;
+  if (current === undefined || sealing || sealEveryMs <= 0) return;
+  sealing = true;
+  try {
+    const image = await current.mk.sealSandbox({
+      deadlineMs: SEAL_DEADLINE_MS,
+    });
+    if (live !== current) return;
+    const sealedAt = Date.now();
+    await storeSnapshot({
+      image,
+      pty: current.pty,
+      sealedAt,
+      kernelSha256: current.kernelSha256,
+      attachments: { cells: structuredClone(cells) },
+    }, NOTEBOOK_KEY);
+    post({ type: "snapshot", snapshot: { state: "running", sealedAt } });
+  } catch (error) {
+    status(
+      `seal skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  } finally {
+    sealing = false;
   }
 }
 
@@ -407,6 +525,9 @@ function failAllCells(reason: string): void {
   cells.current = undefined;
   cells.queued = [];
   cells.partialLine = "";
+  cells.outputTail = "";
+  rebindPending = false;
+  stopSealTicks();
   lastError = undefined;
   for (const cell of inFlight) {
     send(cell.header, "shell", "execute_reply", {
@@ -550,8 +671,10 @@ async function restoreStored(
       cells.current = saved.current;
       cells.queued = saved.queued;
       cells.partialLine = saved.partialLine;
+      cells.outputTail = saved.outputTail ?? "";
     }
     const stopPump = attachGuest(restored.host, stored.pty, process);
+    if (cells.current !== undefined) startSealTicks();
     return {
       mk: restored.host,
       pty: stored.pty,
@@ -597,6 +720,7 @@ async function suspend(): Promise<void> {
       attachments: { cells: structuredClone(cells) },
     }, NOTEBOOK_KEY);
     live = undefined;
+    stopSealTicks();
     teardown(current);
     post({
       type: "snapshot",
@@ -697,6 +821,17 @@ async function start(isolated: boolean): Promise<void> {
         type: "snapshot",
         snapshot: { state: "running", restoredFrom: stored.sealedAt },
       });
+      if (cells.current !== undefined) {
+        // This page has no future for the cell's request: whoever re-runs
+        // that cell takes it (`rebind`). Announced BEFORE ready, which is
+        // what the plugin acts on.
+        rebindPending = true;
+        post({
+          type: "pending-cell",
+          code: cells.current.code,
+          executionCount: cells.executionCount + 1,
+        });
+      }
       post({ type: "notebook-ready" });
       return;
     } catch (error) {
@@ -718,6 +853,7 @@ self.onmessage = async (event: MessageEvent<NotebookKernelToWorker>) => {
   try {
     switch (msg.type) {
       case "start":
+        if (msg.sealEveryMs !== undefined) sealEveryMs = msg.sealEveryMs;
         await start(msg.isolated);
         return;
       case "jupyter-send":
