@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yurt playground: continuous snapshots</title>
+    <link rel="stylesheet" href="./xterm.css" />
+    <style>
+      :root {
+        --ground: #161a21;
+        --pane: #1c212a;
+        --rule: #2c3340;
+        --text: #e6e1d7;
+        --muted: #9a948a;
+        --ochre: #e0a458;
+        --sky: #8fb4d9;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: var(--ground);
+        color: var(--text);
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      a {
+        color: var(--sky);
+      }
+      .wrap {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      h1 {
+        font-size: 18px;
+        font-weight: 600;
+        margin: 0 0 4px;
+      }
+      p {
+        margin: 0 0 12px;
+        color: var(--muted);
+      }
+      #terminal {
+        height: 420px;
+        background: var(--pane);
+        border: 1px solid var(--rule);
+        border-radius: 6px;
+        padding: 8px;
+      }
+      .bar {
+        display: flex;
+        gap: 16px;
+        align-items: baseline;
+        margin: 10px 0;
+        min-height: 1.5em;
+      }
+      #status {
+        color: var(--ochre);
+      }
+      #seals {
+        color: var(--muted);
+        flex: 1;
+      }
+      button {
+        font: inherit;
+        color: var(--text);
+        background: var(--pane);
+        border: 1px solid var(--rule);
+        border-radius: 4px;
+        padding: 2px 10px;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Continuous snapshots</h1>
+      <p>
+        A prime finder runs in the sandbox. Every two seconds the whole sandbox
+        — kernel memory, the guest's memory and its unwound call stack — is
+        sealed into IndexedDB. Close the tab, come back, and it picks up from
+        the syscall it was sealed at, no image staged, no program restarted.
+      </p>
+      <div class="bar">
+        <span id="status">loading</span>
+        <span id="seals"></span>
+        <button id="reset" type="button">Forget the snapshot</button>
+      </div>
+      <div id="terminal"></div>
+      <p><a href="./">Back to the playground</a></p>
+    </div>
+    <script type="module" src="./snapshot_page.bundle.js"></script>
+  </body>
+</html>

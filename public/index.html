@@ -866,6 +866,104 @@ yurt stop web</pre>
         </div>
       </details>
 
+      <details class="strip" id="snapshots" data-testid="snapshots">
+        <summary data-testid="snapshots-toggle">
+          <h2 id="snapshots-title">Suspend and resume</h2>
+          <span class="hint">A notebook cell continues where it stopped</span>
+        </summary>
+        <p>
+          A sandbox can be sealed while it runs — the kernel's memory, each
+          program's memory and its unwound call stack — and brought back later
+          exactly where it was: no boot, no image to stage, no program
+          restarted. The
+          <a
+            href="./jupyter/notebooks/index.html?path=suspend-resume.ipynb"
+            data-testid="notebook-snapshot-demo"
+          >notebook</a>
+          suspends and resumes a running cell; the
+          <a href="./snapshot.html" data-testid="snapshot-demo"
+          >terminal demo</a>
+          seals every two seconds.
+        </p>
+        <div class="checks">
+          <article class="check">
+            <h3>In a notebook</h3>
+            <p>
+              Open the
+              <a
+                href="./jupyter/notebooks/index.html?path=suspend-resume.ipynb"
+              >
+                suspend/resume notebook</a>. Its kernel is one CPython 3.14
+              process (the <em>Python 3 (Yurt, suspend/resume)</em> kernelspec),
+              built so the sandbox can be sealed. Run the cell that prints
+              primes, press <kbd>Suspend</kbd> in the panel at the bottom right:
+              about 50 MB lands in IndexedDB in a quarter of a second and the
+              sandbox is gone. Press <kbd>Resume</kbd>: the cell carries on at
+              the next prime, in the same output, with every variable intact.
+              Interrupt works as usual, and <code>primes</code> is still there
+              afterwards.
+            </p>
+            <p>
+              What makes a cell suspendable is a syscall to seal at: printing
+              progress is enough; a loop that never leaves the interpreter has
+              to wait for its next print.
+            </p>
+          </article>
+          <article class="check">
+            <h3>In a terminal</h3>
+            <p>
+              Open the <a href="./snapshot.html">demo</a>. A prime finder prints
+              one prime every quarter second, testing each candidate against the
+              primes it has already found — its position is on the call stack,
+              its list is on the heap, and both come back. The bar counts the
+              seals as they land in your browser's IndexedDB (about 14 MB, under
+              50 ms each).
+            </p>
+            <p>
+              Close the tab. Open the page again: it says which seal it restored
+              from, draws a marker, and the next prime is the one after the last
+              sealed one. <kbd>Forget the snapshot</kbd>
+              drops the image so the next load boots fresh.
+            </p>
+          </article>
+          <article class="check">
+            <h3>What is saved, and when</h3>
+            <p>
+              Nothing happens at close: the browser gives a closing tab no
+              chance to seal. Every seal overwrites the one before, so a restore
+              is at most one interval behind, and the interrupted syscall runs
+              exactly once, after the restore.
+            </p>
+            <p>
+              The image stays on this origin, in this browser, and is tied to
+              the kernel build that sealed it: after an update it is dropped and
+              the page boots fresh.
+            </p>
+          </article>
+          <article class="check">
+            <h3>Use it from code</h3>
+            <p>
+              On the JS host, <code>KernelHostInterface.sealSandbox()</code>
+              returns the image and lets the sandbox continue;
+              <code>KernelHostInterface.restore(kernelWasm, image)</code>
+              brings it back in a fresh host with the processes ready to run. A
+              program opts in by being built with Asyncify on
+              <code>yurt.syscall</code> (it exports
+              <code>yurt_asyncify_syscall</code>); a seal of anything else is
+              refused rather than guessed at.
+            </p>
+            <p>
+              Today: one thread per program, terminals and timers carried;
+              sockets, in-flight host I/O and the stock image's shell are not
+              yet. See <code>src/snapshot_worker.ts</code> for the whole loop in
+              a page, and <code>src/notebook_kernel_worker.ts</code> for the
+              notebook kernel around a sealable CPython (<code
+              >scripts/build-python-seal.sh</code> builds it).
+            </p>
+          </article>
+        </div>
+      </details>
+
       <footer>
         Yurt is a Linux kernel for WebAssembly. Source, issues and releases:
         <a href="https://github.com/YurtOS/yurt-playground"

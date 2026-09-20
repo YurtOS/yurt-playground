@@ -2,11 +2,18 @@
  * JupyterLite kernel plugin for the Yurt playground.
  *
  * JupyterLite supplies the JupyterLab / Notebook frontend and a browser-side
- * Jupyter Server API; this plugin registers one kernelspec, `yurt`, whose
- * kernel is the unmodified ipykernel running inside the Yurt sandbox on this
- * page. Messages are relayed verbatim to the guest's ZMQ sockets through the
- * playground's coordinator Worker (`/playground-bridge.js`); nothing executes
- * in the browser.
+ * Jupyter Server API; this plugin registers two kernelspecs:
+ *
+ * - `yurt`: the unmodified ipykernel running inside the Yurt sandbox on
+ *   this page. Messages are relayed verbatim to the guest's ZMQ sockets
+ *   through the playground's coordinator Worker (`/playground-bridge.js`);
+ *   nothing executes in the browser.
+ * - `yurt-snapshot`: one CPython process in a sandbox that can be suspended
+ *   (sealed into IndexedDB) and resumed, mid-cell, through
+ *   `/snapshot-bridge.js`. A floating panel carries the two buttons.
+ *
+ * Both bridges present the same send/receive pair, so one kernel class
+ * serves both specs.
  */
 import {
   JupyterFrontEnd,
@@ -37,11 +44,32 @@ type PlaygroundKernelBridge = {
   onStatus(listener: (text: string) => void): () => void;
 };
 
+type SnapshotState =
+  | { state: "booting" }
+  | { state: "running"; restoredFrom?: number }
+  | { state: "sealing" }
+  | { state: "suspended"; sealedAt: number; bytes: number; ms: number }
+  | { state: "resuming" };
+
+/** Shape of `/snapshot-bridge.js` (see `src/snapshot_bridge.ts`). */
+type SnapshotKernelBridge = PlaygroundKernelBridge & {
+  suspend(): void;
+  resume(): void;
+  forget(): void;
+  onSnapshot(listener: (state: SnapshotState) => void): () => void;
+  readonly snapshot: SnapshotState;
+};
+
 type BridgeModule = {
   startPlaygroundKernel(coordinatorUrl?: string): PlaygroundKernelBridge;
 };
 
+type SnapshotBridgeModule = {
+  startSnapshotKernel(workerUrl?: string): SnapshotKernelBridge;
+};
+
 const BRIDGE_URL = "/playground-bridge.js";
+const SNAPSHOT_BRIDGE_URL = "/snapshot-bridge.js";
 const MAX_TRACKED_REQUESTS = 4096;
 /** ipykernel answers interrupt_request from its control thread even while
  * a cell runs, so a missing reply means a wedged kernel; do not hang the
@@ -52,6 +80,7 @@ const INTERRUPT_REPLY_TIMEOUT_MS = 10_000;
 const kernels = new Map<string, YurtKernel>();
 
 let bridgePromise: Promise<PlaygroundKernelBridge> | undefined;
+let snapshotBridgePromise: Promise<SnapshotKernelBridge> | undefined;
 
 /** One sandbox per page, booted on first use and shared by every kernel. */
 function bridge(): Promise<PlaygroundKernelBridge> {
@@ -65,13 +94,99 @@ function bridge(): Promise<PlaygroundKernelBridge> {
   return bridgePromise;
 }
 
+/** The suspend/resume sandbox: its own worker, and the panel with it. */
+function snapshotBridge(): Promise<SnapshotKernelBridge> {
+  if (snapshotBridgePromise === undefined) {
+    snapshotBridgePromise = import(
+      /* webpackIgnore: true */ SNAPSHOT_BRIDGE_URL
+    ).then((module: SnapshotBridgeModule) => {
+      const b = module.startSnapshotKernel();
+      mountSnapshotPanel(b);
+      return b;
+    });
+  }
+  return snapshotBridgePromise;
+}
+
+// ── The suspend/resume panel ──────────────────────────────────────────────
+
+function formatBytes(bytes: number): string {
+  return `${(bytes / 1e6).toFixed(1)} MB`;
+}
+
+function describeSnapshot(state: SnapshotState): string {
+  switch (state.state) {
+    case "booting":
+      return "booting the sandbox…";
+    case "running":
+      return state.restoredFrom === undefined
+        ? "running"
+        : `running — resumed from the image sealed at ${
+          new Date(state.restoredFrom).toLocaleTimeString()
+        }`;
+    case "sealing":
+      return "sealing…";
+    case "suspended":
+      return `suspended: ${formatBytes(state.bytes)} sealed in ${state.ms} ms, in IndexedDB`;
+    case "resuming":
+      return "resuming…";
+  }
+}
+
+/**
+ * A small fixed panel on the page: the sandbox's state, Suspend, Resume,
+ * and a status line. Plain DOM rather than a JupyterLab toolbar item so it
+ * is the same in the Notebook and Lab interfaces and needs no settings
+ * schema.
+ */
+function mountSnapshotPanel(b: SnapshotKernelBridge): void {
+  const panel = document.createElement("div");
+  panel.className = "yurt-snapshot-panel";
+  panel.innerHTML = `
+    <div class="yurt-snapshot-title">Yurt sandbox</div>
+    <div class="yurt-snapshot-state"></div>
+    <div class="yurt-snapshot-buttons">
+      <button class="yurt-snapshot-suspend" type="button">Suspend</button>
+      <button class="yurt-snapshot-resume" type="button">Resume</button>
+    </div>
+    <div class="yurt-snapshot-status"></div>`;
+  const stateLine = panel.querySelector(".yurt-snapshot-state")!;
+  const statusLine = panel.querySelector(".yurt-snapshot-status")!;
+  const suspend = panel.querySelector<HTMLButtonElement>(
+    ".yurt-snapshot-suspend",
+  )!;
+  const resume = panel.querySelector<HTMLButtonElement>(
+    ".yurt-snapshot-resume",
+  )!;
+  const render = (state: SnapshotState) => {
+    stateLine.textContent = describeSnapshot(state);
+    panel.dataset.state = state.state;
+    suspend.disabled = state.state !== "running";
+    resume.disabled = state.state !== "suspended";
+    // A boot-time progress line ("starting Python") is stale once the
+    // state moved on; only a message after that is worth keeping.
+    statusLine.textContent = "";
+  };
+  render(b.snapshot);
+  b.onSnapshot(render);
+  b.onStatus((text) => {
+    statusLine.textContent = text;
+  });
+  suspend.addEventListener("click", () => b.suspend());
+  resume.addEventListener("click", () => b.resume());
+  document.body.appendChild(panel);
+}
+
 class YurtKernel implements IKernel {
-  constructor(options: IKernel.IOptions) {
+  constructor(
+    options: IKernel.IOptions,
+    start: () => Promise<PlaygroundKernelBridge>,
+  ) {
     this._id = options.id;
     this._name = options.name;
     this._location = options.location;
     this._sendMessage = options.sendMessage;
-    this.ready = bridge().then(async (b) => {
+    this.ready = start().then(async (b) => {
       this._unsubscribe = b.onMessage((message, channel) =>
         this._fromKernel(message, channel)
       );
@@ -410,7 +525,24 @@ const plugin: JupyterFrontEndPlugin<void> = {
         },
       },
       create: async (options: IKernel.IOptions): Promise<IKernel> => {
-        const kernel = new YurtKernel(options);
+        const kernel = new YurtKernel(options, bridge);
+        kernels.set(options.id, kernel);
+        return kernel;
+      },
+    });
+    kernelspecs.register({
+      spec: {
+        name: "yurt-snapshot",
+        display_name: "Python 3 (Yurt, suspend/resume)",
+        language: "python",
+        argv: [],
+        resources: {
+          "logo-32x32": "",
+          "logo-64x64": "",
+        },
+      },
+      create: async (options: IKernel.IOptions): Promise<IKernel> => {
+        const kernel = new YurtKernel(options, snapshotBridge);
         kernels.set(options.id, kernel);
         return kernel;
       },

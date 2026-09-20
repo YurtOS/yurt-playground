@@ -1,7 +1,7 @@
 {
   "kernelWasm": {
     "repo": "YurtOS/yurtos-kernel",
-    "rev": "be75f0c2692d49e1f973e55deddbc5266de7880e",
+    "rev": "50f871b4c9ee1b6a37e5ef4744bb3652162b1c66",
     "release": "kernel-wasm-v0.0.4",
     "build": "scripts/build-kernel-wasm.sh",
     "path": "target/kernel-wasm/release/yurt_kernel.wasm",
@@ -37,5 +37,13 @@
       "x86_64-unknown-linux-gnu": "yurt_0.1.3_amd64.deb",
       "aarch64-unknown-linux-gnu": "yurt_0.1.3_arm64.deb"
     }
+  },
+  "pythonSeal": {
+    "repo": "YurtOS/yurt-ports",
+    "rev": "f876776193b203335345aa19b9c2a6df04196990",
+    "releaseRepo": "YurtOS/yurt-playground",
+    "release": "python-seal-v0.0.1",
+    "build": "scripts/build-python-seal.sh",
+    "sha256": "611a76b4fc60574344c1e3bb0308e8109deeffe480f843bc3df125b718a696da"
   }
 }

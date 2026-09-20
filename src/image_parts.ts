@@ -6,17 +6,24 @@
  */
 export const IMAGE_PART_BYTES = 20 * 1024 * 1024;
 
+/** The notebook kernel's sealable CPython (51 MB), published in parts too;
+ * built by scripts/build-python-seal.sh into public/. */
+export const PYTHON_SEAL_NAME = "demo/python3-seal.wasm";
+
 export type ImagePartsManifest = { size: number; parts: string[] };
 
-/** Manifest for an image of `size` bytes published as `name` parts. */
+/** Manifest for an image of `size` bytes published as `name` parts. The
+ * parts are named relative to the manifest, which sits beside them, so a
+ * `name` with a directory lists bare `<base>.<i>` entries. */
 export function imagePartsManifest(
   name: string,
   size: number,
 ): ImagePartsManifest {
   const count = Math.max(1, Math.ceil(size / IMAGE_PART_BYTES));
+  const base = name.slice(name.lastIndexOf("/") + 1);
   return {
     size,
-    parts: Array.from({ length: count }, (_, i) => `${name}.${i}`),
+    parts: Array.from({ length: count }, (_, i) => `${base}.${i}`),
   };
 }
 

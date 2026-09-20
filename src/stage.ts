@@ -54,10 +54,17 @@ function chownPath(
   }
 }
 
+/**
+ * Stage the image into the kernel's ramfs. `include` keeps only the entries
+ * it accepts (directories are always kept): the ramfs lives in the kernel's
+ * memory, and a sandbox that will be sealed pays for every staged byte on
+ * every seal, so a demo stages what its one program needs.
+ */
 export async function stageYurtimg(
   mk: KernelHostInterface,
   yurtimg: Uint8Array,
   host: Map<string, Uint8Array>,
+  include: (path: string) => boolean = () => true,
 ): Promise<void> {
   setPidCredentials(mk, KERNEL_PID, 0, 0);
   const tarBytes = decompressYurtimg(yurtimg);
@@ -74,6 +81,7 @@ export async function stageYurtimg(
   }
   for (const [path, entry] of Object.entries(index.entries)) {
     if (entry.type !== "file" && entry.type !== "hardlink") continue;
+    if (!include(path)) continue;
     stageRamfsFile(
       mk,
       host,
@@ -84,6 +92,7 @@ export async function stageYurtimg(
   }
   for (const [path, entry] of Object.entries(index.entries)) {
     if (entry.type !== "symlink") continue;
+    if (!include(path)) continue;
     registerRamfsSymlink(mk, entry.target, path);
     try {
       host.set(path, provider.readFile(path));
@@ -93,6 +102,7 @@ export async function stageYurtimg(
   }
   for (const [path, entry] of Object.entries(index.entries)) {
     if (entry.uid === 0 && entry.gid === 0) continue;
+    if (entry.type !== "dir" && !include(path)) continue;
     chownPath(
       mk,
       path,
