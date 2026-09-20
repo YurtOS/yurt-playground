@@ -72,7 +72,18 @@ Deno.test("handler rejects a malformed percent-encoding", async () => {
 Deno.test("worker bootstrap is served as a JS module", async () => {
   const publicDir = join(dirname(fileURLToPath(import.meta.url)), "../public");
   const workerPath = join(publicDir, "worker_bootstrap.js");
-  await Deno.writeTextFile(workerPath, "export {};\n");
+  // The real bundle, when ensureBundle has written one, is left alone: this
+  // used to overwrite it with a stub and delete it afterwards, and the
+  // pre-commit run of this suite took a running dev server's leader Worker
+  // script away under it (every sandbox boot then failed with
+  // kernel_spawn_process rc=-5, the notebook and the terminal alike).
+  let created = false;
+  try {
+    await Deno.stat(workerPath);
+  } catch {
+    await Deno.writeTextFile(workerPath, "export {};\n");
+    created = true;
+  }
   try {
     const res = await handlePlaygroundRequest(
       new Request("http://playground/worker_bootstrap.js"),
@@ -84,7 +95,7 @@ Deno.test("worker bootstrap is served as a JS module", async () => {
     );
     await res.body?.cancel();
   } finally {
-    await Deno.remove(workerPath);
+    if (created) await Deno.remove(workerPath);
   }
 });
 
