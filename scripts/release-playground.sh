@@ -43,10 +43,12 @@
 #                   YurtOS/yurt-packages, where the hand-cut ones live) or
 #                   `owner/repo@tag` (a previous train's, in its own repo)
 #   --train         the label (default: derived)
-#   --validate      publish=false: build everything, publish nothing, pin
-#                   nothing; the image and native runs are tested against
-#                   the kernel wasm and image releases currently pinned,
-#                   since the train's do not exist
+#   --validate      a rehearsal: the train is labelled <TRAIN>-validate and
+#                   published like any other -- as prereleases in the
+#                   builders' repositories, so every step tests against
+#                   the train's own artifacts (the pinned ones may be a
+#                   kernel rev behind the runtime) -- then the prereleases
+#                   are deleted; nothing is pinned, no PR is opened
 #   --resume        continue a train from its state file
 #   --check         dispatch nothing, write nothing: is everything up to date?
 #                   One row per pin (each repo's main vs the pinned rev, the
@@ -334,10 +336,24 @@ elif [ -z "$train" ]; then
   done
 fi
 if [ "$pins_only" = 0 ]; then
+  [[ "$train" == *-validate ]] && [ "$validate" = 0 ] && die "train label $train is a rehearsal's; pass --validate"
+  train=${train%-validate}
   [[ "$train" =~ ^playground-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{7}(\.[0-9]+)?$ ]] \
     || die "train label $train does not look like playground-YYYY.MM.DD-<rev7>[.N]"
+  if [ "$validate" = 1 ]; then
+    train="$train-validate"
+    # The prereleases a rehearsal publishes, as repo:tag, deleted at the end.
+    rehearsal_releases=("$sandbox_repo:kernel-wasm-$train" "$sandbox_repo:desktop-host-$train" "$sandbox_repo:yurt-cli-$train"
+      "$ports_repo:playground-image-$train" "$ports_repo:python-seal-$train")
+    if [ "$resume" = 0 ]; then
+      for spec in "${rehearsal_releases[@]}"; do
+        gh release view "${spec#*:}" --repo "${spec%%:*}" >/dev/null 2>&1 \
+          && die "${spec%%:*} still has ${spec#*:} from an unfinished rehearsal; --resume it, or delete them (gh release delete ${spec#*:} --repo ${spec%%:*} --yes --cleanup-tag)"
+      done
+    fi
+  fi
 fi
-say "train   $train$( [ "$validate" = 1 ] && echo ' (validate: nothing is published)')"
+say "train   $train$( [ "$validate" = 1 ] && echo ' (validate: prereleases, deleted at the end)')"
 build_image=$([ -z "$image_release" ] && echo 1 || echo 0)
 kernel_wasm_repo=$(release_repo "${kernel_wasm_release:-$sandbox_repo@x}")
 kernel_wasm_release=$(release_tag "${kernel_wasm_release:-kernel-wasm-$train}")
@@ -361,7 +377,7 @@ state=$state_dir/$train.json
 if [ "$resume" = 1 ]; then
   [ -f "$state" ] || die "nothing to resume: $state"
 else
-  [ -f "$state" ] && [ "$validate" = 0 ] && die "$state exists; --resume it, or pick --train"
+  [ -f "$state" ] && die "$state exists; --resume it, or pick --train"
   jq -n --arg train "$train" --arg kernel "$kernel_sha" --arg ports "$ports_sha" --arg sandbox "$sandbox_sha" \
     --arg image "$image_release" --argjson build_image "$build_image" --argjson validate "$validate" \
     '{train:$train, kernel_sha:$kernel, ports_sha:$ports, sandbox_sha:$sandbox, image_release:$image, build_image:($build_image == 1), validate:$validate, steps:{}}' \
@@ -411,18 +427,13 @@ dispatch_and_watch() {
   fi
 }
 
-publish_flag=$([ "$validate" = 1 ] && echo false || echo true)
+# A rehearsal publishes too (prereleases, see --validate): the runs test
+# against the train's own artifacts either way.
 
 # [1] the kernel wasm
 if [ "$(step_get kernel_wasm conclusion)" != success ]; then
   dispatch_and_watch kernel_wasm "$sandbox_repo" release-kernel-wasm.yml \
-    -f "kernel_sha=$kernel_sha" -f "train=$train" -f "publish=$publish_flag"
-fi
-if [ "$validate" = 1 ]; then
-  # The train's wasm was not published: the image and native runs are
-  # tested against the release the page pins today.
-  kernel_wasm_release=$(jq -r .kernelWasm.release "$root/artifacts/pins.json")
-  kernel_wasm_repo=$(jq -r ".kernelWasm.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")
+    -f "kernel_sha=$kernel_sha" -f "train=$train" -f "publish=true"
 fi
 
 # [2] the image and the sealable cpython, one run. The Jupyter payload the
@@ -444,24 +455,27 @@ if [ "$build_image" = 1 ] && [ "$(step_get image conclusion)" != success ]; then
     -f "yurt_cli_release=$(jq -r .yurtCli.release "$root/artifacts/pins.json")" \
     -f "yurt_cli_repo=$(jq -r ".yurtCli.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")" \
     -f "jupyter_payload_release=$jupyter_payload" \
-    -f "train=$train" -f "publish=$publish_flag"
+    -f "train=$train" -f "publish=true"
 fi
-if [ "$validate" = 1 ] && [ "$build_image" = 1 ]; then
-  image_release=$(jq -r .image.release "$root/artifacts/pins.json")
-  image_repo=$(jq -r ".image.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")
-fi
-
 # [3] the desktop host and the CLI, one run
 if [ "$(step_get native conclusion)" != success ]; then
   dispatch_and_watch native "$sandbox_repo" release-native.yml \
     -f "sandbox_sha=$sandbox_sha" -f "kernel_sha=$kernel_sha" \
     -f "kernel_wasm_release=$kernel_wasm_release" -f "kernel_wasm_repo=$kernel_wasm_repo" \
     -f "image_release=$image_release" -f "image_repo=$image_repo" \
-    -f "train=$train" -f "publish=$publish_flag"
+    -f "train=$train" -f "publish=true"
 fi
 
 if [ "$validate" = 1 ]; then
-  say "validated: every artifact of $train built and tested; nothing was published"
+  say "validated: every artifact of $train built and tested against the train's own artifacts"
+  say "deleting the rehearsal's prereleases"
+  for spec in "${rehearsal_releases[@]}"; do
+    # With --image-release the train published no image or seal of its own.
+    gh release view "${spec#*:}" --repo "${spec%%:*}" >/dev/null 2>&1 || continue
+    gh release delete "${spec#*:}" --repo "${spec%%:*}" --yes --cleanup-tag \
+      || die "could not delete ${spec%%:*} ${spec#*:}; delete the rest by hand (the next rehearsal refuses to start until then)"
+  done
+  rm -f "$state" # a finished rehearsal leaves nothing behind
   exit 0
 fi
 fi # pins_only
