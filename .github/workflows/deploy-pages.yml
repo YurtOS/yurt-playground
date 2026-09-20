@@ -62,83 +62,9 @@ jobs:
         with:
           persist-credentials: false
           path: playground
-      - name: Read pins
-        id: pins
-        working-directory: playground
-        run: |
-          echo "kernel_rev=$(jq -r .kernelWasm.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
-          echo "jupyter_rev=$(jq -r .yurtJupyterRev artifacts/jupyter-requirements.lock)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./playground/.github/actions/site-inputs
         with:
-          persist-credentials: false
-          repository: YurtOS/yurtos-kernel
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-          ref: ${{ steps.pins.outputs.kernel_rev }}
-          path: yurtos-kernel
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          repository: YurtOS/yurt-jupyter
-          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-          ref: ${{ steps.pins.outputs.jupyter_rev }}
-          path: yurt-jupyter
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          # Pinned, not v2.x: deno fmt's output changed between 2.x releases
-          # (public/index.html reindents), so a floating formatter turns CI red
-          # with no code change and disagrees with what developers run locally.
-          deno-version: v2.7.14
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        id: host-python
-        with:
-          # Exact, not "3.14": the payload tree hash in
-          # artifacts/jupyter-requirements.lock is only reproducible from the
-          # interpreter that produced it — pip writes interpreter-dependent
-          # dist-info — and a floating patch silently breaks it.
-          python-version: "3.14.0"
-          architecture: x64
-      # Same rule as ci.yml: the staged payload is not reproducible, so it is
-      # published once and fetched. Rebuilding it here would re-derive a tree
-      # the lock's payloadTreeSha256 cannot match.
-      - name: Install the Jupyter payload from its release
-        working-directory: playground
-        env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-          YURT_JUPYTER_ROOT: ../yurt-jupyter
-        run: scripts/install-jupyter-payload.sh
-      - name: Materialize locked Jupyter payload
-        working-directory: playground
-        env:
-          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
-          YURT_JUPYTER_ROOT: ../yurt-jupyter
-        run: deno run --allow-read --allow-write --allow-env --allow-run scripts/materialize-jupyter.ts
-      # Published once and fetched, never rebuilt here; see ci.yml.
-      # The Jupyter Notebook / Lab interface: JupyterLite's frontend with the
-      # Yurt kernel plugin (jupyterlite/). node builds the plugin, the host
-      # python already provisioned above builds the site. Output: public/jupyter.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: playground/jupyterlite/yurt-kernel/package-lock.json
-      - name: Build the JupyterLite site
-        timeout-minutes: 5
-        working-directory: playground
-        env:
-          JUPYTERLITE_PYTHON: ${{ steps.host-python.outputs.python-path }}
-        run: |
-          "$JUPYTERLITE_PYTHON" -m pip install --disable-pip-version-check -q -r jupyterlite/requirements.txt
-          jupyterlite/build.sh
-      - name: Install the pinned kernel wasm and playground image
-        working-directory: playground
-        env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-        run: scripts/install-pinned-artifacts.sh
-      - name: Pin artifacts
-        working-directory: playground
-        env:
-          YURT_KERNEL_ROOT: ../yurtos-kernel
-        run: deno task pin
       - name: Verify playground
         timeout-minutes: 12
         working-directory: playground

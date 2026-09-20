@@ -1,5 +1,24 @@
 import { assertEquals } from "@std/assert";
 
+/** A workflow's text with the repository's own composite actions inlined
+ *  where they are used (`uses: ./playground/.github/actions/<name>`), so
+ *  the shape assertions below see the steps a job actually runs. */
+async function workflowSource(file: string): Promise<string> {
+  let text = await Deno.readTextFile(
+    new URL(`../.github/workflows/${file}`, import.meta.url),
+  );
+  for (
+    const match of text.matchAll(
+      /uses: \.\/playground\/\.github\/actions\/([\w-]+)/g,
+    )
+  ) {
+    text += "\n" + await Deno.readTextFile(
+      new URL(`../.github/actions/${match[1]}/action.yml`, import.meta.url),
+    );
+  }
+  return text;
+}
+
 Deno.test("deno.json exposes the fmt/lint/check/test tasks", () => {
   const deno = JSON.parse(
     Deno.readTextFileSync(new URL("../deno.json", import.meta.url)),
@@ -11,9 +30,7 @@ Deno.test("deno.json exposes the fmt/lint/check/test tasks", () => {
 });
 
 Deno.test("CI fetches the pinned kernel wasm and playground image for integration tests", async () => {
-  const workflow = await Deno.readTextFile(
-    new URL("../.github/workflows/ci.yml", import.meta.url),
-  );
+  const workflow = await workflowSource("ci.yml");
   assertEquals(workflow.includes("repository: YurtOS/yurtos-kernel"), true);
   assertEquals(workflow.includes("repository: YurtOS/yurt-jupyter"), true);
   assertEquals(workflow.includes("jupyter_rev"), true);
@@ -42,7 +59,9 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   assertEquals(workflow.includes("dtolnay/rust-toolchain"), false);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
   assertEquals(workflow.includes("playwright/cli.js install chromium"), true);
-  assertEquals(workflow.includes("scripts/pin-artifacts.ts"), true);
+  // The browser artifacts are materialized by the site inputs (deno task
+  // pin runs scripts/pin-artifacts.ts).
+  assertEquals(workflow.includes("deno task pin"), true);
   assertEquals(workflow.includes("tests/playground_e2e.ts"), true);
   assertEquals(
     workflow.includes("deno run --allow-all tests/playground_e2e.ts"),
@@ -61,22 +80,44 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
 Deno.test("every action is pinned to a commit and no checkout keeps its credentials", async () => {
   // A moved tag runs someone else's code with the deploy secrets; a commit
   // does not move. And a checkout's token otherwise stays in .git/config for
-  // every later step, including scripts a pull request can edit.
+  // every later step, including scripts a pull request can edit. The
+  // repository's own composite actions (uses: ./playground/.github/actions/
+  // ...) are this tree, pinned by the checkout itself; their steps are held
+  // to the same rules.
+  const sources: [string, string][] = [];
   for (
     const entry of Deno.readDirSync(
       new URL("../.github/workflows", import.meta.url),
     )
   ) {
-    const workflow = await Deno.readTextFile(
-      new URL(`../.github/workflows/${entry.name}`, import.meta.url),
-    );
+    sources.push([
+      entry.name,
+      await Deno.readTextFile(
+        new URL(`../.github/workflows/${entry.name}`, import.meta.url),
+      ),
+    ]);
+  }
+  for (
+    const entry of Deno.readDirSync(
+      new URL("../.github/actions", import.meta.url),
+    )
+  ) {
+    sources.push([
+      `actions/${entry.name}`,
+      await Deno.readTextFile(
+        new URL(`../.github/actions/${entry.name}/action.yml`, import.meta.url),
+      ),
+    ]);
+  }
+  for (const [name, workflow] of sources) {
     const uses = workflow.match(/uses: \S+/g) ?? [];
-    assertEquals(uses.length > 0, true, `${entry.name} uses no action`);
+    assertEquals(uses.length > 0, true, `${name} uses no action`);
     for (const use of uses) {
       assertEquals(
-        /^uses: [\w.-]+\/[\w.-]+@[0-9a-f]{40}$/.test(use),
+        /^uses: [\w.-]+\/[\w.-]+@[0-9a-f]{40}$/.test(use) ||
+          /^uses: \.\/playground\/\.github\/actions\/[\w-]+$/.test(use),
         true,
-        `${entry.name}: ${use} is not pinned to a commit`,
+        `${name}: ${use} is not pinned to a commit`,
       );
     }
     const checkouts = uses.filter((use) => use.includes("actions/checkout@"));
@@ -84,7 +125,7 @@ Deno.test("every action is pinned to a commit and no checkout keeps its credenti
     assertEquals(
       persisted.length,
       checkouts.length,
-      `${entry.name}: ${checkouts.length} checkouts, ${persisted.length} drop credentials`,
+      `${name}: ${checkouts.length} checkouts, ${persisted.length} drop credentials`,
     );
   }
 });
@@ -93,15 +134,20 @@ Deno.test("workflows authenticate every private sibling checkout", async () => {
   // The default GITHUB_TOKEN cannot read a *different* private repository, so
   // each YurtOS sibling checkout needs an explicit token. Without one the job
   // dies at "remote: Repository not found" before any step runs.
-  for (const file of ["ci.yml", "deploy-pages.yml"]) {
-    const workflow = await Deno.readTextFile(
-      new URL(`../.github/workflows/${file}`, import.meta.url),
-    );
+  for (const file of ["ci.yml", "deploy-pages.yml", "release-desktop.yml"]) {
+    const workflow = await workflowSource(file);
     const siblings = workflow.match(/repository: YurtOS\/\S+/g) ?? [];
     assertEquals(siblings.length > 0, true, `${file} checks out no sibling`);
-    const tokens =
-      workflow.match(/token: \$\{\{ secrets\.KERNEL_CHECKOUT_TOKEN \}\}/g) ??
-        [];
+    // The composite takes the token as its input and hands it to its
+    // checkouts; the callers pass KERNEL_CHECKOUT_TOKEN.
+    const tokens = (workflow.match(
+      /token: \$\{\{ (secrets\.KERNEL_CHECKOUT_TOKEN|inputs\.token) \}\}/g,
+    ) ?? []).filter((t) => t.includes("inputs.token"));
+    assertEquals(
+      workflow.includes("token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}"),
+      true,
+      `${file} passes no KERNEL_CHECKOUT_TOKEN to the site inputs`,
+    );
     assertEquals(
       tokens.length,
       siblings.length,
@@ -110,15 +156,13 @@ Deno.test("workflows authenticate every private sibling checkout", async () => {
   }
 });
 
-Deno.test("both workflows fetch the pinned blobs, neither builds them", async () => {
+Deno.test("the site workflows fetch the pinned blobs, none builds them", async () => {
   // The kernel wasm is deterministic on a host but not across hosts, and the
   // image needs the guest toolchain plus hours of port builds, so a workflow
-  // that rebuilt either could never satisfy artifacts/pins.json. Both consume
+  // that rebuilt either could never satisfy artifacts/pins.json. All consume
   // the published releases through the same script.
-  for (const file of ["ci.yml", "deploy-pages.yml"]) {
-    const workflow = await Deno.readTextFile(
-      new URL(`../.github/workflows/${file}`, import.meta.url),
-    );
+  for (const file of ["ci.yml", "deploy-pages.yml", "release-desktop.yml"]) {
+    const workflow = await workflowSource(file);
     assertEquals(
       workflow.includes("scripts/install-pinned-artifacts.sh"),
       true,
@@ -202,9 +246,7 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
 });
 
 Deno.test("deployment workflow publishes an isolated static site", async () => {
-  const workflow = await Deno.readTextFile(
-    new URL("../.github/workflows/deploy-pages.yml", import.meta.url),
-  );
+  const workflow = await workflowSource("deploy-pages.yml");
   assertEquals(
     /actions\/setup-python@[0-9a-f]{40} # v\d+/.test(workflow),
     true,

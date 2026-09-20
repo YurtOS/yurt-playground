@@ -1,20 +1,23 @@
 name: CI
 
+# Pull requests only. A merge to main runs deploy-pages.yml, which builds
+# the same site from the same inputs and verifies it before deploying;
+# running this again on the merge commit repeated that work (~15 runner
+# minutes, two of them macOS) for a tree the pull request had just tested.
+# The desktop installers and their GitHub release, which used to be built
+# here on every merge, are cut by release-desktop.yml when the release
+# train asks (scripts/release-playground.sh).
 on:
   pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 # The workflow token can read the repository and nothing else; the
-# cross-repo and Cloudflare credentials come from named secrets.
+# cross-repo credentials come from named secrets.
 # A push on top of a push runs the newest tree only: the superseded run's
-# integration job (15 min) and both desktop bundles (one on a macOS runner)
-# are cancelled. Pushes to main are keyed by commit and never cancel each
-# other.
+# integration job (15 min) is cancelled.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -93,85 +96,9 @@ jobs:
         with:
           persist-credentials: false
           path: playground
-      - name: Read kernel pin
-        id: pins
-        working-directory: playground
-        run: |
-          echo "kernel_rev=$(jq -r .kernelWasm.rev artifacts/pins.json)" >> "$GITHUB_OUTPUT"
-          echo "jupyter_rev=$(jq -r .yurtJupyterRev artifacts/jupyter-requirements.lock)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./playground/.github/actions/site-inputs
         with:
-          persist-credentials: false
-          repository: YurtOS/yurtos-kernel
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-          ref: ${{ steps.pins.outputs.kernel_rev }}
-          path: yurtos-kernel
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          repository: YurtOS/yurt-jupyter
-          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-          ref: ${{ steps.pins.outputs.jupyter_rev }}
-          path: yurt-jupyter
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          # Pinned, not v2.x: deno fmt's output changed between 2.x releases
-          # (public/index.html reindents), so a floating formatter turns CI red
-          # with no code change and disagrees with what developers run locally.
-          deno-version: v2.7.14
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        id: host-python
-        with:
-          # Exact, not "3.14": the payload tree hash in
-          # artifacts/jupyter-requirements.lock is only reproducible from the
-          # interpreter that produced it — pip writes interpreter-dependent
-          # dist-info — and a floating patch silently breaks it.
-          python-version: "3.14.0"
-          architecture: x64
-      # The staged payload is not reproducible — pip resolves build backends
-      # from PyPI at build time, and five builds with identical pins produced
-      # five different trees — so it is published once and fetched, never
-      # rebuilt here. Regenerate with the "Regenerate Jupyter payload"
-      # workflow, which publishes to yurt-packages.
-      - name: Install the Jupyter payload from its release
-        working-directory: playground
-        env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-          YURT_JUPYTER_ROOT: ../yurt-jupyter
-        run: scripts/install-jupyter-payload.sh
-      - name: Materialize locked Jupyter payload
-        working-directory: playground
-        env:
-          HOST_PYTHON: ${{ steps.host-python.outputs.python-path }}
-          YURT_JUPYTER_ROOT: ../yurt-jupyter
-        run: deno run --allow-read --allow-write --allow-env --allow-run scripts/materialize-jupyter.ts
-      # The kernel wasm and the playground image are published once and
-      # fetched, never rebuilt here: the kernel build is deterministic on a
-      # host but not across hosts, so a consumer cannot match a pin it did not
-      # produce, and the image needs the guest toolchain plus hours of port
-      # builds. To move a pin, publish the artifact and record the sha256 the
-      # release carries (see scripts/install-pinned-artifacts.sh).
-      # The Jupyter Notebook / Lab interface: JupyterLite's frontend with the
-      # Yurt kernel plugin (jupyterlite/). node builds the plugin, the host
-      # python already provisioned above builds the site. Output: public/jupyter.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: playground/jupyterlite/yurt-kernel/package-lock.json
-      - name: Build the JupyterLite site
-        timeout-minutes: 5
-        working-directory: playground
-        env:
-          JUPYTERLITE_PYTHON: ${{ steps.host-python.outputs.python-path }}
-        run: |
-          "$JUPYTERLITE_PYTHON" -m pip install --disable-pip-version-check -q -r jupyterlite/requirements.txt
-          jupyterlite/build.sh
-      - name: Install the pinned kernel wasm and playground image
-        working-directory: playground
-        env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-        run: scripts/install-pinned-artifacts.sh
       - name: check
         working-directory: playground
         run: deno check "**/*.ts"
@@ -182,11 +109,6 @@ jobs:
           YURT_KERNEL_ROOT: ../yurtos-kernel
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
         run: deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
-      - name: Materialize pinned browser artifacts
-        working-directory: playground
-        env:
-          YURT_KERNEL_ROOT: ../yurtos-kernel
-        run: deno run --allow-all scripts/pin-artifacts.ts
       # Playwright's Chromium, keyed on the pinned playwright version: a hit
       # makes `install chromium` a no-op.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -196,19 +118,13 @@ jobs:
       - name: Install Chromium for browser acceptance
         working-directory: playground
         run: deno run --allow-all node_modules/playwright/cli.js install chromium
-      # The deployable site, built once from the inputs above and uploaded
-      # before the acceptance below, so the desktop job packages it while
-      # the browsers here are still booting sandboxes.
+      # The deployable site, built from the inputs above: what the
+      # acceptance below boots.
       - name: Build static site
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
         run: deno task build-static
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: dist
-          path: playground/dist
-          if-no-files-found: error
       # Serial, not side by side: two sandboxes booting at once starve each
       # other on the 4-vCPU runner (both timed out when tried, 2026-09-15).
       - name: Browser acceptance
@@ -229,146 +145,3 @@ jobs:
   # runner builds both architectures of its own OS and runs the app
   # acceptance — a native boot, a cell, HTTPS from the guest — on the one it
   # can execute; the other is built the same way from the same inputs.
-  desktop:
-    needs: deno
-    # `success()` is transitive over `needs`, and `deno` now hangs off
-    # `checks`; the bundles must not be hidden by a fmt/lint nit any more
-    # than the integration job is.
-    if: ${{ !cancelled() && needs.deno.result == 'success' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            targets: aarch64-apple-darwin x86_64-apple-darwin
-            browsers: ~/Library/Caches/ms-playwright
-          - os: ubuntu-latest
-            targets: x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
-            browsers: ~/.cache/ms-playwright
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: dist
-          path: dist
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version: v2.7.14
-      # The native sandbox for each target: the pinned kernel wasm and image
-      # (artifacts/), and the pinned desktop host + runtime (runtime/<target>/).
-      - name: Install the pinned kernel wasm and playground image
-        env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-        run: scripts/install-pinned-artifacts.sh
-      - name: Install the pinned desktop host for each target
-        env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-          TARGETS: ${{ matrix.targets }}
-        run: |
-          for target in $TARGETS; do
-            scripts/install-desktop-host.sh --target "$target"
-          done
-      - name: Build the bundles
-        timeout-minutes: 5
-        env:
-          TARGETS: ${{ matrix.targets }}
-        run: |
-          for target in $TARGETS; do
-            scripts/build-desktop.sh --target "$target"
-          done
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ matrix.browsers }}
-          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deno.json') }}
-      - name: Install Chromium for the app acceptance
-        run: |
-          deno install
-          deno run --allow-all node_modules/playwright/cli.js install chromium
-      - name: App acceptance
-        timeout-minutes: 8
-        run: deno run --allow-all tests/desktop_e2e.ts
-      # The .deb as dpkg sees it: valid, installable, and the installed
-      # launcher finds its site and runtime.
-      - name: Check the .deb
-        if: runner.os == 'Linux'
-        run: |
-          dpkg-deb --info dist-desktop/Yurt-Playground-x86_64-unknown-linux-gnu.deb
-          sudo apt-get install -y ./dist-desktop/Yurt-Playground-x86_64-unknown-linux-gnu.deb
-          test -x /usr/lib/yurt-playground/yurt-playground
-          test -f /usr/lib/yurt-playground/runtime/yurt-desktop-host
-          command -v yurt-playground
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: Yurt-Playground-${{ runner.os }}
-          path: |
-            dist-desktop/*.dmg
-            dist-desktop/*.deb
-          if-no-files-found: error
-
-  # A merge to main publishes the installers as the GitHub release the
-  # home page's download links resolve to (releases/latest/download/). A
-  # full release, never a prerelease: "latest" ignores prereleases.
-  release:
-    needs: desktop
-    # Only main: a workflow_dispatch on a branch would otherwise become the
-    # "latest" release the home page links.
-    if: ${{ !cancelled() && needs.desktop.result == 'success' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: Yurt-Playground-*
-          merge-multiple: true
-          path: release
-      # The `yurt` command-line packages travel in the same release, so one
-      # releases/latest/download/ serves the app and the CLI. They are
-      # built privately (yurt-sandbox) and published to yurt-packages; the
-      # pinned release is mirrored here under stable, versionless names.
-      - name: Fetch the pinned yurt CLI packages
-        env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-        run: |
-          set -euo pipefail
-          tag=$(jq -r .yurtCli.release artifacts/pins.json)
-          mkdir -p cli
-          for target in $(jq -r '.yurtCli.assets | keys[]' artifacts/pins.json); do
-            asset=$(jq -r ".yurtCli.assets[\"$target\"]" artifacts/pins.json)
-            gh release download "$tag" --repo YurtOS/yurt-packages --pattern "$asset" --dir cli --clobber
-            case $asset in
-              *.deb) mv "cli/$asset" "release/yurt-$target.deb" ;;
-              *) mv "cli/$asset" "release/yurt-$target.tar.gz" ;;
-            esac
-          done
-          ls -l release
-      - name: Publish the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          tag="desktop-$(date -u +%Y%m%d)-${SHA:0:7}"
-          kernel=$(jq -r .kernelWasm.release artifacts/pins.json)
-          image=$(jq -r .image.release artifacts/pins.json)
-          cli=$(jq -r .yurtCli.release artifacts/pins.json)
-          gh release create "$tag" \
-            --target "$SHA" \
-            --title "Yurt Playground ($tag)" \
-            --notes "Built from ${SHA:0:7} with kernel $kernel and image $image; the yurt CLI is $cli. Desktop app — macOS: open the .dmg, drag the app to Applications; not notarized, so allow the first open under System Settings → Privacy & Security → Open Anyway. Debian/Ubuntu: sudo apt install ./Yurt-Playground-<arch>.deb, then run yurt-playground. Command line — Debian/Ubuntu: sudo apt install ./yurt-<arch>.deb; macOS: tar -xzf yurt-<arch>.tar.gz && sudo yurt/install.sh; then yurt pull playground && yurt run -it playground." \
-            release/Yurt-Playground-aarch64-apple-darwin.dmg \
-            release/Yurt-Playground-x86_64-apple-darwin.dmg \
-            release/Yurt-Playground-x86_64-unknown-linux-gnu.deb \
-            release/Yurt-Playground-aarch64-unknown-linux-gnu.deb \
-            release/yurt-aarch64-apple-darwin.tar.gz \
-            release/yurt-x86_64-apple-darwin.tar.gz \
-            release/yurt-x86_64-unknown-linux-gnu.deb \
-            release/yurt-aarch64-unknown-linux-gnu.deb
