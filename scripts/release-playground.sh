@@ -16,7 +16,8 @@
 #   [2] image         (yurt-ports)    -> playground-image-<TRAIN> + python-seal-<TRAIN>
 #                                        (one run, one ports rev: the sealable
 #                                        CPython is relinked from the image's
-#                                        cpython build; smoked with [1])
+#                                        cpython build; smoked through the
+#                                        CLI pins.json records today)
 #   [3] native        (yurt-sandbox)  -> desktop-host-<TRAIN> + yurt-cli-<TRAIN>
 #                                        (tested against [1] and [2])
 #   [4] pins.json from the releases' sidecars, verified, PR, merge on a yes
@@ -386,7 +387,9 @@ fi
 # [2] the image and the sealable cpython, one run. The Jupyter payload the
 # image overlays is resolved here (the newest jupyter-payload release, the
 # rule scripts/install-jupyter-payload.sh follows) so the run's inputs are
-# all recorded in the state file.
+# all recorded in the state file. The smoke boots the image through the
+# yurt CLI the page pins today; the train's own CLI is tested against the
+# image in [3].
 if [ "$build_image" = 1 ] && [ "$(step_get image conclusion)" != success ]; then
   jupyter_payload=$(step_get image jupyter_payload_release)
   if [ -z "$jupyter_payload" ]; then
@@ -397,7 +400,8 @@ if [ "$build_image" = 1 ] && [ "$(step_get image conclusion)" != success ]; then
   fi
   dispatch_and_watch image "$ports_repo" release-playground-image.yml \
     -f "ports_sha=$ports_sha" -f "kernel_sha=$kernel_sha" \
-    -f "kernel_wasm_release=$kernel_wasm_release" -f "jupyter_payload_release=$jupyter_payload" \
+    -f "yurt_cli_release=$(jq -r .yurtCli.release "$root/artifacts/pins.json")" \
+    -f "jupyter_payload_release=$jupyter_payload" \
     -f "train=$train" -f "publish=$publish_flag"
 fi
 if [ "$validate" = 1 ] && [ "$build_image" = 1 ]; then
