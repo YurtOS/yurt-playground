@@ -358,6 +358,16 @@ dispatch_and_watch() {
   local step=$1 repo=$2 workflow=$3; shift 3
   local run_id
   run_id=$(step_get "$step" run_id)
+  # A recorded run that finished without success (failed, cancelled) is
+  # what --resume is for: forget it and dispatch again.
+  if [ -n "$run_id" ]; then
+    local status
+    status=$(gh run view "$run_id" --repo "$repo" --json status,conclusion --jq '"\(.status)/\(.conclusion)"')
+    case $status in
+      completed/success) ;;
+      completed/*) say "run $run_id ended ${status#completed/}; dispatching again"; run_id="" ;;
+    esac
+  fi
   if [ -z "$run_id" ]; then
     local cid="rel-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM$RANDOM"
     say "dispatch $repo $workflow ($cid)"
