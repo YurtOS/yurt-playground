@@ -72,6 +72,12 @@ ports_repo=YurtOS/yurt-ports
 packages_repo=YurtOS/yurt-packages
 state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/yurt-playground/releases
 
+# The header comment above, whole: every line that starts with `#` from
+# line 2 until the first line that does not.
+usage() {
+  sed -n '2,/^[^#]/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+}
+
 kernel_sha=""
 ports_sha=""
 sandbox_sha=""
@@ -100,7 +106,7 @@ while [ $# -gt 0 ]; do
     --kernel-wasm-release) kernel_wasm_release=$2; shift 2 ;;
     --desktop-host-release) host_release=$2; shift 2 ;;
     --yurt-cli-release) cli_release=$2; shift 2 ;;
-    -h|--help) sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help|help|—help|–help) usage; exit 0 ;;
     *) echo "release-playground: unknown argument $1" >&2; exit 2 ;;
   esac
 done
