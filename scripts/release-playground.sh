@@ -38,6 +38,12 @@
 #                   the kernel wasm and image releases currently pinned,
 #                   since the train's do not exist
 #   --resume        continue a train from its state file
+#   --check         dispatch nothing, write nothing: is everything up to date?
+#                   One row per pin (each repo's main vs the pinned rev, the
+#                   image and the seal at one rev, the guest SDK the train
+#                   would build with, what the deployed page serves, every
+#                   pinned release installable); exit 0 = current, 1 = stale,
+#                   each STALE row names the step that fixes it
 #   --pins-only     dispatch nothing: regenerate artifacts/pins.json from
 #                   existing releases (--kernel-wasm-release, --image-release,
 #                   --desktop-host-release, --yurt-cli-release, and
@@ -69,6 +75,7 @@ train=""
 validate=0
 resume=0
 pins_only=0
+check=0
 kernel_wasm_release=""
 host_release=""
 cli_release=""
@@ -83,6 +90,7 @@ while [ $# -gt 0 ]; do
     --validate) validate=1; shift ;;
     --resume) resume=1; shift ;;
     --pins-only) pins_only=1; shift ;;
+    --check) check=1; shift ;;
     --kernel-wasm-release) kernel_wasm_release=$2; shift 2 ;;
     --desktop-host-release) host_release=$2; shift 2 ;;
     --yurt-cli-release) cli_release=$2; shift 2 ;;
@@ -98,6 +106,166 @@ for tool in gh jq git; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
 done
 gh auth status >/dev/null 2>&1 || die "gh is not logged in"
+
+# ---- --check: is everything up to date? (read-only) ------------------------
+# One row per thing the train produces or consumes; exit 0 when every row is
+# current, 1 when any is stale. Nothing is built, dispatched or written.
+# Everything is read from the same places the generator writes and the
+# workflows read (pins.json, the repos' main branches, the releases, the
+# deployed page), so the answer cannot drift from what a run would do.
+run_check() {
+  local pins=$root/artifacts/pins.json stale=0
+  local playground_repo=YurtOS/yurt-playground
+  local toolchain_repo=YurtOS/yurt-toolchain
+  local site=${YURT_PLAYGROUND_SITE:-https://yurt-playground.pages.dev}
+  main_sha() { gh api "repos/$1/commits/main" --jq .sha; }
+  row() {
+    # row STATUS NAME PINNED CURRENT NOTE
+    local mark
+    case $1 in
+      ok) mark="ok   " ;;
+      stale) mark="STALE"; stale=1 ;;
+      *) mark="?    "; stale=1 ;;
+    esac
+    printf '%s  %-20s %-34s %-34s %s\n' "$mark" "$2" "$3" "$4" "${5:-}"
+  }
+  short() { echo "${1:0:12}"; }
+
+  local kernel_main ports_main sandbox_main playground_main
+  kernel_main=$(main_sha YurtOS/yurtos-kernel)
+  ports_main=$(main_sha YurtOS/yurt-ports)
+  sandbox_main=$(main_sha YurtOS/yurt-sandbox)
+  playground_main=$(main_sha "$playground_repo")
+
+  # The kernel wasm, and the JS host the page bundles at the same rev: a
+  # kernel-side change with an unchanged wasm still counts.
+  local kernel_pin; kernel_pin=$(jq -r .kernelWasm.rev "$pins")
+  if [ "$kernel_pin" = "$kernel_main" ]; then
+    row ok "kernel wasm" "$(short "$kernel_pin")" "$(short "$kernel_main")" "yurtos-kernel main"
+  else
+    row stale "kernel wasm" "$(short "$kernel_pin")" "$(short "$kernel_main")" "yurtos-kernel main moved: [1] kernel wasm, [2] image, [3] native rebuild"
+  fi
+
+  # The image and the sealable CPython: one ports rev, and that rev current.
+  local image_pin seal_pin; image_pin=$(jq -r .image.rev "$pins"); seal_pin=$(jq -r '.pythonSeal.rev // ""' "$pins")
+  if [ "$image_pin" = "$ports_main" ]; then
+    row ok "image" "$(short "$image_pin")" "$(short "$ports_main")" "yurt-ports main"
+  else
+    row stale "image" "$(short "$image_pin")" "$(short "$ports_main")" "yurt-ports main moved: [2] image rebuild"
+  fi
+  if [ -z "$seal_pin" ]; then
+    row stale "python seal" "(none)" "$(short "$image_pin")" "no pythonSeal pin: the notebook kernel has no interpreter"
+  elif [ "$seal_pin" = "$image_pin" ]; then
+    row ok "python seal" "$(short "$seal_pin")" "$(short "$image_pin")" "same ports rev as the image"
+  else
+    row stale "python seal" "$(short "$seal_pin")" "$(short "$image_pin")" "not the image's ports rev: [2] rebuilds both"
+  fi
+
+  # The desktop host and the CLI.
+  local host_pin cli_pin; host_pin=$(jq -r .desktopHost.rev "$pins"); cli_pin=$(jq -r '.yurtCli.rev // ""' "$pins")
+  if [ "$host_pin" = "$sandbox_main" ]; then
+    row ok "desktop host" "$(short "$host_pin")" "$(short "$sandbox_main")" "yurt-sandbox main"
+  else
+    row stale "desktop host" "$(short "$host_pin")" "$(short "$sandbox_main")" "yurt-sandbox main moved: [3] native rebuild"
+  fi
+  if [ -z "$cli_pin" ]; then
+    row stale "yurt cli" "(no rev)" "$(short "$sandbox_main")" "pin predates the generator: [3] native rebuild records it"
+  elif [ "$cli_pin" = "$sandbox_main" ]; then
+    row ok "yurt cli" "$(short "$cli_pin")" "$(short "$sandbox_main")" "yurt-sandbox main"
+  else
+    row stale "yurt cli" "$(short "$cli_pin")" "$(short "$sandbox_main")" "yurt-sandbox main moved: [3] native rebuild"
+  fi
+
+  # The guest SDK behind the image: the train builds the ports with the
+  # release yurtos-kernel@main pins in toolchain/sdk.lock. Stale when the
+  # lock trails the newest guest-sdk release (run the SDK script, merge the
+  # lock bump, then the train), and noted when the pinned image was built
+  # against an older lock than main's (a train would move it).
+  sdk_lock_at() {
+    gh api -H 'Accept: application/vnd.github.raw+json' "repos/YurtOS/yurtos-kernel/contents/toolchain/sdk.lock?ref=$1" \
+      | sed -n 's/^guest_sdk_release = "\(.*\)"/\1/p' | head -1
+  }
+  local sdk_main sdk_pinned sdk_latest
+  sdk_main=$(sdk_lock_at "$kernel_main")
+  sdk_pinned=$(sdk_lock_at "$kernel_pin")
+  sdk_latest=$(gh api "repos/$toolchain_repo/releases" --paginate \
+    --jq '[.[] | select(.draft | not) | select(.tag_name | startswith("guest-sdk-v"))] | first | .tag_name')
+  if [ "$sdk_main" = "$sdk_latest" ]; then
+    row ok "guest sdk (lock)" "$sdk_main" "$sdk_latest" "sdk.lock at yurtos-kernel main names the newest release"
+  else
+    row stale "guest sdk (lock)" "$sdk_main" "$sdk_latest" "sdk.lock trails the newest release: SDK script first, then the lock bump, then the train"
+  fi
+  if [ "$sdk_pinned" = "$sdk_main" ]; then
+    row ok "guest sdk (image)" "$sdk_pinned" "$sdk_main" "the pinned image's kernel rev locks what main locks"
+  else
+    row stale "guest sdk (image)" "$sdk_pinned" "$sdk_main" "the pinned image was built with an older SDK: [2] image rebuild"
+  fi
+
+  # The deployed page: what the site serves vs pins.json on main, and the
+  # commit it was built from. A merged pin PR whose deploy never ran shows
+  # here.
+  local served_pins served_commit
+  served_pins=$(curl -fsS "$site/pins.json" 2>/dev/null || true)
+  served_commit=$(curl -fsS "$site/integrity.json" 2>/dev/null | jq -r '.commit // ""' || true)
+  local main_pins; main_pins=$(gh api -H 'Accept: application/vnd.github.raw+json' "repos/$playground_repo/contents/artifacts/pins.json?ref=$playground_main")
+  if [ -z "$served_pins" ]; then
+    row unknown "deployed page" "-" "-" "$site/pins.json did not answer"
+  elif [ "$(jq -S . <<< "$served_pins")" = "$(jq -S . <<< "$main_pins")" ]; then
+    row ok "deployed pins" "$(jq -r '.train // .image.release' <<< "$main_pins")" "$(jq -r '.train // .image.release' <<< "$served_pins")" "$site serves pins.json as on main"
+  else
+    row stale "deployed pins" "$(jq -r '.train // .image.release' <<< "$main_pins")" "$(jq -r '.train // .image.release' <<< "$served_pins")" "$site serves other pins than main: deploy pending or failed"
+  fi
+  if [ -n "$served_commit" ]; then
+    if [ "$served_commit" = "$playground_main" ]; then
+      row ok "deployed commit" "$(short "$playground_main")" "$(short "$served_commit")" "yurt-playground main is what is deployed"
+    else
+      row stale "deployed commit" "$(short "$playground_main")" "$(short "$served_commit")" "the page was built from another commit: deploy pending or failed"
+    fi
+  fi
+
+  # The pins are installable: every release and its sha256 sidecar resolve.
+  local key repo tag asset
+  for key in kernelWasm image pythonSeal desktopHost yurtCli; do
+    repo=$(jq -r ".$key.releaseRepo // \"$packages_repo\"" "$pins")
+    tag=$(jq -r ".$key.release // \"\"" "$pins")
+    if [ -z "$tag" ]; then
+      row stale "release $key" "(none)" "-" "no release pinned"
+      continue
+    fi
+    case $key in
+      kernelWasm) asset=kernel-wasm.wasm ;;
+      image) asset=playground-image.yurtimg ;;
+      pythonSeal) asset=python3-seal.wasm ;;
+      desktopHost) asset=yurt-desktop-host-aarch64-apple-darwin.tar.gz ;;
+      yurtCli) asset=$(jq -r '.yurtCli.assets["aarch64-apple-darwin"]' "$pins") ;;
+    esac
+    local names; names=$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name' 2>/dev/null || true)
+    if ! grep -qx "$asset" <<< "$names"; then
+      row stale "release $key" "$tag" "$asset" "missing in $repo"
+    elif ! grep -qx "$asset.sha256" <<< "$names"; then
+      # Installable (pins.json carries the sha), but the generator re-pins
+      # from sidecars, so a hand-cut release without one cannot be carried
+      # into a --pins-only regeneration by tag.
+      row ok "release $key" "$tag" "$asset" "$repo (no .sha256 sidecar: cut by hand)"
+    else
+      row ok "release $key" "$tag" "$asset" "$repo"
+    fi
+  done
+
+  if [ "$stale" = 0 ]; then
+    say "up to date: every pin is at its repo's main, installable, and deployed"
+  else
+    say "stale: see the STALE rows; --check again after the train"
+  fi
+  return "$stale"
+}
+
+if [ "$check" = 1 ]; then
+  command -v curl >/dev/null 2>&1 || die "curl is required for --check"
+  run_check
+  exit $?
+fi
+
 for given in "$image_release" "$seal_release"; do
   [ -z "$given" ] || gh release view "$given" --repo "$packages_repo" >/dev/null 2>&1 \
     || die "$given is not a release of $packages_repo"
