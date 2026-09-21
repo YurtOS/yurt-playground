@@ -296,6 +296,28 @@ done
 [ -z "$seal_release" ] || [ -n "$image_release" ] \
   || die "--python-seal-release goes with --image-release (the train builds the two together)"
 
+# ---- a resumed train is the state file's ----------------------------------
+# The revisions, the image and the label come from the record, never from
+# the checkouts: main has moved since the train started, and a step
+# dispatched at today's revision would not match the artifacts already built.
+if [ "$resume" = 1 ] && [ "$pins_only" = 0 ]; then
+  if [ -z "$train" ]; then
+    train=$(jq -r --argjson v "$validate" \
+      'select(.validate == $v and (.train | endswith("-validate")) == ($v == 1)) | .train' \
+      "$state_dir"/*.json 2>/dev/null | sort -V | tail -1)
+    [ -n "$train" ] || die "nothing to resume$( [ "$validate" = 1 ] && echo ' (rehearsal)'); pass --train"
+  fi
+  train=${train%-validate}; [ "$validate" = 0 ] || train="$train-validate"
+  state=$state_dir/$train.json
+  [ -f "$state" ] || die "nothing to resume: $state"
+  for var in kernel_sha ports_sha sandbox_sha; do
+    recorded=$(jq -r ".$var" "$state")
+    [ -z "${!var}" ] || [ "${!var}" = "$recorded" ] || die "--${var//_/-} ${!var} is not the train's ($recorded)"
+    printf -v "$var" '%s' "$recorded"
+  done
+  [ "$(jq -r .build_image "$state")" = true ] || image_release=$(jq -r .image_release "$state")
+fi
+
 # ---- revisions -----------------------------------------------------------
 resolve_sha() {
   local dir=$1 given=$2 name=$3
@@ -326,13 +348,6 @@ if [ "$pins_only" = 1 ]; then
   [ -n "$kernel_wasm_release" ] && [ -n "$image_release" ] && [ -n "$host_release" ] && [ -n "$cli_release" ] \
     || die "--pins-only needs --kernel-wasm-release, --image-release, --desktop-host-release and --yurt-cli-release"
   train=${train:-$cli_release}
-elif [ -z "$train" ] && [ "$resume" = 1 ]; then
-  # The label carries the day the train started, not today: resume the
-  # newest train of this kernel rev (rehearsals and real trains apart).
-  train=$(jq -r --arg k "$kernel_sha" --argjson v "$validate" \
-    'select(.kernel_sha == $k and .validate == $v and (.train | endswith("-validate")) == ($v == 1)) | .train' \
-    "$state_dir"/*.json 2>/dev/null | sort -V | tail -1)
-  [ -n "$train" ] || die "nothing to resume for kernel ${kernel_sha:0:7}; pass --train"
 elif [ -z "$train" ]; then
   base="playground-$(date -u +%Y.%m.%d)-${kernel_sha:0:7}"
   train=$base
