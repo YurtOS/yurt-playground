@@ -120,17 +120,21 @@ function describeSnapshot(state: SnapshotState): string {
   switch (state.state) {
     case "booting":
       return "booting the sandbox…";
-    case "running":
-      if (state.restoredFrom !== undefined) {
-        return `running — resumed from the image sealed at ${
-          new Date(state.restoredFrom).toLocaleTimeString()
-        }`;
-      }
-      return state.sealedAt === undefined
-        ? "running"
-        : `running — sealed at ${
-          new Date(state.sealedAt).toLocaleTimeString()
-        } (again every 10 s while a cell runs; save the notebook and the tab can be closed)`;
+    case "running": {
+      // Both can hold: a resumed kernel keeps sealing while cells run, and
+      // the line must say so, or the tab looks unsafe to close.
+      const at = (t: number) => new Date(t).toLocaleTimeString();
+      const resumed = state.restoredFrom === undefined
+        ? undefined
+        : `resumed from the image sealed at ${at(state.restoredFrom)}`;
+      const sealed = state.sealedAt === undefined
+        ? undefined
+        : `sealed ${resumed === undefined ? "" : "again "}at ${
+          at(state.sealedAt)
+        } (every 10 s while a cell runs; save the notebook and the tab can be closed)`;
+      const parts = [resumed, sealed].filter((p) => p !== undefined);
+      return parts.length === 0 ? "running" : `running — ${parts.join("; ")}`;
+    }
     case "sealing":
       return "sealing…";
     case "suspended":
