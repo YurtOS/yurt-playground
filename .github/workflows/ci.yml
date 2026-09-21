@@ -141,7 +141,8 @@ jobs:
 
   # The desktop bundles (scripts/build-desktop.sh): the site from the
   # integration job, the launcher, and the native sandbox (the pinned
-  # desktop host, runtime, kernel wasm and image), packaged per target. Each
-  # runner builds both architectures of its own OS and runs the app
-  # acceptance — a native boot, a cell, HTTPS from the guest — on the one it
-  # can execute; the other is built the same way from the same inputs.
+  # desktop host, runtime, kernel wasm and image), packaged per target. The
+  # Linux runner builds both architectures of its OS, the macOS runner Apple
+  # Silicon only, and each runs the app acceptance — a native boot, a cell,
+  # HTTPS from the guest — on the one it can execute; the other is built the
+  # same way from the same inputs.

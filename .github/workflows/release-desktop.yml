@@ -1,7 +1,7 @@
 name: Release desktop
 
 # The playground's desktop installers (the Yurt Playground app for the
-# four targets, with the yurt CLI packages mirrored beside them), built
+# three targets, with the yurt CLI packages mirrored beside them), built
 # from an exact commit of this repository and published as the GitHub
 # release the home page's download links resolve to. The last step of the
 # playground release train (yurt-playground#78): scripts/release-playground.sh
@@ -84,8 +84,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Apple Silicon only: nothing ships for Intel macOS.
           - os: macos-latest
-            targets: aarch64-apple-darwin x86_64-apple-darwin
+            targets: aarch64-apple-darwin
             browsers: ~/Library/Caches/ms-playwright
           - os: ubuntu-latest
             targets: x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
@@ -218,10 +219,8 @@ jobs:
             --title "Yurt Playground ($tag)" \
             --notes "Built from ${SHA:0:7} with kernel $kernel and image $image; the yurt CLI is $cli. Desktop app — macOS: open the .dmg, drag the app to Applications; not notarized, so allow the first open under System Settings → Privacy & Security → Open Anyway. Debian/Ubuntu: sudo apt install ./Yurt-Playground-<arch>.deb, then run yurt-playground. Command line — Debian/Ubuntu: sudo apt install ./yurt-<arch>.deb; macOS: tar -xzf yurt-<arch>.tar.gz && sudo yurt/install.sh; then yurt pull playground && yurt run -it playground." \
             release/Yurt-Playground-aarch64-apple-darwin.dmg \
-            release/Yurt-Playground-x86_64-apple-darwin.dmg \
             release/Yurt-Playground-x86_64-unknown-linux-gnu.deb \
             release/Yurt-Playground-aarch64-unknown-linux-gnu.deb \
             release/yurt-aarch64-apple-darwin.tar.gz \
-            release/yurt-x86_64-apple-darwin.tar.gz \
             release/yurt-x86_64-unknown-linux-gnu.deb \
             release/yurt-aarch64-unknown-linux-gnu.deb
