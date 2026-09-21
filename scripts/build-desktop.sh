@@ -38,6 +38,7 @@ while [ $# -gt 0 ]; do
 done
 case $target in
   aarch64-apple-darwin) family=macos ;;
+  x86_64-apple-darwin) echo "build-desktop: Intel macOS is no longer a target (yurt-playground#121); build on or for Apple Silicon" >&2; exit 2 ;;
   x86_64-unknown-linux-gnu) family=linux; deb_arch=amd64 ;;
   aarch64-unknown-linux-gnu) family=linux; deb_arch=arm64 ;;
   *) echo "build-desktop: $target is not a macOS or Linux target" >&2; exit 2 ;;
