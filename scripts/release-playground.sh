@@ -326,6 +326,13 @@ if [ "$pins_only" = 1 ]; then
   [ -n "$kernel_wasm_release" ] && [ -n "$image_release" ] && [ -n "$host_release" ] && [ -n "$cli_release" ] \
     || die "--pins-only needs --kernel-wasm-release, --image-release, --desktop-host-release and --yurt-cli-release"
   train=${train:-$cli_release}
+elif [ -z "$train" ] && [ "$resume" = 1 ]; then
+  # The label carries the day the train started, not today: resume the
+  # newest train of this kernel rev (rehearsals and real trains apart).
+  train=$(jq -r --arg k "$kernel_sha" --argjson v "$validate" \
+    'select(.kernel_sha == $k and .validate == $v and (.train | endswith("-validate")) == ($v == 1)) | .train' \
+    "$state_dir"/*.json 2>/dev/null | sort -V | tail -1)
+  [ -n "$train" ] || die "nothing to resume for kernel ${kernel_sha:0:7}; pass --train"
 elif [ -z "$train" ]; then
   base="playground-$(date -u +%Y.%m.%d)-${kernel_sha:0:7}"
   train=$base
