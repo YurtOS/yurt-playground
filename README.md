@@ -26,12 +26,13 @@ page.
 
 ## Desktop app
 
-**macOS.** Open `Yurt-Playground-<arch>-apple-darwin.dmg` and drag _Yurt
-Playground_ to Applications. The app is not notarized yet, so macOS blocks the
-first open: allow it under _System Settings → Privacy & Security → Open Anyway_
-(or run `xattr -dr com.apple.quarantine "/Applications/Yurt
-Playground.app"`),
-then open it again. A terminal window shows the server; close it to stop.
+**macOS** (Apple Silicon). Open `Yurt-Playground-aarch64-apple-darwin.dmg` and
+drag _Yurt Playground_ to Applications. The app is not notarized yet, so macOS
+blocks the first open: allow it under _System Settings → Privacy & Security →
+Open Anyway_ (or run
+`xattr -dr com.apple.quarantine "/Applications/Yurt
+Playground.app"`), then open
+it again. A terminal window shows the server; close it to stop.
 
 **Debian / Ubuntu.**
 `sudo apt install ./Yurt-Playground-<arch>-unknown-linux-gnu.deb`, then run

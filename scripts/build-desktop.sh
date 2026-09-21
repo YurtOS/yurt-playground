@@ -21,8 +21,8 @@
 # fetches them in native mode, and runtime/ carries both.
 #
 # Usage: scripts/build-desktop.sh [--target <target>]
-#   Targets: aarch64-apple-darwin x86_64-apple-darwin
-#            x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+#   Targets: aarch64-apple-darwin (Apple Silicon only: nothing ships for
+#            Intel macOS) x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
 #   Output: dist-desktop/<target>/ (the staged bundle, what the acceptance
 #           runs) and dist-desktop/Yurt-Playground-<target>.{dmg,deb}
 set -euo pipefail
@@ -37,7 +37,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 case $target in
-  aarch64-apple-darwin | x86_64-apple-darwin) family=macos ;;
+  aarch64-apple-darwin) family=macos ;;
   x86_64-unknown-linux-gnu) family=linux; deb_arch=amd64 ;;
   aarch64-unknown-linux-gnu) family=linux; deb_arch=arm64 ;;
   *) echo "build-desktop: $target is not a macOS or Linux target" >&2; exit 2 ;;

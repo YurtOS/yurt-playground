@@ -26,7 +26,6 @@
     "build": "scripts/build-desktop-host.sh",
     "sha256": {
       "aarch64-apple-darwin": "e8c83bb36dcd9c06b778279e61b5674d19ce04f2faace2a8efbf555fa739c52a",
-      "x86_64-apple-darwin": "331b14dc3bd81e90365fe91f2d4b77ead244023549c92b650d7b6d0af186bffe",
       "x86_64-unknown-linux-gnu": "4d6ab7a5175452a7cff0b7f2fba6276ef69cd08d1cf7784ba6a5c18d16949f4c",
       "aarch64-unknown-linux-gnu": "e46d710652f4cbcd811067cc93d823fe070edbc274550901b224c3c6a6f77e71"
     }
@@ -39,13 +38,11 @@
     "build": "scripts/build-yurt-cli.sh",
     "assets": {
       "aarch64-apple-darwin": "yurt-aarch64-apple-darwin.tar.gz",
-      "x86_64-apple-darwin": "yurt-x86_64-apple-darwin.tar.gz",
       "x86_64-unknown-linux-gnu": "yurt_0.1.3+playground.2026.09.21.7eb03a7_amd64.deb",
       "aarch64-unknown-linux-gnu": "yurt_0.1.3+playground.2026.09.21.7eb03a7_arm64.deb"
     },
     "sha256": {
       "aarch64-apple-darwin": "d90d37d3083acafb7d52f2efc7095affcb5b1cd45bc6ad268c689a398f753664",
-      "x86_64-apple-darwin": "33ae5c6c289ac50f16f0a1b90b4d24411be2d87a0f3e2e90c0c2e6ca0a47f676",
       "x86_64-unknown-linux-gnu": "2107ee0cca4f19a5d20c5e452c88195e84440b3c5b8c24ece8ea6551a392671b",
       "aarch64-unknown-linux-gnu": "d4b6d5a2f33e36321bafc79dcf90a9765fa031f79262aa3136c5a03f9d59deca"
     }

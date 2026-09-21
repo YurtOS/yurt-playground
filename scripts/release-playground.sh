@@ -540,7 +540,7 @@ cli_asset_for() {
     *) grep -F "yurt-$1.tar.gz" <<< "$cli_assets" | grep -v '\.sha256$' ;;
   esac
 }
-for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+for target in aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
   host_json=$(jq --arg t "$target" --arg s "$(sidecar_sha "$host_repo" "$host_release" "yurt-desktop-host-$target.tar.gz")" '. + {($t): $s}' <<< "$host_json")
   asset=$(cli_asset_for "$target" | head -1)
   [ -n "$asset" ] || die "$cli_release has no package for $target"
@@ -621,7 +621,7 @@ if [ "$pr_state" != MERGED ]; then
 fi
 say "deploy: gh run list --repo YurtOS/yurt-playground --workflow deploy-pages.yml"
 
-# [5] the desktop installers, from the merge commit: the app for the four
+# [5] the desktop installers, from the merge commit: the app for the three
 # targets with the train's CLI packages beside it, released as
 # desktop-<train> (what the home page's download links resolve to).
 merge_sha=$(gh pr view "$pr_url" --json mergeCommit --jq .mergeCommit.oid)
