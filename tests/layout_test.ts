@@ -331,10 +331,27 @@ Deno.test("every disclosure on the home page is styled, not just the proof", asy
     .map((m) => m[1]);
   assertEquals(ids.length >= 2, true, `expected several strips, got ${ids}`);
   // A rule on the class styles every one of them; an id rule styles one.
-  const byClass = /\.strip\s*>\s*summary\b/.test(css);
+  const styles = (selector: string) =>
+    new RegExp(`${selector}\\s*(::-webkit-details-marker|\\{)`).test(css);
   for (const id of ids) {
-    const byId = css.includes(`#${id} summary`);
-    assertEquals(byClass || byId, true, `#${id}: no rule styles its summary`);
+    assertEquals(
+      styles("\\.strip\\s*>\\s*summary") || styles(`#${id} summary`),
+      true,
+      `#${id}: no rule styles its summary`,
+    );
+  }
+  // The specific thing that was missing: the default disclosure marker is
+  // suppressed, and a triangle of the page's own is drawn in its place.
+  // Without this a rule that merely mentions `summary` would pass while the
+  // section still rendered with the browser's marker on a line of its own.
+  for (
+    const rule of [
+      /\.strip\s*>\s*summary\s*\{[^}]*list-style:\s*none/,
+      /\.strip\s*>\s*summary::-webkit-details-marker\s*\{[^}]*display:\s*none/,
+      /\.strip\s*>\s*summary h2::before\s*\{[^}]*content:/,
+    ]
+  ) {
+    assertEquals(rule.test(css), true, `no class-scoped rule for ${rule}`);
   }
 });
 
