@@ -167,9 +167,35 @@ Deno.test("home page links the installers and CLI packages the desktop release w
   // its checksum. Without them `yurt pull playground` resolves a release in
   // a private repository and anyone who installed only the CLI is stuck
   // (yurt-sandbox#278).
+  //
+  // Checked as arguments of the publish command rather than as substrings
+  // of the file: a comment or an unrelated command naming the same path
+  // would satisfy a substring, and requoting or reflowing the argument list
+  // would break it (#128 review).
+  const publishStep = workflow
+    .slice(workflow.indexOf("- name: Publish the release"))
+    .split(/\n {6}- name: /)[0];
+  const publishArgs = publishStep
+    .slice(publishStep.indexOf("gh release create"))
+    .split("\n")
+    .join(" ")
+    .replaceAll("\\ ", " ")
+    .split(/\s+/);
   for (const asset of ["playground.yurtimg", "playground.yurtimg.sha256"]) {
-    assertStringIncludes(workflow, `release/${asset} \\`);
+    assertEquals(
+      publishArgs.includes(`release/${asset}`),
+      true,
+      `gh release create does not attach release/${asset}`,
+    );
   }
+  // ...and the step that puts them there, with the checksum it verifies
+  // against the pin before anything is published.
+  const fetchStep = workflow
+    .slice(workflow.indexOf("- name: Fetch the pinned playground image"))
+    .split(/\n {6}- name: /)[0];
+  assertStringIncludes(fetchStep, "--pattern playground-image.yurtimg");
+  assertStringIncludes(fetchStep, "jq -r .image.sha256 artifacts/pins.json");
+  assertStringIncludes(fetchStep, "release/playground.yurtimg.sha256");
   // The release train publishes the release the links resolve to, from
   // main only, on dispatch (scripts/release-playground.sh step [5]).
   assertStringIncludes(workflow, "workflow_dispatch");
