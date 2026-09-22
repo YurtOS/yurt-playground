@@ -37,7 +37,25 @@ fetch() {
     exit 1
   }
   echo "fetching $asset from $repo $tag" >&2
-  gh release download "$tag" --repo "$repo" --pattern "$asset" --dir "$cache" --clobber
+  # Retried: the API answers a transient 5xx often enough to matter now that
+  # CI fetches these per job rather than once (yurt-playground#123). The
+  # checksum below is what decides the bytes are right, so a retry can only
+  # cost time. A 404 is not transient -- a wrong pin should say so at once.
+  attempt=1
+  until gh release download "$tag" --repo "$repo" --pattern "$asset" \
+    --dir "$cache" --clobber 2>"$cache/download.err"; do
+    cat "$cache/download.err" >&2
+    if grep -qiE "HTTP 4[0-9][0-9]|not found|release not found" "$cache/download.err"; then
+      exit 1
+    fi
+    if [[ $attempt -ge 3 ]]; then
+      echo "$asset: giving up after $attempt attempts" >&2
+      exit 1
+    fi
+    echo "$asset: attempt $attempt failed, retrying in $((attempt * 5))s" >&2
+    sleep $((attempt * 5))
+    attempt=$((attempt + 1))
+  done
   actual=$(shasum -a 256 "$cache/$asset" | cut -d' ' -f1)
   if [[ "$actual" != "$expected" ]]; then
     echo "$asset sha256 mismatch: got $actual, pin $expected" >&2
