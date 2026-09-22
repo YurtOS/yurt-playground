@@ -687,10 +687,36 @@
           you would use <code>docker</code>.
         </p>
         <div id="install" data-testid="download-mac">
-          <input type="radio" name="install" id="install-app-mac" checked>
-          <input type="radio" name="install" id="install-app-linux">
-          <input type="radio" name="install" id="install-cli-mac">
-          <input type="radio" name="install" id="install-cli-linux">
+          <!-- The visible label of each choice is only its platform, and the
+               two group headings above them are plain divs, so nothing in the
+               accessibility tree told "macOS" the app from "macOS" the command
+               line: four controls, two names (#137). The aria-label carries the
+               group; the visible text is unchanged. -->
+          <input
+            type="radio"
+            name="install"
+            id="install-app-mac"
+            aria-label="Desktop app — macOS"
+            checked
+          >
+          <input
+            type="radio"
+            name="install"
+            id="install-app-linux"
+            aria-label="Desktop app — Linux"
+          >
+          <input
+            type="radio"
+            name="install"
+            id="install-cli-mac"
+            aria-label="Command line — macOS"
+          >
+          <input
+            type="radio"
+            name="install"
+            id="install-cli-linux"
+            aria-label="Command line — Linux"
+          >
           <div class="tabs">
             <div class="group">Desktop app</div>
             <label for="install-app-mac">macOS</label>

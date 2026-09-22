@@ -317,6 +317,48 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
   assertEquals(unsupported.includes("Cross-Origin-Embedder-Policy"), true);
 });
 
+Deno.test("every install choice has an accessible name of its own", async () => {
+  // yurt-playground#137: the four radios are labelled only by platform --
+  // macOS, Linux, macOS, Linux -- and the "Desktop app" / "Command line"
+  // headings above them are plain divs, so they contribute nothing to an
+  // accessible name. A screen reader announced four choices and two names,
+  // and voice control had nothing to aim at.
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const install = html.match(/<div id="install"[\s\S]*?<div class="tabs">/)
+    ?.[0] ?? "";
+  // `deno fmt` puts each attribute of a multi-attribute tag on its own
+  // line, so the tag has to be matched across newlines -- a `[^>]*` after
+  // `<input type="radio"` finds nothing the moment the file is formatted.
+  const radios = [...install.matchAll(/<input\b[\s\S]*?>/g)]
+    .map((m) => m[0])
+    .filter((tag) => tag.includes('type="radio"'));
+  assertEquals(radios.length, 4, `expected four choices: ${radios.length}`);
+  const names = radios.map((tag) =>
+    tag.match(/aria-label="([^"]+)"/)?.[1] ?? ""
+  );
+  assertEquals(
+    names.filter((name) => name !== "").length,
+    4,
+    `a choice with no accessible name: ${names}`,
+  );
+  assertEquals(
+    new Set(names).size,
+    4,
+    `two choices answer to the same name: ${names}`,
+  );
+  // ... and each one says which group it belongs to, so the name cannot
+  // drift away from the heading a sighted reader sees.
+  for (const group of ["Desktop app", "Command line"]) {
+    assertEquals(
+      names.filter((name) => name.includes(group)).length,
+      2,
+      `${group} is not in two of ${names}`,
+    );
+  }
+});
+
 Deno.test("deployment workflow publishes an isolated static site", async () => {
   const workflow = await workflowSource("deploy-pages.yml");
   assertEquals(
