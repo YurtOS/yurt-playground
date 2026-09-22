@@ -3,8 +3,8 @@ import {
   allTestFiles,
   CATCH_ALL_SHARD,
   filesFor,
+  REPO_ROOT,
   SHARDS,
-  TESTS_ROOT,
 } from "../scripts/ci-shards.ts";
 
 /** A workflow's text with the repository's own composite actions inlined
@@ -43,7 +43,7 @@ Deno.test("every test file runs in exactly one CI shard, and the workflow runs t
   const seen = new Map<string, string[]>();
   for (const shard of SHARDS) {
     for (const path of await filesFor(shard)) {
-      const name = path.slice(`${TESTS_ROOT}/`.length);
+      const name = path.slice(`${REPO_ROOT}/`.length);
       seen.set(name, [...(seen.get(name) ?? []), shard]);
     }
   }
