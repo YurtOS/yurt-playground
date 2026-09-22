@@ -163,6 +163,13 @@ Deno.test("home page links the installers and CLI packages the desktop release w
     // The workflow packages under exactly that name and attaches it.
     assertStringIncludes(workflow, asset);
   }
+  // Published but not linked from the page: the image the CLI pulls, and
+  // its checksum. Without them `yurt pull playground` resolves a release in
+  // a private repository and anyone who installed only the CLI is stuck
+  // (yurt-sandbox#278).
+  for (const asset of ["playground.yurtimg", "playground.yurtimg.sha256"]) {
+    assertStringIncludes(workflow, `release/${asset} \\`);
+  }
   // The release train publishes the release the links resolve to, from
   // main only, on dispatch (scripts/release-playground.sh step [5]).
   assertStringIncludes(workflow, "workflow_dispatch");

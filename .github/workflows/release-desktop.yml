@@ -199,6 +199,32 @@ jobs:
             esac
           done
           ls -l release
+      # The image travels with them, for the same reason: `yurt pull
+      # playground` resolves the pinned image from yurt-ports, which is
+      # private, so anyone who installs only the CLI from this release hits
+      # a dead end (yurt-sandbox#278). Mirrored here under a versionless
+      # name with its checksum, so the CLI can fetch both without a token
+      # and verify what it got.
+      - name: Fetch the pinned playground image
+        env:
+          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag=$(jq -r .image.release artifacts/pins.json)
+          repo=$(jq -r '.image.releaseRepo // "YurtOS/yurt-packages"' artifacts/pins.json)
+          expected=$(jq -r .image.sha256 artifacts/pins.json)
+          gh release download "$tag" --repo "$repo" \
+            --pattern playground-image.yurtimg --dir image --clobber
+          actual=$(sha256sum image/playground-image.yurtimg | cut -d' ' -f1)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::image sha256 $actual does not match the pin $expected"
+            exit 1
+          fi
+          mv image/playground-image.yurtimg release/playground.yurtimg
+          # The checksum travels beside it: the CLI verifies what it fetched
+          # without needing this train's pins.json.
+          printf '%s  playground.yurtimg\n' "$actual" > release/playground.yurtimg.sha256
+          ls -l release
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -221,6 +247,8 @@ jobs:
             release/Yurt-Playground-aarch64-apple-darwin.dmg \
             release/Yurt-Playground-x86_64-unknown-linux-gnu.deb \
             release/Yurt-Playground-aarch64-unknown-linux-gnu.deb \
+            release/playground.yurtimg \
+            release/playground.yurtimg.sha256 \
             release/yurt-aarch64-apple-darwin.tar.gz \
             release/yurt-x86_64-unknown-linux-gnu.deb \
             release/yurt-aarch64-unknown-linux-gnu.deb
