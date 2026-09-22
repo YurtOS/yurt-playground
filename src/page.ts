@@ -1,7 +1,7 @@
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import { mountNotebook } from "./notebook.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
-import type { JupyterReply } from "./jupyter.ts";
+import type { JupyterPartial, JupyterReply } from "./jupyter.ts";
 import {
   type DesktopInfo,
   desktopInfo,
@@ -28,6 +28,7 @@ type FromWorker =
     value?: unknown;
     error?: string;
   }
+  | { type: "cell-stream"; id: string; partial: JupyterPartial }
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string };
 
@@ -178,6 +179,7 @@ function showFailure(
 function boot(
   notebook: ReturnType<typeof mountNotebook>,
   execute: { current: (id: string, code: string) => void },
+  interruptCell: { current: () => void },
   desktop: DesktopInfo | undefined,
 ): void {
   const kernelPorts = desktop?.kernelPorts;
@@ -189,6 +191,9 @@ function boot(
   attachGuestWorkerFactory(worker);
   execute.current = (id, code) => {
     worker.postMessage({ type: "cell", id, code });
+  };
+  interruptCell.current = () => {
+    worker.postMessage({ type: "cell-interrupt" });
   };
   // A boot that dies before the shell has shown anything is explained in
   // the terminal's place (a tablet gets its likely cause too); once a shell
@@ -267,6 +272,7 @@ function boot(
       if (msg.ok) waiter.resolve(msg.value);
       else waiter.reject(new Error(msg.error ?? "yurt request failed"));
     }
+    if (msg.type === "cell-stream") notebook.stream(msg.id, msg.partial);
     if (msg.type === "cell-result") notebook.result(msg.id, msg.result);
     if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
   };
@@ -341,9 +347,12 @@ async function runPage(): Promise<void> {
   // The cell is part of the workspace from the first screen, waiting for
   // the sandbox; its Run reaches the coordinator once there is one.
   const execute = { current: (_id: string, _code: string) => {} };
-  const notebook = mountNotebook(byId("notebook"), (id, code) => {
-    execute.current(id, code);
-  });
+  const interruptCell = { current: () => {} };
+  const notebook = mountNotebook(
+    byId("notebook"),
+    (id, code) => execute.current(id, code),
+    () => interruptCell.current(),
+  );
   const start = document.getElementById("start");
   const begin = () => {
     if (start) start.hidden = true;
@@ -357,7 +366,7 @@ async function runPage(): Promise<void> {
       });
       stopAnnouncing = announceSandbox();
     }
-    boot(notebook, execute, desktop);
+    boot(notebook, execute, interruptCell, desktop);
   };
   // Only the in-tab kernel has the memory problem; the desktop app's page
   // runs the sandbox natively.

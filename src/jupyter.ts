@@ -65,6 +65,13 @@ export function hushUntil(
   return () => release();
 }
 
+/** What a cell has printed so far: the streams of `JupyterReply` without
+ * its verdict, handed over as the messages arrive. */
+export type JupyterPartial = Pick<
+  JupyterReply,
+  "stdout" | "stderr" | "display"
+>;
+
 export type JupyterReply = {
   status: "ok" | "error";
   stdout: string;
@@ -416,6 +423,9 @@ export async function executeCell(
   transport: JupyterTransport,
   code: string,
   timeoutMs = EXECUTE_TIMEOUT_MS,
+  /** Called as the cell prints, so a long one is not a blank pane for a
+   * minute (yurt-playground#131). The reply carries the same text again. */
+  onStream?: (partial: JupyterPartial) => void,
 ): Promise<JupyterReply> {
   const msgId = crypto.randomUUID();
   const output = {
@@ -424,6 +434,11 @@ export async function executeCell(
     display: "",
     traceback: [] as string[],
   };
+  const partial = (): JupyterPartial => ({
+    stdout: output.stdout,
+    stderr: output.stderr,
+    display: output.display,
+  });
   let unsubscribe: (() => void) | undefined;
   const result = new Promise<JupyterReply>((resolve, reject) => {
     let gotReply = false;
@@ -441,11 +456,13 @@ export async function executeCell(
         const text = String(message.content.text ?? "");
         if (message.content.name === "stderr") output.stderr += text;
         else output.stdout += text;
+        onStream?.({ ...partial() });
       } else if (
         message.header.msg_type === "display_data" ||
         message.header.msg_type === "execute_result"
       ) {
         output.display += displayText(message.content.data);
+        onStream?.({ ...partial() });
       } else if (message.header.msg_type === "error") {
         output.traceback.push(...asStrings(message.content.traceback));
       } else if (message.header.msg_type === "execute_reply") {
@@ -490,6 +507,31 @@ export async function executeCell(
     unsubscribe?.();
     unsubscribe = undefined;
   }
+}
+
+/**
+ * Raise KeyboardInterrupt in whatever the kernel is running.
+ *
+ * `interrupt_request` goes on the control channel, which ipykernel serves
+ * on a thread of its own, so it lands while the shell thread is inside a
+ * cell -- which is the whole point. The running `executeCell` then
+ * finishes the ordinary way, with the traceback on its error frame; there
+ * is nothing to wait for here (yurt-playground#130).
+ */
+export function interruptKernel(transport: JupyterTransport): Promise<void> {
+  const msgId = crypto.randomUUID();
+  return transport.send({
+    header: {
+      msg_id: msgId,
+      username: "user",
+      session: msgId,
+      msg_type: "interrupt_request",
+      version: "5.3",
+    },
+    parent_header: {},
+    metadata: {},
+    content: {},
+  }, "control");
 }
 
 async function waitForKernelInfo(transport: JupyterTransport): Promise<void> {

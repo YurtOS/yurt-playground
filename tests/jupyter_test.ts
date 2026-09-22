@@ -8,6 +8,7 @@ import {
   connectJupyterWithRetries,
   executeCell,
   hushUntil,
+  interruptKernel,
   startGuestKernel,
 } from "../src/jupyter.ts";
 import type { JupyterMessage } from "../src/jupyter_protocol.ts";
@@ -399,4 +400,93 @@ Deno.test("the launch is kept off the screen; the prompt after the marker is sho
   const { hushOutput: _, ...plain } = session;
   hushUntil(plain, "MARK")();
   assertEquals(shown.length, 2);
+});
+
+Deno.test("executeCell hands over output as it arrives, not only at the end", async () => {
+  // yurt-playground#131: the pane stayed empty for the whole of a cell --
+  // 46 s for 30,000 prints -- and then showed everything at once, so a slow
+  // cell and a hung one looked the same.
+  let listener:
+    | ((message: JupyterMessage, channel: JupyterChannel) => void)
+    | undefined;
+  const frame = (
+    parent: string,
+    msg_type: string,
+    content: Record<string, unknown>,
+  ) => ({
+    header: {
+      msg_id: crypto.randomUUID(),
+      username: "user",
+      session: "s",
+      msg_type,
+      version: "5.3",
+    },
+    parent_header: { msg_id: parent },
+    metadata: {},
+    content,
+  });
+  const transport: JupyterTransport = {
+    send(message) {
+      const id = message.header.msg_id;
+      listener?.(
+        frame(id, "stream", { name: "stdout", text: "one\n" }),
+        "iopub",
+      );
+      listener?.(
+        frame(id, "stream", { name: "stderr", text: "warn\n" }),
+        "iopub",
+      );
+      listener?.(
+        frame(id, "execute_result", { data: { "text/plain": "3" } }),
+        "iopub",
+      );
+      listener?.(frame(id, "execute_reply", { status: "ok" }), "shell");
+      listener?.(frame(id, "status", { execution_state: "idle" }), "iopub");
+      return Promise.resolve();
+    },
+    subscribe(next) {
+      listener = next;
+      return () => listener = undefined;
+    },
+    close() {
+      return Promise.resolve();
+    },
+  };
+  const seen: string[] = [];
+  const reply = await executeCell(
+    transport,
+    "print('one')",
+    1000,
+    (partial) =>
+      seen.push(`${partial.stdout}|${partial.stderr}|${partial.display}`),
+  );
+  assertEquals(seen, [
+    "one\n||",
+    "one\n|warn\n|",
+    "one\n|warn\n|3",
+  ]);
+  // and the reply still carries the whole of it
+  assertEquals(reply.stdout, "one\n");
+  assertEquals(reply.stderr, "warn\n");
+  assertEquals(reply.display, "3");
+});
+
+Deno.test("interruptKernel asks on the control channel, where ipykernel can hear it mid-cell", async () => {
+  // yurt-playground#130: the page had no way to stop a running cell, so a
+  // loop cost the reader the whole boot.
+  const sent: Array<{ type: string; channel: string | undefined }> = [];
+  const transport: JupyterTransport = {
+    send(message, channel) {
+      sent.push({ type: message.header.msg_type, channel });
+      return Promise.resolve();
+    },
+    subscribe() {
+      return () => {};
+    },
+    close() {
+      return Promise.resolve();
+    },
+  };
+  await interruptKernel(transport);
+  assertEquals(sent, [{ type: "interrupt_request", channel: "control" }]);
 });

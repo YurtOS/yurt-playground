@@ -317,6 +317,39 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
   assertEquals(unsupported.includes("Cross-Origin-Embedder-Policy"), true);
 });
 
+Deno.test("the cell can be stopped, and its output cannot push the page away", async () => {
+  // yurt-playground#130: Run was the only control and was disabled while a
+  // cell ran, so `while True: x += 1` left reloading as the only way out.
+  const notebook = await Deno.readTextFile(
+    new URL("../src/notebook.ts", import.meta.url),
+  );
+  assertEquals(
+    notebook.includes('stop.dataset.testid = "notebook-interrupt"'),
+    true,
+    "no Stop control in the cell",
+  );
+  assertEquals(
+    notebook.includes("stream(id, partial)"),
+    true,
+    "the view cannot show a cell's output before it ends",
+  );
+  // ... and the e2e drives both, so the wiring is not asserted on text alone.
+  const e2e = await Deno.readTextFile(
+    new URL("../tests/playground_e2e.ts", import.meta.url),
+  );
+  assertEquals(e2e.includes("notebook-interrupt"), true);
+  assertEquals(e2e.includes("KeyboardInterrupt"), true);
+  // yurt-playground#131: 30,000 prints made the pane 630,198 px tall and
+  // pushed the downloads, the proof and the footer that far down the page.
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
+  const pane = css.match(/#notebook-output \{([^}]*)\}/)?.[1] ?? "";
+  assertEquals(/max-height:/.test(pane), true, "no max-height on the pane");
+  assertEquals(/overflow-y:\s*auto/.test(pane), true, "the pane cannot scroll");
+});
+
 Deno.test("deployment workflow publishes an isolated static site", async () => {
   const workflow = await workflowSource("deploy-pages.yml");
   assertEquals(
