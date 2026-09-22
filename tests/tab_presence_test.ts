@@ -48,6 +48,7 @@ Deno.test("the note is taken down once the neighbour is gone", async () => {
     60,
     "yurt-test-watch",
     30,
+    1,
   );
   try {
     await new Promise((r) => setTimeout(r, 400));
@@ -60,4 +61,50 @@ Deno.test("the note is taken down once the neighbour is gone", async () => {
     stopNeighbour();
     stopSelf();
   }
+});
+
+// yurt-playground#134, review: one silent round is not evidence. The answer
+// needs the *other* tab's main thread, and that tab is busy by definition --
+// it is why the note is up. A single long task there would otherwise erase a
+// warning that is still true, with no way back.
+Deno.test("a single silent round does not take the note down", async () => {
+  const stopNeighbour = announceSandbox("yurt-test-patient", NEIGHBOUR);
+  let gone = 0;
+  // Three rounds of silence required; the neighbour goes quiet for one.
+  const stopWatching = whileAnotherSandboxRuns(
+    () => gone++,
+    40,
+    "yurt-test-patient",
+    20,
+    3,
+  );
+  try {
+    await new Promise((r) => setTimeout(r, 200));
+    assertEquals(gone, 0, "answered rounds must not count");
+    stopNeighbour();
+    await new Promise((r) => setTimeout(r, 90));
+    assertEquals(gone, 0, "one silent round is not enough");
+    await new Promise((r) => setTimeout(r, 300));
+    assertEquals(gone, 1, "three silent rounds must take it down, once");
+  } finally {
+    stopWatching();
+    stopNeighbour();
+  }
+});
+
+// ... and the watcher stops meaning it once it is stopped: `clearInterval`
+// cannot cancel a probe already in flight.
+Deno.test("a stopped watcher does not report later", async () => {
+  let gone = 0;
+  const stopWatching = whileAnotherSandboxRuns(
+    () => gone++,
+    20,
+    "yurt-test-stopped",
+    200,
+    1,
+  );
+  await new Promise((r) => setTimeout(r, 40));
+  stopWatching();
+  await new Promise((r) => setTimeout(r, 400));
+  assertEquals(gone, 0, "a probe in flight at stop() still reported");
 });

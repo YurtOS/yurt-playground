@@ -9,7 +9,9 @@
 
 const CHANNEL = "yurt-playground-sandbox";
 
-type Presence = { type: "who" } | { type: "here"; from: string };
+/** `from` is optional on the wire: a tab still running the previous bundle
+ * answers without it, and that answer is a real neighbour. */
+type Presence = { type: "who" } | { type: "here"; from?: string };
 
 /** A browser with cross-origin isolation but no BroadcastChannel (Safari
  * 15.2-15.3) boots without the question; the channel is a courtesy. */
@@ -64,22 +66,41 @@ export function anotherSandboxRunning(
  *
  * The note the first answer raises tells the reader to close the other tab,
  * and used to keep contradicting them once they had (yurt-playground#134).
- * `gone` is called at most once, on the first round with no answer, and the
- * asking stops there: a neighbour that comes back later does not slow this
- * tab's boot, which is what the note was about.
+ * `gone` is called at most once, after `silentRounds` consecutive rounds
+ * with no answer, and the asking stops there: a neighbour that comes back
+ * later does not slow this tab's boot, which is what the note was about.
  */
 export function whileAnotherSandboxRuns(
   gone: () => void,
   intervalMs = 5000,
   name = CHANNEL,
   timeoutMs = 300,
+  /** Rounds of silence before the neighbour is believed gone. One is not
+   * enough: the answer needs the *other* tab's main thread, and that tab
+   * is busy by definition -- it is the reason the note is up. A single
+   * long task there, or Chrome throttling a hidden tab, would otherwise
+   * erase a warning that is still true, with no way back. */
+  silentRounds = 3,
   ignore = SELF,
 ): () => void {
   if (!supported) return () => {};
   let timer = 0;
-  const stop = () => clearInterval(timer);
+  let silent = 0;
+  // `clearInterval` cannot cancel a probe already in flight, and `gone`
+  // must be called at most once however many overlap.
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+    clearInterval(timer);
+  };
   timer = setInterval(async () => {
-    if (await anotherSandboxRunning(timeoutMs, name, ignore)) return;
+    const another = await anotherSandboxRunning(timeoutMs, name, ignore);
+    if (stopped) return;
+    if (another) {
+      silent = 0;
+      return;
+    }
+    if (++silent < silentRounds) return;
     stop();
     gone();
   }, intervalMs);
