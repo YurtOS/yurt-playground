@@ -265,8 +265,10 @@ if (import.meta.main) {
     // On a launcher without the session routes it is job [1], as before.
     if (apiPresent) {
       await page.locator("#term").click();
-      // The echo of the typed line must not match the marker itself.
-      await page.keyboard.type("jobs; echo __JOBS_''DONE__\n");
+      // The echo of the typed line must not match the markers themselves.
+      await page.keyboard.type(
+        "jobs; echo __SH''PID__$$; echo __JOBS_''DONE__\n",
+      );
       await page.waitForFunction(
         () =>
           (document.querySelector("#term .xterm-rows")?.textContent ?? "")
@@ -284,18 +286,27 @@ if (import.meta.main) {
       ) {
         throw new Error(`the kernel is a job of the user's shell: ${listed}`);
       }
-      const cell = await page.getByTestId("notebook-input");
-      await cell.fill("import os; os.getppid()");
+      const shellPid = listed.match(/__SHPID__(\d+)/)?.[1];
+      if (shellPid === undefined) {
+        throw new Error(`no shell pid in the terminal: ${listed}`);
+      }
+      // Not the user's shell's child either.
+      await page.getByTestId("notebook-input").fill("import os; os.getppid()");
       await page.getByTestId("notebook-execute").click();
-      // Not the user's shell's child either: the page's session has
-      // init for a parent once its sh has exec'd the kernel.
       await page.waitForFunction(() =>
         /^\d+$/.test(
           document.querySelector<HTMLElement>("[data-testid=notebook-output]")
             ?.textContent?.trim() ?? "",
         )
       );
-      console.log("desktop e2e: the kernel is no job of the shell");
+      const parent = (await page.getByTestId("notebook-output").textContent())
+        ?.trim();
+      if (parent === shellPid) {
+        throw new Error(`the kernel's parent is the user's shell (${parent})`);
+      }
+      console.log(
+        `desktop e2e: the kernel is no job of the shell (shell ${shellPid}, kernel's parent ${parent})`,
+      );
     }
     // window.yurt on the native page: the launcher's registry, reached
     // with the token /desktop.json gave the page; bytes through /api/fs.

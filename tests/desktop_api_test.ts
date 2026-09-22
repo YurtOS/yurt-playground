@@ -3,6 +3,7 @@ import {
   buildTreeKill,
   createDesktopApi,
   type HostClient,
+  HostRequestError,
   nativeSpawner,
   parseExecRequest,
 } from "../src/desktop_api.ts";
@@ -59,12 +60,22 @@ function fakeHost(
       return Promise.resolve({ id, pid: 40 + next });
     },
     sessionComplete(id) {
-      const s = sessions.get(id)!;
+      const s = sessions.get(id);
+      if (s === undefined) {
+        return Promise.reject(new HostRequestError(404, `no session ${id}`));
+      }
       s.polls--;
       return Promise.resolve(s.polls <= 0);
     },
     closeSession(id) {
-      const s = sessions.get(id)!;
+      // As the host: a close of a session still running is refused.
+      if (id === "running") {
+        return Promise.reject(new HostRequestError(409, "still running"));
+      }
+      const s = sessions.get(id);
+      if (s === undefined) {
+        return Promise.reject(new HostRequestError(404, `no session ${id}`));
+      }
       sessions.delete(id);
       return Promise.resolve(s.exit);
     },
@@ -361,6 +372,29 @@ Deno.test("/api/sessions is the host's session route: a process of its own, seen
   });
   assertEquals(response.status, 400);
   assertEquals((await response.json()).error.includes("command"), true);
+  // The host's own answer comes through with its status: a session it
+  // does not know is a 404, a close while it still runs a 409.
+  response = await request("/api/sessions/nope");
+  assertEquals(response.status, 404);
+  assertEquals((await response.json()).code, "NotFound");
+  response = await request("/api/sessions/running", { method: "DELETE" });
+  assertEquals(response.status, 409);
+  assertEquals((await response.json()).code, "Conflict");
+});
+
+Deno.test("/api/fs/stat is the host's stat, no guest process: a size, or a 404", async () => {
+  const { request, fake } = api();
+  let response = await request("/api/fs/stat?path=/tmp/absent");
+  assertEquals(response.status, 404);
+  assertEquals((await response.json()).code, "NotFound");
+  fake.files.set("/tmp/there", new Uint8Array(7));
+  response = await request("/api/fs/stat?path=/tmp/there");
+  assertEquals(response.status, 200);
+  assertEquals(await response.json(), { size: 7 });
+  assertEquals(fake.commands, [], "a stat starts no command");
+  response = await request("/api/fs/stat");
+  assertEquals(response.status, 400);
+  await response.body?.cancel();
 });
 
 Deno.test("/api/fs moves bytes as bytes and lists through the guest", async () => {

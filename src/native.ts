@@ -226,18 +226,23 @@ function dialNativePort(port: number): SandboxPortConn {
  * (`POST /api/sessions`) -- not typed into the user's shell, where ipykernel
  * was job [1] and `kill %1` killed it (yurt-playground#82), and not an
  * execution, whose timeout and slot cap do not fit a process that lives as
- * long as the page -- and `readFile` reads a guest file (`/api/fs/content`;
- * a 404 is "not yet"), so the connection-file wait is polled rather than
- * typed. A restart's spawn closes the previous kernel's session first:
- * by then the stop has killed the process, so the close is a join of a
- * corpse and returns at once. */
+ * long as the page -- and `readFile` reads a guest file: a stat first
+ * (`/api/fs/stat`, straight from the host; a 404 is "not yet"), so the
+ * connection-file poll costs no guest process until the file is there,
+ * then the bytes (`/api/fs/content`, a `cat` of the user's own). A
+ * restart's spawn sees the previous kernel's session out first: the stop
+ * has sent SIGKILL, and the close (a join) is refused with 409 until the
+ * process is gone, so it waits for `complete`, briefly. */
 export function nativeLaunchHooks(
   token: string,
   fetchApi: typeof fetch = (input, init) => fetch(input, init),
+  options: { pollMs?: number; closeWaitMs?: number } = {},
 ): {
   spawn(line: string): Promise<void>;
   readFile(path: string): Promise<Uint8Array | undefined>;
 } {
+  const pollMs = options.pollMs ?? 100;
+  const closeWaitMs = options.closeWaitMs ?? 10_000;
   const call = (path: string, init: RequestInit = {}) =>
     fetchApi(`/api${path}`, {
       ...init,
@@ -253,20 +258,41 @@ export function nativeLaunchHooks(
     }
     return new Error(message);
   };
+  const sleep = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+  /** Close the previous kernel's session once its process is gone; a
+   * session the host no longer knows (404) is as closed as it gets. */
+  const seeOut = async (id: string): Promise<void> => {
+    const encoded = encodeURIComponent(id);
+    const deadline = Date.now() + closeWaitMs;
+    for (;;) {
+      const status = await call(`/sessions/${encoded}`);
+      if (status.status === 404) {
+        await status.body?.cancel();
+        return;
+      }
+      if (!status.ok) throw await failed("close the previous kernel", status);
+      if ((await status.json()).complete === true) break;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `close the previous kernel: still running after ${closeWaitMs} ms`,
+        );
+      }
+      await sleep(pollMs);
+    }
+    const closed = await call(`/sessions/${encoded}`, { method: "DELETE" });
+    if (!closed.ok && closed.status !== 404) {
+      throw await failed("close the previous kernel", closed);
+    }
+    await closed.body?.cancel();
+  };
   let previous: string | undefined;
   return {
     async spawn(line) {
       if (previous !== undefined) {
         const closing = previous;
         previous = undefined;
-        const response = await call(
-          `/sessions/${encodeURIComponent(closing)}`,
-          {
-            method: "DELETE",
-          },
-        );
-        // A session the host no longer knows is as closed as it gets.
-        await response.body?.cancel();
+        await seeOut(closing);
       }
       const response = await call("/sessions", {
         method: "POST",
@@ -277,13 +303,15 @@ export function nativeLaunchHooks(
       previous = (await response.json()).id;
     },
     async readFile(path) {
-      const response = await call(
-        `/fs/content?path=${encodeURIComponent(path)}`,
-      );
-      if (response.status === 404) {
-        await response.body?.cancel();
+      const encoded = encodeURIComponent(path);
+      const stat = await call(`/fs/stat?path=${encoded}`);
+      if (stat.status === 404) {
+        await stat.body?.cancel();
         return undefined;
       }
+      if (!stat.ok) throw await failed(`stat ${path}`, stat);
+      await stat.body?.cancel();
+      const response = await call(`/fs/content?path=${encoded}`);
       if (!response.ok) throw await failed(`read ${path}`, response);
       return new Uint8Array(await response.arrayBuffer());
     },

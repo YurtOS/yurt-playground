@@ -48,9 +48,27 @@ async function hostError(response: Response): Promise<HostFailure> {
   return { status: response.status, error: error || response.statusText };
 }
 
-class HostRequestError extends Error {
+/** The host refused: its status is the answer (the session routes pass it
+ * on -- a `409` is "still running", a `404` "not this host's"). */
+export class HostRequestError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
+  }
+}
+
+/** The code a driver reads for a status the host gave. */
+function hostStatusCode(status: number): string {
+  switch (status) {
+    case 400:
+      return "BadRequest";
+    case 403:
+      return "PermissionDenied";
+    case 404:
+      return "NotFound";
+    case 409:
+      return "Conflict";
+    default:
+      return "HostFailed";
   }
 }
 
@@ -239,6 +257,9 @@ export function buildTreeKill(pid: number, signal: number): string {
 /** An error code a driver can act on, from the message. */
 function errorCode(error: unknown): { status: number; code: string } {
   if (error instanceof PathError) return { status: 400, code: "BadPath" };
+  if (error instanceof HostRequestError) {
+    return { status: error.status, code: hostStatusCode(error.status) };
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (message.startsWith("TooManyExecutions")) {
     return { status: 429, code: "TooManyExecutions" };
@@ -510,6 +531,18 @@ export function createDesktopApi(options: {
       if (method === "DELETE") {
         return json({ exitCode: await options.host.closeSession(id) });
       }
+    }
+    // A stat straight from the host, no guest process: what a wait for a
+    // file to appear polls (the kernel's connection file, every 500 ms for
+    // minutes) so that only the read, once the file is there, costs an
+    // execution. Size only; the runtime reads as root (yurtos-kernel#2825)
+    // and this tells a token holder no more than that a path exists.
+    if (path === "/fs/stat" && method === "GET") {
+      const target = url.searchParams.get("path");
+      if (target === null) return refuse(400, "BadPath", "?path= is needed");
+      const size = await options.host.fileSize(target);
+      if (size === undefined) return refuse(404, "NotFound", target);
+      return json({ size });
     }
     if (path === "/fs/content" || path === "/fs/entries") {
       const target = url.searchParams.get("path");

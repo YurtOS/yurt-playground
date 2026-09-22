@@ -374,9 +374,12 @@ Deno.test("the desktop server binds the port it is given", async () => {
 
 Deno.test("the desktop launch hooks start the kernel as a host session and poll its file through /api", async () => {
   // yurt-playground#82: the kernel is a process of the page's own, not a
-  // job typed into the user's shell; a restart closes the previous one.
+  // job typed into the user's shell; a restart sees the previous one out.
   const calls: { path: string; method: string; body?: unknown }[] = [];
   const files = new Map<string, Uint8Array>();
+  // The previous kernel's session: complete only after the stop's SIGKILL
+  // has landed, which takes a poll or two; a close before that is a 409.
+  let pollsUntilDead = 2;
   const fetchApi: typeof fetch = (input, rawInit) => {
     const init = rawInit as RequestInit | undefined;
     const url = new URL(String(input), "http://127.0.0.1:1");
@@ -395,11 +398,32 @@ Deno.test("the desktop launch hooks start the kernel as a host session and poll 
         Response.json({ id: `s${calls.length}`, pid: 40 }, { status: 201 }),
       );
     }
+    if (url.pathname.startsWith("/api/sessions/") && method === "GET") {
+      pollsUntilDead--;
+      return Promise.resolve(Response.json({ complete: pollsUntilDead <= 0 }));
+    }
     if (url.pathname.startsWith("/api/sessions/") && method === "DELETE") {
-      return Promise.resolve(Response.json({ exitCode: 0 }));
+      if (pollsUntilDead > 0) {
+        return Promise.resolve(
+          Response.json({ error: "still running", code: "Conflict" }, {
+            status: 409,
+          }),
+        );
+      }
+      return Promise.resolve(Response.json({ exitCode: 137 }));
+    }
+    const target = url.searchParams.get("path") ?? "";
+    if (url.pathname === "/api/fs/stat") {
+      const bytes = files.get(target);
+      if (bytes === undefined) {
+        return Promise.resolve(
+          Response.json({ error: target, code: "NotFound" }, { status: 404 }),
+        );
+      }
+      return Promise.resolve(Response.json({ size: bytes.byteLength }));
     }
     if (url.pathname === "/api/fs/content") {
-      const bytes = files.get(url.searchParams.get("path") ?? "");
+      const bytes = files.get(target);
       if (bytes === undefined) {
         return Promise.resolve(
           Response.json({ error: "no such file", code: "NotFound" }, {
@@ -413,7 +437,7 @@ Deno.test("the desktop launch hooks start the kernel as a host session and poll 
       Response.json({ error: "nope", code: "NoSuchRoute" }, { status: 404 }),
     );
   };
-  const hooks = nativeLaunchHooks("t0k3n", fetchApi);
+  const hooks = nativeLaunchHooks("t0k3n", fetchApi, { pollMs: 1 });
   await hooks.spawn("echo $$ > /tmp/pid; exec python3 -m ipykernel_launcher");
   assertEquals(calls.map((c) => `${c.method} ${c.path}`), [
     "POST /api/sessions",
@@ -421,16 +445,26 @@ Deno.test("the desktop launch hooks start the kernel as a host session and poll 
   assertEquals(calls[0].body, {
     command: "echo $$ > /tmp/pid; exec python3 -m ipykernel_launcher",
   });
-  // Not there yet is `undefined`, not an error; then the bytes.
+  // Not there yet is `undefined` from a stat alone -- no read, so no guest
+  // process for a poll that comes up empty; then a stat and the bytes.
   assertEquals(await hooks.readFile("/tmp/conn.json"), undefined);
+  assertEquals(calls.at(-1)?.path, "/api/fs/stat?path=%2Ftmp%2Fconn.json");
   files.set("/tmp/conn.json", new Uint8Array([123, 125]));
   assertEquals(
     await hooks.readFile("/tmp/conn.json"),
     new Uint8Array([123, 125]),
   );
-  // A restart's spawn closes the previous kernel's session first.
+  assertEquals(calls.slice(-2).map((c) => c.path), [
+    "/api/fs/stat?path=%2Ftmp%2Fconn.json",
+    "/api/fs/content?path=%2Ftmp%2Fconn.json",
+  ]);
+  // A restart's spawn sees the previous kernel's session out first: it
+  // polls until the process is gone, then closes, then starts the next.
+  const before = calls.length;
   await hooks.spawn("exec python3 -m ipykernel_launcher");
-  assertEquals(calls.slice(-2).map((c) => `${c.method} ${c.path}`), [
+  assertEquals(calls.slice(before).map((c) => `${c.method} ${c.path}`), [
+    "GET /api/sessions/s1",
+    "GET /api/sessions/s1",
     "DELETE /api/sessions/s1",
     "POST /api/sessions",
   ]);
