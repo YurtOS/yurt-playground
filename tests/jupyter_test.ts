@@ -187,6 +187,49 @@ Deno.test("a session that can spawn gets the kernel as its own process, not type
   assertEquals(typed.some((t) => t.includes("ipykernel_launcher")), false);
 });
 
+Deno.test("a launch whose connection file never comes stops the kernel it started", async () => {
+  // yurt-playground#82, review: the kernel is a process of its own now,
+  // so a failed launch would otherwise leave it running for nobody.
+  const typed: string[] = [];
+  const handlers = new Set<(bytes: Uint8Array) => void>();
+  const session = {
+    terminal: {
+      write(bytes: Uint8Array) {
+        const line = new TextDecoder().decode(bytes);
+        typed.push(line);
+        // The typed stop line ends with an echo marker; answer it.
+        const marker = line.match(/echo (YURT_SHELL_DONE_)""(\w+)/);
+        if (marker !== null) {
+          const reply = new TextEncoder().encode(
+            `${marker[1]}${marker[2]}\n$ `,
+          );
+          for (const handler of handlers) handler(reply);
+        }
+        return Promise.resolve();
+      },
+    },
+    spawn: () => Promise.resolve(),
+    readFile: () => Promise.reject(new Error("the launcher is gone")),
+    dialSandboxPort: () => {
+      throw new Error("not dialed in this test");
+    },
+    onOutput(handler: (bytes: Uint8Array) => void) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+  };
+  await assertRejects(
+    () => startGuestKernel(session, undefined, { pollMs: 1 }),
+    Error,
+    "the launcher is gone",
+  );
+  assertEquals(
+    typed.some((t) => t.includes("kill -KILL")),
+    true,
+    `the stop line was typed: ${JSON.stringify(typed)}`,
+  );
+});
+
 /// yurtos-kernel#2824: the "first command after boot takes ~20 s" was the
 /// page's own connection-file wait loop, typed into the user's shell and
 /// hushed -- `while [ ! -s file ]; do sleep 1; done` for as long as

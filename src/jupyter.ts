@@ -229,12 +229,21 @@ export async function startGuestKernel(
         encoder.encode(`${buildKernelStartLine(ports)}\n`),
       );
     }
-    connection = session.readFile !== undefined
-      ? await pollConnectionFile(
-        session.readFile,
-        options.pollMs ?? CONNECTION_FILE_POLL_MS,
-      )
-      : await readConnectionFile(session);
+    try {
+      connection = session.readFile !== undefined
+        ? await pollConnectionFile(
+          session.readFile,
+          options.pollMs ?? CONNECTION_FILE_POLL_MS,
+        )
+        : await readConnectionFile(session);
+    } catch (error) {
+      // The launch is out (a process of its own, or a job of the shell)
+      // and its connection file never came, or could not be read: it is
+      // not left running for nobody. The stop is typed and hushed, and
+      // its own failure is not the news here.
+      await stopGuestKernel(session).catch(() => {});
+      throw error;
+    }
   } finally {
     release();
   }
