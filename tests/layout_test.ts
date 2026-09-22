@@ -1,4 +1,5 @@
 import { assertEquals } from "@std/assert";
+import { allTestFiles, filesFor, SHARDS } from "../scripts/ci-shards.ts";
 
 /** A workflow's text with the repository's own composite actions inlined
  *  where they are used (`uses: ./playground/.github/actions/<name>`), so
@@ -27,6 +28,32 @@ Deno.test("deno.json exposes the fmt/lint/check/test tasks", () => {
   assertEquals(typeof deno.tasks.lint, "string");
   assertEquals(typeof deno.tasks.check, "string");
   assertEquals(typeof deno.tasks.test, "string");
+});
+
+Deno.test("every test file runs in exactly one CI shard, and the workflow runs them all", async () => {
+  // yurt-playground#123: the suite is split across jobs. A file in no shard
+  // would stop running with nothing red to show for it.
+  const all = await allTestFiles();
+  const seen = new Map<string, string[]>();
+  for (const shard of SHARDS) {
+    for (const path of await filesFor(shard)) {
+      const name = path.slice("tests/".length);
+      seen.set(name, [...(seen.get(name) ?? []), shard]);
+    }
+  }
+  for (const name of all) {
+    assertEquals(seen.get(name)?.length, 1, `${name}: ${seen.get(name)}`);
+  }
+  assertEquals([...seen.keys()].sort(), all);
+  // And the workflow's matrix is the shard list, so adding a shard without
+  // a job (or the reverse) is caught here.
+  const workflow = await workflowSource("ci.yml");
+  const matrix = workflow.match(/shard: \[([^\]]+)\]/)?.[1];
+  assertEquals(
+    matrix?.split(",").map((s) => s.trim()).sort(),
+    [...SHARDS].sort(),
+    workflow.slice(0, 0) + `matrix: ${matrix}`,
+  );
 });
 
 Deno.test("CI fetches the pinned kernel wasm and playground image for integration tests", async () => {
@@ -62,16 +89,24 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   // The browser artifacts are materialized by the site inputs (deno task
   // pin runs scripts/pin-artifacts.ts).
   assertEquals(workflow.includes("deno task pin"), true);
-  assertEquals(workflow.includes("tests/playground_e2e.ts"), true);
+  // One job per scene since #123, so the scene is the matrix value and the
+  // run line is templated; every `tests/<scene>_e2e.ts` must exist.
+  const scenes = workflow.match(/scene: \[([^\]]+)\]/)?.[1]
+    .split(",").map((s) => s.trim()) ?? [];
+  assertEquals(scenes.includes("playground"), true, workflow.slice(0, 0));
   assertEquals(
-    workflow.includes("deno run --allow-all tests/playground_e2e.ts"),
+    workflow.includes("deno run --allow-all tests/${{ matrix.scene }}_e2e.ts"),
     true,
   );
-  // The notebook interface is accepted in the same browser step.
-  assertEquals(
-    workflow.includes("deno run --allow-all tests/jupyterlite_e2e.ts"),
-    true,
-  );
+  for (const scene of scenes) {
+    assertEquals(
+      (await Deno.stat(`tests/${scene}_e2e.ts`)).isFile,
+      true,
+      `tests/${scene}_e2e.ts`,
+    );
+  }
+  // The notebook interface is accepted too -- its own job since #123.
+  assertEquals(scenes.includes("jupyterlite"), true);
   // Browser acceptance is a required step, not a repository-variable opt-in:
   // it is the only check that proves the deployed pages boot the sandbox.
   assertEquals(workflow.includes("YURT_JUPYTER_E2E"), false);

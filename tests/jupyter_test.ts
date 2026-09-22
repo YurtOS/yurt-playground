@@ -153,9 +153,15 @@ Deno.test("a session that can spawn gets the kernel as its own process, not type
   const session = {
     terminal: {
       write(bytes: Uint8Array) {
-        typed.push(new TextDecoder().decode(bytes));
+        const line = new TextDecoder().decode(bytes);
+        typed.push(line);
         // The connection-file read is still typed: answer it with "no
         // file", which ends the launch right there, spawn already done.
+        const stop = line.match(/echo (YURT_SHELL_DONE_)""(\w+)/);
+        if (stop !== null) {
+          const reply = new TextEncoder().encode(`${stop[1]}${stop[2]}\n$ `);
+          for (const handler of handlers) handler(reply);
+        }
         if (typed.at(-1)?.includes(JUPYTER_CONNECTION_FILE)) {
           const reply = new TextEncoder().encode(
             "KERNEL_LOG\n(nothing)\nYURT_JUPYTER_CONNECTION_READY\n$ ",
@@ -278,7 +284,11 @@ Deno.test("a session that can read guest files polls the connection file instead
   // The launch is spawned and the file polled; the dial is where this
   // test stops: the connect retries give up on it.
   await assertRejects(
-    () => startGuestKernel(session, undefined, { pollMs: 1 }),
+    () =>
+      startGuestKernel(session, undefined, {
+        pollMs: 1,
+        connect: { attempts: 2, delayMs: 1 },
+      }),
     Error,
     "did not become ready",
   );

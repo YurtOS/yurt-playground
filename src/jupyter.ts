@@ -208,7 +208,13 @@ const TYPED_CONNECTION_MARKER = 'YURT_JUPYTER_CONNECTION_""READY';
 export async function startGuestKernel(
   session: JupyterLaunchSession,
   ports?: KernelPorts,
-  options: { pollMs?: number } = {},
+  /** `connect` is the dial's retry budget -- production waits out a kernel
+   * that is still binding its ports; a test that never dials says so
+   * instead of paying the whole backoff (yurt-playground#123). */
+  options: {
+    pollMs?: number;
+    connect?: { attempts?: number; delayMs?: number };
+  } = {},
 ): Promise<JupyterTransport> {
   // Only what is typed into the user's shell needs hushing; a session that
   // spawns the launch and reads the file itself types nothing.
@@ -262,6 +268,7 @@ export async function startGuestKernel(
         config,
       ),
     waitForKernelInfo,
+    options.connect,
   );
 }
 

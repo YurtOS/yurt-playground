@@ -14,7 +14,7 @@ on:
 # The workflow token can read the repository and nothing else; the
 # cross-repo credentials come from named secrets.
 # A push on top of a push runs the newest tree only: the superseded run's
-# integration job (15 min) is cancelled.
+# test and acceptance legs are cancelled.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -82,15 +82,24 @@ jobs:
       - name: lint
         run: deno lint
 
-  deno:
-    name: integration (cross-repo)
+  # The cross-repo work, split so a push waits for the longest leg rather
+  # than the sum of all of them (#123). Every leg pays the same ~80 s of
+  # site-inputs; what follows is minutes, which is why the split pays.
+  # `check` rides the fast shard: it needs the same inputs and takes 4 s.
+  tests:
+    name: tests (${{ matrix.shard }})
     needs: checks
     # The token step runs first in `checks`, and this gate does not wait for
     # fmt/lint to pass: a formatting nit must not hide the integration result
     # (review). `!cancelled()` overrides the implicit success() on `needs`.
     if: ${{ !cancelled() && needs.checks.outputs.present == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      # Keep in step with scripts/ci-shards.ts; layout_test.ts asserts it.
+      matrix:
+        shard: [python, guest, fast]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -100,15 +109,44 @@ jobs:
         with:
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
       - name: check
+        if: matrix.shard == 'fast'
         working-directory: playground
         run: deno check "**/*.ts"
       - name: test
-        timeout-minutes: 10
+        timeout-minutes: 15
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
-        run: deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
+        run: |
+          set -euo pipefail
+          readarray -t files < <(
+            deno run --allow-read scripts/ci-shards.ts "${{ matrix.shard }}" | tr " " "\n"
+          )
+          echo "shard ${{ matrix.shard }}: ${files[*]}"
+          deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run "${files[@]}"
+
+  # One browser scene per job: each boots its own sandbox, and two of them
+  # on one 4-vCPU runner starve each other (both timed out when tried side
+  # by side on a single runner, 2026-09-15) -- separate runners do not.
+  acceptance:
+    name: acceptance (${{ matrix.scene }})
+    needs: checks
+    if: ${{ !cancelled() && needs.checks.outputs.present == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        scene: [playground, jupyterlite, snapshot, notebook_snapshot]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: playground
+      - uses: ./playground/.github/actions/site-inputs
+        with:
+          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
       # Playwright's Chromium, keyed on the pinned playwright version: a hit
       # makes `install chromium` a no-op.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -125,24 +163,10 @@ jobs:
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
         run: deno task build-static
-      # Serial, not side by side: two sandboxes booting at once starve each
-      # other on the 4-vCPU runner (both timed out when tried, 2026-09-15).
       - name: Browser acceptance
         timeout-minutes: 20
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
-        run: |
-          deno run --allow-all tests/playground_e2e.ts
-          deno run --allow-all tests/jupyterlite_e2e.ts
-          deno run --allow-all tests/snapshot_e2e.ts
-          deno run --allow-all tests/notebook_snapshot_e2e.ts
-
-  # The desktop bundles (scripts/build-desktop.sh): the site from the
-  # integration job, the launcher, and the native sandbox (the pinned
-  # desktop host, runtime, kernel wasm and image), packaged per target. The
-  # Linux runner builds both architectures of its OS, the macOS runner Apple
-  # Silicon only, and each runs the app acceptance — a native boot, a cell,
-  # HTTPS from the guest — on the one it can execute; the other is built the
-  # same way from the same inputs.
+        run: deno run --allow-all tests/${{ matrix.scene }}_e2e.ts
