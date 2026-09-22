@@ -7,7 +7,11 @@ import {
   desktopInfo,
   nativeYurtTransport,
 } from "./native.ts";
-import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
+import {
+  announceSandbox,
+  anotherSandboxRunning,
+  whileAnotherSandboxRuns,
+} from "./tab_presence.ts";
 import {
   createYurt,
   type Yurt,
@@ -33,6 +37,7 @@ type FromWorker =
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
+let stopWatchingNeighbour: () => void = () => {};
 
 /**
  * window.yurt (src/agent_api.ts): a driver's view of the sandbox, present
@@ -199,6 +204,8 @@ function boot(
     // A tab with a failed boot has no sandbox to speak for.
     stopAnnouncing();
     stopAnnouncing = () => {};
+    stopWatchingNeighbour();
+    stopWatchingNeighbour = () => {};
     rememberBooting(undefined);
     if (!terminalEmpty) {
       status.textContent = `failed: ${message}`;
@@ -353,7 +360,14 @@ async function runPage(): Promise<void> {
     // applies there.
     if (desktop === undefined) {
       void anotherSandboxRunning().then((another) => {
-        if (another) byId("another-tab-note").hidden = false;
+        if (!another) return;
+        const note = byId("another-tab-note");
+        note.hidden = false;
+        // ... and take it down again when that tab goes: it tells the
+        // reader to close the other one (yurt-playground#134).
+        stopWatchingNeighbour = whileAnotherSandboxRuns(() => {
+          note.hidden = true;
+        });
       });
       stopAnnouncing = announceSandbox();
     }
