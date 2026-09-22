@@ -482,6 +482,35 @@ export function createDesktopApi(options: {
         return new Response(null, { status: 204, headers: JSON_HEADERS });
       }
     }
+    // The host's session route, as it is: a process of its own with no
+    // registry around it -- what the page starts the notebook kernel as,
+    // outside the user's shell (yurt-playground#82) and outside the
+    // execution registry, whose timeout and slot cap do not fit a process
+    // that lives as long as the page. Seen out by id: `complete` while it
+    // runs, closed for its exit code.
+    if (path === "/sessions" && method === "POST") {
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return refuse(400, "BadRequest", "the body must be JSON");
+      }
+      const command = (body as { command?: unknown })?.command;
+      if (typeof command !== "string" || command === "") {
+        return refuse(400, "BadRequest", "command: a shell line");
+      }
+      return json(await options.host.startSession(command), 201);
+    }
+    const session = path.match(/^\/sessions\/([^/]+)$/);
+    if (session !== null) {
+      const id = decodeURIComponent(session[1]);
+      if (method === "GET") {
+        return json({ complete: await options.host.sessionComplete(id) });
+      }
+      if (method === "DELETE") {
+        return json({ exitCode: await options.host.closeSession(id) });
+      }
+    }
     if (path === "/fs/content" || path === "/fs/entries") {
       const target = url.searchParams.get("path");
       if (target === null) return refuse(400, "BadPath", "?path= is needed");

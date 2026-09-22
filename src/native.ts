@@ -221,8 +221,81 @@ function dialNativePort(port: number): SandboxPortConn {
   };
 }
 
+/** The notebook kernel's launch on the desktop page, through the
+ * launcher's `/api/*`: `spawn` starts the line as a host session of its own
+ * (`POST /api/sessions`) -- not typed into the user's shell, where ipykernel
+ * was job [1] and `kill %1` killed it (yurt-playground#82), and not an
+ * execution, whose timeout and slot cap do not fit a process that lives as
+ * long as the page -- and `readFile` reads a guest file (`/api/fs/content`;
+ * a 404 is "not yet"), so the connection-file wait is polled rather than
+ * typed. A restart's spawn closes the previous kernel's session first:
+ * by then the stop has killed the process, so the close is a join of a
+ * corpse and returns at once. */
+export function nativeLaunchHooks(
+  token: string,
+  fetchApi: typeof fetch = (input, init) => fetch(input, init),
+): {
+  spawn(line: string): Promise<void>;
+  readFile(path: string): Promise<Uint8Array | undefined>;
+} {
+  const call = (path: string, init: RequestInit = {}) =>
+    fetchApi(`/api${path}`, {
+      ...init,
+      headers: { ...init.headers, authorization: `Bearer ${token}` },
+    });
+  const failed = async (what: string, response: Response): Promise<Error> => {
+    let message = `${what}: ${response.status}`;
+    try {
+      const body = await response.json();
+      if (typeof body.error === "string") message = `${what}: ${body.error}`;
+    } catch {
+      // Not JSON: the status is the message.
+    }
+    return new Error(message);
+  };
+  let previous: string | undefined;
+  return {
+    async spawn(line) {
+      if (previous !== undefined) {
+        const closing = previous;
+        previous = undefined;
+        const response = await call(
+          `/sessions/${encodeURIComponent(closing)}`,
+          {
+            method: "DELETE",
+          },
+        );
+        // A session the host no longer knows is as closed as it gets.
+        await response.body?.cancel();
+      }
+      const response = await call("/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ command: line }),
+      });
+      if (!response.ok) throw await failed("start the kernel", response);
+      previous = (await response.json()).id;
+    },
+    async readFile(path) {
+      const response = await call(
+        `/fs/content?path=${encodeURIComponent(path)}`,
+      );
+      if (response.status === 404) {
+        await response.body?.cancel();
+        return undefined;
+      }
+      if (!response.ok) throw await failed(`read ${path}`, response);
+      return new Uint8Array(await response.arrayBuffer());
+    },
+  };
+}
+
 export async function bootNativePlayground(
   env: PlaygroundEnv,
+  /** The launcher's `/api/*` token, when it has the session routes: the
+   * kernel then starts as a process of its own. Without it the launch is
+   * typed at the prompt, as on a launcher older than the API. */
+  api?: { token: string },
 ): Promise<PlaygroundSession> {
   env.show("connecting to the sandbox");
   const ws = await openSocket("/ws/tty");
@@ -260,10 +333,14 @@ export async function bootNativePlayground(
     stop();
   };
   env.show("");
+  const hooks = api === undefined ? undefined : nativeLaunchHooks(api.token);
   return {
     stop,
     controller,
     terminal,
+    ...(hooks === undefined
+      ? {}
+      : { spawn: hooks.spawn, readFile: hooks.readFile }),
     dialSandboxPort: dialNativePort,
     onOutput: output.onOutput,
     hushOutput: output.hushOutput,

@@ -331,6 +331,38 @@ Deno.test("/api/executions runs a command through the host and reports it once",
   await swept();
 });
 
+Deno.test("/api/sessions is the host's session route: a process of its own, seen out by id", async () => {
+  // The page starts the notebook kernel here (yurt-playground#82): outside
+  // the user's shell and outside the execution registry, whose timeout
+  // and slot would not fit a process that lives as long as the page.
+  const { request, fake } = api();
+  let response = await request("/api/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ command: "echo $$ > /tmp/pid; exec sleep 1000" }),
+  });
+  assertEquals(response.status, 201);
+  const { id, pid } = await response.json();
+  assertEquals(typeof id, "string");
+  assertEquals(typeof pid, "number");
+  assertEquals(fake.commands, ["echo $$ > /tmp/pid; exec sleep 1000"]);
+  response = await request(`/api/sessions/${id}`);
+  assertEquals(response.status, 200);
+  assertEquals((await response.json()).complete, true);
+  response = await request(`/api/sessions/${id}`, { method: "DELETE" });
+  assertEquals(response.status, 200);
+  assertEquals((await response.json()).exitCode, 0);
+  assertEquals(fake.sessions.size, 0);
+  // A body without a command names it.
+  response = await request("/api/sessions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assertEquals(response.status, 400);
+  assertEquals((await response.json()).error.includes("command"), true);
+});
+
 Deno.test("/api/fs moves bytes as bytes and lists through the guest", async () => {
   const { request, fake } = api();
   // The fake guest's "commands" cannot really write a file; what is

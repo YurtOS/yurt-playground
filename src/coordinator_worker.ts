@@ -34,12 +34,14 @@ installCoordinatorWorkerProxy();
 type ToWorker =
   // `kernelPorts` set: the desktop app's native sandbox (see native.ts),
   // reached over WebSockets; otherwise the kernel boots in this worker.
+  // `apiToken` opens the launcher's /api/* to the launch (yurt-playground#82).
   | {
     type: "start";
     cols: number;
     rows: number;
     isolated: boolean;
     kernelPorts?: KernelPorts;
+    apiToken?: string;
   }
   | { type: "in"; text: string }
   | { type: "resize"; rows: number; cols: number }
@@ -265,7 +267,10 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     };
     session = kernelPorts === undefined
       ? await bootPlayground(env)
-      : await bootNativePlayground(env);
+      : await bootNativePlayground(
+        env,
+        msg.apiToken === undefined ? undefined : { token: msg.apiToken },
+      );
     if (session.process !== undefined && session.signal !== undefined) {
       executions = new ExecutionRegistry(session.process, session.signal);
     }

@@ -17,14 +17,16 @@ const encoder = new TextEncoder();
 export type JupyterLaunchSession = {
   terminal: { write(bytes: Uint8Array): Promise<void> };
   /** Run a shell line as a process of the page's own, outside the user's
-   * shell (the in-tab boot can; the desktop app's page has only the
-   * terminal). Without it the launch is typed at the prompt. */
+   * shell (the in-tab boot spawns it; the desktop page asks the launcher
+   * for a host session, `nativeLaunchHooks`). Without it -- a launcher
+   * older than the API -- the launch is typed at the prompt. */
   spawn?(line: string): Promise<void>;
   /** A guest file's bytes, or `undefined` when it does not exist yet (the
-   * in-tab boot reads the VFS directly). Without it the connection-file
-   * wait is typed at the prompt and the user's shell is busy with it for
-   * as long as ipykernel takes to import -- twenty seconds and more in
-   * which anything the user types queues behind it (yurtos-kernel#2824). */
+   * in-tab boot reads the VFS directly; the desktop page reads through the
+   * launcher). Without it the connection-file wait is typed at the prompt
+   * and the user's shell is busy with it for as long as ipykernel takes to
+   * import -- twenty seconds and more in which anything the user types
+   * queues behind it (yurtos-kernel#2824). */
   readFile?(path: string): Promise<Uint8Array | undefined>;
   dialSandboxPort(port: number): SandboxPortConn;
   onOutput(handler: (bytes: Uint8Array) => void): () => void;
@@ -106,9 +108,9 @@ export function buildKernelLaunchCommand(
 
 /** The shell line that starts the kernel in the background and records
  * its pid. Typed at the prompt, so ipykernel is job [1] of the user's own
- * interactive shell and `kill %1` kills it (yurt-playground#82); a subshell
- * would keep it off the job table, but on the native runtime a child does
- * not survive its parent's exit (yurtos-kernel#2816), so that waits. */
+ * interactive shell and `kill %1` kills it (yurt-playground#82) -- what a
+ * session without `spawn` gets: a launcher older than the /api/sessions
+ * route. */
 export function buildKernelStartLine(
   ports?: KernelPorts,
   connectionFile = JUPYTER_CONNECTION_FILE,
@@ -220,9 +222,9 @@ export async function startGuestKernel(
     if (session.spawn !== undefined) {
       await session.spawn(buildKernelOwnProcessLine(ports));
     } else {
-      // The desktop app's page has only the terminal: the launch is a
-      // background job of the user's shell until the host starts the
-      // kernel itself (yurt-playground#82, yurtos-kernel#2816).
+      // No way to start a process of the page's own (a launcher older
+      // than /api/sessions): the launch is a background job of the user's
+      // shell (yurt-playground#82).
       await session.terminal.write(
         encoder.encode(`${buildKernelStartLine(ports)}\n`),
       );
