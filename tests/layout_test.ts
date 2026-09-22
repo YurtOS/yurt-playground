@@ -349,10 +349,36 @@ Deno.test("every disclosure on the home page is styled, not just the proof", asy
       /\.strip\s*>\s*summary\s*\{[^}]*list-style:\s*none/,
       /\.strip\s*>\s*summary::-webkit-details-marker\s*\{[^}]*display:\s*none/,
       /\.strip\s*>\s*summary h2::before\s*\{[^}]*content:/,
+      /\.strip\[open\]\s*>\s*summary\s*\.hint\s*\{[^}]*display:\s*none/,
     ]
   ) {
     assertEquals(rule.test(css), true, `no class-scoped rule for ${rule}`);
   }
+  // ... and the body, not only the header. Both disclosures carry the same
+  // `.checks` grid of four `.check` cards, so a rule left on `#proof` leaves
+  // the other one's cards unstyled -- the same defect one element deeper.
+  for (const id of ids) {
+    const details = html.match(
+      new RegExp(`<details class="strip" id="${id}"[\\s\\S]*?</details>`),
+    )
+      ?.[0] ?? "";
+    for (const klass of ["checks", "check"]) {
+      if (!details.includes(`class="${klass}"`)) continue;
+      assertEquals(
+        new RegExp(`\\.strip\\s+\\.${klass}[\\s{]`).test(css) ||
+          css.includes(`#${id} .${klass}`),
+        true,
+        `#${id} uses .${klass} and no rule styles it`,
+      );
+    }
+  }
+  // No rule may be scoped to one disclosure any more: that is how this
+  // happened, twice.
+  assertEquals(
+    css.includes("#proof "),
+    false,
+    "a rule is still scoped to #proof",
+  );
 });
 
 Deno.test("deployment workflow publishes an isolated static site", async () => {
