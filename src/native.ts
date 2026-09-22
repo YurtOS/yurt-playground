@@ -289,10 +289,14 @@ export function nativeLaunchHooks(
   let previous: string | undefined;
   return {
     async spawn(line) {
+      // The previous kernel's session stays remembered until it is seen
+      // out: a failed close (the host slow to see a SIGKILLed kernel gone,
+      // a 5xx) leaves the restart failed and the session still ours, so
+      // the next restart closes it instead of starting a second kernel on
+      // the same five ports.
       if (previous !== undefined) {
-        const closing = previous;
+        await seeOut(previous);
         previous = undefined;
-        await seeOut(closing);
       }
       const response = await call("/sessions", {
         method: "POST",
@@ -311,7 +315,14 @@ export function nativeLaunchHooks(
       }
       if (!stat.ok) throw await failed(`stat ${path}`, stat);
       await stat.body?.cancel();
+      // The read is a `cat` through the launcher's execution registry: a
+      // 429 while drivers hold every slot, or a 404 from a file gone
+      // between the stat and the read, is "not yet", and the poll goes on.
       const response = await call(`/fs/content?path=${encoded}`);
+      if (response.status === 404 || response.status === 429) {
+        await response.body?.cancel();
+        return undefined;
+      }
       if (!response.ok) throw await failed(`read ${path}`, response);
       return new Uint8Array(await response.arrayBuffer());
     },
