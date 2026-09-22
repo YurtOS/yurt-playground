@@ -317,6 +317,27 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
   assertEquals(unsupported.includes("Cross-Origin-Embedder-Policy"), true);
 });
 
+Deno.test("every disclosure on the home page is styled, not just the proof", async () => {
+  // yurt-playground#129: the summary rules were written as `#proof summary`,
+  // so the "Suspend and resume" disclosure added later rendered with the
+  // browser's default marker, its heading as a block and its hint on a third
+  // line -- directly under the styled one. Scope the rules to the element,
+  // and a third <details class="strip"> cannot regress the same way.
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
+  const ids = [...html.matchAll(/<details class="strip" id="([\w-]+)"/g)]
+    .map((m) => m[1]);
+  assertEquals(ids.length >= 2, true, `expected several strips, got ${ids}`);
+  // A rule on the class styles every one of them; an id rule styles one.
+  const byClass = /\.strip\s*>\s*summary\b/.test(css);
+  for (const id of ids) {
+    const byId = css.includes(`#${id} summary`);
+    assertEquals(byClass || byId, true, `#${id}: no rule styles its summary`);
+  }
+});
+
 Deno.test("deployment workflow publishes an isolated static site", async () => {
   const workflow = await workflowSource("deploy-pages.yml");
   assertEquals(

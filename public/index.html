@@ -194,7 +194,7 @@
         #start .prompt::after {
           animation: none;
         }
-        #proof summary h2::before {
+        .strip > summary h2::before {
           transition: none;
         }
       }
@@ -417,8 +417,10 @@
         color: var(--text);
       }
 
-      /* The proof, on demand. */
-      #proof summary {
+      /* The disclosures -- the proof and the snapshots -- on demand.
+         Scoped to the class, not to one id: a rule written as `#proof
+         summary` left the next <details class="strip"> unstyled (#129). */
+      .strip > summary {
         cursor: pointer;
         list-style: none;
         display: flex;
@@ -426,14 +428,14 @@
         align-items: baseline;
         gap: 4px 12px;
       }
-      #proof summary::-webkit-details-marker {
+      .strip > summary::-webkit-details-marker {
         display: none;
       }
-      #proof summary h2 {
+      .strip > summary h2 {
         margin: 0;
       }
       /* The one sign it opens: a small triangle in the accent, turning. */
-      #proof summary h2::before {
+      .strip > summary h2::before {
         content: "";
         display: inline-block;
         width: 0;
@@ -445,13 +447,13 @@
         border-right: 0;
         transition: transform 120ms ease-out;
       }
-      #proof[open] summary h2::before {
+      .strip[open] > summary h2::before {
         transform: rotate(90deg);
       }
-      #proof summary .hint {
+      .strip > summary .hint {
         color: var(--muted);
       }
-      #proof[open] summary .hint {
+      .strip[open] > summary .hint {
         display: none;
       }
       /* Four checks, two by two: they are parallel, none comes first. */
