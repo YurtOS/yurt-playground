@@ -48,9 +48,27 @@ async function hostError(response: Response): Promise<HostFailure> {
   return { status: response.status, error: error || response.statusText };
 }
 
-class HostRequestError extends Error {
+/** The host refused: its status is the answer (the session routes pass it
+ * on -- a `409` is "still running", a `404` "not this host's"). */
+export class HostRequestError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
+  }
+}
+
+/** The code a driver reads for a status the host gave. */
+function hostStatusCode(status: number): string {
+  switch (status) {
+    case 400:
+      return "BadRequest";
+    case 403:
+      return "PermissionDenied";
+    case 404:
+      return "NotFound";
+    case 409:
+      return "Conflict";
+    default:
+      return "HostFailed";
   }
 }
 
@@ -239,6 +257,9 @@ export function buildTreeKill(pid: number, signal: number): string {
 /** An error code a driver can act on, from the message. */
 function errorCode(error: unknown): { status: number; code: string } {
   if (error instanceof PathError) return { status: 400, code: "BadPath" };
+  if (error instanceof HostRequestError) {
+    return { status: error.status, code: hostStatusCode(error.status) };
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (message.startsWith("TooManyExecutions")) {
     return { status: 429, code: "TooManyExecutions" };
@@ -481,6 +502,47 @@ export function createDesktopApi(options: {
         await registry.kill(id, signal);
         return new Response(null, { status: 204, headers: JSON_HEADERS });
       }
+    }
+    // The host's session route, as it is: a process of its own with no
+    // registry around it -- what the page starts the notebook kernel as,
+    // outside the user's shell (yurt-playground#82) and outside the
+    // execution registry, whose timeout and slot cap do not fit a process
+    // that lives as long as the page. Seen out by id: `complete` while it
+    // runs, closed for its exit code.
+    if (path === "/sessions" && method === "POST") {
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return refuse(400, "BadRequest", "the body must be JSON");
+      }
+      const command = (body as { command?: unknown })?.command;
+      if (typeof command !== "string" || command === "") {
+        return refuse(400, "BadRequest", "command: a shell line");
+      }
+      return json(await options.host.startSession(command), 201);
+    }
+    const session = path.match(/^\/sessions\/([^/]+)$/);
+    if (session !== null) {
+      const id = decodeURIComponent(session[1]);
+      if (method === "GET") {
+        return json({ complete: await options.host.sessionComplete(id) });
+      }
+      if (method === "DELETE") {
+        return json({ exitCode: await options.host.closeSession(id) });
+      }
+    }
+    // A stat straight from the host, no guest process: what a wait for a
+    // file to appear polls (the kernel's connection file, every 500 ms for
+    // minutes) so that only the read, once the file is there, costs an
+    // execution. Size only; the runtime reads as root (yurtos-kernel#2825)
+    // and this tells a token holder no more than that a path exists.
+    if (path === "/fs/stat" && method === "GET") {
+      const target = url.searchParams.get("path");
+      if (target === null) return refuse(400, "BadPath", "?path= is needed");
+      const size = await options.host.fileSize(target);
+      if (size === undefined) return refuse(404, "NotFound", target);
+      return json({ size });
     }
     if (path === "/fs/content" || path === "/fs/entries") {
       const target = url.searchParams.get("path");

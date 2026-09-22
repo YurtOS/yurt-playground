@@ -5,7 +5,7 @@ import {
   parseLauncherArgs,
   startDesktopServer,
 } from "../src/desktop.ts";
-import { desktopInfo } from "../src/native.ts";
+import { desktopInfo, nativeLaunchHooks } from "../src/native.ts";
 import { inlineScriptHashes } from "../src/csp.ts";
 
 const isolation = {
@@ -370,4 +370,149 @@ Deno.test("the desktop server binds the port it is given", async () => {
   } finally {
     await server.shutdown();
   }
+});
+
+Deno.test("the desktop launch hooks start the kernel as a host session and poll its file through /api", async () => {
+  // yurt-playground#82: the kernel is a process of the page's own, not a
+  // job typed into the user's shell; a restart sees the previous one out.
+  const calls: { path: string; method: string; body?: unknown }[] = [];
+  const files = new Map<string, Uint8Array>();
+  // The previous kernel's session: complete only after the stop's SIGKILL
+  // has landed, which takes a poll or two; a close before that is a 409.
+  let pollsUntilDead = 2;
+  let lastSessionId = "";
+  const fetchApi: typeof fetch = (input, rawInit) => {
+    const init = rawInit as RequestInit | undefined;
+    const url = new URL(String(input), "http://127.0.0.1:1");
+    const method = init?.method ?? "GET";
+    const auth = new Headers(init?.headers).get("authorization");
+    if (auth !== "Bearer t0k3n") {
+      return Promise.resolve(new Response("", { status: 401 }));
+    }
+    calls.push({
+      path: url.pathname + url.search,
+      method,
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+    });
+    if (url.pathname === "/api/sessions" && method === "POST") {
+      lastSessionId = `s${calls.length}`;
+      return Promise.resolve(
+        Response.json({ id: lastSessionId, pid: 40 }, { status: 201 }),
+      );
+    }
+    if (url.pathname.startsWith("/api/sessions/") && method === "GET") {
+      pollsUntilDead--;
+      return Promise.resolve(Response.json({ complete: pollsUntilDead <= 0 }));
+    }
+    if (url.pathname.startsWith("/api/sessions/") && method === "DELETE") {
+      if (pollsUntilDead > 0) {
+        return Promise.resolve(
+          Response.json({ error: "still running", code: "Conflict" }, {
+            status: 409,
+          }),
+        );
+      }
+      return Promise.resolve(Response.json({ exitCode: 137 }));
+    }
+    const target = url.searchParams.get("path") ?? "";
+    if (url.pathname === "/api/fs/stat") {
+      const bytes = files.get(target);
+      if (bytes === undefined) {
+        return Promise.resolve(
+          Response.json({ error: target, code: "NotFound" }, { status: 404 }),
+        );
+      }
+      return Promise.resolve(Response.json({ size: bytes.byteLength }));
+    }
+    if (url.pathname === "/api/fs/content") {
+      const bytes = files.get(target);
+      if (bytes === undefined) {
+        return Promise.resolve(
+          Response.json({ error: "no such file", code: "NotFound" }, {
+            status: 404,
+          }),
+        );
+      }
+      return Promise.resolve(new Response(bytes as BodyInit));
+    }
+    return Promise.resolve(
+      Response.json({ error: "nope", code: "NoSuchRoute" }, { status: 404 }),
+    );
+  };
+  let contentStatus: number | undefined;
+  const contentGate: typeof fetch = (input, init) => {
+    const url = new URL(String(input), "http://127.0.0.1:1");
+    if (url.pathname === "/api/fs/content" && contentStatus !== undefined) {
+      return Promise.resolve(
+        Response.json({ error: "busy", code: "TooManyExecutions" }, {
+          status: contentStatus,
+        }),
+      );
+    }
+    return fetchApi(input, init);
+  };
+  const hooks = nativeLaunchHooks("t0k3n", contentGate, { pollMs: 1 });
+  await hooks.spawn("echo $$ > /tmp/pid; exec python3 -m ipykernel_launcher");
+  assertEquals(calls.map((c) => `${c.method} ${c.path}`), [
+    "POST /api/sessions",
+  ]);
+  assertEquals(calls[0].body, {
+    command: "echo $$ > /tmp/pid; exec python3 -m ipykernel_launcher",
+  });
+  // Not there yet is `undefined` from a stat alone -- no read, so no guest
+  // process for a poll that comes up empty; then a stat and the bytes.
+  assertEquals(await hooks.readFile("/tmp/conn.json"), undefined);
+  assertEquals(calls.at(-1)?.path, "/api/fs/stat?path=%2Ftmp%2Fconn.json");
+  files.set("/tmp/conn.json", new Uint8Array([123, 125]));
+  assertEquals(
+    await hooks.readFile("/tmp/conn.json"),
+    new Uint8Array([123, 125]),
+  );
+  assertEquals(calls.slice(-2).map((c) => c.path), [
+    "/api/fs/stat?path=%2Ftmp%2Fconn.json",
+    "/api/fs/content?path=%2Ftmp%2Fconn.json",
+  ]);
+  // The read is an execution: no slot (429) is "not yet", not a failure.
+  contentStatus = 429;
+  assertEquals(await hooks.readFile("/tmp/conn.json"), undefined);
+  contentStatus = undefined;
+  // A restart's spawn sees the previous kernel's session out first: it
+  // polls until the process is gone, then closes, then starts the next.
+  const before = calls.length;
+  await hooks.spawn("exec python3 -m ipykernel_launcher");
+  assertEquals(calls.slice(before).map((c) => `${c.method} ${c.path}`), [
+    "GET /api/sessions/s1",
+    "GET /api/sessions/s1",
+    "DELETE /api/sessions/s1",
+    "POST /api/sessions",
+  ]);
+  // A close that fails leaves the restart failed and the session still
+  // remembered: the next spawn closes it, never starts a second kernel
+  // on the same ports beside it.
+  pollsUntilDead = 1000;
+  const failing = nativeLaunchHooks("t0k3n", fetchApi, {
+    pollMs: 1,
+    closeWaitMs: 5,
+  });
+  await failing.spawn("first");
+  const firstId = lastSessionId;
+  let refused: Error | undefined;
+  try {
+    await failing.spawn("second");
+  } catch (error) {
+    refused = error as Error;
+  }
+  assertEquals(refused?.message.includes("still running"), true);
+  assertEquals(
+    calls.filter((c) => c.method === "POST").length,
+    3,
+    "the second kernel was not started",
+  );
+  pollsUntilDead = 1;
+  await failing.spawn("second");
+  assertEquals(calls.slice(-3).map((c) => `${c.method} ${c.path}`), [
+    `GET /api/sessions/${firstId}`,
+    `DELETE /api/sessions/${firstId}`,
+    "POST /api/sessions",
+  ]);
 });

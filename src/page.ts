@@ -290,6 +290,7 @@ function boot(
     rows: term.rows,
     isolated: globalThis.crossOriginIsolated === true,
     kernelPorts,
+    apiToken: desktop?.apiToken,
   });
 }
 

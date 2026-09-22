@@ -221,8 +221,120 @@ function dialNativePort(port: number): SandboxPortConn {
   };
 }
 
+/** The notebook kernel's launch on the desktop page, through the
+ * launcher's `/api/*`: `spawn` starts the line as a host session of its own
+ * (`POST /api/sessions`) -- not typed into the user's shell, where ipykernel
+ * was job [1] and `kill %1` killed it (yurt-playground#82), and not an
+ * execution, whose timeout and slot cap do not fit a process that lives as
+ * long as the page -- and `readFile` reads a guest file: a stat first
+ * (`/api/fs/stat`, straight from the host; a 404 is "not yet"), so the
+ * connection-file poll costs no guest process until the file is there,
+ * then the bytes (`/api/fs/content`, a `cat` of the user's own). A
+ * restart's spawn sees the previous kernel's session out first: the stop
+ * has sent SIGKILL, and the close (a join) is refused with 409 until the
+ * process is gone, so it waits for `complete`, briefly. */
+export function nativeLaunchHooks(
+  token: string,
+  fetchApi: typeof fetch = (input, init) => fetch(input, init),
+  options: { pollMs?: number; closeWaitMs?: number } = {},
+): {
+  spawn(line: string): Promise<void>;
+  readFile(path: string): Promise<Uint8Array | undefined>;
+} {
+  const pollMs = options.pollMs ?? 100;
+  const closeWaitMs = options.closeWaitMs ?? 10_000;
+  const call = (path: string, init: RequestInit = {}) =>
+    fetchApi(`/api${path}`, {
+      ...init,
+      headers: { ...init.headers, authorization: `Bearer ${token}` },
+    });
+  const failed = async (what: string, response: Response): Promise<Error> => {
+    let message = `${what}: ${response.status}`;
+    try {
+      const body = await response.json();
+      if (typeof body.error === "string") message = `${what}: ${body.error}`;
+    } catch {
+      // Not JSON: the status is the message.
+    }
+    return new Error(message);
+  };
+  const sleep = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+  /** Close the previous kernel's session once its process is gone; a
+   * session the host no longer knows (404) is as closed as it gets. */
+  const seeOut = async (id: string): Promise<void> => {
+    const encoded = encodeURIComponent(id);
+    const deadline = Date.now() + closeWaitMs;
+    for (;;) {
+      const status = await call(`/sessions/${encoded}`);
+      if (status.status === 404) {
+        await status.body?.cancel();
+        return;
+      }
+      if (!status.ok) throw await failed("close the previous kernel", status);
+      if ((await status.json()).complete === true) break;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `close the previous kernel: still running after ${closeWaitMs} ms`,
+        );
+      }
+      await sleep(pollMs);
+    }
+    const closed = await call(`/sessions/${encoded}`, { method: "DELETE" });
+    if (!closed.ok && closed.status !== 404) {
+      throw await failed("close the previous kernel", closed);
+    }
+    await closed.body?.cancel();
+  };
+  let previous: string | undefined;
+  return {
+    async spawn(line) {
+      // The previous kernel's session stays remembered until it is seen
+      // out: a failed close (the host slow to see a SIGKILLed kernel gone,
+      // a 5xx) leaves the restart failed and the session still ours, so
+      // the next restart closes it instead of starting a second kernel on
+      // the same five ports.
+      if (previous !== undefined) {
+        await seeOut(previous);
+        previous = undefined;
+      }
+      const response = await call("/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ command: line }),
+      });
+      if (!response.ok) throw await failed("start the kernel", response);
+      previous = (await response.json()).id;
+    },
+    async readFile(path) {
+      const encoded = encodeURIComponent(path);
+      const stat = await call(`/fs/stat?path=${encoded}`);
+      if (stat.status === 404) {
+        await stat.body?.cancel();
+        return undefined;
+      }
+      if (!stat.ok) throw await failed(`stat ${path}`, stat);
+      await stat.body?.cancel();
+      // The read is a `cat` through the launcher's execution registry: a
+      // 429 while drivers hold every slot, or a 404 from a file gone
+      // between the stat and the read, is "not yet", and the poll goes on.
+      const response = await call(`/fs/content?path=${encoded}`);
+      if (response.status === 404 || response.status === 429) {
+        await response.body?.cancel();
+        return undefined;
+      }
+      if (!response.ok) throw await failed(`read ${path}`, response);
+      return new Uint8Array(await response.arrayBuffer());
+    },
+  };
+}
+
 export async function bootNativePlayground(
   env: PlaygroundEnv,
+  /** The launcher's `/api/*` token, when it has the session routes: the
+   * kernel then starts as a process of its own. Without it the launch is
+   * typed at the prompt, as on a launcher older than the API. */
+  api?: { token: string },
 ): Promise<PlaygroundSession> {
   env.show("connecting to the sandbox");
   const ws = await openSocket("/ws/tty");
@@ -260,10 +372,14 @@ export async function bootNativePlayground(
     stop();
   };
   env.show("");
+  const hooks = api === undefined ? undefined : nativeLaunchHooks(api.token);
   return {
     stop,
     controller,
     terminal,
+    ...(hooks === undefined
+      ? {}
+      : { spawn: hooks.spawn, readFile: hooks.readFile }),
     dialSandboxPort: dialNativePort,
     onOutput: output.onOutput,
     hushOutput: output.hushOutput,
