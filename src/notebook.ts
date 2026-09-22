@@ -9,18 +9,12 @@ export type NotebookView = {
   dispose(): void;
 };
 
-/** The streams of a reply, in the order the pane shows them. `traceback`
- *  is the reply's alone: a cell that is still running has none. */
-function streamSpans(
-  parts: Array<[string, string]>,
-): HTMLSpanElement[] {
-  return parts.filter(([, text]) => text !== "").map(([stream, text]) => {
-    const span = document.createElement("span");
-    span.dataset.stream = stream;
-    span.textContent = text;
-    return span;
-  });
-}
+/** The streams the pane shows, in order. One span each, created once and
+ *  updated in place: rebuilding the pane on every stream message relaid
+ *  out the whole of a growing <pre>, and threw away the reader's scroll
+ *  position with it (yurt-playground#131 review). */
+const STREAMS = ["stdout", "stderr", "display", "traceback"] as const;
+type Stream = typeof STREAMS[number];
 
 /** `text` without ANSI escape sequences (CSI and simple two-byte ones). */
 export function stripAnsi(text: string): string {
@@ -76,14 +70,53 @@ export function mountNotebook(
   const output = document.createElement("pre");
   output.id = "notebook-output";
   output.dataset.testid = "notebook-output";
+  const spans = new Map<Stream, HTMLSpanElement>();
+  for (const stream of STREAMS) {
+    const span = document.createElement("span");
+    span.dataset.stream = stream;
+    spans.set(stream, span);
+    output.append(span);
+  }
   root.append(bar, editor, actions, output);
   const pending = new Set<string>();
+  /** What the pane should show; rendered at most once an animation frame.
+   * A cell printing 30,000 lines sends hundreds of messages, and drawing
+   * each one is quadratic work on the main thread. */
+  let showing: Record<Stream, string> | undefined;
+  let frame = 0;
+  const render = () => {
+    frame = 0;
+    if (showing === undefined) return;
+    // Stick to the bottom only if the reader is already there, so a scroll
+    // back through the output is not yanked away by the next message.
+    const atBottom =
+      output.scrollHeight - output.scrollTop - output.clientHeight < 4;
+    for (const stream of STREAMS) {
+      const span = spans.get(stream)!;
+      const text = showing[stream];
+      if (span.textContent !== text) span.textContent = text;
+    }
+    if (atBottom) output.scrollTop = output.scrollHeight;
+  };
+  const show = (next: Partial<Record<Stream, string>>) => {
+    showing = {
+      stdout: "",
+      stderr: "",
+      display: "",
+      traceback: "",
+      ...next,
+    };
+    if (frame === 0) {
+      frame = typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame(render)
+        : setTimeout(render, 0) as unknown as number;
+    }
+  };
   /** Run is back, Stop is gone: one place, so no path leaves the cell
    * without a control. */
   const settle = (state: string) => {
     button.disabled = false;
     stop.hidden = true;
-    stop.disabled = false;
     status.textContent = state;
   };
   button.onclick = () => {
@@ -91,16 +124,19 @@ export function mountNotebook(
     pending.add(id);
     button.disabled = true;
     stop.hidden = interrupt === undefined;
-    stop.disabled = false;
     status.textContent = "executing";
-    output.replaceChildren();
+    show({});
     execute(id, editor.value);
   };
   stop.onclick = () => {
     if (pending.size === 0) return;
     // The kernel answers the interrupt with the cell's own error frame, so
     // `result` does the settling; until then say what was asked for.
-    stop.disabled = true;
+    //
+    // Stop stays enabled. An interrupt the kernel cannot honour -- a
+    // CPU-bound loop, yurtos-kernel#2811 -- would otherwise leave the
+    // reader with two dead buttons and a status claiming an interrupt is
+    // in progress, which is worse than what this set out to fix.
     status.textContent = "interrupting";
     interrupt?.();
   };
@@ -112,11 +148,7 @@ export function mountNotebook(
     },
     stream(id, partial) {
       if (!pending.has(id)) return;
-      output.replaceChildren(...streamSpans([
-        ["stdout", partial.stdout],
-        ["stderr", partial.stderr],
-        ["display", partial.display],
-      ]));
+      show(partial);
     },
     result(id, reply) {
       if (!pending.delete(id)) return;
@@ -124,17 +156,28 @@ export function mountNotebook(
       // One element per stream, so a driver reading the cell can tell a
       // warning from a result; the traceback without the colour codes
       // ipykernel puts in it, which a <pre> would show as `[31m`.
-      output.replaceChildren(...streamSpans([
-        ["stdout", reply.stdout],
-        ["stderr", reply.stderr],
-        ["display", reply.display],
-        ["traceback", stripAnsi(reply.traceback.join("\n"))],
-      ]));
+      show({
+        stdout: reply.stdout,
+        stderr: reply.stderr,
+        display: reply.display,
+        traceback: stripAnsi(reply.traceback.join("\n")),
+      });
     },
     error(id, message) {
       if (!pending.delete(id)) return;
       settle("error");
-      output.textContent = message;
+      // Appended, not written over what the cell printed. A cell that
+      // times out after 120 s had streamed everything it did up to then,
+      // and that text was the only record of it (#131 review).
+      show({
+        ...(showing ?? {
+          stdout: "",
+          stderr: "",
+          display: "",
+          traceback: "",
+        }),
+        traceback: message,
+      });
     },
     dispose() {
       root.replaceChildren();

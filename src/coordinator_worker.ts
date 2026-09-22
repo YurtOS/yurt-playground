@@ -242,7 +242,18 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     return;
   }
   if (msg.type === "cell-interrupt") {
-    if (jupyter !== undefined) await interruptKernel(jupyter).catch(() => {});
+    // Answer either way: a silent return left the cell reading
+    // "interrupting" for ever, with nothing to settle it (#130 review).
+    if (jupyter === undefined) {
+      post({ type: "error", message: "Jupyter is not ready" });
+      return;
+    }
+    await interruptKernel(jupyter).catch((error) => {
+      post({
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
     return;
   }
   if (msg.type === "cell") {
