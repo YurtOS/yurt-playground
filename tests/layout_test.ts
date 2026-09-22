@@ -1,5 +1,11 @@
 import { assertEquals } from "@std/assert";
-import { allTestFiles, filesFor, SHARDS } from "../scripts/ci-shards.ts";
+import {
+  allTestFiles,
+  CATCH_ALL_SHARD,
+  filesFor,
+  SHARDS,
+  TESTS_ROOT,
+} from "../scripts/ci-shards.ts";
 
 /** A workflow's text with the repository's own composite actions inlined
  *  where they are used (`uses: ./playground/.github/actions/<name>`), so
@@ -37,7 +43,7 @@ Deno.test("every test file runs in exactly one CI shard, and the workflow runs t
   const seen = new Map<string, string[]>();
   for (const shard of SHARDS) {
     for (const path of await filesFor(shard)) {
-      const name = path.slice("tests/".length);
+      const name = path.slice(`${TESTS_ROOT}/`.length);
       seen.set(name, [...(seen.get(name) ?? []), shard]);
     }
   }
@@ -52,7 +58,23 @@ Deno.test("every test file runs in exactly one CI shard, and the workflow runs t
   assertEquals(
     matrix?.split(",").map((s) => s.trim()).sort(),
     [...SHARDS].sort(),
-    workflow.slice(0, 0) + `matrix: ${matrix}`,
+    `matrix: ${matrix}`,
+  );
+  // `deno check` rides the catch-all shard. Keyed on the name, so the name
+  // has to be the one the script calls catch-all -- otherwise renaming the
+  // shard leaves the type check silently unrun with every job still green.
+  assertEquals(
+    workflow.includes(`if: matrix.shard == '${CATCH_ALL_SHARD}'`),
+    true,
+    `no check step keyed on the catch-all shard '${CATCH_ALL_SHARD}'`,
+  );
+  // The legs report under one context because that is what `main`'s ruleset
+  // requires; losing it blocks every pull request on a check nobody sends.
+  assertEquals(workflow.includes("name: integration (cross-repo)"), true);
+  assertEquals(
+    /needs: \[checks, tests, acceptance\]/.test(workflow),
+    true,
+    "the aggregate gate must wait for every leg",
   );
 });
 
@@ -93,18 +115,33 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   // run line is templated; every `tests/<scene>_e2e.ts` must exist.
   const scenes = workflow.match(/scene: \[([^\]]+)\]/)?.[1]
     .split(",").map((s) => s.trim()) ?? [];
-  assertEquals(scenes.includes("playground"), true, workflow.slice(0, 0));
+  assertEquals(scenes.includes("playground"), true, `scenes: ${scenes}`);
   assertEquals(
     workflow.includes("deno run --allow-all tests/${{ matrix.scene }}_e2e.ts"),
     true,
   );
+  const testsDir = new URL("../tests", import.meta.url);
   for (const scene of scenes) {
     assertEquals(
-      (await Deno.stat(`tests/${scene}_e2e.ts`)).isFile,
+      (await Deno.stat(new URL(`../tests/${scene}_e2e.ts`, import.meta.url)))
+        .isFile,
       true,
       `tests/${scene}_e2e.ts`,
     );
   }
+  // ...and the converse: an e2e file nobody put in the matrix would never
+  // run here. `desktop_e2e.ts` is release-desktop.yml's, by name.
+  const e2eFiles: string[] = [];
+  for await (const entry of Deno.readDir(testsDir)) {
+    if (entry.isFile && entry.name.endsWith("_e2e.ts")) {
+      e2eFiles.push(entry.name.replace(/_e2e\.ts$/, ""));
+    }
+  }
+  assertEquals(
+    e2eFiles.filter((s) => s !== "desktop" && !scenes.includes(s)),
+    [],
+    "an e2e scene exists that no acceptance job runs",
+  );
   // The notebook interface is accepted too -- its own job since #123.
   assertEquals(scenes.includes("jupyterlite"), true);
   // Browser acceptance is a required step, not a repository-variable opt-in:

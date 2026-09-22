@@ -108,6 +108,9 @@ jobs:
       - uses: ./playground/.github/actions/site-inputs
         with:
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+      # `fast` is the catch-all shard (scripts/ci-shards.ts CATCH_ALL_SHARD);
+      # layout_test.ts asserts this condition names it, so renaming the shard
+      # cannot leave `deno check` silently unrun (#123 review).
       - name: check
         if: matrix.shard == 'fast'
         working-directory: playground
@@ -120,9 +123,13 @@ jobs:
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
         run: |
           set -euo pipefail
-          readarray -t files < <(
-            deno run --allow-read scripts/ci-shards.ts "${{ matrix.shard }}" | tr " " "\n"
-          )
+          # Not `< <(...)`: a process substitution's failure is invisible to
+          # `set -e`, and an empty `files` would make `deno test` discover the
+          # whole suite in every shard instead of reporting the error (#123
+          # review).
+          deno run --allow-read scripts/ci-shards.ts "${{ matrix.shard }}" > /tmp/shard-files
+          readarray -t files < <(tr " " "\n" < /tmp/shard-files)
+          [ "${#files[@]}" -gt 0 ] || { echo "no files for shard ${{ matrix.shard }}" >&2; exit 1; }
           echo "shard ${{ matrix.shard }}: ${files[*]}"
           deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run "${files[@]}"
 
@@ -170,3 +177,33 @@ jobs:
           YURT_KERNEL_ROOT: ../yurtos-kernel
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
         run: deno run --allow-all tests/${{ matrix.scene }}_e2e.ts
+
+  # One context for the legs above, under the name `main`'s ruleset requires.
+  # Renaming the single job they replaced would otherwise have orphaned that
+  # requirement: the ruleset would wait for a check nobody reports (#123
+  # review). Adding the seven leg names to the ruleset instead would mean a
+  # settings change on every future split, and a leg that is skipped because
+  # the token is absent would block the merge rather than explain itself.
+  integration:
+    name: integration (cross-repo)
+    needs: [checks, tests, acceptance]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every leg passed, or said why it did not run
+        env:
+          TOKEN_PRESENT: ${{ needs.checks.outputs.present }}
+          TESTS: ${{ needs.tests.result }}
+          ACCEPTANCE: ${{ needs.acceptance.result }}
+        run: |
+          set -euo pipefail
+          echo "token=$TOKEN_PRESENT tests=$TESTS acceptance=$ACCEPTANCE"
+          if [ "$TOKEN_PRESENT" != "true" ]; then
+            # The legs are skipped by design without the cross-repo token
+            # (a fork's pull request); `checks` has already said so loudly
+            # in the job summary.
+            echo "cross-repo legs did not run: no KERNEL_CHECKOUT_TOKEN"
+            exit 0
+          fi
+          [ "$TESTS" = "success" ] && [ "$ACCEPTANCE" = "success" ]

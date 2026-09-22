@@ -162,7 +162,10 @@ Deno.test("a session that can spawn gets the kernel as its own process, not type
           const reply = new TextEncoder().encode(`${stop[1]}${stop[2]}\n$ `);
           for (const handler of handlers) handler(reply);
         }
-        if (typed.at(-1)?.includes(JUPYTER_CONNECTION_FILE)) {
+        // The stop line names the connection file too (it removes it), so
+        // the branch below must not fire on it and answer "ready" during a
+        // stop (#123 review).
+        if (stop === null && typed.at(-1)?.includes(JUPYTER_CONNECTION_FILE)) {
           const reply = new TextEncoder().encode(
             "KERNEL_LOG\n(nothing)\nYURT_JUPYTER_CONNECTION_READY\n$ ",
           );

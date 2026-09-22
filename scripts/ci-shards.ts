@@ -20,21 +20,42 @@ export const NAMED_SHARDS: Record<string, string[]> = {
   ],
 };
 
-export const SHARDS = [...Object.keys(NAMED_SHARDS), "fast"];
+/** The shard that takes whatever the named ones do not. The workflow's
+ * `deno check` step rides it, and `layout_test.ts` asserts that the step's
+ * condition names this shard, so renaming it cannot leave the type check
+ * silently unrun (#123 review). */
+export const CATCH_ALL_SHARD = "fast";
 
-/** Every `tests/*_test.ts`, as the shards name them (basenames). */
-export async function allTestFiles(root = "tests"): Promise<string[]> {
+export const SHARDS = [...Object.keys(NAMED_SHARDS), CATCH_ALL_SHARD];
+
+/** Where the suite lives, resolved from this file and not from the process's
+ * working directory: a run from anywhere but the repository root would
+ * otherwise find nothing (#123 review). */
+export const TESTS_ROOT = new URL("../tests", import.meta.url).pathname;
+
+/** Every `*_test.ts` under `root`, recursively, relative to it. Recursive
+ * because `deno test` with no arguments discovers nested files too, so a
+ * flat listing would drop `tests/sub/foo_test.ts` from every shard -- and
+ * the coverage assertion could not see it either (#123 review). */
+export async function allTestFiles(root = TESTS_ROOT): Promise<string[]> {
   const names: string[] = [];
-  for await (const entry of Deno.readDir(root)) {
-    if (entry.isFile && entry.name.endsWith("_test.ts")) names.push(entry.name);
-  }
+  const walk = async (dir: string, prefix: string) => {
+    for await (const entry of Deno.readDir(dir)) {
+      if (entry.isDirectory) {
+        await walk(`${dir}/${entry.name}`, `${prefix}${entry.name}/`);
+      } else if (entry.isFile && entry.name.endsWith("_test.ts")) {
+        names.push(`${prefix}${entry.name}`);
+      }
+    }
+  };
+  await walk(root, "");
   return names.sort();
 }
 
 /** The files one shard runs, as paths `deno test` takes. */
 export async function filesFor(
   shard: string,
-  root = "tests",
+  root = TESTS_ROOT,
 ): Promise<string[]> {
   const named = NAMED_SHARDS[shard];
   const all = await allTestFiles(root);
