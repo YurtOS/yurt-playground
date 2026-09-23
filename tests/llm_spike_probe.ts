@@ -1,7 +1,7 @@
 /**
  * Drives public/llm-spike.html (#140 feasibility gate) in a real browser
  * and writes the measurements as JSON. Manual, not part of `deno test`: it
- * needs a GPU and the multi-gigabyte model from scripts/fetch-llm-spike.sh.
+ * needs a GPU and the multi-gigabyte model from scripts/fetch-llm.sh.
  *
  *   deno run -A tests/llm_spike_probe.ts [E2B|E4B] [--headed] [--out f.json]
  *

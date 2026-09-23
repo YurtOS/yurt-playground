@@ -13,7 +13,14 @@ import {
 } from "@litert-lm/core";
 
 export type ToWorker =
-  | { type: "load"; model: string; maxNumTokens: number }
+  | {
+    type: "load";
+    model: string;
+    /** Where the bytes live in Cache Storage; a pinned model's key names
+     * its sha256, so a new pin is a new entry (the default: the URL). */
+    cacheKey?: string;
+    maxNumTokens: number;
+  }
   | {
     type: "generate";
     id: number;
@@ -57,17 +64,19 @@ export type FromWorker =
   }
   | { type: "error"; id?: number; message: string };
 
-const CACHE = "yurt-llm-spike";
+const CACHE = "yurt-llm";
 const post = (msg: FromWorker) => self.postMessage(msg);
 let engine: Engine | undefined;
 let active: Conversation | undefined;
+/** A cancel that arrived while the conversation was still being created. */
+let cancelRequested = false;
 
 /** The model's bytes from Cache Storage, fetching them first if absent.
  * Streamed straight into the cache (no tee), so a 2 GB download never sits
  * in memory; the Blob read back is disk-backed. */
-async function modelBlob(url: string) {
+async function modelBlob(url: string, key: string) {
   const cache = await caches.open(CACHE);
-  const cached = await cache.match(url);
+  const cached = await cache.match(key);
   if (cached !== undefined) {
     return {
       blob: await cached.blob(),
@@ -96,11 +105,18 @@ async function modelBlob(url: string) {
       },
     }),
   );
+  // Other pins of this file are dead weight (gigabytes): drop them first.
+  for (const request of await cache.keys()) {
+    const old = new URL(request.url);
+    if (old.pathname === new URL(key, location.href).pathname) {
+      await cache.delete(request);
+    }
+  }
   await cache.put(
-    url,
+    key,
     new Response(counted, { headers: { "content-length": String(total) } }),
   );
-  const stored = await cache.match(url);
+  const stored = await cache.match(key);
   if (stored === undefined) throw new Error("model vanished from the cache");
   return {
     blob: await stored.blob(),
@@ -110,7 +126,11 @@ async function modelBlob(url: string) {
   };
 }
 
-async function load(model: string, maxNumTokens: number): Promise<void> {
+async function load(
+  model: string,
+  cacheKey: string,
+  maxNumTokens: number,
+): Promise<void> {
   // The glue resolves its .wasm against the worker's URL unless told.
   (self as unknown as { Module: unknown }).Module = {
     locateFile: (path: string) => `/llm/wasm/${path}`,
@@ -120,7 +140,7 @@ async function load(model: string, maxNumTokens: number): Promise<void> {
   const wasmMs = performance.now() - t;
   const wasmVariant = performance.getEntriesByType("resource")
     .map((e) => e.name).find((name) => name.endsWith(".wasm")) ?? "unknown";
-  const got = await modelBlob(model);
+  const got = await modelBlob(model, cacheKey);
   t = performance.now();
   // No backend: the default, GPU_ARTISAN, is the one that streams the
   // weights in; the others copy the whole file into wasm memory first.
@@ -151,6 +171,7 @@ async function generate(msg: Extract<ToWorker, { type: "generate" }>) {
     sessionConfig: { maxOutputTokens: msg.maxOutputTokens },
   });
   active = conversation;
+  if (cancelRequested) conversation.cancel();
   const started = performance.now();
   let firstTokenMs: number | null = null;
   let text = "";
@@ -190,12 +211,17 @@ async function generate(msg: Extract<ToWorker, { type: "generate" }>) {
 self.onmessage = async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
   if (msg.type === "cancel") {
+    cancelRequested = true;
     active?.cancel();
     return;
   }
   try {
-    if (msg.type === "load") await load(msg.model, msg.maxNumTokens);
-    else await generate(msg);
+    if (msg.type === "load") {
+      await load(msg.model, msg.cacheKey ?? msg.model, msg.maxNumTokens);
+    } else {
+      cancelRequested = false;
+      await generate(msg);
+    }
   } catch (error) {
     post({
       type: "error",
