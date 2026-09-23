@@ -43,7 +43,7 @@ jupyterlite/yurt-kernel/yurt_jupyterlite_kernel/
 # The native sandbox beside dist/ (scripts/build-desktop.sh, install-pinned-artifacts)
 /runtime
 
-# The #140 LLM spike (scripts/fetch-llm-spike.sh, scripts/serve.ts)
+# The local agent (#140): models from scripts/fetch-llm.sh, bundles from scripts/serve.ts
 artifacts/llm/
 public/llm_spike.bundle.js
 public/llm_worker.bundle.js

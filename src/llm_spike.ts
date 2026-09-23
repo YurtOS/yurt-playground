@@ -657,6 +657,6 @@ for (const name of Object.keys(MODELS) as ModelName[]) {
     `option[value=${name}]`,
   )!;
   option.textContent = Number.isNaN(size)
-    ? `${name} (not fetched: scripts/fetch-llm-spike.sh ${name})`
+    ? `${name} (not fetched: scripts/fetch-llm.sh ${name})`
     : `${name} (${(size / 2 ** 30).toFixed(2)} GiB download)`;
 }
