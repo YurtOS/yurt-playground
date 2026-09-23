@@ -68,6 +68,7 @@ export function contentType(path: string): string {
   }
   if (path.endsWith(".css")) return "text/css; charset=utf-8";
   if (path.endsWith(".wasm")) return "application/wasm";
+  if (path.endsWith(".svg")) return "image/svg+xml";
   if (path.endsWith(".yurtimg")) return "application/octet-stream";
   if (path.endsWith(".json")) return "application/json; charset=utf-8";
   return "application/octet-stream";
