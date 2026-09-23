@@ -198,3 +198,40 @@ Deno.test("cancel stops a running tool and reports it", async () => {
   assertEquals(prompts.length, 1);
   assertEquals(events.at(-1), { type: "stopped", reason: "cancelled" });
 });
+
+Deno.test("a task longer than the limit is refused before the model is asked", async () => {
+  const { events, prompts } = await run(['{"action":"answer","text":"x"}'], {
+    limits: { maxTask: 10 }, // the task is "How many users?", 16 chars
+  });
+  assertEquals(prompts.length, 0);
+  assertEquals(events, [{ type: "stopped", reason: "task" }]);
+});
+
+Deno.test("a single turn larger than the budget is clipped to fit", () => {
+  const turns = [{
+    reply: '{"action":"exec","cmd":"cat big"}',
+    result: "z".repeat(20_000),
+  }];
+  const prompt = buildPrompt("the task", turns, 2000);
+  assert(prompt.length <= 2000, `prompt is ${prompt.length} chars`);
+  assert(prompt.includes('"cmd":"cat big"'), "the latest reply is kept");
+  assert(prompt.includes("more characters]"), "the clip is named");
+});
+
+Deno.test("the prompt never exceeds its budget", () => {
+  for (const max of [600, 2000, 9000]) {
+    for (const size of [0, 10, 300, 1500, 5000, 30_000]) {
+      for (const count of [0, 1, 3, 12]) {
+        const turns = Array.from({ length: count }, (_, i) => ({
+          reply: `{"action":"exec","cmd":"step ${i}"}`,
+          result: "r".repeat(size),
+        }));
+        const prompt = buildPrompt("t".repeat(200), turns, max);
+        assert(
+          prompt.length <= max,
+          `max ${max}, ${count} turns of ${size}: ${prompt.length} chars`,
+        );
+      }
+    }
+  }
+});

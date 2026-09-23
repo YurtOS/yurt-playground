@@ -40,6 +40,8 @@ export type Limits = {
   maxInvalid: number;
   /** Characters of one tool result the model is shown. */
   maxObservation: number;
+  /** Characters of the task; a longer one is refused, not cut. */
+  maxTask: number;
   /** Characters of the whole prompt (task + steps): the active context. */
   maxPrompt: number;
   /** Wall-clock budget for the task. */
@@ -50,6 +52,7 @@ export const DEFAULT_LIMITS: Limits = {
   maxSteps: 8,
   maxInvalid: 2,
   maxObservation: 1500,
+  maxTask: 2000,
   // ~2,500 tokens at 3.5 characters a token: with the system prompt and the
   // reply it stays inside the 4,096-token engine.
   maxPrompt: 9000,
@@ -81,7 +84,10 @@ export type AgentEvent =
     ms: number;
   }
   | { type: "answer"; text: string }
-  | { type: "stopped"; reason: "cancelled" | "steps" | "invalid" | "timeout" }
+  | {
+    type: "stopped";
+    reason: "cancelled" | "steps" | "invalid" | "timeout" | "task";
+  }
   | { type: "error"; message: string };
 
 export const SYSTEM_PROMPT = [
@@ -129,7 +135,10 @@ export function parseAction(text: string): Action | null {
 type Turn = { reply: string; result: string };
 
 /** The prompt for the next step: the task, then as many of the latest
- * turns as fit `maxPrompt`. Older turns are named, not dropped silently. */
+ * turns as fit `maxPrompt`. Older turns are named, not dropped silently;
+ * a latest turn too big on its own is clipped. The result is never longer
+ * than `maxPrompt`, given a task that fits (runAgent refuses one that
+ * does not). */
 export function buildPrompt(
   task: string,
   turns: Turn[],
@@ -139,21 +148,30 @@ export function buildPrompt(
   const rendered = turns.map((t, i) =>
     `Step ${i + 1}: you replied ${t.reply}\nResult:\n${t.result}`
   );
-  let budget = maxPrompt - head.length;
-  let keep = 0;
+  const note = (n: number) => `(Steps 1-${n} are omitted to fit the context.)`;
+  // Room for the omission note, whether or not it is needed.
+  let budget = maxPrompt - head.length - (note(turns.length).length + 2);
+  const kept: string[] = [];
   for (let i = rendered.length - 1; i >= 0; i--) {
-    if (rendered[i].length + 2 > budget && keep > 0) break;
-    budget -= rendered[i].length + 2;
-    keep++;
+    const cost = rendered[i].length + 2;
+    if (cost <= budget) {
+      kept.unshift(rendered[i]);
+      budget -= cost;
+      continue;
+    }
+    // The latest turn alone does not fit: keep its start, say how much went.
+    const room = budget - 2 - CLIP_SUFFIX_MAX;
+    if (kept.length === 0 && room > 0) {
+      kept.unshift(clip(rendered[i], room).text);
+    }
+    break;
   }
-  const omitted = rendered.length - keep;
-  const parts = [head];
-  if (omitted > 0) {
-    parts.push(`(Steps 1-${omitted} are omitted to fit the context.)`);
-  }
-  parts.push(...rendered.slice(omitted));
-  return parts.join("\n\n");
+  const omitted = rendered.length - kept.length;
+  return [head, ...(omitted > 0 ? [note(omitted)] : []), ...kept].join("\n\n");
 }
+
+/** The longest suffix `clip` appends. */
+const CLIP_SUFFIX_MAX = 40;
 
 export function clip(
   text: string,
@@ -183,6 +201,9 @@ export async function runAgent(
       type: "stopped",
       reason: cancel.aborted ? "cancelled" : "timeout",
     });
+  if (task.length > limits.maxTask) {
+    return onEvent({ type: "stopped", reason: "task" });
+  }
   const turns: Turn[] = [];
   let invalid = 0;
   try {

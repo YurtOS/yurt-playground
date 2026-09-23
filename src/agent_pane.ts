@@ -3,8 +3,9 @@
  * on the GPU, using the page's own sandbox through window.yurt. One action
  * to download and start, then a task box; every step the controller
  * (src/agent.ts) takes is shown as it happens. The pane only appears where
- * the server has a model to give (`/llm/models.json`), so the hosted site,
- * which has none, is unchanged.
+ * the server has a model to give (`/llm/models.json`): the local dev server
+ * with fetched weights. The hosted site and the desktop app have none yet
+ * (hosting the weights is #140's open decision), so they are unchanged.
  */
 import type { Yurt } from "./agent_api.ts";
 import { type AgentEvent, runAgent, type Tools } from "./agent.ts";
@@ -79,8 +80,10 @@ export async function mountAgentPane(
   sandbox: { yurt: () => Yurt; start: () => void },
 ): Promise<void> {
   const models = await offeredModels();
-  if (models.length === 0 || !("gpu" in navigator)) return;
+  if (models.length === 0) return;
   root.hidden = false;
+  const gpu = (navigator as Navigator & { gpu?: GPU }).gpu;
+  const adapter = await gpu?.requestAdapter().catch(() => null);
 
   // The bar: what this is, the model's state, the context in use, Stop.
   const status = el("span", {
@@ -113,13 +116,7 @@ export async function mountAgentPane(
   });
   choice.setAttribute("aria-label", "Model");
   for (const m of models) {
-    const hint = m.id === "E4B" ? "more reliable" : "about twice as fast";
-    choice.append(
-      el("option", {
-        value: m.id,
-        textContent: `${m.label} · ${(m.bytes / GiB).toFixed(1)} GiB · ${hint}`,
-      }),
-    );
+    choice.append(el("option", { value: m.id, textContent: m.choice }));
   }
   const startButton = el("button", {
     type: "button",
@@ -127,28 +124,52 @@ export async function mountAgentPane(
     testid: "agent-start",
   });
   const progress = el("progress", { hidden: true, max: 1, value: 0 });
+  const cost = el("p", { className: "cost", testid: "agent-cost" });
+  // What it is, what it may do, and what it costs, before anything loads.
   const intro = el(
     "div",
     { id: "agent-intro" },
     el(
       "p",
       {},
-      "A language model that runs in this tab, on your GPU, and works in the " +
-        "sandbox the way a program would: it runs commands and reads files " +
-        "through ",
+      "A language model that runs in this tab, on your GPU: nothing you " +
+        "type is sent anywhere. It works in this page's sandbox through ",
       el("code", { textContent: "window.yurt" }),
-      ", one checked step at a time. Nothing is sent anywhere; once it is " +
-        "downloaded it works offline.",
+      " and can run any command there, change or delete files and stop " +
+        "processes, the same as typing in the terminal above. Every step is " +
+        "shown as it runs, and Stop ends it. Running commands still needs " +
+        "this page's server: offline, the model answers but the sandbox " +
+        "cannot start new processes.",
     ),
     el("div", { className: "row" }, choice, startButton),
+    cost,
     progress,
   );
+  if (!adapter) {
+    intro.replaceChildren(
+      el(
+        "p",
+        { className: "unsupported", testid: "agent-unsupported" },
+        "This browser offers no WebGPU, which the model needs to run in the " +
+          "tab. A current Chrome, Edge or Safari on a desktop has it.",
+      ),
+    );
+    status.textContent = "needs WebGPU";
+    root.replaceChildren(bar, intro);
+    return;
+  }
   const selected = () => models.find((m) => m.id === choice.value)!;
   const label = async () => {
     const m = selected();
-    startButton.textContent = await isCached(m)
+    const cached = await isCached(m);
+    startButton.textContent = cached
       ? `Start ${m.label}`
       : `Download ${m.label} (${(m.bytes / GiB).toFixed(1)} GiB) and start`;
+    cost.textContent =
+      `Needs about ${m.memoryGB} GB of free memory while it runs. ` +
+      (cached
+        ? "Already downloaded."
+        : "The browser keeps the download for next time.");
   };
   choice.addEventListener("change", () => void label());
   await label();
@@ -313,6 +334,7 @@ export async function mountAgentPane(
           invalid:
             "stopped: the model kept replying with something that is not an action",
           timeout: "stopped: the task took too long",
+          task: "not started: the task is too long; shorten it",
         }[e.reason];
         transcript.append(el("li", { className: "stopped", textContent: why }));
       }
