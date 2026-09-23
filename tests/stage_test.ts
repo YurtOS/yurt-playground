@@ -17,6 +17,9 @@ const STAT_LEN = 48;
 
 const repoRoot = join(fileURLToPath(import.meta.url), "../..");
 
+// `"dir"` no longer reaches `chownPath` -- directories take their owner
+// from the metadata pass -- but the mapping is still the one a caller
+// would get, and cheap to keep honest.
 Deno.test("symlink ownership uses no-follow lchown", () => {
   assertEquals(ownershipMethodForEntry("symlink"), 0x1_01D2);
   assertEquals(ownershipMethodForEntry("file"), 0x1_0023);
@@ -152,6 +155,10 @@ Deno.test({
     // pre-creates, so before this they kept its 0o777 default while `/bin`,
     // created by the staging itself, got 0o755 from the umask
     // (yurt-ports#102).
+    // `/etc` and `/` are the two that fail without the fix. The three
+    // below are already correct on main -- `/bin` and `/home/user` from
+    // staging's own mkdir under the 0o022 umask, `/tmp` from boot's
+    // override -- so they are regression pins, not proof of anything.
     assertEquals(statMode(mk, "/etc"), 0o755);
     // The most load-bearing line in this file, and the easiest to mistake
     // for noise: the shipped page had `/` at 0o777 with no sticky bit, so

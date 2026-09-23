@@ -72,10 +72,13 @@ function chownPath(
  * Staging used to set ownership only, which left directory modes to
  * chance: one the kernel's `mkdir` created here came out 0o755 (its 0o777
  * minus the default umask), but one the kernel's boot ramfs had already
- * seeded -- `/`, `/etc`, `/tmp` -- kept that ramfs's own 0o777 default,
+ * seeded -- `/` and `/etc` -- kept that ramfs's own 0o777 default,
  * because `mkdir` returns EEXIST and staging moved on. So the shipped
  * playground had a world-writable `/etc` that the sandbox user could
- * `touch` (yurt-ports#102), while `/bin` beside it was 0o755.
+ * `touch` (yurt-ports#102), while `/bin` beside it was 0o755. `/tmp` is
+ * seeded too but was never in that state: boot gives it an explicit
+ * 0o41777 override, so the pass below rewrites it with byte-identical
+ * metadata.
  *
  * The image has carried the right answer all along: the tar has 1,462
  * directory members, `etc` at 0o755 and `tmp` at 0o1777, sticky bit
@@ -101,6 +104,11 @@ function setDirectoryMetadata(
   const pathBytes = s(path);
   const req = new Uint8Array(20 + pathBytes.byteLength);
   const view = new DataView(req.buffer);
+  // The type bits are not decoration: the kernel stores this mode
+  // verbatim, so without them the stored metadata is a typeless 0o755.
+  // (A `stat` re-derives the type and hides that, which is why it is
+  // easy to conclude they are inert -- they are not.) `disk.rs` ORs
+  // them in for the same reason.
   view.setUint32(0, (S_IFDIR | (entry.mode & MODE_PERM_MASK)) >>> 0, true);
   view.setUint32(4, entry.uid >>> 0, true);
   view.setUint32(8, entry.gid >>> 0, true);
@@ -183,7 +191,8 @@ export async function stageYurtimg(
   // that run no permission checks -- but `mkdir`, `symlink` and `chown`
   // above are guest syscall ids dispatched as the caller, and they only
   // pass because staging is uid 0 AND every ancestor still has an execute
-  // bit (root waives read and write, never search). An image directory at
+  // bit: root waives read and write outright, but is refused search on a
+  // directory with no execute bit at all. An image directory at
   // 0o600 would be fine here and would fail the `chown` of its own
   // contents if this pass ran first, which is why it runs after.
   for (const [path, entry] of Object.entries(index.entries)) {
