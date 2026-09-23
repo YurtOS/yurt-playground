@@ -70,10 +70,20 @@ function statMode(mk: KernelHostInterface, path: string): number {
   return readStat(mk, path).getUint32(STAT_MODE, true) & 0o7777;
 }
 
+/** The one staged kernel both tests read, built at most once: staging the
+ * 87 MB image costs seconds, and nothing either test does mutates it. */
+let staged: Promise<KernelHostInterface | null> | undefined;
+
 /** A kernel with the pinned image staged into it, or `null` when the
- * artifacts are not resolvable here (the same skip the owners test uses:
- * this needs the real image, not a fixture). */
-async function stagedKernel(): Promise<KernelHostInterface | null> {
+ * artifacts are not resolvable here -- this needs the real image, not a
+ * fixture. A skip is a hole in the coverage, so in CI, where the
+ * artifacts are always resolved, it is a failure instead of a shrug. */
+function stagedKernel(): Promise<KernelHostInterface | null> {
+  staged ??= buildStagedKernel();
+  return staged;
+}
+
+async function buildStagedKernel(): Promise<KernelHostInterface | null> {
   const artifactsDir = join(repoRoot, "artifacts");
   try {
     await resolveArtifacts({
@@ -84,11 +94,13 @@ async function stagedKernel(): Promise<KernelHostInterface | null> {
       portsRoot: Deno.env.get("YURT_PORTS_ROOT"),
     });
   } catch (error) {
-    console.log(
-      `skipping staged-kernel test: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
+    const why = error instanceof Error ? error.message : String(error);
+    if (Deno.env.get("CI")) {
+      throw new Error(
+        `artifacts must resolve in CI, so this cannot skip: ${why}`,
+      );
+    }
+    console.log(`skipping staged-kernel test: ${why}`);
     return null;
   }
   const kernelRes = await handlePlaygroundRequest(
@@ -139,6 +151,8 @@ Deno.test({
     // created by the staging itself, got 0o755 from the umask
     // (yurt-ports#102).
     assertEquals(statMode(mk, "/etc"), 0o755);
+    // `/` has no ustar entry; the index builder synthesises the root at
+    // 0o755, so this pins that default rather than anything the image says.
     assertEquals(statMode(mk, "/"), 0o755);
     assertEquals(statMode(mk, "/bin"), 0o755);
     assertEquals(statMode(mk, "/home/user"), 0o755);

@@ -8,14 +8,15 @@ import { buildTarImageIndex, TarImageRootProvider } from "@yurt/tar-image";
 import { decompressYurtimg } from "./zstd.ts";
 
 const NEG_EEXIST = -17;
-/** `METHOD_KERNEL_VFS_SET_METADATA`. A host-control method (`kernel_only`),
- * so it sets mode/uid/gid/mtime outright rather than as the caller: a
- * `chmod` would be refused, since staging runs as the kernel pid, whose
- * credentials default to uid 1000, against root-owned directories. The
- * native host stages the same image through the same method
- * (`disk.rs`'s `set_entry_metadata`). Spelled here rather than imported
- * because the shared `METHOD` table does not carry the host-control ids,
- * the same as `SYS_CHOWN` above. */
+/** `METHOD_KERNEL_VFS_SET_METADATA`. A host-control method (`kernel_only`)
+ * that sets mode, owner and mtime in one kernel-authoritative call, which
+ * is why it is used here rather than a `chmod` plus a `chown`: staging is
+ * root (`setPidCredentials(KERNEL_PID, 0, 0)` below), so a `chmod` would
+ * have been permitted too, but it would take three calls to say what this
+ * says in one. The native host stages the same image through the same
+ * method (`disk.rs`'s `set_entry_metadata`). Spelled here rather than
+ * imported because the shared `METHOD` table does not carry the
+ * host-control ids, the same as `SYS_CHOWN` above. */
 const KERNEL_VFS_SET_METADATA = 33;
 const S_IFDIR = 0o040_000;
 const MODE_PERM_MASK = 0o7777;
@@ -77,7 +78,16 @@ function chownPath(
  * `touch` (yurt-ports#102), while `/bin` beside it was 0o755.
  *
  * The image has carried the right answer all along: 1,462 directory
- * entries, `etc` at 0o755 and `tmp` at 0o1777, sticky bit included. */
+ * entries, `etc` at 0o755 and `tmp` at 0o1777, sticky bit included.
+ *
+ * Two things this is NOT. `/` is not one of those entries -- ustar has no
+ * `./` member and the index builder synthesises the root at 0o755, so `/`
+ * gets a default from `tar-image-root-provider.ts`, not from the image,
+ * and an image cannot ask for a different one. And file modes are still
+ * discarded: a staged file is 0o644, or 0o755 when its payload starts
+ * with `\0asm`, so the image's handful of non-wasm executables stay
+ * non-executable. Directories are what yurt-ports#102 is about; the files
+ * are their own question. */
 function setDirectoryMetadata(
   mk: KernelHostInterface,
   path: string,
@@ -151,9 +161,10 @@ export async function stageYurtimg(
       // Dangling or non-file symlink: valid VFS entry, not a module.
     }
   }
-  // Directories last, and in one pass that carries mode as well as owner:
-  // until every file and symlink is in place, tightening a directory the
-  // staging still has to write into would refuse its own writes.
+  // Directories last, and in one pass that carries mode as well as owner.
+  // Staging's own writes would survive any order -- they are host-control
+  // calls that run no permission checks -- but a guest process started
+  // against a half-staged tree would not, and ordering-last costs nothing.
   for (const [path, entry] of Object.entries(index.entries)) {
     if (entry.type !== "dir") continue;
     setDirectoryMetadata(mk, path, entry);
