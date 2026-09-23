@@ -45,5 +45,4 @@ jupyterlite/yurt-kernel/yurt_jupyterlite_kernel/
 
 # The local agent (#140): models from scripts/fetch-llm.sh, bundles from scripts/serve.ts
 artifacts/llm/
-public/llm_spike.bundle.js
 public/llm_worker.bundle.js

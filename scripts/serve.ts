@@ -133,13 +133,8 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
       "self.location.href",
     ),
   );
-  // The #140 local-LLM spike (public/llm-spike.html) and its classic
-  // inference worker.
-  await bundle(kernelPath, {
-    entry: join(repoRoot, "src/llm_spike.ts"),
-    out: join(repoRoot, "public/llm_spike.bundle.js"),
-    importMap: importMapPath,
-  });
+  // The local agent's inference worker (#140): classic, because LiteRT-LM
+  // loads its emscripten glue with importScripts.
   await bundle(kernelPath, {
     entry: join(repoRoot, "src/llm_worker.ts"),
     out: join(repoRoot, "public/llm_worker.bundle.js"),

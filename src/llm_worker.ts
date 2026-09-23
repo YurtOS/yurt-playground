@@ -1,16 +1,10 @@
 /**
- * The #140 feasibility spike's inference worker: owns LiteRT-LM and its
- * WebGPU device, so generation never blocks the page (or the sandbox's
+ * The local agent's inference worker (#140): owns LiteRT-LM and its WebGPU
+ * device, so generation never blocks the page (or the sandbox's
  * coordinator). A classic worker, because LiteRT-LM loads its emscripten
  * glue with importScripts.
  */
-import {
-  type Conversation,
-  Engine,
-  loadLiteRtLm,
-  type Message,
-  type Tool,
-} from "@litert-lm/core";
+import { type Conversation, Engine, loadLiteRtLm } from "@litert-lm/core";
 
 export type ToWorker =
   | {
@@ -26,8 +20,6 @@ export type ToWorker =
     id: number;
     system: string;
     prompt: string;
-    tools?: Tool[];
-    constrained?: boolean;
     maxOutputTokens: number;
   }
   | { type: "cancel" };
@@ -57,7 +49,6 @@ export type FromWorker =
     type: "done";
     id: number;
     text: string;
-    toolCalls: Message["tool_calls"];
     firstTokenMs: number | null;
     wallMs: number;
     bench: Bench;
@@ -165,9 +156,7 @@ async function generate(msg: Extract<ToWorker, { type: "generate" }>) {
   const conversation = await engine.createConversation({
     preface: {
       messages: [{ role: "system", content: msg.system }],
-      tools: msg.tools,
     },
-    enableConstrainedDecoding: msg.constrained ?? false,
     sessionConfig: { maxOutputTokens: msg.maxOutputTokens },
   });
   active = conversation;
@@ -175,14 +164,12 @@ async function generate(msg: Extract<ToWorker, { type: "generate" }>) {
   const started = performance.now();
   let firstTokenMs: number | null = null;
   let text = "";
-  const toolCalls: NonNullable<Message["tool_calls"]> = [];
   try {
     const reader = conversation.sendMessageStreaming(msg.prompt).getReader();
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       firstTokenMs ??= performance.now() - started;
-      toolCalls.push(...(value.tool_calls ?? []));
       const parts = typeof value.content === "string"
         ? [{ type: "text", text: value.content }]
         : value.content ?? [];
@@ -197,7 +184,6 @@ async function generate(msg: Extract<ToWorker, { type: "generate" }>) {
       type: "done",
       id: msg.id,
       text,
-      toolCalls,
       firstTokenMs,
       wallMs: performance.now() - started,
       bench: await conversation.getBenchmarkInfo(),
