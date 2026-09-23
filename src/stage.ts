@@ -77,17 +77,22 @@ function chownPath(
  * playground had a world-writable `/etc` that the sandbox user could
  * `touch` (yurt-ports#102), while `/bin` beside it was 0o755.
  *
- * The image has carried the right answer all along: 1,462 directory
- * entries, `etc` at 0o755 and `tmp` at 0o1777, sticky bit included.
+ * The image has carried the right answer all along: the tar has 1,462
+ * directory members, `etc` at 0o755 and `tmp` at 0o1777, sticky bit
+ * included.
  *
- * Two things this is NOT. `/` is not one of those entries -- ustar has no
- * `./` member and the index builder synthesises the root at 0o755, so `/`
- * gets a default from `tar-image-root-provider.ts`, not from the image,
- * and an image cannot ask for a different one. And file modes are still
- * discarded: a staged file is 0o644, or 0o755 when its payload starts
- * with `\0asm`, so the image's handful of non-wasm executables stay
- * non-executable. Directories are what yurt-ports#102 is about; the files
- * are their own question. */
+ * **`/` is the biggest of these**, and it is the 1,463rd: ustar has no
+ * `./` member, so `buildTarImageIndex` seeds the root itself at 0o755 and
+ * refuses any image that tries to say otherwise. The shipped page ran with
+ * `/` at 0o777 and no sticky bit, so the sandbox user could not only
+ * `touch /probe` but `mv /etc /etc.old` -- a wider hole than the `/etc`
+ * one yurt-ports#102 reports. The loop below is what closes it, and
+ * `stage_test.ts` is the only thing holding it closed.
+ *
+ * File modes are still discarded: a staged file is 0o644, or 0o755 when
+ * its payload starts with `\0asm`, so the image's handful of non-wasm
+ * executables stay non-executable. Directories are what #102 is about;
+ * the files are their own question. */
 function setDirectoryMetadata(
   mk: KernelHostInterface,
   path: string,
@@ -161,14 +166,6 @@ export async function stageYurtimg(
       // Dangling or non-file symlink: valid VFS entry, not a module.
     }
   }
-  // Directories last, and in one pass that carries mode as well as owner.
-  // Staging's own writes would survive any order -- they are host-control
-  // calls that run no permission checks -- but a guest process started
-  // against a half-staged tree would not, and ordering-last costs nothing.
-  for (const [path, entry] of Object.entries(index.entries)) {
-    if (entry.type !== "dir") continue;
-    setDirectoryMetadata(mk, path, entry);
-  }
   for (const [path, entry] of Object.entries(index.entries)) {
     if (entry.type === "dir") continue;
     if (entry.uid === 0 && entry.gid === 0) continue;
@@ -180,6 +177,18 @@ export async function stageYurtimg(
       entry.gid,
       ownershipMethodForEntry(entry.type),
     );
+  }
+  // Directories genuinely last, in one pass that carries mode as well as
+  // owner. Not for staging's file writes, which are host-control calls
+  // that run no permission checks -- but `mkdir`, `symlink` and `chown`
+  // above are guest syscall ids dispatched as the caller, and they only
+  // pass because staging is uid 0 AND every ancestor still has an execute
+  // bit (root waives read and write, never search). An image directory at
+  // 0o600 would be fine here and would fail the `chown` of its own
+  // contents if this pass ran first, which is why it runs after.
+  for (const [path, entry] of Object.entries(index.entries)) {
+    if (entry.type !== "dir") continue;
+    setDirectoryMetadata(mk, path, entry);
   }
 }
 

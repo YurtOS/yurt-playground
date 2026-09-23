@@ -76,8 +76,10 @@ let staged: Promise<KernelHostInterface | null> | undefined;
 
 /** A kernel with the pinned image staged into it, or `null` when the
  * artifacts are not resolvable here -- this needs the real image, not a
- * fixture. A skip is a hole in the coverage, so in CI, where the
- * artifacts are always resolved, it is a failure instead of a shrug. */
+ * fixture. A skip is a hole in the coverage, so when the caller says the
+ * artifacts are required -- `PLAYGROUND_REQUIRE_ARTIFACTS=1`, which CI
+ * sets and `layout_test.ts` asserts it sets -- it is a failure instead of
+ * a shrug. */
 function stagedKernel(): Promise<KernelHostInterface | null> {
   staged ??= buildStagedKernel();
   return staged;
@@ -95,9 +97,9 @@ async function buildStagedKernel(): Promise<KernelHostInterface | null> {
     });
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
-    if (Deno.env.get("CI")) {
+    if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS") === "1") {
       throw new Error(
-        `artifacts must resolve in CI, so this cannot skip: ${why}`,
+        `artifacts were required, so this must not skip: ${why}`,
       );
     }
     console.log(`skipping staged-kernel test: ${why}`);
@@ -151,8 +153,11 @@ Deno.test({
     // created by the staging itself, got 0o755 from the umask
     // (yurt-ports#102).
     assertEquals(statMode(mk, "/etc"), 0o755);
-    // `/` has no ustar entry; the index builder synthesises the root at
-    // 0o755, so this pins that default rather than anything the image says.
+    // The most load-bearing line in this file, and the easiest to mistake
+    // for noise: the shipped page had `/` at 0o777 with no sticky bit, so
+    // the sandbox user could rename or remove any top-level directory. `/`
+    // has no ustar member -- the index builder seeds the root at 0o755 --
+    // so nothing else in the repo pins this.
     assertEquals(statMode(mk, "/"), 0o755);
     assertEquals(statMode(mk, "/bin"), 0o755);
     assertEquals(statMode(mk, "/home/user"), 0o755);
