@@ -38,6 +38,7 @@ export function kernelImportMap(
       "@xterm/xterm": "npm:@xterm/xterm@5.5.0",
       "@xterm/addon-fit": "npm:@xterm/addon-fit@0.10.0",
       fzstd: "npm:fzstd@0.1.1",
+      "@litert-lm/core": "npm:@litert-lm/core@0.17.1",
     },
   };
 }
@@ -132,6 +133,18 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
       "self.location.href",
     ),
   );
+  // The #140 local-LLM spike (public/llm-spike.html) and its classic
+  // inference worker.
+  await bundle(kernelPath, {
+    entry: join(repoRoot, "src/llm_spike.ts"),
+    out: join(repoRoot, "public/llm_spike.bundle.js"),
+    importMap: importMapPath,
+  });
+  await bundle(kernelPath, {
+    entry: join(repoRoot, "src/llm_worker.ts"),
+    out: join(repoRoot, "public/llm_worker.bundle.js"),
+    importMap: importMapPath,
+  });
 }
 
 async function bundle(

@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yurt playground: local LLM spike</title>
+    <style>
+      :root {
+        --ground: #161a21;
+        --pane: #1c212a;
+        --rule: #2c3340;
+        --text: #e6e1d7;
+        --muted: #9a948a;
+        --ochre: #e0a458;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      body {
+        margin: 0;
+        background: var(--ground);
+        color: var(--text);
+        font: 13px/1.5 var(--mono);
+      }
+      .wrap {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 4px;
+      }
+      p {
+        color: var(--muted);
+        margin: 0 0 12px;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      button,
+      select {
+        font: inherit;
+        background: var(--pane);
+        color: var(--text);
+        border: 1px solid var(--rule);
+        padding: 4px 10px;
+      }
+      #net {
+        color: var(--ochre);
+      }
+      pre {
+        background: var(--pane);
+        border: 1px solid var(--rule);
+        padding: 8px;
+        max-height: 320px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Local LLM feasibility spike (#140)</h1>
+      <p>
+        Gemma 4 through LiteRT-LM on WebGPU, in a worker of this page, beside a
+        Yurt sandbox. Weights and runtime come from this origin only. Network:
+        <span id="net"></span>
+      </p>
+      <div class="controls">
+        <select id="model">
+          <option value="E2B">E2B</option>
+          <option value="E4B">E4B</option>
+        </select>
+        <button id="load">Download model and start</button>
+        <button id="actions">Action schema</button>
+        <button id="map">Map step</button>
+        <button id="boot">Boot sandbox + Jupyter</button>
+        <button id="loop">Tool loop</button>
+        <button id="offline">Offline run</button>
+        <button id="cancel">Cancel</button>
+      </div>
+      <pre id="stream"></pre>
+      <pre id="log"></pre>
+      <pre id="results"></pre>
+    </div>
+    <script type="module" src="/llm_spike.bundle.js"></script>
+  </body>
+</html>
