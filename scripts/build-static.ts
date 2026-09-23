@@ -40,6 +40,7 @@ const STATIC_FILES = [
   // The page asks whether it is the desktop app; on the hosted site the
   // answer is no, said in JSON rather than as a 404 on every boot (#86).
   "desktop.json",
+  "favicon.svg",
 ];
 /** The JupyterLite site (jupyterlite/build.sh); served under /jupyter/. */
 const JUPYTER_DIR = "jupyter";
