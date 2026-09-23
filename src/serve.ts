@@ -177,6 +177,30 @@ async function handleIntegrity(): Promise<Response> {
   });
 }
 
+/** The #140 spike's runtime wasm and model weights (scripts/fetch-llm-spike.sh),
+ * streamed: a model is gigabytes, too big to read into memory per request. */
+async function handleLlmFile(pathname: string): Promise<Response | null> {
+  if (!pathname.startsWith("/llm/")) return null;
+  const relative = pathname.slice("/llm/".length);
+  if (relative.split("/").some((s) => s === "" || s === "..")) {
+    return notFound();
+  }
+  let file: Deno.FsFile;
+  try {
+    file = await Deno.open(join(artifactsDir, "llm", relative));
+  } catch {
+    return notFound();
+  }
+  const { size } = await file.stat();
+  return new Response(file.readable, {
+    headers: {
+      ...ISOLATION_HEADERS,
+      "Content-Type": contentType(relative),
+      "Content-Length": String(size),
+    },
+  });
+}
+
 export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
   let pathname: string;
@@ -185,6 +209,8 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   } catch {
     return notFound();
   }
+  const llm = await handleLlmFile(pathname);
+  if (llm !== null) return llm;
   if (pathname === "/integrity.json") {
     try {
       return await handleIntegrity();
