@@ -67,35 +67,7 @@ function chownPath(
   }
 }
 
-/** Give a staged directory the mode, owner and mtime the image asks for.
- *
- * Staging used to set ownership only, which left directory modes to
- * chance: one the kernel's `mkdir` created here came out 0o755 (its 0o777
- * minus the default umask), but one the kernel's boot ramfs had already
- * seeded -- `/` and `/etc` -- kept that ramfs's own 0o777 default,
- * because `mkdir` returns EEXIST and staging moved on. So the shipped
- * playground had a world-writable `/etc` that the sandbox user could
- * `touch` (yurt-ports#102), while `/bin` beside it was 0o755. `/tmp` is
- * seeded too but was never in that state: boot gives it an explicit
- * 0o41777 override, so the pass below rewrites it with byte-identical
- * metadata.
- *
- * The image has carried the right answer all along: the tar has 1,462
- * directory members, `etc` at 0o755 and `tmp` at 0o1777, sticky bit
- * included.
- *
- * **`/` is the biggest of these**, and it is the 1,463rd: ustar has no
- * `./` member, so `buildTarImageIndex` seeds the root itself at 0o755 and
- * refuses any image that tries to say otherwise. The shipped page ran with
- * `/` at 0o777 and no sticky bit, so the sandbox user could not only
- * `touch /probe` but `mv /etc /etc.old` -- a wider hole than the `/etc`
- * one yurt-ports#102 reports. The loop below is what closes it, and
- * `stage_test.ts` is the only thing holding it closed.
- *
- * File modes are still discarded: a staged file is 0o644, or 0o755 when
- * its payload starts with `\0asm`, so the image's handful of non-wasm
- * executables stay non-executable. Directories are what #102 is about;
- * the files are their own question. */
+/** Apply the image's mode, owner, and mtime to a staged directory. */
 function setDirectoryMetadata(
   mk: KernelHostInterface,
   path: string,
@@ -104,11 +76,7 @@ function setDirectoryMetadata(
   const pathBytes = s(path);
   const req = new Uint8Array(20 + pathBytes.byteLength);
   const view = new DataView(req.buffer);
-  // The type bits are not decoration: the kernel stores this mode
-  // verbatim, so without them the stored metadata is a typeless 0o755.
-  // (A `stat` re-derives the type and hides that, which is why it is
-  // easy to conclude they are inert -- they are not.) `disk.rs` ORs
-  // them in for the same reason.
+  // The kernel stores this mode verbatim, so include the directory type.
   view.setUint32(0, (S_IFDIR | (entry.mode & MODE_PERM_MASK)) >>> 0, true);
   view.setUint32(4, entry.uid >>> 0, true);
   view.setUint32(8, entry.gid >>> 0, true);
@@ -186,15 +154,8 @@ export async function stageYurtimg(
       ownershipMethodForEntry(entry.type),
     );
   }
-  // Directories genuinely last, in one pass that carries mode as well as
-  // owner. Not for staging's file writes, which are host-control calls
-  // that run no permission checks -- but `mkdir`, `symlink` and `chown`
-  // above are guest syscall ids dispatched as the caller, and they only
-  // pass because staging is uid 0 AND every ancestor still has an execute
-  // bit: root waives read and write outright, but is refused search on a
-  // directory with no execute bit at all. An image directory at
-  // 0o600 would be fine here and would fail the `chown` of its own
-  // contents if this pass ran first, which is why it runs after.
+  // Apply these modes last: mkdir, symlink, and chown above are
+  // permission-checked, and root still needs search permission through ancestors.
   for (const [path, entry] of Object.entries(index.entries)) {
     if (entry.type !== "dir") continue;
     setDirectoryMetadata(mk, path, entry);

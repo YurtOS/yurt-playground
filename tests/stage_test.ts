@@ -144,31 +144,16 @@ Deno.test({
 });
 
 Deno.test({
-  name: "stageYurtimg applies the tar's directory modes, so /etc is not 0777",
+  name: "stageYurtimg applies the image's directory modes",
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
     const mk = await stagedKernel();
     if (!mk) return;
-    // What the image carries, and what `ls -ld` showed in the shipped
-    // playground: `/` and `/etc` are the directories the kernel's boot ramfs
-    // pre-creates, so before this they kept its 0o777 default while `/bin`,
-    // created by the staging itself, got 0o755 from the umask
-    // (yurt-ports#102).
-    // `/etc` and `/` are the two that fail without the fix. The three
-    // below are already correct on main -- `/bin` and `/home/user` from
-    // staging's own mkdir under the 0o022 umask, `/tmp` from boot's
-    // override -- so they are regression pins, not proof of anything.
     assertEquals(statMode(mk, "/etc"), 0o755);
-    // The most load-bearing line in this file, and the easiest to mistake
-    // for noise: the shipped page had `/` at 0o777 with no sticky bit, so
-    // the sandbox user could rename or remove any top-level directory. `/`
-    // has no ustar member -- the index builder seeds the root at 0o755 --
-    // so nothing else in the repo pins this.
     assertEquals(statMode(mk, "/"), 0o755);
     assertEquals(statMode(mk, "/bin"), 0o755);
     assertEquals(statMode(mk, "/home/user"), 0o755);
-    // The one that is meant to be world-writable keeps its sticky bit.
     assertEquals(statMode(mk, "/tmp"), 0o1777);
   },
 });

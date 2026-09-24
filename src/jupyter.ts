@@ -65,6 +65,12 @@ export function hushUntil(
   return () => release();
 }
 
+/** One new piece of cell output. Keep IPC proportional to new output. */
+export type JupyterStream = {
+  stream: "stdout" | "stderr" | "display";
+  text: string;
+};
+
 export type JupyterReply = {
   status: "ok" | "error";
   stdout: string;
@@ -415,7 +421,11 @@ export const EXECUTE_TIMEOUT_MS = 120_000;
 export async function executeCell(
   transport: JupyterTransport,
   code: string,
-  timeoutMs = EXECUTE_TIMEOUT_MS,
+  options: {
+    timeoutMs?: number;
+    /** Called with each new output chunk; the reply remains complete. */
+    onStream?: (chunk: JupyterStream) => void;
+  } = {},
 ): Promise<JupyterReply> {
   const msgId = crypto.randomUUID();
   const output = {
@@ -439,13 +449,16 @@ export async function executeCell(
       if (message.parent_header.msg_id !== msgId) return;
       if (message.header.msg_type === "stream") {
         const text = String(message.content.text ?? "");
-        if (message.content.name === "stderr") output.stderr += text;
-        else output.stdout += text;
+        const stream = message.content.name === "stderr" ? "stderr" : "stdout";
+        output[stream] += text;
+        options.onStream?.({ stream, text });
       } else if (
         message.header.msg_type === "display_data" ||
         message.header.msg_type === "execute_result"
       ) {
-        output.display += displayText(message.content.data);
+        const text = displayText(message.content.data);
+        output.display += text;
+        options.onStream?.({ stream: "display", text });
       } else if (message.header.msg_type === "error") {
         output.traceback.push(...asStrings(message.content.traceback));
       } else if (message.header.msg_type === "execute_reply") {
@@ -485,11 +498,40 @@ export async function executeCell(
     });
   });
   try {
-    return await withTimeout(result, timeoutMs, "Jupyter execute timed out");
+    return await withTimeout(
+      result,
+      options.timeoutMs ?? EXECUTE_TIMEOUT_MS,
+      "Jupyter execute timed out",
+    );
   } finally {
     unsubscribe?.();
     unsubscribe = undefined;
   }
+}
+
+/**
+ * Raise KeyboardInterrupt in whatever the kernel is running.
+ *
+ * `interrupt_request` goes on the control channel, which ipykernel serves
+ * on a thread of its own, so it lands while the shell thread is inside a
+ * cell -- which is the whole point. The running `executeCell` then
+ * finishes the ordinary way, with the traceback on its error frame; there
+ * is nothing to wait for here (yurt-playground#130).
+ */
+export function interruptKernel(transport: JupyterTransport): Promise<void> {
+  const msgId = crypto.randomUUID();
+  return transport.send({
+    header: {
+      msg_id: msgId,
+      username: "user",
+      session: msgId,
+      msg_type: "interrupt_request",
+      version: "5.3",
+    },
+    parent_header: {},
+    metadata: {},
+    content: {},
+  }, "control");
 }
 
 async function waitForKernelInfo(transport: JupyterTransport): Promise<void> {
