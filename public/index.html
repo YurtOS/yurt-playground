@@ -704,17 +704,44 @@
           you would use <code>docker</code>.
         </p>
         <div id="install" data-testid="download-mac">
-          <input type="radio" name="install" id="install-app-mac" checked>
-          <input type="radio" name="install" id="install-app-linux">
-          <input type="radio" name="install" id="install-cli-mac">
-          <input type="radio" name="install" id="install-cli-linux">
+          <!-- Each radio takes its accessible name from the visible group
+               heading and platform label. -->
+          <input
+            type="radio"
+            name="install"
+            id="install-app-mac"
+            aria-labelledby="install-group-app install-app-mac-label"
+            checked
+          >
+          <input
+            type="radio"
+            name="install"
+            id="install-app-linux"
+            aria-labelledby="install-group-app install-app-linux-label"
+          >
+          <input
+            type="radio"
+            name="install"
+            id="install-cli-mac"
+            aria-labelledby="install-group-cli install-cli-mac-label"
+          >
+          <input
+            type="radio"
+            name="install"
+            id="install-cli-linux"
+            aria-labelledby="install-group-cli install-cli-linux-label"
+          >
           <div class="tabs">
-            <div class="group">Desktop app</div>
-            <label for="install-app-mac">macOS</label>
-            <label for="install-app-linux">Linux</label>
-            <div class="group">Command line</div>
-            <label for="install-cli-mac">macOS</label>
-            <label for="install-cli-linux">Linux</label>
+            <div class="group" id="install-group-app">Desktop app</div>
+            <label id="install-app-mac-label" for="install-app-mac"
+            >macOS</label>
+            <label id="install-app-linux-label" for="install-app-linux"
+            >Linux</label>
+            <div class="group" id="install-group-cli">Command line</div>
+            <label id="install-cli-mac-label" for="install-cli-mac"
+            >macOS</label>
+            <label id="install-cli-linux-label" for="install-cli-linux"
+            >Linux</label>
           </div>
           <div class="panel app-mac">
             <h3>The playground as a Mac app</h3>

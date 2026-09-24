@@ -317,6 +317,109 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
   assertEquals(unsupported.includes("Cross-Origin-Embedder-Policy"), true);
 });
 
+Deno.test("every install choice has an accessible name of its own", async () => {
+  // Each radio gets its name from the visible group heading and platform label.
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const install = html.match(/<div id="install"[\s\S]*?<\/section>/)?.[0] ?? "";
+  // `deno fmt` puts each attribute of a multi-attribute tag on its own
+  // line, so the tag has to be matched across newlines -- a `[^>]*` after
+  // `<input type="radio"` finds nothing the moment the file is formatted.
+  const radios = [...install.matchAll(/<input\b[\s\S]*?>/g)]
+    .map((m) => m[0])
+    .filter((tag) => tag.includes('type="radio"'));
+  assertEquals(radios.length, 4, `expected four choices: ${radios.length}`);
+  const attribute = (tag: string, name: string) =>
+    tag.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1] ?? "";
+  const groups = [...install.matchAll(
+    /<div\b(?=[^>]*class="group")([^>]*)>([^<]*)<\/div>/g,
+  )].map(([, attributes, text]) => ({
+    id: attribute(attributes, "id"),
+    text,
+  }));
+  const labels = [...install.matchAll(/<label\b([^>]*)>([^<]*)<\/label>/g)]
+    .map(([, attributes, text]) => ({
+      id: attribute(attributes, "id"),
+      for: attribute(attributes, "for"),
+      text,
+    }));
+  assertEquals(groups.length, 2, "expected the two visible install headings");
+  assertEquals(labels.length, 4, "expected four visible platform labels");
+  const referencedIds = [
+    ...groups.map((group) => group.id),
+    ...labels.map((label) => label.id),
+  ];
+  assertEquals(
+    referencedIds.every((id) => id !== "") &&
+      new Set(referencedIds).size === referencedIds.length,
+    true,
+    "heading and label ids must be present and unique",
+  );
+
+  const pairs: string[] = [];
+  const names: string[] = [];
+  for (const [index, radio] of radios.entries()) {
+    const id = attribute(radio, "id");
+    const references = attribute(radio, "aria-labelledby").split(/\s+/)
+      .filter(Boolean);
+    const group = groups[Math.floor(index / 2)];
+    const label = labels.find((candidate) => candidate.for === id);
+    assertEquals(
+      attribute(radio, "aria-label"),
+      "",
+      `${id} duplicates its name`,
+    );
+    assertEquals(
+      group?.id !== "",
+      true,
+      `heading ${index} has no id`,
+    );
+    assertEquals(
+      label?.id !== undefined && label.id !== "",
+      true,
+      `${id} label has no id`,
+    );
+    assertEquals(
+      references.length,
+      2,
+      `${id} must reference its heading and label`,
+    );
+    assertEquals(
+      references.includes(group?.id ?? ""),
+      true,
+      `${id} misses its group heading`,
+    );
+    assertEquals(
+      references.includes(label?.id ?? ""),
+      true,
+      `${id} misses its own visible label`,
+    );
+    assertEquals(
+      (group?.text ?? "").trim() !== "",
+      true,
+      "group heading is empty",
+    );
+    assertEquals(
+      (label?.text ?? "").trim() !== "",
+      true,
+      `${id} label is empty`,
+    );
+    pairs.push(`${group?.id}:${label?.id}`);
+    names.push(`${group?.text.trim()} ${label?.text.trim()}`);
+  }
+  assertEquals(
+    new Set(pairs).size,
+    4,
+    `choices do not have distinct references: ${pairs}`,
+  );
+  assertEquals(
+    new Set(names).size,
+    4,
+    `choices do not have distinct names: ${names}`,
+  );
+});
+
 Deno.test("the cell can be stopped, and its output cannot push the page away", async () => {
   // yurt-playground#130: Run was the only control and was disabled while a
   // cell ran, so `while True: x += 1` left reloading as the only way out.
