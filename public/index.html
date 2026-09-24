@@ -190,14 +190,6 @@
           opacity: 0;
         }
       }
-      @media (prefers-reduced-motion: reduce) {
-        #start .prompt::after {
-          animation: none;
-        }
-        #proof summary h2::before {
-          transition: none;
-        }
-      }
       #start button {
         font: inherit;
         font-size: 15px;
@@ -417,8 +409,10 @@
         color: var(--text);
       }
 
-      /* The proof, on demand. */
-      #proof summary {
+      /* The disclosures -- the proof and the snapshots -- on demand.
+         Scoped to the class, not to one id: a rule written as `#proof
+         summary` left the next <details class="strip"> unstyled (#129). */
+      .strip > summary {
         cursor: pointer;
         list-style: none;
         display: flex;
@@ -426,14 +420,14 @@
         align-items: baseline;
         gap: 4px 12px;
       }
-      #proof summary::-webkit-details-marker {
+      .strip > summary::-webkit-details-marker {
         display: none;
       }
-      #proof summary h2 {
+      .strip > summary h2 {
         margin: 0;
       }
       /* The one sign it opens: a small triangle in the accent, turning. */
-      #proof summary h2::before {
+      .strip > summary h2::before {
         content: "";
         display: inline-block;
         width: 0;
@@ -445,40 +439,40 @@
         border-right: 0;
         transition: transform 120ms ease-out;
       }
-      #proof[open] summary h2::before {
+      .strip[open] > summary h2::before {
         transform: rotate(90deg);
       }
-      #proof summary .hint {
+      .strip > summary .hint {
         color: var(--muted);
       }
-      #proof[open] summary .hint {
+      .strip[open] > summary .hint {
         display: none;
       }
       /* Four checks, two by two: they are parallel, none comes first. */
-      #proof .checks {
+      .strip .checks {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 14px;
         margin-top: 14px;
       }
-      #proof .check {
+      .strip .check {
         border: 1px solid var(--rule);
         border-radius: 6px;
         padding: 12px 14px;
       }
-      #proof .check h3 {
+      .strip .check h3 {
         margin: 0 0 8px;
         font-size: 1rem;
         font-weight: 600;
       }
-      #proof .check p {
+      .strip .check p {
         margin: 0 0 8px;
         color: var(--muted);
       }
-      #proof .check p:last-child {
+      .strip .check p:last-child {
         margin-bottom: 0;
       }
-      #proof .check button {
+      .strip .check button {
         font: inherit;
         color: #161a21;
         background: var(--sky);
@@ -487,7 +481,7 @@
         padding: 6px 14px;
         cursor: pointer;
       }
-      #proof .check button:disabled {
+      .strip .check button:disabled {
         opacity: 0.6;
         cursor: wait;
       }
@@ -553,8 +547,16 @@
           border-right: 0;
           border-bottom: 1px solid var(--rule);
         }
-        #proof .checks {
+        .strip .checks {
           grid-template-columns: 1fr;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #start .prompt::after {
+          animation: none;
+        }
+        .strip > summary h2::before {
+          transition: none;
         }
       }
     </style>
