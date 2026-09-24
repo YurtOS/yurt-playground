@@ -280,9 +280,20 @@
         padding: 6px 14px;
         cursor: pointer;
       }
-      #notebook-execute:disabled {
+      #notebook-execute:disabled,
+      #notebook-interrupt:disabled {
         opacity: 0.45;
         cursor: default;
+      }
+      /* Stop: quieter than Run -- it is the way out, not the way in. */
+      #notebook-interrupt {
+        font: inherit;
+        color: var(--text);
+        background: transparent;
+        border: 1px solid var(--rule);
+        border-radius: 6px;
+        padding: 6px 14px;
+        cursor: pointer;
       }
       #notebook-status {
         color: var(--muted);
@@ -294,6 +305,10 @@
         white-space: pre-wrap;
         font: inherit;
         font-size: 14px;
+        /* A loop that prints made the pane 630,000 px tall and pushed the
+           rest of the page that far down (yurt-playground#131). */
+        max-height: 60vh;
+        overflow-y: auto;
       }
       #notebook-output:not(:empty) {
         border-top: 1px solid var(--rule);
