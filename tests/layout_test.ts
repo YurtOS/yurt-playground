@@ -320,6 +320,195 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
   assertEquals(unsupported.includes("Cross-Origin-Embedder-Policy"), true);
 });
 
+Deno.test("every install choice has an accessible name of its own", async () => {
+  // Each radio gets its name from the visible group heading and platform label.
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const install = html.match(/<div id="install"[\s\S]*?<\/section>/)?.[0] ?? "";
+  // `deno fmt` puts each attribute of a multi-attribute tag on its own
+  // line, so the tag has to be matched across newlines -- a `[^>]*` after
+  // `<input type="radio"` finds nothing the moment the file is formatted.
+  const radios = [...install.matchAll(/<input\b[\s\S]*?>/g)]
+    .map((m) => m[0])
+    .filter((tag) => tag.includes('type="radio"'));
+  assertEquals(radios.length, 4, `expected four choices: ${radios.length}`);
+  const attribute = (tag: string, name: string) =>
+    tag.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1] ?? "";
+  const groups = [...install.matchAll(
+    /<div\b(?=[^>]*class="group")([^>]*)>([^<]*)<\/div>/g,
+  )].map(([, attributes, text]) => ({
+    id: attribute(attributes, "id"),
+    text,
+  }));
+  const labels = [...install.matchAll(/<label\b([^>]*)>([^<]*)<\/label>/g)]
+    .map(([, attributes, text]) => ({
+      id: attribute(attributes, "id"),
+      for: attribute(attributes, "for"),
+      text,
+    }));
+  assertEquals(groups.length, 2, "expected the two visible install headings");
+  assertEquals(labels.length, 4, "expected four visible platform labels");
+  const referencedIds = [
+    ...groups.map((group) => group.id),
+    ...labels.map((label) => label.id),
+  ];
+  assertEquals(
+    referencedIds.every((id) => id !== "") &&
+      new Set(referencedIds).size === referencedIds.length,
+    true,
+    "heading and label ids must be present and unique",
+  );
+
+  const pairs: string[] = [];
+  const names: string[] = [];
+  for (const [index, radio] of radios.entries()) {
+    const id = attribute(radio, "id");
+    const references = attribute(radio, "aria-labelledby").split(/\s+/)
+      .filter(Boolean);
+    const group = groups[Math.floor(index / 2)];
+    const label = labels.find((candidate) => candidate.for === id);
+    assertEquals(
+      attribute(radio, "aria-label"),
+      "",
+      `${id} duplicates its name`,
+    );
+    assertEquals(
+      group?.id !== "",
+      true,
+      `heading ${index} has no id`,
+    );
+    assertEquals(
+      label?.id !== undefined && label.id !== "",
+      true,
+      `${id} label has no id`,
+    );
+    assertEquals(
+      references.length,
+      2,
+      `${id} must reference its heading and label`,
+    );
+    assertEquals(
+      references.includes(group?.id ?? ""),
+      true,
+      `${id} misses its group heading`,
+    );
+    assertEquals(
+      references.includes(label?.id ?? ""),
+      true,
+      `${id} misses its own visible label`,
+    );
+    assertEquals(
+      (group?.text ?? "").trim() !== "",
+      true,
+      "group heading is empty",
+    );
+    assertEquals(
+      (label?.text ?? "").trim() !== "",
+      true,
+      `${id} label is empty`,
+    );
+    pairs.push(`${group?.id}:${label?.id}`);
+    names.push(`${group?.text.trim()} ${label?.text.trim()}`);
+  }
+  assertEquals(
+    new Set(pairs).size,
+    4,
+    `choices do not have distinct references: ${pairs}`,
+  );
+  assertEquals(
+    new Set(names).size,
+    4,
+    `choices do not have distinct names: ${names}`,
+  );
+});
+
+Deno.test("the cell can be stopped, and its output cannot push the page away", async () => {
+  // yurt-playground#130: Run was the only control and was disabled while a
+  // cell ran, so `while True: x += 1` left reloading as the only way out.
+  const notebook = await Deno.readTextFile(
+    new URL("../src/notebook.ts", import.meta.url),
+  );
+  assertEquals(
+    notebook.includes('stop.dataset.testid = "notebook-interrupt"'),
+    true,
+    "no Stop control in the cell",
+  );
+  assertEquals(
+    notebook.includes("stream(id, chunk)"),
+    true,
+    "the view cannot show a cell's output before it ends",
+  );
+  // ... and the e2e drives both, so the wiring is not asserted on text alone.
+  const e2e = await Deno.readTextFile(
+    new URL("../tests/playground_e2e.ts", import.meta.url),
+  );
+  assertEquals(e2e.includes("notebook-interrupt"), true);
+  assertEquals(e2e.includes("KeyboardInterrupt"), true);
+  // yurt-playground#131: 30,000 prints made the pane 630,198 px tall and
+  // pushed the downloads, the proof and the footer that far down the page.
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
+  const pane = css.match(/#notebook-output \{([^}]*)\}/)?.[1] ?? "";
+  assertEquals(/max-height:/.test(pane), true, "no max-height on the pane");
+  assertEquals(/overflow-y:\s*auto/.test(pane), true, "the pane cannot scroll");
+});
+
+Deno.test("every disclosure on the home page is styled, not just the proof", async () => {
+  // Every disclosure opts into the shared styling, independent of id or
+  // attribute order, and the shared selectors own both the summary and body.
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
+  const body = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/)?.[1] ?? "";
+  const disclosures = [...body.matchAll(/<details\b([^>]*)>/g)];
+  assertEquals(disclosures.length >= 2, true);
+  for (const [index, [, attributes]] of disclosures.entries()) {
+    assertEquals(
+      /(?:^|\s)class="strip"(?:\s|$)/.test(attributes),
+      true,
+      `details ${index + 1} must opt into .strip styling`,
+    );
+  }
+  for (
+    const rule of [
+      /\.strip\s*>\s*summary\s*\{[^}]*display:\s*flex/,
+      /\.strip\s*>\s*summary\s*\{[^}]*list-style:\s*none/,
+      /\.strip\s*>\s*summary::-webkit-details-marker\s*\{[^}]*display:\s*none/,
+      /\.strip\s*>\s*summary h2::before\s*\{[^}]*content:[^}]*border-left:\s*7px solid var\(--ochre\)/,
+      /\.strip\s+\.checks\s*\{/,
+      /\.strip\s+\.check\s*\{/,
+    ]
+  ) {
+    assertEquals(rule.test(css), true, `no class-scoped rule for ${rule}`);
+  }
+  const reducedMotion = [
+    ...css.matchAll(
+      /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n[ ]{6}\}/g,
+    ),
+  ];
+  assertEquals(reducedMotion.length, 1, "expected one reduced-motion block");
+  assertEquals(
+    /#start \.prompt::after\s*\{[^}]*animation:\s*none/.test(
+      reducedMotion[0]?.[1] ?? "",
+    ),
+    true,
+  );
+  assertEquals(
+    /\.strip\s*>\s*summary h2::before\s*\{[^}]*transition:\s*none/.test(
+      reducedMotion[0]?.[1] ?? "",
+    ),
+    true,
+  );
+  assertEquals(
+    css.trimEnd().endsWith(reducedMotion[0]?.[0].trimEnd() ?? ""),
+    true,
+  );
+});
+
 Deno.test("deployment workflow publishes an isolated static site", async () => {
   const workflow = await workflowSource("deploy-pages.yml");
   assertEquals(

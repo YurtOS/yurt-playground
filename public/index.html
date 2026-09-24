@@ -191,14 +191,6 @@
           opacity: 0;
         }
       }
-      @media (prefers-reduced-motion: reduce) {
-        #start .prompt::after {
-          animation: none;
-        }
-        #proof summary h2::before {
-          transition: none;
-        }
-      }
       #start button {
         font: inherit;
         font-size: 15px;
@@ -289,9 +281,20 @@
         padding: 6px 14px;
         cursor: pointer;
       }
-      #notebook-execute:disabled {
+      #notebook-execute:disabled,
+      #notebook-interrupt:disabled {
         opacity: 0.45;
         cursor: default;
+      }
+      /* Stop: quieter than Run -- it is the way out, not the way in. */
+      #notebook-interrupt {
+        font: inherit;
+        color: var(--text);
+        background: transparent;
+        border: 1px solid var(--rule);
+        border-radius: 6px;
+        padding: 6px 14px;
+        cursor: pointer;
       }
       #notebook-status {
         color: var(--muted);
@@ -303,6 +306,10 @@
         white-space: pre-wrap;
         font: inherit;
         font-size: 14px;
+        /* A loop that prints made the pane 630,000 px tall and pushed the
+           rest of the page that far down (yurt-playground#131). */
+        max-height: 60vh;
+        overflow-y: auto;
       }
       #notebook-output:not(:empty) {
         border-top: 1px solid var(--rule);
@@ -418,8 +425,10 @@
         color: var(--text);
       }
 
-      /* The proof, on demand. */
-      #proof summary {
+      /* The disclosures -- the proof and the snapshots -- on demand.
+         Scoped to the class, not to one id: a rule written as `#proof
+         summary` left the next <details class="strip"> unstyled (#129). */
+      .strip > summary {
         cursor: pointer;
         list-style: none;
         display: flex;
@@ -427,14 +436,14 @@
         align-items: baseline;
         gap: 4px 12px;
       }
-      #proof summary::-webkit-details-marker {
+      .strip > summary::-webkit-details-marker {
         display: none;
       }
-      #proof summary h2 {
+      .strip > summary h2 {
         margin: 0;
       }
       /* The one sign it opens: a small triangle in the accent, turning. */
-      #proof summary h2::before {
+      .strip > summary h2::before {
         content: "";
         display: inline-block;
         width: 0;
@@ -446,40 +455,40 @@
         border-right: 0;
         transition: transform 120ms ease-out;
       }
-      #proof[open] summary h2::before {
+      .strip[open] > summary h2::before {
         transform: rotate(90deg);
       }
-      #proof summary .hint {
+      .strip > summary .hint {
         color: var(--muted);
       }
-      #proof[open] summary .hint {
+      .strip[open] > summary .hint {
         display: none;
       }
       /* Four checks, two by two: they are parallel, none comes first. */
-      #proof .checks {
+      .strip .checks {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 14px;
         margin-top: 14px;
       }
-      #proof .check {
+      .strip .check {
         border: 1px solid var(--rule);
         border-radius: 6px;
         padding: 12px 14px;
       }
-      #proof .check h3 {
+      .strip .check h3 {
         margin: 0 0 8px;
         font-size: 1rem;
         font-weight: 600;
       }
-      #proof .check p {
+      .strip .check p {
         margin: 0 0 8px;
         color: var(--muted);
       }
-      #proof .check p:last-child {
+      .strip .check p:last-child {
         margin-bottom: 0;
       }
-      #proof .check button {
+      .strip .check button {
         font: inherit;
         color: #161a21;
         background: var(--sky);
@@ -488,7 +497,7 @@
         padding: 6px 14px;
         cursor: pointer;
       }
-      #proof .check button:disabled {
+      .strip .check button:disabled {
         opacity: 0.6;
         cursor: wait;
       }
@@ -554,8 +563,16 @@
           border-right: 0;
           border-bottom: 1px solid var(--rule);
         }
-        #proof .checks {
+        .strip .checks {
           grid-template-columns: 1fr;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #start .prompt::after {
+          animation: none;
+        }
+        .strip > summary h2::before {
+          transition: none;
         }
       }
     </style>
@@ -698,17 +715,44 @@
           you would use <code>docker</code>.
         </p>
         <div id="install" data-testid="download-mac">
-          <input type="radio" name="install" id="install-app-mac" checked>
-          <input type="radio" name="install" id="install-app-linux">
-          <input type="radio" name="install" id="install-cli-mac">
-          <input type="radio" name="install" id="install-cli-linux">
+          <!-- Each radio takes its accessible name from the visible group
+               heading and platform label. -->
+          <input
+            type="radio"
+            name="install"
+            id="install-app-mac"
+            aria-labelledby="install-group-app install-app-mac-label"
+            checked
+          >
+          <input
+            type="radio"
+            name="install"
+            id="install-app-linux"
+            aria-labelledby="install-group-app install-app-linux-label"
+          >
+          <input
+            type="radio"
+            name="install"
+            id="install-cli-mac"
+            aria-labelledby="install-group-cli install-cli-mac-label"
+          >
+          <input
+            type="radio"
+            name="install"
+            id="install-cli-linux"
+            aria-labelledby="install-group-cli install-cli-linux-label"
+          >
           <div class="tabs">
-            <div class="group">Desktop app</div>
-            <label for="install-app-mac">macOS</label>
-            <label for="install-app-linux">Linux</label>
-            <div class="group">Command line</div>
-            <label for="install-cli-mac">macOS</label>
-            <label for="install-cli-linux">Linux</label>
+            <div class="group" id="install-group-app">Desktop app</div>
+            <label id="install-app-mac-label" for="install-app-mac"
+            >macOS</label>
+            <label id="install-app-linux-label" for="install-app-linux"
+            >Linux</label>
+            <div class="group" id="install-group-cli">Command line</div>
+            <label id="install-cli-mac-label" for="install-cli-mac"
+            >macOS</label>
+            <label id="install-cli-linux-label" for="install-cli-linux"
+            >Linux</label>
           </div>
           <div class="panel app-mac">
             <h3>The playground as a Mac app</h3>
