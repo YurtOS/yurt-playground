@@ -5,8 +5,13 @@
  * spinning.
  */
 import type { Model, ModelStats } from "./agent.ts";
-import type { LocalModel } from "./llm_models.ts";
-import { MAX_NUM_TOKENS } from "./llm_models.ts";
+import {
+  type LocalModel,
+  MAX_NUM_TOKENS,
+  MODEL_CACHE,
+  modelCacheKey,
+  modelUrl,
+} from "./llm_models.ts";
 import type { FromWorker, ToWorker } from "./llm_worker.ts";
 
 export type LoadProgress =
@@ -24,6 +29,17 @@ export type LocalLlm = Model & {
   onToken?: (text: string) => void;
   dispose(): void;
 };
+
+/** Whether the worker already holds this pin in Cache Storage: the pane's
+ * "Start" versus "Download". */
+export async function isModelCached(model: LocalModel): Promise<boolean> {
+  try {
+    const cache = await caches.open(MODEL_CACHE);
+    return await cache.match(modelCacheKey(model)) !== undefined;
+  } catch {
+    return false;
+  }
+}
 
 export async function loadLocalModel(
   model: LocalModel,
@@ -81,8 +97,8 @@ export async function loadLocalModel(
       loading = { resolve, reject };
       post({
         type: "load",
-        model: `/llm/${model.file}`,
-        cacheKey: `/llm/${model.file}?sha256=${model.sha256}`,
+        model: modelUrl(model),
+        cacheKey: modelCacheKey(model),
         maxNumTokens: MAX_NUM_TOKENS,
       });
     });

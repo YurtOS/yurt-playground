@@ -29,10 +29,13 @@ Deno.test("inline script hashes are CSP sha256 sources of the exact body", async
   ]);
 });
 
-Deno.test("the policy keeps every request on the origin", () => {
+Deno.test("the policy keeps every request on the origin but the model's", () => {
   const policy = contentSecurityPolicy({ scriptHashes: ["'sha256-x'"] });
   assertStringIncludes(policy, "default-src 'self'");
-  assertStringIncludes(policy, "connect-src 'self'");
+  assertStringIncludes(
+    policy,
+    "connect-src 'self' https://huggingface.co https://*.hf.co;",
+  );
   assertStringIncludes(policy, "frame-src 'none'");
   assertStringIncludes(policy, "object-src 'none'");
   assertStringIncludes(
@@ -40,7 +43,27 @@ Deno.test("the policy keeps every request on the origin", () => {
     "script-src 'self' 'wasm-unsafe-eval' 'sha256-x'",
   );
   assertEquals(policy.includes("'unsafe-eval'"), false);
-  assertEquals(policy.includes("http"), false);
+  // Only connect-src names another origin.
+  assertEquals(
+    policy.split("; ").filter((d) => d.includes("http")),
+    ["connect-src 'self' https://huggingface.co https://*.hf.co"],
+  );
+});
+
+Deno.test("JupyterLite documents stay on the origin alone", () => {
+  for (
+    const policy of [
+      documentPolicy("/jupyter/notebooks/index.html", []),
+      contentSecurityPolicy({ sameOriginOnly: true }),
+    ]
+  ) {
+    assertStringIncludes(policy, "connect-src 'self';");
+    assertEquals(policy.includes("http"), false);
+  }
+  assertStringIncludes(
+    documentPolicy("/index.html", []),
+    "connect-src 'self' https://huggingface.co",
+  );
 });
 
 Deno.test("only JupyterLite documents may eval", () => {
@@ -71,5 +94,7 @@ Deno.test("_headers detaches the strict policy before the JupyterLite one", () =
   assertEquals(lines[3], "/jupyter/*");
   assertEquals(lines[4], "  ! Content-Security-Policy");
   assertStringIncludes(lines[5], "'unsafe-eval' 'sha256-j'");
+  assertStringIncludes(lines[2], "https://huggingface.co");
+  assertEquals(lines[5].includes("http"), false);
   assertEquals(lines.length, 6);
 });

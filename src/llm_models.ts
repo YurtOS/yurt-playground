@@ -1,9 +1,9 @@
 /**
- * The local models the agent can run (#140), pinned like every other
- * artifact: a Hugging Face commit and the file's sha256. The weights are
- * fetched by scripts/fetch-llm.sh into artifacts/llm/ (gitignored) and served
- * from the page's own origin under /llm/. The sha256 is also the browser
- * cache key, so a new pin never reads an old model back as cached.
+ * The local models the agent can run (#140), pinned to a Hugging Face
+ * commit. The page's worker downloads the weights from there once
+ * ({@link modelUrl}; the CSP names those hosts, `MODEL_ORIGINS` in csp.ts)
+ * and keeps them in Cache Storage under {@link modelCacheKey}, which names
+ * the sha256, so a new pin never reads an old model back as cached.
  */
 export type LocalModel = {
   id: string;
@@ -42,6 +42,21 @@ export const LOCAL_MODELS: LocalModel[] = [
     memoryGB: 6,
   },
 ];
+
+/** Where the weights live: a commit-pinned Hugging Face URL, so the bytes
+ * behind it cannot change. It answers with a redirect to Hugging Face's CDN,
+ * CORS-enabled, which is what lets a COEP `require-corp` page read it. */
+export function modelUrl(model: LocalModel): string {
+  return `https://huggingface.co/litert-community/gemma-4-${model.id}-it-litert-lm/resolve/${model.commit}/${model.file}`;
+}
+
+/** The Cache Storage the worker keeps downloaded models in. */
+export const MODEL_CACHE = "yurt-llm";
+
+/** The model's Cache Storage key: on the page's origin, naming the pin. */
+export function modelCacheKey(model: LocalModel): string {
+  return `/llm/${model.file}?sha256=${model.sha256}`;
+}
 
 /** Engine budget: prompt + reply, in tokens. */
 export const MAX_NUM_TOKENS = 4096;

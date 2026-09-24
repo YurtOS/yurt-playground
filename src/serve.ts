@@ -180,59 +180,51 @@ async function handleIntegrity(): Promise<Response> {
 }
 
 /** LiteRT-LM's wasm builds, straight from the npm package deno.lock pins. */
-const LITERT_WASM_DIR = join(repoRoot, "node_modules/@litert-lm/core/wasm");
-const LLM_DIR = join(artifactsDir, "llm");
+export const LITERT_WASM_DIR = join(
+  repoRoot,
+  "node_modules/@litert-lm/core/wasm",
+);
 
-/** The pinned models this server has (scripts/fetch-llm.sh). The static
- * build has none, so there the page answers 404 and shows no agent. */
-export async function availableModels(dir = LLM_DIR): Promise<string[]> {
-  const ids: string[] = [];
-  for (const model of LOCAL_MODELS) {
-    const stat = await Deno.stat(join(dir, model.file)).catch(() => null);
-    if (stat?.size === model.bytes) ids.push(model.id);
-  }
-  return ids;
+/** What `/llm/models.json` lists: every pin. The weights come from Hugging
+ * Face, so a site that ships the runtime offers them all. */
+export function offeredModelIds(): string[] {
+  return LOCAL_MODELS.map((m) => m.id);
 }
 
-/** The local agent's model weights and runtime (#140), streamed: a model
- * is gigabytes, too big to read into memory per request. */
+/** The local agent's runtime (#140): `/llm/models.json`, the emscripten glue,
+ * and each `.wasm` gzipped as `.wasm.gz`, the form the static build ships
+ * (a build is 21-34 MB; Cloudflare Pages refuses a file over 25 MiB). */
 async function handleLlmFile(pathname: string): Promise<Response | null> {
   if (!pathname.startsWith("/llm/")) return null;
   const relative = pathname.slice("/llm/".length);
   if (relative === "models.json") {
-    return new Response(JSON.stringify(await availableModels()), {
+    return new Response(JSON.stringify(offeredModelIds()), {
       headers: {
         ...ISOLATION_HEADERS,
         "Content-Type": "application/json; charset=utf-8",
       },
     });
   }
-  const parts = relative.split("/");
-  if (parts.some((s) => s === "" || s === "..")) return notFound();
-  const path = parts[0] === "wasm" && parts.length === 2
-    ? join(LITERT_WASM_DIR, parts[1])
-    : parts.length === 1
-    ? join(LLM_DIR, parts[0])
-    : null;
-  if (path === null) return notFound();
+  const name = /^wasm\/([\w.-]+\.(js|wasm\.gz))$/.exec(relative)?.[1];
+  if (name === undefined) return notFound();
   let file: Deno.FsFile;
   try {
-    file = await Deno.open(path);
+    file = await Deno.open(join(LITERT_WASM_DIR, name.replace(/\.gz$/, "")));
   } catch {
     return notFound();
   }
-  const stat = await file.stat();
-  if (!stat.isFile) {
-    file.close();
-    return notFound();
-  }
-  return new Response(file.readable, {
-    headers: {
-      ...ISOLATION_HEADERS,
-      "Content-Type": contentType(relative),
-      "Content-Length": String(stat.size),
+  const gzip = name.endsWith(".gz");
+  return new Response(
+    gzip
+      ? file.readable.pipeThrough(new CompressionStream("gzip"))
+      : file.readable,
+    {
+      headers: {
+        ...ISOLATION_HEADERS,
+        "Content-Type": gzip ? "application/gzip" : contentType(name),
+      },
     },
-  });
+  );
 }
 
 export async function handlePlaygroundRequest(req: Request): Promise<Response> {

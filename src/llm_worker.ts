@@ -5,6 +5,7 @@
  * glue with importScripts.
  */
 import { type Conversation, Engine, loadLiteRtLm } from "@litert-lm/core";
+import { MODEL_CACHE } from "./llm_models.ts";
 
 export type ToWorker =
   | {
@@ -55,7 +56,6 @@ export type FromWorker =
   }
   | { type: "error"; id?: number; message: string };
 
-const CACHE = "yurt-llm";
 const post = (msg: FromWorker) => self.postMessage(msg);
 let engine: Engine | undefined;
 let active: Conversation | undefined;
@@ -66,7 +66,7 @@ let cancelRequested = false;
  * Streamed straight into the cache (no tee), so a 2 GB download never sits
  * in memory; the Blob read back is disk-backed. */
 async function modelBlob(url: string, key: string) {
-  const cache = await caches.open(CACHE);
+  const cache = await caches.open(MODEL_CACHE);
   const cached = await cache.match(key);
   if (cached !== undefined) {
     return {
@@ -117,20 +117,58 @@ async function modelBlob(url: string, key: string) {
   };
 }
 
+/** Fetch a gzipped .wasm, inflate it as it streams in, and compile it
+ * while it arrives. */
+async function instantiateGzipped(
+  url: string,
+  imports: WebAssembly.Imports,
+): Promise<WebAssembly.Instance> {
+  const response = await fetch(url);
+  if (!response.ok || response.body === null) {
+    throw new Error(`${url}: HTTP ${response.status}`);
+  }
+  const wasm = new Response(
+    response.body.pipeThrough(new DecompressionStream("gzip")),
+    { headers: { "content-type": "application/wasm" } },
+  );
+  return (await WebAssembly.instantiateStreaming(wasm, imports)).instance;
+}
+
 async function load(
   model: string,
   cacheKey: string,
   maxNumTokens: number,
 ): Promise<void> {
-  // The glue resolves its .wasm against the worker's URL unless told.
+  // The loader picks one of four builds (relaxed-SIMD × JSPI) and
+  // importScripts its glue; the glue's .wasm is the same name.
+  let glue = "";
+  const scope = self as unknown as {
+    importScripts: (...urls: string[]) => void;
+  };
+  const importScripts = scope.importScripts.bind(self);
+  scope.importScripts = (...urls) => {
+    glue = String(urls.at(-1) ?? "");
+    importScripts(...urls);
+  };
+  // Each .wasm ships gzipped (21-34 MB raw; Cloudflare Pages refuses a file
+  // over 25 MiB), so the glue is handed the instance rather than a URL.
   (self as unknown as { Module: unknown }).Module = {
-    locateFile: (path: string) => `/llm/wasm/${path}`,
+    instantiateWasm(
+      imports: WebAssembly.Imports,
+      done: (instance: WebAssembly.Instance) => void,
+    ) {
+      instantiateGzipped(glue.replace(/\.js$/, ".wasm.gz"), imports)
+        .then(
+          done,
+          (error) => post({ type: "error", message: `runtime wasm: ${error}` }),
+        );
+      return {};
+    },
   };
   let t = performance.now();
   await loadLiteRtLm("/llm/wasm/");
   const wasmMs = performance.now() - t;
-  const wasmVariant = performance.getEntriesByType("resource")
-    .map((e) => e.name).find((name) => name.endsWith(".wasm")) ?? "unknown";
+  const wasmVariant = glue.replace(/\.js$/, ".wasm");
   const got = await modelBlob(model, cacheKey);
   t = performance.now();
   // No backend: the default, GPU_ARTISAN, is the one that streams the

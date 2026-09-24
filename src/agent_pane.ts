@@ -2,17 +2,16 @@
  * The home page's agent pane (#140): a language model running in this tab
  * on the GPU, using the page's own sandbox through window.yurt. One action
  * to download and start, then a task box; every step the controller
- * (src/agent.ts) takes is shown as it happens. The pane only appears where
- * the server has a model to give (`/llm/models.json`): the local dev server
- * with fetched weights. The hosted site and the desktop app have none yet
- * (hosting the weights is #140's open decision), so they are unchanged.
+ * (src/agent.ts) takes is shown as it happens. The pane appears where the
+ * site ships the inference runtime (`/llm/models.json`, written by the
+ * static build and answered by the dev server); the weights download from
+ * Hugging Face (src/llm_models.ts).
  */
 import type { Yurt } from "./agent_api.ts";
 import { type AgentEvent, runAgent, type Tools } from "./agent.ts";
-import { loadLocalModel, type LocalLlm } from "./llm.ts";
+import { isModelCached, loadLocalModel, type LocalLlm } from "./llm.ts";
 import { LOCAL_MODELS, type LocalModel, MAX_NUM_TOKENS } from "./llm_models.ts";
 
-const CACHE = "yurt-llm";
 const GiB = 2 ** 30;
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -30,17 +29,7 @@ function el<K extends keyof HTMLElementTagNameMap>(
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 
-async function isCached(model: LocalModel): Promise<boolean> {
-  try {
-    const cache = await caches.open(CACHE);
-    return await cache.match(`/llm/${model.file}?sha256=${model.sha256}`) !==
-      undefined;
-  } catch {
-    return false;
-  }
-}
-
-/** Which pinned models this server offers; none (a 404) hides the pane. */
+/** Which pinned models this site offers; none (a 404) hides the pane. */
 async function offeredModels(): Promise<LocalModel[]> {
   try {
     const response = await fetch("/llm/models.json");
@@ -132,8 +121,9 @@ export async function mountAgentPane(
     el(
       "p",
       {},
-      "A language model that runs in this tab, on your GPU: nothing you " +
-        "type is sent anywhere. It works in this page's sandbox through ",
+      "A language model that runs in this tab, on your GPU. Its weights " +
+        "download once from Hugging Face; after that nothing you type is " +
+        "sent anywhere. It works in this page's sandbox through ",
       el("code", { textContent: "window.yurt" }),
       " and can run any command there, change or delete files and stop " +
         "processes, the same as typing in the terminal above. Every step is " +
@@ -161,7 +151,7 @@ export async function mountAgentPane(
   const selected = () => models.find((m) => m.id === choice.value)!;
   const label = async () => {
     const m = selected();
-    const cached = await isCached(m);
+    const cached = await isModelCached(m);
     startButton.textContent = cached
       ? `Start ${m.label}`
       : `Download ${m.label} (${(m.bytes / GiB).toFixed(1)} GiB) and start`;
@@ -169,7 +159,7 @@ export async function mountAgentPane(
       `Needs about ${m.memoryGB} GB of free memory while it runs. ` +
       (cached
         ? "Already downloaded."
-        : "The browser keeps the download for next time.");
+        : "Downloaded from Hugging Face; the browser keeps it for next time.");
   };
   choice.addEventListener("change", () => void label());
   await label();
