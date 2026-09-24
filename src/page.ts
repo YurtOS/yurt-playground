@@ -7,11 +7,7 @@ import {
   desktopInfo,
   nativeYurtTransport,
 } from "./native.ts";
-import {
-  announceSandbox,
-  anotherSandboxRunning,
-  whileAnotherSandboxRuns,
-} from "./tab_presence.ts";
+import { announceSandbox, watchForAnotherSandbox } from "./tab_presence.ts";
 import {
   createYurt,
   type Yurt,
@@ -37,11 +33,6 @@ type FromWorker =
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
-let stopWatchingNeighbour: () => void = () => {};
-/** Set once this tab's sandbox is gone. The boot runs while the neighbour
- *  probe is in flight and can fail inside it, so the probe's answer has to
- *  be checked against this before it raises a note on a dead page. */
-let noSandbox = false;
 
 /**
  * window.yurt (src/agent_api.ts): a driver's view of the sandbox, present
@@ -188,6 +179,7 @@ function boot(
   notebook: ReturnType<typeof mountNotebook>,
   execute: { current: (id: string, code: string) => void },
   desktop: DesktopInfo | undefined,
+  stopWatchingForAnotherSandbox: () => void,
 ): void {
   const kernelPorts = desktop?.kernelPorts;
   const status = byId("status");
@@ -204,18 +196,10 @@ function boot(
   // is on screen the status bar alone carries the message, so the shell
   // stays usable.
   let terminalEmpty = true;
-  // A tab with no sandbox has nothing to say to its neighbours, and no
-  // reason to keep asking about them. Separate from `fail`, which also
-  // runs for an error *after* the shell is up -- "Jupyter is not ready"
-  // from a cell pressed early is the likeliest one, and tearing the
-  // watcher down there froze the note up for the life of the tab, which
-  // is #134 again.
   const sandboxGone = () => {
-    noSandbox = true;
     stopAnnouncing();
     stopAnnouncing = () => {};
-    stopWatchingNeighbour();
-    stopWatchingNeighbour = () => {};
+    stopWatchingForAnotherSandbox();
   };
   const fail = (message: string) => {
     rememberBooting(undefined);
@@ -374,24 +358,16 @@ async function runPage(): Promise<void> {
     // so before this one boots, and answer the next tab that asks. The
     // desktop app's sandbox is native and one per launcher, so neither
     // applies there.
+    let stopWatchingForAnotherSandbox = () => {};
     if (desktop === undefined) {
-      void anotherSandboxRunning().then((another) => {
-        // The boot runs while this probe is in flight, and can fail inside
-        // its 300 ms. Raising the note then would put a warning on a dead
-        // page and install a watcher nothing can stop, since the teardown
-        // already ran against the no-op.
-        if (!another || noSandbox) return;
-        const note = byId("another-tab-note");
-        note.hidden = false;
-        // ... and take it down again when that tab goes: it tells the
-        // reader to close the other one (yurt-playground#134).
-        stopWatchingNeighbour = whileAnotherSandboxRuns(() => {
-          note.hidden = true;
-        });
-      });
+      const note = byId("another-tab-note");
+      stopWatchingForAnotherSandbox = watchForAnotherSandbox(
+        () => note.hidden = false,
+        () => note.hidden = true,
+      );
       stopAnnouncing = announceSandbox();
     }
-    boot(notebook, execute, desktop);
+    boot(notebook, execute, desktop, stopWatchingForAnotherSandbox);
   };
   // Only the in-tab kernel has the memory problem; the desktop app's page
   // runs the sandbox natively.

@@ -3,62 +3,119 @@
  * browser share the CPU: a second boot next to a running one took 140 s
  * where the first took 27, and the page said nothing about why
  * (yurt-playground#84). A tab with a sandbox answers the others' question
- * over a BroadcastChannel; there is no shared state to keep, only tabs to
- * ask.
+ * over one BroadcastChannel per name in this tab; there is no cross-tab
+ * state to keep, only tabs to ask.
  */
 
 const CHANNEL = "yurt-playground-sandbox";
 
-/** `from` is optional on the wire: a tab still running the previous bundle
- * answers without it, and that answer is a real neighbour. */
-type Presence = { type: "who" } | { type: "here"; from?: string };
+type Presence = { type: "who" } | { type: "here" };
 
 /** A browser with cross-origin isolation but no BroadcastChannel (Safari
  * 15.2-15.3) boots without the question; the channel is a courtesy. */
 const supported = typeof BroadcastChannel !== "undefined";
 
-/**
- * This tab, for telling its own answer apart from a neighbour's.
- *
- * A BroadcastChannel delivers to every *other* channel object, including
- * the ones this tab holds: once it announces its own sandbox, asking again
- * hears itself. The first ask happens before the announcement so it never
- * noticed; the watcher below asks afterwards and would never see a
- * neighbour leave (yurt-playground#134).
- */
-const SELF = `${Date.now()}-${Math.random()}`;
+type SharedChannel = { channel: BroadcastChannel; listeners: number };
+const channels = new Map<string, SharedChannel>();
 
-/** Answer "who has a sandbox?" until the returned function is called. */
-export function announceSandbox(name = CHANNEL, from = SELF): () => void {
-  if (!supported) return () => {};
-  const channel = new BroadcastChannel(name);
-  channel.onmessage = (event: MessageEvent<Presence>) => {
-    if (event.data?.type === "who") channel.postMessage({ type: "here", from });
+function listen(
+  name: string,
+  handler: (event: MessageEvent<Presence>) => void,
+): { channel: BroadcastChannel; stop: () => void } {
+  let shared = channels.get(name);
+  if (shared === undefined) {
+    shared = { channel: new BroadcastChannel(name), listeners: 0 };
+    channels.set(name, shared);
+  }
+  const entry = shared;
+  entry.listeners++;
+  entry.channel.addEventListener("message", handler);
+  let stopped = false;
+  return {
+    channel: entry.channel,
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      entry.channel.removeEventListener("message", handler);
+      if (--entry.listeners === 0) {
+        entry.channel.close();
+        channels.delete(name);
+      }
+    },
   };
-  return () => channel.close();
 }
 
-/** Ask, and wait up to `timeoutMs` for another tab to say it has one.
- *  Answers from `ignore` -- this tab, by default -- do not count. */
+/** Answer "who has a sandbox?" until the returned function is called. */
+export function announceSandbox(name = CHANNEL): () => void {
+  if (!supported) return () => {};
+  const listener = listen(name, (event) => {
+    if (event.data?.type === "who") {
+      listener.channel.postMessage({ type: "here" });
+    }
+  });
+  return listener.stop;
+}
+
+/** Ask, and wait up to `timeoutMs` for another tab to say it has one. */
 export function anotherSandboxRunning(
   timeoutMs = 300,
   name = CHANNEL,
-  ignore = SELF,
 ): Promise<boolean> {
   if (!supported) return Promise.resolve(false);
   return new Promise((resolve) => {
-    const channel = new BroadcastChannel(name);
+    let settled = false;
+    let stopListening = () => {};
+    let cancelTimeout = () => {};
     const done = (answer: boolean) => {
-      clearTimeout(timer);
-      channel.close();
+      if (settled) return;
+      settled = true;
+      cancelTimeout();
+      stopListening();
       resolve(answer);
     };
+    const listener = listen(name, (event) => {
+      if (event.data?.type === "here") done(true);
+    });
+    stopListening = listener.stop;
     const timer = setTimeout(() => done(false), timeoutMs);
-    channel.onmessage = (event: MessageEvent<Presence>) => {
-      if (event.data?.type === "here" && event.data.from !== ignore) done(true);
-    };
-    channel.postMessage({ type: "who" });
+    cancelTimeout = () => clearTimeout(timer);
+    listener.channel.postMessage({ type: "who" });
   });
+}
+
+/** Show a warning while a neighbour answers; return one stop for the whole
+ * initial probe and follow-up watcher lifecycle. */
+export function watchForAnotherSandbox(
+  show: () => void,
+  hide: () => void,
+  options: { intervalMs?: number; name?: string; timeoutMs?: number } = {},
+): () => void {
+  const { intervalMs = 5000, name = CHANNEL, timeoutMs = 300 } = options;
+  let stopped = false;
+  let visible = false;
+  let stopWatching = () => {};
+  const hideOnce = () => {
+    if (!visible) return;
+    visible = false;
+    hide();
+  };
+  void anotherSandboxRunning(timeoutMs, name).then((another) => {
+    if (!another || stopped) return;
+    visible = true;
+    show();
+    stopWatching = whileAnotherSandboxRuns(
+      hideOnce,
+      intervalMs,
+      name,
+      timeoutMs,
+    );
+  });
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    stopWatching();
+    hideOnce();
+  };
 }
 
 /**
@@ -81,7 +138,6 @@ export function whileAnotherSandboxRuns(
    * long task there, or Chrome throttling a hidden tab, would otherwise
    * erase a warning that is still true, with no way back. */
   silentRounds = 3,
-  ignore = SELF,
 ): () => void {
   if (!supported) return () => {};
   let timer = 0;
@@ -94,7 +150,7 @@ export function whileAnotherSandboxRuns(
     clearInterval(timer);
   };
   timer = setInterval(async () => {
-    const another = await anotherSandboxRunning(timeoutMs, name, ignore);
+    const another = await anotherSandboxRunning(timeoutMs, name);
     if (stopped) return;
     if (another) {
       silent = 0;
