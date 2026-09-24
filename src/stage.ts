@@ -8,6 +8,19 @@ import { buildTarImageIndex, TarImageRootProvider } from "@yurt/tar-image";
 import { decompressYurtimg } from "./zstd.ts";
 
 const NEG_EEXIST = -17;
+/** `METHOD_KERNEL_VFS_SET_METADATA`. A host-control method (`kernel_only`)
+ * that sets mode, owner and mtime in one kernel-authoritative call, which
+ * is why it is used here rather than a `chmod` plus a `chown`: staging is
+ * root (`setPidCredentials(KERNEL_PID, 0, 0)` below), so a `chmod` would
+ * have been permitted too, but it would take three calls to say what this
+ * says in one. The native host stages the same image through the same
+ * method (`disk.rs`'s `set_entry_metadata`). Spelled here rather than
+ * imported because the shared `METHOD` table does not carry the
+ * host-control ids, the same as `SYS_CHOWN` above. */
+const KERNEL_VFS_SET_METADATA = 33;
+const S_IFDIR = 0o040_000;
+const MODE_PERM_MASK = 0o7777;
+const NANOS_PER_SECOND = 1_000_000_000n;
 const REGISTER_FILE_CHUNK_HEADER_BYTES = 12;
 const DEFAULT_KERNEL_SCRATCH_LEN = 64 * 1024;
 
@@ -51,6 +64,35 @@ function chownPath(
   const { rc } = mk.syscall(method, req, 0);
   if (Number(rc) !== 0) {
     throw new Error(`chown ${path} ${uid}:${gid} failed: rc=${rc}`);
+  }
+}
+
+/** Apply the image's mode, owner, and mtime to a staged directory. */
+function setDirectoryMetadata(
+  mk: KernelHostInterface,
+  path: string,
+  entry: { mode: number; uid: number; gid: number; mtime: number },
+): void {
+  const pathBytes = s(path);
+  const req = new Uint8Array(20 + pathBytes.byteLength);
+  const view = new DataView(req.buffer);
+  // The kernel stores this mode verbatim, so include the directory type.
+  view.setUint32(0, (S_IFDIR | (entry.mode & MODE_PERM_MASK)) >>> 0, true);
+  view.setUint32(4, entry.uid >>> 0, true);
+  view.setUint32(8, entry.gid >>> 0, true);
+  view.setBigUint64(
+    12,
+    BigInt(Math.trunc(entry.mtime)) * NANOS_PER_SECOND,
+    true,
+  );
+  req.set(pathBytes, 20);
+  const { rc } = mk.syscall(KERNEL_VFS_SET_METADATA, req, 0);
+  if (Number(rc) !== 0) {
+    throw new Error(
+      `set metadata on ${path} (mode ${
+        entry.mode.toString(8)
+      }) failed: rc=${rc}`,
+    );
   }
 }
 
@@ -101,8 +143,9 @@ export async function stageYurtimg(
     }
   }
   for (const [path, entry] of Object.entries(index.entries)) {
+    if (entry.type === "dir") continue;
     if (entry.uid === 0 && entry.gid === 0) continue;
-    if (entry.type !== "dir" && !include(path)) continue;
+    if (!include(path)) continue;
     chownPath(
       mk,
       path,
@@ -110,6 +153,12 @@ export async function stageYurtimg(
       entry.gid,
       ownershipMethodForEntry(entry.type),
     );
+  }
+  // Apply these modes last: mkdir, symlink, and chown above are
+  // permission-checked, and root still needs search permission through ancestors.
+  for (const [path, entry] of Object.entries(index.entries)) {
+    if (entry.type !== "dir") continue;
+    setDirectoryMetadata(mk, path, entry);
   }
 }
 

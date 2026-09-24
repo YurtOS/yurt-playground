@@ -10,12 +10,16 @@ import { handlePlaygroundRequest } from "../src/serve.ts";
 import { loadPins, resolveArtifacts } from "../src/pins.ts";
 import { ownershipMethodForEntry, stageYurtimg } from "../src/stage.ts";
 
+const STAT_MODE = 12;
 const STAT_UID = 16;
 const STAT_GID = 20;
 const STAT_LEN = 48;
 
 const repoRoot = join(fileURLToPath(import.meta.url), "../..");
 
+// `"dir"` no longer reaches `chownPath` -- directories take their owner
+// from the metadata pass -- but the mapping is still the one a caller
+// would get, and cheap to keep honest.
 Deno.test("symlink ownership uses no-follow lchown", () => {
   assertEquals(ownershipMethodForEntry("symlink"), 0x1_01D2);
   assertEquals(ownershipMethodForEntry("file"), 0x1_0023);
@@ -32,10 +36,7 @@ function openReq(path: string): Uint8Array {
   return req;
 }
 
-function statOwner(
-  mk: KernelHostInterface,
-  path: string,
-): { uid: number; gid: number } {
+function readStat(mk: KernelHostInterface, path: string): DataView {
   const opened = mk.syscall(METHOD.KERNEL_FS_OPEN, openReq(path), 0);
   const fd = Number(opened.rc);
   if (fd < 0) {
@@ -53,12 +54,79 @@ function statOwner(
       `fstat ${path} short response: ${stat.byteLength} < ${STAT_LEN}`,
     );
   }
-  const view = new DataView(stat.buffer, stat.byteOffset, stat.byteLength);
   mk.syscall(METHOD.KERNEL_FS_CLOSE, fdBytes, 0);
+  return new DataView(stat.buffer, stat.byteOffset, stat.byteLength);
+}
+
+function statOwner(
+  mk: KernelHostInterface,
+  path: string,
+): { uid: number; gid: number } {
+  const view = readStat(mk, path);
   return {
     uid: view.getUint32(STAT_UID, true),
     gid: view.getUint32(STAT_GID, true),
   };
+}
+
+function statMode(mk: KernelHostInterface, path: string): number {
+  return readStat(mk, path).getUint32(STAT_MODE, true) & 0o7777;
+}
+
+/** The one staged kernel both tests read, built at most once: staging the
+ * 87 MB image costs seconds, and nothing either test does mutates it. */
+let staged: Promise<KernelHostInterface | null> | undefined;
+
+/** A kernel with the pinned image staged into it, or `null` when the
+ * artifacts are not resolvable here -- this needs the real image, not a
+ * fixture. A skip is a hole in the coverage, so when the caller says the
+ * artifacts are required -- `PLAYGROUND_REQUIRE_ARTIFACTS=1`, which CI
+ * sets and `layout_test.ts` asserts it sets -- it is a failure instead of
+ * a shrug. */
+function stagedKernel(): Promise<KernelHostInterface | null> {
+  staged ??= buildStagedKernel();
+  return staged;
+}
+
+async function buildStagedKernel(): Promise<KernelHostInterface | null> {
+  const artifactsDir = join(repoRoot, "artifacts");
+  try {
+    await resolveArtifacts({
+      artifactsDir,
+      pins: await loadPins(join(artifactsDir, "pins.json")),
+      kernelRoot: Deno.env.get("YURT_KERNEL_ROOT") ??
+        join(repoRoot, "../yurtos-kernel"),
+      portsRoot: Deno.env.get("YURT_PORTS_ROOT"),
+    });
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS") === "1") {
+      throw new Error(
+        `artifacts were required, so this must not skip: ${why}`,
+      );
+    }
+    console.log(`skipping staged-kernel test: ${why}`);
+    return null;
+  }
+  const kernelRes = await handlePlaygroundRequest(
+    new Request("http://playground/yurt_kernel.wasm"),
+  );
+  const imageRes = await handlePlaygroundRequest(
+    new Request("http://playground/playground.yurtimg"),
+  );
+  if (!kernelRes.ok || !imageRes.ok) {
+    throw new Error("failed to load pinned kernel or image");
+  }
+  const mk = await KernelHostInterface.load(
+    new Uint8Array(await kernelRes.arrayBuffer()),
+    defaultHostState(),
+  );
+  await stageYurtimg(
+    mk,
+    new Uint8Array(await imageRes.arrayBuffer()),
+    new Map(),
+  );
+  return mk;
 }
 
 Deno.test({
@@ -67,45 +135,25 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
-    const artifactsDir = join(repoRoot, "artifacts");
-    try {
-      await resolveArtifacts({
-        artifactsDir,
-        pins: await loadPins(join(artifactsDir, "pins.json")),
-        kernelRoot: Deno.env.get("YURT_KERNEL_ROOT") ??
-          join(repoRoot, "../yurtos-kernel"),
-        portsRoot: Deno.env.get("YURT_PORTS_ROOT"),
-      });
-    } catch (error) {
-      console.log(
-        `skipping stage owners: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return;
-    }
-
-    const kernelRes = await handlePlaygroundRequest(
-      new Request("http://playground/yurt_kernel.wasm"),
-    );
-    const imageRes = await handlePlaygroundRequest(
-      new Request("http://playground/playground.yurtimg"),
-    );
-    if (!kernelRes.ok || !imageRes.ok) {
-      throw new Error("failed to load pinned kernel or image");
-    }
-    const mk = await KernelHostInterface.load(
-      new Uint8Array(await kernelRes.arrayBuffer()),
-      defaultHostState(),
-    );
-    await stageYurtimg(
-      mk,
-      new Uint8Array(await imageRes.arrayBuffer()),
-      new Map(),
-    );
-
+    const mk = await stagedKernel();
+    if (!mk) return;
     assertEquals(statOwner(mk, "/bin"), { uid: 0, gid: 0 });
     assertEquals(statOwner(mk, "/home"), { uid: 0, gid: 0 });
     assertEquals(statOwner(mk, "/home/user"), { uid: 1000, gid: 1000 });
+  },
+});
+
+Deno.test({
+  name: "stageYurtimg applies the image's directory modes",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const mk = await stagedKernel();
+    if (!mk) return;
+    assertEquals(statMode(mk, "/etc"), 0o755);
+    assertEquals(statMode(mk, "/"), 0o755);
+    assertEquals(statMode(mk, "/bin"), 0o755);
+    assertEquals(statMode(mk, "/home/user"), 0o755);
+    assertEquals(statMode(mk, "/tmp"), 0o1777);
   },
 });
