@@ -7,7 +7,7 @@ import {
   desktopInfo,
   nativeYurtTransport,
 } from "./native.ts";
-import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
+import { announceSandbox, watchForAnotherSandbox } from "./tab_presence.ts";
 import {
   createYurt,
   type Yurt,
@@ -179,6 +179,7 @@ function boot(
   notebook: ReturnType<typeof mountNotebook>,
   execute: { current: (id: string, code: string) => void },
   desktop: DesktopInfo | undefined,
+  stopWatchingForAnotherSandbox: () => void,
 ): void {
   const kernelPorts = desktop?.kernelPorts;
   const status = byId("status");
@@ -195,10 +196,12 @@ function boot(
   // is on screen the status bar alone carries the message, so the shell
   // stays usable.
   let terminalEmpty = true;
-  const fail = (message: string) => {
-    // A tab with a failed boot has no sandbox to speak for.
+  const sandboxGone = () => {
     stopAnnouncing();
     stopAnnouncing = () => {};
+    stopWatchingForAnotherSandbox();
+  };
+  const fail = (message: string) => {
     rememberBooting(undefined);
     if (!terminalEmpty) {
       status.textContent = `failed: ${message}`;
@@ -249,7 +252,10 @@ function boot(
       // Only a boot failure is the sandbox's failure: an error once the
       // shell is up ("Jupyter is not ready", a restart that failed) leaves
       // exec working, and the status says so.
-      if (!yurtState.isRunning()) yurtState.failed(msg.message);
+      if (!yurtState.isRunning()) {
+        yurtState.failed(msg.message);
+        sandboxGone();
+      }
     }
     if (msg.type === "out") {
       terminalEmpty = false;
@@ -274,6 +280,7 @@ function boot(
     const message = event.message || "coordinator worker failed";
     fail(message);
     yurtState.failed(message);
+    sandboxGone();
     // Nothing will answer them now.
     for (const waiter of pending.values()) waiter.reject(new Error(message));
     pending.clear();
@@ -351,13 +358,16 @@ async function runPage(): Promise<void> {
     // so before this one boots, and answer the next tab that asks. The
     // desktop app's sandbox is native and one per launcher, so neither
     // applies there.
+    let stopWatchingForAnotherSandbox = () => {};
     if (desktop === undefined) {
-      void anotherSandboxRunning().then((another) => {
-        if (another) byId("another-tab-note").hidden = false;
-      });
+      const note = byId("another-tab-note");
+      stopWatchingForAnotherSandbox = watchForAnotherSandbox(
+        () => note.hidden = false,
+        () => note.hidden = true,
+      );
       stopAnnouncing = announceSandbox();
     }
-    boot(notebook, execute, desktop);
+    boot(notebook, execute, desktop, stopWatchingForAnotherSandbox);
   };
   // Only the in-tab kernel has the memory problem; the desktop app's page
   // runs the sandbox natively.
