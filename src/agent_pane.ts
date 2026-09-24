@@ -8,7 +8,8 @@
  * Hugging Face (src/llm_models.ts).
  */
 import type { Yurt } from "./agent_api.ts";
-import { type AgentEvent, runAgent, type Tools } from "./agent.ts";
+import { createAgentTools, waitForSandbox } from "./agent_tools.ts";
+import { type AgentEvent, runAgent } from "./agent.ts";
 import { isModelCached, loadLocalModel, type LocalLlm } from "./llm.ts";
 import { LOCAL_MODELS, type LocalModel, MAX_NUM_TOKENS } from "./llm_models.ts";
 
@@ -39,29 +40,6 @@ async function offeredModels(): Promise<LocalModel[]> {
   } catch {
     return [];
   }
-}
-
-function sandboxTools(yurt: Yurt): Tools {
-  return {
-    async exec(cmd, signal) {
-      const execution = await yurt.spawn(cmd, { timeoutMs: 30_000 });
-      const kill = () => void execution.kill().catch(() => {});
-      signal.addEventListener("abort", kill, { once: true });
-      try {
-        const r = await execution.wait();
-        return {
-          code: "code" in r ? r.code : null,
-          stdout: r.stdout,
-          stderr: r.stderr,
-        };
-      } finally {
-        signal.removeEventListener("abort", kill);
-      }
-    },
-    async readFile(path) {
-      return new TextDecoder().decode(await yurt.fs.read(path));
-    },
-  };
 }
 
 export async function mountAgentPane(
@@ -247,7 +225,8 @@ export async function mountAgentPane(
   const go = async () => {
     const text = task.value.trim();
     if (llm === undefined || running !== undefined || text === "") return;
-    running = new AbortController();
+    const controller = new AbortController();
+    running = controller;
     run.disabled = true;
     stop.hidden = false;
     transcript.replaceChildren();
@@ -258,10 +237,15 @@ export async function mountAgentPane(
         textContent: "starting the sandbox first",
       });
       transcript.append(waiting);
-      if (yurt.status === "idle") sandbox.start();
       try {
-        await yurt.ready;
+        await waitForSandbox(yurt, sandbox.start, controller.signal);
       } catch (error) {
+        if (controller.signal.aborted) {
+          waiting.textContent = "stopped";
+          waiting.className = "stopped";
+          finish();
+          return;
+        }
         waiting.className = "stopped";
         waiting.textContent = `the sandbox did not start: ${error}`;
         finish();
@@ -333,7 +317,13 @@ export async function mountAgentPane(
         transcript.append(el("li", { className: "stopped", textContent: why }));
       }
     };
-    await runAgent(text, llm, sandboxTools(yurt), onEvent, running.signal);
+    await runAgent(
+      text,
+      llm,
+      createAgentTools(yurt),
+      onEvent,
+      controller.signal,
+    );
     finish();
   };
   const finish = () => {
