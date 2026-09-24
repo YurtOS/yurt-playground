@@ -65,12 +65,11 @@ export function hushUntil(
   return () => release();
 }
 
-/** What a cell has printed so far: the streams of `JupyterReply` without
- * its verdict, handed over as the messages arrive. */
-export type JupyterPartial = Pick<
-  JupyterReply,
-  "stdout" | "stderr" | "display"
->;
+/** One new piece of cell output. Keep IPC proportional to new output. */
+export type JupyterStream = {
+  stream: "stdout" | "stderr" | "display";
+  text: string;
+};
 
 export type JupyterReply = {
   status: "ok" | "error";
@@ -422,10 +421,11 @@ export const EXECUTE_TIMEOUT_MS = 120_000;
 export async function executeCell(
   transport: JupyterTransport,
   code: string,
-  timeoutMs = EXECUTE_TIMEOUT_MS,
-  /** Called as the cell prints, so a long one is not a blank pane for a
-   * minute (yurt-playground#131). The reply carries the same text again. */
-  onStream?: (partial: JupyterPartial) => void,
+  options: {
+    timeoutMs?: number;
+    /** Called with each new output chunk; the reply remains complete. */
+    onStream?: (chunk: JupyterStream) => void;
+  } = {},
 ): Promise<JupyterReply> {
   const msgId = crypto.randomUUID();
   const output = {
@@ -434,11 +434,6 @@ export async function executeCell(
     display: "",
     traceback: [] as string[],
   };
-  const partial = (): JupyterPartial => ({
-    stdout: output.stdout,
-    stderr: output.stderr,
-    display: output.display,
-  });
   let unsubscribe: (() => void) | undefined;
   const result = new Promise<JupyterReply>((resolve, reject) => {
     let gotReply = false;
@@ -454,15 +449,16 @@ export async function executeCell(
       if (message.parent_header.msg_id !== msgId) return;
       if (message.header.msg_type === "stream") {
         const text = String(message.content.text ?? "");
-        if (message.content.name === "stderr") output.stderr += text;
-        else output.stdout += text;
-        onStream?.({ ...partial() });
+        const stream = message.content.name === "stderr" ? "stderr" : "stdout";
+        output[stream] += text;
+        options.onStream?.({ stream, text });
       } else if (
         message.header.msg_type === "display_data" ||
         message.header.msg_type === "execute_result"
       ) {
-        output.display += displayText(message.content.data);
-        onStream?.({ ...partial() });
+        const text = displayText(message.content.data);
+        output.display += text;
+        options.onStream?.({ stream: "display", text });
       } else if (message.header.msg_type === "error") {
         output.traceback.push(...asStrings(message.content.traceback));
       } else if (message.header.msg_type === "execute_reply") {
@@ -502,7 +498,11 @@ export async function executeCell(
     });
   });
   try {
-    return await withTimeout(result, timeoutMs, "Jupyter execute timed out");
+    return await withTimeout(
+      result,
+      options.timeoutMs ?? EXECUTE_TIMEOUT_MS,
+      "Jupyter execute timed out",
+    );
   } finally {
     unsubscribe?.();
     unsubscribe = undefined;

@@ -1,9 +1,9 @@
-import type { JupyterPartial, JupyterReply } from "./jupyter.ts";
+import type { JupyterReply, JupyterStream } from "./jupyter.ts";
 
 export type NotebookView = {
   ready(): void;
   /** What the running cell has printed so far (yurt-playground#131). */
-  stream(id: string, partial: JupyterPartial): void;
+  stream(id: string, chunk: JupyterStream): void;
   result(id: string, reply: JupyterReply): void;
   error(id: string, message: string): void;
   dispose(): void;
@@ -27,7 +27,7 @@ export function mountNotebook(
   execute: (id: string, code: string) => void,
   /** Stop the running cell. Without one -- a page that cannot reach the
    * kernel's control channel -- there is no Stop button, as before. */
-  interrupt?: () => void,
+  interrupt?: (id: string) => void,
 ): NotebookView {
   root.replaceChildren();
   // The pane's bar: what this is, and where the kernel stands.
@@ -138,7 +138,8 @@ export function mountNotebook(
     // reader with two dead buttons and a status claiming an interrupt is
     // in progress, which is worse than what this set out to fix.
     status.textContent = "interrupting";
-    interrupt?.();
+    const id = pending.values().next().value;
+    if (id !== undefined) interrupt?.(id);
   };
   return {
     ready() {
@@ -146,9 +147,15 @@ export function mountNotebook(
       button.disabled = false;
       status.textContent = "ready";
     },
-    stream(id, partial) {
+    stream(id, chunk) {
       if (!pending.has(id)) return;
-      show(partial);
+      showing ??= { stdout: "", stderr: "", display: "", traceback: "" };
+      showing[chunk.stream] += chunk.text;
+      if (frame === 0) {
+        frame = typeof requestAnimationFrame === "function"
+          ? requestAnimationFrame(render)
+          : setTimeout(render, 0) as unknown as number;
+      }
     },
     result(id, reply) {
       if (!pending.delete(id)) return;

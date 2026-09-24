@@ -329,7 +329,7 @@ Deno.test("the cell can be stopped, and its output cannot push the page away", a
     "no Stop control in the cell",
   );
   assertEquals(
-    notebook.includes("stream(id, partial)"),
+    notebook.includes("stream(id, chunk)"),
     true,
     "the view cannot show a cell's output before it ends",
   );
@@ -348,6 +348,59 @@ Deno.test("the cell can be stopped, and its output cannot push the page away", a
   const pane = css.match(/#notebook-output \{([^}]*)\}/)?.[1] ?? "";
   assertEquals(/max-height:/.test(pane), true, "no max-height on the pane");
   assertEquals(/overflow-y:\s*auto/.test(pane), true, "the pane cannot scroll");
+});
+
+Deno.test("every disclosure on the home page is styled, not just the proof", async () => {
+  // Every disclosure opts into the shared styling, independent of id or
+  // attribute order, and the shared selectors own both the summary and body.
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
+  const body = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/)?.[1] ?? "";
+  const disclosures = [...body.matchAll(/<details\b([^>]*)>/g)];
+  assertEquals(disclosures.length >= 2, true);
+  for (const [index, [, attributes]] of disclosures.entries()) {
+    assertEquals(
+      /(?:^|\s)class="strip"(?:\s|$)/.test(attributes),
+      true,
+      `details ${index + 1} must opt into .strip styling`,
+    );
+  }
+  for (
+    const rule of [
+      /\.strip\s*>\s*summary\s*\{[^}]*display:\s*flex/,
+      /\.strip\s*>\s*summary\s*\{[^}]*list-style:\s*none/,
+      /\.strip\s*>\s*summary::-webkit-details-marker\s*\{[^}]*display:\s*none/,
+      /\.strip\s*>\s*summary h2::before\s*\{[^}]*content:[^}]*border-left:\s*7px solid var\(--ochre\)/,
+      /\.strip\s+\.checks\s*\{/,
+      /\.strip\s+\.check\s*\{/,
+    ]
+  ) {
+    assertEquals(rule.test(css), true, `no class-scoped rule for ${rule}`);
+  }
+  const reducedMotion = [
+    ...css.matchAll(
+      /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n[ ]{6}\}/g,
+    ),
+  ];
+  assertEquals(reducedMotion.length, 1, "expected one reduced-motion block");
+  assertEquals(
+    /#start \.prompt::after\s*\{[^}]*animation:\s*none/.test(
+      reducedMotion[0]?.[1] ?? "",
+    ),
+    true,
+  );
+  assertEquals(
+    /\.strip\s*>\s*summary h2::before\s*\{[^}]*transition:\s*none/.test(
+      reducedMotion[0]?.[1] ?? "",
+    ),
+    true,
+  );
+  assertEquals(
+    css.trimEnd().endsWith(reducedMotion[0]?.[0].trimEnd() ?? ""),
+    true,
+  );
 });
 
 Deno.test("deployment workflow publishes an isolated static site", async () => {

@@ -10,12 +10,12 @@ import {
 } from "./boot.ts";
 import {
   executeCell,
-  interruptKernel,
-  type JupyterPartial,
+  type JupyterStream,
   type KernelPorts,
   restartGuestKernel,
   startGuestKernel,
 } from "./jupyter.ts";
+import { requestCellInterrupt } from "./cell_interrupt.ts";
 import { bootNativePlayground } from "./native.ts";
 import {
   type ExecOptions,
@@ -50,7 +50,7 @@ type ToWorker =
   | { type: "cell"; id: string; code: string }
   // Stop whatever the kernel is running: KeyboardInterrupt in the cell,
   // which then answers with its traceback like any other error (#130).
-  | { type: "cell-interrupt" }
+  | { type: "cell-interrupt"; id: string }
   // Raw Jupyter wire-protocol passthrough for a real frontend (JupyterLite's
   // Yurt kernel plugin): messages go to the guest kernel as sent, and every
   // message the kernel emits comes back with the socket it arrived on.
@@ -84,7 +84,7 @@ type FromWorker =
   | {
     type: "cell-stream";
     id: string;
-    partial: JupyterPartial;
+    chunk: JupyterStream;
   }
   | { type: "cell-error"; id: string; message: string }
   | {
@@ -242,18 +242,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     return;
   }
   if (msg.type === "cell-interrupt") {
-    // Answer either way: a silent return left the cell reading
-    // "interrupting" for ever, with nothing to settle it (#130 review).
-    if (jupyter === undefined) {
-      post({ type: "error", message: "Jupyter is not ready" });
-      return;
-    }
-    await interruptKernel(jupyter).catch((error) => {
-      post({
-        type: "error",
-        message: error instanceof Error ? error.message : String(error),
-      });
-    });
+    await requestCellInterrupt(jupyter, msg.id, post);
     return;
   }
   if (msg.type === "cell") {
@@ -268,8 +257,10 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         result: await executeCell(
           jupyter,
           msg.code,
-          undefined,
-          (partial) => post({ type: "cell-stream", id: msg.id, partial }),
+          {
+            onStream: (chunk) =>
+              post({ type: "cell-stream", id: msg.id, chunk }),
+          },
         ),
       });
     } catch (error) {

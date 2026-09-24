@@ -316,7 +316,7 @@ Deno.test("executeCell removes its listener after a timeout", async () => {
     close: () => Promise.resolve(),
   };
 
-  await assertRejects(() => executeCell(transport, "1+1", 0));
+  await assertRejects(() => executeCell(transport, "1+1", { timeoutMs: 0 }));
   assertEquals(subscriptions, 0);
 });
 
@@ -452,18 +452,19 @@ Deno.test("executeCell hands over output as it arrives, not only at the end", as
       return Promise.resolve();
     },
   };
-  const seen: string[] = [];
+  const seen: Array<{ stream: string; text: string }> = [];
   const reply = await executeCell(
     transport,
     "print('one')",
-    1000,
-    (partial) =>
-      seen.push(`${partial.stdout}|${partial.stderr}|${partial.display}`),
+    {
+      timeoutMs: 1000,
+      onStream: (chunk) => seen.push(chunk),
+    },
   );
   assertEquals(seen, [
-    "one\n||",
-    "one\n|warn\n|",
-    "one\n|warn\n|3",
+    { stream: "stdout", text: "one\n" },
+    { stream: "stderr", text: "warn\n" },
+    { stream: "display", text: "3" },
   ]);
   // and the reply still carries the whole of it
   assertEquals(reply.stdout, "one\n");
