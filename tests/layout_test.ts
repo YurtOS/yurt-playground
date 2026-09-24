@@ -318,66 +318,54 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
 });
 
 Deno.test("every disclosure on the home page is styled, not just the proof", async () => {
-  // yurt-playground#129: the summary rules were written as `#proof summary`,
-  // so the "Suspend and resume" disclosure added later rendered with the
-  // browser's default marker, its heading as a block and its hint on a third
-  // line -- directly under the styled one. Scope the rules to the element,
-  // and a third <details class="strip"> cannot regress the same way.
+  // Every disclosure opts into the shared styling, independent of id or
+  // attribute order, and the shared selectors own both the summary and body.
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
   );
   const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
-  const ids = [...html.matchAll(/<details class="strip" id="([\w-]+)"/g)]
-    .map((m) => m[1]);
-  assertEquals(ids.length >= 2, true, `expected several strips, got ${ids}`);
-  // A rule on the class styles every one of them; an id rule styles one.
-  const styles = (selector: string) =>
-    new RegExp(`${selector}\\s*(::-webkit-details-marker|\\{)`).test(css);
-  for (const id of ids) {
+  const disclosures = [...html.matchAll(/<details\b([^>]*)>/g)];
+  assertEquals(disclosures.length >= 2, true);
+  for (const [index, [, attributes]] of disclosures.entries()) {
     assertEquals(
-      styles("\\.strip\\s*>\\s*summary") || styles(`#${id} summary`),
+      /(?:^|\s)class="strip"(?:\s|$)/.test(attributes),
       true,
-      `#${id}: no rule styles its summary`,
+      `details ${index + 1} must opt into .strip styling`,
     );
   }
-  // The specific thing that was missing: the default disclosure marker is
-  // suppressed, and a triangle of the page's own is drawn in its place.
-  // Without this a rule that merely mentions `summary` would pass while the
-  // section still rendered with the browser's marker on a line of its own.
   for (
     const rule of [
+      /\.strip\s*>\s*summary\s*\{[^}]*display:\s*flex/,
       /\.strip\s*>\s*summary\s*\{[^}]*list-style:\s*none/,
       /\.strip\s*>\s*summary::-webkit-details-marker\s*\{[^}]*display:\s*none/,
-      /\.strip\s*>\s*summary h2::before\s*\{[^}]*content:/,
-      /\.strip\[open\]\s*>\s*summary\s*\.hint\s*\{[^}]*display:\s*none/,
+      /\.strip\s*>\s*summary h2::before\s*\{[^}]*content:[^}]*border-left:\s*7px solid var\(--ochre\)/,
+      /\.strip\s+\.checks\s*\{/,
+      /\.strip\s+\.check\s*\{/,
     ]
   ) {
     assertEquals(rule.test(css), true, `no class-scoped rule for ${rule}`);
   }
-  // ... and the body, not only the header. Both disclosures carry the same
-  // `.checks` grid of four `.check` cards, so a rule left on `#proof` leaves
-  // the other one's cards unstyled -- the same defect one element deeper.
-  for (const id of ids) {
-    const details = html.match(
-      new RegExp(`<details class="strip" id="${id}"[\\s\\S]*?</details>`),
-    )
-      ?.[0] ?? "";
-    for (const klass of ["checks", "check"]) {
-      if (!details.includes(`class="${klass}"`)) continue;
-      assertEquals(
-        new RegExp(`\\.strip\\s+\\.${klass}[\\s{]`).test(css) ||
-          css.includes(`#${id} .${klass}`),
-        true,
-        `#${id} uses .${klass} and no rule styles it`,
-      );
-    }
-  }
-  // No rule may be scoped to one disclosure any more: that is how this
-  // happened, twice.
+  const reducedMotion = [
+    ...css.matchAll(
+      /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n[ ]{6}\}/g,
+    ),
+  ];
+  assertEquals(reducedMotion.length, 1, "expected one reduced-motion block");
   assertEquals(
-    css.includes("#proof "),
-    false,
-    "a rule is still scoped to #proof",
+    /#start \.prompt::after\s*\{[^}]*animation:\s*none/.test(
+      reducedMotion[0]?.[1] ?? "",
+    ),
+    true,
+  );
+  assertEquals(
+    /\.strip\s*>\s*summary h2::before\s*\{[^}]*transition:\s*none/.test(
+      reducedMotion[0]?.[1] ?? "",
+    ),
+    true,
+  );
+  assertEquals(
+    css.trimEnd().endsWith(reducedMotion[0]?.[0].trimEnd() ?? ""),
+    true,
   );
 });
 

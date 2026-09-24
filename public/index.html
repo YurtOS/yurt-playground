@@ -190,11 +190,6 @@
           opacity: 0;
         }
       }
-      @media (prefers-reduced-motion: reduce) {
-        #start .prompt::after {
-          animation: none;
-        }
-      }
       #start button {
         font: inherit;
         font-size: 15px;
@@ -447,14 +442,6 @@
       .strip[open] > summary h2::before {
         transform: rotate(90deg);
       }
-      /* After the rule it overrides, not before: a media query adds no
-         specificity, so the earlier copy of this lost to the transition
-         declared below it and the triangle animated anyway. */
-      @media (prefers-reduced-motion: reduce) {
-        .strip > summary h2::before {
-          transition: none;
-        }
-      }
       .strip > summary .hint {
         color: var(--muted);
       }
@@ -562,6 +549,14 @@
         }
         .strip .checks {
           grid-template-columns: 1fr;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #start .prompt::after {
+          animation: none;
+        }
+        .strip > summary h2::before {
+          transition: none;
         }
       }
     </style>
