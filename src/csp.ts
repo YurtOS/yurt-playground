@@ -4,7 +4,9 @@
  * The guest has no network; this is what keeps the *page* honest about it.
  * Every request the browser makes from a playground page must stay on the
  * site's own origin (`connect-src 'self'`), so notebook markdown, rich HTML
- * output or a broken frontend cannot phone out. Scripts come from the origin
+ * output or a broken frontend cannot phone out. One exception, outside
+ * JupyterLite: the local agent's weights (#140) download from Hugging Face
+ * ({@link MODEL_ORIGINS}); gigabytes do not fit the site's host. Scripts come from the origin
  * plus the inline bootstraps JupyterLite emits in its index pages, allowed
  * by hash; the WebAssembly kernel needs `'wasm-unsafe-eval'`. Styles allow
  * inline because JupyterLab sets them everywhere.
@@ -45,6 +47,11 @@ export async function inlineScriptHashes(html: string): Promise<string[]> {
   return hashes;
 }
 
+/** Where the agent's model weights come from (src/llm_models.ts):
+ * `huggingface.co` answers with a redirect to its CDN under `hf.co`, and a
+ * CSP checks every hop. */
+export const MODEL_ORIGINS = ["https://huggingface.co", "https://*.hf.co"];
+
 export type CspOptions = {
   /** `'sha256-…'` sources for the document's inline scripts. */
   scriptHashes?: string[];
@@ -53,6 +60,8 @@ export type CspOptions = {
    * validators with `new Function`; only the JupyterLite pages get this.
    */
   allowEval?: boolean;
+  /** Keep `connect-src` on the origin alone: no model download. */
+  sameOriginOnly?: boolean;
 };
 
 export function contentSecurityPolicy(options: CspOptions = {}): string {
@@ -69,7 +78,8 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "media-src 'self' blob:",
-    "connect-src 'self'",
+    ["connect-src 'self'", ...(options.sameOriginOnly ? [] : MODEL_ORIGINS)]
+      .join(" "),
     "worker-src 'self'",
     "frame-src 'none'",
     "object-src 'none'",
@@ -87,9 +97,11 @@ export function documentPolicy(
   pathname: string,
   scriptHashes: string[],
 ): string {
+  const jupyter = pathname.startsWith(JUPYTER_PREFIX);
   return contentSecurityPolicy({
     scriptHashes,
-    allowEval: pathname.startsWith(JUPYTER_PREFIX),
+    allowEval: jupyter,
+    sameOriginOnly: jupyter,
   });
 }
 
@@ -120,6 +132,7 @@ export function headersFile(
       contentSecurityPolicy({
         scriptHashes: jupyterScriptHashes,
         allowEval: true,
+        sameOriginOnly: true,
       })
     }`,
   );

@@ -38,6 +38,7 @@ export function kernelImportMap(
       "@xterm/xterm": "npm:@xterm/xterm@5.5.0",
       "@xterm/addon-fit": "npm:@xterm/addon-fit@0.10.0",
       fzstd: "npm:fzstd@0.1.1",
+      "@litert-lm/core": "npm:@litert-lm/core@0.17.1",
     },
   };
 }
@@ -132,6 +133,13 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
       "self.location.href",
     ),
   );
+  // The local agent's inference worker (#140): classic, because LiteRT-LM
+  // loads its emscripten glue with importScripts.
+  await bundle(kernelPath, {
+    entry: join(repoRoot, "src/llm_worker.ts"),
+    out: join(repoRoot, "public/llm_worker.bundle.js"),
+    importMap: importMapPath,
+  });
 }
 
 async function bundle(

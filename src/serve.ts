@@ -12,6 +12,7 @@ import {
   PYTHON_SEAL_NAME,
 } from "./image_parts.ts";
 import { IMAGE_NAME, integrityManifest } from "./integrity.ts";
+import { LOCAL_MODELS } from "./llm_models.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -67,6 +68,7 @@ export function contentType(path: string): string {
   }
   if (path.endsWith(".css")) return "text/css; charset=utf-8";
   if (path.endsWith(".wasm")) return "application/wasm";
+  if (path.endsWith(".svg")) return "image/svg+xml";
   if (path.endsWith(".yurtimg")) return "application/octet-stream";
   if (path.endsWith(".json")) return "application/json; charset=utf-8";
   return "application/octet-stream";
@@ -177,6 +179,54 @@ async function handleIntegrity(): Promise<Response> {
   });
 }
 
+/** LiteRT-LM's wasm builds, straight from the npm package deno.lock pins. */
+export const LITERT_WASM_DIR = join(
+  repoRoot,
+  "node_modules/@litert-lm/core/wasm",
+);
+
+/** What `/llm/models.json` lists: every pin. The weights come from Hugging
+ * Face, so a site that ships the runtime offers them all. */
+export function offeredModelIds(): string[] {
+  return LOCAL_MODELS.map((m) => m.id);
+}
+
+/** The local agent's runtime (#140): `/llm/models.json`, the emscripten glue,
+ * and each `.wasm` gzipped as `.wasm.gz`, the form the static build ships
+ * (a build is 21-34 MB; Cloudflare Pages refuses a file over 25 MiB). */
+async function handleLlmFile(pathname: string): Promise<Response | null> {
+  if (!pathname.startsWith("/llm/")) return null;
+  const relative = pathname.slice("/llm/".length);
+  if (relative === "models.json") {
+    return new Response(JSON.stringify(offeredModelIds()), {
+      headers: {
+        ...ISOLATION_HEADERS,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+    });
+  }
+  const name = /^wasm\/([\w.-]+\.(js|wasm\.gz))$/.exec(relative)?.[1];
+  if (name === undefined) return notFound();
+  let file: Deno.FsFile;
+  try {
+    file = await Deno.open(join(LITERT_WASM_DIR, name.replace(/\.gz$/, "")));
+  } catch {
+    return notFound();
+  }
+  const gzip = name.endsWith(".gz");
+  return new Response(
+    gzip
+      ? file.readable.pipeThrough(new CompressionStream("gzip"))
+      : file.readable,
+    {
+      headers: {
+        ...ISOLATION_HEADERS,
+        "Content-Type": gzip ? "application/gzip" : contentType(name),
+      },
+    },
+  );
+}
+
 export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
   let pathname: string;
@@ -185,6 +235,8 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   } catch {
     return notFound();
   }
+  const llm = await handleLlmFile(pathname);
+  if (llm !== null) return llm;
   if (pathname === "/integrity.json") {
     try {
       return await handleIntegrity();

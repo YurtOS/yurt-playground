@@ -8,6 +8,7 @@
     "@xterm/addon-fit": "npm:@xterm/addon-fit@0.10.0",
     "playwright": "npm:playwright@1.55.0",
     "fzstd": "npm:fzstd@0.1.1",
+    "@litert-lm/core": "npm:@litert-lm/core@0.17.1",
     "@yurt/kernel-host-interface-js": "../yurtos-kernel/packages/kernel-host-interface-js/mod.ts",
     "@yurt/tar-image": "../yurtos-kernel/packages/runner/src/vfs/tar-image-root-provider.ts"
   },

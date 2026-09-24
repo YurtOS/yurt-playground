@@ -2,7 +2,12 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "./serve.ts";
-import { ISOLATION_HEADERS, XTERM_CSS_PATH } from "../src/serve.ts";
+import {
+  ISOLATION_HEADERS,
+  LITERT_WASM_DIR,
+  offeredModelIds,
+  XTERM_CSS_PATH,
+} from "../src/serve.ts";
 import { headersFile, inlineScriptHashes } from "../src/csp.ts";
 import {
   imagePartRange,
@@ -40,6 +45,10 @@ const STATIC_FILES = [
   // The page asks whether it is the desktop app; on the hosted site the
   // answer is no, said in JSON rather than as a 404 on every boot (#86).
   "desktop.json",
+  "favicon.svg",
+  // The local agent's inference worker (#140); its runtime is /llm/.
+  "llm_worker.bundle.js",
+  "agent.css",
 ];
 /** The JupyterLite site (jupyterlite/build.sh); served under /jupyter/. */
 const JUPYTER_DIR = "jupyter";
@@ -132,7 +141,37 @@ export async function buildStaticSite(): Promise<void> {
       2,
     ) + "\n",
   );
+  await writeLlmRuntime();
   await Deno.writeTextFile(join(distDir, "_headers"), await siteHeaders());
+}
+
+/** The local agent's runtime (#140), as the dev server answers it: the
+ * model list, LiteRT-LM's glue, and each .wasm gzipped (the largest is
+ * 34 MB raw, 10 MB gzipped, and Pages refuses a file over 25 MiB). The
+ * weights are not here; the worker downloads them from Hugging Face. */
+async function writeLlmRuntime(): Promise<void> {
+  const dir = join(distDir, "llm", "wasm");
+  await Deno.mkdir(dir, { recursive: true });
+  await Deno.writeTextFile(
+    join(distDir, "llm", "models.json"),
+    JSON.stringify(offeredModelIds()),
+  );
+  for await (const entry of Deno.readDir(LITERT_WASM_DIR)) {
+    const from = join(LITERT_WASM_DIR, entry.name);
+    if (entry.name.endsWith(".js")) {
+      await Deno.copyFile(from, join(dir, entry.name));
+    } else if (entry.name.endsWith(".wasm")) {
+      const gz = await new Response(
+        (await Deno.open(from)).readable.pipeThrough(
+          new CompressionStream("gzip"),
+        ),
+      ).arrayBuffer();
+      if (gz.byteLength > 25 * 2 ** 20) {
+        throw new Error(`${entry.name}.gz is over Pages' 25 MiB file limit`);
+      }
+      await Deno.writeFile(join(dir, `${entry.name}.gz`), new Uint8Array(gz));
+    }
+  }
 }
 
 /** Hash the inline scripts of every HTML file under `dir` (recursively). */

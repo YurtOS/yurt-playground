@@ -62,6 +62,12 @@ Deno.test("static build writes every file the pages need", async () => {
       "_headers",
       "verify.js",
       "integrity.json",
+      "agent.css",
+      "llm_worker.bundle.js",
+      "llm/models.json",
+      "llm/wasm/litertlm_wasm_internal.js",
+      "llm/wasm/litertlm_wasm_internal.wasm.gz",
+      "llm/wasm/litertlm_wasm_compat_asyncify_internal.wasm.gz",
     ]
   ) {
     const stat = await Deno.stat(new URL(`dist/${file}`, repoRoot));
@@ -112,7 +118,7 @@ Deno.test("static build writes every file the pages need", async () => {
       "Cross-Origin-Opener-Policy: same-origin",
       "Cross-Origin-Embedder-Policy: require-corp",
       "Cross-Origin-Resource-Policy: same-origin",
-      "connect-src 'self'",
+      "connect-src 'self' https://huggingface.co https://*.hf.co;",
       "/jupyter/*\n  ! Content-Security-Policy\n  Content-Security-Policy: ",
     ]
   ) {
@@ -121,6 +127,8 @@ Deno.test("static build writes every file the pages need", async () => {
   const [siteRule, jupyterRule] = headers.split("/jupyter/*");
   assertEquals(siteRule.includes("'unsafe-eval'"), false);
   assertEquals(jupyterRule.includes("'unsafe-eval'"), true);
+  // The model download is the home page's; JupyterLite stays on the origin.
+  assertEquals(jupyterRule.includes("huggingface"), false);
   // The home page ships no inline script, so its rule carries no hash.
   assertEquals(
     await inlineScriptHashes(

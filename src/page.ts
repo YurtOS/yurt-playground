@@ -1,5 +1,6 @@
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import { mountNotebook } from "./notebook.ts";
+import { mountAgentPane } from "./agent_pane.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
 import {
@@ -360,6 +361,12 @@ async function runPage(): Promise<void> {
     (id, code) => execute.current(id, code),
     (id) => interruptCell.current(id),
   );
+  // The local agent (#140) drives the same sandbox through window.yurt; its
+  // Run starts the sandbox the way the Start button does, and only then.
+  void mountAgentPane(byId("agent"), {
+    yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
+    start: () => document.getElementById("start-sandbox")?.click(),
+  });
   const start = document.getElementById("start");
   const begin = () => {
     if (start) start.hidden = true;

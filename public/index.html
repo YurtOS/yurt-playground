@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Yurt playground</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./xterm.css" />
     <style>
       :root {
@@ -575,6 +576,7 @@
         }
       }
     </style>
+    <link rel="stylesheet" href="./agent.css" />
   </head>
   <body>
     <main class="wrap">
@@ -693,6 +695,15 @@
         id="notebook"
         aria-label="Jupyter notebook"
         data-testid="notebook"
+      >
+      </section>
+
+      <section
+        class="pane"
+        id="agent"
+        aria-label="Local agent"
+        data-testid="agent"
+        hidden
       >
       </section>
 
