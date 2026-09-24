@@ -6,6 +6,10 @@
  * and the sandbox the agent's commands run in. Scenes: no WebGPU, a model
  * that fails to start, Enter vs Shift+Enter, a task answered through a real
  * command (starting the sandbox on the way), and Stop killing a command.
+ * This checks the tool loop and the pane, not the GPU: the adapter below
+ * is a stub and the worker never creates a device. The model on a real
+ * adapter, in real Chrome and Safari, is tests/agent_webgpu_e2e.ts (a Mac,
+ * not CI).
  * Run: `deno run --allow-all tests/agent_e2e.ts` (needs the kernel checkout
  * and pinned artifacts like playground_e2e.ts).
  */
@@ -69,6 +73,7 @@ async function withModel(
       body: fakeWorker(opts.worker),
     }));
   // Headless Chromium on a runner has no GPU; the pane asks for an adapter.
+  // A stub, so this proves nothing about WebGPU (agent_webgpu_e2e.ts does).
   await context.addInitScript((webgpu: boolean) => {
     Object.defineProperty(Navigator.prototype, "gpu", {
       configurable: true,

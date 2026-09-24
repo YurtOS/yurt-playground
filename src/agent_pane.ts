@@ -227,6 +227,10 @@ export async function mountAgentPane(
     }
     status.textContent = `${model.label} · WebGPU · in this tab`;
     root.dataset.agentReady = "";
+    // Which runtime build the browser got, and whether the weights were
+    // already cached (tests/agent_webgpu_e2e.ts reports both).
+    root.dataset.agentRuntime = llm.loaded.wasmVariant;
+    root.dataset.agentFromCache = String(llm.loaded.fromCache);
     intro.hidden = true;
     work.hidden = false;
     task.focus();
