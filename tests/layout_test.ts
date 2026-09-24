@@ -324,7 +324,8 @@ Deno.test("every disclosure on the home page is styled, not just the proof", asy
     new URL("../public/index.html", import.meta.url),
   );
   const css = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
-  const disclosures = [...html.matchAll(/<details\b([^>]*)>/g)];
+  const body = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/)?.[1] ?? "";
+  const disclosures = [...body.matchAll(/<details\b([^>]*)>/g)];
   assertEquals(disclosures.length >= 2, true);
   for (const [index, [, attributes]] of disclosures.entries()) {
     assertEquals(
