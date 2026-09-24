@@ -285,6 +285,52 @@ if (import.meta.main) {
     await page.getByTestId("notebook-execute").click();
     await cellDone("hi\n");
     console.log("playground e2e: !echo hi ran in BusyBox");
+    // A cell that takes its time shows what it has printed while it runs,
+    // and Stop ends it: before #130/#131 the pane was blank for the whole
+    // of a cell and a loop cost the reader the boot (reload was the only
+    // way out).
+    await page.getByTestId("notebook-input").fill(
+      "import time\nfor i in range(600):\n" +
+        "    print('tick', i, flush=True)\n    time.sleep(0.2)",
+    );
+    await page.getByTestId("notebook-execute").click();
+    await page.waitForFunction(
+      () => {
+        const out = document.querySelector<HTMLElement>(
+          "[data-testid=notebook-output]",
+        )?.textContent ?? "";
+        const status = document.querySelector<HTMLElement>(
+          "[data-testid=notebook-status]",
+        )?.textContent ?? "";
+        return status !== "ok" && out.includes("tick 0");
+      },
+      undefined,
+      { timeout: 90_000 },
+    );
+    console.log("playground e2e: the cell streamed while it ran");
+    await page.getByTestId("notebook-interrupt").click();
+    await page.waitForFunction(
+      () =>
+        (document.querySelector<HTMLElement>(
+          "[data-testid=notebook-output]",
+        )?.textContent ?? "").includes("KeyboardInterrupt"),
+      undefined,
+      {
+        timeout: 90_000,
+      },
+    );
+    // ... and the cell is the reader's again.
+    await page.waitForFunction(() =>
+      document.querySelector<HTMLButtonElement>(
+          "[data-testid=notebook-execute]",
+        )?.disabled === false &&
+      document.querySelector<HTMLElement>(
+          "[data-testid=notebook-interrupt]",
+        )?.hidden === true
+    );
+    console.log(
+      "playground e2e: Stop raised KeyboardInterrupt and gave the cell back",
+    );
     // window.yurt (#79): a driver's exec with exit status and separate
     // streams, stdin into a pipeline, a bounded capture, files in and
     // out, a listing that survives awkward names, and a timeout that kills.

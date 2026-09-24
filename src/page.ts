@@ -1,13 +1,13 @@
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import { mountNotebook } from "./notebook.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
-import type { JupyterReply } from "./jupyter.ts";
+import type { JupyterReply, JupyterStream } from "./jupyter.ts";
 import {
   type DesktopInfo,
   desktopInfo,
   nativeYurtTransport,
 } from "./native.ts";
-import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
+import { announceSandbox, watchForAnotherSandbox } from "./tab_presence.ts";
 import {
   createYurt,
   type Yurt,
@@ -28,6 +28,7 @@ type FromWorker =
     value?: unknown;
     error?: string;
   }
+  | { type: "cell-stream"; id: string; chunk: JupyterStream }
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string };
 
@@ -178,7 +179,9 @@ function showFailure(
 function boot(
   notebook: ReturnType<typeof mountNotebook>,
   execute: { current: (id: string, code: string) => void },
+  interruptCell: { current: (id: string) => void },
   desktop: DesktopInfo | undefined,
+  stopWatchingForAnotherSandbox: () => void,
 ): void {
   const kernelPorts = desktop?.kernelPorts;
   const status = byId("status");
@@ -190,15 +193,20 @@ function boot(
   execute.current = (id, code) => {
     worker.postMessage({ type: "cell", id, code });
   };
+  interruptCell.current = (id) => {
+    worker.postMessage({ type: "cell-interrupt", id });
+  };
   // A boot that dies before the shell has shown anything is explained in
   // the terminal's place (a tablet gets its likely cause too); once a shell
   // is on screen the status bar alone carries the message, so the shell
   // stays usable.
   let terminalEmpty = true;
-  const fail = (message: string) => {
-    // A tab with a failed boot has no sandbox to speak for.
+  const sandboxGone = () => {
     stopAnnouncing();
     stopAnnouncing = () => {};
+    stopWatchingForAnotherSandbox();
+  };
+  const fail = (message: string) => {
     rememberBooting(undefined);
     if (!terminalEmpty) {
       status.textContent = `failed: ${message}`;
@@ -249,7 +257,10 @@ function boot(
       // Only a boot failure is the sandbox's failure: an error once the
       // shell is up ("Jupyter is not ready", a restart that failed) leaves
       // exec working, and the status says so.
-      if (!yurtState.isRunning()) yurtState.failed(msg.message);
+      if (!yurtState.isRunning()) {
+        yurtState.failed(msg.message);
+        sandboxGone();
+      }
     }
     if (msg.type === "out") {
       terminalEmpty = false;
@@ -267,6 +278,7 @@ function boot(
       if (msg.ok) waiter.resolve(msg.value);
       else waiter.reject(new Error(msg.error ?? "yurt request failed"));
     }
+    if (msg.type === "cell-stream") notebook.stream(msg.id, msg.chunk);
     if (msg.type === "cell-result") notebook.result(msg.id, msg.result);
     if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
   };
@@ -274,6 +286,7 @@ function boot(
     const message = event.message || "coordinator worker failed";
     fail(message);
     yurtState.failed(message);
+    sandboxGone();
     // Nothing will answer them now.
     for (const waiter of pending.values()) waiter.reject(new Error(message));
     pending.clear();
@@ -341,9 +354,12 @@ async function runPage(): Promise<void> {
   // The cell is part of the workspace from the first screen, waiting for
   // the sandbox; its Run reaches the coordinator once there is one.
   const execute = { current: (_id: string, _code: string) => {} };
-  const notebook = mountNotebook(byId("notebook"), (id, code) => {
-    execute.current(id, code);
-  });
+  const interruptCell = { current: (_id: string) => {} };
+  const notebook = mountNotebook(
+    byId("notebook"),
+    (id, code) => execute.current(id, code),
+    (id) => interruptCell.current(id),
+  );
   const start = document.getElementById("start");
   const begin = () => {
     if (start) start.hidden = true;
@@ -351,13 +367,22 @@ async function runPage(): Promise<void> {
     // so before this one boots, and answer the next tab that asks. The
     // desktop app's sandbox is native and one per launcher, so neither
     // applies there.
+    let stopWatchingForAnotherSandbox = () => {};
     if (desktop === undefined) {
-      void anotherSandboxRunning().then((another) => {
-        if (another) byId("another-tab-note").hidden = false;
-      });
+      const note = byId("another-tab-note");
+      stopWatchingForAnotherSandbox = watchForAnotherSandbox(
+        () => note.hidden = false,
+        () => note.hidden = true,
+      );
       stopAnnouncing = announceSandbox();
     }
-    boot(notebook, execute, desktop);
+    boot(
+      notebook,
+      execute,
+      interruptCell,
+      desktop,
+      stopWatchingForAnotherSandbox,
+    );
   };
   // Only the in-tab kernel has the memory problem; the desktop app's page
   // runs the sandbox natively.
