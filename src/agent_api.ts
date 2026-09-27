@@ -237,7 +237,13 @@ export function createYurt(
         }${mode}`;
       const result = await exec(line, { stdin: bytes });
       if (!("code" in result) || result.code !== 0) {
-        throw failed(result, `write ${path}`);
+        // The temporary file is this function's detail: an error names
+        // the path the caller asked for (yurt-sandbox#301).
+        const error = failed(result, `write ${path}`);
+        const [head, ...rest] = error.message.split(`${path}.yurt-tmp.`);
+        error.message = head +
+          rest.map((tail) => path + tail.replace(/^\d+/, "")).join("");
+        throw error;
       }
     },
     async list(path) {

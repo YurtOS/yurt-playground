@@ -176,3 +176,23 @@ Deno.test("fs.export tars a directory in a process of its own and saves the arch
   await assertRejects(() => yurt.fs.export("/"), PathError);
   await assertRejects(() => yurt.fs.export("relative"), PathError);
 });
+
+Deno.test("a refused write names the path asked for, not the atomic write's temporary file", async () => {
+  // yurt-sandbox#301 item 4: the desktop API's 403 read
+  // "sh: can't create /etc/probe.yurt-tmp.99: Permission denied".
+  const { transport } = fakeTransport(() => ({
+    code: 1,
+    stderr: new TextEncoder().encode(
+      "sh: can't create /etc/probe.yurt-tmp.99: Permission denied\n",
+    ),
+  }));
+  const yurt = createYurt(transport, {
+    current: () => "running",
+    ready: Promise.resolve(),
+  });
+  const error = await assertRejects(() => yurt.fs.write("/etc/probe", "x"));
+  assertEquals(
+    (error as Error).message,
+    "write /etc/probe: exit 1: sh: can't create /etc/probe: Permission denied",
+  );
+});
