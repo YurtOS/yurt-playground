@@ -67,6 +67,16 @@ function chownPath(
   }
 }
 
+/** Give a regular file to `uid`:`gid`, as root. */
+export function chownFile(
+  mk: KernelHostInterface,
+  path: string,
+  uid: number,
+  gid: number,
+): void {
+  chownPath(mk, path, uid, gid, SYS_CHOWN);
+}
+
 /** Apply the image's mode, owner, and mtime to a staged directory. */
 function setDirectoryMetadata(
   mk: KernelHostInterface,

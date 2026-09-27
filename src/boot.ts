@@ -5,7 +5,12 @@ import {
   pumpPtyMaster,
   s,
 } from "@yurt/kernel-host-interface-js";
-import { setPidCredentials, stageYurtimg, writeRamfsFile } from "./stage.ts";
+import {
+  chownFile,
+  setPidCredentials,
+  stageYurtimg,
+  writeRamfsFile,
+} from "./stage.ts";
 import {
   createSessionController,
   type PtyTransport,
@@ -326,6 +331,9 @@ export async function bootPlayground(
         // buffer, so bytes would be altered or dropped; a file written by
         // the kernel is exact at any size.
         writeRamfsFile(mk, path("in"), io.stdin);
+        // The kernel writes it as root, and /tmp is sticky: the login
+        // user's sweep below could not remove it otherwise.
+        chownFile(mk, path("in"), LOGIN_UID, LOGIN_GID);
         stdinRedirect = `< ${q(path("in"))}`;
       }
       const process = await spawnShell([
