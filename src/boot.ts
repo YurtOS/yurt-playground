@@ -95,6 +95,8 @@ const LOGIN_USER = "user";
 const LOGIN_UID = 1000;
 const LOGIN_GID = 1000;
 const LOGIN_HOME = "/home/user";
+/** setsid(2) through the kernel host interface, as the named pid. */
+const SYS_SETSID = 0x1_001A;
 
 const DEFAULT_ENV: Record<string, string> = {
   HOME: LOGIN_HOME,
@@ -333,6 +335,17 @@ export async function bootPlayground(
         "-c",
         `${line} > ${q(path("out"))} 2> ${q(path("err"))} ${stdinRedirect}`,
       ]);
+      // Its own session and process group before it runs, so everything it
+      // starts can be signalled as one group (`signal` below).
+      const { rc: sid } = mk.kernelSyscall(
+        SYS_SETSID,
+        process.pid,
+        new Uint8Array(),
+        0,
+      );
+      if (Number(sid) !== process.pid) {
+        throw new Error(`setsid pid=${process.pid} failed: rc=${sid}`);
+      }
       process.closeStdin();
       // Read back once the command has exited, one byte past the bound
       // so the registry sees the cut and says so; the files go afterwards.
@@ -373,14 +386,15 @@ export async function bootPlayground(
     },
     async signal(pid, signal) {
       // A process of the page's own, not the user's shell: `kill` is
-      // BusyBox's, and the login user may signal its own processes. The
-      // command's children (a pipeline, a background job) share its
-      // process group, so the group goes first; the pid itself after, in
-      // case it is not a group leader on this host.
+      // BusyBox's, and the login user may signal its own processes. Every
+      // execution leads its own process group (`process` above), which its
+      // children (a pipeline, a background job) share, so the group is
+      // signalled. BusyBox's `kill` takes a negative pid as a group, and
+      // rejects `--`.
       const process = await spawnShell([
         "/bin/sh",
         "-c",
-        `kill -${signal} -- -${pid} 2>/dev/null; kill -${signal} ${pid} 2>/dev/null; true`,
+        `kill -${signal} -${pid} 2>/dev/null`,
       ]);
       process.closeStdin();
       await process.runStartAsync();
