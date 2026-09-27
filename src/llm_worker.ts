@@ -6,6 +6,7 @@
  */
 import { type Conversation, Engine, loadLiteRtLm } from "@litert-lm/core";
 import { MODEL_CACHE } from "./llm_models.ts";
+import { readModel, storeModel } from "./llm_store.ts";
 
 export type ToWorker =
   | {
@@ -63,14 +64,14 @@ let active: Conversation | undefined;
 let cancelRequested = false;
 
 /** The model's bytes from Cache Storage, fetching them first if absent.
- * Streamed straight into the cache (no tee), so a 2 GB download never sits
- * in memory; the Blob read back is disk-backed. */
+ * Streamed into the cache part by part (no tee), so a 2 GB download never
+ * sits in memory; the Blob read back is disk-backed. */
 async function modelBlob(url: string, key: string) {
   const cache = await caches.open(MODEL_CACHE);
-  const cached = await cache.match(key);
+  const cached = await readModel(cache, key);
   if (cached !== undefined) {
     return {
-      blob: await cached.blob(),
+      blob: cached,
       fromCache: true,
       downloadBytes: 0,
       downloadMs: 0,
@@ -85,7 +86,7 @@ async function modelBlob(url: string, key: string) {
   let loaded = 0;
   let lastPost = 0;
   const counted = response.body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
+    new TransformStream<Uint8Array<ArrayBuffer>, Uint8Array<ArrayBuffer>>({
       transform(chunk, controller) {
         loaded += chunk.byteLength;
         if (loaded - lastPost > 16 * 1024 * 1024 || loaded === total) {
@@ -96,21 +97,19 @@ async function modelBlob(url: string, key: string) {
       },
     }),
   );
-  // Other pins of this file are dead weight (gigabytes): drop them first.
+  // Other pins of this file are dead weight (gigabytes), and so are the
+  // parts of a download cut short: drop them first.
   for (const request of await cache.keys()) {
     const old = new URL(request.url);
     if (old.pathname === new URL(key, location.href).pathname) {
       await cache.delete(request);
     }
   }
-  await cache.put(
-    key,
-    new Response(counted, { headers: { "content-length": String(total) } }),
-  );
-  const stored = await cache.match(key);
+  await storeModel(cache, key, counted);
+  const stored = await readModel(cache, key);
   if (stored === undefined) throw new Error("model vanished from the cache");
   return {
-    blob: await stored.blob(),
+    blob: stored,
     fromCache: false,
     downloadBytes: loaded,
     downloadMs: performance.now() - started,
