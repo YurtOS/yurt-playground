@@ -4,6 +4,7 @@ import {
   METHOD,
   pumpPtyMaster,
   s,
+  type UserProcess,
 } from "@yurt/kernel-host-interface-js";
 import { setPidCredentials, stageYurtimg, writeRamfsFile } from "./stage.ts";
 import {
@@ -233,6 +234,13 @@ export async function bootPlayground(
     }
     return process;
   };
+  /** Run a process of `spawnShell`'s to its exit, then reap it: the host is
+   * its parent, so nothing in the guest ever waits for it, and until the
+   * host does it stays in the process table as a zombie
+   * (yurt-playground#148, yurtos-kernel#2813). Its output is in guest
+   * files, not in the host's per-pid buffers the reap drops. */
+  const runToExit = (process: UserProcess) =>
+    process.runStartAsync().finally(() => mk.reapHostChild(process.pid));
   env.show("starting ash");
   const user = await spawnShell(["/bin/sh"]);
   const pty = mk.attachHostPty(user.pid);
@@ -270,7 +278,7 @@ export async function bootPlayground(
     }
   };
 
-  void user.runStartAsync().then(() => {
+  void runToExit(user).then(() => {
     // `exit` at the prompt: the shell is done, the sandbox is still there
     // (the notebook's kernel keeps answering). Say so where the prompt
     // was, and in the status, instead of failing the next keystroke.
@@ -296,7 +304,7 @@ export async function bootPlayground(
       const process = await spawnShell(["/bin/sh", "-c", line]);
       // Nothing feeds it: stdin is at end-of-file from the start.
       process.closeStdin();
-      void process.runStartAsync().catch(() => {
+      void runToExit(process).catch(() => {
         // Its exit is the kernel's business (the connection file, the log);
         // nothing here waits on it.
       });
@@ -317,7 +325,7 @@ export async function bootPlayground(
       const single = async (command: string) => {
         const p = await spawnShell(["/bin/sh", "-c", command]);
         p.closeStdin();
-        await p.runStartAsync();
+        await runToExit(p);
       };
       let stdinRedirect = "< /dev/null";
       if (io.stdin !== undefined) {
@@ -341,7 +349,7 @@ export async function bootPlayground(
         void single(
           `exec rm -f ${q(path("out"))} ${q(path("err"))} ${q(path("in"))}`,
         );
-      const exited = process.runStartAsync().then((rc) => {
+      const exited = runToExit(process).then((rc) => {
         done = true;
         return rc;
       }, (error) => {
@@ -383,7 +391,7 @@ export async function bootPlayground(
         `kill -${signal} -- -${pid} 2>/dev/null; kill -${signal} ${pid} 2>/dev/null; true`,
       ]);
       process.closeStdin();
-      await process.runStartAsync();
+      await runToExit(process);
     },
     // The Jupyter connection file, looked for by the page itself: nothing is
     // typed into the user's shell for it (yurtos-kernel#2824). Read as the
