@@ -54,6 +54,8 @@ export function mountNotebook(
   button.dataset.testid = "notebook-execute";
   button.type = "button";
   button.textContent = "Run";
+  // The agent pane has a Run and a Stop of its own on the same page.
+  button.setAttribute("aria-label", "Run the Python cell");
   button.disabled = true;
   // Stop: a loop in the cell used to cost the reader the whole boot, since
   // Run is disabled while one runs and reload was the only way out (#130).
@@ -62,6 +64,7 @@ export function mountNotebook(
   stop.dataset.testid = "notebook-interrupt";
   stop.type = "button";
   stop.textContent = "Stop";
+  stop.setAttribute("aria-label", "Stop the Python cell");
   stop.hidden = true;
   const hint = document.createElement("span");
   hint.textContent = "one cell, on a real ipykernel in the sandbox";

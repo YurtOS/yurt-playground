@@ -118,6 +118,8 @@
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
+  /* A command or answer of several lines keeps its line breaks. */
+  white-space: pre-wrap;
 }
 #agent-transcript .meta {
   color: var(--muted);

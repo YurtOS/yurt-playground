@@ -97,6 +97,14 @@ export function startSnapshotDemo(): void {
           megabytes(msg.bytes)
         } in ${msg.ms} ms — close the tab whenever you like`;
         break;
+      case "forgotten":
+        // The last seal's "close the tab whenever you like" no longer
+        // holds: nothing is stored, and nothing will be.
+        status.textContent =
+          "stored image dropped and sealing stopped; reload to boot fresh";
+        seals.textContent = "";
+        reset.disabled = true;
+        break;
       case "error":
         began = "failed";
         status.textContent = `error: ${msg.message}`;

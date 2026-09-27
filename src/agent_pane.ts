@@ -66,6 +66,8 @@ export async function mountAgentPane(
     hidden: true,
     testid: "agent-stop",
   });
+  // The Python cell has a Run and a Stop of its own on the same page.
+  stop.setAttribute("aria-label", "Stop the agent");
   const bar = el(
     "div",
     { className: "bar" },
@@ -155,6 +157,7 @@ export async function mountAgentPane(
     textContent: "Run",
     testid: "agent-run",
   });
+  run.setAttribute("aria-label", "Run the agent");
   const hint = el("span", {
     className: "hint",
     textContent: "Enter to run · Shift+Enter for a new line",

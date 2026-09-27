@@ -23,7 +23,8 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** A worker that loads nothing and replies from a script: run a command,
  * then answer with the last number the command printed; or, for a task
- * that says "sleep", run one that never ends on its own. */
+ * that says "sleep", run one that never ends on its own; for "two lines",
+ * a command of two lines. */
 function fakeWorker(mode: "ok" | "fail"): string {
   return `
 self.onmessage = (event) => {
@@ -42,6 +43,11 @@ self.onmessage = (event) => {
   let text;
   if (m.prompt.includes("sleep")) {
     text = '{"action":"exec","cmd":"sleep 60"}';
+  } else if (
+    m.prompt.includes("two lines") &&
+    !m.prompt.slice(m.prompt.lastIndexOf("two lines")).includes("Result:")
+  ) {
+    text = JSON.stringify({ action: "exec", cmd: "echo 1\\necho 2" });
   } else if (m.prompt.includes("Result:")) {
     const numbers = m.prompt.split("Result:").pop().match(/\\d+/g);
     text = JSON.stringify({ action: "answer", text: numbers.pop() });
@@ -199,6 +205,46 @@ if (import.meta.main) {
           JSON.stringify(answer)
         }, the sandbox says ${truth}`,
       );
+    }
+
+    // A command of several lines is shown as one (yurt-playground#154):
+    // on one line, a script reads as a single invalid command.
+    await task.fill("print two lines");
+    await task.press("Enter");
+    await until(
+      page,
+      "the two-line command's answer",
+      () =>
+        document.querySelector("[data-testid=agent-answer]")?.textContent ===
+          "2",
+      60_000,
+    );
+    const twoLines = await page.locator("#agent-transcript .call").last()
+      .innerText();
+    if (twoLines !== "$ echo 1\necho 2") {
+      throw new Error(
+        `agent e2e: a two-line command shows as ${JSON.stringify(twoLines)}`,
+      );
+    }
+
+    // Each button says whose it is: the agent's Run and Stop beside the
+    // Python cell's (yurt-playground#154).
+    for (
+      const name of [
+        "Run the agent",
+        "Stop the agent",
+        "Run the Python cell",
+        "Stop the Python cell",
+      ]
+    ) {
+      const count = await page.getByRole("button", {
+        name,
+        exact: true,
+        includeHidden: true,
+      }).count();
+      if (count !== 1) {
+        throw new Error(`agent e2e: ${count} buttons named "${name}"`);
+      }
     }
 
     // Stop: the command dies, the transcript says so.

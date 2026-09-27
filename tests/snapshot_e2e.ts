@@ -128,6 +128,36 @@ if (import.meta.main) {
         );
       }
     }
+    // The restored run's status is long; the seal line beside it must
+    // still read as a line, not a column one word wide (#154).
+    const sealsNow = await d.seals();
+    await d.until(
+      "a seal after the restore",
+      async () => await d.seals() > sealsNow,
+    );
+    const sealLines = await page.locator("#seals").evaluate((el) =>
+      Math.round(
+        el.getBoundingClientRect().height /
+          parseFloat(getComputedStyle(el).lineHeight),
+      )
+    );
+    if (sealLines > 1) {
+      throw new Error(`the seal line wraps onto ${sealLines} lines`);
+    }
+    // Forget: the bar stops promising a seal it no longer keeps (#154).
+    await page.locator("#reset").click();
+    await d.until(
+      "the forget",
+      async () =>
+        (await page.locator("#status").textContent() ?? "").includes(
+          "dropped",
+        ),
+    );
+    await page.waitForTimeout(2500); // a seal interval: none may land
+    const sealsText = await page.locator("#seals").textContent() ?? "";
+    if (sealsText.includes("close the tab")) {
+      throw new Error(`after Forget the bar still says: ${sealsText}`);
+    }
     console.log(
       `snapshot demo: first run reached #${lastBefore}, restored run resumed at #${first} and continued`,
     );
