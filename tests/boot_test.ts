@@ -3,6 +3,7 @@ import { bootPlayground, fetchPlaygroundBytes } from "../src/boot.ts";
 import {
   assertNoTouchFailure,
   bootAshSession,
+  bootExecSession,
   memoryTerm,
   typeCommand,
   waitFor,
@@ -180,6 +181,29 @@ Deno.test({
       }
       const retouch = await typeCommand(term, "touch sss");
       assertNoTouchFailure(retouch, "second touch sss");
+    } finally {
+      session.stop();
+    }
+  },
+});
+
+Deno.test({
+  name: "an exec's stdin staging file is swept from /tmp (#142)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootExecSession();
+    if (!session) return;
+    try {
+      const result = await session.exec("cat", { stdin: "hello\n" });
+      assertEquals(result.stdout, "hello\n");
+      // The staging files are swept 5 s after the command exits.
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+      const tmp = await session.exec("ls -la /tmp");
+      const staged = tmp.stdout.split("\n").filter((line) =>
+        line.endsWith(".in")
+      );
+      assertEquals(staged, [], tmp.stdout);
     } finally {
       session.stop();
     }
