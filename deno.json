@@ -79,6 +79,7 @@
       "public/snapshot-bridge.js",
       "public/notebook_kernel.bundle.js",
       "artifacts/jupyter-site-packages",
+      "artifacts/playground.yurtimg.manifest.json",
       "jupyterlite/files",
       "public/jupyter",
       "jupyterlite/yurt-kernel/node_modules",

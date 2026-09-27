@@ -1,6 +1,7 @@
 # Pinned blobs — hashes live in artifacts/pins.json
 artifacts/*.wasm
 artifacts/*.yurtimg
+artifacts/*.yurtimg.manifest.json
 artifacts/*.yurtpkg
 # Materialized Jupyter payload (scripts/materialize-jupyter.ts)
 artifacts/jupyter-site-packages/
