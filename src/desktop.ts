@@ -9,6 +9,7 @@
  * computed from public/ or artifacts/.
  */
 import { join } from "node:path";
+import pins from "../artifacts/pins.json" with { type: "json" };
 import { documentPolicy, inlineScriptHashes } from "./csp.ts";
 import { createDesktopApi, hostClient } from "./desktop_api.ts";
 import { type DesktopHost, proxyWebSocket } from "./desktop_host.ts";
@@ -97,17 +98,20 @@ export function handleDistRequest(
 /** What `yurt-playground` takes on its command line. */
 export type LauncherArgs = {
   help: boolean;
+  version: boolean;
   /** 0: a free port, printed in the URL. */
   port: number;
   /** Hand the URL to the default browser (a terminal only). */
   open: boolean;
 };
 
-export const LAUNCHER_USAGE = `usage: yurt-playground [--port N] [--no-open]
+export const LAUNCHER_USAGE =
+  `usage: yurt-playground [--port N] [--no-open] [--version]
 
 Boot the sandbox natively and serve the playground on a loopback port.
   --port N    listen on 127.0.0.1:N instead of a free port
   --no-open   print the URL but do not open a browser
+  --version   the release this is, and the kernel, image and host it pins
   -h, --help  this text
 
 A program on this machine drives the sandbox through <url>/api/* with the
@@ -120,7 +124,12 @@ sandbox from a program".`;
  * enough to parse by hand: three flags, and a flag nobody knows is an
  * error rather than a boot (yurt-playground#90). */
 export function parseLauncherArgs(argv: string[]): LauncherArgs {
-  const args: LauncherArgs = { help: false, port: 0, open: true };
+  const args: LauncherArgs = {
+    help: false,
+    version: false,
+    port: 0,
+    open: true,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const value = (flag: string): string => {
@@ -130,6 +139,7 @@ export function parseLauncherArgs(argv: string[]): LauncherArgs {
       return next;
     };
     if (arg === "-h" || arg === "--help") args.help = true;
+    else if (arg === "--version") args.version = true;
     else if (arg === "--no-open") args.open = false;
     else if (arg === "--port" || arg.startsWith("--port=")) {
       const text = value("--port");
@@ -141,6 +151,16 @@ export function parseLauncherArgs(argv: string[]): LauncherArgs {
     } else throw new Error(`unknown argument ${arg}\n${LAUNCHER_USAGE}`);
   }
   return args;
+}
+
+/** What `--version` prints: the release train the app was built for (its
+ * release is `desktop-<train>`) and the revisions it carries. pins.json is
+ * compiled into the binary, so this is what shipped. */
+export function launcherVersion(): string {
+  const short = (rev: string) => rev.slice(0, 7);
+  return `yurt-playground ${pins.train}\n` +
+    `kernel ${short(pins.kernelWasm.rev)}, image ${short(pins.image.rev)}, ` +
+    `desktop host ${short(pins.desktopHost.rev)}`;
 }
 
 /** A token for this launch's `/api/*`: 128 random bits, hex. */

@@ -2,6 +2,7 @@ import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { join } from "node:path";
 import {
   handleDistRequest,
+  launcherVersion,
   parseLauncherArgs,
   startDesktopServer,
 } from "../src/desktop.ts";
@@ -127,6 +128,10 @@ Deno.test("desktop build ships the launcher with dist/ and runtime/ in the bundl
       "hdiutil create",
       "debian-binary",
       "/usr/bin/yurt-playground",
+      // The menu entry's icon (yurt-playground#154).
+      "Icon=yurt-playground",
+      "share/icons/hicolor/scalable/apps",
+      '"$icons/yurt-playground.svg"',
     ]
   ) {
     assertStringIncludes(script, value);
@@ -181,14 +186,34 @@ Deno.test("home page links the installers and CLI packages the desktop release w
     .join(" ")
     .replaceAll("\\ ", " ")
     .split(/\s+/);
-  for (const asset of ["playground.yurtimg", "playground.yurtimg.sha256"]) {
+  // Each app installer has a checksum beside it (yurt-playground#154).
+  const checksums = assets.filter((asset) => asset.startsWith("Yurt-"))
+    .map((asset) => `${asset}.sha256`);
+  assertEquals(checksums.length, 3);
+  for (
+    const asset of [
+      "playground.yurtimg",
+      "playground.yurtimg.sha256",
+      ...checksums,
+    ]
+  ) {
     assertEquals(
       publishArgs.includes(`release/${asset}`),
       true,
       `gh release create does not attach release/${asset}`,
     );
   }
-  // ...and the step that puts them there, with the checksum it verifies
+  // The step that writes those, in sha256sum's format and named for the
+  // file, so `sha256sum -c` verifies a download in place.
+  const checksumStep = workflow
+    .slice(workflow.indexOf("- name: Checksum the installers"))
+    .split(/\n {6}- name: /)[0];
+  assertStringIncludes(checksumStep, "for installer in Yurt-Playground-*");
+  assertStringIncludes(
+    checksumStep,
+    'sha256sum "$installer" > "$installer.sha256"',
+  );
+  // ...and the step that puts the image there, with the checksum it verifies
   // against the pin before anything is published.
   const fetchStep = workflow
     .slice(workflow.indexOf("- name: Fetch the pinned playground image"))
@@ -378,7 +403,13 @@ Deno.test("desktop server applies Pages' directory rule to the Jupyter apps", as
 Deno.test("the launcher's command line: --help, --port, --no-open", () => {
   // Any flag used to boot the sandbox (yurt-playground#90); a script that
   // starts the launcher needs a fixed port and no browser.
-  assertEquals(parseLauncherArgs([]), { help: false, port: 0, open: true });
+  assertEquals(parseLauncherArgs([]), {
+    help: false,
+    version: false,
+    port: 0,
+    open: true,
+  });
+  assertEquals(parseLauncherArgs(["--version"]).version, true);
   assertEquals(parseLauncherArgs(["--help"]).help, true);
   assertEquals(parseLauncherArgs(["-h"]).help, true);
   assertEquals(parseLauncherArgs(["--port", "8765"]).port, 8765);
@@ -386,6 +417,19 @@ Deno.test("the launcher's command line: --help, --port, --no-open", () => {
   assertEquals(parseLauncherArgs(["--no-open"]).open, false);
   assertThrows(() => parseLauncherArgs(["--port", "zero"]), Error, "--port");
   assertThrows(() => parseLauncherArgs(["--bogus"]), Error, "--bogus");
+});
+
+Deno.test("yurt-playground --version names the release train and what it pins", async () => {
+  const pins = JSON.parse(
+    await Deno.readTextFile(
+      new URL("../artifacts/pins.json", import.meta.url),
+    ),
+  );
+  const text = launcherVersion();
+  assertStringIncludes(text, `yurt-playground ${pins.train}`);
+  assertStringIncludes(text, pins.kernelWasm.rev.slice(0, 7));
+  assertStringIncludes(text, pins.image.rev.slice(0, 7));
+  assertStringIncludes(text, pins.desktopHost.rev.slice(0, 7));
 });
 
 Deno.test("the desktop server binds the port it is given", async () => {
