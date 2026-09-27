@@ -113,7 +113,8 @@ Boot the sandbox natively and serve the playground on a loopback port.
 A program on this machine drives the sandbox through <url>/api/* with the
 bearer token the launcher prints; the token and URL are also written to
 ~/.yurt/playground.json (mode 0600) for the launcher's lifetime. While one
-runs, a second launch prints its URL (and opens it) instead. The page's
+boots or runs, a second launch says so, with its URL once there is one
+(and opens it), instead of booting another. The page's
 window.yurt is the same API from the browser. See the README, "Driving the
 sandbox from a program".`;
 
@@ -144,13 +145,34 @@ export function parseLauncherArgs(argv: string[]): LauncherArgs {
   return args;
 }
 
-/** What `~/.yurt/playground.json` holds while a launcher serves. */
-export type LauncherState = { url: string; apiToken: string; pid: number };
+/** What `~/.yurt/playground.json` holds: `{pid, startedAt}` while a
+ * launcher boots its sandbox, then `url` and `apiToken` once it serves. */
+export type LauncherState = {
+  pid: number;
+  startedAt?: number;
+  url?: string;
+  apiToken?: string;
+};
 
-/** The launcher `stateFile` names, if it still serves. A file left by one
- * that could not clean up (SIGKILL, a crash) is removed. A live pid alone
- * does not prove it (pids are reused), so the recorded URL must answer as
- * a launcher does. */
+/** Longer than any boot: the host gives the runtime 120 s per call and the
+ * image 20 s to finish its init. */
+const BOOT_LIMIT_MS = 180_000;
+
+function processExists(pid: number): boolean {
+  try {
+    // A stopped process would resume; a running one ignores it.
+    Deno.kill(pid, "SIGCONT");
+    return true;
+  } catch {
+    // ESRCH, or EPERM: another user's, so not a launcher of this one.
+    return false;
+  }
+}
+
+/** The launcher `stateFile` names, if it still boots or serves. A file
+ * left by one that could not clean up (SIGKILL, a crash) is removed. A
+ * live pid alone does not prove a server (pids are reused), so a recorded
+ * URL must answer as a launcher does. */
 export async function runningLauncher(
   stateFile: string,
 ): Promise<LauncherState | null> {
@@ -159,6 +181,16 @@ export async function runningLauncher(
     state = JSON.parse(await Deno.readTextFile(stateFile));
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return null;
+    await Deno.remove(stateFile).catch(() => undefined);
+    return null;
+  }
+  if (state.url === undefined) {
+    if (
+      processExists(state.pid) &&
+      Date.now() - (state.startedAt ?? 0) < BOOT_LIMIT_MS
+    ) {
+      return state;
+    }
     await Deno.remove(stateFile).catch(() => undefined);
     return null;
   }
@@ -176,7 +208,7 @@ export async function runningLauncher(
 }
 
 /** Remove `stateFile` if the launcher with `pid` wrote it. Synchronous:
- * it runs from a signal handler just before the process exits. */
+ * it runs from the launcher's `unload`, as the process exits. */
 export function removeLauncherState(stateFile: string, pid: number): void {
   try {
     if (JSON.parse(Deno.readTextFileSync(stateFile)).pid === pid) {

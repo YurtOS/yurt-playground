@@ -86,15 +86,48 @@ const tokenFile = join(
   "playground.json",
 );
 // One sandbox per user: a second launch would boot another (~1 GB) and
-// take the state file from the first.
-const running = await runningLauncher(tokenFile);
-if (running !== null) {
-  console.log(
-    `yurt-playground is already running (pid ${running.pid}): ${running.url}`,
-  );
-  await openInBrowser(running.url);
-  Deno.exit(0);
+// take the state file from the first. The claim is the state file itself,
+// created exclusively before the boot; losing that race to another launch
+// finds it booting.
+while (true) {
+  const running = await runningLauncher(tokenFile);
+  if (running?.url !== undefined) {
+    console.log(
+      `yurt-playground is already running (pid ${running.pid}): ${running.url}`,
+    );
+    await openInBrowser(running.url);
+    Deno.exit(0);
+  }
+  if (running !== null) {
+    console.log(
+      `yurt-playground is already starting (pid ${running.pid}); it prints its URL when the sandbox is up.`,
+    );
+    Deno.exit(0);
+  }
+  try {
+    await Deno.mkdir(dirname(tokenFile), { recursive: true, mode: 0o700 });
+    await Deno.writeTextFile(
+      tokenFile,
+      JSON.stringify({ pid: Deno.pid, startedAt: Date.now() }) + "\n",
+      { createNew: true, mode: 0o600 },
+    );
+    break;
+  } catch (error) {
+    if (error instanceof Deno.errors.AlreadyExists) continue;
+    console.error(
+      `yurt-playground: could not write ${tokenFile}: ${
+        (error as Error).message
+      }`,
+    );
+    break;
+  }
 }
+// Deno.exit (the signal handler below, a failed boot) dispatches unload;
+// only SIGKILL or a crash leaves the file for the next launch to clear.
+globalThis.addEventListener(
+  "unload",
+  () => removeLauncherState(tokenFile, Deno.pid),
+);
 console.log("booting the sandbox…");
 const child = spawnDesktopHost(runtimeDir);
 let host: DesktopHost | undefined;
@@ -126,7 +159,6 @@ for (
     } catch {
       // already gone
     }
-    removeLauncherState(tokenFile, Deno.pid);
     Deno.exit(code);
   });
 }
@@ -160,7 +192,6 @@ console.log(`Yurt playground: ${url}`);
 // script finds it without the terminal, readable by this user alone.
 console.log(`API token: ${apiToken}`);
 try {
-  await Deno.mkdir(dirname(tokenFile), { recursive: true, mode: 0o700 });
   await Deno.writeTextFile(
     tokenFile,
     JSON.stringify({ url, apiToken, pid: Deno.pid }) + "\n",

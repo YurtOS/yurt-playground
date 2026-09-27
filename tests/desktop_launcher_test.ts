@@ -11,10 +11,13 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 /** A stand-in host. Like the real one it ignores its stdin until the
  * sandbox is up (FAKE_HOST_MODE=boot-forever: it never is, and its
  * "runtime", a child of its own, boots on regardless of the host), then
- * announces a URL whose /status answers, and exits when its stdin closes. */
+ * announces a URL whose /status answers, and exits when its stdin closes.
+ * FAKE_HOST_MODE=fail: a boot that fails. */
 const FAKE_HOST = `#!/usr/bin/env -S deno run -A
 await Deno.writeTextFile(Deno.env.get("FAKE_HOST_PIDFILE"), String(Deno.pid));
-if (Deno.env.get("FAKE_HOST_MODE") === "boot-forever") {
+if (Deno.env.get("FAKE_HOST_MODE") === "fail") {
+  Deno.exit(1);
+} else if (Deno.env.get("FAKE_HOST_MODE") === "boot-forever") {
   const runtime = new Deno.Command("sleep", { args: ["60"] }).spawn();
   await Deno.writeTextFile(Deno.env.get("FAKE_RUNTIME_PIDFILE"), String(runtime.pid));
   setInterval(() => {}, 1000);
@@ -256,5 +259,60 @@ Deno.test("a state file left by a killed launcher does not stop the next one", a
     assertEquals(state.pid, next.child.pid);
   } finally {
     await cleanup(f, killed, ...(next ? [next] : []));
+  }
+});
+
+Deno.test("a launch while another boots says so instead of booting a second sandbox", async () => {
+  const f = await fixture();
+  const first = launch(f, "boot-forever");
+  let second: Launcher | undefined;
+  try {
+    await first.waitFor(/booting the sandbox/);
+    await hostPid(f);
+    second = launch(f);
+    const status = await within(second.exited, "the second launch to exit");
+    assertEquals(status.code, 0);
+    assertStringIncludes(
+      await second.waitFor(/./),
+      `already starting (pid ${first.child.pid})`,
+    );
+    const hosts = [];
+    for await (const entry of Deno.readDir(f.root)) {
+      if (entry.name.startsWith("host-")) hosts.push(entry.name);
+    }
+    assertEquals(hosts.length, 1, "the second launch booted a sandbox");
+  } finally {
+    await cleanup(f, first, ...(second ? [second] : []));
+  }
+});
+
+Deno.test("a launcher killed during its boot does not stop the next one", async () => {
+  const f = await fixture();
+  const killed = launch(f, "boot-forever");
+  let next: Launcher | undefined;
+  try {
+    await killed.waitFor(/booting the sandbox/);
+    await hostPid(f);
+    killed.child.kill("SIGKILL");
+    await killed.exited;
+    next = launch(f);
+    await next.waitFor(/Close this window/);
+    const state = JSON.parse(await Deno.readTextFile(f.stateFile));
+    assertEquals(state.pid, next.child.pid);
+  } finally {
+    await cleanup(f, killed, ...(next ? [next] : []));
+  }
+});
+
+Deno.test("a launcher whose sandbox fails to boot leaves no state file", async () => {
+  const f = await fixture();
+  const launcher = launch(f, "fail");
+  try {
+    const status = await within(launcher.exited, "the launcher to give up");
+    assertEquals(status.code, 1);
+    const left = await Deno.stat(f.stateFile).then(() => true, () => false);
+    assertEquals(left, false, "the boot's claim outlived the launcher");
+  } finally {
+    await cleanup(f, launcher);
   }
 });
