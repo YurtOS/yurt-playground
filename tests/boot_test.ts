@@ -3,6 +3,7 @@ import { bootPlayground, fetchPlaygroundBytes } from "../src/boot.ts";
 import {
   assertNoTouchFailure,
   bootAshSession,
+  bootExecSession,
   memoryTerm,
   typeCommand,
   waitFor,
@@ -214,6 +215,39 @@ Deno.test({
       }
     } finally {
       second.stop();
+    }
+  },
+});
+
+Deno.test({
+  name: "exec'd commands and their staging sweeps are reaped (#148)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootExecSession();
+    if (!session) return;
+    try {
+      for (
+        const [cmd, stdin] of [
+          ["echo hi | wc -c", undefined],
+          ["true", undefined],
+          ["cat", "hello\n"],
+        ] as const
+      ) {
+        const result = await session.exec(cmd, { stdin });
+        assertEquals("code" in result && result.code, 0, cmd);
+      }
+      // Each exec's /tmp staging files are swept by a process of its own,
+      // started 5 s after the command exits.
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+      const ps = await session.exec("ps");
+      // BusyBox ps: PID USER VSZ STAT COMMAND.
+      const zombies = ps.stdout.split("\n").filter((line) =>
+        line.trim().split(/\s+/)[3]?.startsWith("Z")
+      );
+      assertEquals(zombies, [], ps.stdout);
+    } finally {
+      session.stop();
     }
   },
 });
