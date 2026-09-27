@@ -75,6 +75,16 @@ def run_cell(code, namespace):
             emit({"t": "result", "text": repr(value)})
 
 
+def cell_traceback(error):
+    """The traceback from the cell's first frame on: the frames above it are
+    this server's (main, run_cell) or the compiler's, not the user's. A
+    SyntaxError never reaches the cell, and says where it is on its own."""
+    tb = error.__traceback__
+    while tb is not None and tb.tb_frame.f_code.co_filename != "<cell>":
+        tb = tb.tb_next
+    return traceback.format_exception(type(error), error, tb)
+
+
 def main():
     # The pty carries a protocol, not a terminal session: no echo, no
     # CR/LF rewriting, no ^C (the host interrupts with a signal instead).
@@ -102,7 +112,7 @@ def main():
                 "t": "error",
                 "ename": type(error).__name__,
                 "evalue": str(error),
-                "traceback": traceback.format_exception(error),
+                "traceback": cell_traceback(error),
             })
         emit({"t": "done", "count": count})
 

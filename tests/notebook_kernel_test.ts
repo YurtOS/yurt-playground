@@ -134,3 +134,106 @@ Deno.test({
     );
   },
 });
+
+Deno.test({
+  name:
+    "the notebook kernel's tracebacks start at the cell, not in cell_server.py",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const guest = await readOptional(
+      join(repoRoot, "public", PYTHON_SEAL_NAME),
+    );
+    let kernel: Uint8Array | undefined;
+    let image: Uint8Array | undefined;
+    try {
+      kernel = await fetchViaHandler("./yurt_kernel.wasm");
+      image = await fetchViaHandler("./playground.yurtimg");
+    } catch { /* no pinned blobs */ }
+    if (guest === undefined || kernel === undefined || image === undefined) {
+      if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS")) {
+        throw new Error("the notebook kernel test needs the blobs");
+      }
+      console.log("skipped: needs the pinned blobs and python3-seal.wasm");
+      return;
+    }
+    const server = await Deno.readFile(
+      join(repoRoot, "public/demo/cell_server.py"),
+    );
+    const mk = await KernelHostInterface.load(kernel, defaultHostState());
+    await stageYurtimg(mk, image, new Map(), stagedPath);
+    writeRamfsFile(mk, "/usr/local/yurt/cell_server.py", server);
+    let out = "";
+    const process = await mk.spawnUserProcessWithArgsAsync(guest, [
+      s("python3"),
+      s("/usr/local/yurt/cell_server.py"),
+    ], {
+      PYTHONHOME: "/usr/local",
+      PYTHONDONTWRITEBYTECODE: "1",
+      TERM: "dumb",
+    });
+    const pty = mk.attachHostPty(process.pid);
+    const stopPump = pumpPtyMaster(mk, pty, (bytes) => {
+      out += new TextDecoder().decode(bytes);
+    });
+    process.runStartAsync().catch(() => {});
+    const errors = () =>
+      out.split("\n").filter((line) => line.includes('"t": "error"')).map(
+        (line) =>
+          JSON.parse(line) as {
+            ename: string;
+            traceback: string[];
+          },
+      );
+    const run = async (code: string, interrupt = false) => {
+      const seen = errors().length;
+      mk.ptyMasterWrite(
+        pty,
+        new TextEncoder().encode(JSON.stringify({ t: "exec", code }) + "\n"),
+      );
+      if (interrupt) {
+        await waitFor(() => out.includes("tick"), "the cell to start", 30_000);
+        mk.killProcess(process.pid, 2);
+      }
+      await waitFor(() => errors().length > seen, "the error frame", 30_000);
+      return errors()[seen];
+    };
+    try {
+      await waitFor(() => out.includes('"ready"'), "the cell server", 180_000);
+      // A raise two frames deep, a syntax error, and the reported case: an
+      // interrupt (yurt-ports#150).
+      const raised = await run("def f():\n    1 / 0\nf()\n");
+      const syntax = await run("1 +\n");
+      const interrupted = await run(
+        "import time\nprint('tick', flush=True)\nwhile True:\n    time.sleep(0.05)\n",
+        true,
+      );
+      assertEquals(
+        [raised.ename, syntax.ename, interrupted.ename],
+        ["ZeroDivisionError", "SyntaxError", "KeyboardInterrupt"],
+      );
+      for (const error of [raised, syntax, interrupted]) {
+        const text = error.traceback.join("");
+        assert(!text.includes("cell_server.py"), text);
+      }
+      for (const error of [raised, interrupted]) {
+        assertEquals(
+          error.traceback[0],
+          "Traceback (most recent call last):\n",
+        );
+        assert(
+          error.traceback[1].startsWith('  File "<cell>"'),
+          error.traceback.join(""),
+        );
+      }
+      assert(
+        syntax.traceback.join("").includes('File "<cell>", line 1'),
+        syntax.traceback.join(""),
+      );
+    } finally {
+      stopPump();
+      mk.killProcess(process.pid, 9);
+      mk.dispose();
+    }
+  },
+});
