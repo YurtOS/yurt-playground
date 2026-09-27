@@ -8,12 +8,20 @@ import { fileURLToPath } from "node:url";
 import {
   freshApiToken,
   LAUNCHER_USAGE,
+  type LauncherArgs,
   parseLauncherArgs,
+  removeLauncherState,
+  runningLauncher,
   startDesktopServer,
 } from "../src/desktop.ts";
-import { RUNTIME_FILES, startDesktopHost } from "../src/desktop_host.ts";
+import {
+  connectDesktopHost,
+  type DesktopHost,
+  RUNTIME_FILES,
+  spawnDesktopHost,
+} from "../src/desktop_host.ts";
 
-let args;
+let args: LauncherArgs;
 try {
   args = parseLauncherArgs(Deno.args);
 } catch (error) {
@@ -61,10 +69,69 @@ if (!(await hostPresent(runtimeDir))) {
   );
   Deno.exit(2);
 }
+// From a terminal window: hand the URL to the default browser. The page's
+// own support gate says so if that browser cannot run the sandbox. A caller
+// with stdout piped (tests, scripts) or --no-open gets the URL and nothing
+// opened.
+async function openInBrowser(url: string) {
+  const opener = { darwin: "open", linux: "xdg-open" }[Deno.build.os as string];
+  if (opener === undefined || !args.open || !Deno.stdout.isTerminal()) return;
+  const { success } = await new Deno.Command(opener, { args: [url] }).output()
+    .catch(() => ({ success: false }));
+  if (!success) console.log(`Open ${url} in a browser.`);
+}
+const tokenFile = join(
+  Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ".",
+  ".yurt",
+  "playground.json",
+);
+// One sandbox per user: a second launch would boot another (~1 GB) and
+// take the state file from the first.
+const running = await runningLauncher(tokenFile);
+if (running !== null) {
+  console.log(
+    `yurt-playground is already running (pid ${running.pid}): ${running.url}`,
+  );
+  await openInBrowser(running.url);
+  Deno.exit(0);
+}
 console.log("booting the sandbox…");
-let host;
+const child = spawnDesktopHost(runtimeDir);
+let host: DesktopHost | undefined;
+// Ctrl-C, kill, or the terminal window closing: take the host down with
+// us. Its stdin closing is enough once it is up, but during the boot it
+// does not read it, and would run on for the rest of the boot.
+for (
+  const [signal, code] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+    ["SIGHUP", 129],
+  ] as const
+) {
+  Deno.addSignalListener(signal, () => {
+    if (host === undefined) {
+      // Booting: SIGTERM ends the host at once, but its runtime would run
+      // the boot to the end before it noticed; end that too.
+      try {
+        new Deno.Command("pkill", {
+          args: ["-TERM", "-P", String(child.pid)],
+        }).outputSync();
+      } catch {
+        // no pkill: the runtime goes when its boot is done
+      }
+    }
+    // Once up, the host tears the sandbox down on SIGTERM.
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // already gone
+    }
+    removeLauncherState(tokenFile, Deno.pid);
+    Deno.exit(code);
+  });
+}
 try {
-  host = await startDesktopHost(runtimeDir);
+  host = await connectDesktopHost(child);
 } catch (error) {
   // The host's own stderr (the cause) is already on the terminal above
   // this line; a stack trace from here would only bury it.
@@ -92,11 +159,6 @@ console.log(`Yurt playground: ${url}`);
 // token (README, "Driving the desktop app"); it is also left where a
 // script finds it without the terminal, readable by this user alone.
 console.log(`API token: ${apiToken}`);
-const tokenFile = join(
-  Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ".",
-  ".yurt",
-  "playground.json",
-);
 try {
   await Deno.mkdir(dirname(tokenFile), { recursive: true, mode: 0o700 });
   await Deno.writeTextFile(
@@ -113,13 +175,4 @@ try {
   );
 }
 console.log("Close this window to stop it.");
-// From a terminal window: hand the URL to the default browser. The page's
-// own support gate says so if that browser cannot run the sandbox. A caller
-// with stdout piped (tests, scripts) or --no-open gets the URL and nothing
-// opened.
-const opener = { darwin: "open", linux: "xdg-open" }[Deno.build.os as string];
-if (opener !== undefined && args.open && Deno.stdout.isTerminal()) {
-  const { success } = await new Deno.Command(opener, { args: [url] }).output()
-    .catch(() => ({ success: false }));
-  if (!success) console.log(`Open ${url} in a browser.`);
-}
+await openInBrowser(url);

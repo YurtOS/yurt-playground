@@ -112,7 +112,8 @@ Boot the sandbox natively and serve the playground on a loopback port.
 
 A program on this machine drives the sandbox through <url>/api/* with the
 bearer token the launcher prints; the token and URL are also written to
-~/.yurt/playground.json (mode 0600) for the launcher's lifetime. The page's
+~/.yurt/playground.json (mode 0600) for the launcher's lifetime. While one
+runs, a second launch prints its URL (and opens it) instead. The page's
 window.yurt is the same API from the browser. See the README, "Driving the
 sandbox from a program".`;
 
@@ -141,6 +142,49 @@ export function parseLauncherArgs(argv: string[]): LauncherArgs {
     } else throw new Error(`unknown argument ${arg}\n${LAUNCHER_USAGE}`);
   }
   return args;
+}
+
+/** What `~/.yurt/playground.json` holds while a launcher serves. */
+export type LauncherState = { url: string; apiToken: string; pid: number };
+
+/** The launcher `stateFile` names, if it still serves. A file left by one
+ * that could not clean up (SIGKILL, a crash) is removed. A live pid alone
+ * does not prove it (pids are reused), so the recorded URL must answer as
+ * a launcher does. */
+export async function runningLauncher(
+  stateFile: string,
+): Promise<LauncherState | null> {
+  let state: LauncherState;
+  try {
+    state = JSON.parse(await Deno.readTextFile(stateFile));
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    await Deno.remove(stateFile).catch(() => undefined);
+    return null;
+  }
+  try {
+    const response = await fetch(new URL("desktop.json", state.url), {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (response.ok && (await response.json()).native === true) return state;
+    await response.body?.cancel();
+  } catch {
+    // nothing listens there any more
+  }
+  await Deno.remove(stateFile).catch(() => undefined);
+  return null;
+}
+
+/** Remove `stateFile` if the launcher with `pid` wrote it. Synchronous:
+ * it runs from a signal handler just before the process exits. */
+export function removeLauncherState(stateFile: string, pid: number): void {
+  try {
+    if (JSON.parse(Deno.readTextFileSync(stateFile)).pid === pid) {
+      Deno.removeSync(stateFile);
+    }
+  } catch {
+    // no file, or not ours
+  }
 }
 
 /** A token for this launch's `/api/*`: 128 random bits, hex. */

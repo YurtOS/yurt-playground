@@ -64,10 +64,11 @@ export const RUNTIME_FILES = {
   image: "playground.yurtimg",
 } as const;
 
-export async function startDesktopHost(
-  runtimeDir: string,
-): Promise<DesktopHost> {
-  const child = new Deno.Command(join(runtimeDir, RUNTIME_FILES.host), {
+/** Start `yurt-desktop-host` on the bundle's runtime; `connectDesktopHost`
+ * waits for its sandbox. Until its announce the host does not watch its
+ * stdin, so a launcher that goes away during the boot has to kill it. */
+export function spawnDesktopHost(runtimeDir: string): Deno.ChildProcess {
+  return new Deno.Command(join(runtimeDir, RUNTIME_FILES.host), {
     args: [
       "--runtime",
       join(runtimeDir, RUNTIME_FILES.runtime),
@@ -83,6 +84,12 @@ export async function startDesktopHost(
     stderr: "inherit",
     env: { RUST_LOG: "warn" },
   }).spawn();
+}
+
+/** The host `child` runs, once its sandbox is up and it has announced. */
+export async function connectDesktopHost(
+  child: Deno.ChildProcess,
+): Promise<DesktopHost> {
   // The announce is the first and only stdout line: `URL TOKEN`.
   const reader = child.stdout.getReader();
   const decoder = new TextDecoder();
