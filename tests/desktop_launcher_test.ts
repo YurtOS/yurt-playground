@@ -316,3 +316,78 @@ Deno.test("a launcher whose sandbox fails to boot leaves no state file", async (
     await cleanup(f, launcher);
   }
 });
+
+Deno.test("launches started together boot one sandbox", async () => {
+  const f = await fixture();
+  const launchers = Array.from({ length: 6 }, () => launch(f, "boot-forever"));
+  try {
+    // All but the one that claimed the boot exit, saying it is starting.
+    const exits = await within(
+      Promise.all(launchers.map((l) =>
+        Promise.race([
+          l.exited.then(() => "exited"),
+          l.waitForUntimed(/booting the sandbox/).then(() => "booting"),
+        ]).catch(() => "exited")
+      )),
+      "every launch to exit or boot",
+    );
+    await hostPid(f);
+    // A second booting launch spawns its host as soon as the first did.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const hosts = [];
+    for await (const entry of Deno.readDir(f.root)) {
+      if (entry.name.startsWith("host-")) hosts.push(entry.name);
+    }
+    assertEquals(
+      exits.filter((e) => e === "booting").length,
+      1,
+      "more than one launch booted a sandbox",
+    );
+    assertEquals(hosts.length, 1, "more than one host started");
+  } finally {
+    await cleanup(f, ...launchers);
+  }
+});
+
+Deno.test("checking a booting record's pid does not signal that process", async () => {
+  // The check used to send SIGCONT, which resumes a stopped process: a
+  // reused pid's, or a launcher suspended with Ctrl-Z.
+  const { runningLauncher } = await import("../src/desktop.ts");
+  const dir = await Deno.makeTempDir({ prefix: "desktop-state-" });
+  const stateFile = join(dir, "playground.json");
+  const stopped = new Deno.Command("sleep", { args: ["30"] }).spawn();
+  try {
+    stopped.kill("SIGSTOP");
+    await Deno.writeTextFile(
+      stateFile,
+      JSON.stringify({ pid: stopped.pid, startedAt: Date.now() }),
+    );
+    assertEquals((await runningLauncher(stateFile))?.pid, stopped.pid);
+    const { stdout } = await new Deno.Command("ps", {
+      args: ["-o", "stat=", "-p", String(stopped.pid)],
+    }).output();
+    assertStringIncludes(new TextDecoder().decode(stdout), "T");
+  } finally {
+    stopped.kill("SIGKILL");
+    await stopped.status;
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a booting record naming another user's process is stale", async () => {
+  const { runningLauncher } = await import("../src/desktop.ts");
+  const dir = await Deno.makeTempDir({ prefix: "desktop-state-" });
+  const stateFile = join(dir, "playground.json");
+  try {
+    // pid 1 is alive but not this user's: not a launcher of ours.
+    await Deno.writeTextFile(
+      stateFile,
+      JSON.stringify({ pid: 1, startedAt: Date.now() }),
+    );
+    assertEquals(await runningLauncher(stateFile), null);
+    const left = await Deno.stat(stateFile).then(() => true, () => false);
+    assertEquals(left, false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

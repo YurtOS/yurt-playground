@@ -6,6 +6,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  claimLauncherState,
   freshApiToken,
   LAUNCHER_USAGE,
   type LauncherArgs,
@@ -13,6 +14,7 @@ import {
   removeLauncherState,
   runningLauncher,
   startDesktopServer,
+  writeLauncherState,
 } from "../src/desktop.ts";
 import {
   connectDesktopHost,
@@ -88,8 +90,10 @@ const tokenFile = join(
 // One sandbox per user: a second launch would boot another (~1 GB) and
 // take the state file from the first. The claim is the state file itself,
 // created exclusively before the boot; losing that race to another launch
-// finds it booting.
-while (true) {
+// finds it booting. A record that is neither running nor removable
+// (another user's file, say) would loop here forever; a few rounds settle
+// any honest race.
+for (let round = 0;; round++) {
   const running = await runningLauncher(tokenFile);
   if (running?.url !== undefined) {
     console.log(
@@ -106,14 +110,14 @@ while (true) {
   }
   try {
     await Deno.mkdir(dirname(tokenFile), { recursive: true, mode: 0o700 });
-    await Deno.writeTextFile(
-      tokenFile,
-      JSON.stringify({ pid: Deno.pid, startedAt: Date.now() }) + "\n",
-      { createNew: true, mode: 0o600 },
+    const state = { pid: Deno.pid, startedAt: Date.now() };
+    if (await claimLauncherState(tokenFile, state)) break;
+    if (round < 5) continue;
+    console.error(
+      `yurt-playground: ${tokenFile} names no running launcher but cannot be replaced; remove it and start again.`,
     );
-    break;
+    Deno.exit(1);
   } catch (error) {
-    if (error instanceof Deno.errors.AlreadyExists) continue;
     console.error(
       `yurt-playground: could not write ${tokenFile}: ${
         (error as Error).message
@@ -192,12 +196,7 @@ console.log(`Yurt playground: ${url}`);
 // script finds it without the terminal, readable by this user alone.
 console.log(`API token: ${apiToken}`);
 try {
-  await Deno.writeTextFile(
-    tokenFile,
-    JSON.stringify({ url, apiToken, pid: Deno.pid }) + "\n",
-    { mode: 0o600 },
-  );
-  await Deno.chmod(tokenFile, 0o600).catch(() => undefined);
+  await writeLauncherState(tokenFile, { url, apiToken, pid: Deno.pid });
 } catch (error) {
   console.error(
     `yurt-playground: could not write ${tokenFile}: ${

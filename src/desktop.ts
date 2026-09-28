@@ -158,15 +158,85 @@ export type LauncherState = {
  * image 20 s to finish its init. */
 const BOOT_LIMIT_MS = 180_000;
 
+/** Whether `pid` is a process of this user's. The shell's `kill -0`, as
+ * Deno.kill has no signal 0 and any real signal acts on a reused pid. */
 function processExists(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
-    // A stopped process would resume; a running one ignores it.
-    Deno.kill(pid, "SIGCONT");
-    return true;
+    // EPERM (another user's, so not a launcher of this one) fails too.
+    return new Deno.Command("sh", {
+      args: ["-c", 'kill -0 "$1" 2>/dev/null', "sh", String(pid)],
+      stdout: "null",
+      stderr: "null",
+    }).outputSync().success;
   } catch {
-    // ESRCH, or EPERM: another user's, so not a launcher of this one.
     return false;
   }
+}
+
+/** Write `state` to a file of its own beside `stateFile`, whole, so a
+ * reader never sees it half written. */
+async function stagedState(
+  stateFile: string,
+  state: LauncherState,
+): Promise<string> {
+  const staged = `${stateFile}.${Deno.pid}.tmp`;
+  await Deno.writeTextFile(staged, JSON.stringify(state) + "\n", {
+    mode: 0o600,
+  });
+  return staged;
+}
+
+/** Create `stateFile` holding `state`, only if there is none: the claim
+ * two launches race for. A hard link appears whole or not at all, where an
+ * exclusive create is seen empty until its write lands (and a launch that
+ * read it then took it for garbage). False if another launch holds it. */
+export async function claimLauncherState(
+  stateFile: string,
+  state: LauncherState,
+): Promise<boolean> {
+  const staged = await stagedState(stateFile, state);
+  try {
+    await Deno.link(staged, stateFile);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.AlreadyExists) return false;
+    throw error;
+  } finally {
+    await Deno.remove(staged).catch(() => undefined);
+  }
+}
+
+/** Replace `stateFile` with `state` in one step (a rename). */
+export async function writeLauncherState(
+  stateFile: string,
+  state: LauncherState,
+): Promise<void> {
+  const staged = await stagedState(stateFile, state);
+  try {
+    await Deno.rename(staged, stateFile);
+  } catch (error) {
+    await Deno.remove(staged).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Remove `stateFile` if it still holds `text`, the record judged stale.
+ * Two launches that both read one stale record both come here: the second
+ * must not remove the claim the first made in its place. The file is moved
+ * aside first, so what is checked is what was taken; a newer claim taken
+ * by mistake goes back. */
+async function removeStale(stateFile: string, text: string): Promise<void> {
+  const aside = `${stateFile}.${Deno.pid}.stale`;
+  try {
+    await Deno.rename(stateFile, aside);
+  } catch {
+    return; // already gone
+  }
+  if ((await Deno.readTextFile(aside).catch(() => text)) !== text) {
+    await Deno.link(aside, stateFile).catch(() => undefined);
+  }
+  await Deno.remove(aside).catch(() => undefined);
 }
 
 /** The launcher `stateFile` names, if it still boots or serves. A file
@@ -176,12 +246,19 @@ function processExists(pid: number): boolean {
 export async function runningLauncher(
   stateFile: string,
 ): Promise<LauncherState | null> {
+  let text: string;
+  try {
+    text = await Deno.readTextFile(stateFile);
+  } catch {
+    // None, or one this user cannot read (the launcher's claim then
+    // fails, naming it).
+    return null;
+  }
   let state: LauncherState;
   try {
-    state = JSON.parse(await Deno.readTextFile(stateFile));
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return null;
-    await Deno.remove(stateFile).catch(() => undefined);
+    state = JSON.parse(text);
+  } catch {
+    await removeStale(stateFile, text);
     return null;
   }
   if (state.url === undefined) {
@@ -191,7 +268,7 @@ export async function runningLauncher(
     ) {
       return state;
     }
-    await Deno.remove(stateFile).catch(() => undefined);
+    await removeStale(stateFile, text);
     return null;
   }
   try {
@@ -203,7 +280,7 @@ export async function runningLauncher(
   } catch {
     // nothing listens there any more
   }
-  await Deno.remove(stateFile).catch(() => undefined);
+  await removeStale(stateFile, text);
   return null;
 }
 
