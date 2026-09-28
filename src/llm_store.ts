@@ -1,0 +1,130 @@
+/**
+ * How the agent's model weights sit in Cache Storage (#150). Safari fails a
+ * single `cache.put` over 2 GiB ("Failed writing data to the file system")
+ * whatever the quota, and Gemma 4 E4B is 2.77 GiB, so a model is stored as
+ * parts under their own keys and read back as one Blob of them. The entry
+ * at the model's own key is written last and names the part count, so a
+ * download cut short leaves no entry and is fetched again. A write that
+ * fails (a network error, the quota) removes the parts it wrote: they are
+ * up to gigabytes, and nothing else would find them if the next download is
+ * a different model.
+ */
+
+/** Well under Safari's 2 GiB, and small enough to hold in memory while it
+ * is written. */
+export const PART_BYTES = 64 * 1024 * 1024;
+
+/** On the head entry: how many parts follow. Absent on a model stored whole
+ * (before #150), which is read back as it is. */
+const PARTS_HEADER = "x-yurt-parts";
+
+type ModelCache = Pick<Cache, "match" | "put" | "delete">;
+
+/** The request shape used to coordinate model cache work across tabs. */
+export type ModelLockRequest = (
+  name: string,
+  operation: () => Promise<unknown>,
+) => Promise<unknown>;
+
+/** Run cache work under a lock shared by every pin of the same model path. */
+export function withModelLock<T>(
+  requestLock: ModelLockRequest,
+  key: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const pathname = new URL(key, "https://yurt.invalid").pathname;
+  return requestLock(`yurt-model-cache:${pathname}`, operation).then((value) =>
+    value as T
+  );
+}
+
+function partKey(key: string, index: number): string {
+  return `${key}${key.includes("?") ? "&" : "?"}part=${index}`;
+}
+
+/** The stored model, or `undefined` when there is none or a part of it is
+ * gone (the caller fetches it again, and its sweep drops the rest). */
+export async function readModel(
+  cache: ModelCache,
+  key: string,
+): Promise<Blob | undefined> {
+  const head = await cache.match(key);
+  if (head === undefined) return undefined;
+  const count = head.headers.get(PARTS_HEADER);
+  if (count === null) return await head.blob();
+  const n = Number(count);
+  if (!Number.isInteger(n) || n < 0) return undefined;
+  const parts: Blob[] = [];
+  for (let index = 0; index < n; index++) {
+    const part = await cache.match(partKey(key, index));
+    if (part === undefined) return undefined;
+    parts.push(await part.blob());
+  }
+  // A Blob of disk-backed Blobs: nothing is read into memory here.
+  return new Blob(parts);
+}
+
+/** Write `body` under `key`, in parts of `partBytes` (the last may be
+ * shorter); the head entry goes last. Returns the bytes stored. */
+export async function storeModel(
+  cache: ModelCache,
+  key: string,
+  body: ReadableStream<Uint8Array<ArrayBuffer>>,
+  partBytes = PART_BYTES,
+): Promise<number> {
+  const pending: Uint8Array<ArrayBuffer>[] = [];
+  let pendingBytes = 0;
+  let parts = 0;
+  let total = 0;
+  // Store the first `bytes` of `pending` as the next part. A chunk that
+  // straddles the cut is split and its tail stays pending, so a part is
+  // never larger than asked, however big a single read was.
+  const flush = async (bytes: number) => {
+    const out: Uint8Array<ArrayBuffer>[] = [];
+    let need = bytes;
+    while (need > 0) {
+      const chunk = pending[0];
+      if (chunk.byteLength <= need) {
+        out.push(chunk);
+        pending.shift();
+        need -= chunk.byteLength;
+      } else {
+        out.push(chunk.subarray(0, need));
+        pending[0] = chunk.subarray(need);
+        need = 0;
+      }
+    }
+    pendingBytes -= bytes;
+    await cache.put(partKey(key, parts), new Response(new Blob(out)));
+    parts++;
+  };
+  // A reader, not `for await`: Safari 26's ReadableStream is not async
+  // iterable.
+  const reader = body.getReader();
+  try {
+    for (;;) {
+      const { done, value: chunk } = await reader.read();
+      if (done) break;
+      pending.push(chunk);
+      pendingBytes += chunk.byteLength;
+      total += chunk.byteLength;
+      while (pendingBytes >= partBytes) await flush(partBytes);
+    }
+    if (pendingBytes > 0) await flush(pendingBytes);
+    // Inside the `try`: a quota error here must remove the parts as well.
+    await cache.put(
+      key,
+      new Response(null, { headers: { [PARTS_HEADER]: String(parts) } }),
+    );
+  } catch (error) {
+    // Stop the download too (`for await` did that implicitly).
+    await reader.cancel(error).catch(() => {});
+    // `parts` is the one that failed, if a put did; delete it too.
+    for (let index = 0; index <= parts; index++) {
+      await cache.delete(partKey(key, index)).catch(() => false);
+    }
+    await cache.delete(key).catch(() => false);
+    throw error;
+  }
+  return total;
+}

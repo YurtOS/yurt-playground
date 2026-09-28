@@ -6,6 +6,7 @@
  */
 import { type Conversation, Engine, loadLiteRtLm } from "@litert-lm/core";
 import { MODEL_CACHE } from "./llm_models.ts";
+import { readModel, storeModel, withModelLock } from "./llm_store.ts";
 
 export type ToWorker =
   | {
@@ -63,58 +64,66 @@ let active: Conversation | undefined;
 let cancelRequested = false;
 
 /** The model's bytes from Cache Storage, fetching them first if absent.
- * Streamed straight into the cache (no tee), so a 2 GB download never sits
- * in memory; the Blob read back is disk-backed. */
+ * Streamed into the cache part by part (no tee), so a 2 GB download never
+ * sits in memory; the Blob read back is disk-backed. */
 async function modelBlob(url: string, key: string) {
-  const cache = await caches.open(MODEL_CACHE);
-  const cached = await cache.match(key);
-  if (cached !== undefined) {
-    return {
-      blob: await cached.blob(),
-      fromCache: true,
-      downloadBytes: 0,
-      downloadMs: 0,
-    };
-  }
-  const started = performance.now();
-  const response = await fetch(url);
-  if (!response.ok || response.body === null) {
-    throw new Error(`${url}: HTTP ${response.status}`);
-  }
-  const total = Number(response.headers.get("content-length") ?? 0);
-  let loaded = 0;
-  let lastPost = 0;
-  const counted = response.body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        loaded += chunk.byteLength;
-        if (loaded - lastPost > 16 * 1024 * 1024 || loaded === total) {
-          lastPost = loaded;
-          post({ type: "progress", loaded, total });
-        }
-        controller.enqueue(chunk);
-      },
-    }),
-  );
-  // Other pins of this file are dead weight (gigabytes): drop them first.
-  for (const request of await cache.keys()) {
-    const old = new URL(request.url);
-    if (old.pathname === new URL(key, location.href).pathname) {
-      await cache.delete(request);
-    }
-  }
-  await cache.put(
+  return await withModelLock(
+    (name, operation) => navigator.locks.request(name, operation),
     key,
-    new Response(counted, { headers: { "content-length": String(total) } }),
+    async () => {
+      const cache = await caches.open(MODEL_CACHE);
+      // Recheck after taking the lock: another tab may have finished the
+      // download while this worker waited.
+      const cached = await readModel(cache, key);
+      if (cached !== undefined) {
+        return {
+          blob: cached,
+          fromCache: true,
+          downloadBytes: 0,
+          downloadMs: 0,
+        };
+      }
+      const started = performance.now();
+      const response = await fetch(url);
+      if (!response.ok || response.body === null) {
+        throw new Error(`${url}: HTTP ${response.status}`);
+      }
+      const total = Number(response.headers.get("content-length") ?? 0);
+      let loaded = 0;
+      let lastPost = 0;
+      const counted = response.body.pipeThrough(
+        new TransformStream<Uint8Array<ArrayBuffer>, Uint8Array<ArrayBuffer>>({
+          transform(chunk, controller) {
+            loaded += chunk.byteLength;
+            if (loaded - lastPost > 16 * 1024 * 1024 || loaded === total) {
+              lastPost = loaded;
+              post({ type: "progress", loaded, total });
+            }
+            controller.enqueue(chunk);
+          },
+        }),
+      );
+      // Other pins of this file are dead weight (gigabytes), and so are the
+      // parts of a download cut short: drop them first.
+      for (const request of await cache.keys()) {
+        const old = new URL(request.url);
+        if (old.pathname === new URL(key, location.href).pathname) {
+          await cache.delete(request);
+        }
+      }
+      await storeModel(cache, key, counted);
+      const stored = await readModel(cache, key);
+      if (stored === undefined) {
+        throw new Error("model vanished from the cache");
+      }
+      return {
+        blob: stored,
+        fromCache: false,
+        downloadBytes: loaded,
+        downloadMs: performance.now() - started,
+      };
+    },
   );
-  const stored = await cache.match(key);
-  if (stored === undefined) throw new Error("model vanished from the cache");
-  return {
-    blob: await stored.blob(),
-    fromCache: false,
-    downloadBytes: loaded,
-    downloadMs: performance.now() - started,
-  };
 }
 
 /** Fetch a gzipped .wasm, inflate it as it streams in, and compile it
