@@ -151,7 +151,10 @@ for (
   Deno.addSignalListener(signal, () => {
     if (host === undefined) {
       // Booting: SIGTERM ends the host at once, but its runtime would run
-      // the boot to the end before it noticed; end that too.
+      // the boot to the end before it noticed; end that too. This belongs
+      // in the host (yurt-sandbox's yurt-desktop-host, which watches
+      // SIGTERM and stdin EOF only after its announce); once a pinned host
+      // does it during the boot, this branch and the .deb's procps go.
       try {
         new Deno.Command("pkill", {
           args: ["-TERM", "-P", String(child.pid)],
