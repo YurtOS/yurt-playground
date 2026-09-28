@@ -65,6 +65,22 @@ Deno.test("a model bigger than one cache entry allows is stored in parts and rea
   assertEquals(new Uint8Array(await blob.arrayBuffer()), data);
 });
 
+Deno.test("a stream without async iteration (Safari 26) is stored", async () => {
+  // Safari 26.6.2's ReadableStream has no Symbol.asyncIterator and no
+  // values(): `for await (... of body)` threw "undefined is not a function"
+  // before a byte was stored (yurt-playground#162 in real Safari).
+  const { cache } = limitedCache(1000);
+  const { data, body } = model(2500);
+  Object.defineProperty(body, Symbol.asyncIterator, { value: undefined });
+  Object.defineProperty(body, "values", { value: undefined });
+
+  assertEquals(await storeModel(cache, KEY, body, 256), 2500);
+
+  const blob = await readModel(cache, KEY);
+  assert(blob !== undefined);
+  assertEquals(new Uint8Array(await blob.arrayBuffer()), data);
+});
+
 Deno.test("a download cut short leaves no model behind", async () => {
   const { cache, entries } = limitedCache(1000);
   const { body } = model(2500);

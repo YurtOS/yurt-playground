@@ -64,8 +64,13 @@ export async function storeModel(
     pending = [];
     pendingBytes = 0;
   };
+  // A reader, not `for await`: Safari 26's ReadableStream is not async
+  // iterable.
+  const reader = body.getReader();
   try {
-    for await (const chunk of body) {
+    for (;;) {
+      const { done, value: chunk } = await reader.read();
+      if (done) break;
       pending.push(chunk);
       pendingBytes += chunk.byteLength;
       total += chunk.byteLength;
@@ -73,6 +78,8 @@ export async function storeModel(
     }
     if (pendingBytes > 0) await flush();
   } catch (error) {
+    // Stop the download too (`for await` did that implicitly).
+    await reader.cancel(error).catch(() => {});
     // `parts` is the one that failed, if a put did; delete it too.
     for (let index = 0; index <= parts; index++) {
       await cache.delete(partKey(key, index)).catch(() => false);
