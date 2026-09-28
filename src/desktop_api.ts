@@ -278,6 +278,13 @@ function errorCode(error: unknown): { status: number; code: string } {
   ) {
     return { status: 400, code: "NotAFile" };
   }
+  // ELOOP: musl's (the guest's) text, then glibc's and macOS's.
+  if (
+    message.includes("Symbolic link loop") ||
+    /too many levels of symbolic links/i.test(message)
+  ) {
+    return { status: 400, code: "SymlinkLoop" };
+  }
   return { status: 500, code: "Failed" };
 }
 

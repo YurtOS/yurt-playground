@@ -468,6 +468,39 @@ function shellHost(): HostClient {
   };
 }
 
+Deno.test("an atomic PUT through a symlink writes its target; a link loop is a 400 SymlinkLoop", async () => {
+  // #166: the PUT replaced the link with a regular file. A real shell runs
+  // the write line here.
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${dir}/real`, "old");
+    await Deno.symlink("real", `${dir}/link`);
+    await Deno.symlink("b", `${dir}/a`);
+    await Deno.symlink("a", `${dir}/b`);
+    const { request } = api({ host: shellHost() });
+    const put = (path: string) =>
+      request(`/api/fs/content?path=${encodeURIComponent(path)}`, {
+        method: "PUT",
+        body: "new",
+      });
+    const wrote = await put(`${dir}/link`);
+    assertEquals(wrote.status, 204, await wrote.text());
+    assertEquals(Deno.readLinkSync(`${dir}/link`), "real");
+    assertEquals(Deno.readTextFileSync(`${dir}/real`), "new");
+    const loop = await put(`${dir}/a`);
+    const body = await loop.json();
+    assertEquals(loop.status, 400, JSON.stringify(body));
+    assertEquals(body.code, "SymlinkLoop");
+    assertEquals(
+      [...Deno.readDirSync(dir)].map((e) => e.name).sort(),
+      ["a", "b", "link", "real"],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+  await swept();
+});
+
 Deno.test("an atomic PUT to a directory is a 400 NotAFile and writes nothing into it", async () => {
   // #163: `mv -f tmp dir` moved the temporary file into the directory and
   // the PUT answered 204. A real shell runs the write line here.

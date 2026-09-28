@@ -110,10 +110,11 @@ Deno.test("fs.read is cat's bytes; fs.write feeds stdin to an atomic cat; a fail
   await yurt.fs.write("/home/user/x.txt", "hi", { mode: 0o600 });
   const write = asked.at(-1)!;
   assertEquals(
-    write.cmd.includes('cat > "$t" && mv -f -- "$t" \'/home/user/x.txt\''),
+    write.cmd.includes('cat > "$t" && mv -f -- "$t" "$d"') &&
+      write.cmd.includes("d='/home/user/x.txt'"),
     true,
   );
-  assertEquals(write.cmd.endsWith("&& chmod 600 -- '/home/user/x.txt'"), true);
+  assertEquals(write.cmd.endsWith('&& chmod 600 -- "$d"'), true);
   assertEquals(new TextDecoder().decode(write.opts.stdin as Uint8Array), "hi");
   await yurt.fs.download("/tmp/bin");
   assertEquals(saved, ["bin"]);
@@ -230,13 +231,11 @@ Deno.test("a failed atomic write removes its temporary file, since the error no 
 });
 
 Deno.test("hideAtomicTemp drops only the temporary suffix and its pid; other digits after the path stay", () => {
-  const path = "/srv/run";
   // dash's form: the digit before the path is a line number, and the
   // pid follows the suffix.
   assertEquals(
     hideAtomicTemp(
       "write /srv/run: exit 2: sh: 1: cannot create /srv/run.yurt-tmp.4242: Directory nonexistent",
-      path,
     ),
     "write /srv/run: exit 2: sh: 1: cannot create /srv/run: Directory nonexistent",
   );
@@ -245,18 +244,23 @@ Deno.test("hideAtomicTemp drops only the temporary suffix and its pid; other dig
   assertEquals(
     hideAtomicTemp(
       "mv: can't rename '/srv/run.yurt-tmp.7': /srv/run2 and /srv/run.1 busy; /srv/run.yurt-tmp.7 kept",
-      path,
     ),
     "mv: can't rename '/srv/run': /srv/run2 and /srv/run.1 busy; /srv/run kept",
   );
   // A path that ends in digits keeps them.
   assertEquals(
-    hideAtomicTemp("can't create /v/2024.yurt-tmp.31: EROFS", "/v/2024"),
+    hideAtomicTemp("can't create /v/2024.yurt-tmp.31: EROFS"),
     "can't create /v/2024: EROFS",
+  );
+  // Through a symlink (#166) the temporary file sits beside the link's
+  // target, and the error names the target.
+  assertEquals(
+    hideAtomicTemp("sh: can't create /data/real.yurt-tmp.5: No space left"),
+    "sh: can't create /data/real: No space left",
   );
   // No temporary name: the message is unchanged.
   assertEquals(
-    hideAtomicTemp("sh: /srv/run: Permission denied", path),
+    hideAtomicTemp("sh: /srv/run: Permission denied"),
     "sh: /srv/run: Permission denied",
   );
 });
@@ -287,7 +291,9 @@ Deno.test("the atomic write line keeps a failing cat's or mv's status, removes t
             "-c",
             // The mode suffix stands in for `&& chmod`: macOS chmod has no
             // `--`, and a marker file shows whether the suffix ran.
-            `${fake}\n${atomicWriteLine(dest, ` && : > '${dir}/suffix-ran'`)}`,
+            `${fake}\n${
+              atomicWriteLine(dest, () => ` && : > '${dir}/suffix-ran'`)
+            }`,
           ],
           stdin: "piped",
           stderr: "piped",
@@ -370,7 +376,10 @@ Deno.test("an atomic write fails when a directory appears at the path while stdi
     try {
       const target = `${dir}/target`;
       const child = new Deno.Command(sh, {
-        args: ["-c", atomicWriteLine(target, ` && : > '${dir}/suffix-ran'`)],
+        args: [
+          "-c",
+          atomicWriteLine(target, () => ` && : > '${dir}/suffix-ran'`),
+        ],
         stdin: "piped",
         stderr: "piped",
       }).spawn();
@@ -400,6 +409,158 @@ Deno.test("an atomic write fails when a directory appears at the path while stdi
       );
     } finally {
       await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+/** A Yurt whose fs.write runs its line in `sh`, a real shell. */
+function shellYurt(sh: string, scratch: string) {
+  const { transport } = fakeTransport((cmd, opts) => {
+    const input = `${scratch}.stdin`;
+    Deno.writeFileSync(input, opts.stdin as Uint8Array);
+    const out = new Deno.Command(sh, {
+      args: ["-c", `exec < "$0"; ${cmd}`, input],
+    }).outputSync();
+    Deno.removeSync(input);
+    return { code: out.code, stderr: out.stderr };
+  });
+  return createYurt(transport, {
+    current: () => "running",
+    ready: Promise.resolve(),
+  });
+}
+
+Deno.test("an atomic write through a symlink writes the target and keeps the link", async () => {
+  // #166: `mv -f tmp link` replaced the link with a regular file and left
+  // the target's old content. Linux open(O_TRUNC) writes through it.
+  for (const sh of realShells()) {
+    const dir = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${dir}/data`);
+      await Deno.writeTextFile(`${dir}/data/real`, "old");
+      // Absolute, relative, and a chain of two with a relative `..` hop.
+      await Deno.symlink(`${dir}/data/real`, `${dir}/abs`);
+      await Deno.symlink("data/real", `${dir}/rel`);
+      await Deno.mkdir(`${dir}/links`);
+      await Deno.symlink("../rel", `${dir}/links/chain`);
+      const yurt = shellYurt(sh, dir);
+      for (const link of ["abs", "rel", "links/chain"]) {
+        const what = `${sh} ${link}`;
+        await yurt.fs.write(`${dir}/${link}`, `new ${link}`);
+        assert(Deno.lstatSync(`${dir}/${link}`).isSymlink, what);
+        assertEquals(
+          Deno.readTextFileSync(`${dir}/data/real`),
+          `new ${link}`,
+          what,
+        );
+      }
+      assertEquals(Deno.readLinkSync(`${dir}/rel`), "data/real");
+      assertEquals(
+        [...Deno.readDirSync(`${dir}/data`)].map((e) => e.name),
+        ["real"],
+        sh,
+      );
+      assertEquals(
+        [...Deno.readDirSync(dir)].map((e) => e.name).sort(),
+        ["abs", "data", "links", "rel"],
+        sh,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("an atomic write to a dangling symlink creates its target, as O_CREAT does", async () => {
+  for (const sh of realShells()) {
+    const dir = await Deno.makeTempDir();
+    try {
+      await Deno.symlink("made", `${dir}/dangling`);
+      const yurt = shellYurt(sh, dir);
+      await yurt.fs.write(`${dir}/dangling`, "created");
+      assert(Deno.lstatSync(`${dir}/dangling`).isSymlink, sh);
+      assertEquals(Deno.readTextFileSync(`${dir}/made`), "created", sh);
+      assertEquals(
+        [...Deno.readDirSync(dir)].map((e) => e.name).sort(),
+        ["dangling", "made"],
+        sh,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("an atomic write to a symlink to a directory fails as the directory does", async () => {
+  for (const sh of realShells()) {
+    const dir = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${dir}/sub`);
+      await Deno.symlink("sub", `${dir}/link`);
+      const yurt = shellYurt(sh, dir);
+      const error = await assertRejects(() =>
+        yurt.fs.write(`${dir}/link`, "x")
+      );
+      assertEquals(
+        (error as Error).message,
+        `write ${dir}/link: exit 1: ${dir}/link: Is a directory`,
+        sh,
+      );
+      assert(Deno.lstatSync(`${dir}/link`).isSymlink, sh);
+      assertEquals([...Deno.readDirSync(`${dir}/sub`)], [], sh);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("an atomic write to a symlink loop fails as one and writes nothing", async () => {
+  for (const sh of realShells()) {
+    const dir = await Deno.makeTempDir();
+    try {
+      await Deno.symlink("b", `${dir}/a`);
+      await Deno.symlink("a", `${dir}/b`);
+      const yurt = shellYurt(sh, dir);
+      const error = await assertRejects(() => yurt.fs.write(`${dir}/a`, "x"));
+      assertEquals(
+        (error as Error).message,
+        `write ${dir}/a: exit 1: ${dir}/a: Symbolic link loop`,
+        sh,
+      );
+      assertEquals(
+        [...Deno.readDirSync(dir)].map((e) => e.name).sort(),
+        ["a", "b"],
+        sh,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("an atomic write through a symlink sets the mode on the target, not the link", async () => {
+  // The guest's chmod of a symlink changes the link's own mode, so the
+  // mode suffix is given the resolved file. A marker records the word.
+  for (const sh of realShells()) {
+    const dir = await Deno.makeTempDir();
+    try {
+      await Deno.writeTextFile(`${dir}/real`, "old");
+      await Deno.symlink("real", `${dir}/link`);
+      const out = new Deno.Command(sh, {
+        args: [
+          "-c",
+          atomicWriteLine(
+            `${dir}/link`,
+            (file) => ` && printf %s ${file} > '${dir}.chmod'`,
+          ),
+        ],
+        stdin: "null",
+      }).outputSync();
+      assertEquals(out.code, 0, sh);
+      assertEquals(Deno.readTextFileSync(`${dir}.chmod`), `${dir}/real`, sh);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+      await Deno.remove(`${dir}.chmod`).catch(() => undefined);
     }
   }
 });
