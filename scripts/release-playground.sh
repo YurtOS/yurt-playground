@@ -120,6 +120,7 @@ done
 
 say() { printf '\033[1m==> %s\033[0m\n' "$*" >&2; }
 die() { echo "release-playground: $*" >&2; exit 1; }
+source "$root/scripts/lib/kernel-release.sh"
 
 for tool in gh jq git; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
@@ -332,20 +333,6 @@ resolve_sha() {
 }
 kernel_sha=$(resolve_sha "$kernel_dir" "$kernel_sha" kernel-sha)
 
-# release-kernel-wasm.yml (yurt-sandbox#297) fetches a yurtos-kernel release
-# by its kernel-v* tag, not by commit: GitHub has no commit -> release
-# index, and this train already has a full yurtos-kernel checkout, so
-# resolving the tag here is one local `git tag --points-at`, no API calls.
-resolve_kernel_release() {
-  local dir=$1 sha=$2
-  [ -d "$dir/.git" ] || die "no checkout at $dir to resolve a kernel-v* tag from; pass --kernel-sha with a checkout present, or set YURT_KERNEL_ROOT"
-  git -C "$dir" fetch -q origin --tags
-  local tag
-  tag=$(git -C "$dir" tag --points-at "$sha" | grep '^kernel-v' | sort -V | tail -1)
-  [ -n "$tag" ] || die "no kernel-v* tag in yurtos-kernel points at $sha; cut one there first"
-  echo "$tag"
-}
-kernel_release=$(resolve_kernel_release "$kernel_dir" "$kernel_sha")
 sandbox_sha=$(resolve_sha "$sandbox_dir" "$sandbox_sha" sandbox-sha)
 if [ -n "$image_release" ] && [ -z "$ports_sha" ]; then
   # A hand-cut image: its ports rev is whatever pins.json already records,
@@ -354,7 +341,7 @@ if [ -n "$image_release" ] && [ -z "$ports_sha" ]; then
 else
   ports_sha=$(resolve_sha "$ports_dir" "$ports_sha" ports-sha)
 fi
-say "kernel  $kernel_sha ($kernel_release)"
+say "kernel  $kernel_sha"
 say "ports   $ports_sha$( [ -n "$image_release" ] && echo " (the image is $image_release, cut by hand)")"
 say "sandbox $sandbox_sha"
 
@@ -469,6 +456,8 @@ dispatch_and_watch() {
 
 # [1] the kernel wasm
 if [ "$(step_get kernel_wasm conclusion)" != success ]; then
+  kernel_release=$(resolve_kernel_release "$kernel_dir" "$kernel_sha")
+  say "kernel release $kernel_release"
   dispatch_and_watch kernel_wasm "$sandbox_repo" release-kernel-wasm.yml \
     -f "kernel_release=$kernel_release" -f "train=$train" -f "publish=true"
 fi
