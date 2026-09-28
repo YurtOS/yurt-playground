@@ -46,23 +46,39 @@ export async function readModel(
   return new Blob(parts);
 }
 
-/** Write `body` under `key`, in parts of about `partBytes`; the head entry
- * goes last. Returns the bytes stored. */
+/** Write `body` under `key`, in parts of `partBytes` (the last may be
+ * shorter); the head entry goes last. Returns the bytes stored. */
 export async function storeModel(
   cache: ModelCache,
   key: string,
   body: ReadableStream<Uint8Array<ArrayBuffer>>,
   partBytes = PART_BYTES,
 ): Promise<number> {
-  let pending: Uint8Array<ArrayBuffer>[] = [];
+  const pending: Uint8Array<ArrayBuffer>[] = [];
   let pendingBytes = 0;
   let parts = 0;
   let total = 0;
-  const flush = async () => {
-    await cache.put(partKey(key, parts), new Response(new Blob(pending)));
+  // Store the first `bytes` of `pending` as the next part. A chunk that
+  // straddles the cut is split and its tail stays pending, so a part is
+  // never larger than asked, however big a single read was.
+  const flush = async (bytes: number) => {
+    const out: Uint8Array<ArrayBuffer>[] = [];
+    let need = bytes;
+    while (need > 0) {
+      const chunk = pending[0];
+      if (chunk.byteLength <= need) {
+        out.push(chunk);
+        pending.shift();
+        need -= chunk.byteLength;
+      } else {
+        out.push(chunk.subarray(0, need));
+        pending[0] = chunk.subarray(need);
+        need = 0;
+      }
+    }
+    pendingBytes -= bytes;
+    await cache.put(partKey(key, parts), new Response(new Blob(out)));
     parts++;
-    pending = [];
-    pendingBytes = 0;
   };
   // A reader, not `for await`: Safari 26's ReadableStream is not async
   // iterable.
@@ -74,9 +90,9 @@ export async function storeModel(
       pending.push(chunk);
       pendingBytes += chunk.byteLength;
       total += chunk.byteLength;
-      if (pendingBytes >= partBytes) await flush();
+      while (pendingBytes >= partBytes) await flush(partBytes);
     }
-    if (pendingBytes > 0) await flush();
+    if (pendingBytes > 0) await flush(pendingBytes);
     // Inside the `try`: a quota error here must remove the parts as well.
     await cache.put(
       key,

@@ -71,6 +71,30 @@ Deno.test("a model bigger than one cache entry allows is stored in parts and rea
   assertEquals(new Uint8Array(await blob.arrayBuffer()), data);
 });
 
+Deno.test("a read chunk several parts long is split, and no put exceeds a part", async () => {
+  // A fetch may yield one chunk bigger than a part. Storing all of it as
+  // one put would bring back the oversized entry parts exist to avoid.
+  const { cache, largest } = limitedCache(1000);
+  const data = new Uint8Array(3000).map((_, i) => (i * 13 + 5) & 0xff);
+  const sizes = [10, 1100, 30, 900, 960];
+  let at = 0;
+  const body = new ReadableStream<Uint8Array<ArrayBuffer>>({
+    pull(controller) {
+      const n = sizes.shift();
+      if (n === undefined) return controller.close();
+      controller.enqueue(data.slice(at, at + n));
+      at += n;
+    },
+  });
+
+  assertEquals(await storeModel(cache, KEY, body, 256), 3000);
+
+  assert(largest.bytes <= 256, `a put of ${largest.bytes} bytes`);
+  const blob = await readModel(cache, KEY);
+  assert(blob !== undefined);
+  assertEquals(new Uint8Array(await blob.arrayBuffer()), data);
+});
+
 Deno.test("a stream without async iteration (Safari 26) is stored", async () => {
   // Safari 26.6.2's ReadableStream has no Symbol.asyncIterator and no
   // values(): `for await (... of body)` threw "undefined is not a function"
