@@ -196,3 +196,33 @@ Deno.test("a refused write names the path asked for, not the atomic write's temp
     "write /etc/probe: exit 1: sh: can't create /etc/probe: Permission denied",
   );
 });
+
+Deno.test("a failed atomic write removes its temporary file, since the error no longer names it", async () => {
+  // The error above names the requested path, so a partial
+  // `<path>.yurt-tmp.<pid>` left behind would be a file nobody was told of.
+  // A real shell runs the line; a one-block file size limit fails the cat.
+  const dir = await Deno.makeTempDir();
+  try {
+    const { transport } = fakeTransport((cmd, opts) => {
+      const input = `${dir}.stdin`;
+      Deno.writeFileSync(input, opts.stdin as Uint8Array);
+      const out = new Deno.Command("sh", {
+        args: ["-c", `exec < "$0"; trap '' XFSZ; ulimit -f 1; ${cmd}`, input],
+      }).outputSync();
+      Deno.removeSync(input);
+      return { code: out.code, stderr: out.stderr };
+    });
+    const yurt = createYurt(transport, {
+      current: () => "running",
+      ready: Promise.resolve(),
+    });
+    const error = await assertRejects(() =>
+      yurt.fs.write(`${dir}/big`, new Uint8Array(100_000))
+    );
+    assertEquals((error as Error).message.includes(".yurt-tmp."), false);
+    const left = [...Deno.readDirSync(dir)].map((e) => e.name);
+    assertEquals(left, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

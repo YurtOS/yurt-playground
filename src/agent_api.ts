@@ -232,9 +232,11 @@ export function createYurt(
         : ` && chmod ${opts.mode.toString(8)} -- ${quoted(path)}`;
       const line = opts.atomic === false
         ? `cat > ${quoted(path)}${mode}`
-        : `t=${quoted(path)}.yurt-tmp.$$ && cat > "$t" && mv -f -- "$t" ${
+        // A failed write takes its temporary file with it: the error names
+        // the requested path, so a partial file left behind would go unseen.
+        : `t=${quoted(path)}.yurt-tmp.$$ && { cat > "$t" && mv -f -- "$t" ${
           quoted(path)
-        }${mode}`;
+        } || { s=$?; rm -f -- "$t"; exit $s; }; }${mode}`;
       const result = await exec(line, { stdin: bytes });
       if (!("code" in result) || result.code !== 0) {
         // The temporary file is this function's detail: an error names
