@@ -120,6 +120,7 @@ done
 
 say() { printf '\033[1m==> %s\033[0m\n' "$*" >&2; }
 die() { echo "release-playground: $*" >&2; exit 1; }
+source "$root/scripts/lib/kernel-release.sh"
 
 for tool in gh jq git; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
@@ -331,6 +332,7 @@ resolve_sha() {
   git -C "$dir" rev-parse origin/main
 }
 kernel_sha=$(resolve_sha "$kernel_dir" "$kernel_sha" kernel-sha)
+
 sandbox_sha=$(resolve_sha "$sandbox_dir" "$sandbox_sha" sandbox-sha)
 if [ -n "$image_release" ] && [ -z "$ports_sha" ]; then
   # A hand-cut image: its ports rev is whatever pins.json already records,
@@ -413,6 +415,11 @@ step_set() { local tmp; tmp=$(mktemp); jq ".steps[\"$1\"].$2 = $3" "$state" > "$
 # run-name (the workflows set run-name from the correlation_id input).
 dispatch_and_watch() {
   local step=$1 repo=$2 workflow=$3; shift 3
+  local kernel_sha_to_resolve=""
+  if [ "${1:-}" = "--resolve-kernel-release" ]; then
+    kernel_sha_to_resolve=$2
+    shift 2
+  fi
   local run_id
   run_id=$(step_get "$step" run_id)
   # A recorded run that finished without success (failed, cancelled) is
@@ -426,6 +433,12 @@ dispatch_and_watch() {
     esac
   fi
   if [ -z "$run_id" ]; then
+    if [ -n "$kernel_sha_to_resolve" ]; then
+      local kernel_release
+      kernel_release=$(resolve_kernel_release "$kernel_dir" "$kernel_sha_to_resolve")
+      say "kernel release $kernel_release"
+      set -- "$@" -f "kernel_release=$kernel_release"
+    fi
     local cid="rel-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM$RANDOM"
     say "dispatch $repo $workflow ($cid)"
     gh workflow run "$workflow" --repo "$repo" --ref main "$@" -f "correlation_id=$cid"
@@ -455,7 +468,7 @@ dispatch_and_watch() {
 # [1] the kernel wasm
 if [ "$(step_get kernel_wasm conclusion)" != success ]; then
   dispatch_and_watch kernel_wasm "$sandbox_repo" release-kernel-wasm.yml \
-    -f "kernel_sha=$kernel_sha" -f "train=$train" -f "publish=true"
+    --resolve-kernel-release "$kernel_sha" -f "train=$train" -f "publish=true"
 fi
 
 # [2] the image and the sealable cpython, one run. The Jupyter payload the
