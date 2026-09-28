@@ -118,12 +118,14 @@ for (let round = 0;; round++) {
     );
     Deno.exit(1);
   } catch (error) {
+    // No claim, so no boot: another launch could take the file meanwhile,
+    // and this one's later write would replace that launch's record.
     console.error(
       `yurt-playground: could not write ${tokenFile}: ${
         (error as Error).message
       }`,
     );
-    break;
+    Deno.exit(1);
   }
 }
 // Deno.exit (the signal handler below, a failed boot) dispatches unload;

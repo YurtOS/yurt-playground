@@ -391,3 +391,23 @@ Deno.test("a booting record naming another user's process is stale", async () =>
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("a launcher that cannot write its claim does not boot", async () => {
+  // A failed claim write went on to boot with no claim, and later renamed
+  // its record over whatever another launch had claimed meanwhile.
+  const f = await fixture();
+  await Deno.mkdir(dirname(f.stateFile), { mode: 0o500 });
+  const launcher = launch(f, "boot-forever");
+  try {
+    const status = await within(launcher.exited, "the launcher to give up");
+    assertEquals(status.code, 1);
+    const hosts = [];
+    for await (const entry of Deno.readDir(f.root)) {
+      if (entry.name.startsWith("host-")) hosts.push(entry.name);
+    }
+    assertEquals(hosts.length, 0, "it booted a sandbox with no claim");
+  } finally {
+    await Deno.chmod(dirname(f.stateFile), 0o700);
+    await cleanup(f, launcher);
+  }
+});
