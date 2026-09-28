@@ -89,10 +89,11 @@ const tokenFile = join(
 );
 // One sandbox per user: a second launch would boot another (~1 GB) and
 // take the state file from the first. The claim is the state file itself,
-// created exclusively before the boot; losing that race to another launch
-// finds it booting. A record that is neither running nor removable
+// created exclusively before the boot and locked for as long as this
+// process runs; losing that race to another launch finds it booting. A record that is neither running nor removable
 // (another user's file, say) would loop here forever; a few rounds settle
 // any honest race.
+let claim: Deno.FsFile | null = null;
 for (let round = 0;; round++) {
   const running = await runningLauncher(tokenFile);
   if (running?.url !== undefined) {
@@ -110,8 +111,8 @@ for (let round = 0;; round++) {
   }
   try {
     await Deno.mkdir(dirname(tokenFile), { recursive: true, mode: 0o700 });
-    const state = { pid: Deno.pid, startedAt: Date.now() };
-    if (await claimLauncherState(tokenFile, state)) break;
+    claim = await claimLauncherState(tokenFile, { pid: Deno.pid });
+    if (claim !== null) break;
     if (round < 5) continue;
     console.error(
       `yurt-playground: ${tokenFile} names no running launcher but cannot be replaced; remove it and start again.`,

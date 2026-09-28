@@ -145,34 +145,13 @@ export function parseLauncherArgs(argv: string[]): LauncherArgs {
   return args;
 }
 
-/** What `~/.yurt/playground.json` holds: `{pid, startedAt}` while a
- * launcher boots its sandbox, then `url` and `apiToken` once it serves. */
+/** What `~/.yurt/playground.json` holds: `{pid}` while a launcher boots
+ * its sandbox, then `url` and `apiToken` once it serves. */
 export type LauncherState = {
   pid: number;
-  startedAt?: number;
   url?: string;
   apiToken?: string;
 };
-
-/** Longer than any boot: the host gives the runtime 120 s per call and the
- * image 20 s to finish its init. */
-const BOOT_LIMIT_MS = 180_000;
-
-/** Whether `pid` is a process of this user's. The shell's `kill -0`, as
- * Deno.kill has no signal 0 and any real signal acts on a reused pid. */
-function processExists(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    // EPERM (another user's, so not a launcher of this one) fails too.
-    return new Deno.Command("sh", {
-      args: ["-c", 'kill -0 "$1" 2>/dev/null', "sh", String(pid)],
-      stdout: "null",
-      stderr: "null",
-    }).outputSync().success;
-  } catch {
-    return false;
-  }
-}
 
 /** Write `state` to a file of its own beside `stateFile`, whole, so a
  * reader never sees it half written. */
@@ -190,17 +169,28 @@ async function stagedState(
 /** Create `stateFile` holding `state`, only if there is none: the claim
  * two launches race for. A hard link appears whole or not at all, where an
  * exclusive create is seen empty until its write lands (and a launch that
- * read it then took it for garbage). False if another launch holds it. */
+ * read it then took it for garbage). Null if another launch holds it.
+ *
+ * The claim is also an exclusive lock (flock) on the claimed file, taken
+ * before the link so no reader sees the file unlocked. The kernel drops
+ * it when the returned file closes, which it does when this process ends
+ * however it ends, SIGKILL included; a child does not inherit it (Deno
+ * opens files close-on-exec). Keep the file open while the claim should
+ * hold. */
 export async function claimLauncherState(
   stateFile: string,
   state: LauncherState,
-): Promise<boolean> {
+): Promise<Deno.FsFile | null> {
   const staged = await stagedState(stateFile, state);
+  let claim: Deno.FsFile | undefined;
   try {
+    claim = await Deno.open(staged, { read: true });
+    await claim.lock(true);
     await Deno.link(staged, stateFile);
-    return true;
+    return claim;
   } catch (error) {
-    if (error instanceof Deno.errors.AlreadyExists) return false;
+    claim?.close();
+    if (error instanceof Deno.errors.AlreadyExists) return null;
     throw error;
   } finally {
     await Deno.remove(staged).catch(() => undefined);
@@ -239,20 +229,59 @@ async function removeStale(stateFile: string, text: string): Promise<void> {
   await Deno.remove(aside).catch(() => undefined);
 }
 
+/** The whole of `file`, from where it is. */
+async function readAllText(file: Deno.FsFile): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const chunk = new Uint8Array(4096);
+    const n = await file.read(chunk);
+    if (n === null) break;
+    chunks.push(chunk.subarray(0, n));
+  }
+  const whole = new Uint8Array(chunks.reduce((sum, c) => sum + c.length, 0));
+  let at = 0;
+  for (const c of chunks) {
+    whole.set(c, at);
+    at += c.length;
+  }
+  return new TextDecoder().decode(whole);
+}
+
+/** Whether the launcher that claimed the file open as `file` still runs:
+ * its claim's lock (see `claimLauncherState`) is still held. A shared lock
+ * conflicts only with that one, so two launches checking at once do not
+ * take each other for the claim. */
+function claimHeld(file: Deno.FsFile): boolean {
+  if (!file.tryLockSync(false)) return true;
+  file.unlockSync();
+  return false;
+}
+
 /** The launcher `stateFile` names, if it still boots or serves. A file
  * left by one that could not clean up (SIGKILL, a crash) is removed. A
- * live pid alone does not prove a server (pids are reused), so a recorded
- * URL must answer as a launcher does. */
+ * live pid proves nothing (pids are reused), so a booting record must
+ * still be locked by its claim, and a recorded URL must answer as a
+ * launcher does. */
 export async function runningLauncher(
   stateFile: string,
 ): Promise<LauncherState | null> {
-  let text: string;
+  let file: Deno.FsFile;
   try {
-    text = await Deno.readTextFile(stateFile);
+    file = await Deno.open(stateFile, { read: true });
   } catch {
     // None, or one this user cannot read (the launcher's claim then
     // fails, naming it).
     return null;
+  }
+  // The text and the lock checked are the same file's: a rename can put
+  // another file at `stateFile` in between two opens.
+  let text: string;
+  let held: boolean;
+  try {
+    text = await readAllText(file);
+    held = claimHeld(file);
+  } finally {
+    file.close();
   }
   let state: LauncherState;
   try {
@@ -262,12 +291,7 @@ export async function runningLauncher(
     return null;
   }
   if (state.url === undefined) {
-    if (
-      processExists(state.pid) &&
-      Date.now() - (state.startedAt ?? 0) < BOOT_LIMIT_MS
-    ) {
-      return state;
-    }
+    if (held) return state;
     await removeStale(stateFile, text);
     return null;
   }

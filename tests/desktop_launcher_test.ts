@@ -349,27 +349,76 @@ Deno.test("launches started together boot one sandbox", async () => {
   }
 });
 
-Deno.test("checking a booting record's pid does not signal that process", async () => {
-  // The check used to send SIGCONT, which resumes a stopped process: a
-  // reused pid's, or a launcher suspended with Ctrl-Z.
+Deno.test("a booting record whose pid is alive but holds no claim is stale", async () => {
+  // A reused pid: a live process of this user's that is not the launcher
+  // which wrote the record. It used to count as "already starting" (by
+  // `kill -0`) for up to 180 s, and every launch meanwhile exited 0.
   const { runningLauncher } = await import("../src/desktop.ts");
   const dir = await Deno.makeTempDir({ prefix: "desktop-state-" });
   const stateFile = join(dir, "playground.json");
-  const stopped = new Deno.Command("sleep", { args: ["30"] }).spawn();
+  const reused = new Deno.Command("sleep", { args: ["30"] }).spawn();
   try {
-    stopped.kill("SIGSTOP");
     await Deno.writeTextFile(
       stateFile,
-      JSON.stringify({ pid: stopped.pid, startedAt: Date.now() }),
+      JSON.stringify({ pid: reused.pid, startedAt: Date.now() }),
     );
-    assertEquals((await runningLauncher(stateFile))?.pid, stopped.pid);
-    const { stdout } = await new Deno.Command("ps", {
-      args: ["-o", "stat=", "-p", String(stopped.pid)],
-    }).output();
-    assertStringIncludes(new TextDecoder().decode(stdout), "T");
+    assertEquals(await runningLauncher(stateFile), null);
+    const left = await Deno.stat(stateFile).then(() => true, () => false);
+    assertEquals(left, false);
   } finally {
-    stopped.kill("SIGKILL");
-    await stopped.status;
+    reused.kill("SIGKILL");
+    await reused.status;
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a booting record holds while its claim does, however long the boot", async () => {
+  // A boot still in connectDesktopHost after 180 s lost its claim, and the
+  // next launch booted a second sandbox.
+  const { claimLauncherState, runningLauncher } = await import(
+    "../src/desktop.ts"
+  );
+  const dir = await Deno.makeTempDir({ prefix: "desktop-state-" });
+  const stateFile = join(dir, "playground.json");
+  // The claim is made by another process, as a launcher's is.
+  const holder = new Deno.Command(Deno.execPath(), {
+    args: [
+      "eval",
+      `const { claimLauncherState } = await import(${
+        JSON.stringify(new URL("../src/desktop.ts", import.meta.url).href)
+      });
+      const claim = await claimLauncherState(${JSON.stringify(stateFile)},
+        { pid: Deno.pid, startedAt: Date.now() - 600_000 });
+      console.log(claim === null ? "lost" : "claimed");
+      setInterval(() => claim, 1000);`,
+    ],
+    stdout: "piped",
+    stderr: "inherit",
+  }).spawn();
+  const lines = holder.stdout.pipeThrough(new TextDecoderStream()).getReader();
+  try {
+    assertEquals(
+      (await within(lines.read(), "the claim")).value?.trim(),
+      "claimed",
+    );
+    assertEquals((await runningLauncher(stateFile))?.pid, holder.pid);
+    // Nor can another launch claim it.
+    assertEquals(await claimLauncherState(stateFile, { pid: Deno.pid }), null);
+    // SIGKILL: nothing of the holder runs to release the lock; the kernel
+    // does, and the record is then stale.
+    holder.kill("SIGKILL");
+    await holder.status;
+    assertEquals(await runningLauncher(stateFile), null);
+    const left = await Deno.stat(stateFile).then(() => true, () => false);
+    assertEquals(left, false);
+  } finally {
+    try {
+      holder.kill("SIGKILL");
+    } catch {
+      // already gone
+    }
+    await holder.status;
+    await lines.cancel().catch(() => undefined);
     await Deno.remove(dir, { recursive: true });
   }
 });
