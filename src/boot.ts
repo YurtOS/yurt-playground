@@ -95,8 +95,8 @@ const LOGIN_USER = "user";
 const LOGIN_UID = 1000;
 const LOGIN_GID = 1000;
 const LOGIN_HOME = "/home/user";
-/** setsid(2) through the kernel host interface, as the named pid. */
-const SYS_SETSID = 0x1_001A;
+/** No such process: a `SYS_KILLPG` to a group with no live member. */
+const ESRCH = 3;
 
 const DEFAULT_ENV: Record<string, string> = {
   HOME: LOGIN_HOME,
@@ -216,14 +216,29 @@ export async function bootPlayground(
     throw new Error("playground image is missing /bin/sh");
   }
 
-  /** `/bin/sh` with `argv`, as the login user in the login home. */
-  const spawnShell = async (argv: string[]) => {
+  /** `/bin/sh` with `argv`, as the login user in the login home, leading
+   * its own process group unless `ownGroup` is false. */
+  const spawnShell = async (argv: string[], { ownGroup = true } = {}) => {
     const process = await mk.spawnUserProcessWithArgsAsync(
       sh,
       argv.map((arg) => s(arg)),
       { ...DEFAULT_ENV },
     );
     setPidCredentials(mk, process.pid, LOGIN_UID, LOGIN_GID);
+    // Its own process group, which everything it starts inherits, so
+    // `signal` below reaches a pipeline or a background job with it.
+    // setpgid(0, 0) as the pid: target 0 is the caller, pgid 0 its pid.
+    if (ownGroup) {
+      const { rc } = mk.kernelSyscall(
+        METHOD.SYS_SETPGID,
+        process.pid,
+        new Uint8Array(8),
+        0,
+      );
+      if (Number(rc) !== 0) {
+        throw new Error(`setpgid pid=${process.pid} failed: rc=${rc}`);
+      }
+    }
     const { rc: chdirRc } = mk.kernelSyscall(
       METHOD.KERNEL_FS_CHDIR,
       process.pid,
@@ -236,7 +251,9 @@ export async function bootPlayground(
     return process;
   };
   env.show("starting ash");
-  const user = await spawnShell(["/bin/sh"]);
+  // Not a group leader: attaching the terminal makes the login shell a
+  // session leader, which the kernel refuses a group leader (EPERM).
+  const user = await spawnShell(["/bin/sh"], { ownGroup: false });
   const pty = mk.attachHostPty(user.pid);
   mk.ptySetWinsize(pty, env.term.rows, env.term.cols);
   const encoder = new TextEncoder();
@@ -335,17 +352,6 @@ export async function bootPlayground(
         "-c",
         `${line} > ${q(path("out"))} 2> ${q(path("err"))} ${stdinRedirect}`,
       ]);
-      // Its own session and process group before it runs, so everything it
-      // starts can be signalled as one group (`signal` below).
-      const { rc: sid } = mk.kernelSyscall(
-        SYS_SETSID,
-        process.pid,
-        new Uint8Array(),
-        0,
-      );
-      if (Number(sid) !== process.pid) {
-        throw new Error(`setsid pid=${process.pid} failed: rc=${sid}`);
-      }
       process.closeStdin();
       // Read back once the command has exited, one byte past the bound
       // so the registry sees the cut and says so; the files go afterwards.
@@ -384,20 +390,22 @@ export async function bootPlayground(
         }),
       };
     },
-    async signal(pid, signal) {
-      // A process of the page's own, not the user's shell: `kill` is
-      // BusyBox's, and the login user may signal its own processes. Every
-      // execution leads its own process group (`process` above), which its
-      // children (a pipeline, a background job) share, so the group is
-      // signalled. BusyBox's `kill` takes a negative pid as a group, and
-      // rejects `--`.
-      const process = await spawnShell([
-        "/bin/sh",
-        "-c",
-        `kill -${signal} -${pid} 2>/dev/null`,
-      ]);
-      process.closeStdin();
-      await process.runStartAsync();
+    signal(pid, signal) {
+      // Every process `spawnShell` starts leads its own group, which its
+      // children (a pipeline, a background job) share: killpg(pid, signal)
+      // as the login shell, whose user may signal its own processes.
+      const request = new Uint8Array(8);
+      const view = new DataView(request.buffer);
+      view.setUint32(0, pid, true);
+      view.setUint32(4, signal, true);
+      const { rc } = mk.kernelSyscall(METHOD.SYS_KILLPG, user.pid, request, 0);
+      // An empty group: the execution is already gone.
+      if (Number(rc) !== 0 && Number(rc) !== -ESRCH) {
+        return Promise.reject(
+          new Error(`killpg pgid=${pid} sig=${signal} failed: rc=${rc}`),
+        );
+      }
+      return Promise.resolve();
     },
     // The Jupyter connection file, looked for by the page itself: nothing is
     // typed into the user's shell for it (yurtos-kernel#2824). Read as the

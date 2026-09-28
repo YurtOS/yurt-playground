@@ -1,13 +1,12 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { bootPlayground, type PlaygroundTerm } from "../src/boot.ts";
+import {
+  bootPlayground,
+  type PlaygroundSession,
+  type PlaygroundTerm,
+} from "../src/boot.ts";
 import { handlePlaygroundRequest } from "../src/serve.ts";
 import { loadPins, resolveArtifacts } from "../src/pins.ts";
-import {
-  type ExecOptions,
-  ExecutionRegistry,
-  type Result,
-} from "../src/executions.ts";
 
 export const repoRoot = join(fileURLToPath(import.meta.url), "../..");
 
@@ -118,6 +117,10 @@ export type AshSession = {
   term: MemoryTerm;
   shown: () => string;
   stop: () => void;
+  /** What the page's `window.yurt.exec` runs over: an ExecutionRegistry
+   * (src/executions.ts) takes these two. */
+  process: NonNullable<PlaygroundSession["process"]>;
+  signal: NonNullable<PlaygroundSession["signal"]>;
 };
 
 export type AshSessionOptions = {
@@ -146,10 +149,15 @@ export async function bootAshSession(
       JSON.stringify(term.output())
     }`,
   );
+  if (session.process === undefined || session.signal === undefined) {
+    throw new Error("the in-tab session has no process/signal");
+  }
   return {
     term,
     shown: () => shown,
     stop: () => session.stop(),
+    process: session.process,
+    signal: session.signal,
   };
 }
 
@@ -160,35 +168,4 @@ export function assertNoTouchFailure(output: string, label: string): void {
   ) {
     throw new Error(`${label} failed: ${JSON.stringify(output)}`);
   }
-}
-
-export type ExecSession = {
-  registry: ExecutionRegistry;
-  /** Run `cmd` through the registry, as `window.yurt.exec` does. */
-  exec: (cmd: string, opts?: ExecOptions) => Promise<Result>;
-  stop: () => void;
-};
-
-/** A booted sandbox driven the way the page's `window.yurt.exec` drives
- * it: an ExecutionRegistry over the session's own process and signal. */
-export async function bootExecSession(): Promise<ExecSession | undefined> {
-  if (!await resolvePlaygroundArtifacts()) return undefined;
-  const term = memoryTerm();
-  const session = await bootPlayground({
-    isolated: true,
-    fetchBytes: fetchViaHandler,
-    show: () => {},
-    term,
-  });
-  await waitFor(() => term.output().length > 0, "ash prompt", 60_000);
-  if (session.process === undefined || session.signal === undefined) {
-    throw new Error("the in-tab session has no process/signal");
-  }
-  const registry = new ExecutionRegistry(session.process, session.signal);
-  return {
-    registry,
-    exec: async (cmd, opts) =>
-      await registry.wait(await registry.spawn(cmd, opts)),
-    stop: () => session.stop(),
-  };
 }
