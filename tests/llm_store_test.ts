@@ -9,9 +9,12 @@ function limitedCache(limit: number) {
     { body: Uint8Array<ArrayBuffer>; headers: Headers }
   >();
   const largest = { bytes: 0 };
+  let puts = 0;
+  const failAt = { put: Infinity, error: new Error("unused") };
   const cache = {
     async put(key: RequestInfo | URL, response: Response) {
       const body = new Uint8Array(await response.arrayBuffer());
+      if (++puts === failAt.put) throw failAt.error;
       if (body.byteLength > limit) {
         throw new TypeError("Failed writing data to the file system");
       }
@@ -26,8 +29,11 @@ function limitedCache(limit: number) {
           : new Response(entry.body, { headers: entry.headers }),
       );
     },
+    delete(key: RequestInfo | URL) {
+      return Promise.resolve(entries.delete(String(key)));
+    },
   };
-  return { cache: cache as unknown as Cache, entries, largest };
+  return { cache: cache as unknown as Cache, entries, largest, failAt };
 }
 
 /** `bytes` of a counting pattern, streamed in uneven chunks. */
@@ -75,7 +81,32 @@ Deno.test("a download cut short leaves no model behind", async () => {
 
   await assertRejects(() => storeModel(cache, KEY, cut, 256), Error);
 
-  assert(entries.size > 0, "some parts were written");
+  assertEquals([...entries.keys()], [], "the parts written are removed");
+  assertEquals(await readModel(cache, KEY), undefined);
+});
+
+Deno.test("a quota error mid-write leaves no parts behind", async () => {
+  const { cache, entries, failAt } = limitedCache(1000);
+  failAt.put = 3;
+  failAt.error = new DOMException("quota", "QuotaExceededError");
+  const { body } = model(2500);
+
+  await assertRejects(
+    () => storeModel(cache, KEY, body, 256),
+    DOMException,
+    "quota",
+  );
+
+  assertEquals([...entries.keys()], []);
+});
+
+Deno.test("a stored model missing a part reads as absent, to be fetched again", async () => {
+  const { cache, entries } = limitedCache(1000);
+  await storeModel(cache, KEY, model(2500).body, 256);
+  const part = [...entries.keys()].find((k) => k.endsWith("&part=4"));
+  assert(part !== undefined);
+  entries.delete(part);
+
   assertEquals(await readModel(cache, KEY), undefined);
 });
 
