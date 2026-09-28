@@ -94,7 +94,10 @@ if [ "$family" = linux ]; then
   # checks it with dpkg-deb and installs it.
   pkg=$out/deb
   rm -rf "$pkg"
-  mkdir -p "$pkg/data/usr/lib" "$pkg/data/usr/bin" "$pkg/data/usr/share/applications" "$pkg/control"
+  icons=$pkg/data/usr/share/icons/hicolor/scalable/apps
+  mkdir -p "$pkg/data/usr/lib" "$pkg/data/usr/bin" "$pkg/data/usr/share/applications" "$icons" "$pkg/control"
+  # The page's own icon, for the menu entry below.
+  cp public/favicon.svg "$icons/yurt-playground.svg"
   cp -R "$out/yurt-playground" "$pkg/data/usr/lib/yurt-playground"
   cat > "$pkg/data/usr/bin/yurt-playground" <<'WRAP'
 #!/bin/sh
@@ -107,6 +110,7 @@ Type=Application
 Name=Yurt Playground
 Comment=A Linux sandbox with Python and Jupyter, running natively, shown in your browser
 Exec=yurt-playground
+Icon=yurt-playground
 Terminal=true
 Categories=Development;
 DESKTOP

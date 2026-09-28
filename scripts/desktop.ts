@@ -10,6 +10,7 @@ import {
   freshApiToken,
   LAUNCHER_USAGE,
   type LauncherArgs,
+  launcherVersion,
   parseLauncherArgs,
   removeLauncherState,
   runningLauncher,
@@ -32,6 +33,10 @@ try {
 }
 if (args.help) {
   console.log(LAUNCHER_USAGE);
+  Deno.exit(0);
+}
+if (args.version) {
+  console.log(launcherVersion());
   Deno.exit(0);
 }
 const candidates = [

@@ -225,6 +225,17 @@ jobs:
           # without needing this train's pins.json.
           printf '%s  playground.yurtimg\n' "$actual" > release/playground.yurtimg.sha256
           ls -l release
+      # A checksum beside each app installer (yurt-playground#154), in
+      # sha256sum's format and named for the file: `sha256sum -c
+      # Yurt-Playground-<target>.deb.sha256` next to the download checks it.
+      - name: Checksum the installers
+        working-directory: release
+        run: |
+          set -euo pipefail
+          for installer in Yurt-Playground-*; do
+            sha256sum "$installer" > "$installer.sha256"
+          done
+          cat Yurt-Playground-*.sha256
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -245,8 +256,11 @@ jobs:
             --title "Yurt Playground ($tag)" \
             --notes "Built from ${SHA:0:7} with kernel $kernel and image $image; the yurt CLI is $cli. Desktop app — macOS: open the .dmg, drag the app to Applications; not notarized, so allow the first open under System Settings → Privacy & Security → Open Anyway. Debian/Ubuntu: sudo apt install ./Yurt-Playground-<arch>.deb, then run yurt-playground. Command line — Debian/Ubuntu: sudo apt install ./yurt-<arch>.deb; macOS: tar -xzf yurt-<arch>.tar.gz && sudo yurt/install.sh; then yurt pull playground && yurt run -it playground." \
             release/Yurt-Playground-aarch64-apple-darwin.dmg \
+            release/Yurt-Playground-aarch64-apple-darwin.dmg.sha256 \
             release/Yurt-Playground-x86_64-unknown-linux-gnu.deb \
+            release/Yurt-Playground-x86_64-unknown-linux-gnu.deb.sha256 \
             release/Yurt-Playground-aarch64-unknown-linux-gnu.deb \
+            release/Yurt-Playground-aarch64-unknown-linux-gnu.deb.sha256 \
             release/playground.yurtimg \
             release/playground.yurtimg.sha256 \
             release/yurt-aarch64-apple-darwin.tar.gz \

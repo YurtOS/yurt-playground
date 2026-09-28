@@ -54,6 +54,12 @@ async function fixture(): Promise<Fixture> {
     join(root, "scripts/desktop.ts"),
   );
   await Deno.symlink(join(repoRoot, "src"), join(root, "src"));
+  // src/desktop.ts imports ../artifacts/pins.json (for --version).
+  await Deno.mkdir(join(root, "artifacts"));
+  await Deno.copyFile(
+    join(repoRoot, "artifacts/pins.json"),
+    join(root, "artifacts/pins.json"),
+  );
   await Deno.mkdir(join(root, "dist"));
   await Deno.writeTextFile(join(root, "dist/index.html"), "<!doctype html>");
   await Deno.mkdir(join(root, "runtime"));
@@ -71,9 +77,15 @@ type Launcher = {
   waitFor: (pattern: RegExp) => Promise<string>;
   waitForUntimed: (pattern: RegExp) => Promise<string>;
   exited: Promise<Deno.CommandStatus>;
+  /** Its stderr, once it exits; "" unless launched with `stderr`. */
+  stderr: Promise<string>;
 };
 
-function launch(f: Fixture, mode = "announce"): Launcher {
+function launch(
+  f: Fixture,
+  mode = "announce",
+  { stderr = false } = {},
+): Launcher {
   const id = crypto.randomUUID();
   const child = new Deno.Command(Deno.execPath(), {
     args: [
@@ -93,8 +105,11 @@ function launch(f: Fixture, mode = "announce"): Launcher {
       FAKE_RUNTIME_PIDFILE: join(f.root, `runtime-${id}.pid`),
     },
     stdout: "piped",
-    stderr: "null",
+    stderr: stderr ? "piped" : "null",
   }).spawn();
+  const errText = stderr
+    ? new Response(child.stderr).text()
+    : Promise.resolve("");
   let text = "";
   const waiters: Array<() => void> = [];
   const pump = (async () => {
@@ -109,6 +124,7 @@ function launch(f: Fixture, mode = "announce"): Launcher {
   return {
     child,
     exited,
+    stderr: errText,
     waitFor(pattern) {
       return within(this.waitForUntimed(pattern), `stdout to match ${pattern}`);
     },
@@ -446,10 +462,15 @@ Deno.test("a launcher that cannot write its claim does not boot", async () => {
   // its record over whatever another launch had claimed meanwhile.
   const f = await fixture();
   await Deno.mkdir(dirname(f.stateFile), { mode: 0o500 });
-  const launcher = launch(f, "boot-forever");
+  const launcher = launch(f, "boot-forever", { stderr: true });
   try {
     const status = await within(launcher.exited, "the launcher to give up");
     assertEquals(status.code, 1);
+    // Exit 1 for this reason, not any other failure before the boot.
+    assertStringIncludes(
+      await launcher.stderr,
+      `could not write ${f.stateFile}`,
+    );
     const hosts = [];
     for await (const entry of Deno.readDir(f.root)) {
       if (entry.name.startsWith("host-")) hosts.push(entry.name);
