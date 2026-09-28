@@ -10,11 +10,17 @@ function limitedCache(limit: number) {
   >();
   const largest = { bytes: 0 };
   let puts = 0;
-  const failAt = { put: Infinity, error: new Error("unused") };
+  const failAt = {
+    put: Infinity,
+    key: undefined as string | undefined,
+    error: new Error("unused"),
+  };
   const cache = {
     async put(key: RequestInfo | URL, response: Response) {
       const body = new Uint8Array(await response.arrayBuffer());
-      if (++puts === failAt.put) throw failAt.error;
+      if (++puts === failAt.put || String(key) === failAt.key) {
+        throw failAt.error;
+      }
       if (body.byteLength > limit) {
         throw new TypeError("Failed writing data to the file system");
       }
@@ -114,6 +120,23 @@ Deno.test("a quota error mid-write leaves no parts behind", async () => {
   );
 
   assertEquals([...entries.keys()], []);
+});
+
+Deno.test("a quota error on the head entry leaves no parts and no head", async () => {
+  // The head goes last, after every part is written: a quota error there
+  // left all the parts in the cache with nothing pointing at them.
+  const { cache, entries, failAt } = limitedCache(1000);
+  failAt.key = KEY;
+  failAt.error = new DOMException("quota", "QuotaExceededError");
+
+  await assertRejects(
+    () => storeModel(cache, KEY, model(2500).body, 256),
+    DOMException,
+    "quota",
+  );
+
+  assertEquals([...entries.keys()], []);
+  assertEquals(await readModel(cache, KEY), undefined);
 });
 
 Deno.test("a stored model missing a part reads as absent, to be fetched again", async () => {

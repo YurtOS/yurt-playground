@@ -77,6 +77,11 @@ export async function storeModel(
       if (pendingBytes >= partBytes) await flush();
     }
     if (pendingBytes > 0) await flush();
+    // Inside the `try`: a quota error here must remove the parts as well.
+    await cache.put(
+      key,
+      new Response(null, { headers: { [PARTS_HEADER]: String(parts) } }),
+    );
   } catch (error) {
     // Stop the download too (`for await` did that implicitly).
     await reader.cancel(error).catch(() => {});
@@ -84,11 +89,8 @@ export async function storeModel(
     for (let index = 0; index <= parts; index++) {
       await cache.delete(partKey(key, index)).catch(() => false);
     }
+    await cache.delete(key).catch(() => false);
     throw error;
   }
-  await cache.put(
-    key,
-    new Response(null, { headers: { [PARTS_HEADER]: String(parts) } }),
-  );
   return total;
 }
