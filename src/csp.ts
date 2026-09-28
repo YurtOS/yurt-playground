@@ -62,6 +62,7 @@ export type CspOptions = {
   allowEval?: boolean;
   /** Keep `connect-src` on the origin alone: no model download. */
   sameOriginOnly?: boolean;
+  allowFrames?: boolean;
 };
 
 export function contentSecurityPolicy(options: CspOptions = {}): string {
@@ -81,7 +82,7 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
     ["connect-src 'self'", ...(options.sameOriginOnly ? [] : MODEL_ORIGINS)]
       .join(" "),
     "worker-src 'self'",
-    "frame-src 'none'",
+    options.allowFrames ? "frame-src 'self'" : "frame-src 'none'",
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'none'",
@@ -102,6 +103,7 @@ export function documentPolicy(
     scriptHashes,
     allowEval: jupyter,
     sameOriginOnly: jupyter,
+    allowFrames: pathname === "/" || pathname === "/index.html",
   });
 }
 
@@ -136,5 +138,17 @@ export function headersFile(
       })
     }`,
   );
+  for (const path of ["/", "/index.html"]) {
+    lines.push(
+      path,
+      "  ! Content-Security-Policy",
+      `  Content-Security-Policy: ${
+        contentSecurityPolicy({
+          scriptHashes: siteScriptHashes,
+          allowFrames: true,
+        })
+      }`,
+    );
+  }
   return lines.join("\n") + "\n";
 }

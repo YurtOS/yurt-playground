@@ -235,6 +235,26 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   } catch {
     return notFound();
   }
+  if (
+    pathname.startsWith("/apps/datasette/") &&
+    !["/apps/datasette/service-worker.js", "/apps/datasette/unavailable.html"]
+      .includes(pathname)
+  ) {
+    const html = await Deno.readTextFile(
+      join(publicDir, "apps/datasette/unavailable.html"),
+    );
+    return new Response(req.method === "HEAD" ? null : html, {
+      headers: {
+        ...ISOLATION_HEADERS,
+        "content-type": "text/html; charset=utf-8",
+        "Content-Security-Policy": documentPolicy(
+          "/apps/datasette/unavailable.html",
+          [],
+        ),
+        "cache-control": "no-store",
+      },
+    });
+  }
   const llm = await handleLlmFile(pathname);
   if (llm !== null) return llm;
   if (pathname === "/integrity.json") {

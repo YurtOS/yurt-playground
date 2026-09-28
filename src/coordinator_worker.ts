@@ -5,6 +5,7 @@
  */
 import {
   bootPlayground,
+  browserPins,
   fetchPlaygroundBytes,
   type PlaygroundTerm,
 } from "./boot.ts";
@@ -34,6 +35,9 @@ import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 
 installCoordinatorWorkerProxy();
+import { DatasetteDemo, handleDatasetteMessage } from "./datasette.ts";
+import { requestGuestHttp } from "./guest_http.ts";
+import type { GuestReply, LifecycleReply } from "./datasette_protocol.ts";
 type ToWorker =
   // `kernelPorts` set: the desktop app's native sandbox (see native.ts),
   // reached over WebSockets; otherwise the kernel boots in this worker.
@@ -71,6 +75,9 @@ type ToWorker =
   | { type: "yurt-list"; req: number };
 
 type FromWorker =
+  | { type: "datasette-qualification"; hashes: string[] }
+  | GuestReply
+  | LifecycleReply
   | { type: "status"; text: string }
   | { type: "out"; bytes: number[] }
   | { type: "error"; message: string }
@@ -105,6 +112,7 @@ type FromWorker =
 let jupyter: JupyterTransport | undefined;
 let launchSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 let executions: ExecutionRegistry | undefined;
+let datasette: DatasetteDemo | undefined;
 
 async function serveYurt(msg: ToWorker): Promise<void> {
   if (
@@ -157,8 +165,8 @@ function subscribeJupyter(transport: JupyterTransport): void {
   });
 }
 
-function post(msg: FromWorker): void {
-  self.postMessage(msg);
+function post(msg: FromWorker, transfer: Transferable[] = []): void {
+  self.postMessage(msg, transfer);
 }
 
 function workerTerm(init: { cols: number; rows: number }): PlaygroundTerm {
@@ -199,6 +207,7 @@ function workerTerm(init: { cols: number; rows: number }): PlaygroundTerm {
 
 self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
+  if (await handleDatasetteMessage(datasette, msg, post)) return;
   await serveYurt(msg);
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
@@ -298,6 +307,73 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       );
     if (session.process !== undefined && session.signal !== undefined) {
       executions = new ExecutionRegistry(session.process, session.signal);
+    }
+    const qualification = kernelPorts === undefined
+      ? (await browserPins()).datasette
+      : undefined;
+    post({
+      type: "datasette-qualification",
+      hashes: qualification?.inlineScriptHashes ?? [],
+    });
+    if (
+      kernelPorts === undefined && session.startResident !== undefined &&
+      executions !== undefined && qualification !== undefined
+    ) {
+      const guest = session;
+      const registry = executions;
+      let seed: Uint8Array | undefined;
+      datasette = new DatasetteDemo({
+        uuid: () => crypto.randomUUID(),
+        now: () => performance.now(),
+        delay: (ms, signal) =>
+          new Promise<void>((resolve, reject) => {
+            signal?.throwIfAborted();
+            const abort = () => {
+              clearTimeout(timer);
+              reject(signal?.reason);
+            };
+            const timer = setTimeout(() => {
+              signal?.removeEventListener("abort", abort);
+              resolve();
+            }, ms);
+            signal?.addEventListener("abort", abort, { once: true });
+          }),
+        startResident: (line) => guest.startResident!(line),
+        finite: async (line, stdin, timeoutMs) => {
+          const id = await registry.spawn(line, {
+            stdin,
+            timeoutMs: timeoutMs ?? 120_000,
+            maxOutputBytes: 8192,
+          });
+          const result = await registry.wait(id);
+          return {
+            code: "code" in result && result.code !== null ? result.code : -1,
+            stdout: result.stdout,
+            stderr: result.stderr,
+          };
+        },
+        seedSource: async (signal) => {
+          signal.throwIfAborted();
+          if (seed) return seed;
+          const response = await fetch("/demo/datasette_seed.py", { signal });
+          if (!response.ok) {
+            throw new Error(`seed download failed: ${response.status}`);
+          }
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          if (bytes.length > 64 * 1024) {
+            throw new Error("seed script exceeds 64 KiB");
+          }
+          signal.throwIfAborted();
+          seed = bytes;
+          return bytes;
+        },
+        request: (options) =>
+          requestGuestHttp(
+            () => Promise.resolve(guest.dialSandboxPort(8001)),
+            options,
+          ),
+        changed: (snapshot) => post({ type: "datasette-state", snapshot }),
+      });
     }
     post({ type: "status", text: "starting Jupyter" });
     launchSession = session;

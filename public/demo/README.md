@@ -17,3 +17,9 @@ local one. The dev server and the static build publish it in 20 MiB parts, and
 the `yurt-snapshot` JupyterLite kernel runs it with `cell_server.py` as its cell
 loop. Without it that kernel reports the missing file at boot; the other kernel
 and the rest of the site do not need it.
+
+`datasette_seed.py` creates twelve deterministic orders under
+`/home/user/demos/datasette/`. The playground publishes and stages this script;
+ports supplies Datasette and SQLite. Initial seeding preserves an existing
+`orders.db`; `--reset` restores the sample and removes only its known sidecars,
+pid and log. It does not remove other files in that directory.

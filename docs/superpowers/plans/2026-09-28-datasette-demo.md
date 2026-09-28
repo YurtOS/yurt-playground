@@ -132,7 +132,7 @@ carry requestId and the Task 3 state. Ownership registration uses session,
 prefix, nonce and transferred port. Runtime guards reject malformed values,
 invalid UUIDs, CR/LF in paths/headers, and paths outside that session prefix.
 
-- [ ] Write wire fixtures with a fake connection that returns each response one
+- [x] Write wire fixtures with a fake connection that returns each response one
       byte at a time. Include this behavior-discriminating test:
 
 ```ts
@@ -165,23 +165,23 @@ Deno.test("HEAD does not wait for Content-Length bytes", async () => {
 });
 ```
 
-- [ ] Add fixtures for Content-Length, chunks/extensions/trailers, EOF bodies,
+- [x] Add fixtures for Content-Length, chunks/extensions/trailers, EOF bodies,
       short reads, eight/nine interim replies, 204/304, duplicate/conflicting
       length, TE+length, truncated bodies, bad chunks, 101, Set-Cookie,
       nonidentity encoding, header/body limits and CR/LF injection. Assert the
       request has fixed Host, identity encoding, Connection close, no secrets.
-- [ ] Add abort-before-dial and abort-during-read tests; late dial completion
+- [x] Add abort-before-dial and abort-during-read tests; late dial completion
       must close its connection. Timeout must close once and reject as 504.
       Relative/guest-loopback redirects inside P are rewritten; foreign origins,
       encoded/normalized prefix escapes and malformed targets fail as 502.
-- [ ] Run
+- [x] Run
       `deno test --allow-all tests/guest_http_test.ts tests/datasette_protocol_test.ts`
       and capture the initial failure before implementing.
-- [ ] Implement incremental parsing with one reader, bounded buffering,
+- [x] Implement incremental parsing with one reader, bounded buffering,
       monotonic remaining deadline and cleanup in `finally`. Strip hop-by-hop
       headers and Connection tokens; retain validated HEAD/304 representation
       lengths and recompute ordinary decoded body length.
-- [ ] Run the focused tests, formatter, lint and type check. Commit as
+- [x] Run the focused tests, formatter, lint and type check. Commit as
       `feat: add bounded guest HTTP client`.
 
 ## Task 2: Resident process seam and explicit browser kernel ports
@@ -197,7 +197,7 @@ output files as exit signals. Add an explicit optional bind-address parameter to
 Jupyter launch/start/restart builders, defaulting compatibly for existing
 callers. Export `BROWSER_KERNEL_PORTS` from `src/jupyter.ts`.
 
-- [ ] Write failing launch assertions that browser initial/restart commands
+- [x] Write failing launch assertions that browser initial/restart commands
       contain `--ip=127.0.0.1` and all five reserved ports; native commands
       retain their explicit ports and 0.0.0.0 bind. Assert `msg.kernelPorts`
       continues to select native boot only.
@@ -220,14 +220,14 @@ for (
 ) assertStringIncludes(command, flag);
 ```
 
-- [ ] Test resident stdin closure, preservation of the original exit promise,
+- [x] Test resident stdin closure, preservation of the original exit promise,
       positive-pid kill command, exit rejection observation and no registry
       allocation. Reuse the repository's existing kernel test harness for an
       actual sleep/exit/signalling test; require artifacts when CI requests it.
-- [ ] Run those tests red, then implement using `spawnShell`, the existing user
+- [x] Run those tests red, then implement using `spawnShell`, the existing user
       credentials/home, `runStartAsync`, and a finite numeric `kill` command. Do
       not call the existing group-first signal helper.
-- [ ] Wire browser ports/bind through initial start and restart without changing
+- [x] Wire browser ports/bind through initial start and restart without changing
       native dispatch. Run focused tests and commit
       `feat: supervise resident guest processes`.
 
@@ -341,8 +341,8 @@ the protocol, route registry and policy, never kernel/page modules.
       includeUncontrolled root-owner lookup and exactly-one-claim rule. Keep
       recovery alive with waitUntil; fetch lifetime belongs to respondWith.
       Never perform network fallback for intercepted guest routes.
-- [ ] Bundle the worker to the exact URL using the existing esbuild pipeline in
-      `scripts/serve.ts`; copy it in static build and add generated-file
+- [ ] Bundle the worker to the exact URL using the existing Deno bundle pipeline
+      in `scripts/serve.ts`; copy it in static build and add generated-file
       exclusions consistent with existing bundles. Publish unavailable.html and
       `_redirects` with the spec's single rule. Local preview routes resolve to
       that same fallback before generic routing; the worker script bypasses it.
@@ -375,19 +375,19 @@ records report a diagnostic without claiming qualification. Export a single
 eligibility helper shared by page and coordinator. Mount function receives
 container, coordinator messaging and validated qualification; returns dispose.
 
-- [ ] Write failing tests for absent, valid, mismatched and malformed records;
+- [x] Write failing tests for absent, valid, mismatched and malformed records;
       test every identity independently, empty/invalid hash list, wrong version
       and native host. Keep today's artifacts/pins.json without a record.
-- [ ] Implement validation and visibility, pass validated qualification to the
+- [x] Implement validation and visibility, pass validated qualification to the
       coordinator, and reject start messages without eligibility. Mount an
       accessible section with Start, Stop, Reset, query preview, Download JSON,
       status/error/log text and database path. Disable controls by lifecycle;
       stuck forbids Start/Reset. Render logs with textContent.
-- [ ] Before iframe navigation, activate/ping/handshake using the registration;
+- [x] Before iframe navigation, activate/ping/handshake using the registration;
       listen for recovery messages independently of the old port. Dispose old
       requests/ports on stop or session replacement. Keep the iframe hidden
       until the ownership acknowledgement arrives.
-- [ ] Route JSON download directly to coordinator request/reply, make a Blob URL
+- [x] Route JSON download directly to coordinator request/reply, make a Blob URL
       from the returned bytes, click a download link and revoke the URL. Add the
       regression browser test below; no owner fetch is involved:
 
@@ -401,7 +401,7 @@ assertEquals(await Deno.readTextFile(file), expectedGuestJson);
 assertEquals(ownerNetworkJsonRequests, 0);
 ```
 
-- [ ] Change only the owner document's single CSP to frame-src self; guest and
+- [x] Change only the owner document's single CSP to frame-src self; guest and
       fallback policies retain their different form/framing rules. Run focused
       tests, native visibility and mock bridge browser acceptance. Commit
       `feat: add qualified Datasette controls and exports`.
@@ -495,3 +495,25 @@ owning tests above.
 Execution order: Tasks 1 through 5 can progress without qualified Datasette;
 Task 6 first proves the simple guest server, then waits for ports qualification
 before pinning/enabling Datasette. Task 7 verifies the final proposed head.
+
+## Implementation evidence (local, 2026-09-28)
+
+Tasks 3–5 are implemented. Lifecycle, scoped routing and qualification tests
+include the review fixes for heartbeat transport, stale startup diagnostics,
+cancellable seed download, reset locking and concurrent owner recovery. The
+guest seed probe confirms twelve rows, preserved terminal edits and reset
+without removing a foreign sentinel. The built site includes the exact seed,
+worker and fallback bytes plus Cloudflare redirects and independent CSP rules.
+The Chromium bridge harness covers two owners, GET forms, vendored assets,
+HEAD/POST, worker eviction, missing owners, native/absent visibility and exact
+CSV/JSON downloads. An eight-second request survives healthy heartbeats without
+re-registration. The real guest HTTP baseline proves guest file edits, residence
+beyond 120 seconds and stop/restart port reuse.
+
+Task 6 remains blocked by producer qualification: ports #170/#171, toolchain
+#180/#201 and kernel #3036. SQLite serialized threading and libyaml repairs are
+local reviewed prerequisites; no published Datasette image or qualification
+record exists. The qualified Datasette scene is authored but has not run. Its
+missing qualification fails explicitly. CI makes that scene mandatory when a
+valid published record exists, and reports the absent gate otherwise. No
+Datasette runtime or hosted CI completion is claimed.

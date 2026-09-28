@@ -115,7 +115,7 @@ const DEFAULT_ENV: Record<string, string> = {
 
 let pinsPromise: Promise<Pins> | undefined;
 
-async function browserPins(): Promise<Pins> {
+export async function browserPins(): Promise<Pins> {
   pinsPromise ??= fetch("./pins.json").then(async (response) => {
     if (!response.ok) {
       throw new Error(`fetch ./pins.json failed: ${response.status}`);
