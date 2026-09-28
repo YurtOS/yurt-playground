@@ -1,8 +1,10 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  atomicWriteLine,
   buildListLine,
   checkPath,
   createYurt,
+  hideAtomicTemp,
   parseListing,
   PathError,
   type YurtTransport,
@@ -224,5 +226,88 @@ Deno.test("a failed atomic write removes its temporary file, since the error no 
     assertEquals(left, []);
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("hideAtomicTemp drops only the temporary suffix and its pid; other digits after the path stay", () => {
+  const path = "/srv/run";
+  // dash's form: the digit before the path is a line number, and the
+  // pid follows the suffix.
+  assertEquals(
+    hideAtomicTemp(
+      "write /srv/run: exit 2: sh: 1: cannot create /srv/run.yurt-tmp.4242: Directory nonexistent",
+      path,
+    ),
+    "write /srv/run: exit 2: sh: 1: cannot create /srv/run: Directory nonexistent",
+  );
+  // `/srv/run2` and `/srv/run.1` are other files: their digits are the
+  // error's, not a pid, and are kept. Every temporary name is replaced.
+  assertEquals(
+    hideAtomicTemp(
+      "mv: can't rename '/srv/run.yurt-tmp.7': /srv/run2 and /srv/run.1 busy; /srv/run.yurt-tmp.7 kept",
+      path,
+    ),
+    "mv: can't rename '/srv/run': /srv/run2 and /srv/run.1 busy; /srv/run kept",
+  );
+  // A path that ends in digits keeps them.
+  assertEquals(
+    hideAtomicTemp("can't create /v/2024.yurt-tmp.31: EROFS", "/v/2024"),
+    "can't create /v/2024: EROFS",
+  );
+  // No temporary name: the message is unchanged.
+  assertEquals(
+    hideAtomicTemp("sh: /srv/run: Permission denied", path),
+    "sh: /srv/run: Permission denied",
+  );
+});
+
+Deno.test("the atomic write line keeps a failing cat's or mv's status, removes the temporary file, and skips the mode suffix", async () => {
+  // Real shells run the line; a shell function stands in for the command
+  // that fails, with a status no real failure here would give.
+  const shells = ["/bin/sh", "/bin/dash"].filter((sh) => {
+    try {
+      return Deno.statSync(sh).isFile;
+    } catch {
+      return false;
+    }
+  });
+  for (const sh of shells) {
+    for (
+      const [fake, status] of [
+        ["cat() { command cat > /dev/null; return 7; }", 7],
+        ["mv() { return 9; }", 9],
+        ["", 0],
+      ] as const
+    ) {
+      const dir = await Deno.makeTempDir();
+      try {
+        const dest = `${dir}/out`;
+        const out = await new Deno.Command(sh, {
+          args: [
+            "-c",
+            // The mode suffix stands in for `&& chmod`: macOS chmod has no
+            // `--`, and a marker file shows whether the suffix ran.
+            `${fake}\n${atomicWriteLine(dest, ` && : > '${dir}/suffix-ran'`)}`,
+          ],
+          stdin: "piped",
+          stderr: "piped",
+        }).spawn();
+        const writer = out.stdin.getWriter();
+        await writer.write(new TextEncoder().encode("hi"));
+        await writer.close();
+        const { code } = await out.output();
+        const what = `${sh} ${fake || "no failure"}`;
+        assertEquals(code, status, what);
+        const left = [...Deno.readDirSync(dir)].map((e) => e.name);
+        if (status === 0) {
+          assertEquals(left.sort(), ["out", "suffix-ran"], what);
+          assertEquals(Deno.readTextFileSync(dest), "hi", what);
+        } else {
+          assertEquals(left, [], what);
+        }
+      } finally {
+        await Deno.remove(dir, { recursive: true });
+      }
+    }
   }
 });

@@ -182,6 +182,43 @@ function failed(result: Result | RawResult, what: string): Error {
   );
 }
 
+/** The atomic write's temporary file is `<path>` + this + the shell's pid. */
+const TEMP_SUFFIX = ".yurt-tmp.";
+
+/**
+ * The shell line for an atomic `fs.write`: stdin goes to a temporary file
+ * beside `path`, which then replaces `path`. `mode` (a `&& chmod ...`
+ * suffix, or "") stays outside the `if`, so it runs only once the file is
+ * in place. A failed `cat` or `mv` removes the temporary file and exits
+ * with the failing command's status: the error names the requested path
+ * (hideAtomicTemp), so a partial file left behind would go unseen. The
+ * guest shell, BusyBox ash, keeps the condition's status in `$?` at the
+ * start of the `else` branch, as POSIX requires.
+ */
+export function atomicWriteLine(path: string, mode: string): string {
+  const dest = quoted(path);
+  return `t=${dest}${TEMP_SUFFIX}$$
+if cat > "$t" && mv -f -- "$t" ${dest}; then
+  :
+else
+  s=$?
+  rm -f -- "$t"
+  exit $s
+fi${mode}`;
+}
+
+/**
+ * The temporary file is this module's detail: a failed write's error names
+ * the path the caller asked for (yurt-sandbox#301). Each `<path>` +
+ * TEMP_SUFFIX + pid in `message` becomes `<path>`; the rest is kept as is,
+ * digits included.
+ */
+export function hideAtomicTemp(message: string, path: string): string {
+  const mark = `${path}${TEMP_SUFFIX}`;
+  const [head, ...rest] = message.split(mark);
+  return head + rest.map((tail) => path + tail.replace(/^\d+/, "")).join("");
+}
+
 export function createYurt(
   transport: YurtTransport,
   status: { current: () => YurtStatus; ready: Promise<void> },
@@ -232,20 +269,11 @@ export function createYurt(
         : ` && chmod ${opts.mode.toString(8)} -- ${quoted(path)}`;
       const line = opts.atomic === false
         ? `cat > ${quoted(path)}${mode}`
-        // A failed write takes its temporary file with it: the error names
-        // the requested path, so a partial file left behind would go unseen.
-        : `t=${quoted(path)}.yurt-tmp.$$ && { cat > "$t" && mv -f -- "$t" ${
-          quoted(path)
-        } || { s=$?; rm -f -- "$t"; exit $s; }; }${mode}`;
+        : atomicWriteLine(path, mode);
       const result = await exec(line, { stdin: bytes });
       if (!("code" in result) || result.code !== 0) {
-        // The temporary file is this function's detail: an error names
-        // the path the caller asked for (yurt-sandbox#301).
-        const error = failed(result, `write ${path}`);
-        const [head, ...rest] = error.message.split(`${path}.yurt-tmp.`);
-        error.message = head +
-          rest.map((tail) => path + tail.replace(/^\d+/, "")).join("");
-        throw error;
+        const { message } = failed(result, `write ${path}`);
+        throw new Error(hideAtomicTemp(message, path));
       }
     },
     async list(path) {
