@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   atomicWriteLine,
   buildListLine,
@@ -315,14 +315,7 @@ Deno.test("the atomic write line keeps a failing cat's or mv's status, removes t
 Deno.test("an atomic write to a directory fails as one and leaves nothing in it", async () => {
   // #163: `mv -f tmp dir` moved the temporary file into the directory and
   // the write succeeded. Real shells run the line.
-  const shells = ["/bin/sh", "/bin/dash"].filter((sh) => {
-    try {
-      return Deno.statSync(sh).isFile;
-    } catch {
-      return false;
-    }
-  });
-  for (const sh of shells) {
+  for (const sh of realShells()) {
     const dir = await Deno.makeTempDir();
     try {
       const target = `${dir}/sub`;
@@ -348,6 +341,63 @@ Deno.test("an atomic write to a directory fails as one and leaves nothing in it"
       );
       assertEquals([...Deno.readDirSync(target)], [], sh);
       assertEquals([...Deno.readDirSync(dir)].map((e) => e.name), ["sub"], sh);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+/** The POSIX shells on this machine that run the write line; at least
+ * one, so a loop over them cannot pass without running. */
+function realShells(): string[] {
+  const shells = ["/bin/sh", "/bin/dash"].filter((sh) => {
+    try {
+      return Deno.statSync(sh).isFile;
+    } catch {
+      return false;
+    }
+  });
+  assert(shells.length > 0, "no /bin/sh or /bin/dash to run the line");
+  return shells;
+}
+
+Deno.test("an atomic write fails when a directory appears at the path while stdin streams", async () => {
+  // #163 review: the check before `cat` passes, a directory is made at the
+  // path while `cat` still reads, and `mv` moves the temporary file into
+  // it. The line must see that after the `mv`, remove the file and fail.
+  for (const sh of realShells()) {
+    const dir = await Deno.makeTempDir();
+    try {
+      const target = `${dir}/target`;
+      const child = new Deno.Command(sh, {
+        args: ["-c", atomicWriteLine(target, ` && : > '${dir}/suffix-ran'`)],
+        stdin: "piped",
+        stderr: "piped",
+      }).spawn();
+      const writer = child.stdin.getWriter();
+      await writer.write(new TextEncoder().encode("data"));
+      // `cat` has its first bytes, so the check before it is behind us.
+      const tmp = new RegExp(`^target\\.yurt-tmp\\.\\d+$`);
+      const deadline = Date.now() + 10_000;
+      while (![...Deno.readDirSync(dir)].some((e) => tmp.test(e.name))) {
+        assert(Date.now() < deadline, `${sh}: no temporary file appeared`);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await Deno.mkdir(target);
+      await writer.close();
+      const out = await child.output();
+      assertEquals(out.code, 1, sh);
+      assertEquals(
+        new TextDecoder().decode(out.stderr),
+        `${target}: Is a directory\n`,
+        sh,
+      );
+      assertEquals([...Deno.readDirSync(target)], [], sh);
+      assertEquals(
+        [...Deno.readDirSync(dir)].map((e) => e.name),
+        ["target"],
+        sh,
+      );
     } finally {
       await Deno.remove(dir, { recursive: true });
     }

@@ -195,21 +195,31 @@ const TEMP_SUFFIX = ".yurt-tmp.";
  * guest shell, BusyBox ash, keeps the condition's status in `$?` at the
  * start of the `else` branch, as POSIX requires.
  *
- * A directory at `path` is refused before anything is written: `mv` would
- * move the temporary file into it and succeed (#163). The message says
- * "Is a directory", as the non-atomic `cat >` does, so the desktop API
- * answers 400 NotAFile for both. `[ -d ]` rather than BusyBox's `mv -T`:
- * its refusal reads "is a directory", and macOS mv has no `-T`.
+ * A directory at `path` is refused: `mv` would move the temporary file
+ * into it and succeed (#163). The common case is caught before anything
+ * is written. A directory that appears while stdin is still streaming is
+ * caught after the `mv`, by the temporary file's name inside it, which is
+ * removed. Either way the message says "Is a directory", as the
+ * non-atomic `cat >` does, so the desktop API answers 400 NotAFile for
+ * both. Not BusyBox's `mv -T`: its refusal reads "is a directory", and
+ * macOS mv has no `-T`.
  */
 export function atomicWriteLine(path: string, mode: string): string {
   const dest = quoted(path);
+  // Where `mv` puts the temporary file when `path` is a directory.
+  const inside = quoted(`${path}/${path.split("/").pop()}${TEMP_SUFFIX}`);
+  const refuse = `printf '%s: Is a directory\\n' ${dest} >&2`;
   return `if [ -d ${dest} ]; then
-  printf '%s: Is a directory\\n' ${dest} >&2
+  ${refuse}
   exit 1
 fi
 t=${dest}${TEMP_SUFFIX}$$
 if cat > "$t" && mv -f -- "$t" ${dest}; then
-  :
+  if [ -d ${dest} ] && [ -e ${inside}$$ ]; then
+    rm -f -- ${inside}$$
+    ${refuse}
+    exit 1
+  fi
 else
   s=$?
   rm -f -- "$t"
