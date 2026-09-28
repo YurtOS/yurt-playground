@@ -200,13 +200,27 @@ Deno.test({
     try {
       const result = await exec("cat", "hello\n");
       assertEquals(result.stdout, "hello\n");
-      // The staging files are swept 5 s after the command exits.
-      await new Promise((resolve) => setTimeout(resolve, 6_000));
-      const tmp = await exec("ls -la /tmp");
-      const staged = tmp.stdout.split("\n").filter((line) =>
-        line.endsWith(".in")
-      );
-      assertEquals(staged, [], tmp.stdout);
+      // The staging files are swept 5 s after the command exits: poll
+      // until no stdin file is left. Only this exec had stdin, and the
+      // `ls` has to have run: an empty listing from a failed one is not
+      // an empty /tmp. The first listing comes before the sweep is due,
+      // so it has to show the file.
+      const deadline = Date.now() + 30_000;
+      let seen = false;
+      for (;;) {
+        const ls = await exec("ls -a /tmp");
+        assertEquals("code" in ls && ls.code, 0, ls.stderr);
+        const staged = ls.stdout.split("\n").filter((name) =>
+          name.startsWith(".yurt-exec-") && name.endsWith(".in")
+        );
+        if (staged.length === 0) break;
+        seen = true;
+        if (Date.now() > deadline) {
+          throw new Error(`the stdin file was never swept: ${staged}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      assertEquals(seen, true, "the stdin file was never staged");
     } finally {
       session.stop();
     }
