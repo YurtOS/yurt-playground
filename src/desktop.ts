@@ -121,7 +121,7 @@ window.yurt is the same API from the browser. See the README, "Driving the
 sandbox from a program".`;
 
 /** The launcher's command line, or an Error naming the argument. Small
- * enough to parse by hand: three flags, and a flag nobody knows is an
+ * enough to parse by hand: four flags, and a flag nobody knows is an
  * error rather than a boot (yurt-playground#90). */
 export function parseLauncherArgs(argv: string[]): LauncherArgs {
   const args: LauncherArgs = {
