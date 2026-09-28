@@ -3,11 +3,11 @@ import { bootPlayground, fetchPlaygroundBytes } from "../src/boot.ts";
 import {
   assertNoTouchFailure,
   bootAshSession,
-  bootExecSession,
   memoryTerm,
   typeCommand,
   waitFor,
 } from "./ash_harness.ts";
+import { ExecutionRegistry } from "../src/executions.ts";
 
 Deno.test("bootPlayground fails closed when the page is not isolated", async () => {
   let shown = "";
@@ -192,14 +192,17 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
-    const session = await bootExecSession();
+    const session = await bootAshSession();
     if (!session) return;
+    const registry = new ExecutionRegistry(session.process, session.signal);
+    const exec = async (cmd: string, stdin?: string) =>
+      await registry.wait(await registry.spawn(cmd, { stdin }));
     try {
-      const result = await session.exec("cat", { stdin: "hello\n" });
+      const result = await exec("cat", "hello\n");
       assertEquals(result.stdout, "hello\n");
       // The staging files are swept 5 s after the command exits.
       await new Promise((resolve) => setTimeout(resolve, 6_000));
-      const tmp = await session.exec("ls -la /tmp");
+      const tmp = await exec("ls -la /tmp");
       const staged = tmp.stdout.split("\n").filter((line) =>
         line.endsWith(".in")
       );
