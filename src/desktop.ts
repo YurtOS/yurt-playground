@@ -154,13 +154,12 @@ export function parseLauncherArgs(argv: string[]): LauncherArgs {
 }
 
 /** What `--version` prints: the release train the app was built for (its
- * release is `desktop-<train>`) and the revisions it carries. pins.json is
+ * release is `desktop-<train>`) and the releases it carries. pins.json is
  * compiled into the binary, so this is what shipped. */
 export function launcherVersion(): string {
-  const short = (rev: string) => rev.slice(0, 7);
   return `yurt-playground ${pins.train}\n` +
-    `kernel ${short(pins.kernelWasm.rev)}, image ${short(pins.image.rev)}, ` +
-    `desktop host ${short(pins.desktopHost.rev)}`;
+    `kernel ${pins.kernelWasm.release}, image ${pins.image.release}, ` +
+    `desktop host ${pins.desktopHost.release}`;
 }
 
 /** A token for this launch's `/api/*`: 128 random bits, hex. */

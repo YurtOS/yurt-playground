@@ -427,9 +427,9 @@ Deno.test("yurt-playground --version names the release train and what it pins", 
   );
   const text = launcherVersion();
   assertStringIncludes(text, `yurt-playground ${pins.train}`);
-  assertStringIncludes(text, pins.kernelWasm.rev.slice(0, 7));
-  assertStringIncludes(text, pins.image.rev.slice(0, 7));
-  assertStringIncludes(text, pins.desktopHost.rev.slice(0, 7));
+  assertStringIncludes(text, pins.kernelWasm.release);
+  assertStringIncludes(text, pins.image.release);
+  assertStringIncludes(text, pins.desktopHost.release);
 });
 
 Deno.test("the desktop server binds the port it is given", async () => {
