@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { readModel, storeModel } from "../src/llm_store.ts";
+import { readModel, storeModel, withModelLock } from "../src/llm_store.ts";
 
 /** A Cache that refuses a body over `limit` bytes, as Safari's does over
  * 2 GiB with "Failed writing data to the file system" (#150). */
@@ -58,6 +58,49 @@ function model(bytes: number) {
 }
 
 const KEY = "/llm/m.litertlm?sha256=abc";
+
+Deno.test("model cache work for the same path is serialized across pins", async () => {
+  const locks = new Map<string, Promise<void>>();
+  const requestLock = async <T>(name: string, operation: () => Promise<T>) => {
+    const previous = locks.get(name) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => release = resolve);
+    locks.set(name, previous.then(() => current));
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  };
+  let releaseFirst!: () => void;
+  const firstHeld = new Promise<void>((resolve) => releaseFirst = resolve);
+  const events: string[] = [];
+
+  const first = withModelLock(
+    requestLock,
+    "/llm/m.litertlm?sha256=old",
+    async () => {
+      events.push("first-start");
+      await firstHeld;
+      events.push("first-end");
+    },
+  );
+  const second = withModelLock(
+    requestLock,
+    "/llm/m.litertlm?sha256=new",
+    async () => {
+      await Promise.resolve();
+      events.push("second-start");
+    },
+  );
+
+  await Promise.resolve();
+  assertEquals(events, ["first-start"]);
+  releaseFirst();
+  await Promise.all([first, second]);
+  assertEquals(events, ["first-start", "first-end", "second-start"]);
+});
 
 Deno.test("a model bigger than one cache entry allows is stored in parts and read back whole", async () => {
   const { cache, largest } = limitedCache(1000);

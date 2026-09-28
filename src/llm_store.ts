@@ -20,6 +20,24 @@ const PARTS_HEADER = "x-yurt-parts";
 
 type ModelCache = Pick<Cache, "match" | "put" | "delete">;
 
+/** The request shape used to coordinate model cache work across tabs. */
+export type ModelLockRequest = (
+  name: string,
+  operation: () => Promise<unknown>,
+) => Promise<unknown>;
+
+/** Run cache work under a lock shared by every pin of the same model path. */
+export function withModelLock<T>(
+  requestLock: ModelLockRequest,
+  key: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const pathname = new URL(key, "https://yurt.invalid").pathname;
+  return requestLock(`yurt-model-cache:${pathname}`, operation).then((value) =>
+    value as T
+  );
+}
+
 function partKey(key: string, index: number): string {
   return `${key}${key.includes("?") ? "&" : "?"}part=${index}`;
 }
