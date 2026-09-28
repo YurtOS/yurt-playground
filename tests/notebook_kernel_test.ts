@@ -13,6 +13,7 @@ import {
   KernelHostInterface,
   pumpPtyMaster,
   s,
+  type UserProcess,
 } from "@yurt/kernel-host-interface-js";
 import { PYTHON_SEAL_NAME } from "../src/image_parts.ts";
 import { stagedPath } from "../src/notebook_stage.ts";
@@ -37,6 +38,79 @@ async function readOptional(path: string): Promise<Uint8Array | undefined> {
   }
 }
 
+/** The cell server booted on the JS host, past its "ready" frame. */
+interface CellServer {
+  kernel: Uint8Array;
+  host: KernelHostInterface;
+  pty: number;
+  process: UserProcess;
+  /** Everything the pty has printed; the pump appends to it. */
+  out: string;
+  stopPump: () => void;
+}
+
+/**
+ * Stages the image and `cell_server.py`, starts the sealable CPython on a raw
+ * pty, and waits for "ready". Returns undefined when the blobs are absent,
+ * which fails instead when PLAYGROUND_REQUIRE_ARTIFACTS is set.
+ */
+async function bootCellServer(): Promise<CellServer | undefined> {
+  const guest = await readOptional(join(repoRoot, "public", PYTHON_SEAL_NAME));
+  let kernel: Uint8Array | undefined;
+  let image: Uint8Array | undefined;
+  try {
+    kernel = await fetchViaHandler("./yurt_kernel.wasm");
+    image = await fetchViaHandler("./playground.yurtimg");
+  } catch { /* no pinned blobs */ }
+  if (guest === undefined || kernel === undefined || image === undefined) {
+    if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS")) {
+      throw new Error("the notebook kernel test needs the blobs");
+    }
+    console.log("skipped: needs the pinned blobs and python3-seal.wasm");
+    return undefined;
+  }
+  const server = await Deno.readFile(
+    join(repoRoot, "public/demo/cell_server.py"),
+  );
+  const host = await KernelHostInterface.load(kernel, defaultHostState());
+  await stageYurtimg(host, image, new Map(), stagedPath);
+  writeRamfsFile(host, "/usr/local/yurt/cell_server.py", server);
+  const process = await host.spawnUserProcessWithArgsAsync(guest, [
+    s("python3"),
+    s("/usr/local/yurt/cell_server.py"),
+  ], {
+    PYTHONHOME: "/usr/local",
+    PYTHONDONTWRITEBYTECODE: "1",
+    TERM: "dumb",
+  });
+  const pty = host.attachHostPty(process.pid);
+  const booted: CellServer = {
+    kernel,
+    host,
+    pty,
+    process,
+    out: "",
+    stopPump: () => {},
+  };
+  booted.stopPump = pumpPtyMaster(host, pty, (bytes) => {
+    booted.out += new TextDecoder().decode(bytes);
+  });
+  process.runStartAsync().catch(() => {});
+  try {
+    await waitFor(
+      () => booted.out.includes('"ready"'),
+      "the cell server",
+      180_000,
+    );
+  } catch (error) {
+    booted.stopPump();
+    host.killProcess(process.pid, 9);
+    host.dispose();
+    throw error;
+  }
+  return booted;
+}
+
 Deno.test({
   name:
     "the notebook kernel's CPython seals mid-cell and resumes at the next prime",
@@ -45,45 +119,10 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
-    const guest = await readOptional(
-      join(repoRoot, "public", PYTHON_SEAL_NAME),
-    );
-    let kernel: Uint8Array | undefined;
-    let image: Uint8Array | undefined;
-    try {
-      kernel = await fetchViaHandler("./yurt_kernel.wasm");
-      image = await fetchViaHandler("./playground.yurtimg");
-    } catch { /* no pinned blobs */ }
-    if (guest === undefined || kernel === undefined || image === undefined) {
-      if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS")) {
-        throw new Error("the notebook kernel test needs the blobs");
-      }
-      console.log("skipped: needs the pinned blobs and python3-seal.wasm");
-      return;
-    }
-    const server = await Deno.readFile(
-      join(repoRoot, "public/demo/cell_server.py"),
-    );
-    const mk = await KernelHostInterface.load(kernel, defaultHostState());
-    await stageYurtimg(mk, image, new Map(), stagedPath);
-    writeRamfsFile(mk, "/usr/local/yurt/cell_server.py", server);
-
-    let out = "";
-    const primes = () => (out.match(/prime #/g) ?? []).length;
-    const process = await mk.spawnUserProcessWithArgsAsync(guest, [
-      s("python3"),
-      s("/usr/local/yurt/cell_server.py"),
-    ], {
-      PYTHONHOME: "/usr/local",
-      PYTHONDONTWRITEBYTECODE: "1",
-      TERM: "dumb",
-    });
-    const pty = mk.attachHostPty(process.pid);
-    const stopPump = pumpPtyMaster(mk, pty, (bytes) => {
-      out += new TextDecoder().decode(bytes);
-    });
-    process.runStartAsync().catch(() => {});
-    await waitFor(() => out.includes('"ready"'), "the cell server", 180_000);
+    const booted = await bootCellServer();
+    if (booted === undefined) return;
+    const { kernel, host: mk, pty, process } = booted;
+    const primes = () => (booted.out.match(/prime #/g) ?? []).length;
     mk.ptyMasterWrite(
       pty,
       new TextEncoder().encode(
@@ -96,11 +135,11 @@ Deno.test({
     // Only the stdlib is staged: with the whole image the kernel's memory
     // (the ramfs) would be ~400 MB, copied on every seal.
     assert(sealed.kernelMemory.byteLength < 64 * 1024 * 1024);
-    stopPump();
+    booted.stopPump();
     mk.killProcess(process.pid, 9);
     mk.dispose();
     const before = primes();
-    const lastBefore = out.match(/prime #(\d+) = (\d+)/g)?.at(-1);
+    const lastBefore = booted.out.match(/prime #(\d+) = (\d+)/g)?.at(-1);
 
     const restored = await KernelHostInterface.restore(
       kernel,
@@ -109,7 +148,7 @@ Deno.test({
     );
     const [resumed] = restored.processes;
     const stopResumed = pumpPtyMaster(restored.host, pty, (bytes) => {
-      out += new TextDecoder().decode(bytes);
+      booted.out += new TextDecoder().decode(bytes);
     });
     resumed.runStartAsync().catch(() => {});
     try {
@@ -124,13 +163,13 @@ Deno.test({
       restored.host.dispose();
     }
     // The loop continued, not restarted: the numbering runs on from the seal.
-    const all = [...out.matchAll(/prime #(\d+) = (\d+)/g)].map((m) =>
+    const all = [...booted.out.matchAll(/prime #(\d+) = (\d+)/g)].map((m) =>
       Number(m[1])
     );
     assertEquals(all, all.map((_, i) => i + 1));
     assert(
       lastBefore !== undefined &&
-        out.indexOf(lastBefore) === out.lastIndexOf(lastBefore),
+        booted.out.indexOf(lastBefore) === booted.out.lastIndexOf(lastBefore),
     );
   },
 });
@@ -141,50 +180,18 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
-    const guest = await readOptional(
-      join(repoRoot, "public", PYTHON_SEAL_NAME),
-    );
-    let kernel: Uint8Array | undefined;
-    let image: Uint8Array | undefined;
-    try {
-      kernel = await fetchViaHandler("./yurt_kernel.wasm");
-      image = await fetchViaHandler("./playground.yurtimg");
-    } catch { /* no pinned blobs */ }
-    if (guest === undefined || kernel === undefined || image === undefined) {
-      if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS")) {
-        throw new Error("the notebook kernel test needs the blobs");
-      }
-      console.log("skipped: needs the pinned blobs and python3-seal.wasm");
-      return;
-    }
-    const server = await Deno.readFile(
-      join(repoRoot, "public/demo/cell_server.py"),
-    );
-    const mk = await KernelHostInterface.load(kernel, defaultHostState());
-    await stageYurtimg(mk, image, new Map(), stagedPath);
-    writeRamfsFile(mk, "/usr/local/yurt/cell_server.py", server);
-    let out = "";
-    const process = await mk.spawnUserProcessWithArgsAsync(guest, [
-      s("python3"),
-      s("/usr/local/yurt/cell_server.py"),
-    ], {
-      PYTHONHOME: "/usr/local",
-      PYTHONDONTWRITEBYTECODE: "1",
-      TERM: "dumb",
-    });
-    const pty = mk.attachHostPty(process.pid);
-    const stopPump = pumpPtyMaster(mk, pty, (bytes) => {
-      out += new TextDecoder().decode(bytes);
-    });
-    process.runStartAsync().catch(() => {});
+    const booted = await bootCellServer();
+    if (booted === undefined) return;
+    const { host: mk, pty, process } = booted;
     const errors = () =>
-      out.split("\n").filter((line) => line.includes('"t": "error"')).map(
-        (line) =>
-          JSON.parse(line) as {
-            ename: string;
-            traceback: string[];
-          },
-      );
+      booted.out.split("\n").filter((line) => line.includes('"t": "error"'))
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              ename: string;
+              traceback: string[];
+            },
+        );
     const run = async (code: string, interrupt = false) => {
       const seen = errors().length;
       mk.ptyMasterWrite(
@@ -192,14 +199,17 @@ Deno.test({
         new TextEncoder().encode(JSON.stringify({ t: "exec", code }) + "\n"),
       );
       if (interrupt) {
-        await waitFor(() => out.includes("tick"), "the cell to start", 30_000);
+        await waitFor(
+          () => booted.out.includes("tick"),
+          "the cell to start",
+          30_000,
+        );
         mk.killProcess(process.pid, 2);
       }
       await waitFor(() => errors().length > seen, "the error frame", 30_000);
       return errors()[seen];
     };
     try {
-      await waitFor(() => out.includes('"ready"'), "the cell server", 180_000);
       // A raise two frames deep, a syntax error, and the reported case: an
       // interrupt (yurt-ports#150).
       const raised = await run("def f():\n    1 / 0\nf()\n");
@@ -231,7 +241,7 @@ Deno.test({
         syntax.traceback.join(""),
       );
     } finally {
-      stopPump();
+      booted.stopPump();
       mk.killProcess(process.pid, 9);
       mk.dispose();
     }
