@@ -9,6 +9,7 @@ import {
   type PlaygroundTerm,
 } from "./boot.ts";
 import {
+  BROWSER_KERNEL_PORTS,
   executeCell,
   type JupyterStream,
   type KernelPorts,
@@ -227,7 +228,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         jupyter = await restartGuestKernel(
           launchSession,
           previous,
-          kernelPorts,
+          kernelPorts ?? BROWSER_KERNEL_PORTS,
+          kernelPorts === undefined ? "127.0.0.1" : "0.0.0.0",
         );
         subscribeJupyter(jupyter);
         post({ type: "jupyter-restarted" });
@@ -308,7 +310,13 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       post({ type: "status", text: `starting Jupyter (${seconds} s)` });
     }, 5000);
     try {
-      jupyter = await startGuestKernel(session, kernelPorts);
+      jupyter = await startGuestKernel(
+        session,
+        kernelPorts ?? BROWSER_KERNEL_PORTS,
+        {
+          bindAddress: kernelPorts === undefined ? "127.0.0.1" : "0.0.0.0",
+        },
+      );
     } finally {
       clearInterval(ticking);
     }

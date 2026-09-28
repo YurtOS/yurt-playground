@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildKernelLaunchCommand,
   buildKernelOwnProcessLine,
@@ -44,5 +44,42 @@ Deno.test("as its own process the kernel records its pid and execs in place", ()
   assertEquals(
     buildKernelOwnProcessLine(),
     `echo $$ > ${JUPYTER_PID_FILE}; exec ${buildKernelLaunchCommand()} >${JUPYTER_LOG_FILE} 2>&1`,
+  );
+});
+
+Deno.test("browser fixed ports retain loopback binding while native ports retain native binding", async () => {
+  const {
+    BROWSER_KERNEL_PORTS,
+    buildKernelLaunchCommand,
+    buildKernelOwnProcessLine,
+  } = await import("../src/jupyter.ts");
+  const browser = buildKernelLaunchCommand(
+    undefined,
+    BROWSER_KERNEL_PORTS,
+    "127.0.0.1",
+  );
+  for (
+    const flag of [
+      "--ip=127.0.0.1",
+      "--shell=49161",
+      "--iopub=49162",
+      "--stdin=49163",
+      "--control=49164",
+      "--hb=49165",
+    ]
+  ) assertStringIncludes(browser, flag);
+  assertStringIncludes(
+    buildKernelOwnProcessLine(
+      BROWSER_KERNEL_PORTS,
+      undefined,
+      undefined,
+      undefined,
+      "127.0.0.1",
+    ),
+    "--ip=127.0.0.1",
+  );
+  assertStringIncludes(
+    buildKernelLaunchCommand(undefined, [8002, 8003, 8004, 8005, 8006]),
+    "--ip=0.0.0.0",
   );
 });

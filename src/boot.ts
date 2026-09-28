@@ -45,6 +45,7 @@ export type PlaygroundSession = {
    * kernel is started as, so it is no job of the user's shell. Absent on
    * the desktop app's page, which has only the terminal. */
   spawn?: (line: string) => Promise<void>;
+  startResident?: (line: string) => Promise<ResidentHandle>;
   /** A guest file's bytes as the login shell would read them, or
    * `undefined` when there is no such file (the Jupyter connection file,
    * looked for without typing into the user's shell). */
@@ -63,6 +64,12 @@ export type PlaygroundSession = {
    * launch) is not for the user to read. `tail` is written as the display
    * resumes. */
   hushOutput: () => { show(tail: Uint8Array): void };
+};
+
+export type ResidentHandle = {
+  pid: number;
+  exited: Promise<number>;
+  signalPid(signal: number): Promise<void>;
 };
 
 /** The shell's output goes to the screen and to whoever asked to see it
@@ -300,6 +307,50 @@ export async function bootPlayground(
         // Its exit is the kernel's business (the connection file, the log);
         // nothing here waits on it.
       });
+    },
+    async startResident(line) {
+      const process = await spawnShell(["/bin/sh", "-c", line]);
+      process.closeStdin();
+      const exited = process.runStartAsync();
+      let ended = false;
+      void exited.then(() => {
+        ended = true;
+      }, () => {
+        ended = true;
+      });
+      return {
+        pid: process.pid,
+        exited,
+        async signalPid(signal) {
+          if (!Number.isInteger(signal) || signal < 1 || signal > 64) {
+            throw new RangeError("invalid resident signal");
+          }
+          if (ended) return;
+          const killer = await spawnShell([
+            "/bin/sh",
+            "-c",
+            `exec kill -${signal} ${process.pid}`,
+          ]);
+          killer.closeStdin();
+          let timer: number | undefined;
+          try {
+            const rc = await Promise.race([
+              killer.runStartAsync(),
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(
+                  () => reject(new Error("resident signal timed out")),
+                  30_000,
+                );
+              }),
+            ]);
+            if (rc !== 0 && !ended) {
+              throw new Error(`resident signal failed: ${rc}`);
+            }
+          } finally {
+            clearTimeout(timer);
+          }
+        },
+      };
     },
     async process(line, io) {
       // The host keeps stdio per pid: a forked child's output lands in its
