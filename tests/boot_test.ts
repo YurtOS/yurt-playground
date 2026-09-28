@@ -1,13 +1,14 @@
 import { assertEquals, assertRejects } from "@std/assert";
+import { KernelHostInterface } from "@yurt/kernel-host-interface-js";
 import { bootPlayground, fetchPlaygroundBytes } from "../src/boot.ts";
 import {
   assertNoTouchFailure,
   bootAshSession,
-  bootExecSession,
   memoryTerm,
   typeCommand,
   waitFor,
 } from "./ash_harness.ts";
+import { ExecutionRegistry } from "../src/executions.ts";
 
 Deno.test("bootPlayground fails closed when the page is not isolated", async () => {
   let shown = "";
@@ -224,8 +225,16 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
-    const session = await bootExecSession();
+    const session = await bootAshSession();
     if (!session) return;
+    const registry = new ExecutionRegistry(session.process, session.signal);
+    const exec = async (cmd: string, stdin?: string) =>
+      await registry.wait(await registry.spawn(cmd, { stdin }));
+    // BusyBox ps: PID USER VSZ STAT COMMAND.
+    const zombies = (ps: string) =>
+      ps.split("\n").filter((line) =>
+        line.trim().split(/\s+/)[3]?.startsWith("Z")
+      );
     try {
       for (
         const [cmd, stdin] of [
@@ -234,20 +243,85 @@ Deno.test({
           ["cat", "hello\n"],
         ] as const
       ) {
-        const result = await session.exec(cmd, { stdin });
+        const result = await exec(cmd, stdin);
         assertEquals("code" in result && result.code, 0, cmd);
       }
       // Each exec's /tmp staging files are swept by a process of its own,
-      // started 5 s after the command exits.
-      await new Promise((resolve) => setTimeout(resolve, 6_000));
-      const ps = await session.exec("ps");
-      // BusyBox ps: PID USER VSZ STAT COMMAND.
-      const zombies = ps.stdout.split("\n").filter((line) =>
-        line.trim().split(/\s+/)[3]?.startsWith("Z")
-      );
-      assertEquals(zombies, [], ps.stdout);
+      // started 5 s after the command exits. Poll until the sweeps of the
+      // execs above are gone -- their files removed and no process left
+      // that names them -- and fail on the first zombie seen on the way.
+      // Each poll stages files of its own, so the wait is for these tags,
+      // not for an empty /tmp.
+      const staged = async () =>
+        (await exec("ls -a /tmp")).stdout.split("\n")
+          .filter((name) =>
+            name.startsWith(".yurt-exec-") &&
+            // A stdin file is root's, and the login user's sweep cannot
+            // remove it from the sticky /tmp until #142 is fixed; its
+            // sweep still runs, and exits, all the same.
+            !name.endsWith(".in")
+          )
+          .map((name) => name.slice(".yurt-exec-".length).split(".")[0]);
+      // A prefix: BusyBox ps cuts the command at the line width.
+      const tags = new Set((await staged()).map((tag) => tag.slice(0, 8)));
+      const deadline = Date.now() + 30_000;
+      for (;;) {
+        const ps = (await exec("ps")).stdout;
+        assertEquals(zombies(ps), [], ps);
+        const left = [
+          ...(await staged()).filter((tag) => tags.has(tag.slice(0, 8))),
+          ...ps.split("\n").filter((line) =>
+            [...tags].some((tag) => line.includes(`.yurt-exec-${tag}`))
+          ),
+        ];
+        if (left.length === 0) break;
+        if (Date.now() > deadline) {
+          throw new Error(`the staging sweeps never finished: ${left}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      const ps = (await exec("ps")).stdout;
+      assertEquals(zombies(ps), [], ps);
     } finally {
       session.stop();
+    }
+  },
+});
+
+Deno.test({
+  name: "a failing reap does not change an exec's exit status (#148)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const reap = KernelHostInterface.prototype.reapHostChild;
+    const warn = console.warn;
+    const warned: string[] = [];
+    KernelHostInterface.prototype.reapHostChild = () => {
+      throw new Error("stubbed reap failure");
+    };
+    console.warn = (...args: unknown[]) => warned.push(args.join(" "));
+    try {
+      const session = await bootAshSession();
+      if (!session) return;
+      const registry = new ExecutionRegistry(session.process, session.signal);
+      try {
+        for (const code of [0, 3]) {
+          const result = await registry.wait(
+            await registry.spawn(`exit ${code}`),
+          );
+          assertEquals("code" in result && result.code, code, result.error);
+        }
+        assertEquals(
+          warned.some((line) => line.includes("stubbed reap failure")),
+          true,
+          "the stubbed reap was never called",
+        );
+      } finally {
+        session.stop();
+      }
+    } finally {
+      KernelHostInterface.prototype.reapHostChild = reap;
+      console.warn = warn;
     }
   },
 });
