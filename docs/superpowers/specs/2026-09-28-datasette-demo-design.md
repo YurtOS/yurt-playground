@@ -1,8 +1,7 @@
 # Datasette in the browser sandbox
 
-Status: revised specification, awaiting review. Design direction was approved on
-2026-09-28; the first written spec at da3e073 was rejected. Product
-implementation follows written-spec and implementation-plan approval.
+Status: revised specification reviewed at f9c7ca5 and approved by the user on
+2026-09-28. Product implementation follows implementation-plan approval.
 
 ## Scope, ownership, and issue dependencies
 
@@ -104,9 +103,11 @@ following single line, with no trailing newline:
     [{"product": "Mug", "revenue_cents": 8400}, {"product": "Notebook", "revenue_cents": 4000}, {"product": "Pen", "revenue_cents": 2000}]
 
 The browser checks both the CSV bytes and the parsed JSON against these values.
-JSON can be saved through the demo's Download JSON control using that response;
-CSV also exercises Datasette's own attachment response. Sorting, filtering,
-query submission, and static scripts remain upstream behavior.
+JSON is saved through the demo's Download JSON control using a direct
+guest-http-request to the coordinator and a Blob download of that response. An
+ordinary fetch from the uncontrolled owner page bypasses the scoped worker. CSV
+also exercises Datasette's own attachment response. Sorting, filtering, query
+submission, and static scripts remain upstream behavior.
 
 "Read-only" means Datasette's ordinary custom-SQL validation: non-SELECT
 statements are rejected. The database itself is opened as a mutable positional
