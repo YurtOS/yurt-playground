@@ -194,10 +194,20 @@ const TEMP_SUFFIX = ".yurt-tmp.";
  * (hideAtomicTemp), so a partial file left behind would go unseen. The
  * guest shell, BusyBox ash, keeps the condition's status in `$?` at the
  * start of the `else` branch, as POSIX requires.
+ *
+ * A directory at `path` is refused before anything is written: `mv` would
+ * move the temporary file into it and succeed (#163). The message says
+ * "Is a directory", as the non-atomic `cat >` does, so the desktop API
+ * answers 400 NotAFile for both. `[ -d ]` rather than BusyBox's `mv -T`:
+ * its refusal reads "is a directory", and macOS mv has no `-T`.
  */
 export function atomicWriteLine(path: string, mode: string): string {
   const dest = quoted(path);
-  return `t=${dest}${TEMP_SUFFIX}$$
+  return `if [ -d ${dest} ]; then
+  printf '%s: Is a directory\\n' ${dest} >&2
+  exit 1
+fi
+t=${dest}${TEMP_SUFFIX}$$
 if cat > "$t" && mv -f -- "$t" ${dest}; then
   :
 else

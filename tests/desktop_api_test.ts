@@ -227,12 +227,14 @@ Deno.test("parseExecRequest names the field a driver got wrong", () => {
   }
 });
 
-function api(options: { token?: string; origin?: string } = {}) {
+function api(
+  options: { token?: string; origin?: string; host?: HostClient } = {},
+) {
   const fake = fakeHost();
   const token = options.token ?? "t0k3n";
   const origin = options.origin ?? "http://127.0.0.1:4321";
   const desktop = createDesktopApi({
-    host: fake.host,
+    host: options.host ?? fake.host,
     token,
     bootMs: 1200,
     pollMs: 1,
@@ -425,5 +427,73 @@ Deno.test("/api/fs moves bytes as bytes and lists through the guest", async () =
   response = await request("/api/fs/entries");
   assertEquals(response.status, 400);
   await response.body?.cancel();
+  await swept();
+});
+
+/** The host's routes over this machine: a session is a real `sh -c` of
+ * its line, run to the end before it is reported; the files are this
+ * machine's. For a line whose effect on the file system is the point. */
+function shellHost(): HostClient {
+  const exits = new Map<string, number>();
+  let next = 1;
+  const exists = (path: string) => {
+    try {
+      Deno.statSync(path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  return {
+    startSession(command) {
+      const id = `sh-${next++}`;
+      exits.set(
+        id,
+        new Deno.Command("sh", { args: ["-c", command] })
+          .outputSync().code,
+      );
+      return Promise.resolve({ id, pid: next });
+    },
+    sessionComplete: () => Promise.resolve(true),
+    closeSession(id) {
+      const code = exits.get(id)!;
+      exits.delete(id);
+      return Promise.resolve(code);
+    },
+    readFile: (path) => Deno.readFile(path),
+    writeFile: (path, bytes) => Deno.writeFile(path, bytes),
+    removeFile: (path) => Deno.remove(path).catch(() => undefined),
+    fileSize: (path) =>
+      Promise.resolve(exists(path) ? Deno.statSync(path).size : undefined),
+  };
+}
+
+Deno.test("an atomic PUT to a directory is a 400 NotAFile and writes nothing into it", async () => {
+  // #163: `mv -f tmp dir` moved the temporary file into the directory and
+  // the PUT answered 204. A real shell runs the write line here.
+  const dir = await Deno.makeTempDir();
+  try {
+    const target = `${dir}/sub`;
+    await Deno.mkdir(target);
+    await Deno.writeTextFile(`${target}/keep`, "keep");
+    const { request } = api({ host: shellHost() });
+    for (const headers of [{}, { "x-yurt-mode": "600" }] as HeadersInit[]) {
+      const response = await request(
+        `/api/fs/content?path=${encodeURIComponent(target)}`,
+        { method: "PUT", headers, body: "x" },
+      );
+      const body = await response.json();
+      assertEquals(response.status, 400, JSON.stringify(body));
+      assertEquals(body.code, "NotAFile");
+      assertEquals(
+        body.error,
+        `write ${target}: exit 1: ${target}: Is a directory`,
+      );
+    }
+    assertEquals([...Deno.readDirSync(target)].map((e) => e.name), ["keep"]);
+    assertEquals([...Deno.readDirSync(dir)].map((e) => e.name), ["sub"]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
   await swept();
 });

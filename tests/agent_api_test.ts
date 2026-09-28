@@ -311,3 +311,45 @@ Deno.test("the atomic write line keeps a failing cat's or mv's status, removes t
     }
   }
 });
+
+Deno.test("an atomic write to a directory fails as one and leaves nothing in it", async () => {
+  // #163: `mv -f tmp dir` moved the temporary file into the directory and
+  // the write succeeded. Real shells run the line.
+  const shells = ["/bin/sh", "/bin/dash"].filter((sh) => {
+    try {
+      return Deno.statSync(sh).isFile;
+    } catch {
+      return false;
+    }
+  });
+  for (const sh of shells) {
+    const dir = await Deno.makeTempDir();
+    try {
+      const target = `${dir}/sub`;
+      await Deno.mkdir(target);
+      const { transport } = fakeTransport((cmd, opts) => {
+        const input = `${dir}.stdin`;
+        Deno.writeFileSync(input, opts.stdin as Uint8Array);
+        const out = new Deno.Command(sh, {
+          args: ["-c", `exec < "$0"; ${cmd}`, input],
+        }).outputSync();
+        Deno.removeSync(input);
+        return { code: out.code, stderr: out.stderr };
+      });
+      const yurt = createYurt(transport, {
+        current: () => "running",
+        ready: Promise.resolve(),
+      });
+      const error = await assertRejects(() => yurt.fs.write(target, "x"));
+      assertEquals(
+        (error as Error).message,
+        `write ${target}: exit 1: ${target}: Is a directory`,
+        sh,
+      );
+      assertEquals([...Deno.readDirSync(target)], [], sh);
+      assertEquals([...Deno.readDirSync(dir)].map((e) => e.name), ["sub"], sh);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
