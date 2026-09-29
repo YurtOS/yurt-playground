@@ -1,11 +1,18 @@
 import {
   defaultHostState,
+  KERNEL_PID,
   KernelHostInterface,
   METHOD,
   pumpPtyMaster,
   s,
 } from "@yurt/kernel-host-interface-js";
 import { setPidCredentials, stageYurtimg, writeRamfsFile } from "./stage.ts";
+import {
+  browserStorageRoot,
+  type GuestRoot,
+  openGuestRoot,
+  type OpfsDirectory,
+} from "./opfs_root.ts";
 import {
   createSessionController,
   type PtyTransport,
@@ -34,6 +41,12 @@ export type PlaygroundEnv = {
   fetchBytes: (path: string) => Promise<Uint8Array>;
   show: (text: string) => void;
   term: PlaygroundTerm;
+  /** The image's pinned sha256, which keys its copy in browser storage;
+   * hashed from the bytes when absent. */
+  imageSha256?: string;
+  /** Where the guest's root lives: OPFS by default in a worker. Tests hand
+   * in a directory of their own; `null` keeps the root in kernel memory. */
+  storage?: () => Promise<OpfsDirectory | undefined | null>;
 };
 
 export type PlaygroundSession = {
@@ -57,6 +70,9 @@ export type PlaygroundSession = {
   dialSandboxPort: (
     port: number,
   ) => ReturnType<KernelHostInterface["dialSandboxPort"]>;
+  /** Where the guest's files are: in browser storage (OPFS) or, when that
+   * could not be used, in the kernel's memory, and why. */
+  storage?: { kind: "device" } | { kind: "memory"; reason: string };
   onOutput: (handler: (bytes: Uint8Array) => void) => () => void;
   /** Keep the shell's output off the screen until `show(tail)`: what the
    * page types into the user's shell on its own behalf (the Jupyter
@@ -123,6 +139,11 @@ async function browserPins(): Promise<Pins> {
     pinsPromise = undefined;
     throw error;
   }
+}
+
+/** The pinned image's sha256: what keys its copy in browser storage. */
+export async function pinnedImageSha256(): Promise<string> {
+  return (await browserPins()).image.sha256;
 }
 
 export async function fetchPlaygroundBytes(
@@ -208,10 +229,37 @@ export async function bootPlayground(
   const mk = await KernelHostInterface.load(kernel, defaultHostState());
   env.show("loading image");
   const image = await env.fetchBytes("./playground.yurtimg");
-  env.show("unpacking image");
-  const files = new Map<string, Uint8Array>();
-  await stageYurtimg(mk, image, files);
-  const sh = files.get("/bin/sh");
+  const root = await openGuestRoot({
+    storage: (await (env.storage ?? browserStorageRoot)()) ?? undefined,
+    yurtimg: image,
+    imageSha256: env.imageSha256 ?? await sha256Hex(image),
+    show: env.show,
+  });
+  let sh: Uint8Array | undefined;
+  /** A file from the host, as `writeRamfsFile` would stage it. */
+  let writeGuestFile: (
+    path: string,
+    bytes: Uint8Array,
+    owner: { uid: number; gid: number },
+  ) => void;
+  if (root.kind === "device") {
+    // Mounting over / needs root, as ramfs staging does.
+    setPidCredentials(mk, KERNEL_PID, 0, 0);
+    mk.mountYurtDevice(s("/"), root.device);
+    sh = root.device.readFile("/bin/sh");
+    writeGuestFile = (path, bytes, owner) =>
+      root.device.writeFile(path, bytes, {
+        ...owner,
+        mtimeNs: BigInt(Date.now()) * 1_000_000n,
+      });
+  } else {
+    env.show(`unpacking image into memory (${root.reason})`);
+    const files = new Map<string, Uint8Array>();
+    await stageYurtimg(mk, image, files);
+    sh = files.get("/bin/sh");
+    writeGuestFile = (path, bytes, owner) =>
+      writeRamfsFile(mk, path, bytes, owner);
+  }
   if (sh === undefined) {
     throw new Error("playground image is missing /bin/sh");
   }
@@ -363,7 +411,7 @@ export async function bootPlayground(
         // the kernel is exact at any size.
         // The login user's, so its sweep below can remove it from the
         // sticky /tmp.
-        writeRamfsFile(mk, path("in"), io.stdin, {
+        writeGuestFile(path("in"), io.stdin, {
           uid: LOGIN_UID,
           gid: LOGIN_GID,
         });
@@ -438,7 +486,25 @@ export async function bootPlayground(
       return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
     },
     dialSandboxPort: (port) => mk.dialSandboxPort(port),
+    storage: storageSummary(root),
     onOutput: output.onOutput,
     hushOutput: output.hushOutput,
   };
+}
+
+function storageSummary(
+  root: GuestRoot,
+): { kind: "device" } | { kind: "memory"; reason: string } {
+  return root.kind === "device"
+    ? { kind: "device" }
+    : { kind: "memory", reason: root.reason };
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    bytes as Uint8Array<ArrayBuffer>,
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
