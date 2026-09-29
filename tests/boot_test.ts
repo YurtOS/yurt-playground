@@ -198,29 +198,39 @@ Deno.test({
     const exec = async (cmd: string, stdin?: string) =>
       await registry.wait(await registry.spawn(cmd, { stdin }));
     try {
-      const result = await exec("cat", "hello\n");
-      assertEquals(result.stdout, "hello\n");
-      // The staging files are swept 5 s after the command exits: poll
-      // until no stdin file is left. Only this exec had stdin, and the
-      // `ls` has to have run: an empty listing from a failed one is not
-      // an empty /tmp. The first listing comes before the sweep is due,
-      // so it has to show the file.
+      // Capture this exec's stdin path while the consumer is still running,
+      // before its delayed sweep can remove any staging files.
+      const result = await exec(
+        "cat; printf '\\n'; printf '%s\\n' /tmp/.yurt-exec-*.in",
+        "hello\n",
+      );
+      assertEquals("code" in result && result.code, 0, result.stderr);
+      assertEquals(result.stdout.startsWith("hello\n"), true, result.stdout);
+      const staged = result.stdout.split("\n").filter((line) =>
+        /^\/tmp\/\.yurt-exec-[0-9a-f-]+\.in$/.test(line)
+      );
+      assertEquals(staged.length, 1, result.stdout);
+      const stdinPath = staged[0];
+
+      // Wait for this exact file to disappear. Sweeps for concurrent execs
+      // may remove other entries from /tmp while each query runs.
       const deadline = Date.now() + 30_000;
-      let seen = false;
       for (;;) {
-        const ls = await exec("ls -a /tmp");
-        assertEquals("code" in ls && ls.code, 0, ls.stderr);
-        const staged = ls.stdout.split("\n").filter((name) =>
-          name.startsWith(".yurt-exec-") && name.endsWith(".in")
-        );
-        if (staged.length === 0) break;
-        seen = true;
+        const exists = await exec(`[ -e ${stdinPath} ]`);
+        assertEquals("code" in exists, true, exists.error);
+        if ("code" in exists) {
+          assertEquals(
+            exists.code === 0 || exists.code === 1,
+            true,
+            exists.stderr,
+          );
+          if (exists.code === 1) break;
+        }
         if (Date.now() > deadline) {
-          throw new Error(`the stdin file was never swept: ${staged}`);
+          throw new Error(`the stdin file was never swept: ${stdinPath}`);
         }
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
-      assertEquals(seen, true, "the stdin file was never staged");
     } finally {
       session.stop();
     }
