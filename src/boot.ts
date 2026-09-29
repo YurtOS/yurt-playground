@@ -231,6 +231,23 @@ export async function bootPlayground(
     if (Number(chdirRc) !== 0) {
       throw new Error(`chdir ${LOGIN_HOME} failed: rc=${chdirRc}`);
     }
+    // Reap it at its exit: the host is its parent, so nothing in the guest
+    // waits for it, and until the host does it stays in the process table
+    // as a zombie (yurt-playground#148, yurtos-kernel#2813). Its output is
+    // in guest files, not in the per-pid buffers the reap drops. Best
+    // effort, as the kernel runner's `reapRootBestEffort`: the exit status
+    // is already known, and a failed wait must not replace it.
+    const start = process.runStartAsync.bind(process);
+    process.runStartAsync = () =>
+      start().finally(() => {
+        try {
+          mk.reapHostChild(process.pid);
+        } catch (error) {
+          console.warn(
+            `reap host-parented pid ${process.pid} failed: ${error}`,
+          );
+        }
+      });
     return process;
   };
   env.show("starting ash");
