@@ -803,7 +803,7 @@ yurt-playground</pre>
               >Download for Apple Silicon</a>, then:
             </p>
             <pre>tar -xzf yurt-*.tar.gz &amp;&amp; sudo yurt/install.sh
-yurt pull playground                       # needs GH_TOKEN (private repo) or the desktop app installed
+yurt pull playground                       # the image (about 90 MB), no account needed
 yurt run -it playground                    # a shell in the sandbox
 yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
 yurt logs -f web                           # Ctrl-C leaves it running
@@ -836,7 +836,7 @@ yurt stop web</pre>
               (Debian, Ubuntu), then:
             </p>
             <pre>sudo apt install ./yurt-*.deb
-yurt pull playground                       # needs GH_TOKEN (private repo) or the desktop app installed
+yurt pull playground                       # the image (about 90 MB), no account needed
 yurt run -it playground                    # a shell in the sandbox
 yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
 yurt logs -f web                           # Ctrl-C leaves it running
@@ -859,15 +859,17 @@ yurt stop web</pre>
         </summary>
         <p>
           No badge can prove it, so here is what a server-backed fake could not
-          survive. Each takes under a minute in Chrome.
+          survive. Each takes under a minute, in Chrome, Edge, Firefox or
+          Safari.
         </p>
         <div class="checks">
           <article class="check">
             <h3>Go offline, keep computing</h3>
             <p>
               Start the sandbox and wait for the cell to say <code>ready</code>.
-              Then turn off Wi-Fi, or in DevTools pick <kbd>Network</kbd>
-              &rarr; <kbd>Offline</kbd>. Run another cell.
+              Then turn off Wi-Fi (or, in Chrome, Edge and Firefox, pick
+              <kbd>Offline</kbd> in the developer tools' <kbd>Network</kbd>
+              panel). Run another cell.
             </p>
             <p>
               It still answers. The terminal's bar shows <code>offline</code>
@@ -877,22 +879,30 @@ yurt stop web</pre>
           <article class="check">
             <h3>Watch the tab work</h3>
             <p>
-              Open Chrome's Task Manager with <kbd>Shift</kbd>+<kbd>Esc</kbd>
-              (or the Window menu). This tab's memory climbs by hundreds of MB
-              as the sandbox boots, and its CPU spikes when a cell runs.
+              Watch this tab in the browser's task manager: in Chrome and Edge,
+              <kbd>Shift</kbd>+<kbd>Esc</kbd>; in Firefox,
+              <code>about:processes</code>; for Safari, macOS's Activity
+              Monitor, which lists each tab's web content process. Its memory
+              climbs by hundreds of MB as the sandbox boots, and its CPU spikes
+              when a cell runs.
             </p>
             <p>A thin client stays flat.</p>
           </article>
           <article class="check">
             <h3>See the workers</h3>
             <p>
-              Visit <code>chrome://inspect/#workers</code> while the sandbox
-              runs. The coordinator and the guest workers are listed with their
-              script URLs, and you can attach a debugger.
+              While the sandbox runs, list the page's workers: in Chrome, visit
+              <code>chrome://inspect/#workers</code> (in Edge,
+              <code>edge://inspect/#workers</code>); in Firefox,
+              <code>about:debugging#/runtime/this-firefox</code>; in Safari, the
+              Web Inspector's <kbd>Sources</kbd> tab. The coordinator and the
+              guest workers are listed with their script URLs, and you can
+              attach a debugger.
             </p>
             <p>
-              In DevTools <kbd>Network</kbd>, nothing moves while a cell runs.
-              The page's security policy forbids talking to any other origin.
+              In the developer tools' <kbd>Network</kbd> panel, nothing moves
+              while a cell runs. The page's security policy forbids talking to
+              any other origin.
             </p>
           </article>
           <article class="check">

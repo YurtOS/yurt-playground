@@ -53,7 +53,10 @@
       }
       .bar {
         display: flex;
-        gap: 16px;
+        /* The restored run's status is long: the seal line goes under it
+           rather than into a column beside it. */
+        flex-wrap: wrap;
+        gap: 4px 16px;
         align-items: baseline;
         margin: 10px 0;
         min-height: 1.5em;
@@ -63,7 +66,7 @@
       }
       #seals {
         color: var(--muted);
-        flex: 1;
+        flex: 1 1 auto;
       }
       button {
         font: inherit;
@@ -73,6 +76,10 @@
         border-radius: 4px;
         padding: 2px 10px;
         cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
       }
     </style>
   </head>
