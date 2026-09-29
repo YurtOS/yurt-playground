@@ -107,7 +107,15 @@ try {
   await frame.goto(
     server.url + prefix + "orders?sql=" + encodeURIComponent(DATASETTE_QUERY),
   );
-  await frame.locator("textarea[name=sql]").fill(DATASETTE_QUERY);
+  // Datasette replaces this hidden textarea with CodeMirror; enter the SQL
+  // through the visible editor and submit its normal form.
+  await frame.locator(".CodeMirror-line").first().click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.insertText(DATASETTE_QUERY);
+  assertEquals(
+    await frame.locator("textarea[name=sql]").inputValue(),
+    DATASETTE_QUERY,
+  );
   await frame.locator("form").filter({
     has: frame.locator("textarea[name=sql]"),
   }).locator("[type=submit]").first().click();
