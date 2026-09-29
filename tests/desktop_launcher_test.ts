@@ -481,3 +481,166 @@ Deno.test("a launcher that cannot write its claim does not boot", async () => {
     await cleanup(f, launcher);
   }
 });
+
+Deno.test("stale cleanup cannot displace a claim acquired during cleanup", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "desktop-state-race-" });
+  const stateFile = join(dir, "playground.json");
+  const moduleUrl = new URL("../src/desktop.ts", import.meta.url).href;
+  const claimantFile = join(dir, "claimant.ts");
+  const runnerFile = join(dir, "runner.ts");
+  const claimant = `
+    const { claimLauncherState } = await import(${JSON.stringify(moduleUrl)});
+    const claim = await claimLauncherState(Deno.args[0], { pid: Deno.pid });
+    console.log(claim === null ? "lost" : "claimed");
+    if (claim !== null) setInterval(() => {}, 1000);
+  `;
+  const runner = `
+    const { claimLauncherState, runningLauncher } = await import(${
+    JSON.stringify(moduleUrl)
+  });
+    const stateFile = Deno.args[0];
+    const running = await runningLauncher(stateFile);
+    if (running !== null) {
+      console.log("already");
+    } else {
+      const claim = await claimLauncherState(stateFile, { pid: Deno.pid });
+      console.log(claim === null ? "lost" : "claimed");
+      if (claim !== null) setInterval(() => {}, 1000);
+    }
+  `;
+  const probe = `
+    const { runningLauncher } = await import(${JSON.stringify(moduleUrl)});
+    const stateFile = ${JSON.stringify(stateFile)};
+    const claimantFile = ${JSON.stringify(claimantFile)};
+    const runnerFile = ${JSON.stringify(runnerFile)};
+    await Deno.writeTextFile(stateFile, JSON.stringify({ pid: 99999999 }));
+    const rename = Deno.rename;
+    const readTextFile = Deno.readTextFile;
+    const atRename = Promise.withResolvers();
+    const resumeRename = Promise.withResolvers();
+    const atRead = Promise.withResolvers();
+    const resumeRead = Promise.withResolvers();
+    let pausedRename = false;
+    let pausedRead = false;
+    const children = [];
+    Deno.rename = async (from, to) => {
+      if (!pausedRename && String(to).endsWith('.stale')) {
+        pausedRename = true;
+        atRename.resolve();
+        await resumeRename.promise;
+        await rename(from, to);
+      } else {
+        await rename(from, to);
+      }
+    };
+    Deno.readTextFile = async (path) => {
+      if (!pausedRead && String(path).endsWith('.stale')) {
+        pausedRead = true;
+        atRead.resolve();
+        await resumeRead.promise;
+      }
+      return await readTextFile(path);
+    };
+    const startClaim = (script) => {
+      const child = new Deno.Command(Deno.execPath(), {
+        args: ["run", "-A", script, stateFile],
+        stdout: "piped",
+        stderr: "piped",
+      }).spawn();
+      const line = child.stdout.pipeThrough(new TextDecoderStream())
+        .getReader().read().then((result) => result.value?.trim() ?? "");
+      children.push(child);
+      return { child, line };
+    };
+    try {
+      const cleanup = runningLauncher(stateFile);
+      await atRename.promise;
+      const serialized = await Deno.stat(stateFile + '.lock').then(
+        () => true,
+        () => false,
+      );
+      const first = startClaim(runnerFile);
+      // The unfixed implementation lets this runner clean the stale record
+      // and claim it while the first cleanup is paused. The fix serializes it.
+      if (!serialized) await first.line;
+      resumeRename.resolve();
+      await atRead.promise;
+      const second = startClaim(claimantFile);
+      // On the unfixed code this claim lands in the empty path before the
+      // displaced first claim is either restored or deleted.
+      if (!serialized) await second.line;
+      resumeRead.resolve();
+      const results = await Promise.all([first.line, second.line]);
+      await cleanup;
+      console.log(JSON.stringify({ claimCount: results.filter((value) => value === "claimed").length }));
+    } finally {
+      for (const child of children) {
+        try { child.kill("SIGKILL"); } catch { /* already exited */ }
+        await child.status;
+      }
+      Deno.rename = rename;
+      Deno.readTextFile = readTextFile;
+    }
+  `;
+  const probeFile = join(dir, "probe.ts");
+  try {
+    await Deno.writeTextFile(claimantFile, claimant);
+    await Deno.writeTextFile(runnerFile, runner);
+    await Deno.writeTextFile(probeFile, probe);
+    const result = await new Deno.Command(Deno.execPath(), {
+      args: ["run", "-A", probeFile],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
+    assertEquals(JSON.parse(new TextDecoder().decode(result.stdout)), {
+      claimCount: 1,
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a slow health probe does not discard the live launcher's locked state", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "desktop-health-race-" });
+  const stateFile = join(dir, "playground.json");
+  const moduleUrl = new URL("../src/desktop.ts", import.meta.url).href;
+  const probe = `
+    const { claimLauncherState, runningLauncher, writeLauncherState } = await import(${
+    JSON.stringify(moduleUrl)
+  });
+    const stateFile = ${JSON.stringify(stateFile)};
+    const claim = await claimLauncherState(stateFile, { pid: Deno.pid });
+    if (claim === null) throw new Error('could not make launcher claim');
+    let fetches = 0;
+    globalThis.fetch = async (_input, init) => {
+      fetches++;
+      return await new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    };
+    try {
+      await writeLauncherState(stateFile, { pid: Deno.pid, url: 'http://127.0.0.1:1/' });
+      const running = await runningLauncher(stateFile);
+      console.log(JSON.stringify({ pid: running?.pid ?? null, fetches }));
+    } finally {
+      claim.close();
+    }
+  `;
+  const probeFile = join(dir, "probe.ts");
+  try {
+    await Deno.writeTextFile(probeFile, probe);
+    const result = await new Deno.Command(Deno.execPath(), {
+      args: ["run", "-A", probeFile],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
+    assertEquals(JSON.parse(new TextDecoder().decode(result.stdout)), {
+      pid: JSON.parse(await Deno.readTextFile(stateFile)).pid,
+      fetches: 0,
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
