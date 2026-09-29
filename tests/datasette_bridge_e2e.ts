@@ -12,11 +12,11 @@ class Coordinator extends EventTarget {
   postMessage(m){
     if(m.type==='datasette-start') this.emit({type:'datasette-state',snapshot:{state:'running',session,prefix}});
     if(m.type==='datasette-stop'||m.type==='datasette-reset') this.emit({type:'datasette-state',snapshot:{state:'stopped'}});
-    if(m.type==='guest-http-request') {
+    if(m.type==='datasette-http') {
       let body='<html><body><h1>Guest UI</h1><a href="'+prefix+'orders.csv">CSV</a></body></html>',headers=[['content-type','text/html']];
       if(m.path.includes('orders.json')) {body='[{"product":"Mug","revenue_cents":8400},{"product":"Notebook","revenue_cents":4000},{"product":"Pen","revenue_cents":2000}]';headers=[['content-type','application/json']];}
       if(m.path.includes('orders.csv')) {body='product,revenue_cents\r\nMug,8400\r\nNotebook,4000\r\nPen,2000\r\n';headers=[['content-type','text/csv'],['content-disposition','attachment; filename="revenue.csv"']];}
-      const send=()=>this.emit({type:'guest-http-response',session,requestId:m.requestId,status:200,headers,body:new TextEncoder().encode(body).buffer});
+      const send=()=>this.emit({type:'datasette-response',session,requestId:m.requestId,status:200,headers,body:new TextEncoder().encode(body).buffer});
       if(m.path.endsWith('/slow')) setTimeout(send,8000);else send();
     }
   }
@@ -48,7 +48,7 @@ async function bind(nonce=crypto.randomUUID()) {
       let type='text/html';
       if(p.pathname.endsWith('/asset.js')){type='text/javascript';body='document.body.dataset.asset="loaded"';}
       if(p.pathname.endsWith('/json')){type='application/json';body='[{"ready":1}]';}
-      channel.port1.postMessage({type:'guest-http-response',session,requestId:m.requestId,status:200,headers:[['Content-Type',type]],body:new TextEncoder().encode(body).buffer});
+      channel.port1.postMessage({type:'datasette-response',session,requestId:m.requestId,status:200,headers:[['Content-Type',type]],body:new TextEncoder().encode(body).buffer});
     }
   };});
   channel.port1.start();registration.active.postMessage({type:'datasette-register',session,prefix,nonce,hashes:['sha256-'+ 'A'.repeat(43)+'=']},[channel.port2]);

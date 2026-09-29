@@ -1,10 +1,13 @@
-import type { ResidentHandle } from "./boot.ts";
+import type { BrowserPlaygroundSession, ResidentHandle } from "./boot.ts";
 import {
   GuestHttpError,
   type GuestHttpOptions,
   type GuestHttpReply,
   validateGuestPath,
 } from "./guest_http.ts";
+import { requestGuestHttp } from "./guest_http.ts";
+import type { ExecutionRegistry } from "./executions.ts";
+import type { Pins } from "./pins.ts";
 import {
   type DatasetteSnapshot,
   type GuestReply,
@@ -16,8 +19,9 @@ import {
 export interface DatasetteDependencies {
   uuid(): string;
   now(): number;
+  servicePort: number;
   delay(ms: number, signal?: AbortSignal): Promise<void>;
-  startResident(line: string): Promise<ResidentHandle>;
+  spawn(line: string): Promise<ResidentHandle>;
   finite(
     line: string,
     stdin?: Uint8Array,
@@ -100,12 +104,12 @@ export class DatasetteDemo {
         `exec python3 ${quote(DATASETTE_DIR + "/datasette_seed.py")}`,
       );
       controller.signal.throwIfAborted();
-      const resident = await this.deps.startResident(
+      const resident = await this.deps.spawn(
         `echo $$ > ${
           quote(DATASETTE_DIR + "/server.pid")
         } && exec python3 -m datasette serve ${
           quote(DATASETTE_DB)
-        } --host 127.0.0.1 --port 8001 --setting base_url ${
+        } --host 127.0.0.1 --port ${this.deps.servicePort} --setting base_url ${
           quote(prefix)
         } --setting default_cache_ttl 0 > ${
           quote(DATASETTE_DIR + "/server.log")
@@ -312,8 +316,9 @@ export class DatasetteDemo {
             if (!location || redirects === 4) {
               throw new Error("readiness redirect limit");
             }
-            path = new URL(location, "http://127.0.0.1:8001" + path).pathname +
-              new URL(location, "http://127.0.0.1:8001" + path).search;
+            const origin = `http://127.0.0.1:${this.deps.servicePort}`;
+            path = new URL(location, origin + path).pathname +
+              new URL(location, origin + path).search;
             validateGuestPath(session, prefix, path);
             continue;
           }
@@ -387,6 +392,78 @@ export class DatasetteDemo {
   }
 }
 
+export function attachDatasette(
+  session: BrowserPlaygroundSession,
+  pins: Pins,
+  options: {
+    executions: ExecutionRegistry;
+    send: (
+      reply: GuestReply | LifecycleReply,
+      transfer?: Transferable[],
+    ) => void;
+  },
+): DatasetteDemo | undefined {
+  const qualification = pins.datasette;
+  if (!qualification) return undefined;
+  let seed: Uint8Array | undefined;
+  return new DatasetteDemo({
+    uuid: () => crypto.randomUUID(),
+    now: () => performance.now(),
+    servicePort: session.guestPorts.datasette,
+    delay: (ms, signal) =>
+      new Promise<void>((resolve, reject) => {
+        signal?.throwIfAborted();
+        const abort = () => {
+          clearTimeout(timer);
+          reject(signal?.reason);
+        };
+        const timer = setTimeout(() => {
+          signal?.removeEventListener("abort", abort);
+          resolve();
+        }, ms);
+        signal?.addEventListener("abort", abort, { once: true });
+      }),
+    spawn: (line) => session.spawn(line),
+    finite: async (line, stdin, timeoutMs) => {
+      const id = await options.executions.spawn(line, {
+        stdin,
+        timeoutMs: timeoutMs ?? 120_000,
+        maxOutputBytes: 8192,
+      });
+      const result = await options.executions.wait(id);
+      return {
+        code: "code" in result && result.code !== null ? result.code : -1,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      };
+    },
+    seedSource: async (signal) => {
+      signal.throwIfAborted();
+      if (seed) return seed;
+      const response = await fetch("/demo/datasette_seed.py", { signal });
+      if (!response.ok) {
+        throw new Error(`seed download failed: ${response.status}`);
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.length > 64 * 1024) {
+        throw new Error("seed script exceeds 64 KiB");
+      }
+      signal.throwIfAborted();
+      seed = bytes;
+      return bytes;
+    },
+    request: (request) =>
+      requestGuestHttp(
+        () =>
+          Promise.resolve(
+            session.dialSandboxPort(session.guestPorts.datasette),
+          ),
+        { ...request, port: session.guestPorts.datasette },
+      ),
+    changed: (snapshot) => options.send({ type: "datasette-state", snapshot }),
+  });
+}
+
 export async function handleDatasetteMessage(
   demo: DatasetteDemo | undefined,
   value: unknown,
@@ -436,14 +513,14 @@ export async function handleDatasetteMessage(
     }
     const reply = await demo.request(request);
     send({
-      type: "guest-http-response",
+      type: "datasette-response",
       session: request.session,
       requestId: request.requestId,
       ...reply,
     }, [reply.body]);
   } catch (error) {
     send({
-      type: "guest-http-error",
+      type: "datasette-error",
       session: request.session,
       requestId: request.requestId,
       code: error instanceof GuestHttpError

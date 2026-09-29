@@ -17,6 +17,7 @@ export interface GuestHttpOptions {
   prefix: string;
   method: GuestMethod;
   path: string;
+  port?: number;
   headers: HeaderPairs;
   signal: AbortSignal;
   timeoutMs?: number;
@@ -31,7 +32,7 @@ const HEADER_LIMIT = 64 * 1024;
 const BODY_LIMIT = 16 * 1024 * 1024;
 const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ORIGIN = "http://127.0.0.1:8001";
+const origin = (port = 8001) => `http://127.0.0.1:${port}`;
 const HOP = new Set([
   "connection",
   "keep-alive",
@@ -55,6 +56,7 @@ export function validateGuestPath(
   session: string,
   prefix: string,
   path: string,
+  port = 8001,
 ): void {
   if (!UUID.test(session) || prefix !== `/apps/datasette/${session}/`) {
     fail("invalid session prefix");
@@ -73,22 +75,27 @@ export function validateGuestPath(
   }
   if (
     /[\x00-\x20\x7f\\]/.test(decoded) ||
-    !new URL(decoded, ORIGIN).pathname.startsWith(prefix)
+    !new URL(decoded, origin(port)).pathname.startsWith(prefix)
   ) fail("guest path escapes session");
-  if (!new URL(path, ORIGIN).pathname.startsWith(prefix)) {
+  if (!new URL(path, origin(port)).pathname.startsWith(prefix)) {
     fail("guest path escapes session");
   }
 }
-function redirect(location: string, path: string, prefix: string): string {
+function redirect(
+  location: string,
+  path: string,
+  prefix: string,
+  port = 8001,
+): string {
   if (/[\x00-\x20\x7f\\]/.test(location)) fail("invalid redirect location");
   let url: URL;
   try {
-    url = new URL(location, ORIGIN + path);
+    url = new URL(location, origin(port) + path);
   } catch {
     fail("invalid redirect location");
   }
   if (
-    url.origin !== ORIGIN || url.username || url.password ||
+    url.origin !== origin(port) || url.username || url.password ||
     !url.pathname.startsWith(prefix)
   ) fail("redirect escapes session");
   let decoded: string;
@@ -99,7 +106,7 @@ function redirect(location: string, path: string, prefix: string): string {
   }
   if (
     decoded.includes("\\") ||
-    !new URL(decoded, ORIGIN).pathname.startsWith(prefix)
+    !new URL(decoded, origin(port)).pathname.startsWith(prefix)
   ) fail("redirect escapes session");
   return url.pathname + url.search + url.hash;
 }
@@ -172,7 +179,12 @@ export async function requestGuestHttp(
   dial: () => Promise<GuestConnection>,
   options: GuestHttpOptions,
 ): Promise<GuestHttpReply> {
-  validateGuestPath(options.session, options.prefix, options.path);
+  validateGuestPath(
+    options.session,
+    options.prefix,
+    options.path,
+    options.port,
+  );
   if (options.method !== "GET" && options.method !== "HEAD") {
     throw new GuestHttpError("unsupported method", 405);
   }
@@ -227,7 +239,9 @@ export async function requestGuestHttp(
     await race(opening);
     if (!conn) fail("guest connection unavailable");
     const request =
-      `${options.method} ${options.path} HTTP/1.1\r\nHost: 127.0.0.1:8001\r\nConnection: close\r\nAccept-Encoding: identity\r\n` +
+      `${options.method} ${options.path} HTTP/1.1\r\nHost: 127.0.0.1:${
+        options.port ?? 8001
+      }\r\nConnection: close\r\nAccept-Encoding: identity\r\n` +
       requestHeaders.map(([k, v]) => `${k}: ${v}\r\n`).join("") + "\r\n";
     await race(conn.write(new TextEncoder().encode(request)));
     const reader = new Reader(() => race(conn!.read(8192)));
@@ -331,7 +345,12 @@ export async function requestGuestHttp(
     );
     headers = headers.map((
       [k, v],
-    ) => [k, k === "location" ? redirect(v, options.path, options.prefix) : v]);
+    ) => [
+      k,
+      k === "location"
+        ? redirect(v, options.path, options.prefix, options.port)
+        : v,
+    ]);
     if (!bodyless) headers.push(["content-length", String(total)]);
     else if (status !== 204 && length !== undefined) {
       headers.push(["content-length", String(length)]);

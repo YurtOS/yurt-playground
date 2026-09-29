@@ -21,7 +21,7 @@ export interface DatasetteSnapshot {
   logTail?: string;
 }
 export interface GuestRequest {
-  type: "guest-http-request" | "datasette-http";
+  type: "datasette-http";
   session: string;
   requestId: string;
   method: GuestMethod;
@@ -29,17 +29,17 @@ export interface GuestRequest {
   headers: HeaderPairs;
 }
 export interface GuestAbort {
-  type: "guest-http-abort" | "datasette-abort";
+  type: "datasette-abort";
   session: string;
   requestId: string;
 }
 export type GuestReply =
   | (
-    & { type: "guest-http-response"; session: string; requestId: string }
+    & { type: "datasette-response"; session: string; requestId: string }
     & GuestHttpReply
   )
   | {
-    type: "guest-http-error";
+    type: "datasette-error";
     session: string;
     requestId: string;
     code: number;
@@ -94,7 +94,7 @@ export function parseGuestRequest(value: unknown): GuestRequest | undefined {
   const v = object(value);
   if (
     !v || !scoped(v) || !headers(v.headers) || typeof v.path !== "string" ||
-    (v.type !== "guest-http-request" && v.type !== "datasette-http") ||
+    v.type !== "datasette-http" ||
     (v.method !== "GET" && v.method !== "HEAD")
   ) return;
   try {
@@ -112,20 +112,20 @@ export function parseGuestAbort(value: unknown): GuestAbort | undefined {
   const v = object(value);
   if (
     v && scoped(v) &&
-    (v.type === "guest-http-abort" || v.type === "datasette-abort")
+    v.type === "datasette-abort"
   ) return v as unknown as GuestAbort;
 }
 export function parseGuestReply(value: unknown): GuestReply | undefined {
   const v = object(value);
   if (!v || !scoped(v)) return;
   if (
-    v.type === "guest-http-response" && Number.isInteger(v.status) &&
+    v.type === "datasette-response" && Number.isInteger(v.status) &&
     (v.status as number) >= 200 && (v.status as number) <= 599 &&
     headers(v.headers) && v.body instanceof ArrayBuffer &&
     v.body.byteLength <= 16 * 1024 * 1024
   ) return v as unknown as GuestReply;
   if (
-    v.type === "guest-http-error" &&
+    v.type === "datasette-error" &&
     [405, 502, 503, 504].includes(v.code as number) &&
     typeof v.message === "string"
   ) return v as unknown as GuestReply;

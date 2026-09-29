@@ -47,37 +47,15 @@ Deno.test("as its own process the kernel records its pid and execs in place", ()
   );
 });
 
-Deno.test("browser fixed ports retain loopback binding while native ports retain native binding", async () => {
-  const {
-    BROWSER_KERNEL_PORTS,
-    buildKernelLaunchCommand,
-    buildKernelOwnProcessLine,
-  } = await import("../src/jupyter.ts");
-  const browser = buildKernelLaunchCommand(
-    undefined,
-    BROWSER_KERNEL_PORTS,
-    "127.0.0.1",
-  );
-  for (
-    const flag of [
-      "--ip=127.0.0.1",
-      "--shell=49161",
-      "--iopub=49162",
-      "--stdin=49163",
-      "--control=49164",
-      "--hb=49165",
-    ]
-  ) assertStringIncludes(browser, flag);
-  assertStringIncludes(
-    buildKernelOwnProcessLine(
-      BROWSER_KERNEL_PORTS,
-      undefined,
-      undefined,
-      undefined,
-      "127.0.0.1",
-    ),
-    "--ip=127.0.0.1",
-  );
+Deno.test("the in-tab kernel chooses its own loopback ports", async () => {
+  const jupyter = await import("../src/jupyter.ts");
+  assertEquals("BROWSER_KERNEL_PORTS" in jupyter, false);
+  const launch = jupyter.buildKernelLaunchCommand();
+  assertStringIncludes(launch, "--ip=127.0.0.1");
+  assertEquals(/--(?:shell|iopub|stdin|control|hb)=/.test(launch), false);
+});
+
+Deno.test("explicit native ports retain the native bind address", () => {
   assertStringIncludes(
     buildKernelLaunchCommand(undefined, [8002, 8003, 8004, 8005, 8006]),
     "--ip=0.0.0.0",

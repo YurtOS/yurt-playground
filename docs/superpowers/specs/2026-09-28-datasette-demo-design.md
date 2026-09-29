@@ -109,10 +109,10 @@ following single line, with no trailing newline:
 
 The browser checks both the CSV bytes and the parsed JSON against these values.
 JSON is saved through the demo's Download JSON control using a direct
-guest-http-request to the coordinator and a Blob download of that response. An
-ordinary fetch from the uncontrolled owner page bypasses the scoped worker. CSV
-also exercises Datasette's own attachment response. Sorting, filtering, query
-submission, and static scripts remain upstream behavior.
+datasette-http request to the coordinator and a Blob download of that response.
+An ordinary fetch from the uncontrolled owner page bypasses the scoped worker.
+CSV also exercises Datasette's own attachment response. Sorting, filtering,
+query submission, and static scripts remain upstream behavior.
 
 "Read-only" means Datasette's ordinary custom-SQL validation: non-SELECT
 statements are rejected. The database itself is opened as a mutable positional
@@ -134,7 +134,7 @@ restart is needed. Stop/start keeps the change; Reset restores 12 rows and
 Pen/2000. Show the path in the UI so a notebook can inspect the same database.
 Page reload still creates a fresh ordinary sandbox; Download home exports files.
 
-## Command, port reservation, and readiness
+## Command, guest service port, and readiness
 
 The coordinator creates a random UUID for each server start. Its URL prefix is P
 = /apps/datasette/<session>/, including the final slash. It validates the UUID
@@ -155,18 +155,20 @@ This is one sh -c line; any setup failure aborts before exec. No --reload,
 Leave num_sql_threads at its upstream default of 3. Cache TTL zero ensures the
 demonstration's refreshed query reaches the guest after a terminal commit.
 
-Reserve 8001 against Jupyter by making the browser's five ipykernel ports fixed:
-shell 49161, iopub 49162, stdin 49163, control 49164, heartbeat 49165. The
-browser launch uses --ip=127.0.0.1 and the supported --shell/--iopub/--stdin/
---control/--hb aliases, including restart. A separate browser-only constant
-supplies these values. Do not populate the native msg.kernelPorts field, which
-selects bootNativePlayground. Refine the launch builder's bind-address decision:
-explicit browser ports must not inherit its existing ports-present => 0.0.0.0
-inference. Native launch keeps its own ports and bind configuration.
+The browser session owns a guest service-port table and supplies the Datasette
+port to this adapter. Keep Datasette's service port out of the Jupyter launch
+builder. In the browser, ipykernel receives no explicit channel port list and
+continues choosing its own loopback ports from the guest's ephemeral range. The
+desktop app keeps its existing explicit native port list and bind behavior. Do
+not reserve five fixed Jupyter ports to accommodate this demo. A collision must
+be ruled out by the session's port allocation/qualification, not by adding
+Datasette policy to the Jupyter builder.
 
-This reserves 8001 against the playground's Jupyter channels, not arbitrary
-guest programs. Another listener produces a clear startup error. Do not select a
-different port silently or accept an unrelated server as ready.
+Do not launch Datasette until the yurt-ports image contains the qualified
+application and a published pin names that image. Missing package/image support
+is a producer blocker, not a playground installation or patching task. Another
+listener on the allocated service port produces a clear startup error; do not
+accept an unrelated server as ready.
 
 Readiness is GET P + orders.json?sql=SELECT+1+AS+ready&_shape=array. The final
 response must be status 200, JSON content type, and exactly the parsed array
@@ -184,13 +186,15 @@ errors and never consume that startup budget invisibly.
 
 ## Resident supervision and bounded logs
 
-Add PlaygroundSession.startResident(line), implemented alongside spawn with the
-existing spawnShell helper. It closes stdin and returns {pid, exited,
-signalPid}. exited is the original runStartAsync promise, observed once.
-signalPid sends the numeric signal to that positive pid only, using a finite
-guest kill command. Do not use the existing group-first session.signal for this
-resident. Do not add a no-deadline mode to ExecutionRegistry or use its 16 slots
-for Datasette. Retain it for finite seeding, reset, and log-tail reads.
+Use the browser session's direct spawn(line) API for this resident, outside the
+finite ExecutionRegistry. The existing spawnShell helper closes stdin and
+returns a process handle containing {pid, exited, signalPid}; exited is the
+original runStartAsync promise. Signal through the existing process-group helper
+so children are stopped with their process. Do not add a no-deadline mode to
+ExecutionRegistry or use its 16 slots for Datasette. Retain it for finite
+seeding, reset, and log-tail reads. Browser-only sandbox disposal is required on
+the browser session type and is not an optional property on the shared
+desktop/browser session type.
 
 The coordinator holds this handle and checks that server.pid matches the
 returned pid; pid-file absence is a startup error. The handle is authoritative,
@@ -223,26 +227,24 @@ the underlying completion/signalling path belong in their owner.
 Implement src/guest_http.ts as a small HTTP/1.1 client over SandboxPortConn. Its
 public request method is the literal union "GET" | "HEAD"; it has no request
 body, arbitrary port, cookie, or authentication support. The coordinator
-supplies the internal fixed port and current session prefix. Reject other
-methods in the service worker before contacting the owner, with status 405 and
-Allow: GET, HEAD. Reject upgrade requests with a visible error, never a network
-fetch.
+supplies the service port from the browser session and current session prefix.
+Reject other methods in the service worker before contacting the owner, with
+status 405 and Allow: GET, HEAD. Reject upgrade requests with a visible error,
+never a network fetch.
 
 Define shared message types in src/datasette_protocol.ts:
 
-- Service worker -> page: datasette-http {session, requestId, method, path,
-  headers}; datasette-abort {session, requestId}.
-- Page -> coordinator: guest-http-request with those request fields;
-  guest-http-abort {session, requestId}.
-- Coordinator -> page -> worker: guest-http-response {session, requestId,
-  status, headers, body: ArrayBuffer}, or guest-http-error {session, requestId,
+- Service worker -> page -> coordinator: datasette-http {session, requestId,
+  method, path, headers}; datasette-abort {session, requestId}.
+- Coordinator -> page -> service worker: datasette-response {session, requestId,
+  status, headers, body: ArrayBuffer}, or datasette-error {session, requestId,
   code, message}.
 - Page/coordinator lifecycle: datasette-start, datasette-stop, datasette-reset
   with requestId; replies include state, session and bounded failure details.
 
 Headers are a list of pairs restricted to Accept, Accept-Language, If-None-Match
-and If-Modified-Since. The adapter supplies Host: 127.0.0.1:8001, Connection:
-close, and Accept-Encoding: identity. Never forward browser
+and If-Modified-Since. The adapter supplies Host using the session service port,
+Connection: close, and Accept-Encoding: identity. Never forward browser
 Cookie/Authorization, hop-by-hop headers, or an Origin provided by another page.
 Paths are origin-form, include P, retain the query, and are validated against
 the current session. Reject CR/LF, fragments, network-path targets, and

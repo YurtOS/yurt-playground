@@ -1,8 +1,9 @@
 /// <reference lib="deno.worker" />
 import {
   bootPlayground,
+  type BrowserPlaygroundSession,
   fetchPlaygroundBytes,
-  type PlaygroundSession,
+  type ResidentHandle,
 } from "../../src/boot.ts";
 import { ExecutionRegistry } from "../../src/executions.ts";
 import { requestGuestHttp } from "../../src/guest_http.ts";
@@ -14,10 +15,8 @@ import { installCoordinatorWorkerProxy } from "../../src/page_worker_bridge.ts";
 installCoordinatorWorkerProxy();
 const sessionId = "44444444-4444-4444-8444-444444444444",
   prefix = `/apps/datasette/${sessionId}/`;
-let guest: PlaygroundSession, registry: ExecutionRegistry;
-let resident:
-  | Awaited<ReturnType<NonNullable<PlaygroundSession["startResident"]>>>
-  | undefined;
+let guest: BrowserPlaygroundSession, registry: ExecutionRegistry;
+let resident: ResidentHandle | undefined;
 const pending = new Map<string, AbortController>();
 const python = `
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -76,7 +75,7 @@ self.onmessage = async (e) => {
     }
     if (m.type === "datasette-start") {
       state("starting");
-      resident = await guest.startResident!(
+      resident = await guest.spawn(
         "exec python3 /home/user/demo_http/server.py > /home/user/demo_http/log 2>&1",
       );
       const deadline = performance.now() + 240000;
@@ -144,13 +143,13 @@ self.onmessage = async (e) => {
         );
         self.postMessage({
           ...reply,
-          type: "guest-http-response",
+          type: "datasette-response",
           session: sessionId,
           requestId: request.requestId,
         }, [reply.body]);
       } catch (error) {
         self.postMessage({
-          type: "guest-http-error",
+          type: "datasette-error",
           session: sessionId,
           requestId: request.requestId,
           code: 502,

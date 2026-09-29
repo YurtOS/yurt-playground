@@ -24,18 +24,22 @@ function fixture() {
   const deps: DatasetteDependencies = {
     uuid: () => session,
     now: () => now,
+    servicePort: 8123,
     delay: async (ms, signal) => {
       signal?.throwIfAborted();
       now += ms;
     },
-    startResident: async () => ({
-      pid: 42,
-      exited: exit.promise,
-      signalPid: async (s) => {
-        signals.push(s);
-        exit.resolve(0);
-      },
-    }),
+    spawn: async (line) => {
+      commands.push(line);
+      return {
+        pid: 42,
+        exited: exit.promise,
+        signalPid: async (s) => {
+          signals.push(s);
+          exit.resolve(0);
+        },
+      };
+    },
     finite: async (cmd) => {
       commands.push(cmd);
       return {
@@ -101,6 +105,7 @@ Deno.test("Datasette readiness accepts a validated redirect then exact query res
   };
   const d = new DatasetteDemo(f.deps);
   assertEquals((await d.start()).state, "running");
+  assert(f.commands.some((command) => command.includes("--port 8123")));
   assertEquals(count, 2);
   await d.stop();
 });
@@ -129,7 +134,7 @@ Deno.test("Datasette Stop cancels pending Start before waiting for readiness", a
 });
 Deno.test("Datasette tracks a stuck resident and forbids reset until its original exit", async () => {
   const f = fixture();
-  f.deps.startResident = async () => ({
+  f.deps.spawn = async () => ({
     pid: 42,
     exited: f.exit.promise,
     signalPid: async (s) => {
@@ -208,7 +213,7 @@ Deno.test("Datasette request abort and replacement discard old session", async (
 });
 Deno.test("Datasette repeated Stop never re-signals an unconfirmed resident", async () => {
   const f = fixture();
-  f.deps.startResident = async () => ({
+  f.deps.spawn = async () => ({
     pid: 42,
     exited: f.exit.promise,
     signalPid: async (s) => {
@@ -226,7 +231,7 @@ Deno.test("Datasette repeated Stop never re-signals an unconfirmed resident", as
 Deno.test("Datasette seed failure aborts launch and preserves original diagnostic", async () => {
   const f = fixture();
   let launches = 0;
-  f.deps.startResident = async () => {
+  f.deps.spawn = async () => {
     launches++;
     throw new Error("must not launch");
   };
@@ -269,7 +274,7 @@ Deno.test("Datasette messages fail closed without qualification and relay guest 
   const d = new DatasetteDemo(f.deps);
   await d.start();
   await handleDatasetteMessage(d, {
-    type: "guest-http-request",
+    type: "datasette-http",
     session,
     requestId: "r",
     method: "GET",
@@ -277,7 +282,7 @@ Deno.test("Datasette messages fail closed without qualification and relay guest 
     headers: [],
   }, send);
   const msg = messages.pop() as { type: string; body: ArrayBuffer };
-  assertEquals(msg.type, "guest-http-response");
+  assertEquals(msg.type, "datasette-response");
   assert(msg.body instanceof ArrayBuffer);
   await d.stop();
 });
@@ -357,8 +362,8 @@ Deno.test("Datasette concurrent Start shares one launch and log failure keeps th
     probe = Promise.withResolvers<GuestHttpReply>(),
     reading = Promise.withResolvers<void>();
   let launches = 0;
-  const launch = f.deps.startResident;
-  f.deps.startResident = async (line) => {
+  const launch = f.deps.spawn;
+  f.deps.spawn = async (line) => {
     launches++;
     return launch(line);
   };

@@ -18,17 +18,18 @@ MessageChannel, Playwright 1.55.0, guest CPython/SQLite, upstream Datasette
 0.65.5.
 
 **Spec:** [Datasette design](../specs/2026-09-28-datasette-demo-design.md),
-reviewed at f9c7ca5 and approved on 2026-09-28.
+reviewed at f9c7ca5 and approved on 2026-09-28. Port/image launch remains
+blocked until yurt-ports #170 supplies the qualified image and a pin can name
+it.
 
 ## Global Constraints
 
 - Work in `.worktrees/datasette-demo`; keep the primary checkout untouched.
 - Datasette 0.65.5; no altered upstream templates, plugins, authentication,
   writable canned queries, `--immutable`, `--crossdb`, `--root`, or `--reload`.
-- Guest bind 127.0.0.1:8001; prefix `/apps/datasette/<UUID>/` includes its
-  slash.
-- Browser Jupyter ports: shell 49161, iopub 49162, stdin 49163, control 49164,
-  heartbeat 49165. Native boot selection remains separate.
+- The browser session supplies Datasette's port from its guest service-port
+  table; ipykernel continues choosing its own loopback ports. Prefix
+  `/apps/datasette/<UUID>/` includes its slash.
 - Default three SQL threads; no `num_sql_threads=0` workaround.
 - HTTP GET/HEAD only, one connection per request, 30-second request limit, 64
   KiB cumulative headers/trailers, 16 MiB body, eight informational responses.
@@ -187,52 +188,41 @@ Deno.test("HEAD does not wait for Content-Length bytes", async () => {
 - [x] Run the focused tests, formatter, lint and type check. Commit as
       `feat: add bounded guest HTTP client`.
 
-## Task 2: Resident process seam and explicit browser kernel ports
+## Task 2: Resident process handle and browser port independence
 
 **Files:** Modify `src/boot.ts`, `src/jupyter.ts`, `src/coordinator_worker.ts`;
 extend `tests/boot_test.ts`, `tests/jupyter_launch_test.ts`,
 `tests/jupyter_test.ts`; add `tests/resident_test.ts`.
 
-**Interfaces:** `PlaygroundSession.startResident(line)` returns the actual pid,
+**Interfaces:** Browser `PlaygroundSession.spawn(line)` returns the actual pid,
 the original process completion promise and `signalPid(signal: number)`. Use the
 completion type from `process.runStartAsync`; do not invent exit status or use
-output files as exit signals. Add an explicit optional bind-address parameter to
-Jupyter launch/start/restart builders, defaulting compatibly for existing
-callers. Export `BROWSER_KERNEL_PORTS` from `src/jupyter.ts`.
+output files as exit signals. Keep this direct spawn outside
+`ExecutionRegistry`, which remains responsible for finite commands. Do not add
+fixed browser Jupyter ports or a bind override to the Jupyter launch builders.
+The session owns the service-port table and passes the app port into its
+adapter.
 
-- [x] Write failing launch assertions that browser initial/restart commands
-      contain `--ip=127.0.0.1` and all five reserved ports; native commands
-      retain their explicit ports and 0.0.0.0 bind. Assert `msg.kernelPorts`
-      continues to select native boot only.
+- [x] Write a failing assertion that the in-tab kernel command has loopback
+      binding and no explicit channel ports; native commands retain their
+      explicit ports and 0.0.0.0 bind. Assert `msg.kernelPorts` continues to
+      select native boot only.
 
 ```ts
-const command = buildKernelLaunchCommand(
-  JUPYTER_CONNECTION_FILE,
-  BROWSER_KERNEL_PORTS,
-  "127.0.0.1",
-);
+const command = buildKernelLaunchCommand();
 assertStringIncludes(command, "--ip=127.0.0.1");
-for (
-  const flag of [
-    "--shell=49161",
-    "--iopub=49162",
-    "--stdin=49163",
-    "--control=49164",
-    "--hb=49165",
-  ]
-) assertStringIncludes(command, flag);
+assertEquals(/--(?:shell|iopub|stdin|control|hb)=/.test(command), false);
 ```
 
 - [x] Test resident stdin closure, preservation of the original exit promise,
-      positive-pid kill command, exit rejection observation and no registry
+      process-group signalling, exit rejection observation and no registry
       allocation. Reuse the repository's existing kernel test harness for an
       actual sleep/exit/signalling test; require artifacts when CI requests it.
 - [x] Run those tests red, then implement using `spawnShell`, the existing user
-      credentials/home, `runStartAsync`, and a finite numeric `kill` command. Do
-      not call the existing group-first signal helper.
-- [x] Wire browser ports/bind through initial start and restart without changing
-      native dispatch. Run focused tests and commit
-      `feat: supervise resident guest processes`.
+      credentials/home, `runStartAsync`, and the existing process-group signal
+      path.
+- [x] Keep browser Jupyter startup dynamic and leave native dispatch unchanged.
+      Run focused tests and commit `feat: supervise resident guest processes`.
 
 ## Task 3: Deterministic sample and Datasette lifecycle
 

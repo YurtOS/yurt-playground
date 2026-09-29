@@ -62,7 +62,7 @@ export function mountDatasette(
   const cancelRelays = () => {
     for (const [requestId] of relays) {
       coordinator.postMessage({
-        type: "guest-http-abort",
+        type: "datasette-abort",
         session: boundSession,
         requestId,
       });
@@ -85,7 +85,7 @@ export function mountDatasette(
     for (const [requestId, item] of downloads) {
       clearTimeout(item.timer);
       coordinator.postMessage({
-        type: "guest-http-abort",
+        type: "datasette-abort",
         requestId,
         session: item.session,
       });
@@ -152,13 +152,13 @@ export function mountDatasette(
         const request = parseGuestRequest(e.data);
         if (request && request.session === session) {
           relays.set(request.requestId, current);
-          coordinator.postMessage({ ...request, type: "guest-http-request" });
+          coordinator.postMessage(request);
           return;
         }
         const abort = parseGuestAbort(e.data);
         if (abort && abort.session === session) {
           relays.delete(abort.requestId);
-          coordinator.postMessage({ ...abort, type: "guest-http-abort" });
+          coordinator.postMessage(abort);
         }
       };
       current.start();
@@ -251,7 +251,7 @@ export function mountDatasette(
       relays.delete(reply.requestId);
       relay.postMessage(
         reply,
-        reply.type === "guest-http-response" ? [reply.body] : [],
+        reply.type === "datasette-response" ? [reply.body] : [],
       );
       return;
     }
@@ -259,8 +259,8 @@ export function mountDatasette(
     if (!download || download.session !== reply.session) return;
     clearTimeout(download.timer);
     downloads.delete(reply.requestId);
-    if (reply.type === "guest-http-error" || reply.status !== 200) {
-      status.textContent = reply.type === "guest-http-error"
+    if (reply.type === "datasette-error" || reply.status !== 200) {
+      status.textContent = reply.type === "datasette-error"
         ? reply.message
         : `download failed (${reply.status})`;
       return;
@@ -289,7 +289,7 @@ export function mountDatasette(
       const timer = setTimeout(() => {
         downloads.delete(requestId);
         coordinator.postMessage({
-          type: "guest-http-abort",
+          type: "datasette-abort",
           session,
           requestId,
         });
@@ -297,7 +297,7 @@ export function mountDatasette(
       }, 30000);
       downloads.set(requestId, { session, timer });
       coordinator.postMessage({
-        type: "guest-http-request",
+        type: "datasette-http",
         session,
         requestId,
         method: "GET",

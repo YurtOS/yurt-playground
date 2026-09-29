@@ -66,6 +66,17 @@ Deno.test("guest HTTP decodes fragmented length body and sends only permitted he
   assertEquals(c.written().includes("secret"), false);
   assertEquals(c.closed(), 1);
 });
+Deno.test("guest HTTP uses the service port supplied by the browser session", async () => {
+  const c = connection(
+    `HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:8123${prefix}orders/\r\nContent-Length: 0\r\n\r\n`,
+  );
+  const reply = await requestGuestHttp(
+    async () => c.conn,
+    options({ port: 8123 }),
+  );
+  assertEquals(new Headers(reply.headers).get("location"), prefix + "orders/");
+  assertStringIncludes(c.written(), "Host: 127.0.0.1:8123\r\n");
+});
 Deno.test("guest HTTP dechunks extensions and consumes trailers", async () => {
   const c = connection(
     "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2;foo=bar\r\nhi\r\n3\r\nbye\r\n0\r\nX-Trailer: yes\r\n\r\n",

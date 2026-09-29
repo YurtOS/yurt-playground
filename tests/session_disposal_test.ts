@@ -1,4 +1,4 @@
-import { assert, assertRejects, assertThrows } from "@std/assert";
+import { assertRejects, assertThrows } from "@std/assert";
 import { bootPlayground } from "../src/boot.ts";
 import { ExecutionRegistry } from "../src/executions.ts";
 import {
@@ -14,19 +14,17 @@ Deno.test("browser disposal releases live guest waits and pending finite output 
     term: memoryTerm(),
     show: () => {},
   });
-  const disposal = session.dispose;
-  assert(disposal, "browser session must expose sandbox disposal");
   try {
     const registry = new ExecutionRegistry(session.process!, session.signal!);
     await registry.wait(await registry.spawn("true"));
     session.stop();
-    await session.startResident!("exec sleep 600");
+    await session.spawn("exec sleep 600");
   } finally {
-    disposal();
-    disposal();
+    session.dispose();
+    session.dispose();
   }
   await assertRejects(
-    () => session.startResident!("exec sleep 1"),
+    () => session.spawn("exec sleep 1"),
     Error,
     "disposed",
   );
@@ -41,8 +39,8 @@ Deno.test("browser disposal rejects a process launch already in flight", async (
     term: memoryTerm(),
     show: () => {},
   });
-  const launch = session.startResident!("exec sleep 600");
-  session.dispose!();
+  const launch = session.spawn("exec sleep 600");
+  session.dispose();
   await assertRejects(() => launch, Error, "disposed");
 });
 

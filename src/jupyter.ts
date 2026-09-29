@@ -20,7 +20,7 @@ export type JupyterLaunchSession = {
    * shell (the in-tab boot spawns it; the desktop page asks the launcher
    * for a host session, `nativeLaunchHooks`). Without it -- a launcher
    * older than the API -- the launch is typed at the prompt. */
-  spawn?(line: string): Promise<void>;
+  spawn?(line: string): Promise<unknown>;
   /** A guest file's bytes, or `undefined` when it does not exist yet (the
    * in-tab boot reads the VFS directly; the desktop page reads through the
    * launcher). Without it the connection-file wait is typed at the prompt
@@ -83,26 +83,15 @@ export type JupyterReply = {
 
 /** shell, iopub, stdin, control, hb. */
 export type KernelPorts = [number, number, number, number, number];
-export const BROWSER_KERNEL_PORTS: KernelPorts = [
-  49161,
-  49162,
-  49163,
-  49164,
-  49165,
-];
-
 export function buildKernelLaunchCommand(
   connectionFile = JUPYTER_CONNECTION_FILE,
   ports?: KernelPorts,
-  bindAddress: "127.0.0.1" | "0.0.0.0" = ports === undefined
-    ? "127.0.0.1"
-    : "0.0.0.0",
 ): string {
   const line = [
     "python3 -m ipykernel_launcher",
     // Natively the kernel publishes a mapped port to the host only for a
     // non-loopback bind; in the tab the dial is loopback anyway.
-    `--ip=${bindAddress}`,
+    ports === undefined ? "--ip=127.0.0.1" : "--ip=0.0.0.0",
     "--transport=tcp",
     `--Session.key=${JUPYTER_KEY}`,
     `--f=${connectionFile}`,
@@ -132,10 +121,9 @@ export function buildKernelStartLine(
   connectionFile = JUPYTER_CONNECTION_FILE,
   logFile = JUPYTER_LOG_FILE,
   pidFile = JUPYTER_PID_FILE,
-  bindAddress?: "127.0.0.1" | "0.0.0.0",
 ): string {
   return `${
-    buildKernelLaunchCommand(connectionFile, ports, bindAddress)
+    buildKernelLaunchCommand(connectionFile, ports)
   } >${logFile} 2>&1 & echo $! > ${pidFile}`;
 }
 
@@ -150,10 +138,9 @@ export function buildKernelOwnProcessLine(
   connectionFile = JUPYTER_CONNECTION_FILE,
   logFile = JUPYTER_LOG_FILE,
   pidFile = JUPYTER_PID_FILE,
-  bindAddress?: "127.0.0.1" | "0.0.0.0",
 ): string {
   return `echo $$ > ${pidFile}; exec ${
-    buildKernelLaunchCommand(connectionFile, ports, bindAddress)
+    buildKernelLaunchCommand(connectionFile, ports)
   } >${logFile} 2>&1`;
 }
 
@@ -212,11 +199,10 @@ export async function restartGuestKernel(
   session: JupyterLaunchSession,
   previous: JupyterTransport | undefined,
   ports?: KernelPorts,
-  bindAddress?: "127.0.0.1" | "0.0.0.0",
 ): Promise<JupyterTransport> {
   await previous?.close().catch(() => {});
   await stopGuestKernel(session);
-  return await startGuestKernel(session, ports, { bindAddress });
+  return await startGuestKernel(session, ports);
 }
 
 // The PTY echoes the typed command, so the marker must not appear in it:
@@ -231,7 +217,6 @@ export async function startGuestKernel(
    * that is still binding its ports; a test that never dials says so
    * instead of paying the whole backoff (yurt-playground#123). */
   options: {
-    bindAddress?: "127.0.0.1" | "0.0.0.0";
     pollMs?: number;
     connect?: { attempts?: number; delayMs?: number };
   } = {},
@@ -246,31 +231,13 @@ export async function startGuestKernel(
   let connection: KernelConnection;
   try {
     if (session.spawn !== undefined) {
-      await session.spawn(
-        buildKernelOwnProcessLine(
-          ports,
-          undefined,
-          undefined,
-          undefined,
-          options.bindAddress,
-        ),
-      );
+      await session.spawn(buildKernelOwnProcessLine(ports));
     } else {
       // No way to start a process of the page's own (a launcher older
       // than /api/sessions): the launch is a background job of the user's
       // shell (yurt-playground#82).
       await session.terminal.write(
-        encoder.encode(
-          `${
-            buildKernelStartLine(
-              ports,
-              undefined,
-              undefined,
-              undefined,
-              options.bindAddress,
-            )
-          }\n`,
-        ),
+        encoder.encode(`${buildKernelStartLine(ports)}\n`),
       );
     }
     try {

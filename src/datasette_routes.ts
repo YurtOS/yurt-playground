@@ -96,7 +96,7 @@ export class DatasetteRoutes {
       ) return;
       const pending = this.#pending.get(reply.session + ":" + reply.requestId);
       if (!pending || pending.owner !== owner) return;
-      if (reply.type === "guest-http-response") pending.resolve(reply);
+      if (reply.type === "datasette-response") pending.resolve(reply);
       else pending.reject(new GuestHttpError(reply.message, reply.code));
     };
     port.onmessageerror = () => this.#drop(msg.session);

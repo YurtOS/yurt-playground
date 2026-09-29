@@ -39,16 +39,12 @@ export type PlaygroundEnv = {
 export type PlaygroundSession = {
   /** Close the terminal while leaving the sandbox available to other clients. */
   stop: () => void;
-  /** Release the owned browser sandbox, its workers and cleanup timers. */
-  dispose?: () => void;
   controller: SessionController;
   terminal: PtyTransport;
   /** Run a shell line as a process of the page's own (`sh -c`), as the
-   * login user in the login home, with no terminal: what the Jupyter
-   * kernel is started as, so it is no job of the user's shell. Absent on
-   * the desktop app's page, which has only the terminal. */
-  spawn?: (line: string) => Promise<void>;
-  startResident?: (line: string) => Promise<ResidentHandle>;
+   * login user in the login home, outside the finite execution registry.
+   * The returned handle owns that same child until it exits. */
+  spawn?: (line: string) => Promise<unknown>;
   /** A guest file's bytes as the login shell would read them, or
    * `undefined` when there is no such file (the Jupyter connection file,
    * looked for without typing into the user's shell). */
@@ -68,6 +64,16 @@ export type PlaygroundSession = {
    * resumes. */
   hushOutput: () => { show(tail: Uint8Array): void };
 };
+
+export type BrowserPlaygroundSession = Omit<PlaygroundSession, "spawn"> & {
+  /** Release the owned browser sandbox, its workers and cleanup timers. */
+  dispose: () => void;
+  spawn: (line: string) => Promise<ResidentHandle>;
+  /** Guest services reserved by this browser session; Jupyter ports stay dynamic. */
+  guestPorts: Readonly<{ datasette: number }>;
+};
+
+const BROWSER_GUEST_PORTS = { datasette: 8001 } as const;
 
 export type ResidentHandle = {
   pid: number;
@@ -204,7 +210,7 @@ function readGuestFile(
 
 export async function bootPlayground(
   env: PlaygroundEnv,
-): Promise<PlaygroundSession> {
+): Promise<BrowserPlaygroundSession> {
   if (env.isolated !== true) {
     env.show("need COOP/COEP");
     throw new Error("not crossOriginIsolated");
@@ -236,7 +242,10 @@ export async function bootPlayground(
     }
 
     /** `/bin/sh` with `argv`, as the login user in the login home. */
-    const spawnShell = async (argv: string[]) => {
+    const spawnShell = async (
+      argv: string[],
+      { ownGroup = true }: { ownGroup?: boolean } = {},
+    ) => {
       if (disposed) throw new Error("browser sandbox is disposed");
       const process = await mk.spawnUserProcessWithArgsAsync(
         sh,
@@ -244,10 +253,20 @@ export async function bootPlayground(
         { ...DEFAULT_ENV },
       );
       if (disposed) {
-        mk.dispose();
         throw new Error("browser sandbox is disposed");
       }
       setPidCredentials(mk, process.pid, LOGIN_UID, LOGIN_GID);
+      if (ownGroup) {
+        const { rc } = mk.kernelSyscall(
+          METHOD.SYS_SETPGID,
+          process.pid,
+          new Uint8Array(8),
+          0,
+        );
+        if (Number(rc) !== 0) {
+          throw new Error(`setpgid pid=${process.pid} failed: rc=${rc}`);
+        }
+      }
       const { rc: chdirRc } = mk.kernelSyscall(
         METHOD.KERNEL_FS_CHDIR,
         process.pid,
@@ -260,7 +279,7 @@ export async function bootPlayground(
       return process;
     };
     env.show("starting ash");
-    const user = await spawnShell(["/bin/sh"]);
+    const user = await spawnShell(["/bin/sh"], { ownGroup: false });
     const pty = mk.attachHostPty(user.pid);
     mk.ptySetWinsize(pty, env.term.rows, env.term.cols);
     const encoder = new TextEncoder();
@@ -293,6 +312,17 @@ export async function bootPlayground(
       if (!disposed && !stopped) mk.ptySetWinsize(pty, rows, cols);
     });
 
+    const signalProcess = async (pid: number, signal: number) => {
+      if (disposed) throw new Error("browser sandbox is disposed");
+      const process = await spawnShell([
+        "/bin/sh",
+        "-c",
+        `kill -${signal} -- -${pid} 2>/dev/null; kill -${signal} ${pid} 2>/dev/null; true`,
+      ]);
+      process.closeStdin();
+      await process.runStartAsync();
+    };
+
     const stop = () => {
       if (stopped) return;
       stopped = true;
@@ -324,6 +354,7 @@ export async function bootPlayground(
     env.show("");
     return {
       stop,
+      guestPorts: BROWSER_GUEST_PORTS,
       dispose() {
         stop();
         disposeKernel();
@@ -331,15 +362,6 @@ export async function bootPlayground(
       controller,
       terminal,
       async spawn(line) {
-        const process = await spawnShell(["/bin/sh", "-c", line]);
-        // Nothing feeds it: stdin is at end-of-file from the start.
-        process.closeStdin();
-        void process.runStartAsync().catch(() => {
-          // Its exit is the kernel's business (the connection file, the log);
-          // nothing here waits on it.
-        });
-      },
-      async startResident(line) {
         const process = await spawnShell(["/bin/sh", "-c", line]);
         process.closeStdin();
         const exited = process.runStartAsync();
@@ -349,37 +371,16 @@ export async function bootPlayground(
         }, () => {
           ended = true;
         });
+        void exited.catch(() => {});
         return {
           pid: process.pid,
           exited,
           async signalPid(signal) {
             if (!Number.isInteger(signal) || signal < 1 || signal > 64) {
-              throw new RangeError("invalid resident signal");
+              throw new RangeError("invalid process signal");
             }
             if (ended) return;
-            const killer = await spawnShell([
-              "/bin/sh",
-              "-c",
-              `exec kill -${signal} ${process.pid}`,
-            ]);
-            killer.closeStdin();
-            let timer: number | undefined;
-            try {
-              const rc = await Promise.race([
-                killer.runStartAsync(),
-                new Promise<never>((_, reject) => {
-                  timer = setTimeout(
-                    () => reject(new Error("resident signal timed out")),
-                    30_000,
-                  );
-                }),
-              ]);
-              if (rc !== 0 && !ended) {
-                throw new Error(`resident signal failed: ${rc}`);
-              }
-            } finally {
-              clearTimeout(timer);
-            }
+            await signalProcess(process.pid, signal);
           },
         };
       },
@@ -466,13 +467,7 @@ export async function bootPlayground(
         // command's children (a pipeline, a background job) share its
         // process group, so the group goes first; the pid itself after, in
         // case it is not a group leader on this host.
-        const process = await spawnShell([
-          "/bin/sh",
-          "-c",
-          `kill -${signal} -- -${pid} 2>/dev/null; kill -${signal} ${pid} 2>/dev/null; true`,
-        ]);
-        process.closeStdin();
-        await process.runStartAsync();
+        await signalProcess(pid, signal);
       },
       // The Jupyter connection file, looked for by the page itself: nothing is
       // typed into the user's shell for it (yurtos-kernel#2824). Read as the

@@ -6,7 +6,7 @@ import {
 } from "../src/datasette_protocol.ts";
 const session = "11111111-1111-4111-8111-111111111111";
 const request = {
-  type: "guest-http-request",
+  type: "datasette-http",
   session,
   requestId: "r1",
   method: "GET",
@@ -15,6 +15,10 @@ const request = {
 };
 Deno.test("Datasette protocol accepts scoped GET/HEAD requests", () => {
   assertEquals(parseGuestRequest(request), request);
+  assertEquals(
+    parseGuestRequest({ ...request, type: "guest-http-request" }),
+    undefined,
+  );
   assertEquals(
     parseGuestRequest({ ...request, method: "HEAD" })?.method,
     "HEAD",
@@ -35,7 +39,7 @@ Deno.test("Datasette protocol rejects malformed or foreign request fields", () =
 });
 Deno.test("Datasette protocol validates response body and status before relay", () => {
   const reply = {
-    type: "guest-http-response",
+    type: "datasette-response",
     session,
     requestId: "r1",
     status: 200,

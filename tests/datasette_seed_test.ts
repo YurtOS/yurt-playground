@@ -38,7 +38,7 @@ Deno.test({
       );
       assertEquals(result.stdout.trim(), "SEED_PROBE_OK");
     } finally {
-      session.dispose!();
+      session.dispose();
     }
   },
 });

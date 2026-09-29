@@ -24,13 +24,12 @@ Deno.test({
       show: () => {},
     });
     try {
-      assert(session.startResident);
-      const input = await session.startResident(
+      const input = await session.spawn(
         "exec sh -c 'read ignored; exit 7'",
       );
       assertEquals(await input.exited, 7);
-      const other = await session.startResident("exec sleep 60");
-      const target = await session.startResident("exec sleep 60");
+      const other = await session.spawn("exec sleep 60");
+      const target = await session.spawn("exec sleep 60");
       assert(target.pid > 0);
       assert(other.pid !== target.pid);
       await assertRejects(() => target.signalPid(0), RangeError);
@@ -47,7 +46,7 @@ Deno.test({
         "TERMINAL_ALIVE",
       );
     } finally {
-      session.dispose!();
+      session.dispose();
     }
   },
 });

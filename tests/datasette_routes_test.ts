@@ -41,7 +41,7 @@ Deno.test("Datasette routes bind replies to the registered owner channel", async
     f.channel.port2.onmessage = (e) => {
       if (e.data.type === "datasette-http") {
         f.channel.port2.postMessage({
-          type: "guest-http-response",
+          type: "datasette-response",
           session,
           requestId: e.data.requestId,
           status: 200,
@@ -157,7 +157,7 @@ Deno.test("Datasette worker recovery finds the exact uncontrolled root owner", a
   channel.port2.onmessage = (e) => {
     if (e.data.type === "datasette-http") {
       channel.port2.postMessage({
-        type: "guest-http-response",
+        type: "datasette-response",
         session,
         requestId: e.data.requestId,
         status: 200,
@@ -243,7 +243,7 @@ Deno.test("concurrent recovery requests wait for all owner claims", async () => 
   channels[0].port2.onmessage = (e) => {
     if (e.data.type === "datasette-http") {
       channels[0].port2.postMessage({
-        type: "guest-http-response",
+        type: "datasette-response",
         session,
         requestId: e.data.requestId,
         status: 200,

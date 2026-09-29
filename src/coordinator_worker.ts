@@ -6,11 +6,12 @@
 import {
   bootPlayground,
   browserPins,
+  type BrowserPlaygroundSession,
   fetchPlaygroundBytes,
+  type PlaygroundSession,
   type PlaygroundTerm,
 } from "./boot.ts";
 import {
-  BROWSER_KERNEL_PORTS,
   executeCell,
   type JupyterStream,
   type KernelPorts,
@@ -35,8 +36,11 @@ import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 
 installCoordinatorWorkerProxy();
-import { DatasetteDemo, handleDatasetteMessage } from "./datasette.ts";
-import { requestGuestHttp } from "./guest_http.ts";
+import {
+  attachDatasette,
+  DatasetteDemo,
+  handleDatasetteMessage,
+} from "./datasette.ts";
 import type { GuestReply, LifecycleReply } from "./datasette_protocol.ts";
 type ToWorker =
   // `kernelPorts` set: the desktop app's native sandbox (see native.ts),
@@ -110,7 +114,7 @@ type FromWorker =
   };
 
 let jupyter: JupyterTransport | undefined;
-let launchSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
+let launchSession: PlaygroundSession | undefined;
 let executions: ExecutionRegistry | undefined;
 let datasette: DatasetteDemo | undefined;
 
@@ -237,8 +241,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         jupyter = await restartGuestKernel(
           launchSession,
           previous,
-          kernelPorts ?? BROWSER_KERNEL_PORTS,
-          kernelPorts === undefined ? "127.0.0.1" : "0.0.0.0",
+          kernelPorts,
         );
         subscribeJupyter(jupyter);
         post({ type: "jupyter-restarted" });
@@ -284,7 +287,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     return;
   }
   if (msg.type !== "start") return;
-  let session: Awaited<ReturnType<typeof bootPlayground>> | undefined;
+  let session: PlaygroundSession | undefined;
+  let browserSession: BrowserPlaygroundSession | undefined;
   try {
     kernelPorts = msg.kernelPorts;
     const env = {
@@ -299,80 +303,31 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       show: (text: string) => post({ type: "status", text }),
       term: workerTerm({ cols: msg.cols, rows: msg.rows }),
     };
-    session = kernelPorts === undefined
-      ? await bootPlayground(env)
-      : await bootNativePlayground(
+    if (kernelPorts === undefined) {
+      browserSession = await bootPlayground(env);
+      session = browserSession;
+    } else {
+      session = await bootNativePlayground(
         env,
         msg.apiToken === undefined ? undefined : { token: msg.apiToken },
       );
+    }
     if (session.process !== undefined && session.signal !== undefined) {
       executions = new ExecutionRegistry(session.process, session.signal);
     }
-    const qualification = kernelPorts === undefined
-      ? (await browserPins()).datasette
-      : undefined;
+    const pins = kernelPorts === undefined ? await browserPins() : undefined;
+    const qualification = pins?.datasette;
     post({
       type: "datasette-qualification",
       hashes: qualification?.inlineScriptHashes ?? [],
     });
     if (
-      kernelPorts === undefined && session.startResident !== undefined &&
-      executions !== undefined && qualification !== undefined
+      pins !== undefined && browserSession !== undefined &&
+      executions !== undefined
     ) {
-      const guest = session;
-      const registry = executions;
-      let seed: Uint8Array | undefined;
-      datasette = new DatasetteDemo({
-        uuid: () => crypto.randomUUID(),
-        now: () => performance.now(),
-        delay: (ms, signal) =>
-          new Promise<void>((resolve, reject) => {
-            signal?.throwIfAborted();
-            const abort = () => {
-              clearTimeout(timer);
-              reject(signal?.reason);
-            };
-            const timer = setTimeout(() => {
-              signal?.removeEventListener("abort", abort);
-              resolve();
-            }, ms);
-            signal?.addEventListener("abort", abort, { once: true });
-          }),
-        startResident: (line) => guest.startResident!(line),
-        finite: async (line, stdin, timeoutMs) => {
-          const id = await registry.spawn(line, {
-            stdin,
-            timeoutMs: timeoutMs ?? 120_000,
-            maxOutputBytes: 8192,
-          });
-          const result = await registry.wait(id);
-          return {
-            code: "code" in result && result.code !== null ? result.code : -1,
-            stdout: result.stdout,
-            stderr: result.stderr,
-          };
-        },
-        seedSource: async (signal) => {
-          signal.throwIfAborted();
-          if (seed) return seed;
-          const response = await fetch("/demo/datasette_seed.py", { signal });
-          if (!response.ok) {
-            throw new Error(`seed download failed: ${response.status}`);
-          }
-          const bytes = new Uint8Array(await response.arrayBuffer());
-          if (bytes.length > 64 * 1024) {
-            throw new Error("seed script exceeds 64 KiB");
-          }
-          signal.throwIfAborted();
-          seed = bytes;
-          return bytes;
-        },
-        request: (options) =>
-          requestGuestHttp(
-            () => Promise.resolve(guest.dialSandboxPort(8001)),
-            options,
-          ),
-        changed: (snapshot) => post({ type: "datasette-state", snapshot }),
+      datasette = attachDatasette(browserSession, pins, {
+        executions,
+        send: post,
       });
     }
     post({ type: "status", text: "starting Jupyter" });
@@ -386,13 +341,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       post({ type: "status", text: `starting Jupyter (${seconds} s)` });
     }, 5000);
     try {
-      jupyter = await startGuestKernel(
-        session,
-        kernelPorts ?? BROWSER_KERNEL_PORTS,
-        {
-          bindAddress: kernelPorts === undefined ? "127.0.0.1" : "0.0.0.0",
-        },
-      );
+      jupyter = await startGuestKernel(session, kernelPorts);
     } finally {
       clearInterval(ticking);
     }
@@ -400,7 +349,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     post({ type: "notebook-ready" });
   } catch (error) {
     try {
-      if (session?.dispose) session.dispose();
+      if (browserSession !== undefined) browserSession.dispose();
       else session?.stop();
     } catch {
       // The guest may already have stopped while startup failed.
