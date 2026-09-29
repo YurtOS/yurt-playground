@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
 import { canonicalTreeTar } from "../scripts/canonical-tree-tar.ts";
@@ -155,4 +155,21 @@ Deno.test("writeDecompressed streams the tar into the handle", async () => {
     assertEquals(size, expected.byteLength);
     assertEquals(got, expected);
   });
+});
+
+Deno.test("writeDecompressed fails rather than spin on a handle that takes nothing", async () => {
+  const yurtimg = await fixtureImage();
+  const stuck = {
+    read: () => 0,
+    write: () => 0,
+    truncate: () => {},
+    getSize: () => 0,
+    flush: () => {},
+    close: () => {},
+  };
+  assertThrows(
+    () => writeDecompressed(stuck, yurtimg),
+    Error,
+    "accepted no bytes",
+  );
 });

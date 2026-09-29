@@ -203,7 +203,9 @@ export function writeDecompressed(
   const stream = new Decompress((chunk) => {
     let done = 0;
     while (done < chunk.byteLength) {
-      done += handle.write(chunk.subarray(done), { at: at + done });
+      const n = handle.write(chunk.subarray(done), { at: at + done });
+      if (n <= 0) throw new Error("browser storage accepted no bytes");
+      done += n;
     }
     at += chunk.byteLength;
   });
