@@ -362,6 +362,46 @@ Deno.test({
 });
 
 Deno.test({
+  name: "killing an exec ends the command and every child it started (#149)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootAshSession();
+    if (!session) return;
+    const registry = new ExecutionRegistry(session.process, session.signal);
+    try {
+      // A background pipeline and a foreground child, as the agent's Stop
+      // meets them.
+      const id = await registry.spawn(
+        "sleep 120 | cat & sleep 120; echo finished",
+      );
+      // BusyBox ps: PID USER VSZ STAT COMMAND. Zombies are not running.
+      const running = async () =>
+        (await registry.wait(await registry.spawn("ps"))).stdout.split("\n")
+          .filter((line) => {
+            const [, , , stat, ...command] = line.trim().split(/\s+/);
+            return stat !== undefined && !stat.startsWith("Z") &&
+              /^(sleep 120|cat)$/.test(command.join(" "));
+          });
+      const deadline = Date.now() + 20_000;
+      while ((await running()).length < 3) {
+        if (Date.now() > deadline) {
+          throw new Error(`the command never started: ${await running()}`);
+        }
+      }
+      await registry.kill(id, "SIGKILL");
+      const result = await registry.wait(id);
+      assertEquals("signal" in result && result.signal, "SIGKILL");
+      assertEquals(result.stdout, "");
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      assertEquals(await running(), []);
+    } finally {
+      session.stop();
+    }
+  },
+});
+
+Deno.test({
   name: "ash consumes Up-arrow as command history",
   sanitizeOps: false,
   sanitizeResources: false,
