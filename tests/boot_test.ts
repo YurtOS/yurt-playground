@@ -189,6 +189,56 @@ Deno.test({
 });
 
 Deno.test({
+  name: "an exec's stdin staging file is swept from /tmp (#142)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootAshSession();
+    if (!session) return;
+    const registry = new ExecutionRegistry(session.process, session.signal);
+    const exec = async (cmd: string, stdin?: string) =>
+      await registry.wait(await registry.spawn(cmd, { stdin }));
+    try {
+      // Capture this exec's stdin path while the consumer is still running,
+      // before its delayed sweep can remove any staging files.
+      const result = await exec(
+        "cat; printf '\\n'; printf '%s\\n' /tmp/.yurt-exec-*.in",
+        "hello\n",
+      );
+      assertEquals("code" in result && result.code, 0, result.stderr);
+      assertEquals(result.stdout.startsWith("hello\n"), true, result.stdout);
+      const staged = result.stdout.split("\n").filter((line) =>
+        /^\/tmp\/\.yurt-exec-[0-9a-f-]+\.in$/.test(line)
+      );
+      assertEquals(staged.length, 1, result.stdout);
+      const stdinPath = staged[0];
+
+      // Wait for this exact file to disappear. Sweeps for concurrent execs
+      // may remove other entries from /tmp while each query runs.
+      const deadline = Date.now() + 30_000;
+      for (;;) {
+        const exists = await exec(`[ -e ${stdinPath} ]`);
+        assertEquals("code" in exists, true, exists.error);
+        if ("code" in exists) {
+          assertEquals(
+            exists.code === 0 || exists.code === 1,
+            true,
+            exists.stderr,
+          );
+          if (exists.code === 1) break;
+        }
+        if (Date.now() > deadline) {
+          throw new Error(`the stdin file was never swept: ${stdinPath}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    } finally {
+      session.stop();
+    }
+  },
+});
+
+Deno.test({
   name: "a second ash boot is a fresh sandbox",
   sanitizeOps: false,
   sanitizeResources: false,

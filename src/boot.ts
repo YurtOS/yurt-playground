@@ -361,7 +361,12 @@ export async function bootPlayground(
         // console line discipline (ICRNL, VEOF, VERASE, ISIG) and a 64 KiB
         // buffer, so bytes would be altered or dropped; a file written by
         // the kernel is exact at any size.
-        writeRamfsFile(mk, path("in"), io.stdin);
+        // The login user's, so its sweep below can remove it from the
+        // sticky /tmp.
+        writeRamfsFile(mk, path("in"), io.stdin, {
+          uid: LOGIN_UID,
+          gid: LOGIN_GID,
+        });
         stdinRedirect = `< ${q(path("in"))}`;
       }
       const process = await spawnShell([
