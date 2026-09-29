@@ -12,14 +12,15 @@ UI running in the same guest as the terminal and notebook.
 
 [ports #170](https://github.com/YurtOS/yurt-ports/issues/170) blocks completion
 of #173. Ports owns system libraries, image composition, and aggregate guest
-runtime qualification. Python packages requiring native code or compilation
-belong in yurt-pypi, including MarkupSafe and PyYAML. Pure Python dependencies
+runtime qualification. It also builds Python packages requiring native code or
+compilation, including MarkupSafe and PyYAML, following the Rust `crates/`
+producer model. yurt-pypi is the Python package index. Pure Python dependencies
 use ordinary hash-locked upstream wheels. The image consumes those Python
 artifacts as a complete pinned closure; temporary diagnostic builds do not
-replace reusable native package ports. This ownership follows the user's
-clarification on 2026-09-29. Playground exclusively owns the sample generator,
-expected results, reset, browser bridge, controls, and acceptance. The ports
-image contains the runtime, not a second copy of the sample database.
+replace reusable native package ports. This producer/index ownership follows the
+user's clarification on 2026-09-29. Playground exclusively owns the sample
+generator, expected results, reset, browser bridge, controls, and acceptance.
+The ports image contains the runtime, not a second copy of the sample database.
 
 [#168](https://github.com/YurtOS/yurt-playground/issues/168) is related broader
 HTTP-preview work, not a prerequisite that must be completed before #173. This
