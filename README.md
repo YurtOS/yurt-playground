@@ -62,8 +62,10 @@ page's own, not a keystroke in the terminal.
 
 The desktop app also serves the same thing over HTTP for a program on the
 machine, on the launcher's loopback port under `/api/`. The token is printed
-once (`API token: …`) and left in `~/.yurt/playground.json` (mode 0600), and
-every request carries it as `Authorization: Bearer <token>`:
+once (`API token: …`) and left in `~/.yurt/playground.json` (mode 0600) while
+the launcher runs (with no `url` in it until the sandbox is up). One launcher
+runs per user: a second launch says so, with the URL, and exits. Every request
+carries the token as `Authorization: Bearer <token>`:
 
 ```sh
 T=$(jq -r .apiToken ~/.yurt/playground.json); U=$(jq -r .url ~/.yurt/playground.json)

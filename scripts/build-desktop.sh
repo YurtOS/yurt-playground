@@ -120,9 +120,12 @@ DESKTOP
   # the package must depend on, or apt installs a package whose first run
   # dies with "version GLIBC_x.y not found" (yurt-sandbox#250). A release
   # from before that file declares nothing, as before.
-  depends=""
+  # procps: the launcher's pkill, which stops the runtime when it is
+  # interrupted during the boot (#153). Standard installs have it; minimal
+  # ones (containers, debootstrap) do not.
+  depends="Depends: procps"$'\n'
   if [ -f "$runtime/GLIBC_REQUIRED" ]; then
-    depends="Depends: libc6 (>= $(cat "$runtime/GLIBC_REQUIRED"))"$'\n'
+    depends="Depends: libc6 (>= $(cat "$runtime/GLIBC_REQUIRED")), procps"$'\n'
   fi
   # xdg-utils only opens the browser; on a headless box it dragged 243
   # packages of X11 and Mesa in as a Recommends (#91). The launcher prints

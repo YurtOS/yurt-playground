@@ -116,7 +116,9 @@ Boot the sandbox natively and serve the playground on a loopback port.
 
 A program on this machine drives the sandbox through <url>/api/* with the
 bearer token the launcher prints; the token and URL are also written to
-~/.yurt/playground.json (mode 0600) for the launcher's lifetime. The page's
+~/.yurt/playground.json (mode 0600) for the launcher's lifetime. While one
+boots or runs, a second launch says so, with its URL once there is one
+(and opens it), instead of booting another. The page's
 window.yurt is the same API from the browser. See the README, "Driving the
 sandbox from a program".`;
 
@@ -151,6 +153,258 @@ export function parseLauncherArgs(argv: string[]): LauncherArgs {
     } else throw new Error(`unknown argument ${arg}\n${LAUNCHER_USAGE}`);
   }
   return args;
+}
+
+/** What `~/.yurt/playground.json` holds: `{pid}` while a launcher boots
+ * its sandbox, then `url` and `apiToken` once it serves. */
+export type LauncherState = {
+  pid: number;
+  url?: string;
+  apiToken?: string;
+};
+
+/** Serialize state-file inspection/removal with claims. This lock is held
+ * only for one operation; a separate lock identifies the launcher across
+ * the atomic rename from booting to serving. */
+async function withLauncherStateLock<T>(
+  stateFile: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const lockFile = await Deno.open(`${stateFile}.lock`, {
+    create: true,
+    read: true,
+    write: true,
+    mode: 0o600,
+  });
+  try {
+    await lockFile.lock(true);
+    return await operation();
+  } finally {
+    lockFile.unlockSync();
+    lockFile.close();
+  }
+}
+
+/** Write `state` to a file of its own beside `stateFile`, whole, so a
+ * reader never sees it half written. */
+async function stagedState(
+  stateFile: string,
+  state: LauncherState,
+): Promise<string> {
+  const staged = `${stateFile}.${Deno.pid}.tmp`;
+  await Deno.writeTextFile(staged, JSON.stringify(state) + "\n", {
+    mode: 0o600,
+  });
+  return staged;
+}
+
+/** Create `stateFile` holding `state`, only if there is none: the claim
+ * two launches race for. A hard link appears whole or not at all, where an
+ * exclusive create is seen empty until its write lands (and a launch that
+ * read it then took it for garbage). Null if another launch holds it.
+ *
+ * A separate stable file carries the exclusive claim lock (flock), so the
+ * lock survives replacing this record with its serving URL. The kernel
+ * drops it when the returned file closes, which it does when this process
+ * ends however it ends, SIGKILL included; a child does not inherit it (Deno
+ * opens files close-on-exec). Keep the file open while the claim should
+ * hold. */
+export async function claimLauncherState(
+  stateFile: string,
+  state: LauncherState,
+): Promise<Deno.FsFile | null> {
+  return await withLauncherStateLock(
+    stateFile,
+    () => claimLauncherStateUnlocked(stateFile, state),
+  );
+}
+
+async function claimLauncherStateUnlocked(
+  stateFile: string,
+  state: LauncherState,
+): Promise<Deno.FsFile | null> {
+  const claim = await Deno.open(`${stateFile}.claim`, {
+    create: true,
+    read: true,
+    write: true,
+    mode: 0o600,
+  });
+  if (!claim.tryLockSync(true)) {
+    claim.close();
+    return null;
+  }
+  try {
+    const staged = await stagedState(stateFile, state);
+    try {
+      await Deno.link(staged, stateFile);
+    } finally {
+      await Deno.remove(staged).catch(() => undefined);
+    }
+    return claim;
+  } catch (error) {
+    claim.close();
+    if (error instanceof Deno.errors.AlreadyExists) return null;
+    throw error;
+  }
+}
+
+/** Whether the live launcher still holds the stable claim lock. */
+async function launcherClaimHeld(stateFile: string): Promise<boolean> {
+  let claim: Deno.FsFile;
+  try {
+    claim = await Deno.open(`${stateFile}.claim`, { read: true, write: true });
+  } catch {
+    return false;
+  }
+  try {
+    return claimHeld(claim);
+  } finally {
+    claim.close();
+  }
+}
+
+/** Replace `stateFile` with `state` in one step (a rename). */
+export async function writeLauncherState(
+  stateFile: string,
+  state: LauncherState,
+): Promise<void> {
+  const staged = await stagedState(stateFile, state);
+  try {
+    await Deno.rename(staged, stateFile);
+  } catch (error) {
+    await Deno.remove(staged).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Remove `stateFile` if it still holds `text`, the record judged stale.
+ * Two launches that both read one stale record both come here: the second
+ * must not remove the claim the first made in its place. The file is moved
+ * aside first, so what is checked is what was taken; a newer claim taken
+ * by mistake goes back. */
+async function removeStale(stateFile: string, text: string): Promise<void> {
+  const aside = `${stateFile}.${Deno.pid}.stale`;
+  try {
+    await Deno.rename(stateFile, aside);
+  } catch {
+    return; // already gone
+  }
+  if ((await Deno.readTextFile(aside).catch(() => text)) !== text) {
+    await Deno.link(aside, stateFile).catch(() => undefined);
+  }
+  await Deno.remove(aside).catch(() => undefined);
+}
+
+/** The whole of `file`, from where it is. */
+async function readAllText(file: Deno.FsFile): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const chunk = new Uint8Array(4096);
+    const n = await file.read(chunk);
+    if (n === null) break;
+    chunks.push(chunk.subarray(0, n));
+  }
+  const whole = new Uint8Array(chunks.reduce((sum, c) => sum + c.length, 0));
+  let at = 0;
+  for (const c of chunks) {
+    whole.set(c, at);
+    at += c.length;
+  }
+  return new TextDecoder().decode(whole);
+}
+
+/** Whether the launcher that claimed the file open as `file` still runs:
+ * its stable claim lock (see `claimLauncherState`) is still held. A shared
+ * lock conflicts only with that one, so two launches checking at once do
+ * not take each other for the claim. */
+function claimHeld(file: Deno.FsFile): boolean {
+  if (!file.tryLockSync(false)) return true;
+  file.unlockSync();
+  return false;
+}
+
+/** The launcher `stateFile` names, if it still boots or serves. A file
+ * left by one that could not clean up (SIGKILL, a crash) is removed. A
+ * live pid proves nothing (pids are reused), so a booting record must
+ * still be locked by its claim, and a recorded URL must answer as a
+ * launcher does. */
+export async function runningLauncher(
+  stateFile: string,
+): Promise<LauncherState | null> {
+  try {
+    return await withLauncherStateLock(
+      stateFile,
+      () => runningLauncherUnlocked(stateFile),
+    );
+  } catch (error) {
+    // Before the first launch, the state directory may not exist yet.
+    if (
+      error instanceof Deno.errors.NotFound ||
+      error instanceof Deno.errors.PermissionDenied
+    ) return null;
+    throw error;
+  }
+}
+
+async function runningLauncherUnlocked(
+  stateFile: string,
+): Promise<LauncherState | null> {
+  let file: Deno.FsFile;
+  try {
+    file = await Deno.open(stateFile, { read: true });
+  } catch {
+    // None, or one this user cannot read (the launcher's claim then
+    // fails, naming it).
+    return null;
+  }
+  // Read the record through one descriptor; the separate claim lock below
+  // remains stable if a rename puts another state record at this path.
+  let text: string;
+  let held: boolean;
+  try {
+    text = await readAllText(file);
+    held = await launcherClaimHeld(stateFile);
+  } finally {
+    file.close();
+  }
+  let state: LauncherState;
+  try {
+    state = JSON.parse(text);
+  } catch {
+    await removeStale(stateFile, text);
+    return null;
+  }
+  if (state.url === undefined) {
+    if (held) return state;
+    await removeStale(stateFile, text);
+    return null;
+  }
+  // This URL may be slow to answer while its launcher still owns the stable
+  // claim. Do not discard that live record based on a health-probe timeout.
+  if (held) return state;
+  try {
+    const response = await fetch(new URL("desktop.json", state.url), {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (response.ok && (await response.json()).native === true) return state;
+    await response.body?.cancel();
+  } catch {
+    // nothing listens there any more
+  }
+  await removeStale(stateFile, text);
+  return null;
+}
+
+/** Remove `stateFile` if the launcher with `pid` wrote it. Synchronous:
+ * it runs from the launcher's `unload`, as the process exits. */
+export function removeLauncherState(stateFile: string, pid: number): void {
+  try {
+    if (JSON.parse(Deno.readTextFileSync(stateFile)).pid === pid) {
+      Deno.removeSync(stateFile);
+    }
+  } catch {
+    // no file, or not ours
+  }
 }
 
 /** What `--version` prints: the release train the app was built for (its
