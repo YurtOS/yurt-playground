@@ -73,11 +73,12 @@ const INPUT_SLICE = 1 << 20;
  */
 export async function openGuestRoot(options: {
   storage: OpfsDirectory | undefined;
-  yurtimg: Uint8Array;
   imageSha256: string;
+  /** The compressed image; called only when it has to be written. */
+  fetchImage: () => Promise<Uint8Array>;
   show?: (text: string) => void;
 }): Promise<GuestRoot> {
-  const { storage, yurtimg, imageSha256 } = options;
+  const { storage, imageSha256 } = options;
   if (storage === undefined) {
     return { kind: "memory", reason: "OPFS sync access is unavailable" };
   }
@@ -92,6 +93,7 @@ export async function openGuestRoot(options: {
     let wroteImage = false;
     let tarSize = await readDoneMarker(dir, doneName);
     if (tarSize === undefined) {
+      const yurtimg = await options.fetchImage();
       options.show?.("writing the image to browser storage");
       const handle = await (await dir.getFileHandle(imageName, {
         create: true,

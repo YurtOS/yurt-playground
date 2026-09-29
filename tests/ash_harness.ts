@@ -171,6 +171,10 @@ export async function bootAshSession(
     },
     term,
     storage: options.storage ?? (() => Promise.resolve(tab)),
+    // As the page passes the pin: a reload with a complete OPFS copy then
+    // never fetches the image.
+    imageSha256: (await loadPins(join(repoRoot, "artifacts/pins.json")))
+      .image.sha256,
   });
   await waitFor(
     () => /[$#]/.test(term.output()) || term.output().length > 0,

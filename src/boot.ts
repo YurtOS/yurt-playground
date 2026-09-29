@@ -5,11 +5,12 @@ import {
   METHOD,
   pumpPtyMaster,
   s,
+  type SyncHandleYurtDevice,
+  YurtMountError,
 } from "@yurt/kernel-host-interface-js";
 import { setPidCredentials, stageYurtimg, writeRamfsFile } from "./stage.ts";
 import {
   browserStorageRoot,
-  type GuestRoot,
   openGuestRoot,
   type OpfsDirectory,
 } from "./opfs_root.ts";
@@ -227,12 +228,20 @@ export async function bootPlayground(
   const kernel = await env.fetchBytes("./yurt_kernel.wasm");
   env.show("compiling kernel");
   const mk = await KernelHostInterface.load(kernel, defaultHostState());
-  env.show("loading image");
-  const image = await env.fetchBytes("./playground.yurtimg");
+  // The image is fetched only when something needs it: a reload whose
+  // OPFS copy is complete never downloads or holds the 88 MB file.
+  let image: Promise<Uint8Array> | undefined;
+  const fetchImage = () => {
+    if (image === undefined) {
+      env.show("loading image");
+      image = env.fetchBytes("./playground.yurtimg");
+    }
+    return image;
+  };
   const root = await openGuestRoot({
     storage: (await (env.storage ?? browserStorageRoot)()) ?? undefined,
-    yurtimg: image,
-    imageSha256: env.imageSha256 ?? await sha256Hex(image),
+    imageSha256: env.imageSha256 ?? await sha256Hex(await fetchImage()),
+    fetchImage,
     show: env.show,
   });
   let sh: Uint8Array | undefined;
@@ -242,20 +251,28 @@ export async function bootPlayground(
     bytes: Uint8Array,
     owner: { uid: number; gid: number },
   ) => void;
+  /** Why the root is not the device, if it is not. */
+  let refusal = root.kind === "memory" ? root.reason : undefined;
   if (root.kind === "device") {
     // Mounting over / needs root, as ramfs staging does.
     setPidCredentials(mk, KERNEL_PID, 0, 0);
-    mk.mountYurtDevice(s("/"), root.device);
-    sh = root.device.readFile("/bin/sh");
+    refusal = mountGuestRoot(mk, root.device);
+  }
+  if (root.kind === "device" && refusal === undefined) {
+    // Nothing needs the compressed image any more; the closures below
+    // share this scope, so drop it rather than keep 88 MB alive with them.
+    image = undefined;
+    const device = root.device;
+    sh = device.readFile("/bin/sh");
     writeGuestFile = (path, bytes, owner) =>
-      root.device.writeFile(path, bytes, {
+      device.writeFile(path, bytes, {
         ...owner,
         mtimeNs: BigInt(Date.now()) * 1_000_000n,
       });
   } else {
-    env.show(`unpacking image into memory (${root.reason})`);
+    env.show(`unpacking image into memory (${refusal})`);
     const files = new Map<string, Uint8Array>();
-    await stageYurtimg(mk, image, files);
+    await stageYurtimg(mk, await fetchImage(), files);
     sh = files.get("/bin/sh");
     writeGuestFile = (path, bytes, owner) =>
       writeRamfsFile(mk, path, bytes, owner);
@@ -486,18 +503,37 @@ export async function bootPlayground(
       return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
     },
     dialSandboxPort: (port) => mk.dialSandboxPort(port),
-    storage: storageSummary(root),
+    storage: refusal === undefined
+      ? { kind: "device" }
+      : { kind: "memory", reason: refusal },
     onOutput: output.onOutput,
     hushOutput: output.hushOutput,
   };
 }
 
-function storageSummary(
-  root: GuestRoot,
-): { kind: "device" } | { kind: "memory"; reason: string } {
-  return root.kind === "device"
-    ? { kind: "device" }
-    : { kind: "memory", reason: root.reason };
+/**
+ * Mount the device at `/`. A failure that left the kernel as it was is a
+ * reason to stage into memory instead (returned, after the device's handles
+ * are closed); one after the point of no return fails the boot.
+ */
+export function mountGuestRoot(
+  mk: Pick<KernelHostInterface, "mountYurtDevice">,
+  device: SyncHandleYurtDevice,
+): string | undefined {
+  try {
+    mk.mountYurtDevice(s("/"), device);
+    return undefined;
+  } catch (error) {
+    if (!(error instanceof YurtMountError) || error.kernelChanged) {
+      throw new Error(
+        `the guest root is half mounted, reload the page: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    device.close();
+    return `mounting browser storage failed: ${error.message}`;
+  }
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {

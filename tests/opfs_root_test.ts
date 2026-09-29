@@ -38,8 +38,8 @@ const decode = (bytes: Uint8Array | undefined) =>
 Deno.test("openGuestRoot without OPFS stays in memory and says why", async () => {
   const root = await openGuestRoot({
     storage: undefined,
-    yurtimg: await fixtureImage(),
     imageSha256: SHA,
+    fetchImage: fixtureImage,
   });
   assertEquals(root, {
     kind: "memory",
@@ -50,18 +50,28 @@ Deno.test("openGuestRoot without OPFS stays in memory and says why", async () =>
 Deno.test("openGuestRoot writes the image once and reuses it on reload", async () => {
   const yurtimg = await fixtureImage();
   await withStorage(async (storage) => {
-    const first = await openGuestRoot({ storage, yurtimg, imageSha256: SHA });
+    const first = await openGuestRoot({
+      storage,
+      imageSha256: SHA,
+      fetchImage: () => Promise.resolve(yurtimg),
+    });
     if (first.kind !== "device") throw new Error(JSON.stringify(first));
     assertEquals(first.wroteImage, true);
     assertEquals(decode(first.device.readFile("/bin/sh")), "#!shell\n");
     first.device.close();
 
     const writes = storage.counters.writableOpens.length;
+    let fetched = 0;
     const second = await openGuestRoot({
       storage: storage.otherTab(),
-      yurtimg,
       imageSha256: SHA,
+      fetchImage: () => {
+        fetched++;
+        return Promise.resolve(yurtimg);
+      },
     });
+    // A reload with a complete copy does not download the image at all.
+    assertEquals(fetched, 0);
     if (second.kind !== "device") throw new Error(JSON.stringify(second));
     assertEquals(second.wroteImage, false);
     assertEquals(decode(second.device.readFile("/etc/motd")).length, 30000);
@@ -80,7 +90,11 @@ Deno.test("openGuestRoot writes the image once and reuses it on reload", async (
 Deno.test("openGuestRoot sweeps stale files but not a live tab's", async () => {
   const yurtimg = await fixtureImage();
   await withStorage(async (storage) => {
-    const live = await openGuestRoot({ storage, yurtimg, imageSha256: SHA });
+    const live = await openGuestRoot({
+      storage,
+      imageSha256: SHA,
+      fetchImage: () => Promise.resolve(yurtimg),
+    });
     if (live.kind !== "device") throw new Error(JSON.stringify(live));
     const dir = join(storage.path, "yurt-fs");
     await Deno.writeFile(join(dir, "upper-stale.bin"), new Uint8Array(10));
@@ -91,8 +105,8 @@ Deno.test("openGuestRoot sweeps stale files but not a live tab's", async () => {
 
     const next = await openGuestRoot({
       storage: storage.otherTab(),
-      yurtimg,
       imageSha256: SHA,
+      fetchImage: () => Promise.resolve(yurtimg),
     });
     if (next.kind !== "device") throw new Error(JSON.stringify(next));
     const names: string[] = [];
@@ -117,8 +131,8 @@ Deno.test("openGuestRoot falls back when another tab holds the image", async () 
     })).createSyncAccessHandle();
     const root = await openGuestRoot({
       storage: storage.otherTab(),
-      yurtimg,
       imageSha256: SHA,
+      fetchImage: () => Promise.resolve(yurtimg),
     });
     assertEquals(root, {
       kind: "memory",
