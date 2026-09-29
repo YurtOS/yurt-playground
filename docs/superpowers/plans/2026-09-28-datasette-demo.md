@@ -534,3 +534,21 @@ the terminal before launching and disposing another process exposes an upstream
 WorkerHost completion-pump timer surviving teardown; that regression remains
 failing on the unchanged pinned host and is delegated to the kernel owner. Final
 whole-suite and hosted CI gates remain outstanding.
+
+Kernel issue #3065 now has reviewed local repair `a64686c1c`, based on the exact
+pinned host. All three real guest disposal tests pass with normal sanitizers
+using that repaired host and the original matching wasm/image. This is
+diagnostic evidence, not published pin adoption. Ports #173 additionally owns
+the native extensions' libc export contract; its reviewed musl/toolchain repairs
+have produced an ordinary rebuilt CPython. Kernel #3064 tracks the separately
+reproduced DSO data-address relocation defect. Original native imports, upstream
+Datasette acceptance and the published qualification remain open.
+
+Final local diagnostic run: 272 tests pass, zero fail, one is ignored (6m57s),
+using the exact pinned host plus #3065 and the original matching wasm/image. The
+production bridge Chromium scene also passes after the playground cleanup. The
+real guest HTTP scene passes assets, terminal file refresh, live-log reads,
+residence beyond 120 seconds and stop/restart port reuse. Formatting, lint,
+whole TypeScript checking and the static build pass. These results establish the
+browser implementation and owning teardown repair locally; they do not replace
+matching published pin adoption, the upstream Datasette scene or hosted CI.
