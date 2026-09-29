@@ -39,9 +39,11 @@ reviewed at f9c7ca5 and approved on 2026-09-28.
   command.
 - Worker script `/apps/datasette/service-worker.js`, scope `/apps/datasette/`;
   owner root page is uncontrolled. Handshake/recovery five seconds, ping two.
-- Ports #170 owns runtime/dependencies/image/qualification; playground owns
-  seed. Qualified THREADSAFE=1 or 2, threadsafety > 0, overlapping requests
-  required.
+- Ports #170 owns system dependencies, image composition and aggregate runtime
+  qualification; playground owns seed. Native Python packages requiring
+  compilation belong in yurt-pypi; pure Python dependencies use hash-locked
+  upstream wheels. Qualified THREADSAFE=1 or 2, threadsafety > 0, overlapping
+  requests required.
 - No qualification record on today's unqualified pins. Native demo is hidden.
 - Cloudflare Pages deployment; exact-head hosted CI and real guest browser
   acceptance are required before claiming completion. No merge is authorized.
