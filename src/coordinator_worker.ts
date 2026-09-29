@@ -400,7 +400,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     post({ type: "notebook-ready" });
   } catch (error) {
     try {
-      session?.stop();
+      if (session?.dispose) session.dispose();
+      else session?.stop();
     } catch {
       // The guest may already have stopped while startup failed.
     }

@@ -9,8 +9,6 @@ import {
 Deno.test({
   name:
     "Datasette guest seed preserves edits and reset preserves foreign files",
-  sanitizeOps: false,
-  sanitizeResources: false,
   fn: async () => {
     const source = await Deno.readTextFile(
       new URL("../public/demo/datasette_seed.py", import.meta.url),
@@ -40,7 +38,7 @@ Deno.test({
       );
       assertEquals(result.stdout.trim(), "SEED_PROBE_OK");
     } finally {
-      session.stop();
+      session.dispose!();
     }
   },
 });

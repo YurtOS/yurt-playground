@@ -14,8 +14,6 @@ import {
 Deno.test({
   name:
     "resident guest exit, stdin EOF and positive-pid signalling preserve another job",
-  sanitizeOps: false,
-  sanitizeResources: false,
   fn: async () => {
     if (!await resolvePlaygroundArtifacts()) return;
     const term = memoryTerm();
@@ -49,7 +47,7 @@ Deno.test({
         "TERMINAL_ALIVE",
       );
     } finally {
-      session.stop();
+      session.dispose!();
     }
   },
 });

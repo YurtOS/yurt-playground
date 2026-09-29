@@ -37,7 +37,10 @@ export type PlaygroundEnv = {
 };
 
 export type PlaygroundSession = {
+  /** Close the terminal while leaving the sandbox available to other clients. */
   stop: () => void;
+  /** Release the owned browser sandbox, its workers and cleanup timers. */
+  dispose?: () => void;
   controller: SessionController;
   terminal: PtyTransport;
   /** Run a shell line as a process of the page's own (`sh -c`), as the
@@ -211,241 +214,287 @@ export async function bootPlayground(
   const kernel = await env.fetchBytes("./yurt_kernel.wasm");
   env.show("compiling kernel");
   const mk = await KernelHostInterface.load(kernel, defaultHostState());
-  env.show("loading image");
-  const image = await env.fetchBytes("./playground.yurtimg");
-  env.show("unpacking image");
-  const files = new Map<string, Uint8Array>();
-  await stageYurtimg(mk, image, files);
-  const sh = files.get("/bin/sh");
-  if (sh === undefined) {
-    throw new Error("playground image is missing /bin/sh");
-  }
-
-  /** `/bin/sh` with `argv`, as the login user in the login home. */
-  const spawnShell = async (argv: string[]) => {
-    const process = await mk.spawnUserProcessWithArgsAsync(
-      sh,
-      argv.map((arg) => s(arg)),
-      { ...DEFAULT_ENV },
-    );
-    setPidCredentials(mk, process.pid, LOGIN_UID, LOGIN_GID);
-    const { rc: chdirRc } = mk.kernelSyscall(
-      METHOD.KERNEL_FS_CHDIR,
-      process.pid,
-      s(LOGIN_HOME),
-      0,
-    );
-    if (Number(chdirRc) !== 0) {
-      throw new Error(`chdir ${LOGIN_HOME} failed: rc=${chdirRc}`);
+  let disposed = false;
+  const sweepTimers = new Set<number>();
+  let disposePty = () => {};
+  const disposeKernel = () => {
+    if (disposed) return;
+    disposed = true;
+    for (const timer of sweepTimers) clearTimeout(timer);
+    sweepTimers.clear();
+    mk.dispose();
+  };
+  try {
+    env.show("loading image");
+    const image = await env.fetchBytes("./playground.yurtimg");
+    env.show("unpacking image");
+    const files = new Map<string, Uint8Array>();
+    await stageYurtimg(mk, image, files);
+    const sh = files.get("/bin/sh");
+    if (sh === undefined) {
+      throw new Error("playground image is missing /bin/sh");
     }
-    return process;
-  };
-  env.show("starting ash");
-  const user = await spawnShell(["/bin/sh"]);
-  const pty = mk.attachHostPty(user.pid);
-  mk.ptySetWinsize(pty, env.term.rows, env.term.cols);
-  const encoder = new TextEncoder();
-  const output = outputFanout(env.term);
-  const stopPump = pumpPtyMaster(mk, pty, output.push);
-  const terminal: PtyTransport = {
-    write(bytes) {
-      mk.ptyMasterWrite(pty, bytes);
-      return Promise.resolve();
-    },
-    close() {
-      mk.ptyMasterClose(pty);
-    },
-  };
-  const controller = createSessionController({ pty: terminal });
-  let stopped = false;
-  env.term.onData((data) => {
-    // Keys after the shell has gone have nowhere to go; the pty is closed
-    // and a write to it is an error, not a keystroke.
-    if (stopped || controller.state !== "ready") return;
-    void controller.current.pty.write(encoder.encode(data));
-  });
-  env.term.onResize(({ rows, cols }) => mk.ptySetWinsize(pty, rows, cols));
 
-  const stop = () => {
-    if (stopped) return;
-    stopped = true;
-    stopPump();
-    try {
-      controller.current.pty.close();
-    } catch {
-      // guest may already have hung up
-    }
-  };
-
-  void user.runStartAsync().then(() => {
-    // `exit` at the prompt: the shell is done, the sandbox is still there
-    // (the notebook's kernel keeps answering). Say so where the prompt
-    // was, and in the status, instead of failing the next keystroke.
-    if (!stopped) {
-      env.term.write(
-        "\r\n[the shell exited; reload the page for a new one]\r\n",
+    /** `/bin/sh` with `argv`, as the login user in the login home. */
+    const spawnShell = async (argv: string[]) => {
+      if (disposed) throw new Error("browser sandbox is disposed");
+      const process = await mk.spawnUserProcessWithArgsAsync(
+        sh,
+        argv.map((arg) => s(arg)),
+        { ...DEFAULT_ENV },
       );
-      env.show("shell exited");
-    }
-  }).catch((error) => {
-    if (!stopped) {
-      const message = error instanceof Error ? error.message : String(error);
-      env.show(message);
-    }
-  }).finally(stop);
-
-  env.show("");
-  return {
-    stop,
-    controller,
-    terminal,
-    async spawn(line) {
-      const process = await spawnShell(["/bin/sh", "-c", line]);
-      // Nothing feeds it: stdin is at end-of-file from the start.
-      process.closeStdin();
-      void process.runStartAsync().catch(() => {
-        // Its exit is the kernel's business (the connection file, the log);
-        // nothing here waits on it.
-      });
-    },
-    async startResident(line) {
-      const process = await spawnShell(["/bin/sh", "-c", line]);
-      process.closeStdin();
-      const exited = process.runStartAsync();
-      let ended = false;
-      void exited.then(() => {
-        ended = true;
-      }, () => {
-        ended = true;
-      });
-      return {
-        pid: process.pid,
-        exited,
-        async signalPid(signal) {
-          if (!Number.isInteger(signal) || signal < 1 || signal > 64) {
-            throw new RangeError("invalid resident signal");
-          }
-          if (ended) return;
-          const killer = await spawnShell([
-            "/bin/sh",
-            "-c",
-            `exec kill -${signal} ${process.pid}`,
-          ]);
-          killer.closeStdin();
-          let timer: number | undefined;
-          try {
-            const rc = await Promise.race([
-              killer.runStartAsync(),
-              new Promise<never>((_, reject) => {
-                timer = setTimeout(
-                  () => reject(new Error("resident signal timed out")),
-                  30_000,
-                );
-              }),
-            ]);
-            if (rc !== 0 && !ended) {
-              throw new Error(`resident signal failed: ${rc}`);
-            }
-          } finally {
-            clearTimeout(timer);
-          }
-        },
-      };
-    },
-    async process(line, io) {
-      // The host keeps stdio per pid: a forked child's output lands in its
-      // own buffer (grouped after the parent's, not interleaved), and
-      // host-fed stdin never reaches a pipeline element
-      // (yurtos-kernel#2817). Guest files have neither problem, so the
-      // command's three streams are redirected through /tmp and the
-      // outputs read back once it has exited, bounded, by an exec'd
-      // `head` -- a single command, whose own stdout the host does
-      // capture. `line` ends in the exec of the command, so the redirects
-      // bind to the command and every child inherits them.
-      const tag = crypto.randomUUID();
-      const path = (name: string) => `/tmp/.yurt-exec-${tag}.${name}`;
-      const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-      const single = async (command: string) => {
-        const p = await spawnShell(["/bin/sh", "-c", command]);
-        p.closeStdin();
-        await p.runStartAsync();
-      };
-      let stdinRedirect = "< /dev/null";
-      if (io.stdin !== undefined) {
-        // From the host, not through a process: host-fed stdin passes the
-        // console line discipline (ICRNL, VEOF, VERASE, ISIG) and a 64 KiB
-        // buffer, so bytes would be altered or dropped; a file written by
-        // the kernel is exact at any size.
-        writeRamfsFile(mk, path("in"), io.stdin);
-        stdinRedirect = `< ${q(path("in"))}`;
+      if (disposed) {
+        mk.dispose();
+        throw new Error("browser sandbox is disposed");
       }
-      const process = await spawnShell([
-        "/bin/sh",
-        "-c",
-        `${line} > ${q(path("out"))} 2> ${q(path("err"))} ${stdinRedirect}`,
-      ]);
-      process.closeStdin();
-      // Read back once the command has exited, one byte past the bound
-      // so the registry sees the cut and says so; the files go afterwards.
-      let done = false;
-      const sweep = () =>
-        void single(
-          `exec rm -f ${q(path("out"))} ${q(path("err"))} ${q(path("in"))}`,
+      setPidCredentials(mk, process.pid, LOGIN_UID, LOGIN_GID);
+      const { rc: chdirRc } = mk.kernelSyscall(
+        METHOD.KERNEL_FS_CHDIR,
+        process.pid,
+        s(LOGIN_HOME),
+        0,
+      );
+      if (Number(chdirRc) !== 0) {
+        throw new Error(`chdir ${LOGIN_HOME} failed: rc=${chdirRc}`);
+      }
+      return process;
+    };
+    env.show("starting ash");
+    const user = await spawnShell(["/bin/sh"]);
+    const pty = mk.attachHostPty(user.pid);
+    mk.ptySetWinsize(pty, env.term.rows, env.term.cols);
+    const encoder = new TextEncoder();
+    const output = outputFanout(env.term);
+    const stopPump = pumpPtyMaster(mk, pty, output.push);
+    disposePty = () => {
+      stopPump();
+      try {
+        mk.ptyMasterClose(pty);
+      } catch { /* Already closed. */ }
+    };
+    const terminal: PtyTransport = {
+      write(bytes) {
+        mk.ptyMasterWrite(pty, bytes);
+        return Promise.resolve();
+      },
+      close() {
+        mk.ptyMasterClose(pty);
+      },
+    };
+    const controller = createSessionController({ pty: terminal });
+    let stopped = false;
+    env.term.onData((data) => {
+      // Keys after the shell has gone have nowhere to go; the pty is closed
+      // and a write to it is an error, not a keystroke.
+      if (disposed || stopped || controller.state !== "ready") return;
+      void controller.current.pty.write(encoder.encode(data));
+    });
+    env.term.onResize(({ rows, cols }) => {
+      if (!disposed && !stopped) mk.ptySetWinsize(pty, rows, cols);
+    });
+
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      stopPump();
+      try {
+        controller.current.pty.close();
+      } catch {
+        // guest may already have hung up
+      }
+    };
+
+    void user.runStartAsync().then(() => {
+      // `exit` at the prompt: the shell is done, the sandbox is still there
+      // (the notebook's kernel keeps answering). Say so where the prompt
+      // was, and in the status, instead of failing the next keystroke.
+      if (!stopped) {
+        env.term.write(
+          "\r\n[the shell exited; reload the page for a new one]\r\n",
         );
-      const exited = process.runStartAsync().then((rc) => {
-        done = true;
-        return rc;
-      }, (error) => {
-        done = true;
-        throw error;
-      });
-      // The registry reads the files right after the exit; the sweep comes
-      // well after, whichever way the exit went.
-      exited.finally(() => setTimeout(sweep, 5000)).catch(() => {});
-      const cap = io.maxOutputBytes + 1;
-      const taken = { out: false, err: false };
-      const take = (stream: "out" | "err") => {
-        if (!done || taken[stream]) return new Uint8Array();
-        taken[stream] = true;
-        return readGuestFile(mk, user.pid, path(stream), cap);
-      };
-      return {
-        pid: process.pid,
-        exited,
-        takeStdout: () => take("out"),
-        takeStderr: () => take("err"),
-        // The files are readable while the command runs: what a stuck
-        // process has written so far.
-        peek: () => ({
-          stdout: readGuestFile(mk, user.pid, path("out"), cap),
-          stderr: readGuestFile(mk, user.pid, path("err"), cap),
-        }),
-      };
-    },
-    async signal(pid, signal) {
-      // A process of the page's own, not the user's shell: `kill` is
-      // BusyBox's, and the login user may signal its own processes. The
-      // command's children (a pipeline, a background job) share its
-      // process group, so the group goes first; the pid itself after, in
-      // case it is not a group leader on this host.
-      const process = await spawnShell([
-        "/bin/sh",
-        "-c",
-        `kill -${signal} -- -${pid} 2>/dev/null; kill -${signal} ${pid} 2>/dev/null; true`,
-      ]);
-      process.closeStdin();
-      await process.runStartAsync();
-    },
-    // The Jupyter connection file, looked for by the page itself: nothing is
-    // typed into the user's shell for it (yurtos-kernel#2824). Read as the
-    // login shell, whose credentials apply; a missing file is `undefined`.
-    readFile(path) {
-      // Enough for the kernel log the failure message tails.
-      const bytes = readGuestFile(mk, user.pid, path, 4 * 1024 * 1024);
-      return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
-    },
-    dialSandboxPort: (port) => mk.dialSandboxPort(port),
-    onOutput: output.onOutput,
-    hushOutput: output.hushOutput,
-  };
+        env.show("shell exited");
+      }
+    }).catch((error) => {
+      if (!stopped) {
+        const message = error instanceof Error ? error.message : String(error);
+        env.show(message);
+      }
+    }).finally(stop);
+
+    env.show("");
+    return {
+      stop,
+      dispose() {
+        stop();
+        disposeKernel();
+      },
+      controller,
+      terminal,
+      async spawn(line) {
+        const process = await spawnShell(["/bin/sh", "-c", line]);
+        // Nothing feeds it: stdin is at end-of-file from the start.
+        process.closeStdin();
+        void process.runStartAsync().catch(() => {
+          // Its exit is the kernel's business (the connection file, the log);
+          // nothing here waits on it.
+        });
+      },
+      async startResident(line) {
+        const process = await spawnShell(["/bin/sh", "-c", line]);
+        process.closeStdin();
+        const exited = process.runStartAsync();
+        let ended = false;
+        void exited.then(() => {
+          ended = true;
+        }, () => {
+          ended = true;
+        });
+        return {
+          pid: process.pid,
+          exited,
+          async signalPid(signal) {
+            if (!Number.isInteger(signal) || signal < 1 || signal > 64) {
+              throw new RangeError("invalid resident signal");
+            }
+            if (ended) return;
+            const killer = await spawnShell([
+              "/bin/sh",
+              "-c",
+              `exec kill -${signal} ${process.pid}`,
+            ]);
+            killer.closeStdin();
+            let timer: number | undefined;
+            try {
+              const rc = await Promise.race([
+                killer.runStartAsync(),
+                new Promise<never>((_, reject) => {
+                  timer = setTimeout(
+                    () => reject(new Error("resident signal timed out")),
+                    30_000,
+                  );
+                }),
+              ]);
+              if (rc !== 0 && !ended) {
+                throw new Error(`resident signal failed: ${rc}`);
+              }
+            } finally {
+              clearTimeout(timer);
+            }
+          },
+        };
+      },
+      async process(line, io) {
+        // The host keeps stdio per pid: a forked child's output lands in its
+        // own buffer (grouped after the parent's, not interleaved), and
+        // host-fed stdin never reaches a pipeline element
+        // (yurtos-kernel#2817). Guest files have neither problem, so the
+        // command's three streams are redirected through /tmp and the
+        // outputs read back once it has exited, bounded, by an exec'd
+        // `head` -- a single command, whose own stdout the host does
+        // capture. `line` ends in the exec of the command, so the redirects
+        // bind to the command and every child inherits them.
+        const tag = crypto.randomUUID();
+        const path = (name: string) => `/tmp/.yurt-exec-${tag}.${name}`;
+        const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+        const single = async (command: string) => {
+          const p = await spawnShell(["/bin/sh", "-c", command]);
+          p.closeStdin();
+          await p.runStartAsync();
+        };
+        let stdinRedirect = "< /dev/null";
+        if (io.stdin !== undefined) {
+          // From the host, not through a process: host-fed stdin passes the
+          // console line discipline (ICRNL, VEOF, VERASE, ISIG) and a 64 KiB
+          // buffer, so bytes would be altered or dropped; a file written by
+          // the kernel is exact at any size.
+          writeRamfsFile(mk, path("in"), io.stdin);
+          stdinRedirect = `< ${q(path("in"))}`;
+        }
+        const process = await spawnShell([
+          "/bin/sh",
+          "-c",
+          `${line} > ${q(path("out"))} 2> ${q(path("err"))} ${stdinRedirect}`,
+        ]);
+        process.closeStdin();
+        // Read back once the command has exited, one byte past the bound
+        // so the registry sees the cut and says so; the files go afterwards.
+        let done = false;
+        const sweep = () =>
+          void single(
+            `exec rm -f ${q(path("out"))} ${q(path("err"))} ${q(path("in"))}`,
+          );
+        const exited = process.runStartAsync().then((rc) => {
+          done = true;
+          return rc;
+        }, (error) => {
+          done = true;
+          throw error;
+        });
+        // The registry reads the files right after the exit; the sweep comes
+        // well after, whichever way the exit went.
+        exited.finally(() => {
+          if (disposed) return;
+          const timer = setTimeout(() => {
+            sweepTimers.delete(timer);
+            if (!disposed) sweep();
+          }, 5000);
+          sweepTimers.add(timer);
+        }).catch(() => {});
+        const cap = io.maxOutputBytes + 1;
+        const taken = { out: false, err: false };
+        const take = (stream: "out" | "err") => {
+          if (!done || taken[stream]) return new Uint8Array();
+          taken[stream] = true;
+          return readGuestFile(mk, user.pid, path(stream), cap);
+        };
+        return {
+          pid: process.pid,
+          exited,
+          takeStdout: () => take("out"),
+          takeStderr: () => take("err"),
+          // The files are readable while the command runs: what a stuck
+          // process has written so far.
+          peek: () => ({
+            stdout: readGuestFile(mk, user.pid, path("out"), cap),
+            stderr: readGuestFile(mk, user.pid, path("err"), cap),
+          }),
+        };
+      },
+      async signal(pid, signal) {
+        // A process of the page's own, not the user's shell: `kill` is
+        // BusyBox's, and the login user may signal its own processes. The
+        // command's children (a pipeline, a background job) share its
+        // process group, so the group goes first; the pid itself after, in
+        // case it is not a group leader on this host.
+        const process = await spawnShell([
+          "/bin/sh",
+          "-c",
+          `kill -${signal} -- -${pid} 2>/dev/null; kill -${signal} ${pid} 2>/dev/null; true`,
+        ]);
+        process.closeStdin();
+        await process.runStartAsync();
+      },
+      // The Jupyter connection file, looked for by the page itself: nothing is
+      // typed into the user's shell for it (yurtos-kernel#2824). Read as the
+      // login shell, whose credentials apply; a missing file is `undefined`.
+      readFile(path) {
+        if (disposed) {
+          return Promise.reject(new Error("browser sandbox is disposed"));
+        }
+        // Enough for the kernel log the failure message tails.
+        const bytes = readGuestFile(mk, user.pid, path, 4 * 1024 * 1024);
+        return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
+      },
+      dialSandboxPort(port) {
+        if (disposed) throw new Error("browser sandbox is disposed");
+        return mk.dialSandboxPort(port);
+      },
+      onOutput: output.onOutput,
+      hushOutput: output.hushOutput,
+    };
+  } catch (error) {
+    disposePty();
+    disposeKernel();
+    throw error;
+  }
 }

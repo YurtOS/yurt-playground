@@ -517,3 +517,20 @@ record exists. The qualified Datasette scene is authored but has not run. Its
 missing qualification fails explicitly. CI makes that scene mandatory when a
 valid published record exists, and reports the absent gate otherwise. No
 Datasette runtime or hosted CI completion is claimed.
+
+### Follow-up validation (2026-09-29)
+
+The broad local suite reported 262 passing tests, two failures and one ignored
+test. The pip failure passed in isolation. The REPL failure exposed teardown
+ownership: playground issue #175 tracks terminal-only `stop()` being used where
+the sandbox must be disposed. The local repair disposes the kernel and finite
+output sweep timers, preserves terminal-only Stop, and releases failed Jupyter
+startup. Its focused tests use normal resource sanitizers.
+
+With the repair, all three original Python tests pass together (commands, pip,
+REPL). Eighty focused lifecycle, HTTP, routing, policy, execution and Jupyter
+tests also pass. An isolated process-launch/disposal race test passes. Closing
+the terminal before launching and disposing another process exposes an upstream
+WorkerHost completion-pump timer surviving teardown; that regression remains
+failing on the unchanged pinned host and is delegated to the kernel owner. Final
+whole-suite and hosted CI gates remain outstanding.

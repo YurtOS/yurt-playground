@@ -144,7 +144,7 @@ export async function bootAshSession(
   return {
     term,
     shown: () => shown,
-    stop: () => session.stop(),
+    stop: () => session.dispose!(),
   };
 }
 
