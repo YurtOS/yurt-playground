@@ -71,6 +71,8 @@ type ToWorker =
 
 type FromWorker =
   | { type: "status"; text: string }
+  // The browser refused a new process its memory (src/memory_refused.ts).
+  | { type: "memory-refused" }
   | { type: "out"; bytes: number[] }
   | { type: "error"; message: string }
   | { type: "notebook-ready" }
@@ -287,6 +289,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         }),
       show: (text: string) => post({ type: "status", text }),
       term: workerTerm({ cols: msg.cols, rows: msg.rows }),
+      memoryRefused: () => post({ type: "memory-refused" }),
     };
     session = kernelPorts === undefined
       ? await bootPlayground(env)

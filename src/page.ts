@@ -16,6 +16,7 @@ import {
   type YurtTransport,
 } from "./agent_api.ts";
 import type { ExecOptions } from "./executions.ts";
+import { memoryRefusedMessage } from "./memory_refused.ts";
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -31,7 +32,8 @@ type FromWorker =
   }
   | { type: "cell-stream"; id: string; chunk: JupyterStream }
   | { type: "cell-result"; id: string; result: JupyterReply }
-  | { type: "cell-error"; id: string; message: string };
+  | { type: "cell-error"; id: string; message: string }
+  | { type: "memory-refused" };
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
@@ -262,6 +264,14 @@ function boot(
         yurtState.failed(msg.message);
         sandboxGone();
       }
+    }
+    if (msg.type === "memory-refused") {
+      const banner = byId("memory-refused");
+      byId("memory-refused-text").textContent = memoryRefusedMessage(
+        navigator.userAgent,
+      );
+      byId("memory-refused-reload").onclick = () => location.reload();
+      banner.hidden = false;
     }
     if (msg.type === "out") {
       terminalEmpty = false;
