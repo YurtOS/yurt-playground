@@ -24,6 +24,35 @@ page.
 | Works offline                                                | yes                                                                           | yes                                                        |
 | Needs                                                        | a desktop browser with cross-origin isolation (Chrome, Edge, Firefox, Safari) | any browser to display; nothing to install besides the app |
 
+## Supported packages
+
+The browser page, the desktop app and `yurt run playground` boot the same image
+(pinned in `artifacts/pins.json`). Everything else comes from the signed package
+repository [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages),
+which has the full current list; the build recipes are in
+[YurtOS/yurt-ports](https://github.com/YurtOS/yurt-ports).
+
+| Package                                | Version                                   | For                                                                                                                                   | How to get it                             | Status                                                                                                  |
+| -------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| BusyBox                                | 1.37.0                                    | `ash` and 151 applets: core utilities, `grep`, `sed`, `awk`, `vi`, `less`, `tar`, `gzip`, `bzip2`, `unzip`, `wget`, `nc`, `ps`, `top` | in the image                              | available                                                                                               |
+| CPython, pip                           | 3.14.4, 26.1                              | `python3`; `pip install` into `~/.local`: pure-Python packages and matching wheels (no compiler in the image)                         | in the image                              | available                                                                                               |
+| NumPy                                  | 2.5.0                                     | arrays                                                                                                                                | in the image                              | available                                                                                               |
+| ipykernel, IPython, pyzmq              | 7.2.0, 9.13.0, 26.4.0                     | the Jupyter kernel behind Notebook and Lab                                                                                            | in the image                              | available                                                                                               |
+| zsh (+ ncurses)                        | 5.9 (6.5)                                 | shell                                                                                                                                 | `pkg install zsh`                         | available (published)                                                                                   |
+| clang, lld; libc++                     | 23.0.0; 22.1.0                            | C/C++ compiler and linker                                                                                                             | `pkg install clang`, `pkg install libcxx` | available (published); C++ fixes in [yurt-ports#101](https://github.com/YurtOS/yurt-ports/pull/101)     |
+| pkg                                    | 0.1.1                                     | the package client                                                                                                                    | from yurt-packages                        | available (published)                                                                                   |
+| git (+ ca-certificates)                | 2.55.0                                    | version control, clone over HTTPS                                                                                                     | `pkg install git`                         | coming: [yurt-packages#10](https://github.com/YurtOS/yurt-packages/pull/10)                             |
+| rtk                                    | 0.50.0                                    | output-filtering command proxy for coding agents                                                                                      | `pkg install rtk`                         | coming: [yurt-ports#185](https://github.com/YurtOS/yurt-ports/pull/185)                                 |
+| curl, jq, make, perl, sqlite3, gettext | 8.22.0, 1.8.2, 4.4.1, 5.44.0, 3.53.1, 1.0 | HTTP, JSON, builds, scripting, SQL, message catalogs                                                                                  | `pkg install NAME`                        | coming: ported in yurt-ports, not published yet                                                         |
+| gh and other Go programs               | gh 2.102.0                                | GitHub CLI; Go for `linux/wasm32`                                                                                                     | —                                         | coming: [YurtOS/yurt-go](https://github.com/YurtOS/yurt-go) (gh builds and runs)                        |
+| Python native build inputs             | —                                         | building native wheels for pip                                                                                                        | —                                         | coming: [yurt-packages#9](https://github.com/YurtOS/yurt-packages/pull/9), waits on a guest SDK release |
+
+The image does not ship `pkg` or its trusted-repository configuration yet, so a
+published package cannot be installed from inside a running playground today;
+`pkg install` works in an image that carries both. Libraries such as zlib,
+OpenSSL, xz and bzip2 are build dependencies of these packages, not something to
+install on their own.
+
 ## Desktop app
 
 **macOS** (Apple Silicon). Open `Yurt-Playground-aarch64-apple-darwin.dmg` and
