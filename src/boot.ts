@@ -194,6 +194,25 @@ function readGuestFile(
   return out;
 }
 
+/**
+ * The address space each guest process reserves (yurtos-kernel#2996). A
+ * browser reserves a shared wasm memory's whole maximum up front, and
+ * Safari holds about 32 GiB of them per tab; every guest build declares
+ * 4 GiB, and the kernel's default is the whole 1 GiB sandbox budget, so a
+ * burst of a few dozen execs ran Safari out. A quarter GiB leaves room for
+ * more than 100 processes and several times what CPython needs here
+ * (ipykernel 81 MiB, a 2000x2000 NumPy matmul 98 MiB). A process that
+ * outgrows it gets ENOMEM; the sandbox budget still caps them all.
+ */
+export const GUEST_MEMORY_RESERVATION_BYTES = 256 * 1024 * 1024;
+
+export function playgroundHostState(): ReturnType<typeof defaultHostState> {
+  // Object.assign, not a literal: a kernel older than the field ignores it.
+  return Object.assign(defaultHostState(), {
+    guestMemoryReservationBytes: GUEST_MEMORY_RESERVATION_BYTES,
+  });
+}
+
 export async function bootPlayground(
   env: PlaygroundEnv,
 ): Promise<PlaygroundSession> {
@@ -205,7 +224,7 @@ export async function bootPlayground(
   env.show("loading kernel");
   const kernel = await env.fetchBytes("./yurt_kernel.wasm");
   env.show("compiling kernel");
-  const mk = await KernelHostInterface.load(kernel, defaultHostState());
+  const mk = await KernelHostInterface.load(kernel, playgroundHostState());
   env.show("loading image");
   const image = await env.fetchBytes("./playground.yurtimg");
   env.show("unpacking image");
