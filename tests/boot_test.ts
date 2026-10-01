@@ -80,6 +80,54 @@ Deno.test("fetchPlaygroundBytes retries pins.json after a failed load", async ()
 });
 
 Deno.test({
+  name: "ash session: the guest's root is the OPFS device, not kernel memory",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootAshSession();
+    if (!session) return;
+    try {
+      assertEquals(session.storage, { kind: "device" });
+      const out = await typeCommand(
+        session.term,
+        "head -c 5000000 /dev/zero > big && wc -c < big && ls /dev/null /proc/self/status",
+        60_000,
+      );
+      const text = out.replace(/\r/g, "");
+      if (!text.includes("5000000") || !text.includes("/dev/null")) {
+        throw new Error(`device root: ${JSON.stringify(out)}`);
+      }
+    } finally {
+      session.stop();
+    }
+  },
+});
+
+Deno.test({
+  name: "ash session: without OPFS the root is staged into memory, and says so",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootAshSession({
+      storage: () => Promise.resolve(null),
+    });
+    if (!session) return;
+    try {
+      assertEquals(session.storage, {
+        kind: "memory",
+        reason: "OPFS sync access is unavailable",
+      });
+      const hi = await typeCommand(session.term, "echo hi > f && cat f");
+      if (!/^hi$/m.test(hi.replace(/\r/g, ""))) {
+        throw new Error(`memory root: ${JSON.stringify(hi)}`);
+      }
+    } finally {
+      session.stop();
+    }
+  },
+});
+
+Deno.test({
   name: "ash session: login, owners, redirects, and touch",
   sanitizeOps: false,
   sanitizeResources: false,
