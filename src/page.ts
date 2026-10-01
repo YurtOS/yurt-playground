@@ -16,7 +16,7 @@ import {
   type YurtTransport,
 } from "./agent_api.ts";
 import type { ExecOptions } from "./executions.ts";
-import { memoryRefusedMessage } from "./memory_refused.ts";
+import { MEMORY_REFUSED_MESSAGE } from "./memory_refused.ts";
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -267,9 +267,7 @@ function boot(
     }
     if (msg.type === "memory-refused") {
       const banner = byId("memory-refused");
-      byId("memory-refused-text").textContent = memoryRefusedMessage(
-        navigator.userAgent,
-      );
+      byId("memory-refused-text").textContent = MEMORY_REFUSED_MESSAGE;
       byId("memory-refused-reload").onclick = () => location.reload();
       banner.hidden = false;
     }

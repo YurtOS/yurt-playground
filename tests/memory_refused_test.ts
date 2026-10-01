@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import {
-  memoryRefusedMessage,
+  MEMORY_REFUSED_MESSAGE,
   watchGuestMemoryRefusals,
 } from "../src/memory_refused.ts";
 
@@ -37,21 +37,24 @@ Deno.test("a kernel without the refusal hook is never reported", () => {
   assertEquals(told, 0);
 });
 
-Deno.test("the message names Safari only in Safari", () => {
-  const safari =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Safari/605.1.15";
-  const chrome =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
-  const firefox =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:143.0) Gecko/20100101 Firefox/143.0";
+Deno.test("a refusal reported while subscribing is told once and unsubscribed", () => {
+  const listeners = new Set<() => void>();
+  const host = {
+    onGuestMemoryRefused(listener: () => void) {
+      listeners.add(listener);
+      listener();
+      return () => listeners.delete(listener);
+    },
+  };
+  let told = 0;
+  watchGuestMemoryRefusals(host, () => told++);
+  assertEquals(told, 1);
+  assertEquals(listeners.size, 0);
+});
+
+Deno.test("the message names no engine: Chrome and Firefox refuse too", () => {
   assertEquals(
-    memoryRefusedMessage(safari),
-    "Safari ran out of memory for new processes. Reload the page to continue.",
+    MEMORY_REFUSED_MESSAGE,
+    "The browser ran out of memory for new processes. Reload the page to continue.",
   );
-  for (const agent of [chrome, firefox]) {
-    assertEquals(
-      memoryRefusedMessage(agent),
-      "The browser ran out of memory for new processes. Reload the page to continue.",
-    );
-  }
 });
