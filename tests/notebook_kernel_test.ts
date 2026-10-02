@@ -201,8 +201,8 @@ function errorFrame(ename: string): string {
 Deno.test({
   name: "errorFrames reads finished frames and leaves a partial tail alone",
   // Host timers from the surrounding boot tests settle whenever the runner
-  // gets to them: on CI one completed inside this 0 ms test and tripped the
-  // leak check. Sanitizers off, like every other test in this file.
+  // gets to them: on CI one completed inside the 0 ms test below and tripped
+  // the leak check. Sanitizers off, like every other test in this file.
   sanitizeOps: false,
   sanitizeResources: false,
   fn() {
