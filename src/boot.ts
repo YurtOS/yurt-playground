@@ -206,7 +206,9 @@ function readGuestFile(
  */
 export const GUEST_MEMORY_RESERVATION_BYTES = 256 * 1024 * 1024;
 
-export function playgroundHostState(): ReturnType<typeof defaultHostState> {
+export function playgroundHostState():
+  & ReturnType<typeof defaultHostState>
+  & { guestMemoryReservationBytes: number } {
   // Object.assign, not a literal: a kernel older than the field ignores it.
   return Object.assign(defaultHostState(), {
     guestMemoryReservationBytes: GUEST_MEMORY_RESERVATION_BYTES,

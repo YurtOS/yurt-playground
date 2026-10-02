@@ -28,14 +28,13 @@
  * parks on `Atomics.wait`, which the window thread may not do.
  */
 import {
-  defaultHostState,
   KernelHostInterface,
   pumpPtyMaster,
   s,
   type SandboxSealImage,
   type UserProcess,
 } from "@yurt/kernel-host-interface-js";
-import { fetchPlaygroundBytes } from "./boot.ts";
+import { fetchPlaygroundBytes, playgroundHostState } from "./boot.ts";
 import { partsFetch, PYTHON_SEAL_NAME } from "./image_parts.ts";
 import type { JupyterHeader, JupyterMessage } from "./jupyter_protocol.ts";
 import type {
@@ -820,7 +819,7 @@ async function bootFresh(
   kernelSha256: string,
 ): Promise<Live> {
   status("booting the kernel");
-  const mk = await KernelHostInterface.load(kernel, defaultHostState());
+  const mk = await KernelHostInterface.load(kernel, playgroundHostState());
   status("loading the image");
   const image = await fetchPlaygroundBytes("./playground.yurtimg");
   status("staging the Python stdlib");
@@ -840,7 +839,7 @@ async function restoreStored(
   const restored = await KernelHostInterface.restore(
     kernel,
     stored.image,
-    defaultHostState(),
+    playgroundHostState(),
   );
   try {
     const [process] = restored.processes;
