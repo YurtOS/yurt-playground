@@ -83,8 +83,17 @@ def cell_traceback(error):
     while pending:
         current = pending.pop()
         stack = current.stack
+        # A compiler-only cell SyntaxError supplies its own location. A
+        # library-only cause or group member still needs its complete stack.
+        dispatch = next((i for i, frame in enumerate(stack)
+                         if frame.filename == __file__ and frame.name == "run_cell"), None)
+        compiler_error = (
+            getattr(current, "filename", None) == "<cell>" and dispatch is not None
+            and all(frame.filename == ast.__file__ for frame in stack[dispatch + 1:])
+        )
+        fallback = len(stack) if compiler_error else 0
         first = next((i for i, frame in enumerate(stack)
-                      if frame.filename == "<cell>"), len(stack))
+                      if frame.filename == "<cell>"), fallback)
         # Re-raising a saved exception can put older dispatch frames below
         # its first cell frame. Keep other callees, including Stream.write.
         current.stack = traceback.StackSummary.from_list([

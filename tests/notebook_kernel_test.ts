@@ -293,6 +293,57 @@ Deno.test({
       assertEquals(suppressed.ename, "RuntimeError");
       assert(!suppressedText.includes("ValueError"), suppressedText);
       assert(!suppressedText.includes("cell_server.py"), suppressedText);
+      // A library may catch an error internally, so its traceback never
+      // passes through <cell>. Preserve its location in chains and groups.
+      const libraryCause = await run(
+        `exec(compile("try:\\n    1 / 0\\nexcept Exception as e:\\n    library_error = e\\n", "library.py", "exec"))
+raise RuntimeError("library cause") from library_error`,
+      );
+      const libraryGroup = await run(
+        'raise ExceptionGroup("library group", [library_error])',
+      );
+      const libraryContext = await run(
+        `exec(compile("try:\\n    1 / 0\\nexcept Exception:\\n    raise RuntimeError('library context')\\n", "library.py", "exec"))`,
+      );
+      for (const error of [libraryCause, libraryGroup, libraryContext]) {
+        const text = error.traceback.join("");
+        assert(text.includes('File "library.py", line 2'), text);
+        assert(text.includes("ZeroDivisionError: division by zero"), text);
+        assert(!text.includes("cell_server.py"), text);
+      }
+      assertEquals(libraryCause.ename, "RuntimeError");
+      assertEquals(libraryGroup.ename, "ExceptionGroup");
+      assertEquals(libraryContext.ename, "RuntimeError");
+      const librarySyntax = await run(
+        `exec(compile("try:\\n    compile('1 +', '<cell>', 'exec')\\nexcept Exception as e:\\n    library_syntax = e\\n", "library.py", "exec"))
+raise RuntimeError("library syntax") from library_syntax`,
+      );
+      const librarySyntaxText = librarySyntax.traceback.join("");
+      assertEquals(librarySyntax.ename, "RuntimeError");
+      assert(
+        librarySyntaxText.includes('File "library.py", line 2'),
+        librarySyntaxText,
+      );
+      assert(
+        librarySyntaxText.includes('File "<cell>", line 1'),
+        librarySyntaxText,
+      );
+      assert(
+        librarySyntaxText.includes("SyntaxError: invalid syntax"),
+        librarySyntaxText,
+      );
+      assert(!librarySyntaxText.includes("cell_server.py"), librarySyntaxText);
+      const libraryRepr = await run(
+        `exec(compile("class Value:\\n    def __repr__(self):\\n        compile('1 +', '<cell>', 'exec')\\n", "library.py", "exec"))
+Value()`,
+      );
+      const libraryReprText = libraryRepr.traceback.join("");
+      assertEquals(libraryRepr.ename, "SyntaxError");
+      assert(
+        libraryReprText.includes('File "library.py", line 3'),
+        libraryReprText,
+      );
+      assert(!libraryReprText.includes("cell_server.py"), libraryReprText);
       const interrupted = await run(
         "import time\nprint('tick', flush=True)\nwhile True:\n    time.sleep(0.05)\n",
         true,
@@ -323,6 +374,7 @@ Deno.test({
         syntax.traceback.join("").includes('File "<cell>", line 1'),
         syntax.traceback.join(""),
       );
+      assert(syntax.traceback[0].startsWith('  File "<cell>"'));
     } finally {
       booted.stopPump();
       mk.killProcess(process.pid, 9);
