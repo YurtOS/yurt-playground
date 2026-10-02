@@ -75,6 +75,35 @@ def run_cell(code, namespace):
             emit({"t": "result", "text": repr(value)})
 
 
+def cell_traceback(error):
+    """Trim dispatch frames in every displayed exception without changing
+    exceptions saved in the cell namespace. SyntaxError keeps its location."""
+    formatted = traceback.TracebackException.from_exception(error)
+    pending = [formatted]
+    while pending:
+        current = pending.pop()
+        stack = current.stack
+        # A compiler-only cell SyntaxError supplies its own location. A
+        # library-only cause or group member still needs its complete stack.
+        dispatch = next((i for i, frame in enumerate(stack)
+                         if frame.filename == __file__ and frame.name == "run_cell"), None)
+        compiler_error = (
+            getattr(current, "filename", None) == "<cell>" and dispatch is not None
+            and all(frame.filename == ast.__file__ for frame in stack[dispatch + 1:])
+        )
+        # Re-raising a saved exception can put older dispatch frames below
+        # user frames. Keep other callers and callees, including Stream.write.
+        current.stack = traceback.StackSummary.from_list([
+            frame for frame in ([] if compiler_error else stack)
+            if not (frame.filename == __file__
+                    and frame.name in ("main", "run_cell"))
+        ])
+        pending.extend(part for part in (current.__cause__, current.__context__)
+                       if part is not None)
+        pending.extend(current.exceptions or [])
+    return list(formatted.format())
+
+
 def main():
     # The pty carries a protocol, not a terminal session: no echo, no
     # CR/LF rewriting, no ^C (the host interrupts with a signal instead).
@@ -102,7 +131,7 @@ def main():
                 "t": "error",
                 "ename": type(error).__name__,
                 "evalue": str(error),
-                "traceback": traceback.format_exception(error),
+                "traceback": cell_traceback(error),
             })
         emit({"t": "done", "count": count})
 

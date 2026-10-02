@@ -6,13 +6,14 @@
  * public/demo/python3-seal.wasm (scripts/install-pinned-artifacts.sh); skips
  * without them unless PLAYGROUND_REQUIRE_ARTIFACTS is set.
  */
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { join } from "node:path";
 import {
   defaultHostState,
   KernelHostInterface,
   pumpPtyMaster,
   s,
+  type UserProcess,
 } from "@yurt/kernel-host-interface-js";
 import { PYTHON_SEAL_NAME } from "../src/image_parts.ts";
 import { stagedPath } from "../src/notebook_stage.ts";
@@ -37,6 +38,79 @@ async function readOptional(path: string): Promise<Uint8Array | undefined> {
   }
 }
 
+/** The cell server booted on the JS host, past its "ready" frame. */
+interface CellServer {
+  kernel: Uint8Array;
+  host: KernelHostInterface;
+  pty: number;
+  process: UserProcess;
+  /** Everything the pty has printed; the pump appends to it. */
+  out: string;
+  stopPump: () => void;
+}
+
+/**
+ * Stages the image and `cell_server.py`, starts the sealable CPython on a raw
+ * pty, and waits for "ready". Returns undefined when the blobs are absent,
+ * which fails instead when PLAYGROUND_REQUIRE_ARTIFACTS is set.
+ */
+async function bootCellServer(): Promise<CellServer | undefined> {
+  const guest = await readOptional(join(repoRoot, "public", PYTHON_SEAL_NAME));
+  let kernel: Uint8Array | undefined;
+  let image: Uint8Array | undefined;
+  try {
+    kernel = await fetchViaHandler("./yurt_kernel.wasm");
+    image = await fetchViaHandler("./playground.yurtimg");
+  } catch { /* no pinned blobs */ }
+  if (guest === undefined || kernel === undefined || image === undefined) {
+    if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS")) {
+      throw new Error("the notebook kernel test needs the blobs");
+    }
+    console.log("skipped: needs the pinned blobs and python3-seal.wasm");
+    return undefined;
+  }
+  const server = await Deno.readFile(
+    join(repoRoot, "public/demo/cell_server.py"),
+  );
+  const host = await KernelHostInterface.load(kernel, defaultHostState());
+  await stageYurtimg(host, image, new Map(), stagedPath);
+  writeRamfsFile(host, "/usr/local/yurt/cell_server.py", server);
+  const process = await host.spawnUserProcessWithArgsAsync(guest, [
+    s("python3"),
+    s("/usr/local/yurt/cell_server.py"),
+  ], {
+    PYTHONHOME: "/usr/local",
+    PYTHONDONTWRITEBYTECODE: "1",
+    TERM: "dumb",
+  });
+  const pty = host.attachHostPty(process.pid);
+  const booted: CellServer = {
+    kernel,
+    host,
+    pty,
+    process,
+    out: "",
+    stopPump: () => {},
+  };
+  booted.stopPump = pumpPtyMaster(host, pty, (bytes) => {
+    booted.out += new TextDecoder().decode(bytes);
+  });
+  process.runStartAsync().catch(() => {});
+  try {
+    await waitFor(
+      () => booted.out.includes('"ready"'),
+      "the cell server",
+      180_000,
+    );
+  } catch (error) {
+    booted.stopPump();
+    host.killProcess(process.pid, 9);
+    host.dispose();
+    throw error;
+  }
+  return booted;
+}
+
 Deno.test({
   name:
     "the notebook kernel's CPython seals mid-cell and resumes at the next prime",
@@ -45,45 +119,10 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
-    const guest = await readOptional(
-      join(repoRoot, "public", PYTHON_SEAL_NAME),
-    );
-    let kernel: Uint8Array | undefined;
-    let image: Uint8Array | undefined;
-    try {
-      kernel = await fetchViaHandler("./yurt_kernel.wasm");
-      image = await fetchViaHandler("./playground.yurtimg");
-    } catch { /* no pinned blobs */ }
-    if (guest === undefined || kernel === undefined || image === undefined) {
-      if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS")) {
-        throw new Error("the notebook kernel test needs the blobs");
-      }
-      console.log("skipped: needs the pinned blobs and python3-seal.wasm");
-      return;
-    }
-    const server = await Deno.readFile(
-      join(repoRoot, "public/demo/cell_server.py"),
-    );
-    const mk = await KernelHostInterface.load(kernel, defaultHostState());
-    await stageYurtimg(mk, image, new Map(), stagedPath);
-    writeRamfsFile(mk, "/usr/local/yurt/cell_server.py", server);
-
-    let out = "";
-    const primes = () => (out.match(/prime #/g) ?? []).length;
-    const process = await mk.spawnUserProcessWithArgsAsync(guest, [
-      s("python3"),
-      s("/usr/local/yurt/cell_server.py"),
-    ], {
-      PYTHONHOME: "/usr/local",
-      PYTHONDONTWRITEBYTECODE: "1",
-      TERM: "dumb",
-    });
-    const pty = mk.attachHostPty(process.pid);
-    const stopPump = pumpPtyMaster(mk, pty, (bytes) => {
-      out += new TextDecoder().decode(bytes);
-    });
-    process.runStartAsync().catch(() => {});
-    await waitFor(() => out.includes('"ready"'), "the cell server", 180_000);
+    const booted = await bootCellServer();
+    if (booted === undefined) return;
+    const { kernel, host: mk, pty, process } = booted;
+    const primes = () => (booted.out.match(/prime #/g) ?? []).length;
     mk.ptyMasterWrite(
       pty,
       new TextEncoder().encode(
@@ -96,11 +135,11 @@ Deno.test({
     // Only the stdlib is staged: with the whole image the kernel's memory
     // (the ramfs) would be ~400 MB, copied on every seal.
     assert(sealed.kernelMemory.byteLength < 64 * 1024 * 1024);
-    stopPump();
+    booted.stopPump();
     mk.killProcess(process.pid, 9);
     mk.dispose();
     const before = primes();
-    const lastBefore = out.match(/prime #(\d+) = (\d+)/g)?.at(-1);
+    const lastBefore = booted.out.match(/prime #(\d+) = (\d+)/g)?.at(-1);
 
     const restored = await KernelHostInterface.restore(
       kernel,
@@ -109,7 +148,7 @@ Deno.test({
     );
     const [resumed] = restored.processes;
     const stopResumed = pumpPtyMaster(restored.host, pty, (bytes) => {
-      out += new TextDecoder().decode(bytes);
+      booted.out += new TextDecoder().decode(bytes);
     });
     resumed.runStartAsync().catch(() => {});
     try {
@@ -124,13 +163,248 @@ Deno.test({
       restored.host.dispose();
     }
     // The loop continued, not restarted: the numbering runs on from the seal.
-    const all = [...out.matchAll(/prime #(\d+) = (\d+)/g)].map((m) =>
+    const all = [...booted.out.matchAll(/prime #(\d+) = (\d+)/g)].map((m) =>
       Number(m[1])
     );
     assertEquals(all, all.map((_, i) => i + 1));
     assert(
       lastBefore !== undefined &&
-        out.indexOf(lastBefore) === out.lastIndexOf(lastBefore),
+        booted.out.indexOf(lastBefore) === booted.out.lastIndexOf(lastBefore),
     );
+  },
+});
+
+interface ErrorFrame {
+  ename: string;
+  traceback: string[];
+}
+
+/**
+ * The error frames in a pty transcript, one JSON object per line. The pump
+ * hands over chunks, not lines, so an unfinished trailing segment is ignored
+ * until its "\n" arrives: parsing a partial frame throws, and inside waitFor's
+ * predicate that fails the test instead of polling again. A malformed finished
+ * line still throws.
+ */
+function errorFrames(out: string): Array<ErrorFrame> {
+  const lines = out.split("\n");
+  if (!out.endsWith("\n")) lines.pop();
+  return lines.filter((line) => line.includes('"t": "error"'))
+    .map((line) => JSON.parse(line) as ErrorFrame);
+}
+
+/** A guest error frame, spaced the way the guest's json.dumps writes it. */
+function errorFrame(ename: string): string {
+  return `{"t": "error", "ename": "${ename}", "evalue": "", "traceback": ["Traceback (most recent call last):\\n", "  File \\"<cell>\\", line 1, in <module>\\n", "${ename}\\n"]}`;
+}
+
+Deno.test({
+  name: "errorFrames reads finished frames and leaves a partial tail alone",
+  // Host timers from the surrounding boot tests settle whenever the runner
+  // gets to them: on CI one completed inside the 0 ms test below and tripped
+  // the leak check. Sanitizers off, like every other test in this file.
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn() {
+    const done = '{"t": "done", "count": 1}';
+    const first = errorFrame("ZeroDivisionError");
+    const second = errorFrame("SyntaxError");
+    // The pump hands over chunks, not lines: the trailing segment is partway
+    // into the next frame until its "\n" arrives, marker included. Parsing it
+    // would throw inside waitFor's predicate and fail the test instead of
+    // polling again.
+    const tail = second.slice(0, second.indexOf('"ename"'));
+    assertEquals(
+      errorFrames(`${first}\n${done}\n${tail}`).map((f) => f.ename),
+      ["ZeroDivisionError"],
+    );
+    // Once the line is complete, both frames are there.
+    assertEquals(
+      errorFrames(`${first}\n${done}\n${second}\n`).map((f) => f.ename),
+      ["ZeroDivisionError", "SyntaxError"],
+    );
+  },
+});
+
+Deno.test({
+  name: "errorFrames throws on a finished line that is not JSON",
+  sanitizeOps: false, // foreign host timers, as above
+  sanitizeResources: false,
+  fn() {
+    // A completed line that carries the marker but does not parse means the
+    // guest broke the protocol; swallowing that would hide it.
+    assertThrows(() => errorFrames('{"t": "error", "ename": \n'));
+  },
+});
+
+Deno.test({
+  name:
+    "the notebook kernel's tracebacks start at the cell, not in cell_server.py",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const booted = await bootCellServer();
+    if (booted === undefined) return;
+    const { host: mk, pty, process } = booted;
+    const errors = () => errorFrames(booted.out);
+    const run = async (code: string, interrupt = false) => {
+      const seen = errors().length;
+      mk.ptyMasterWrite(
+        pty,
+        new TextEncoder().encode(JSON.stringify({ t: "exec", code }) + "\n"),
+      );
+      if (interrupt) {
+        await waitFor(
+          () => booted.out.includes("tick"),
+          "the cell to start",
+          30_000,
+        );
+        mk.killProcess(process.pid, 2);
+      }
+      await waitFor(() => errors().length > seen, "the error frame", 30_000);
+      return errors()[seen];
+    };
+    try {
+      // A raise two frames deep, a syntax error, and the reported case: an
+      // interrupt (yurt-ports#150).
+      const raised = await run("def f():\n    1 / 0\nf()\n");
+      const syntax = await run("1 +\n");
+      await run('saved = ValueError("original")\nraise saved\n');
+      const caused = await run('raise RuntimeError("outer") from saved\n');
+      const contextual = await run(
+        'try:\n    raise saved\nexcept ValueError:\n    raise RuntimeError("context")\n',
+      );
+      const grouped = await run('raise ExceptionGroup("group", [saved])\n');
+      for (const error of [caused, contextual, grouped]) {
+        const text = error.traceback.join("");
+        assert(!text.includes("cell_server.py"), text);
+        assert(text.includes("ValueError: original"), text);
+        assert(text.includes('File "<cell>", line 2'), text);
+      }
+      assertEquals(caused.ename, "RuntimeError");
+      assert(caused.traceback.join("").includes("direct cause"));
+      assertEquals(contextual.ename, "RuntimeError");
+      assert(contextual.traceback.join("").includes("During handling"));
+      assertEquals(grouped.ename, "ExceptionGroup");
+      const suppressed = await run(
+        'try:\n    raise saved\nexcept ValueError:\n    raise RuntimeError("hidden cause") from None\n',
+      );
+      const suppressedText = suppressed.traceback.join("");
+      assertEquals(suppressed.ename, "RuntimeError");
+      assert(!suppressedText.includes("ValueError"), suppressedText);
+      assert(!suppressedText.includes("cell_server.py"), suppressedText);
+      // A library may catch an error internally, so its traceback never
+      // passes through <cell>. Preserve its location in chains and groups.
+      const libraryCause = await run(
+        `exec(compile("try:\\n    1 / 0\\nexcept Exception as e:\\n    library_error = e\\n", "library.py", "exec"))
+raise RuntimeError("library cause") from library_error`,
+      );
+      const libraryGroup = await run(
+        'raise ExceptionGroup("library group", [library_error])',
+      );
+      const libraryContext = await run(
+        `exec(compile("try:\\n    1 / 0\\nexcept Exception:\\n    raise RuntimeError('library context')\\n", "library.py", "exec"))`,
+      );
+      for (const error of [libraryCause, libraryGroup, libraryContext]) {
+        const text = error.traceback.join("");
+        assert(text.includes('File "library.py", line 2'), text);
+        assert(text.includes("ZeroDivisionError: division by zero"), text);
+        assert(!text.includes("cell_server.py"), text);
+      }
+      assertEquals(libraryCause.ename, "RuntimeError");
+      assertEquals(libraryGroup.ename, "ExceptionGroup");
+      assertEquals(libraryContext.ename, "RuntimeError");
+      const librarySyntax = await run(
+        `exec(compile("try:\\n    compile('1 +', '<cell>', 'exec')\\nexcept Exception as e:\\n    library_syntax = e\\n", "library.py", "exec"))
+raise RuntimeError("library syntax") from library_syntax`,
+      );
+      const librarySyntaxText = librarySyntax.traceback.join("");
+      assertEquals(librarySyntax.ename, "RuntimeError");
+      assert(
+        librarySyntaxText.includes('File "library.py", line 2'),
+        librarySyntaxText,
+      );
+      assert(
+        librarySyntaxText.includes('File "<cell>", line 1'),
+        librarySyntaxText,
+      );
+      assert(
+        librarySyntaxText.includes("SyntaxError: invalid syntax"),
+        librarySyntaxText,
+      );
+      assert(!librarySyntaxText.includes("cell_server.py"), librarySyntaxText);
+      const libraryRepr = await run(
+        `exec(compile("class Value:\\n    def __repr__(self):\\n        compile('1 +', '<cell>', 'exec')\\n", "library.py", "exec"))
+Value()`,
+      );
+      const libraryReprText = libraryRepr.traceback.join("");
+      assertEquals(libraryRepr.ename, "SyntaxError");
+      assert(
+        libraryReprText.includes('File "library.py", line 3'),
+        libraryReprText,
+      );
+      assert(!libraryReprText.includes("cell_server.py"), libraryReprText);
+      // A caught callback error starts in the library before entering the
+      // cell. That library caller is real, even though it precedes <cell>.
+      const callbackCause = await run(
+        `def callback():
+    1 / 0
+exec(compile("def library_call(cb, wrap=False):\\n    try:\\n        cb()\\n    except Exception as e:\\n        if wrap:\\n            raise RuntimeError('callback context')\\n        return e\\n", "library.py", "exec"))
+callback_error = library_call(callback)
+raise RuntimeError("callback cause") from callback_error`,
+      );
+      const callbackGroup = await run(
+        'raise ExceptionGroup("callback group", [callback_error])',
+      );
+      const callbackContext = await run("library_call(callback, True)");
+      for (const error of [callbackCause, callbackGroup, callbackContext]) {
+        const text = error.traceback.join("");
+        assert(
+          text.includes('File "library.py", line 3, in library_call'),
+          text,
+        );
+        assert(text.includes('File "<cell>", line 2, in callback'), text);
+        assert(text.includes("ZeroDivisionError: division by zero"), text);
+        assert(!text.includes("cell_server.py"), text);
+      }
+      assertEquals(callbackCause.ename, "RuntimeError");
+      assertEquals(callbackGroup.ename, "ExceptionGroup");
+      assertEquals(callbackContext.ename, "RuntimeError");
+      const interrupted = await run(
+        "import time\nprint('tick', flush=True)\nwhile True:\n    time.sleep(0.05)\n",
+        true,
+      );
+      assertEquals(
+        [raised.ename, syntax.ename, interrupted.ename],
+        ["ZeroDivisionError", "SyntaxError", "KeyboardInterrupt"],
+      );
+      // The raise and the syntax error carry no server frames at all. An
+      // interrupt may land while the cell's print is inside the server's
+      // write/emit; those frames stay below the cell's, as a real traceback
+      // would. The interrupt's guarantee is where it starts, asserted below.
+      for (const error of [raised, syntax]) {
+        const text = error.traceback.join("");
+        assert(!text.includes("cell_server.py"), text);
+      }
+      for (const error of [raised, interrupted]) {
+        assertEquals(
+          error.traceback[0],
+          "Traceback (most recent call last):\n",
+        );
+        assert(
+          error.traceback[1].startsWith('  File "<cell>"'),
+          error.traceback.join(""),
+        );
+      }
+      assert(
+        syntax.traceback.join("").includes('File "<cell>", line 1'),
+        syntax.traceback.join(""),
+      );
+      assert(syntax.traceback[0].startsWith('  File "<cell>"'));
+    } finally {
+      booted.stopPump();
+      mk.killProcess(process.pid, 9);
+      mk.dispose();
+    }
   },
 });
