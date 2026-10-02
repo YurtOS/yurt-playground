@@ -270,7 +270,11 @@ Deno.test({
         [raised.ename, syntax.ename, interrupted.ename],
         ["ZeroDivisionError", "SyntaxError", "KeyboardInterrupt"],
       );
-      for (const error of [raised, syntax, interrupted]) {
+      // The raise and the syntax error carry no server frames at all. An
+      // interrupt may land while the cell's print is inside the server's
+      // write/emit; those frames stay below the cell's, as a real traceback
+      // would. The interrupt's guarantee is where it starts, asserted below.
+      for (const error of [raised, syntax]) {
         const text = error.traceback.join("");
         assert(!text.includes("cell_server.py"), text);
       }
