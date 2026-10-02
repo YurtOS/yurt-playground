@@ -76,13 +76,26 @@ def run_cell(code, namespace):
 
 
 def cell_traceback(error):
-    """The traceback from the cell's first frame on: the frames above it are
-    this server's (main, run_cell) or the compiler's, not the user's. A
-    SyntaxError never reaches the cell, and says where it is on its own."""
-    tb = error.__traceback__
-    while tb is not None and tb.tb_frame.f_code.co_filename != "<cell>":
-        tb = tb.tb_next
-    return traceback.format_exception(type(error), error, tb)
+    """Trim dispatch frames in every displayed exception without changing
+    exceptions saved in the cell namespace. SyntaxError keeps its location."""
+    formatted = traceback.TracebackException.from_exception(error)
+    pending = [formatted]
+    while pending:
+        current = pending.pop()
+        stack = current.stack
+        first = next((i for i, frame in enumerate(stack)
+                      if frame.filename == "<cell>"), len(stack))
+        # Re-raising a saved exception can put older dispatch frames below
+        # its first cell frame. Keep other callees, including Stream.write.
+        current.stack = traceback.StackSummary.from_list([
+            frame for frame in stack[first:]
+            if not (frame.filename == __file__
+                    and frame.name in ("main", "run_cell"))
+        ])
+        pending.extend(part for part in (current.__cause__, current.__context__)
+                       if part is not None)
+        pending.extend(current.exceptions or [])
+    return list(formatted.format())
 
 
 def main():

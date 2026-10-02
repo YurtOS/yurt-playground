@@ -269,6 +269,30 @@ Deno.test({
       // interrupt (yurt-ports#150).
       const raised = await run("def f():\n    1 / 0\nf()\n");
       const syntax = await run("1 +\n");
+      await run('saved = ValueError("original")\nraise saved\n');
+      const caused = await run('raise RuntimeError("outer") from saved\n');
+      const contextual = await run(
+        'try:\n    raise saved\nexcept ValueError:\n    raise RuntimeError("context")\n',
+      );
+      const grouped = await run('raise ExceptionGroup("group", [saved])\n');
+      for (const error of [caused, contextual, grouped]) {
+        const text = error.traceback.join("");
+        assert(!text.includes("cell_server.py"), text);
+        assert(text.includes("ValueError: original"), text);
+        assert(text.includes('File "<cell>", line 2'), text);
+      }
+      assertEquals(caused.ename, "RuntimeError");
+      assert(caused.traceback.join("").includes("direct cause"));
+      assertEquals(contextual.ename, "RuntimeError");
+      assert(contextual.traceback.join("").includes("During handling"));
+      assertEquals(grouped.ename, "ExceptionGroup");
+      const suppressed = await run(
+        'try:\n    raise saved\nexcept ValueError:\n    raise RuntimeError("hidden cause") from None\n',
+      );
+      const suppressedText = suppressed.traceback.join("");
+      assertEquals(suppressed.ename, "RuntimeError");
+      assert(!suppressedText.includes("ValueError"), suppressedText);
+      assert(!suppressedText.includes("cell_server.py"), suppressedText);
       const interrupted = await run(
         "import time\nprint('tick', flush=True)\nwhile True:\n    time.sleep(0.05)\n",
         true,
