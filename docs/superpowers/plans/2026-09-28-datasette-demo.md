@@ -587,3 +587,66 @@ Isolated follow-up: PR Python one-shot passes, but pip still times out at the
 existing 180-second bound. Kernel completion-pump repair #3069 remains open and
 unmerged; its relationship to these whole-suite failures is not established. The
 independent checks above do not qualify the whole suite or Datasette.
+
+### Follow-up diagnosis (2026-10-02)
+
+The ordinary pip command completes with the original pins, but takes about 283
+seconds after the shell prompt. Applying only kernel PTY-pump commit
+`0e859240489f5ffd53cc3072bcbd9c2b9c90b217` to the pinned host reduces this to
+about 65 seconds with the same kernel wasm and image. No timeout was relaxed.
+
+The published `kernel-v0.0.3` / sandbox mirror
+`kernel-wasm-playground-2026.09.29-c48d70d` has source rev
+`c48d70d80bd2c41361d578074504a281a59459e6` and SHA-256
+`006e447dad85da7c4ecac165c584112bdc951bbd340d51cdd4dc11038c9d0ffc`. Producer and
+mirror bytes match. This release includes the PTY repair. With its exact host,
+all eight affected Python/resident/seed/disposal tests pass alone, but the full
+suite exposes uncaught leader completion and disposal timer leaks. The proposed
+pin update was reverted after diagnosis; committed pins, local wasm bytes and
+the sibling host link again match `a3198c7`. This candidate is not a qualified
+Datasette pair.
+
+Kernel #3069's existing regression fails on this released host with
+`teardown must settle the original completion promise synchronously`. Applying
+its test and eight-line repair to a diagnostic clone makes the regression pass
+and the full playground suite pass: **311 passed, zero failed, one ignored**
+(2m55s). Diagnostic host HEAD is `9e6ad4795a7f703032d087e60b1d501f873b4838`;
+this is not a published host. Logs are
+`/private/tmp/datasette-176-dispose-{red,green}.log` and
+`/private/tmp/datasette-176-repaired-suite.log`. Kernel #3069 remains a separate
+owner merge gate; no hosted playground CI pass is claimed.
+
+Native producer reconstruction now builds and structurally verifies the
+MarkupSafe 3.0.3 WebAssembly wheel using ports #176's unchanged recipe,
+toolchain #210 source, and the preserved CPython 3.14.7 ILP32 development stage
+under `/private/tmp/pr3063-cpython-producer`. An older installed development
+prefix had `SIZEOF_LONG=8` and was rejected by the compiler. No header was
+edited to bypass this. The dynamic-libc export probe with guest SDK 0.0.19 still
+fails on duplicate `asyncify_start_unwind`; current published SDK inputs are
+being checked separately. Native import and default-threaded Datasette runtime
+qualification remain outstanding.
+
+Live refresh found toolchain #210 has moved to
+`0fe32933fc8309bb777685e491e5e989d09a5b70`. Its reviewed head withdraws
+executable libc whole-archive exports because they conflict with shared-runtime
+ownership. Rebuilt this exact head: its ordinary shared-import probe passes with
+SDK 0.0.19, including caller optimization and strict policy, and the unchanged
+MarkupSafe producer builds/stages successfully. With checksum-verified published
+SDK 0.0.25, the same probe and producer fail on duplicate Asyncify exports. No
+optimization opt-out was used to bypass this failure.
+
+The reconstructed locked Datasette closure structurally passes with 28
+distributions, target shebangs, native MarkupSafe/PyYAML wasm and no host
+bytecode. Guest probes on the candidate published kernel (with diagnostic
+teardown repair) fail: original `import httpx; import markupsafe._speedups`
+reports missing `__assert_fail`; `import yaml; import yaml._yaml` reports a
+runtime side module with a mutable global. Both the image interpreter and
+preserved producer interpreter give these failures. Payloads were extracted into
+a temporary guest home solely for the diagnostic; this is not a production image
+qualification. Logs are
+`/private/tmp/datasette-176-native-{probe,producer-probe}.log`.
+
+The user explicitly requested that #3069 remain open. No PR was merged or
+pushed. The diagnostic passing suite is retained separately from the restored
+production pins. Default-threaded Datasette HTTP acceptance remains blocked on
+the owning shared-runtime/loader work; the UI stays disabled.
