@@ -200,6 +200,11 @@ function errorFrame(ename: string): string {
 
 Deno.test({
   name: "errorFrames reads finished frames and leaves a partial tail alone",
+  // Host timers from the surrounding boot tests settle whenever the runner
+  // gets to them: on CI one completed inside this 0 ms test and tripped the
+  // leak check. Sanitizers off, like every other test in this file.
+  sanitizeOps: false,
+  sanitizeResources: false,
   fn() {
     const done = '{"t": "done", "count": 1}';
     const first = errorFrame("ZeroDivisionError");
@@ -223,6 +228,8 @@ Deno.test({
 
 Deno.test({
   name: "errorFrames throws on a finished line that is not JSON",
+  sanitizeOps: false, // foreign host timers, as above
+  sanitizeResources: false,
   fn() {
     // A completed line that carries the marker but does not parse means the
     // guest broke the protocol; swallowing that would hide it.
