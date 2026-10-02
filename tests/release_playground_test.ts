@@ -4,6 +4,22 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
+/** This process's environment without git's own variables. Under a git
+ * hook (the pre-commit fast suite runs this file) git exports GIT_DIR,
+ * GIT_INDEX_FILE and friends, and a child `git -C <fixture>` would then
+ * act on the repository being committed instead of the fixture: set its
+ * user.name to "Test", add remotes, tag it. */
+function fixtureEnv(
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  const env = Object.fromEntries(
+    Object.entries(Deno.env.toObject()).filter(([key]) =>
+      !key.startsWith("GIT_")
+    ),
+  );
+  return { ...env, ...extra };
+}
+
 async function command(
   executable: string,
   args: string[],
@@ -14,6 +30,8 @@ async function command(
     stdout: "piped",
     stderr: "piped",
     ...options,
+    clearEnv: true,
+    env: fixtureEnv(options.env),
   }).output();
   return result;
 }

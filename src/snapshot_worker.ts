@@ -53,6 +53,8 @@ export type SnapshotDemoFromWorker =
   | { type: "restored"; sealedAt: number; bytes: number }
   | { type: "booted" }
   | { type: "sealed"; sealedAt: number; bytes: number; ms: number }
+  /** The stored image is gone and no seal follows. */
+  | { type: "forgotten" }
   | { type: "error"; message: string };
 
 function post(message: SnapshotDemoFromWorker): void {
@@ -264,10 +266,7 @@ self.onmessage = async (event: MessageEvent<SnapshotDemoToWorker>) => {
     forgotten = true;
     if (sealTimer !== undefined) clearInterval(sealTimer);
     await clearSnapshot();
-    post({
-      type: "status",
-      text: "stored image dropped and sealing stopped; reload to boot fresh",
-    });
+    post({ type: "forgotten" });
     return;
   }
   if (msg.type !== "start") return;

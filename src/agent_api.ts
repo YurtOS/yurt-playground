@@ -170,16 +170,154 @@ export function parseListing(bytes: Uint8Array, dir: string): DirEntry[] {
   return entries;
 }
 
-function failed(result: Result | RawResult, what: string): Error {
-  const stderr = typeof result.stderr === "string"
-    ? result.stderr
-    : new TextDecoder().decode(result.stderr);
+function failed(
+  result: Result | RawResult,
+  what: string,
+  clean: (stderr: string) => string = (stderr) => stderr,
+): Error {
+  const stderr = clean(
+    typeof result.stderr === "string"
+      ? result.stderr
+      : new TextDecoder().decode(result.stderr),
+  );
   const why = "stillRunning" in result
     ? "timed out"
     : `exit ${result.code ?? result.signal}`;
   return new Error(
     `${what}: ${why}${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
   );
+}
+
+/** The atomic write's temporary file is the written file's path + this +
+ * the shell's pid. */
+const TEMP_SUFFIX = ".yurt-tmp.";
+
+/** A failed atomic write ends its stderr with a line of this and the
+ * temporary file's path, so hideAtomicTemp knows the exact name. */
+const TEMP_MARK = "yurt-atomic-temp=";
+
+/** How many symlinks a write follows at `path` before it gives up, as
+ * Linux's open(2) does (MAXSYMLINKS). */
+const SYMLINK_LIMIT = 40;
+
+/**
+ * Shell lines that set `d` to the file a write to `path` opens: `path`,
+ * or, while `d` is a symlink, the file it names, a relative target taken
+ * from the link's own directory. More than SYMLINK_LIMIT links is a loop:
+ * "<path>: Symbolic link loop" and exit 1, as the guest's `cat >` says.
+ * The directories on the way are left to the kernel. Not `readlink -f`:
+ * macOS's refuses a dangling link. `-n` and the `x` keep a target's
+ * trailing newlines, which `$(...)` would strip; `-n` because macOS's
+ * readlink adds no newline of its own after a target that ends in one.
+ */
+function resolveLinkLines(dest: string): string {
+  return `d=${dest}
+n=0
+while [ -L "$d" ]; do
+  n=$((n + 1))
+  if [ $n -gt ${SYMLINK_LIMIT} ]; then
+    printf '%s: Symbolic link loop\\n' ${dest} >&2
+    exit 1
+  fi
+  l=$(readlink -n -- "$d" && echo x) || exit
+  l=\${l%x}
+  case $l in
+    /*) d=$l ;;
+    *) d=\${d%/*}/$l ;;
+  esac
+done`;
+}
+
+/**
+ * The shell line for a non-atomic `fs.write`: `cat >` opens `path`, a
+ * symlink included, as open(2) does. `mode` gives the `&& chmod ...`
+ * suffix (or "") for the shell word naming the file; with one, the link
+ * is resolved first (resolveLinkLines) and the mode goes on its target,
+ * since the guest's chmod of a symlink changes the link's own mode
+ * (yurtos-kernel#3038).
+ */
+export function plainWriteLine(
+  path: string,
+  mode: (file: string) => string,
+): string {
+  const dest = quoted(path);
+  const suffix = mode('"$d"');
+  return suffix === ""
+    ? `cat > ${dest}`
+    : `${resolveLinkLines(dest)}\ncat > ${dest}${suffix}`;
+}
+
+/**
+ * The shell line for an atomic `fs.write`: stdin goes to a temporary file
+ * beside the file written, which then replaces it. `mode` gives the
+ * `&& chmod ...` suffix (or "") for the shell word naming that file; it
+ * stays outside the `if`, so it runs only once the file is in place. A
+ * failed `cat` or `mv` removes the temporary file, names it after
+ * TEMP_MARK, and exits with the failing command's status: the error names
+ * the file, not its temporary name (hideAtomicTemp), so a partial file
+ * left behind would go unseen. The guest shell, BusyBox ash, keeps the
+ * condition's status in `$?` at the start of the `else` branch, as POSIX
+ * requires.
+ *
+ * A symlink at `path` is written through, as open(O_WRONLY|O_TRUNC|
+ * O_CREAT) does (#166): `mv` renames onto the final component, so the
+ * line first follows the link chain (resolveLinkLines) and writes the
+ * file it names. The link stays a link. A dangling link creates its
+ * target; a link to a directory is refused like the directory. The mode
+ * goes on the resolved file too.
+ *
+ * A directory at `path` is refused: `mv` would move the temporary file
+ * into it and succeed (#163). The common case is caught before anything
+ * is written. A directory that appears while stdin is still streaming is
+ * caught after the `mv`, by the temporary file's name inside it, which is
+ * removed. Either way the message says "Is a directory", as the
+ * non-atomic `cat >` does, so the desktop API answers 400 NotAFile for
+ * both. Not BusyBox's `mv -T`: its refusal reads "is a directory", and
+ * macOS mv has no `-T`.
+ */
+export function atomicWriteLine(
+  path: string,
+  mode: (file: string) => string,
+): string {
+  const dest = quoted(path);
+  const refuse = `printf '%s: Is a directory\\n' ${dest} >&2`;
+  return `if [ -d ${dest} ]; then
+  ${refuse}
+  exit 1
+fi
+${resolveLinkLines(dest)}
+t=$d${TEMP_SUFFIX}$$
+if cat > "$t" && mv -f -- "$t" "$d"; then
+  # Where \`mv\` put the temporary file if "$d" became a directory.
+  i=$d/\${d##*/}${TEMP_SUFFIX}$$
+  if [ -d "$d" ] && [ -e "$i" ]; then
+    rm -f -- "$i"
+    ${refuse}
+    exit 1
+  fi
+else
+  s=$?
+  rm -f -- "$t"
+  printf '\\n%s%s' '${TEMP_MARK}' "$t" >&2
+  exit $s
+fi${mode('"$d"')}`;
+}
+
+/**
+ * The temporary file is this module's detail: a failed write's error names
+ * the file written (yurt-sandbox#301), the path the caller asked for or,
+ * through a symlink, its target. `stderr` is the write line's; when it
+ * ends with the TEMP_MARK line, that line goes, and each copy of the
+ * temporary path it names becomes the file's path. Nothing else changes,
+ * so a file whose own name holds TEMP_SUFFIX keeps it.
+ */
+export function hideAtomicTemp(stderr: string): string {
+  const at = stderr.lastIndexOf(`\n${TEMP_MARK}`);
+  if (at < 0) return stderr;
+  const temp = stderr.slice(at + 1 + TEMP_MARK.length);
+  const rest = stderr.slice(0, at);
+  const cut = temp.lastIndexOf(TEMP_SUFFIX);
+  return cut < 0 ? rest : rest.split(temp).join(temp.slice(0, cut));
 }
 
 export function createYurt(
@@ -227,17 +365,16 @@ export function createYurt(
         : data;
       const direct = transport.files;
       if (direct !== undefined) return direct.write(path, bytes, opts);
-      const mode = opts.mode === undefined
-        ? ""
-        : ` && chmod ${opts.mode.toString(8)} -- ${quoted(path)}`;
+      const mode = (file: string) =>
+        opts.mode === undefined
+          ? ""
+          : ` && chmod ${opts.mode.toString(8)} -- ${file}`;
       const line = opts.atomic === false
-        ? `cat > ${quoted(path)}${mode}`
-        : `t=${quoted(path)}.yurt-tmp.$$ && cat > "$t" && mv -f -- "$t" ${
-          quoted(path)
-        }${mode}`;
+        ? plainWriteLine(path, mode)
+        : atomicWriteLine(path, mode);
       const result = await exec(line, { stdin: bytes });
       if (!("code" in result) || result.code !== 0) {
-        throw failed(result, `write ${path}`);
+        throw failed(result, `write ${path}`, hideAtomicTemp);
       }
     },
     async list(path) {

@@ -215,12 +215,16 @@ function registerRamfsSymlink(
 
 /** Write `bytes` to `path` from the host, in scratch-sized chunks when
  * large: binary-safe and without a guest process (what a driver's stdin is
- * staged with, src/boot.ts). The file is the kernel's (root-owned, 0644),
- * which a reader needs and a writer does not get. */
+ * staged with, src/boot.ts). The file is the kernel's (root-owned, 0644)
+ * unless an `owner` is given: root's is what a file a guest may read but
+ * must not replace needs (the notebook's cell server). A file the login
+ * user has to remove takes that user as `owner`, because a sticky directory
+ * such as /tmp will not let it unlink a root file. */
 export function writeRamfsFile(
   mk: KernelHostInterface,
   path: string,
   bytes: Uint8Array,
+  owner?: { uid: number; gid: number },
 ): void {
   const pathBytes = s(path);
   const scratch = typeof mk.scratchLen === "number"
@@ -228,18 +232,21 @@ export function writeRamfsFile(
     : DEFAULT_KERNEL_SCRATCH_LEN;
   if (4 + pathBytes.byteLength + bytes.byteLength <= scratch) {
     mk.registerRamfsFile(pathBytes, bytes);
-    return;
+  } else {
+    const chunkSize = scratch - REGISTER_FILE_CHUNK_HEADER_BYTES -
+      pathBytes.byteLength;
+    if (chunkSize <= 0) {
+      throw new Error(`kernel scratch buffer is too small to write ${path}`);
+    }
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const chunk = bytes.subarray(offset, offset + chunkSize);
+      mk.registerRamfsFileChunk(pathBytes, offset, chunk);
+      offset += chunk.byteLength;
+    }
   }
-  const chunkSize = scratch - REGISTER_FILE_CHUNK_HEADER_BYTES -
-    pathBytes.byteLength;
-  if (chunkSize <= 0) {
-    throw new Error(`kernel scratch buffer is too small to write ${path}`);
-  }
-  let offset = 0;
-  while (offset < bytes.byteLength) {
-    const chunk = bytes.subarray(offset, offset + chunkSize);
-    mk.registerRamfsFileChunk(pathBytes, offset, chunk);
-    offset += chunk.byteLength;
+  if (owner !== undefined) {
+    chownPath(mk, path, owner.uid, owner.gid, SYS_CHOWN);
   }
 }
 

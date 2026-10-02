@@ -1,6 +1,10 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { bootPlayground, type PlaygroundTerm } from "../src/boot.ts";
+import {
+  bootPlayground,
+  type PlaygroundSession,
+  type PlaygroundTerm,
+} from "../src/boot.ts";
 import { handlePlaygroundRequest } from "../src/serve.ts";
 import { loadPins, resolveArtifacts } from "../src/pins.ts";
 
@@ -113,6 +117,10 @@ export type AshSession = {
   term: MemoryTerm;
   shown: () => string;
   stop: () => void;
+  /** What the page's `window.yurt.exec` runs over: an ExecutionRegistry
+   * (src/executions.ts) takes these two. */
+  process: NonNullable<PlaygroundSession["process"]>;
+  signal: NonNullable<PlaygroundSession["signal"]>;
 };
 
 export type AshSessionOptions = {
@@ -141,10 +149,15 @@ export async function bootAshSession(
       JSON.stringify(term.output())
     }`,
   );
+  if (session.process === undefined || session.signal === undefined) {
+    throw new Error("the in-tab session has no process/signal");
+  }
   return {
     term,
     shown: () => shown,
     stop: () => session.dispose(),
+    process: session.process,
+    signal: session.signal,
   };
 }
 

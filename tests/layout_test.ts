@@ -330,6 +330,24 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
   assertEquals(unsupported.includes("Cross-Origin-Embedder-Policy"), true);
 });
 
+Deno.test("the page's instructions hold outside Chrome and without a token", async () => {
+  // yurt-playground#154: `yurt pull` reads a public release now, and the
+  // proof is read in Safari and Firefox as well.
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  assertEquals(html.includes("GH_TOKEN"), false, "a token for yurt pull");
+  assertEquals(html.includes("private repo"), false, "a private repository");
+  const proof = html.slice(
+    html.indexOf('data-testid="proof"'),
+    html.indexOf("</details>", html.indexOf('data-testid="proof"')),
+  );
+  assertEquals(proof.includes("in Chrome."), false, "Chrome-only timing");
+  for (const browser of ["Chrome", "Safari", "Firefox"]) {
+    assertEquals(proof.includes(browser), true, `the proof names ${browser}`);
+  }
+});
+
 Deno.test("every install choice has an accessible name of its own", async () => {
   // Each radio gets its name from the visible group heading and platform label.
   const html = await Deno.readTextFile(

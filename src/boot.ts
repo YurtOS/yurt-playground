@@ -111,6 +111,8 @@ const LOGIN_USER = "user";
 const LOGIN_UID = 1000;
 const LOGIN_GID = 1000;
 const LOGIN_HOME = "/home/user";
+/** No such process: a group with no live member. */
+const ESRCH = 3;
 
 const DEFAULT_ENV: Record<string, string> = {
   HOME: LOGIN_HOME,
@@ -276,6 +278,23 @@ export async function bootPlayground(
       if (Number(chdirRc) !== 0) {
         throw new Error(`chdir ${LOGIN_HOME} failed: rc=${chdirRc}`);
       }
+      // Reap it at its exit: the host is its parent, so nothing in the guest
+      // waits for it, and until the host does it stays in the process table
+      // as a zombie (yurt-playground#148, yurtos-kernel#2813). Its output is
+      // in guest files, not in the per-pid buffers the reap drops. Best
+      // effort, as the kernel runner's `reapRootBestEffort`: the exit status
+      // is already known, and a failed wait must not replace it.
+      const start = process.runStartAsync.bind(process);
+      process.runStartAsync = () =>
+        start().finally(() => {
+          try {
+            mk.reapHostChild(process.pid);
+          } catch (error) {
+            console.warn(
+              `reap host-parented pid ${process.pid} failed: ${error}`,
+            );
+          }
+        });
       return process;
     };
     env.show("starting ash");
@@ -312,15 +331,22 @@ export async function bootPlayground(
       if (!disposed && !stopped) mk.ptySetWinsize(pty, rows, cols);
     });
 
-    const signalProcess = async (pid: number, signal: number) => {
-      if (disposed) throw new Error("browser sandbox is disposed");
-      const process = await spawnShell([
-        "/bin/sh",
-        "-c",
-        `kill -${signal} -- -${pid} 2>/dev/null; kill -${signal} ${pid} 2>/dev/null; true`,
-      ]);
-      process.closeStdin();
-      await process.runStartAsync();
+    const signalProcess = (pid: number, signal: number): Promise<void> => {
+      if (disposed) {
+        return Promise.reject(new Error("browser sandbox is disposed"));
+      }
+      const request = new Uint8Array(8);
+      const view = new DataView(request.buffer);
+      view.setUint32(0, pid, true);
+      view.setUint32(4, signal, true);
+      const { rc } = mk.kernelSyscall(METHOD.SYS_KILLPG, user.pid, request, 0);
+      // An empty group: the execution is already gone.
+      if (Number(rc) !== 0 && Number(rc) !== -ESRCH) {
+        return Promise.reject(
+          new Error(`killpg pgid=${pid} sig=${signal} failed: rc=${rc}`),
+        );
+      }
+      return Promise.resolve();
     };
 
     const stop = () => {
@@ -408,7 +434,10 @@ export async function bootPlayground(
           // console line discipline (ICRNL, VEOF, VERASE, ISIG) and a 64 KiB
           // buffer, so bytes would be altered or dropped; a file written by
           // the kernel is exact at any size.
-          writeRamfsFile(mk, path("in"), io.stdin);
+          writeRamfsFile(mk, path("in"), io.stdin, {
+            uid: LOGIN_UID,
+            gid: LOGIN_GID,
+          });
           stdinRedirect = `< ${q(path("in"))}`;
         }
         const process = await spawnShell([
@@ -462,11 +491,7 @@ export async function bootPlayground(
         };
       },
       async signal(pid, signal) {
-        // A process of the page's own, not the user's shell: `kill` is
-        // BusyBox's, and the login user may signal its own processes. The
-        // command's children (a pipeline, a background job) share its
-        // process group, so the group goes first; the pid itself after, in
-        // case it is not a group leader on this host.
+        // Signal the command and its children as the login user.
         await signalProcess(pid, signal);
       },
       // The Jupyter connection file, looked for by the page itself: nothing is

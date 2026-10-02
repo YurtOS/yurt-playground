@@ -545,3 +545,45 @@ residence beyond 120 seconds and stop/restart port reuse. Formatting, lint,
 whole TypeScript checking and the static build pass. These results establish the
 browser implementation and owning teardown repair locally; they do not replace
 matching published pin adoption, the upstream Datasette scene or hosted CI.
+
+### Resume checkpoint (2026-10-02)
+
+Reconciled PR head `2ba5c2cb` with main `f8d2a0d`. The conflict resolution
+preserves main's host-child reaping, login-user stdin ownership and direct
+`SYS_KILLPG`, alongside resident handles, disposal guards and sweep timer
+cancellation. The shell harness exposes process/signal and disposes the whole
+browser sandbox at cleanup. An independent focused review found no important
+merge-resolution defects.
+
+The old qualification directory and kernel-host checkout were deleted. Restored
+an exact host checkout at pinned `a3198c729de1a5a082f2ee3b1cf3c69ec38c2455` and
+downloaded the published kernel, image and Python seal using the existing
+installer, which verified every pinned SHA-256. These are the ordinary published
+artifacts, not a qualified Datasette image.
+
+Local format, lint, whole TypeScript checking and static build pass. Seventy
+focused protocol/lifecycle/routing/policy/page/pin/HTTP/Jupyter-launch tests
+pass. The Chromium bridge scene passes. The real guest HTTP scene passes assets,
+terminal edits, residence beyond 120 seconds, stop/restart and port reuse.
+
+The full suite reports 300 passed, four failed and one ignored (17m28s):
+`Datasette guest seed preserves edits and reset preserves foreign files`,
+`playground runs Python 3 one-shot commands with PYTHONHOME`,
+`playground's pip fails fast without network`, and
+`resident guest exit, stdin EOF and positive-pid signalling preserve another job`.
+The seed execution timed out; the others timed out waiting for terminal markers.
+After reporting the results, WorkerHost also raised `leader 8 exited` from its
+completion pump. Seed/reset and resident signalling both pass when rerun alone;
+all three disposal tests also pass alone. Clean main's Python one-shot test
+passes with the same pinned artifacts. The full-suite interaction remains
+unresolved, and no green whole-suite or hosted CI result is claimed.
+
+The qualification caches are absent, kernel #3071 remains open, kernel #3078
+remains unmerged and ports #176 remains draft. No original httpx/MarkupSafe
+probe or default-threaded Datasette qualification was rerun, no qualified image
+pin was adopted, and no merge or release is authorized.
+
+Isolated follow-up: PR Python one-shot passes, but pip still times out at the
+existing 180-second bound. Kernel completion-pump repair #3069 remains open and
+unmerged; its relationship to these whole-suite failures is not established. The
+independent checks above do not qualify the whole suite or Datasette.
