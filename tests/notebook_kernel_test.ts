@@ -6,7 +6,7 @@
  * public/demo/python3-seal.wasm (scripts/install-pinned-artifacts.sh); skips
  * without them unless PLAYGROUND_REQUIRE_ARTIFACTS is set.
  */
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { join } from "node:path";
 import {
   defaultHostState,
@@ -174,6 +174,62 @@ Deno.test({
   },
 });
 
+interface ErrorFrame {
+  ename: string;
+  traceback: string[];
+}
+
+/**
+ * The error frames in a pty transcript, one JSON object per line. The pump
+ * hands over chunks, not lines, so an unfinished trailing segment is ignored
+ * until its "\n" arrives: parsing a partial frame throws, and inside waitFor's
+ * predicate that fails the test instead of polling again. A malformed finished
+ * line still throws.
+ */
+function errorFrames(out: string): Array<ErrorFrame> {
+  const lines = out.split("\n");
+  if (!out.endsWith("\n")) lines.pop();
+  return lines.filter((line) => line.includes('"t": "error"'))
+    .map((line) => JSON.parse(line) as ErrorFrame);
+}
+
+/** A guest error frame, spaced the way the guest's json.dumps writes it. */
+function errorFrame(ename: string): string {
+  return `{"t": "error", "ename": "${ename}", "evalue": "", "traceback": ["Traceback (most recent call last):\\n", "  File \\"<cell>\\", line 1, in <module>\\n", "${ename}\\n"]}`;
+}
+
+Deno.test({
+  name: "errorFrames reads finished frames and leaves a partial tail alone",
+  fn() {
+    const done = '{"t": "done", "count": 1}';
+    const first = errorFrame("ZeroDivisionError");
+    const second = errorFrame("SyntaxError");
+    // The pump hands over chunks, not lines: the trailing segment is partway
+    // into the next frame until its "\n" arrives, marker included. Parsing it
+    // would throw inside waitFor's predicate and fail the test instead of
+    // polling again.
+    const tail = second.slice(0, second.indexOf('"ename"'));
+    assertEquals(
+      errorFrames(`${first}\n${done}\n${tail}`).map((f) => f.ename),
+      ["ZeroDivisionError"],
+    );
+    // Once the line is complete, both frames are there.
+    assertEquals(
+      errorFrames(`${first}\n${done}\n${second}\n`).map((f) => f.ename),
+      ["ZeroDivisionError", "SyntaxError"],
+    );
+  },
+});
+
+Deno.test({
+  name: "errorFrames throws on a finished line that is not JSON",
+  fn() {
+    // A completed line that carries the marker but does not parse means the
+    // guest broke the protocol; swallowing that would hide it.
+    assertThrows(() => errorFrames('{"t": "error", "ename": \n'));
+  },
+});
+
 Deno.test({
   name:
     "the notebook kernel's tracebacks start at the cell, not in cell_server.py",
@@ -183,15 +239,7 @@ Deno.test({
     const booted = await bootCellServer();
     if (booted === undefined) return;
     const { host: mk, pty, process } = booted;
-    const errors = () =>
-      booted.out.split("\n").filter((line) => line.includes('"t": "error"'))
-        .map(
-          (line) =>
-            JSON.parse(line) as {
-              ename: string;
-              traceback: string[];
-            },
-        );
+    const errors = () => errorFrames(booted.out);
     const run = async (code: string, interrupt = false) => {
       const seen = errors().length;
       mk.ptyMasterWrite(
