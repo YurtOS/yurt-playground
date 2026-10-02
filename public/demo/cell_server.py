@@ -91,13 +91,10 @@ def cell_traceback(error):
             getattr(current, "filename", None) == "<cell>" and dispatch is not None
             and all(frame.filename == ast.__file__ for frame in stack[dispatch + 1:])
         )
-        fallback = len(stack) if compiler_error else 0
-        first = next((i for i, frame in enumerate(stack)
-                      if frame.filename == "<cell>"), fallback)
         # Re-raising a saved exception can put older dispatch frames below
-        # its first cell frame. Keep other callees, including Stream.write.
+        # user frames. Keep other callers and callees, including Stream.write.
         current.stack = traceback.StackSummary.from_list([
-            frame for frame in stack[first:]
+            frame for frame in ([] if compiler_error else stack)
             if not (frame.filename == __file__
                     and frame.name in ("main", "run_cell"))
         ])

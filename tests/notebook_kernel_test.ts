@@ -344,6 +344,32 @@ Value()`,
         libraryReprText,
       );
       assert(!libraryReprText.includes("cell_server.py"), libraryReprText);
+      // A caught callback error starts in the library before entering the
+      // cell. That library caller is real, even though it precedes <cell>.
+      const callbackCause = await run(
+        `def callback():
+    1 / 0
+exec(compile("def library_call(cb, wrap=False):\\n    try:\\n        cb()\\n    except Exception as e:\\n        if wrap:\\n            raise RuntimeError('callback context')\\n        return e\\n", "library.py", "exec"))
+callback_error = library_call(callback)
+raise RuntimeError("callback cause") from callback_error`,
+      );
+      const callbackGroup = await run(
+        'raise ExceptionGroup("callback group", [callback_error])',
+      );
+      const callbackContext = await run("library_call(callback, True)");
+      for (const error of [callbackCause, callbackGroup, callbackContext]) {
+        const text = error.traceback.join("");
+        assert(
+          text.includes('File "library.py", line 3, in library_call'),
+          text,
+        );
+        assert(text.includes('File "<cell>", line 2, in callback'), text);
+        assert(text.includes("ZeroDivisionError: division by zero"), text);
+        assert(!text.includes("cell_server.py"), text);
+      }
+      assertEquals(callbackCause.ename, "RuntimeError");
+      assertEquals(callbackGroup.ename, "ExceptionGroup");
+      assertEquals(callbackContext.ename, "RuntimeError");
       const interrupted = await run(
         "import time\nprint('tick', flush=True)\nwhile True:\n    time.sleep(0.05)\n",
         true,
