@@ -357,6 +357,37 @@ Deno.test("Datasette reset keeps Start disabled until the seed transaction finis
   await resetting;
   assertEquals(d.snapshot.state, "stopped");
 });
+Deno.test("Datasette never publishes stopped before a reset's seed finishes", async () => {
+  const f = fixture(),
+    ready = Promise.withResolvers<void>(),
+    reset = Promise.withResolvers<
+      { code: number; stdout: string; stderr: string }
+    >();
+  const finite = f.deps.finite, states: string[] = [];
+  f.deps.finite = async (...args) => {
+    if (args[0].endsWith("--reset")) {
+      ready.resolve();
+      return reset.promise;
+    }
+    return finite(...args);
+  };
+  const changed = f.deps.changed;
+  f.deps.changed = (s) => {
+    states.push(s.state);
+    changed(s);
+  };
+  const d = new DatasetteDemo(f.deps);
+  await d.start();
+  states.length = 0;
+  const resetting = d.reset();
+  await ready.promise;
+  // The resident's exit lands while the reset is stopping; Start must stay
+  // disabled until the seed is replaced, or its generation bump aborts it.
+  assertEquals(states.includes("stopped"), false, states.join());
+  reset.resolve({ code: 0, stdout: "", stderr: "" });
+  await resetting;
+  assertEquals(states.at(-1), "stopped");
+});
 Deno.test("Datasette concurrent Start shares one launch and log failure keeps the original reason", async () => {
   const f = fixture(),
     probe = Promise.withResolvers<GuestHttpReply>(),

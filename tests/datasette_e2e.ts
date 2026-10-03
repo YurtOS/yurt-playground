@@ -140,7 +140,8 @@ try {
       link.click();
       link.remove();
     },
-    server.url + prefix + "orders.csv?sql=" +
+    // Upstream sends Content-Disposition: attachment only with _dl=1.
+    server.url + prefix + "orders.csv?_dl=1&sql=" +
       encodeURIComponent(DATASETTE_QUERY),
   );
   const csv = await csvPromise;

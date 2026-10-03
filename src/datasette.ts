@@ -198,44 +198,48 @@ export class DatasetteDemo {
     if (this.#snapshot.state === "stuck") {
       return Promise.reject(new Error("resident exit unconfirmed"));
     }
-    const stopped = this.stop(), generation = this.#generation;
-    return stopped.then(() =>
-      this.#serialize(async () => {
+    ++this.#generation;
+    const generation = this.#generation;
+    this.#startup?.abort();
+    this.#cancelRequests();
+    this.#set({ state: "stopping" });
+    // One serialized step that never publishes "stopped" before the seed is
+    // replaced: Start enabled in between would bump the generation and abort
+    // this reset.
+    return this.#serialize(async () => {
+      try {
+        await this.#setup.catch(() => {});
+        await this.#stopResident(false);
         if (generation !== this.#generation) return this.snapshot;
-        try {
-          if (this.#resident && !this.#ended) {
-            throw new Error("resident exit unconfirmed");
-          }
-          this.#set({ state: "stopping" });
-          const source = await this.#seed();
-          if (generation !== this.#generation) return this.snapshot;
-          await this.#finite(
-            `mkdir -p ${quote(DATASETTE_DIR)} && exec sh -c ${
-              quote(`cat > ${DATASETTE_DIR}/datasette_seed.py`)
-            }`,
-            source,
-          );
-          if (generation !== this.#generation) return this.snapshot;
-          await this.#finite(
-            `exec python3 ${
-              quote(DATASETTE_DIR + "/datasette_seed.py")
-            } --reset`,
-          );
-          if (generation === this.#generation) this.#set({ state: "stopped" });
-          return this.snapshot;
-        } catch (error) {
-          if (
-            generation === this.#generation && this.#snapshot.state !== "stuck"
-          ) {
-            this.#set({
-              state: "failed",
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-          throw error;
+        if (this.#resident && !this.#ended) {
+          throw new Error("resident exit unconfirmed");
         }
-      })
-    );
+        const source = await this.#seed();
+        if (generation !== this.#generation) return this.snapshot;
+        await this.#finite(
+          `mkdir -p ${quote(DATASETTE_DIR)} && exec sh -c ${
+            quote(`cat > ${DATASETTE_DIR}/datasette_seed.py`)
+          }`,
+          source,
+        );
+        if (generation !== this.#generation) return this.snapshot;
+        await this.#finite(
+          `exec python3 ${quote(DATASETTE_DIR + "/datasette_seed.py")} --reset`,
+        );
+        if (generation === this.#generation) this.#set({ state: "stopped" });
+        return this.snapshot;
+      } catch (error) {
+        if (
+          generation === this.#generation && this.#snapshot.state !== "stuck"
+        ) {
+          this.#set({
+            state: "failed",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        throw error;
+      }
+    });
   }
   async #finite(line: string, stdin?: Uint8Array, timeoutMs?: number) {
     const result = await this.deps.finite(line, stdin, timeoutMs);
@@ -251,9 +255,7 @@ export class DatasetteDemo {
     this.#ended = true;
     this.#startup?.abort(new Error(`resident exited: ${String(detail)}`));
     this.#cancelRequests();
-    if (
-      this.#snapshot.state === "stuck" || this.#snapshot.state === "stopping"
-    ) this.#set({ state: "stopped" });
+    if (this.#snapshot.state === "stuck") this.#set({ state: "stopped" });
     else if (this.#snapshot.state === "running") {
       this.#set({
         state: "failed",
@@ -273,7 +275,7 @@ export class DatasetteDemo {
       controller.abort();
     }
   }
-  async #stopResident() {
+  async #stopResident(publish = true) {
     if (this.#resident && !this.#ended) {
       await this.#resident.signalPid(15).catch(() => {});
       if (!await this.#waitExit(10_000)) {
@@ -286,7 +288,7 @@ export class DatasetteDemo {
     }
     this.#resident = undefined;
     await this.#finite(`exec rm -f ${quote(DATASETTE_DIR + "/server.pid")}`);
-    this.#set({ state: "stopped" });
+    if (publish) this.#set({ state: "stopped" });
   }
   async #ready(
     session: string,
