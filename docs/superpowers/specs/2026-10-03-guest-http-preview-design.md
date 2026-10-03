@@ -1,6 +1,6 @@
 # Guest HTTP preview: generic "Yurtify" for web apps
 
-Status: draft, revised after design review (round 1 on PR #185). Issue:
+Status: draft, revised after three design reviews on PR #185. Issue:
 [#168](https://github.com/YurtOS/yurt-playground/issues/168). Builds on the
 scoped service-worker bridge from #173 (draft PR #176), which already serves
 unmodified upstream Datasette from the guest.
@@ -79,13 +79,21 @@ document policy. A shared `ResidentApp` supervisor extracted from
 app supplies its commands. The port lives only in coordinator/registry state,
 never in page or SW messages.
 
-Port ownership: before spawning, the coordinator dials the port and refuses to
-start if anything answers; the spawned process must stay alive through
-readiness, so an `EADDRINUSE` exit fails the start instead of the bridge serving
-someone else's listener. A server that binds the port between the pre-check and
-the spawn is a remaining race; the readiness path asserts a response only the
-qualified app produces. Datasette is entry one; a stdlib `wsgiref` preview app
-is entry two (the #168 demo).
+Transport scope: phase 1 is **browser tab only**. Only the browser session has
+`guestPorts` (`boot.ts` `BROWSER_GUEST_PORTS`); the desktop host's
+`GET /ws/port/<n>` accepts only the five kernel ports (404 otherwise) and
+retries a refused connect for 3 s, so a clean refusal check is not possible
+there. Desktop support needs a host change and is a separate item.
+
+Port ownership: before spawning, the coordinator dials the port. Connect
+succeeded means busy: refuse to start. `rc=-111` (ECONNREFUSED, thrown by
+`connectSandboxPort`) means free. Any other error fails the start. The spawned
+process must then stay alive through readiness, so an `EADDRINUSE` exit fails
+the start instead of the bridge serving someone else's listener. Remaining
+races: a server that binds between the pre-check and the spawn, and a full
+listener backlog (also ECONNREFUSED); both are caught by the survive-readiness
+rule plus a readiness response only the qualified app produces. Datasette is
+entry one; a stdlib `wsgiref` preview app is entry two (the #168 demo).
 
 Multiple apps: owner registry keyed by `(app, session)`; one tab may own
 several; limits per session and global (apps, in-flight requests); stop and
@@ -96,7 +104,8 @@ reset clean up each app's owner, jar and pending requests.
 Allow `GET HEAD POST PUT PATCH DELETE OPTIONS`. The SW reads the body with
 `await request.blob()` (portable: Firefox does not expose `Request.body`, and
 `Content-Length` is a forbidden header the SW cannot see), answers 413 when
-`blob.size` exceeds 16 MiB, then `arrayBuffer()`, transferred SW -> owner ->
+`blob.size` exceeds 16 MiB (this bounds what is forwarded, not SW memory, which
+holds the blob first), then `arrayBuffer()`, transferred SW -> owner ->
 coordinator without copies. The client sends an explicit `Content-Length`;
 browser-chunked bodies are buffered, never forwarded chunked. In-flight requests
 are capped (per session, global); excess gets 503. No streaming in phase 1, so
@@ -109,28 +118,36 @@ SW (forbidden header) and the coordinator injects its own (section 5). Dropped:
 hop-by-hop headers, `Upgrade`, `Expect`, proxy headers, anything else.
 
 Division of work (the port never appears in SW messages): the SW classifies the
-initiator and adds it to the `datasette-http` message: `same-app` when the
-initiating client (resolved from `event.clientId`, or
-`request.destination ===
-"iframe"` for the app frame's own navigations) is under
-the same `/apps/<app>/<session>/` prefix or is the owner's app frame, else
-`other`, plus whether the method is safe. The coordinator then builds the guest
-request.
+initiator and adds it to the `datasette-http` message; the coordinator then
+builds the guest request. Classification:
+
+- Subresource and fetch requests (non-empty `event.clientId`): `same-app` when
+  `clients.get(event.clientId).url` is under the same `/apps/<app>/<session>/`
+  prefix, else `other`.
+- Navigations (`event.clientId` is always empty for them): `same-app` when
+  `request.referrer` is under the same prefix. A form POST from app A's frame to
+  `/apps/B/<s>/...` is therefore `other` for B. The initial iframe load and
+  "Reload frame" carry the page's referrer (`/`) and are `owner-frame`, a
+  separate class: only `request.destination === "iframe"` navigations whose
+  target prefix is the frame's own owner-registered prefix.
+- Each message also carries whether the method is safe.
 
 The rules are deliberately Lax-like and framed as hygiene against accidental
 cross-app requests, **not** as protection from other same-origin documents (any
 same-origin script can forge a referrer or reach into the frame; the Security
 model already says qualified apps are trusted):
 
-- Safe methods (GET/HEAD/OPTIONS) from a `same-app` initiator or an iframe
-  navigation: inject jar cookies; send no `Origin`; send `Referer` as the mapped
-  full guest URL (`http://127.0.0.1:<port>/...`) when one exists.
-- Unsafe methods from `same-app`: inject cookies; `Origin` =
-  `http://127.0.0.1:<port>`; `Referer` as above, so the app's CSRF/Host checks
-  behave as on Linux.
-- Unsafe methods from `other`: no cookies, `Origin: null`.
-- First load and "Reload frame" (referrer `/`, `destination === "iframe"`) and
-  apps using `no-referrer` therefore still carry cookies on safe requests.
+| Initiator                                     | Safe method (GET/HEAD/OPTIONS)                     | Unsafe method                                                               |
+| --------------------------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------- |
+| `same-app`                                    | cookies; no `Origin`; `Referer` = mapped guest URL | cookies; `Origin` = `http://127.0.0.1:<port>`; `Referer` = mapped guest URL |
+| `owner-frame` (first load, reload)            | cookies; no `Origin`; no `Referer`                 | not applicable (the frame loads by GET)                                     |
+| `other`, or navigation with an empty referrer | no cookies; no `Origin`; no `Referer`              | no cookies; `Origin: null`; no `Referer`                                    |
+
+An unsafe navigation from an app that sends `no-referrer` therefore has no
+cookies and fails its CSRF check, as it would behind `SameSite=Strict`
+semantics; apps that need that flow must not set `no-referrer` (the bridge
+cannot override a `<meta name="referrer">`). Safe requests from `other` get no
+cookies, so a logged-in app is not reachable from another app's frame.
 
 ### 4. Redirects
 
