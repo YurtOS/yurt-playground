@@ -5,7 +5,10 @@
  */
 import {
   bootPlayground,
+  browserPins,
+  type BrowserPlaygroundSession,
   fetchPlaygroundBytes,
+  type PlaygroundSession,
   type PlaygroundTerm,
 } from "./boot.ts";
 import {
@@ -33,6 +36,12 @@ import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 
 installCoordinatorWorkerProxy();
+import {
+  attachDatasette,
+  DatasetteDemo,
+  handleDatasetteMessage,
+} from "./datasette.ts";
+import type { GuestReply, LifecycleReply } from "./datasette_protocol.ts";
 type ToWorker =
   // `kernelPorts` set: the desktop app's native sandbox (see native.ts),
   // reached over WebSockets; otherwise the kernel boots in this worker.
@@ -70,6 +79,9 @@ type ToWorker =
   | { type: "yurt-list"; req: number };
 
 type FromWorker =
+  | { type: "datasette-qualification"; hashes: string[] }
+  | GuestReply
+  | LifecycleReply
   | { type: "status"; text: string }
   | { type: "out"; bytes: number[] }
   | { type: "error"; message: string }
@@ -102,8 +114,9 @@ type FromWorker =
   };
 
 let jupyter: JupyterTransport | undefined;
-let launchSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
+let launchSession: PlaygroundSession | undefined;
 let executions: ExecutionRegistry | undefined;
+let datasette: DatasetteDemo | undefined;
 
 async function serveYurt(msg: ToWorker): Promise<void> {
   if (
@@ -156,8 +169,8 @@ function subscribeJupyter(transport: JupyterTransport): void {
   });
 }
 
-function post(msg: FromWorker): void {
-  self.postMessage(msg);
+function post(msg: FromWorker, transfer: Transferable[] = []): void {
+  self.postMessage(msg, transfer);
 }
 
 function workerTerm(init: { cols: number; rows: number }): PlaygroundTerm {
@@ -198,6 +211,7 @@ function workerTerm(init: { cols: number; rows: number }): PlaygroundTerm {
 
 self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
+  if (await handleDatasetteMessage(datasette, msg, post)) return;
   await serveYurt(msg);
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
@@ -273,7 +287,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     return;
   }
   if (msg.type !== "start") return;
-  let session: Awaited<ReturnType<typeof bootPlayground>> | undefined;
+  let session: PlaygroundSession | undefined;
+  let browserSession: BrowserPlaygroundSession | undefined;
   try {
     kernelPorts = msg.kernelPorts;
     const env = {
@@ -288,14 +303,32 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       show: (text: string) => post({ type: "status", text }),
       term: workerTerm({ cols: msg.cols, rows: msg.rows }),
     };
-    session = kernelPorts === undefined
-      ? await bootPlayground(env)
-      : await bootNativePlayground(
+    if (kernelPorts === undefined) {
+      browserSession = await bootPlayground(env);
+      session = browserSession;
+    } else {
+      session = await bootNativePlayground(
         env,
         msg.apiToken === undefined ? undefined : { token: msg.apiToken },
       );
+    }
     if (session.process !== undefined && session.signal !== undefined) {
       executions = new ExecutionRegistry(session.process, session.signal);
+    }
+    const pins = kernelPorts === undefined ? await browserPins() : undefined;
+    const qualification = pins?.datasette;
+    post({
+      type: "datasette-qualification",
+      hashes: qualification?.inlineScriptHashes ?? [],
+    });
+    if (
+      pins !== undefined && browserSession !== undefined &&
+      executions !== undefined
+    ) {
+      datasette = attachDatasette(browserSession, pins, {
+        executions,
+        send: post,
+      });
     }
     post({ type: "status", text: "starting Jupyter" });
     launchSession = session;
@@ -316,7 +349,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     post({ type: "notebook-ready" });
   } catch (error) {
     try {
-      session?.stop();
+      if (browserSession !== undefined) browserSession.dispose();
+      else session?.stop();
     } catch {
       // The guest may already have stopped while startup failed.
     }

@@ -20,7 +20,7 @@ export type JupyterLaunchSession = {
    * shell (the in-tab boot spawns it; the desktop page asks the launcher
    * for a host session, `nativeLaunchHooks`). Without it -- a launcher
    * older than the API -- the launch is typed at the prompt. */
-  spawn?(line: string): Promise<void>;
+  spawn?(line: string): Promise<unknown>;
   /** A guest file's bytes, or `undefined` when it does not exist yet (the
    * in-tab boot reads the VFS directly; the desktop page reads through the
    * launcher). Without it the connection-file wait is typed at the prompt
@@ -83,7 +83,6 @@ export type JupyterReply = {
 
 /** shell, iopub, stdin, control, hb. */
 export type KernelPorts = [number, number, number, number, number];
-
 export function buildKernelLaunchCommand(
   connectionFile = JUPYTER_CONNECTION_FILE,
   ports?: KernelPorts,

@@ -39,6 +39,7 @@ jobs:
     # than on a runner of its own.
     outputs:
       present: ${{ steps.token.outputs.present }}
+      datasette: ${{ steps.datasette.outputs.qualified }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -76,6 +77,10 @@ jobs:
               echo '`KERNEL_CHECKOUT_TOKEN` repository secret to enable it.'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Datasette qualification gate
+        id: datasette
+        run: echo "qualified=$(deno run --allow-read scripts/datasette-qualified.ts)" >> "$GITHUB_OUTPUT"
 
       - name: fmt
         run: deno fmt --check
@@ -154,7 +159,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scene: [playground, jupyterlite, snapshot, notebook_snapshot, agent]
+        scene: [
+          playground,
+          jupyterlite,
+          snapshot,
+          notebook_snapshot,
+          agent,
+          datasette_bridge,
+          guest_http,
+        ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -187,6 +200,31 @@ jobs:
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
         run: deno run --allow-all tests/${{ matrix.scene }}_e2e.ts
 
+  datasette-acceptance:
+    name: acceptance (datasette)
+    needs: checks
+    if: ${{ !cancelled() && needs.checks.outputs.present == 'true' && needs.checks.outputs.datasette == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: playground
+      - uses: ./playground/.github/actions/site-inputs
+        with:
+          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+      - name: Install Chromium
+        working-directory: playground
+        run: deno run --allow-all node_modules/playwright/cli.js install chromium
+      - name: Qualified Datasette acceptance
+        timeout-minutes: 20
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+          PLAYGROUND_REQUIRE_ARTIFACTS: "1"
+        run: deno run --allow-all tests/datasette_e2e.ts
+
   # One context for the legs above, under the name `main`'s ruleset requires.
   # Renaming the single job they replaced would otherwise have orphaned that
   # requirement: the ruleset would wait for a check nobody reports (#123
@@ -195,7 +233,7 @@ jobs:
   # the token is absent would block the merge rather than explain itself.
   integration:
     name: integration (cross-repo)
-    needs: [checks, tests, acceptance]
+    needs: [checks, tests, acceptance, datasette-acceptance]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -206,6 +244,8 @@ jobs:
           TOKEN_PRESENT: ${{ needs.checks.outputs.present }}
           TESTS: ${{ needs.tests.result }}
           ACCEPTANCE: ${{ needs.acceptance.result }}
+          DATASETTE_QUALIFIED: ${{ needs.checks.outputs.datasette }}
+          DATASETTE: ${{ needs.datasette-acceptance.result }}
         run: |
           set -euo pipefail
           echo "checks=$CHECKS token=$TOKEN_PRESENT tests=$TESTS acceptance=$ACCEPTANCE"
@@ -231,4 +271,13 @@ jobs:
               exit 1
               ;;
           esac
-          [ "$TESTS" = "success" ] && [ "$ACCEPTANCE" = "success" ]
+          [ "$TESTS" = "success" ]
+          [ "$ACCEPTANCE" = "success" ]
+          case "$DATASETTE_QUALIFIED" in
+            true) [ "$DATASETTE" = "success" ] ;;
+            false)
+              [ "$DATASETTE" = "skipped" ]
+              echo "Datasette runtime acceptance not run: no qualified published pair"
+              ;;
+            *) echo "unknown Datasette qualification verdict" >&2; exit 1 ;;
+          esac

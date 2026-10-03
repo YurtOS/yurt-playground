@@ -96,5 +96,19 @@ Deno.test("_headers detaches the strict policy before the JupyterLite one", () =
   assertStringIncludes(lines[5], "'unsafe-eval' 'sha256-j'");
   assertStringIncludes(lines[2], "https://huggingface.co");
   assertEquals(lines[5].includes("http"), false);
-  assertEquals(lines.length, 6);
+  assertEquals(lines.length, 12);
+});
+
+Deno.test("only the root owner may frame same-origin guest documents", () => {
+  for (const path of ["/", "/index.html"]) {
+    assertStringIncludes(documentPolicy(path, []), "frame-src 'self'");
+    assertStringIncludes(documentPolicy(path, []), "form-action 'none'");
+  }
+  for (const path of ["/terminal.html", "/apps/datasette/unavailable.html"]) {
+    assertStringIncludes(documentPolicy(path, []), "frame-src 'none'");
+  }
+  const file = headersFile({}, [], []);
+  for (const path of ["/", "/index.html"]) {
+    assertStringIncludes(file, `${path}\n  ! Content-Security-Policy\n`);
+  }
 });

@@ -46,3 +46,5 @@ jupyterlite/yurt-kernel/yurt_jupyterlite_kernel/
 
 # The local agent's worker (#140), bundled by scripts/serve.ts
 public/llm_worker.bundle.js
+
+public/apps/datasette/service-worker.js

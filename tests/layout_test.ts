@@ -72,7 +72,7 @@ Deno.test("every test file runs in exactly one CI shard, and the workflow runs t
   // requires; losing it blocks every pull request on a check nobody sends.
   assertEquals(workflow.includes("name: integration (cross-repo)"), true);
   assertEquals(
-    /needs: \[checks, tests, acceptance\]/.test(workflow),
+    /needs: \[checks, tests, acceptance, datasette-acceptance\]/.test(workflow),
     true,
     "the aggregate gate must wait for every leg",
   );
@@ -114,7 +114,7 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   // One job per scene since #123, so the scene is the matrix value and the
   // run line is templated; every `tests/<scene>_e2e.ts` must exist.
   const scenes = workflow.match(/scene: \[([^\]]+)\]/)?.[1]
-    .split(",").map((s) => s.trim()) ?? [];
+    .split(",").map((s) => s.trim()).filter(Boolean) ?? [];
   assertEquals(scenes.includes("playground"), true, `scenes: ${scenes}`);
   assertEquals(
     workflow.includes("deno run --allow-all tests/${{ matrix.scene }}_e2e.ts"),
@@ -140,11 +140,21 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   }
   assertEquals(
     e2eFiles.filter((s) =>
-      s !== "desktop" && s !== "agent_webgpu" && !scenes.includes(s)
+      s !== "desktop" && s !== "agent_webgpu" && s !== "datasette" &&
+      !scenes.includes(s)
     ),
     [],
     "an e2e scene exists that no acceptance job runs",
   );
+  assertEquals(
+    workflow.includes("needs.checks.outputs.datasette == 'true'"),
+    true,
+  );
+  assertEquals(
+    workflow.includes("deno run --allow-all tests/datasette_e2e.ts"),
+    true,
+  );
+  assertEquals(workflow.includes('[ "$DATASETTE" = "success" ]'), true);
   // The notebook interface is accepted too -- its own job since #123.
   assertEquals(scenes.includes("jupyterlite"), true);
   // Browser acceptance is a required step, not a repository-variable opt-in:

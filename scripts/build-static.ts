@@ -39,6 +39,9 @@ const STATIC_FILES = [
   "snapshot-bridge.js",
   "notebook_kernel.bundle.js",
   "demo/cell_server.py",
+  "demo/datasette_seed.py",
+  "apps/datasette/service-worker.js",
+  "apps/datasette/unavailable.html",
   "worker_bootstrap.js",
   "playground-bridge.js",
   "verify.js",
@@ -63,6 +66,7 @@ async function copyFiles(
   targetDir: string,
 ) {
   for (const file of files) {
+    await Deno.mkdir(dirname(join(targetDir, file)), { recursive: true });
     await Deno.copyFile(join(sourceDir, file), join(targetDir, file));
   }
 }
@@ -140,6 +144,10 @@ export async function buildStaticSite(): Promise<void> {
       null,
       2,
     ) + "\n",
+  );
+  await Deno.writeTextFile(
+    join(distDir, "_redirects"),
+    "/apps/datasette/:session/* /apps/datasette/unavailable.html 200\n",
   );
   await writeLlmRuntime();
   await Deno.writeTextFile(join(distDir, "_headers"), await siteHeaders());
