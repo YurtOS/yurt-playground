@@ -117,37 +117,27 @@ authorization. `Cookie` is not allow-listed: the browser never exposes it to a
 SW (forbidden header) and the coordinator injects its own (section 5). Dropped:
 hop-by-hop headers, `Upgrade`, `Expect`, proxy headers, anything else.
 
-Division of work (the port never appears in SW messages): the SW classifies the
-initiator and adds it to the `datasette-http` message; the coordinator then
-builds the guest request. Classification:
+Cookies and `Origin`/`Referer` (the port never appears in SW messages; the
+coordinator builds the guest request from the prefix it already owns): every
+request to an app's prefix, whether it arrives through the SW or directly from
+the owner page, gets that app's jar cookies. `Origin` and `Referer` are
+synthesized exactly as a browser on the app's own page would send them: none on
+safe methods (GET/HEAD/OPTIONS); on unsafe methods `Origin` =
+`http://127.0.0.1:<port>` and `Referer` = the mapped full guest URL, so the
+app's CSRF/Host checks behave as on Linux.
 
-- Subresource and fetch requests (non-empty `event.clientId`): `same-app` when
-  `clients.get(event.clientId).url` is under the same `/apps/<app>/<session>/`
-  prefix, else `other`.
-- Navigations (`event.clientId` is always empty for them): `same-app` when
-  `request.referrer` is under the same prefix. A form POST from app A's frame to
-  `/apps/B/<s>/...` is therefore `other` for B. The initial iframe load and
-  "Reload frame" carry the page's referrer (`/`) and are `owner-frame`, a
-  separate class: only `request.destination === "iframe"` navigations whose
-  target prefix is the frame's own owner-registered prefix.
-- Each message also carries whether the method is safe.
-
-The rules are deliberately Lax-like and framed as hygiene against accidental
-cross-app requests, **not** as protection from other same-origin documents (any
-same-origin script can forge a referrer or reach into the frame; the Security
-model already says qualified apps are trusted):
-
-| Initiator                                     | Safe method (GET/HEAD/OPTIONS)                     | Unsafe method                                                               |
-| --------------------------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------- |
-| `same-app`                                    | cookies; no `Origin`; `Referer` = mapped guest URL | cookies; `Origin` = `http://127.0.0.1:<port>`; `Referer` = mapped guest URL |
-| `owner-frame` (first load, reload)            | cookies; no `Origin`; no `Referer`                 | not applicable (the frame loads by GET)                                     |
-| `other`, or navigation with an empty referrer | no cookies; no `Origin`; no `Referer`              | no cookies; `Origin: null`; no `Referer`                                    |
-
-An unsafe navigation from an app that sends `no-referrer` therefore has no
-cookies and fails its CSRF check, as it would behind `SameSite=Strict`
-semantics; apps that need that flow must not set `no-referrer` (the bridge
-cannot override a `<meta name="referrer">`). Safe requests from `other` get no
-cookies, so a logged-in app is not reachable from another app's frame.
+Deliberately **no initiator gating.** An earlier draft classified requests by
+initiator (referrer/client URL) to withhold cookies from other apps' frames. It
+was dropped: a SW cannot identify the embedding frame for navigations
+(`clientId` is empty), any same-origin script can forge a referrer or reach into
+the frame, referrer policies (`no-referrer`, `origin`) break it for real apps,
+and it left the owner page's direct requests unclassified. Qualified apps are
+trusted (Security model); isolation between apps is the job of the
+origin-isolation work in section 8, not of a heuristic. Consequence, stated up
+front: while two qualified apps run in one tab, one app's frame can cause
+requests to the other with the other's cookies. With a single qualified app
+(Datasette) this does not arise, and phase 1 limits concurrent qualified apps to
+those that are safe to co-host.
 
 ### 4. Redirects
 
