@@ -58,9 +58,12 @@ package whose static assets are known (Datasette today). Therefore:
 
 Path-prefix mount on the playground origin (a virtual origin per app needs
 wildcard DNS and breaks COOP/COEP). `<app>` is a registry id; `<session>` is a
-per-start UUID, so owner state and the cookie jar die with the process. Reserved
-paths for the SW script and the unavailable page live outside any app id
-(`/apps/_bridge/...`).
+per-start UUID, so owner state and the cookie jar die with the process. The SW
+script is served directly at `/apps/bridge-sw.js` (a script's maximum scope is
+its own directory, so this avoids `Service-Worker-Allowed`), and the unavailable
+page at `/apps/_bridge/unavailable.html`. `bridge-sw.js` and `_bridge` are
+reserved and cannot be app ids, and the `/apps/:app/:session/*` static fallback
+excludes them.
 
 Apps must be prefix-aware through their own configuration (Datasette `base_url`,
 Flask `APPLICATION_ROOT`, Django `FORCE_SCRIPT_NAME`, uvicorn `--root-path`,
@@ -74,11 +77,15 @@ A static record per qualified app: `id`, guest `port`, readiness predicate,
 document policy. A shared `ResidentApp` supervisor extracted from
 `DatasetteDemo` owns spawn, readiness, stop-releases-listener and reset; each
 app supplies its commands. The port lives only in coordinator/registry state,
-never in page or SW messages. Before serving, the coordinator verifies the
-listener belongs to the spawned process (pid file plus a request to the app's
-own readiness endpoint); a port already held by a user-started server fails the
-start instead of being served. Datasette is entry one; a stdlib `wsgiref`
-preview app is entry two (the #168 demo).
+never in page or SW messages.
+
+Port ownership: before spawning, the coordinator dials the port and refuses to
+start if anything answers; the spawned process must stay alive through
+readiness, so an `EADDRINUSE` exit fails the start instead of the bridge serving
+someone else's listener. A server that binds the port between the pre-check and
+the spawn is a remaining race; the readiness path asserts a response only the
+qualified app produces. Datasette is entry one; a stdlib `wsgiref` preview app
+is entry two (the #168 demo).
 
 Multiple apps: owner registry keyed by `(app, session)`; one tab may own
 several; limits per session and global (apps, in-flight requests); stop and
@@ -86,34 +93,52 @@ reset clean up each app's owner, jar and pending requests.
 
 ### 3. Methods and request bodies
 
-Allow `GET HEAD POST PUT PATCH DELETE OPTIONS`. The SW reads `request.body` with
-a byte counter, rejects with 413 past 16 MiB (and up front when `Content-Length`
-already exceeds it), and transfers the `ArrayBuffer` SW → owner → coordinator
-without copies. The client sends an explicit `Content-Length`; browser-chunked
-bodies are buffered, never forwarded chunked. In-flight requests are capped (per
-session, global); excess gets 503. No streaming in phase 1, so "back-pressure"
-means that cap plus buffering.
+Allow `GET HEAD POST PUT PATCH DELETE OPTIONS`. The SW reads the body with
+`await request.blob()` (portable: Firefox does not expose `Request.body`, and
+`Content-Length` is a forbidden header the SW cannot see), answers 413 when
+`blob.size` exceeds 16 MiB, then `arrayBuffer()`, transferred SW -> owner ->
+coordinator without copies. The client sends an explicit `Content-Length`;
+browser-chunked bodies are buffered, never forwarded chunked. In-flight requests
+are capped (per session, global); excess gets 503. No streaming in phase 1, so
+"back-pressure" means that cap plus buffering.
 
 Request header allow-list: accept, accept-language, if-none-match,
-if-modified-since, **range, if-range**, content-type, x-requested-with,
+if-modified-since, range, if-range, content-type, x-requested-with,
 authorization. `Cookie` is not allow-listed: the browser never exposes it to a
-SW (forbidden header) and the bridge injects its own (section 5). Dropped:
+SW (forbidden header) and the coordinator injects its own (section 5). Dropped:
 hop-by-hop headers, `Upgrade`, `Expect`, proxy headers, anything else.
 
-`Origin`/`Referer`: the bridge writes the raw guest request itself. When the
-initiating client (resolved from `event.clientId`, or `request.referrer` for
-navigations) is under the same `/apps/<app>/<session>/` prefix, it sends
-`Origin`/`Referer` = `http://127.0.0.1:<port>` so the app's CSRF/Host checks
-behave as on Linux. For any other initiator (the page, another app) it sends
-`Origin: null` and injects no cookies, so the app's origin check keeps
-protecting it from other same-origin documents.
+Division of work (the port never appears in SW messages): the SW classifies the
+initiator and adds it to the `datasette-http` message: `same-app` when the
+initiating client (resolved from `event.clientId`, or
+`request.destination ===
+"iframe"` for the app frame's own navigations) is under
+the same `/apps/<app>/<session>/` prefix or is the owner's app frame, else
+`other`, plus whether the method is safe. The coordinator then builds the guest
+request.
+
+The rules are deliberately Lax-like and framed as hygiene against accidental
+cross-app requests, **not** as protection from other same-origin documents (any
+same-origin script can forge a referrer or reach into the frame; the Security
+model already says qualified apps are trusted):
+
+- Safe methods (GET/HEAD/OPTIONS) from a `same-app` initiator or an iframe
+  navigation: inject jar cookies; send no `Origin`; send `Referer` as the mapped
+  full guest URL (`http://127.0.0.1:<port>/...`) when one exists.
+- Unsafe methods from `same-app`: inject cookies; `Origin` =
+  `http://127.0.0.1:<port>`; `Referer` as above, so the app's CSRF/Host checks
+  behave as on Linux.
+- Unsafe methods from `other`: no cookies, `Origin: null`.
+- First load and "Reload frame" (referrer `/`, `destination === "iframe"`) and
+  apps using `no-referrer` therefore still carry cookies on safe requests.
 
 ### 4. Redirects
 
-Unchanged, 3xx pass through. `Location` handling is explicit: an absolute URL on
-the guest origin or a path inside the prefix is mapped to the prefix; a
-root-absolute path **outside** the prefix is an escape and stays a 502 (it would
-otherwise double-prefix). Browser follows and replays POST/redirect/GET.
+Unchanged: 3xx pass through. `Location` handling is explicit: an absolute URL on
+the guest origin whose path is inside the prefix, or a path inside the prefix,
+is mapped to the browser-visible prefix; a root-absolute path **outside** the
+prefix is an escape and stays a 502 (it would otherwise double-prefix). The
+browser follows and replays POST/redirect/GET.
 
 ### 5. Cookies: bridge-managed jar
 
@@ -121,11 +146,14 @@ Browsers cannot do this for us: `Set-Cookie` is a forbidden response header name
 and a synthetic SW response never feeds the cookie store, and `Cookie` is a
 forbidden request header attached after the SW. So:
 
-- A jar keyed by `(app, session)` lives in the owner page/coordinator (the SW is
-  terminated when idle, which is why owner recovery exists). It parses guest
-  `Set-Cookie` per RFC 6265 (Path, Max-Age/Expires; bounded size and count), is
-  injected as `Cookie` on relayed requests from same-prefix initiators only
-  (section 3), and is cleared on stop/reset.
+- A jar keyed by `(app, session)` lives in the **coordinator**, next to
+  `requestGuestHttp`, the only code that sees raw `Set-Cookie` (the SW is
+  terminated when idle and never sees it). `guest_http.ts` changes from "fail on
+  `Set-Cookie`" to "parse into the jar and strip", trailer `Set-Cookie` is
+  dropped, and `Domain` is ignored (cookies are host-only for 127.0.0.1).
+  Parsing follows RFC 6265 (Path, Max-Age/Expires; bounded size and count). The
+  jar is injected as `Cookie` per the rules in section 3 and cleared on
+  stop/reset.
 - `Set-Cookie` is stripped from what reaches the browser. Cookies are
   effectively HttpOnly: `document.cookie` never sees them. `Secure` is satisfied
   (plain http to 127.0.0.1 inside the sandbox); `SameSite` is ignored because
@@ -138,19 +166,29 @@ forbidden request header attached after the SW. So:
 ### 6. Response policy (defense in depth, qualified apps)
 
 - Response headers are an allow-list: content-type, content-length,
-  cache-control, etag, last-modified, location (rewritten), content-disposition,
-  vary, accept-ranges, content-range, allow, www-authenticate. Dropped
-  explicitly: Refresh, Link, Service-Worker-Allowed, Clear-Site-Data,
-  Report-To/Reporting-Endpoints/NEL, Permissions-Policy, Origin-Agent-Cluster,
-  Access-Control-*, Speculation-Rules, Set-Cookie. The spec does not rely on
-  whether the browser would honor these on synthetic responses.
+  content-language, cache-control, etag, last-modified, location (rewritten),
+  content-disposition, vary, accept-ranges, content-range, allow,
+  www-authenticate. Dropped explicitly: Refresh, Link, Service-Worker-Allowed,
+  Clear-Site-Data, Report-To/Reporting-Endpoints/NEL, Permissions-Policy,
+  Origin-Agent-Cluster, Access-Control-*, Speculation-Rules, Set-Cookie. The
+  spec does not rely on whether the browser would honor these on synthetic
+  responses. Dropped headers are logged for debugging, and each session has a
+  byte budget across in-flight bodies.
 - The document CSP is applied to **every** guest response, not only `text/html`
   (SVG/XHTML/XML with script and sniffed content otherwise run with no policy),
-  together with `X-Content-Type-Options: nosniff` and a CSP `sandbox` directive
-  so the flags travel with a document opened top-level.
-- The SW refuses top-level guest navigations (`mode === "navigate"` with no
-  embedding owner frame) instead of serving guest content at top level.
-- Ranges: 206 and `Content-Range` pass through so media elements work.
+  together with `X-Content-Type-Options: nosniff` and a CSP
+  `sandbox allow-scripts allow-same-origin allow-forms allow-downloads` (exactly
+  the iframe's flags; without `allow-same-origin` the document would turn opaque
+  and leave SW control). Its value is limited: it keeps a document that reaches
+  top level from gaining top-level-only capabilities.
+- The SW refuses top-level guest navigations
+  (`request.destination ===
+  "document"`; the app frame's own navigations are
+  `"iframe"`). Consequence, stated up front: middle-click, `target=_blank`,
+  `window.open` and "open in new tab" on export links are refused; the SW serves
+  an explanatory page instead of a bare error.
+- Ranges: 206 and `Content-Range` pass through so small media elements work;
+  large media fails until phase 2 because bodies are buffered (16 MiB).
   `Content-Disposition` passes through (`allow-downloads` is set); large
   downloads wait for phase 2 streaming.
 
@@ -184,15 +222,23 @@ Rename `datasette_*` bridge modules to `guest_app_*`, moving the hard-coded
 together: `guest_http.ts` `validateGuestPath`, `datasette_protocol.ts`
 (`parseGuestRequest`, `parseOwnerMessage`), the `datasette_routes.ts` respond
 regex, the SW fetch filter and reserved paths, `datasette_page.ts` (SW URL and
-scope), `datasette.ts:87`, `serve.ts:239-251`, the static fallback rule
-`/apps/datasette/:session/*` (`tests/build_static_test.ts`),
-`public/apps/datasette/service-worker.js`, and the tests.
+scope), `datasette.ts:87`, `serve.ts:238-256`, the static fallback rule
+`/apps/datasette/:session/*` (generated as the `_redirects` rule at
+`scripts/build-static.ts:150`, asserted in `tests/build_static_test.ts`),
+`scripts/build-static.ts:43-44` (copies the SW and `unavailable.html`),
+`scripts/serve.ts:68-73` (bundles the SW into `public/apps/datasette/`),
+`public/apps/datasette/service-worker.js`, the built `boot.bundle.js` and
+`coordinator.bundle.js`, and the tests (`tests/csp_test.ts`,
+`tests/datasette_bridge_e2e.ts`, `tests/guest_http_e2e.ts`,
+`tests/fixtures/guest_http_worker.ts`).
 
 Service worker migration: widening scope from `/apps/datasette/` to `/apps/`
 leaves the old, longer-scope registration winning for `/apps/datasette/*` until
 it is unregistered. The page unregisters it, the SW script lives at the reserved
 path, and the SW has a version/`skipWaiting` policy for updates while sessions
-are live. `tests/datasette_e2e.ts` stays green at every step.
+are live. `tests/datasette_e2e.ts` stays green at every step, and a migration
+test upgrades a profile that already has a `/apps/datasette/` registration (the
+e2e tests use fresh profiles and never exercise the unregister path).
 
 ## Phases and acceptance
 
@@ -213,6 +259,14 @@ Phase 1:
 
 Phase 2: streaming. Phase 3: WebSocket shim with its own design. Origin
 isolation for unqualified apps: separate design.
+
+## Known limits (stated, not hidden)
+
+- Cookies are HttpOnly to the page: JS-read cookies break (section 5).
+- Basic-auth apps likely do not work: a synthetic 401 with `WWW-Authenticate`
+  probably does not trigger the browser's credential prompt (verify in the first
+  implementation task, then document).
+- Large media and downloads are bounded by the 16 MiB buffer until phase 2.
 
 ## Open questions
 
