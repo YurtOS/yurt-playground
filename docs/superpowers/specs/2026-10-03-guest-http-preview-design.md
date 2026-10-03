@@ -252,16 +252,16 @@ e2e tests use fresh profiles and never exercise the unregister path).
 Phase 1:
 
 - Registry, generic prefix, extracted `ResidentApp`, methods and bodies with the
-  limits above, bridge-managed cookie jar, initiator checks, response allow-list
-  and CSP on every response, SW migration, listener-ownership check.
-  `tests/datasette_e2e.ts` passes unchanged.
+  limits above, bridge-managed cookie jar, response allow-list and CSP on every
+  response, SW migration, listener-ownership check. `tests/datasette_e2e.ts`
+  passes unchanged.
 - New e2e with a stdlib `wsgiref` guest server: serves HTML and a static asset;
   a POST form with a cookie-backed session and a redirect; editing a served
   guest file shows on refresh; requests appear in the guest log;
   start/stop/reset release the listener; failures surface in the page while the
   terminal stays usable (#168's acceptance items).
-- Unit tests for each rule: header allow-lists, Origin/Referer/initiator logic,
-  jar parsing and injection, `Location` rewriting, CSP on non-HTML, 413/503,
+- Unit tests for each rule: header allow-lists, Origin/Referer synthesis, jar
+  parsing and injection, `Location` rewriting, CSP on non-HTML, 413/503,
   top-level navigation refusal, path-escape cases.
 
 Phase 2: streaming. Phase 3: WebSocket shim with its own design. Origin
