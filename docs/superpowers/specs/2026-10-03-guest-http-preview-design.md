@@ -167,8 +167,8 @@ forbidden request header attached after the SW. So:
   stop/reset.
 - `Set-Cookie` is stripped from what reaches the browser. Cookies are
   effectively HttpOnly: `document.cookie` never sees them. `Secure` is satisfied
-  (plain http to 127.0.0.1 inside the sandbox); `SameSite` is ignored because
-  the bridge enforces scope itself.
+  (plain http to 127.0.0.1 inside the sandbox); cookies are scoped by app prefix
+  and `SameSite` is ignored.
 - Consequence, stated up front: apps whose JavaScript reads a cookie break (e.g.
   Django AJAX reading `csrftoken` into `X-CSRFToken`). Form-field CSRF (Django
   forms, Datasette `asgi-csrf`) works.
