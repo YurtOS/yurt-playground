@@ -1,6 +1,6 @@
 # Guest HTTP preview: generic "Yurtify" for web apps
 
-Status: draft, revised after three design reviews on PR #185. Issue:
+Status: draft, revised after five design reviews on PR #185. Issue:
 [#168](https://github.com/YurtOS/yurt-playground/issues/168). Builds on the
 scoped service-worker bridge from #173 (draft PR #176), which already serves
 unmodified upstream Datasette from the guest.
@@ -44,7 +44,9 @@ Guest code can come from untrusted packages. With `allow-same-origin` and
 `script-src 'self'`, a guest-served script reaches `window.parent`, the
 coordinator, `window.yurt`, other apps' frames (same origin) and all origin
 storage. That is acceptable only for a **qualified** app: a pinned, audited
-package whose static assets are known (Datasette today). Therefore:
+package whose static assets are known (Datasette today), or content the user
+authored in their own session (the `wsgiref` preview app serving files the user
+edits), which gets the same trust as the user's own terminal. Therefore:
 
 - Only qualified apps are enabled. Arbitrary or unqualified apps stay disabled
   until real origin isolation exists (see section 8).
@@ -121,10 +123,10 @@ Cookies and `Origin`/`Referer` (the port never appears in SW messages; the
 coordinator builds the guest request from the prefix it already owns): every
 request to an app's prefix, whether it arrives through the SW or directly from
 the owner page, gets that app's jar cookies. `Origin` and `Referer` are
-synthesized exactly as a browser on the app's own page would send them: none on
-safe methods (GET/HEAD/OPTIONS); on unsafe methods `Origin` =
-`http://127.0.0.1:<port>` and `Referer` = the mapped full guest URL, so the
-app's CSRF/Host checks behave as on Linux.
+synthesized as a browser on the app's own page would send them for the cases
+that matter to CSRF/Host checks: no `Origin` on safe methods (GET/HEAD/OPTIONS);
+on unsafe methods `Origin` = `http://127.0.0.1:<port>` and `Referer` = the
+mapped full guest URL, so the app's CSRF/Host checks behave as on Linux.
 
 Deliberately **no initiator gating.** An earlier draft classified requests by
 initiator (referrer/client URL) to withhold cookies from other apps' frames. It
@@ -134,10 +136,12 @@ the frame, referrer policies (`no-referrer`, `origin`) break it for real apps,
 and it left the owner page's direct requests unclassified. Qualified apps are
 trusted (Security model); isolation between apps is the job of the
 origin-isolation work in section 8, not of a heuristic. Consequence, stated up
-front: while two qualified apps run in one tab, one app's frame can cause
-requests to the other with the other's cookies. With a single qualified app
-(Datasette) this does not arise, and phase 1 limits concurrent qualified apps to
-those that are safe to co-host.
+front: qualified apps may co-host in one tab, and one app's frame can cause
+requests to another with the other's cookies. That adds nothing beyond what the
+Security model already accepts (a qualified app's script can reach other
+same-origin frames), and a cross-app request also needs the other app's
+per-start session UUID. Isolation between apps comes with the origin-isolation
+work in section 8.
 
 ### 4. Redirects
 
