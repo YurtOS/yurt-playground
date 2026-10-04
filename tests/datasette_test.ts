@@ -267,6 +267,7 @@ Deno.test("Datasette messages fail closed without qualification and relay guest 
   };
   await handleDatasetteMessage(undefined, {
     type: "datasette-start",
+    app: "datasette",
     requestId: "start",
   }, send);
   assertStringIncludes(JSON.stringify(messages.pop()), "qualified");
@@ -275,6 +276,7 @@ Deno.test("Datasette messages fail closed without qualification and relay guest 
   await d.start();
   await handleDatasetteMessage(d, {
     type: "datasette-http",
+    app: "datasette",
     session,
     requestId: "r",
     method: "GET",
@@ -285,6 +287,46 @@ Deno.test("Datasette messages fail closed without qualification and relay guest 
   assertEquals(msg.type, "datasette-response");
   assert(msg.body instanceof ArrayBuffer);
   await d.stop();
+});
+Deno.test("Datasette handler ignores Preview lifecycle commands", async () => {
+  const { handleDatasetteMessage } = await import("../src/datasette.ts");
+  const f = fixture();
+  const demo = new DatasetteDemo(f.deps);
+  const replies: unknown[] = [];
+  const send = (reply: unknown) => replies.push(reply);
+  try {
+    for (
+      const type of ["datasette-start", "datasette-stop", "datasette-reset"]
+    ) {
+      assertEquals(
+        await handleDatasetteMessage(demo, {
+          type,
+          app: "preview",
+          requestId: "preview-lifecycle",
+        }, send),
+        false,
+      );
+    }
+    assertEquals(demo.snapshot.state, "stopped");
+    assertEquals(replies, []);
+  } finally {
+    await demo.stop();
+  }
+});
+Deno.test("Datasette handler leaves Preview HTTP requests to the Preview app", async () => {
+  const { handleDatasetteMessage } = await import("../src/datasette.ts");
+  const replies: unknown[] = [];
+  const handled = await handleDatasetteMessage(undefined, {
+    type: "datasette-http",
+    app: "preview",
+    session,
+    requestId: "preview-request",
+    method: "GET",
+    path: `/apps/preview/${session}/`,
+    headers: [],
+  }, (reply) => replies.push(reply));
+  assertEquals(handled, false);
+  assertEquals(replies, []);
 });
 Deno.test("Datasette stale startup diagnostics cannot overwrite Stop", async () => {
   const f = fixture(),

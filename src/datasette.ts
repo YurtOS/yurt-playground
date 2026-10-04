@@ -476,7 +476,7 @@ export async function handleDatasetteMessage(
   send: (reply: GuestReply | LifecycleReply, transfer?: Transferable[]) => void,
 ): Promise<boolean> {
   const lifecycle = parseLifecycleMessage(value);
-  if (lifecycle) {
+  if (lifecycle?.app === "datasette") {
     try {
       if (!demo) {
         throw new Error("Datasette requires a qualified browser image");
@@ -511,7 +511,7 @@ export async function handleDatasetteMessage(
     return true;
   }
   const request = parseGuestRequest(value);
-  if (!request) return false;
+  if (!request || request.app !== "datasette") return false;
   try {
     if (!demo) {
       throw new GuestHttpError(

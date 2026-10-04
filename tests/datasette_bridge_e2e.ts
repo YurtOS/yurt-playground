@@ -220,6 +220,20 @@ try {
   await ui.frameLocator("iframe").getByRole("heading", { name: "Guest UI" })
     .waitFor();
   await ui.evaluate(() => {
+    (window as unknown as {
+      coordinator: { emit(data: unknown): void };
+    }).coordinator.emit({
+      type: "datasette-state",
+      app: "preview",
+      snapshot: { state: "stopped" },
+    });
+  });
+  assertEquals(await ui.locator("#demo iframe").count(), 1);
+  assertEquals(
+    await ui.locator("#demo [data-status]").textContent(),
+    "running",
+  );
+  await ui.evaluate(() => {
     const original = ServiceWorker.prototype.postMessage;
     (window as unknown as { registrations: number }).registrations = 0;
     ServiceWorker.prototype.postMessage = function (

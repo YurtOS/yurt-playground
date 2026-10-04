@@ -230,7 +230,8 @@ export function mountDatasette(
       return;
     }
     if (
-      msg?.type === "datasette-state" && msg.snapshot &&
+      msg?.type === "datasette-state" && msg.app === "datasette" &&
+      msg.snapshot &&
       ["stopped", "starting", "running", "stopping", "failed", "stuck"]
         .includes(msg.snapshot.state)
     ) {
