@@ -558,16 +558,16 @@ Deno.test("late cancelled queue cleanup releases its original session budget", a
   }
 });
 
-Deno.test("attached HTTP pins both the dial and wire Host to its captured service port", async () => {
+Deno.test("both attached apps pin dial and wire Host to their captured service ports", async () => {
   const ports: number[] = [];
-  let written = "";
+  const written = new Map<number, string>();
   const wire = bytes("HTTP/1.1 204 No Content\r\n\r\n");
-  let offset = 0;
   const guestPorts = { datasette: 8001, preview: 8002 };
   const browser = {
     guestPorts,
     dialSandboxPort: (port: number) => {
       ports.push(port);
+      let offset = 0;
       return {
         read: async (n: number) => {
           const part = wire.slice(offset, offset + n);
@@ -575,28 +575,37 @@ Deno.test("attached HTTP pins both the dial and wire Host to its captured servic
           return part;
         },
         write: async (part: Uint8Array) => {
-          written += new TextDecoder().decode(part);
+          written.set(
+            port,
+            (written.get(port) ?? "") + new TextDecoder().decode(part),
+          );
         },
         close: async () => {},
       };
     },
   } as unknown as BrowserPlaygroundSession;
   const pins = { datasette: { inlineScriptHashes: [] } } as unknown as Pins;
-  const app = dispatch.attachGuestApps(browser, pins, {
+  const apps = dispatch.attachGuestApps(browser, pins, {
     executions: {} as ExecutionRegistry,
     send: () => {},
-  }).get("datasette")!;
-  guestPorts.datasette = 9999;
-  await app.deps.request({
-    app: "datasette",
-    session,
-    prefix: `/apps/datasette/${session}/`,
-    path: `/apps/datasette/${session}/`,
-    method: "GET",
-    headers: [],
-    signal: new AbortController().signal,
-    port: 9000,
   });
-  assertEquals(ports, [8001]);
-  assertStringIncludes(written, "Host: 127.0.0.1:8001\r\n");
+  assertEquals([...apps.keys()], ["datasette", "preview"]);
+  guestPorts.datasette = 9999;
+  guestPorts.preview = 9998;
+  for (const name of ["datasette", "preview"] as const) {
+    const prefix = `/apps/${name}/${session}/`;
+    await apps.get(name)!.deps.request({
+      app: name,
+      session,
+      prefix,
+      path: prefix,
+      method: "GET",
+      headers: [],
+      signal: new AbortController().signal,
+      port: 9000,
+    });
+  }
+  assertEquals(ports, [8001, 8002]);
+  assertStringIncludes(written.get(8001)!, "Host: 127.0.0.1:8001\r\n");
+  assertStringIncludes(written.get(8002)!, "Host: 127.0.0.1:8002\r\n");
 });

@@ -4,6 +4,7 @@ import type { ExecutionRegistry } from "./executions.ts";
 import { appInlineScriptHashes, type Pins } from "./pins.ts";
 import { GUEST_APPS, type GuestAppId } from "./guest_apps.ts";
 import { SlotQueue } from "./slot_queue.ts";
+import { previewSpec } from "./preview.ts";
 import {
   type GuestReply,
   type LifecycleReply,
@@ -104,7 +105,7 @@ export function attachGuestApps(
   const apps = new Map<GuestAppId, GuestApp>();
   const queue = new SlotQueue();
   const assets = new Map<string, Uint8Array>();
-  for (const spec of [datasetteSpec]) {
+  for (const spec of [datasetteSpec, previewSpec]) {
     if (appInlineScriptHashes(pins, spec.id) === undefined) continue;
     const port = session.guestPorts[spec.id];
     apps.set(
