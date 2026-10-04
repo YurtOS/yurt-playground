@@ -162,7 +162,7 @@ try {
   });
   assertEquals(result, {
     post: 405,
-    allow: "GET, HEAD",
+    allow: "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
     head: 200,
     length: 0,
     coep: "require-corp",

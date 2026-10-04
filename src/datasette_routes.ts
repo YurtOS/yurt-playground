@@ -258,6 +258,7 @@ export class DatasetteRoutes {
         error instanceof Error ? error.message : String(error),
         method,
         hashes,
+        "Datasette",
       );
     }
   }
