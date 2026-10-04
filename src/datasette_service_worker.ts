@@ -33,6 +33,7 @@ interface DatasetteWorkerGlobal {
   ): void;
 }
 const worker = self as unknown as DatasetteWorkerGlobal;
+const RESERVED = new Set(["/apps/bridge-sw.js"]);
 const routes = new DatasetteRoutes({
   origin: worker.location.origin,
   client: (id) => worker.clients.get(id),
@@ -82,9 +83,9 @@ worker.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (
     url.origin !== worker.location.origin ||
-    !url.pathname.startsWith("/apps/datasette/") ||
-    url.pathname === "/apps/datasette/service-worker.js" ||
-    url.pathname === "/apps/datasette/unavailable.html"
+    !url.pathname.startsWith("/apps/") ||
+    RESERVED.has(url.pathname) ||
+    url.pathname.startsWith("/apps/_bridge/")
   ) return;
   const response = routes.respond(event.request);
   event.respondWith(response);

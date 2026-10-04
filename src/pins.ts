@@ -1,3 +1,5 @@
+import type { GuestAppId } from "./guest_apps.ts";
+
 export type ArtifactPin = {
   repo: string;
   rev: string;
@@ -20,6 +22,17 @@ export type DatasetteQualification = {
   portsRev: string;
   inlineScriptHashes: string[];
 };
+
+/** Inline-script hashes a qualified app's pages may carry; `undefined` means
+ * the app is not qualified for this image. The preview server serves the
+ * user's own files with no inline scripts, so its list is empty by design. */
+export function appInlineScriptHashes(
+  pins: Pins,
+  app: GuestAppId,
+): string[] | undefined {
+  if (app === "preview") return [];
+  return pins.datasette?.inlineScriptHashes;
+}
 
 export type ArtifactSource = "artifacts" | "siblings" | "urls";
 

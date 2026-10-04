@@ -107,7 +107,10 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   assertEquals(workflow.includes("scripts/build-all-ports.sh"), false);
   assertEquals(workflow.includes("dtolnay/rust-toolchain"), false);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
-  assertEquals(workflow.includes("playwright/cli.js install chromium"), true);
+  assertEquals(
+    workflow.includes("node node_modules/playwright/cli.js install chromium"),
+    true,
+  );
   // The browser artifacts are materialized by the site inputs (deno task
   // pin runs scripts/pin-artifacts.ts).
   assertEquals(workflow.includes("deno task pin"), true);
@@ -515,19 +518,19 @@ Deno.test("every disclosure on the home page is styled, not just the proof", asy
   }
   const reducedMotion = [
     ...css.matchAll(
-      /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n[ ]{6}\}/g,
+      /^(?<indent>[ \t]*)@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(?<body>[\s\S]*?)^\k<indent>\}/gm,
     ),
   ];
   assertEquals(reducedMotion.length, 1, "expected one reduced-motion block");
   assertEquals(
     /#start \.prompt::after\s*\{[^}]*animation:\s*none/.test(
-      reducedMotion[0]?.[1] ?? "",
+      reducedMotion[0]?.groups?.body ?? "",
     ),
     true,
   );
   assertEquals(
     /\.strip\s*>\s*summary h2::before\s*\{[^}]*transition:\s*none/.test(
-      reducedMotion[0]?.[1] ?? "",
+      reducedMotion[0]?.groups?.body ?? "",
     ),
     true,
   );

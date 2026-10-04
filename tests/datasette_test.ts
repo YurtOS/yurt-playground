@@ -5,7 +5,9 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { DatasetteDemo, type DatasetteDependencies } from "../src/datasette.ts";
+import { GuestApp, type GuestAppDependencies } from "../src/guest_app.ts";
+import { SlotQueue } from "../src/slot_queue.ts";
+import { datasetteSpec } from "../src/datasette.ts";
 import type { GuestHttpReply } from "../src/guest_http.ts";
 const session = "11111111-1111-4111-8111-111111111111";
 function json(value: unknown, status = 200): GuestHttpReply {
@@ -21,7 +23,8 @@ function fixture() {
   const commands: string[] = [];
   let lastSnapshot: unknown;
   let now = 0;
-  const deps: DatasetteDependencies = {
+  const deps: GuestAppDependencies = {
+    queue: new SlotQueue(),
     uuid: () => session,
     now: () => now,
     servicePort: 8123,
@@ -48,8 +51,9 @@ function fixture() {
         stderr: "",
       };
     },
-    seedSource: async () => new TextEncoder().encode("seed"),
+    asset: async () => new TextEncoder().encode("seed"),
     request: async () => json([{ ready: 1 }]),
+    portBusy: async () => false,
     changed: (s) => {
       lastSnapshot = s;
     },
@@ -84,7 +88,7 @@ Deno.test("Datasette readiness requires final exact JSON shape and correct statu
       f.setNow(240001);
       return reply;
     };
-    const d = new DatasetteDemo(f.deps);
+    const d = new GuestApp(datasetteSpec, f.deps);
     assertEquals((await d.start()).state, "failed");
     assertEquals(f.signals, [15]);
   }
@@ -103,7 +107,7 @@ Deno.test("Datasette readiness accepts a validated redirect then exact query res
       }
       : json([{ ready: 1 }]);
   };
-  const d = new DatasetteDemo(f.deps);
+  const d = new GuestApp(datasetteSpec, f.deps);
   assertEquals((await d.start()).state, "running");
   assert(f.commands.some((command) => command.includes("--port 8123")));
   assertEquals(count, 2);
@@ -121,7 +125,7 @@ Deno.test("Datasette Stop cancels pending Start before waiting for readiness", a
     reading.resolve();
     return reply.promise;
   };
-  const d = new DatasetteDemo(f.deps);
+  const d = new GuestApp(datasetteSpec, f.deps);
   const starting = d.start();
   await reading.promise;
   const stopping = d.stop();
@@ -141,7 +145,7 @@ Deno.test("Datasette tracks a stuck resident and forbids reset until its origina
       f.signals.push(s);
     },
   });
-  const d = new DatasetteDemo(f.deps);
+  const d = new GuestApp(datasetteSpec, f.deps);
   await d.start();
   assertEquals((await d.stop()).state, "stuck");
   assertEquals(f.signals, [15, 9]);
@@ -161,7 +165,7 @@ Deno.test("Datasette pid mismatch fails and reports bounded log tail", async () 
     stdout: cmd.includes("exec cat") ? "99" : "log evidence",
     stderr: "",
   });
-  const d = new DatasetteDemo(f.deps);
+  const d = new GuestApp(datasetteSpec, f.deps);
   const s = await d.start();
   assertEquals(s.state, "failed");
   assertStringIncludes(s.error!, "pid");
@@ -170,7 +174,7 @@ Deno.test("Datasette pid mismatch fails and reports bounded log tail", async () 
 });
 Deno.test("Datasette early exit invalidates requests and retains failure reason", async () => {
   const f = fixture();
-  const d = new DatasetteDemo(f.deps);
+  const d = new GuestApp(datasetteSpec, f.deps);
   await d.start();
   f.exit.resolve(2);
   await Promise.resolve();
@@ -188,7 +192,7 @@ Deno.test("Datasette early exit invalidates requests and retains failure reason"
 });
 Deno.test("Datasette request abort and replacement discard old session", async () => {
   const f = fixture();
-  const d = new DatasetteDemo(f.deps);
+  const d = new GuestApp(datasetteSpec, f.deps);
   await d.start();
   const pending = Promise.withResolvers<void>();
   f.deps.request = async (o) => {
@@ -220,7 +224,7 @@ Deno.test("Datasette repeated Stop never re-signals an unconfirmed resident", as
       f.signals.push(s);
     },
   });
-  const d = new DatasetteDemo(f.deps);
+  const d = new GuestApp(datasetteSpec, f.deps);
   await d.start();
   await d.stop();
   assertEquals(d.snapshot.state, "stuck");
@@ -235,10 +239,10 @@ Deno.test("Datasette seed failure aborts launch and preserves original diagnosti
     launches++;
     throw new Error("must not launch");
   };
-  f.deps.seedSource = async () => {
+  f.deps.asset = async () => {
     throw new Error("seed download failed");
   };
-  const d = new DatasetteDemo(f.deps);
+  const d = new GuestApp(datasetteSpec, f.deps);
   const s = await d.start();
   assertEquals(s.state, "failed");
   assertStringIncludes(s.error!, "seed download failed");
@@ -251,7 +255,7 @@ Deno.test("Datasette aborts readiness when the resident exits during startup", a
     reading.resolve();
     return new Promise(() => {});
   };
-  const d = new DatasetteDemo(f.deps);
+  const d = new GuestApp(datasetteSpec, f.deps);
   const start = d.start();
   await reading.promise;
   f.exit.resolve(3);
@@ -260,21 +264,23 @@ Deno.test("Datasette aborts readiness when the resident exits during startup", a
   assertStringIncludes(s.error!, "resident exited");
 });
 Deno.test("Datasette messages fail closed without qualification and relay guest bytes", async () => {
-  const { handleDatasetteMessage } = await import("../src/datasette.ts");
+  const { handleGuestAppMessage } = await import("../src/datasette.ts");
   const messages: unknown[] = [];
   const send = (msg: unknown) => {
     messages.push(msg);
   };
-  await handleDatasetteMessage(undefined, {
+  await handleGuestAppMessage(undefined, {
     type: "datasette-start",
+    app: "datasette",
     requestId: "start",
   }, send);
   assertStringIncludes(JSON.stringify(messages.pop()), "qualified");
   const f = fixture();
-  const d = new DatasetteDemo(f.deps);
+  const d = new GuestApp(datasetteSpec, f.deps);
   await d.start();
-  await handleDatasetteMessage(d, {
+  await handleGuestAppMessage(new Map([["datasette", d]]), {
     type: "datasette-http",
+    app: "datasette",
     session,
     requestId: "r",
     method: "GET",
@@ -285,6 +291,47 @@ Deno.test("Datasette messages fail closed without qualification and relay guest 
   assertEquals(msg.type, "datasette-response");
   assert(msg.body instanceof ArrayBuffer);
   await d.stop();
+});
+Deno.test("Guest app handler fails closed for unavailable Preview lifecycle commands", async () => {
+  const { handleGuestAppMessage } = await import("../src/datasette.ts");
+  const f = fixture();
+  const demo = new GuestApp(datasetteSpec, f.deps);
+  const replies: unknown[] = [];
+  const send = (reply: unknown) => replies.push(reply);
+  try {
+    for (
+      const type of ["datasette-start", "datasette-stop", "datasette-reset"]
+    ) {
+      assertEquals(
+        await handleGuestAppMessage(new Map([["datasette", demo]]), {
+          type,
+          app: "preview",
+          requestId: "preview-lifecycle",
+        }, send),
+        true,
+      );
+    }
+    assertEquals(demo.snapshot.state, "stopped");
+    assertEquals(replies.length, 3);
+    assertStringIncludes(JSON.stringify(replies), "qualified");
+  } finally {
+    await demo.stop();
+  }
+});
+Deno.test("Guest app handler fails closed for unavailable Preview HTTP", async () => {
+  const { handleGuestAppMessage } = await import("../src/datasette.ts");
+  const replies: unknown[] = [];
+  const handled = await handleGuestAppMessage(undefined, {
+    type: "datasette-http",
+    app: "preview",
+    session,
+    requestId: "preview-request",
+    method: "GET",
+    path: `/apps/preview/${session}/`,
+    headers: [],
+  }, (reply) => replies.push(reply));
+  assertEquals(handled, true);
+  assertStringIncludes(JSON.stringify(replies), '"code":503');
 });
 Deno.test("Datasette stale startup diagnostics cannot overwrite Stop", async () => {
   const f = fixture(),
@@ -304,7 +351,7 @@ Deno.test("Datasette stale startup diagnostics cannot overwrite Stop", async () 
     }
     return finite(...args);
   };
-  const d = new DatasetteDemo(f.deps), starting = d.start();
+  const d = new GuestApp(datasetteSpec, f.deps), starting = d.start();
   await reading.promise;
   await d.stop();
   tail.resolve({ code: 0, stdout: "old log", stderr: "" });
@@ -315,11 +362,11 @@ Deno.test("Datasette Stop cancels a stalled seed before spawning a resident", as
   const f = fixture(),
     reading = Promise.withResolvers<void>(),
     seed = Promise.withResolvers<Uint8Array>();
-  f.deps.seedSource = async () => {
+  f.deps.asset = async () => {
     reading.resolve();
     return seed.promise;
   };
-  const d = new DatasetteDemo(f.deps), starting = d.start();
+  const d = new GuestApp(datasetteSpec, f.deps), starting = d.start();
   await reading.promise;
   const timeout = Promise.withResolvers<never>();
   const timer = setTimeout(
@@ -332,6 +379,33 @@ Deno.test("Datasette Stop cancels a stalled seed before spawning a resident", as
   assertEquals(result.state, "stopped");
   await starting;
   assertEquals(f.signals, []);
+});
+Deno.test("Datasette Stop during seed installation skips the Python seed command", async () => {
+  const f = fixture();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const finite = f.deps.finite;
+  f.deps.finite = async (...args) => {
+    if (args[0].includes("cat >")) {
+      entered.resolve();
+      await release.promise;
+    }
+    return finite(...args);
+  };
+  const d = new GuestApp(datasetteSpec, f.deps);
+  const starting = d.start();
+  await entered.promise;
+  const stopping = d.stop();
+  release.resolve();
+  await Promise.all([starting, stopping]);
+  assertEquals(
+    f.commands.some((command) =>
+      command.startsWith("exec python3") &&
+      command.includes("datasette_seed.py")
+    ),
+    false,
+  );
+  assertEquals(d.snapshot.state, "stopped");
 });
 Deno.test("Datasette reset keeps Start disabled until the seed transaction finishes", async () => {
   const f = fixture(),
@@ -347,7 +421,7 @@ Deno.test("Datasette reset keeps Start disabled until the seed transaction finis
     }
     return finite(...args);
   };
-  const d = new DatasetteDemo(f.deps);
+  const d = new GuestApp(datasetteSpec, f.deps);
   await d.start();
   const resetting = d.reset();
   await ready.promise;
@@ -355,6 +429,28 @@ Deno.test("Datasette reset keeps Start disabled until the seed transaction finis
   await assertRejects(() => d.start());
   reset.resolve({ code: 0, stdout: "", stderr: "" });
   await resetting;
+  assertEquals(d.snapshot.state, "stopped");
+});
+Deno.test("Datasette Stop during Reset skips remaining seed commands", async () => {
+  const f = fixture();
+  const d = new GuestApp(datasetteSpec, f.deps);
+  await d.start();
+  const reading = Promise.withResolvers<void>();
+  const asset = Promise.withResolvers<Uint8Array>();
+  f.deps.asset = async () => {
+    reading.resolve();
+    return asset.promise;
+  };
+  const resetting = d.reset();
+  await reading.promise;
+  const stopping = d.stop();
+  asset.resolve(new TextEncoder().encode("seed"));
+  await resetting;
+  await stopping;
+  assertEquals(
+    f.commands.some((command) => command.endsWith("--reset")),
+    false,
+  );
   assertEquals(d.snapshot.state, "stopped");
 });
 Deno.test("Datasette never publishes stopped before a reset's seed finishes", async () => {
@@ -376,7 +472,7 @@ Deno.test("Datasette never publishes stopped before a reset's seed finishes", as
     states.push(s.state);
     changed(s);
   };
-  const d = new DatasetteDemo(f.deps);
+  const d = new GuestApp(datasetteSpec, f.deps);
   await d.start();
   states.length = 0;
   const resetting = d.reset();
@@ -402,7 +498,7 @@ Deno.test("Datasette concurrent Start shares one launch and log failure keeps th
     reading.resolve();
     return probe.promise;
   };
-  const d = new DatasetteDemo(f.deps), first = d.start();
+  const d = new GuestApp(datasetteSpec, f.deps), first = d.start();
   assertEquals(d.start(), first);
   await reading.promise;
   probe.resolve(json([{ ready: 1 }]));
@@ -418,25 +514,25 @@ Deno.test("Datasette concurrent Start shares one launch and log failure keeps th
     args[0].includes("tail -c")
       ? { code: 1, stdout: "", stderr: "missing log" }
       : finite(...args);
-  const result = await new DatasetteDemo(failed.deps).start();
+  const result = await new GuestApp(datasetteSpec, failed.deps).start();
   assertStringIncludes(result.error!, "readiness timed out");
   assertStringIncludes(result.logTail!, "missing log");
 });
 Deno.test("Datasette reset failure publishes failed internally and permits retry", async () => {
   for (const failSeed of [true, false]) {
-    const f = fixture(), seed = f.deps.seedSource, finite = f.deps.finite;
+    const f = fixture(), seed = f.deps.asset, finite = f.deps.finite;
     if (failSeed) {
-      f.deps.seedSource = async () => {
+      f.deps.asset = async () => {
         throw new Error("seed download failed");
       };
     } else {f.deps.finite = async (...args) =>
         args[0].endsWith("--reset")
           ? { code: 1, stdout: "", stderr: "reset failed" }
           : finite(...args);}
-    const d = new DatasetteDemo(f.deps);
+    const d = new GuestApp(datasetteSpec, f.deps);
     await assertRejects(() => d.reset());
     assertEquals(d.snapshot.state, "failed");
-    f.deps.seedSource = seed;
+    f.deps.asset = seed;
     f.deps.finite = finite;
     assertEquals((await d.reset()).state, "stopped");
     assertEquals((await d.start()).state, "running");

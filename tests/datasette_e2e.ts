@@ -2,7 +2,7 @@ import { assertEquals } from "@std/assert";
 import { watchCspViolations } from "./csp_watch.ts";
 import { inlineScriptHashes } from "../src/csp.ts";
 import { chromium } from "playwright";
-import { loadPins } from "../src/pins.ts";
+import { appInlineScriptHashes, loadPins } from "../src/pins.ts";
 import { quoted } from "../src/executions.ts";
 import { DATASETTE_QUERY } from "../src/datasette.ts";
 import { ensureBundle } from "../scripts/serve.ts";
@@ -10,7 +10,7 @@ import { startPlaygroundServer } from "../src/serve.ts";
 const pins = await loadPins(
   new URL("../artifacts/pins.json", import.meta.url).pathname,
 );
-if (!pins.datasette) {
+if (appInlineScriptHashes(pins, "datasette") === undefined) {
   throw new Error(
     "Datasette acceptance requires a published qualified image/kernel pair",
   );
@@ -45,7 +45,7 @@ try {
   const checkInline = async () => {
     for (const hash of await inlineScriptHashes(await frame.content())) {
       assertEquals(
-        pins.datasette!.inlineScriptHashes.includes(hash.slice(1, -1)),
+        appInlineScriptHashes(pins, "datasette")!.includes(hash.slice(1, -1)),
         true,
         `unqualified inline body ${hash}`,
       );

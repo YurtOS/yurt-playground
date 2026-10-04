@@ -17,6 +17,6 @@ Deno.test("direct guest navigation has an isolated strict unavailable document",
   );
   assertStringIncludes(
     await response.text(),
-    "Open Datasette from the playground",
+    "Open the preview from the playground",
   );
 });

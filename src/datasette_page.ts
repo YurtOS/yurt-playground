@@ -7,6 +7,7 @@ import {
   parseOwnerMessage,
 } from "./datasette_protocol.ts";
 import { DATASETTE_QUERY } from "./datasette.ts";
+import type { GuestAppId } from "./guest_apps.ts";
 export function datasetteControls(qualified: boolean, state: DatasetteState) {
   return {
     hidden: !qualified,
@@ -16,17 +17,104 @@ export function datasetteControls(qualified: boolean, state: DatasetteState) {
     download: qualified && state === "running",
   };
 }
-/** The uncontrolled root page owns one sandbox and one worker channel. */
+export interface GuestAppUi {
+  markup: string;
+  frameTitle: string;
+  download?: { label: string; path: string; filename: string };
+}
+const datasetteUi: GuestAppUi = {
+  markup:
+    `<h2>Explore a SQLite database</h2><p>Browse twelve sample orders, filter tables, and run read-only SQL. Changes in the terminal appear after refresh.</p><div><button data-action="start">Start Datasette</button> <button data-action="stop">Stop</button> <button data-action="reset">Reset sample</button></div><p role="status" data-status></p><pre data-log hidden></pre><details><summary>Revenue by product</summary><pre data-query></pre><p>Expected: Mug 8400, Notebook 4000, Pen 2000 cents.</p><p>Database: <code>/home/user/demos/datasette/orders.db</code></p></details><div data-preview></div>`,
+  frameTitle: "Datasette database browser",
+  download: {
+    label: "Download revenue JSON",
+    path: "orders.json?sql=" + encodeURIComponent(DATASETTE_QUERY) +
+      "&_shape=array",
+    filename: "revenue-by-product.json",
+  },
+};
+const previewUi: GuestAppUi = {
+  markup:
+    `<h2>Preview a website</h2><p>Serves files from <code>/home/user/demos/preview/site/</code> (edit them in the terminal, then refresh). Inline scripts are blocked; use external <code>.js</code> files.</p><div><button data-action="start">Start preview</button> <button data-action="stop">Stop</button> <button data-action="reset">Reset</button></div><p role="status" data-status></p><pre data-log hidden></pre><div data-preview></div>`,
+  frameTitle: "Guest website preview",
+};
 export function mountDatasette(
   root: HTMLElement,
   coordinator: Worker,
   browser: boolean,
 ): () => void {
+  const dispose = mountGuestApp(
+    root,
+    coordinator,
+    browser,
+    "datasette",
+    datasetteUi,
+  );
+  if (browser) {
+    root.querySelector("[data-query]")!.textContent = DATASETTE_QUERY;
+  }
+  return dispose;
+}
+export function mountPreview(
+  root: HTMLElement,
+  coordinator: Worker,
+  browser: boolean,
+): () => void {
+  return mountGuestApp(root, coordinator, browser, "preview", previewUi);
+}
+
+let bridgeRegistration: Promise<ServiceWorkerRegistration> | undefined;
+const ownerListeners = new Set<(event: MessageEvent) => void>();
+const dispatchOwnerMessage = (event: MessageEvent) => {
+  for (const listener of ownerListeners) listener(event);
+};
+function registerBridge(): Promise<ServiceWorkerRegistration> {
+  bridgeRegistration ??= (async () => {
+    for (
+      const registration of await navigator.serviceWorker.getRegistrations()
+    ) {
+      if (new URL(registration.scope).pathname === "/apps/datasette/") {
+        await registration.unregister();
+      }
+    }
+    const registration = await navigator.serviceWorker.register(
+      "/apps/bridge-sw.js",
+      { scope: "/apps/" },
+    );
+    const deadline = performance.now() + 10000;
+    while (!registration.active) {
+      if (performance.now() >= deadline) {
+        throw new Error("preview worker activation timed out");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return registration;
+  })().catch((error) => {
+    bridgeRegistration = undefined;
+    throw error;
+  });
+  return bridgeRegistration;
+}
+/** The uncontrolled root page owns one sandbox and one worker channel. */
+export function mountGuestApp(
+  root: HTMLElement,
+  coordinator: Worker,
+  browser: boolean,
+  app: GuestAppId,
+  ui: GuestAppUi,
+): () => void {
   root.hidden = true;
   if (!browser) return () => {};
-  root.innerHTML =
-    `<h2>Explore a SQLite database</h2><p>Browse twelve sample orders, filter tables, and run read-only SQL. Changes in the terminal appear after refresh.</p><div><button data-action="start">Start Datasette</button> <button data-action="stop">Stop</button> <button data-action="reset">Reset sample</button> <button data-action="download">Download revenue JSON</button></div><p role="status" data-status></p><pre data-log hidden></pre><details><summary>Revenue by product</summary><pre data-query></pre><p>Expected: Mug 8400, Notebook 4000, Pen 2000 cents.</p><p>Database: <code>/home/user/demos/datasette/orders.db</code></p></details><div data-preview></div>`;
-  root.querySelector("[data-query]")!.textContent = DATASETTE_QUERY;
+  root.innerHTML = ui.markup;
+  if (ui.download) {
+    const download = document.createElement("button");
+    download.dataset.action = "download";
+    download.textContent = ui.download.label;
+    root.querySelector("[data-action=reset]")!.parentElement!.append(
+      " ",
+      download,
+    );
+  }
   const status = root.querySelector<HTMLElement>("[data-status]")!;
   const log = root.querySelector<HTMLElement>("[data-log]")!;
   const preview = root.querySelector<HTMLElement>("[data-preview]")!;
@@ -34,7 +122,7 @@ export function mountDatasette(
     ["start", "stop", "reset", "download"].map(
       (
         a,
-      ) => [a, root.querySelector<HTMLButtonElement>(`[data-action="${a}"]`)!],
+      ) => [a, root.querySelector<HTMLButtonElement>(`[data-action="${a}"]`)],
     ),
   );
   let qualified = false,
@@ -48,12 +136,15 @@ export function mountDatasette(
     disposed = false;
   let binding: Promise<void> | undefined;
   const relays = new Map<string, MessagePort>();
-  const downloads = new Map<string, { session: string; timer: number }>();
+  const downloads = new Map<
+    string,
+    { session: string; timer: ReturnType<typeof setTimeout> }
+  >();
   const render = () => {
     const controls = datasetteControls(qualified, snapshot.state);
     root.hidden = controls.hidden;
     for (const action of ["start", "stop", "reset", "download"] as const) {
-      buttons[action].disabled = !controls[action];
+      if (buttons[action]) buttons[action]!.disabled = !controls[action];
     }
     status.textContent = snapshot.error ?? snapshot.state;
     log.hidden = !snapshot.logTail;
@@ -97,31 +188,7 @@ export function mountDatasette(
       return;
     }
     const session = snapshot.session, prefix = snapshot.prefix;
-    if (!registration) {
-      registration = await navigator.serviceWorker.register(
-        "/apps/datasette/service-worker.js",
-        { scope: "/apps/datasette/" },
-      );
-      if (!registration.active) {
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(
-            () => reject(new Error("preview worker activation timed out")),
-            10000,
-          );
-          const poll = () => {
-            if (registration?.active) {
-              clearTimeout(timer);
-              resolve();
-            } else if (!disposed) setTimeout(poll, 50);
-            else {
-              clearTimeout(timer);
-              reject(new Error("preview disposed"));
-            }
-          };
-          poll();
-        });
-      }
-    }
+    registration ??= await registerBridge();
     if (
       disposed || snapshot.session !== session || snapshot.state !== "running"
     ) return;
@@ -150,9 +217,9 @@ export function mountDatasette(
           return;
         }
         const request = parseGuestRequest(e.data);
-        if (request && request.session === session) {
+        if (request && request.app === app && request.session === session) {
           relays.set(request.requestId, current);
-          coordinator.postMessage(request);
+          coordinator.postMessage(request, request.body ? [request.body] : []);
           return;
         }
         const abort = parseGuestAbort(e.data);
@@ -164,6 +231,7 @@ export function mountDatasette(
       current.start();
       (target ?? registration!.active)!.postMessage({
         type: "datasette-register",
+        app,
         session,
         prefix,
         hashes,
@@ -173,7 +241,7 @@ export function mountDatasette(
     if (snapshot.session !== session || disposed) return;
     if (!preview.firstChild) {
       const frame = document.createElement("iframe");
-      frame.title = "Datasette database browser";
+      frame.title = ui.frameTitle;
       frame.setAttribute(
         "sandbox",
         "allow-scripts allow-same-origin allow-forms allow-downloads",
@@ -204,7 +272,10 @@ export function mountDatasette(
       );
     }
   };
-  navigator.serviceWorker.addEventListener("message", ownerMessage);
+  if (ownerListeners.size === 0) {
+    navigator.serviceWorker.addEventListener("message", dispatchOwnerMessage);
+  }
+  ownerListeners.add(ownerMessage);
   const heartbeat = setInterval(() => {
     if (snapshot.state !== "running") return;
     if (!port || performance.now() - pongAt > 5000) {
@@ -219,17 +290,16 @@ export function mountDatasette(
   }, 2000);
   const receive = (e: MessageEvent) => {
     const msg = e.data;
-    if (msg?.type === "datasette-qualification") {
-      qualified = msg.hashes instanceof Array && msg.hashes.length > 0 &&
-        msg.hashes.every((h: unknown) =>
-          typeof h === "string" && /^sha256-[A-Za-z0-9+/]{43}=$/.test(h)
-        );
-      hashes = qualified ? [...msg.hashes] : [];
+    if (msg?.type === "guest-app-qualification") {
+      const nextHashes = msg.apps[app];
+      qualified = nextHashes !== undefined;
+      hashes = nextHashes ?? [];
       render();
       return;
     }
     if (
-      msg?.type === "datasette-state" && msg.snapshot &&
+      msg?.type === "datasette-state" && msg.app === app &&
+      msg.snapshot &&
       ["stopped", "starting", "running", "stopping", "failed", "stuck"]
         .includes(msg.snapshot.state)
     ) {
@@ -270,7 +340,7 @@ export function mountDatasette(
     );
     const link = document.createElement("a");
     link.href = url;
-    link.download = "revenue-by-product.json";
+    link.download = ui.download!.filename;
     document.body.append(link);
     link.click();
     link.remove();
@@ -281,10 +351,10 @@ export function mountDatasette(
     const action = (e.target as HTMLElement).closest<HTMLButtonElement>(
       "button[data-action]",
     )?.dataset.action;
-    if (!action || buttons[action]?.disabled) return;
+    if (!action || !buttons[action] || buttons[action]!.disabled) return;
     const requestId = crypto.randomUUID();
     if (action === "download") {
-      if (!snapshot.session || !snapshot.prefix) return;
+      if (!ui.download || !snapshot.session || !snapshot.prefix) return;
       const session = snapshot.session;
       const timer = setTimeout(() => {
         downloads.delete(requestId);
@@ -298,16 +368,20 @@ export function mountDatasette(
       downloads.set(requestId, { session, timer });
       coordinator.postMessage({
         type: "datasette-http",
+        app,
         session,
         requestId,
         method: "GET",
-        path: snapshot.prefix + "orders.json?sql=" +
-          encodeURIComponent(DATASETTE_QUERY) + "&_shape=array",
+        path: snapshot.prefix + ui.download.path,
         headers: [],
       });
     } else {
       if (action === "stop" || action === "reset") unbind();
-      coordinator.postMessage({ type: `datasette-${action}`, requestId });
+      coordinator.postMessage({
+        type: `datasette-${action}`,
+        app,
+        requestId,
+      });
     }
   };
   root.addEventListener("click", click);
@@ -324,7 +398,14 @@ export function mountDatasette(
     unbind();
     coordinator.removeEventListener("message", receive);
     coordinator.removeEventListener("error", failed);
-    navigator.serviceWorker.removeEventListener("message", ownerMessage);
+    ownerListeners.delete(ownerMessage);
+    if (ownerListeners.size === 0) {
+      navigator.serviceWorker.removeEventListener(
+        "message",
+        dispatchOwnerMessage,
+      );
+    }
+    globalThis.removeEventListener("pagehide", dispose);
     root.removeEventListener("click", click);
   };
   globalThis.addEventListener("pagehide", dispose, { once: true });

@@ -49,7 +49,7 @@ jobs:
           # Pinned, not v2.x: deno fmt's output changed between 2.x releases
           # (public/index.html reindents), so a floating formatter turns CI red
           # with no code change and disagrees with what developers run locally.
-          deno-version: v2.7.14
+          deno-version: v2.9.7
       # yurtos-kernel and yurt-jupyter are PRIVATE, and the default
       # GITHUB_TOKEN cannot read another private repository. Without a PAT stored as
       # KERNEL_CHECKOUT_TOKEN the integration job cannot check them out at all, so
@@ -167,6 +167,7 @@ jobs:
           agent,
           datasette_bridge,
           guest_http,
+          preview,
         ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -184,7 +185,7 @@ jobs:
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('playground/deno.json') }}
       - name: Install Chromium for browser acceptance
         working-directory: playground
-        run: deno run --allow-all node_modules/playwright/cli.js install chromium
+        run: node node_modules/playwright/cli.js install chromium
       # The deployable site, built from the inputs above: what the
       # acceptance below boots.
       - name: Build static site
@@ -216,7 +217,7 @@ jobs:
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
       - name: Install Chromium
         working-directory: playground
-        run: deno run --allow-all node_modules/playwright/cli.js install chromium
+        run: node node_modules/playwright/cli.js install chromium
       - name: Qualified Datasette acceptance
         timeout-minutes: 20
         working-directory: playground

@@ -41,6 +41,7 @@ async function finite(line: string, stdin?: string) {
 function state(state: string) {
   self.postMessage({
     type: "datasette-state",
+    app: "datasette",
     snapshot: { state, session: sessionId, prefix },
   });
 }
@@ -68,8 +69,8 @@ self.onmessage = async (e) => {
       );
       await finite("printf original > /home/user/demo_http/value");
       self.postMessage({
-        type: "datasette-qualification",
-        hashes: ["sha256-" + "A".repeat(43) + "="],
+        type: "guest-app-qualification",
+        apps: { datasette: ["sha256-" + "A".repeat(43) + "="] },
       });
       return;
     }
@@ -85,6 +86,7 @@ self.onmessage = async (e) => {
           const r = await requestGuestHttp(
             () => Promise.resolve(guest.dialSandboxPort(8001)),
             {
+              app: "datasette",
               session: sessionId,
               prefix,
               path: prefix,
@@ -139,7 +141,7 @@ self.onmessage = async (e) => {
       try {
         const reply = await requestGuestHttp(
           () => Promise.resolve(guest.dialSandboxPort(8001)),
-          { ...request, prefix, signal: controller.signal },
+          { ...request, app: "datasette", prefix, signal: controller.signal },
         );
         self.postMessage({
           ...reply,

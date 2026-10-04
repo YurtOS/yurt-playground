@@ -1,4 +1,4 @@
-import { mountDatasette } from "./datasette_page.ts";
+import { mountDatasette, mountPreview } from "./datasette_page.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import { mountNotebook } from "./notebook.ts";
 import { mountAgentPane } from "./agent_pane.ts";
@@ -193,6 +193,7 @@ function boot(
   const worker = new Worker("/coordinator.bundle.js");
   attachGuestWorkerFactory(worker);
   mountDatasette(byId("datasette"), worker, desktop === undefined);
+  mountPreview(byId("preview"), worker, desktop === undefined);
   execute.current = (id, code) => {
     worker.postMessage({ type: "cell", id, code });
   };

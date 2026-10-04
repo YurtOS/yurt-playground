@@ -1,6 +1,25 @@
 // deno-lint-ignore-file no-control-regex
 // HTTP framing deliberately rejects ASCII control bytes.
-export type GuestMethod = "GET" | "HEAD";
+import { appPrefix, type GuestAppId, isGuestAppId } from "./guest_apps.ts";
+export type GuestMethod =
+  | "GET"
+  | "HEAD"
+  | "POST"
+  | "PUT"
+  | "PATCH"
+  | "DELETE"
+  | "OPTIONS";
+export const GUEST_METHODS: ReadonlySet<string> = new Set([
+  "GET",
+  "HEAD",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "OPTIONS",
+]);
+const SAFE = new Set(["GET", "HEAD", "OPTIONS"]);
+const BODY_METHODS = new Set(["POST", "PUT", "PATCH"]);
 export type HeaderPairs = [string, string][];
 export interface GuestConnection {
   write(bytes: Uint8Array): Promise<void>;
@@ -11,14 +30,22 @@ export interface GuestHttpReply {
   status: number;
   headers: HeaderPairs;
   body: ArrayBuffer;
+  /** Raw response-head cookies for the coordinator jar; never browser headers. */
+  setCookies?: string[];
 }
 export interface GuestHttpOptions {
+  app: GuestAppId;
   session: string;
   prefix: string;
   method: GuestMethod;
   path: string;
   port?: number;
   headers: HeaderPairs;
+  body?: ArrayBuffer;
+  referrer?: string;
+  cookie?: string;
+  /** Reserve retained response body bytes before allocation or read. */
+  onBuffer?: (bytes: number) => void;
   signal: AbortSignal;
   timeoutMs?: number;
 }
@@ -28,6 +55,8 @@ export class GuestHttpError extends Error {
     this.name = "GuestHttpError";
   }
 }
+
+export const GUEST_HTTP_TIMEOUT_MS = 30_000;
 const HEADER_LIMIT = 64 * 1024;
 const BODY_LIMIT = 16 * 1024 * 1024;
 const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
@@ -48,17 +77,31 @@ const ALLOWED = new Set([
   "accept-language",
   "if-none-match",
   "if-modified-since",
+  "if-match",
+  "if-unmodified-since",
+  "range",
+  "if-range",
+  "content-type",
+  "x-requested-with",
+  "x-csrf-token",
+  "x-csrftoken",
+  "x-xsrf-token",
+  "authorization",
 ]);
 function fail(message: string): never {
   throw new GuestHttpError(message);
 }
 export function validateGuestPath(
+  app: GuestAppId,
   session: string,
   prefix: string,
   path: string,
   port = 8001,
 ): void {
-  if (!UUID.test(session) || prefix !== `/apps/datasette/${session}/`) {
+  if (
+    !isGuestAppId(app) || !UUID.test(session) ||
+    prefix !== appPrefix(app, session)
+  ) {
     fail("invalid session prefix");
   }
   if (
@@ -143,7 +186,7 @@ class Reader {
       }
     }
   }
-  async exact(n: number): Promise<Uint8Array> {
+  async exact(n: number): Promise<Uint8Array<ArrayBuffer>> {
     const out = new Uint8Array(n);
     let at = 0;
     while (at < n) {
@@ -180,14 +223,23 @@ export async function requestGuestHttp(
   options: GuestHttpOptions,
 ): Promise<GuestHttpReply> {
   validateGuestPath(
+    options.app,
     options.session,
     options.prefix,
     options.path,
     options.port,
   );
-  if (options.method !== "GET" && options.method !== "HEAD") {
+  if (!GUEST_METHODS.has(options.method)) {
     throw new GuestHttpError("unsupported method", 405);
   }
+  const requestBody = new Uint8Array(options.body ?? new ArrayBuffer(0));
+  if (requestBody.length > BODY_LIMIT) {
+    throw new GuestHttpError("request body exceeds 16 MiB", 413);
+  }
+  if (
+    requestBody.length && !BODY_METHODS.has(options.method) &&
+    options.method !== "DELETE"
+  ) throw new GuestHttpError("request body not allowed for this method", 400);
   options.signal.throwIfAborted();
   const requestHeaders: HeaderPairs = [];
   for (const [key, value] of options.headers) {
@@ -196,7 +248,38 @@ export async function requestGuestHttp(
     }
     if (ALLOWED.has(key.toLowerCase())) requestHeaders.push([key, value]);
   }
-  const timeout = options.timeoutMs ?? 30_000;
+  const extra: HeaderPairs = [];
+  if (!SAFE.has(options.method)) {
+    extra.push(["Origin", origin(options.port)]);
+    if (options.referrer !== undefined) {
+      validateGuestPath(
+        options.app,
+        options.session,
+        options.prefix,
+        options.referrer,
+        options.port,
+      );
+      extra.push(["Referer", origin(options.port) + options.referrer]);
+    }
+  }
+  if (options.cookie) {
+    if (/[\x00-\x1f\x7f]/.test(options.cookie)) fail("invalid cookie");
+    extra.push(["Cookie", options.cookie]);
+  }
+  if (BODY_METHODS.has(options.method) || requestBody.length) {
+    extra.push(["Content-Length", String(requestBody.length)]);
+  }
+  const head = new TextEncoder().encode(
+    `${options.method} ${options.path} HTTP/1.1\r\nHost: 127.0.0.1:${
+      options.port ?? 8001
+    }\r\nConnection: close\r\nAccept-Encoding: identity\r\n` +
+      [...requestHeaders, ...extra].map(([k, v]) => `${k}: ${v}\r\n`).join("") +
+      "\r\n",
+  );
+  if (head.length > HEADER_LIMIT) {
+    throw new GuestHttpError("request headers exceed 64 KiB", 431);
+  }
+  const timeout = options.timeoutMs ?? GUEST_HTTP_TIMEOUT_MS;
   if (!Number.isFinite(timeout) || timeout <= 0) {
     throw new GuestHttpError("guest HTTP deadline", 504);
   }
@@ -224,7 +307,7 @@ export async function requestGuestHttp(
     cancel(options.signal.reason ?? new DOMException("Aborted", "AbortError"));
   const timer = setTimeout(
     () => cancel(new GuestHttpError("guest HTTP deadline", 504)),
-    Math.min(timeout, 30_000),
+    Math.min(timeout, GUEST_HTTP_TIMEOUT_MS),
   );
   options.signal.addEventListener("abort", abort, { once: true });
   try {
@@ -238,12 +321,8 @@ export async function requestGuestHttp(
     });
     await race(opening);
     if (!conn) fail("guest connection unavailable");
-    const request =
-      `${options.method} ${options.path} HTTP/1.1\r\nHost: 127.0.0.1:${
-        options.port ?? 8001
-      }\r\nConnection: close\r\nAccept-Encoding: identity\r\n` +
-      requestHeaders.map(([k, v]) => `${k}: ${v}\r\n`).join("") + "\r\n";
-    await race(conn.write(new TextEncoder().encode(request)));
+    await race(conn.write(head));
+    if (requestBody.length) await race(conn.write(requestBody));
     const reader = new Reader(() => race(conn!.read(8192)));
     let status = 0;
     let headers: HeaderPairs = [];
@@ -274,25 +353,27 @@ export async function requestGuestHttp(
       (transfers.length !== 1 || transfers[0].toLowerCase() !== "chunked" ||
         length !== undefined)
     ) fail("unsupported or conflicting HTTP framing");
+    const setCookies = headers.filter(([k]) => k === "set-cookie").map((
+      [, v],
+    ) => v);
     for (const [k, v] of headers) {
-      if (k === "set-cookie") fail("guest cookies unsupported");
       if (k === "content-encoding" && v.toLowerCase() !== "identity") {
         fail("guest content encoding unsupported");
       }
     }
     const bodyless = options.method === "HEAD" || status === 204 ||
       status === 304;
-    const chunks: Uint8Array[] = [];
+    const chunks: Uint8Array<ArrayBuffer>[] = [];
     let total = 0;
-    const append = (bytes: Uint8Array) => {
+    const append = (bytes: Uint8Array<ArrayBuffer>) => {
       total += bytes.length;
-      if (total > BODY_LIMIT) fail("HTTP body exceeds 16 MiB");
       chunks.push(bytes);
     };
     if (!bodyless) {
       if (length !== undefined) {
         if (length > BODY_LIMIT) fail("HTTP body exceeds 16 MiB");
-        append(await reader.exact(length));
+        if (length) options.onBuffer?.(length);
+        if (length) append(await reader.exact(length));
       } else if (transfers.length) {
         for (;;) {
           const line = await reader.line(false);
@@ -309,12 +390,12 @@ export async function requestGuestHttp(
               if (!trailer) break;
               const [k] = parseHeader(trailer);
               if (
-                k === "content-length" || k === "transfer-encoding" ||
-                k === "set-cookie"
+                k === "content-length" || k === "transfer-encoding"
               ) fail("invalid framing trailer");
             }
             break;
           }
+          options.onBuffer?.(size);
           append(await reader.exact(size));
           const end = await reader.exact(2);
           if (end[0] !== 13 || end[1] !== 10) fail("invalid chunk ending");
@@ -322,14 +403,24 @@ export async function requestGuestHttp(
       } else {for (;;) {
           const part = await reader.take(8192);
           if (!part.length) break;
-          append(part.slice());
+          if (part.length > BODY_LIMIT - total) {
+            fail("HTTP body exceeds 16 MiB");
+          }
+          options.onBuffer?.(part.length);
+          const retained = new Uint8Array(part.length);
+          retained.set(part);
+          append(retained);
         }}
     }
-    const body = new Uint8Array(total);
-    let at = 0;
-    for (const chunk of chunks) {
-      body.set(chunk, at);
-      at += chunk.length;
+    let body = chunks[0] ?? new Uint8Array();
+    if (chunks.length > 1) {
+      options.onBuffer?.(total);
+      body = new Uint8Array(total);
+      let at = 0;
+      for (const chunk of chunks) {
+        body.set(chunk, at);
+        at += chunk.length;
+      }
     }
     const removed = new Set(HOP);
     for (const [k, v] of headers) {
@@ -341,7 +432,7 @@ export async function requestGuestHttp(
       }
     }
     headers = headers.filter(([k]) =>
-      !removed.has(k) && k !== "content-length"
+      !removed.has(k) && k !== "content-length" && k !== "set-cookie"
     );
     headers = headers.map((
       [k, v],
@@ -355,7 +446,7 @@ export async function requestGuestHttp(
     else if (status !== 204 && length !== undefined) {
       headers.push(["content-length", String(length)]);
     }
-    return { status, headers, body: body.buffer };
+    return { status, headers, body: body.buffer, setCookies };
   } catch (error) {
     if (cancellation !== undefined) throw cancellation;
     if (error instanceof GuestHttpError || error instanceof DOMException) {

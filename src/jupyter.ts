@@ -589,7 +589,7 @@ async function withTimeout<T>(
   timeoutMs: number,
   message: string,
 ): Promise<T> {
-  let timer: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(message)), timeoutMs);
   });

@@ -7,574 +7,574 @@
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./xterm.css" />
     <style>
-      :root {
-        --ground: #161a21;
-        --pane: #1c212a;
-        --rule: #2c3340;
-        --text: #e6e1d7;
-        --muted: #9a948a;
-        --ochre: #e0a458;
-        --sky: #8fb4d9;
-        --moss: #9fc79a;
-        --ember: #e08a7a;
-        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        --serif:
-          "Iowan Old Style",
-          "Palatino Linotype",
-          Palatino,
-          Georgia,
-          serif;
-      }
-      html,
-      body {
-        margin: 0;
-        min-height: 100%;
-        background: var(--ground);
-        color: var(--text);
-        font-family: var(--mono);
-        font-size: 13px;
-        line-height: 1.5;
-      }
-      a {
-        color: var(--sky);
-      }
-      a:focus-visible,
-      button:focus-visible,
-      summary:focus-visible,
-      textarea:focus-visible {
-        outline: 2px solid var(--ochre);
-        outline-offset: 2px;
-      }
-      code,
-      kbd {
-        font-family: var(--mono);
-        background: var(--pane);
-        border: 1px solid var(--rule);
-        border-radius: 4px;
-        padding: 0 4px;
-      }
-      .wrap {
-        max-width: 1040px;
-        margin: 0 auto;
-        padding: 0 16px;
-      }
+    :root {
+      --ground: #161a21;
+      --pane: #1c212a;
+      --rule: #2c3340;
+      --text: #e6e1d7;
+      --muted: #9a948a;
+      --ochre: #e0a458;
+      --sky: #8fb4d9;
+      --moss: #9fc79a;
+      --ember: #e08a7a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --serif:
+        "Iowan Old Style",
+        "Palatino Linotype",
+        Palatino,
+        Georgia,
+        serif;
+    }
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: var(--ground);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    a {
+      color: var(--sky);
+    }
+    a:focus-visible,
+    button:focus-visible,
+    summary:focus-visible,
+    textarea:focus-visible {
+      outline: 2px solid var(--ochre);
+      outline-offset: 2px;
+    }
+    code,
+    kbd {
+      font-family: var(--mono);
+      background: var(--pane);
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      padding: 0 4px;
+    }
+    .wrap {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 0 16px;
+    }
 
-      /* Masthead: the name, one sentence, the ways in. */
+    /* Masthead: the name, one sentence, the ways in. */
+    header.mast {
+      display: flex;
+      align-items: baseline;
+      gap: 20px;
+      flex-wrap: wrap;
+      padding: 20px 0 14px;
+    }
+    header.mast h1 {
+      font-family: var(--serif);
+      font-weight: 400;
+      font-size: 1.9rem;
+      letter-spacing: 0.01em;
+      margin: 0;
+    }
+    header.mast .lead {
+      font-family: var(--serif);
+      font-size: 1.05rem;
+      color: var(--muted);
+      margin: 0;
+      flex: 1 1 320px;
+    }
+    header.mast nav {
+      display: flex;
+      gap: 18px;
+    }
+    header.mast nav a {
+      text-decoration: none;
+      border-bottom: 1px solid transparent;
+      padding-bottom: 1px;
+    }
+    header.mast nav a:hover {
+      border-bottom-color: var(--sky);
+    }
+
+    #mobile-note,
+    #another-tab-note {
+      border-left: 3px solid var(--ember);
+      background: var(--pane);
+      color: var(--text);
+      padding: 12px 14px;
+      margin: 0 0 16px;
+    }
+
+    /* The workspace: two panes, one machine. */
+    .pane {
+      background: var(--pane);
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .pane + .pane {
+      margin-top: 12px;
+    }
+    .pane .bar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--rule);
+      color: var(--muted);
+      min-height: 20px;
+    }
+    .pane .bar .name {
+      color: var(--text);
+    }
+    .pane .bar .grow {
+      flex: 1;
+    }
+    #status {
+      margin: 0;
+      font: inherit;
+      white-space: pre-wrap;
+    }
+    #net[data-online="false"] {
+      color: var(--ember);
+    }
+    .bar-action {
+      font: inherit;
+      color: var(--muted);
+      background: none;
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      padding: 1px 8px;
+      cursor: pointer;
+    }
+    .bar-action:hover,
+    .bar-action:focus-visible {
+      color: var(--text);
+    }
+    .bar-action[disabled] {
+      cursor: progress;
+    }
+    #term-wrap {
+      position: relative;
+      height: 50vh;
+      min-height: 300px;
+    }
+    #term {
+      position: absolute;
+      inset: 0;
+      padding: 8px 0 0 10px;
+    }
+    /* Before the boot: a prompt and the one action. */
+    #start {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      justify-content: flex-start;
+      gap: 18px;
+      padding: 18px 16px;
+      background: var(--pane);
+    }
+    #start[hidden] {
+      display: none;
+    }
+    #start .prompt {
+      color: var(--ochre);
+      font-size: 15px;
+    }
+    #start .prompt::after {
+      content: "\2588";
+      margin-left: 2px;
+      animation: blink 1.1s steps(1) infinite;
+    }
+    @keyframes blink {
+      50% {
+        opacity: 0;
+      }
+    }
+    #start button {
+      font: inherit;
+      font-size: 15px;
+      color: #161a21;
+      background: var(--ochre);
+      border: 0;
+      border-radius: 6px;
+      padding: 10px 18px;
+      cursor: pointer;
+    }
+    #start button:hover {
+      filter: brightness(1.08);
+    }
+    #start p {
+      margin: 0;
+      color: var(--muted);
+      max-width: 60ch;
+    }
+    #failed {
+      position: absolute;
+      inset: 0;
+      overflow: auto;
+      padding: 18px 16px;
+      background: var(--pane);
+      border-left: 3px solid var(--ember);
+    }
+    #failed[hidden] {
+      display: none;
+    }
+    #failed h2 {
+      font: 400 1.25rem/1.3 var(--serif);
+      margin: 0 0 10px;
+    }
+    #failed p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      max-width: 60ch;
+    }
+    #failed-reason {
+      display: block;
+      margin: 0 0 12px;
+      padding: 8px 10px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: var(--ember);
+      background: var(--ground);
+      border: 1px solid var(--rule);
+      border-radius: 3px;
+    }
+    #failed-reason[hidden] {
+      display: none;
+    }
+
+    /* The cell: one Python cell on the same kernel. */
+    #notebook {
+      padding: 0;
+    }
+    #notebook-input {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 72px;
+      resize: vertical;
+      margin: 0;
+      padding: 10px 12px;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+      font-size: 14px;
+      border: 0;
+      border-bottom: 1px solid var(--rule);
+    }
+    #notebook-input:disabled {
+      color: var(--muted);
+    }
+    #notebook .actions {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 8px 12px;
+    }
+    #notebook-execute {
+      font: inherit;
+      color: #161a21;
+      background: var(--sky);
+      border: 0;
+      border-radius: 6px;
+      padding: 6px 14px;
+      cursor: pointer;
+    }
+    #notebook-execute:disabled,
+    #notebook-interrupt:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    /* Stop: quieter than Run -- it is the way out, not the way in. */
+    #notebook-interrupt {
+      font: inherit;
+      color: var(--text);
+      background: transparent;
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      padding: 6px 14px;
+      cursor: pointer;
+    }
+    #notebook-status {
+      color: var(--muted);
+    }
+    #notebook-output {
+      margin: 0;
+      padding: 0 12px 12px;
+      min-height: 1.5em;
+      white-space: pre-wrap;
+      font: inherit;
+      font-size: 14px;
+      /* A loop that prints made the pane 630,000 px tall and pushed the
+         rest of the page that far down (yurt-playground#131). */
+      max-height: 60vh;
+      overflow-y: auto;
+    }
+    #notebook-output:not(:empty) {
+      border-top: 1px solid var(--rule);
+      padding-top: 10px;
+    }
+
+    /* Secondary: quieter than the panes, below the fold. */
+    .strip {
+      margin-top: 28px;
+      border-top: 1px solid var(--rule);
+      padding-top: 18px;
+    }
+    .strip h2 {
+      font-family: var(--serif);
+      font-weight: 400;
+      font-size: 1.25rem;
+      margin: 0 0 4px;
+    }
+    .strip > p {
+      color: var(--muted);
+      margin: 0 0 14px;
+      max-width: 70ch;
+    }
+
+    /* Run it on your machine: one choice per platform down the left. */
+    #install {
+      position: relative;
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      display: flex;
+      overflow: hidden;
+    }
+    /* The choice is a radio group: Tab reaches the chosen one, the arrow
+     * keys move it. The radios themselves are hidden; their labels are
+     * the tabs, and the focus ring lands on the focused radio's label. */
+    #install > input {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 1px;
+      height: 1px;
+      margin: 0;
+      opacity: 0;
+      pointer-events: none;
+    }
+    #install .tabs {
+      display: flex;
+      flex-direction: column;
+      flex: 0 0 200px;
+      border-right: 1px solid var(--rule);
+      padding: 8px 0;
+    }
+    #install .tabs .group {
+      padding: 8px 16px 2px;
+      color: var(--muted);
+    }
+    #install .tabs label {
+      padding: 6px 16px 6px 26px;
+      color: var(--muted);
+      cursor: pointer;
+      border-left: 3px solid transparent;
+    }
+    #install .tabs label:hover {
+      color: var(--text);
+    }
+    #install-app-mac:checked ~ .tabs label[for="install-app-mac"],
+    #install-app-linux:checked ~ .tabs label[for="install-app-linux"],
+    #install-cli-mac:checked ~ .tabs label[for="install-cli-mac"],
+    #install-cli-linux:checked ~ .tabs label[for="install-cli-linux"] {
+      color: var(--text);
+      border-left-color: var(--ochre);
+      background: var(--pane);
+    }
+    #install-app-mac:focus-visible ~ .tabs label[for="install-app-mac"],
+    #install-app-linux:focus-visible ~ .tabs label[for="install-app-linux"],
+    #install-cli-mac:focus-visible ~ .tabs label[for="install-cli-mac"],
+    #install-cli-linux:focus-visible ~ .tabs label[for="install-cli-linux"] {
+      outline: 2px solid var(--ochre);
+      outline-offset: -2px;
+    }
+    #install .panel {
+      display: none;
+      flex: 1 1 auto;
+      min-width: 0;
+      padding: 14px 18px 16px;
+    }
+    #install-app-mac:checked ~ .panel.app-mac,
+    #install-app-linux:checked ~ .panel.app-linux,
+    #install-cli-mac:checked ~ .panel.cli-mac,
+    #install-cli-linux:checked ~ .panel.cli-linux {
+      display: block;
+    }
+    #install .panel h3 {
+      margin: 0 0 8px;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+    #install .panel p {
+      margin: 0 0 10px;
+      color: var(--muted);
+      max-width: 70ch;
+    }
+    #install .panel p:last-child {
+      margin-bottom: 0;
+    }
+    #install .panel pre {
+      margin: 0 0 10px;
+      padding: 10px 12px;
+      background: var(--ground);
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      overflow-x: auto;
+      color: var(--text);
+    }
+
+    /* The disclosures -- the proof and the snapshots -- on demand.
+       Scoped to the class, not to one id: a rule written as `#proof
+       summary` left the next <details class="strip"> unstyled (#129). */
+    .strip > summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 4px 12px;
+    }
+    .strip > summary::-webkit-details-marker {
+      display: none;
+    }
+    .strip > summary h2 {
+      margin: 0;
+    }
+    /* The one sign it opens: a small triangle in the accent, turning. */
+    .strip > summary h2::before {
+      content: "";
+      display: inline-block;
+      width: 0;
+      height: 0;
+      margin-right: 10px;
+      vertical-align: 2px;
+      border: 5px solid transparent;
+      border-left: 7px solid var(--ochre);
+      border-right: 0;
+      transition: transform 120ms ease-out;
+    }
+    .strip[open] > summary h2::before {
+      transform: rotate(90deg);
+    }
+    .strip > summary .hint {
+      color: var(--muted);
+    }
+    .strip[open] > summary .hint {
+      display: none;
+    }
+    /* Four checks, two by two: they are parallel, none comes first. */
+    .strip .checks {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+    .strip .check {
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      padding: 12px 14px;
+    }
+    .strip .check h3 {
+      margin: 0 0 8px;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+    .strip .check p {
+      margin: 0 0 8px;
+      color: var(--muted);
+    }
+    .strip .check p:last-child {
+      margin-bottom: 0;
+    }
+    .strip .check button {
+      font: inherit;
+      color: #161a21;
+      background: var(--sky);
+      border: 0;
+      border-radius: 6px;
+      padding: 6px 14px;
+      cursor: pointer;
+    }
+    .strip .check button:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+    #verify-results {
+      overflow-x: auto;
+    }
+    #verify-results table {
+      border-collapse: collapse;
+      margin: 12px 0 0;
+      width: 100%;
+    }
+    #verify-results td {
+      padding: 3px 6px 3px 0;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    #verify-results td:last-child {
+      padding-left: 6px;
+      color: var(--moss);
+    }
+    #verify-results tr.ok td:first-child {
+      color: var(--moss);
+    }
+    #verify-results tr.bad td {
+      color: var(--ember);
+    }
+    #verify-results p {
+      margin: 12px 0 0;
+    }
+    #verify-results p.ok {
+      color: var(--moss);
+    }
+    #verify-results p.bad {
+      color: var(--ember);
+    }
+    #verify-commit {
+      margin: 8px 0 0;
+      color: var(--muted);
+    }
+
+    footer {
+      margin: 28px 0 32px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 720px) {
       header.mast {
-        display: flex;
-        align-items: baseline;
-        gap: 20px;
-        flex-wrap: wrap;
-        padding: 20px 0 14px;
+        gap: 8px 16px;
+        padding-top: 14px;
       }
       header.mast h1 {
-        font-family: var(--serif);
-        font-weight: 400;
-        font-size: 1.9rem;
-        letter-spacing: 0.01em;
-        margin: 0;
-      }
-      header.mast .lead {
-        font-family: var(--serif);
-        font-size: 1.05rem;
-        color: var(--muted);
-        margin: 0;
-        flex: 1 1 320px;
-      }
-      header.mast nav {
-        display: flex;
-        gap: 18px;
-      }
-      header.mast nav a {
-        text-decoration: none;
-        border-bottom: 1px solid transparent;
-        padding-bottom: 1px;
-      }
-      header.mast nav a:hover {
-        border-bottom-color: var(--sky);
-      }
-
-      #mobile-note,
-      #another-tab-note {
-        border-left: 3px solid var(--ember);
-        background: var(--pane);
-        color: var(--text);
-        padding: 12px 14px;
-        margin: 0 0 16px;
-      }
-
-      /* The workspace: two panes, one machine. */
-      .pane {
-        background: var(--pane);
-        border: 1px solid var(--rule);
-        border-radius: 6px;
-        overflow: hidden;
-      }
-      .pane + .pane {
-        margin-top: 12px;
-      }
-      .pane .bar {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        padding: 6px 12px;
-        border-bottom: 1px solid var(--rule);
-        color: var(--muted);
-        min-height: 20px;
-      }
-      .pane .bar .name {
-        color: var(--text);
-      }
-      .pane .bar .grow {
-        flex: 1;
-      }
-      #status {
-        margin: 0;
-        font: inherit;
-        white-space: pre-wrap;
-      }
-      #net[data-online="false"] {
-        color: var(--ember);
-      }
-      .bar-action {
-        font: inherit;
-        color: var(--muted);
-        background: none;
-        border: 1px solid var(--rule);
-        border-radius: 4px;
-        padding: 1px 8px;
-        cursor: pointer;
-      }
-      .bar-action:hover,
-      .bar-action:focus-visible {
-        color: var(--text);
-      }
-      .bar-action[disabled] {
-        cursor: progress;
+        font-size: 1.6rem;
       }
       #term-wrap {
-        position: relative;
-        height: 50vh;
-        min-height: 300px;
+        height: 40vh;
+        min-height: 240px;
       }
-      #term {
-        position: absolute;
-        inset: 0;
-        padding: 8px 0 0 10px;
-      }
-      /* Before the boot: a prompt and the one action. */
-      #start {
-        position: absolute;
-        inset: 0;
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        justify-content: flex-start;
-        gap: 18px;
-        padding: 18px 16px;
-        background: var(--pane);
-      }
-      #start[hidden] {
-        display: none;
-      }
-      #start .prompt {
-        color: var(--ochre);
-        font-size: 15px;
-      }
-      #start .prompt::after {
-        content: "\2588";
-        margin-left: 2px;
-        animation: blink 1.1s steps(1) infinite;
-      }
-      @keyframes blink {
-        50% {
-          opacity: 0;
-        }
-      }
-      #start button {
-        font: inherit;
-        font-size: 15px;
-        color: #161a21;
-        background: var(--ochre);
-        border: 0;
-        border-radius: 6px;
-        padding: 10px 18px;
-        cursor: pointer;
-      }
-      #start button:hover {
-        filter: brightness(1.08);
-      }
-      #start p {
-        margin: 0;
-        color: var(--muted);
-        max-width: 60ch;
-      }
-      #failed {
-        position: absolute;
-        inset: 0;
-        overflow: auto;
-        padding: 18px 16px;
-        background: var(--pane);
-        border-left: 3px solid var(--ember);
-      }
-      #failed[hidden] {
-        display: none;
-      }
-      #failed h2 {
-        font: 400 1.25rem/1.3 var(--serif);
-        margin: 0 0 10px;
-      }
-      #failed p {
-        margin: 0 0 12px;
-        color: var(--muted);
-        max-width: 60ch;
-      }
-      #failed-reason {
-        display: block;
-        margin: 0 0 12px;
-        padding: 8px 10px;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-        color: var(--ember);
-        background: var(--ground);
-        border: 1px solid var(--rule);
-        border-radius: 3px;
-      }
-      #failed-reason[hidden] {
-        display: none;
-      }
-
-      /* The cell: one Python cell on the same kernel. */
-      #notebook {
-        padding: 0;
-      }
-      #notebook-input {
-        display: block;
-        width: 100%;
-        box-sizing: border-box;
-        min-height: 72px;
-        resize: vertical;
-        margin: 0;
-        padding: 10px 12px;
-        background: transparent;
-        color: var(--text);
-        font: inherit;
-        font-size: 14px;
-        border: 0;
-        border-bottom: 1px solid var(--rule);
-      }
-      #notebook-input:disabled {
-        color: var(--muted);
-      }
-      #notebook .actions {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        padding: 8px 12px;
-      }
-      #notebook-execute {
-        font: inherit;
-        color: #161a21;
-        background: var(--sky);
-        border: 0;
-        border-radius: 6px;
-        padding: 6px 14px;
-        cursor: pointer;
-      }
-      #notebook-execute:disabled,
-      #notebook-interrupt:disabled {
-        opacity: 0.45;
-        cursor: default;
-      }
-      /* Stop: quieter than Run -- it is the way out, not the way in. */
-      #notebook-interrupt {
-        font: inherit;
-        color: var(--text);
-        background: transparent;
-        border: 1px solid var(--rule);
-        border-radius: 6px;
-        padding: 6px 14px;
-        cursor: pointer;
-      }
-      #notebook-status {
-        color: var(--muted);
-      }
-      #notebook-output {
-        margin: 0;
-        padding: 0 12px 12px;
-        min-height: 1.5em;
-        white-space: pre-wrap;
-        font: inherit;
-        font-size: 14px;
-        /* A loop that prints made the pane 630,000 px tall and pushed the
-           rest of the page that far down (yurt-playground#131). */
-        max-height: 60vh;
-        overflow-y: auto;
-      }
-      #notebook-output:not(:empty) {
-        border-top: 1px solid var(--rule);
-        padding-top: 10px;
-      }
-
-      /* Secondary: quieter than the panes, below the fold. */
-      .strip {
-        margin-top: 28px;
-        border-top: 1px solid var(--rule);
-        padding-top: 18px;
-      }
-      .strip h2 {
-        font-family: var(--serif);
-        font-weight: 400;
-        font-size: 1.25rem;
-        margin: 0 0 4px;
-      }
-      .strip > p {
-        color: var(--muted);
-        margin: 0 0 14px;
-        max-width: 70ch;
-      }
-
-      /* Run it on your machine: one choice per platform down the left. */
       #install {
-        position: relative;
-        border: 1px solid var(--rule);
-        border-radius: 6px;
-        display: flex;
-        overflow: hidden;
-      }
-      /* The choice is a radio group: Tab reaches the chosen one, the arrow
-       * keys move it. The radios themselves are hidden; their labels are
-       * the tabs, and the focus ring lands on the focused radio's label. */
-      #install > input {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 1px;
-        height: 1px;
-        margin: 0;
-        opacity: 0;
-        pointer-events: none;
+        flex-direction: column;
       }
       #install .tabs {
-        display: flex;
-        flex-direction: column;
-        flex: 0 0 200px;
-        border-right: 1px solid var(--rule);
-        padding: 8px 0;
-      }
-      #install .tabs .group {
-        padding: 8px 16px 2px;
-        color: var(--muted);
-      }
-      #install .tabs label {
-        padding: 6px 16px 6px 26px;
-        color: var(--muted);
-        cursor: pointer;
-        border-left: 3px solid transparent;
-      }
-      #install .tabs label:hover {
-        color: var(--text);
-      }
-      #install-app-mac:checked ~ .tabs label[for="install-app-mac"],
-      #install-app-linux:checked ~ .tabs label[for="install-app-linux"],
-      #install-cli-mac:checked ~ .tabs label[for="install-cli-mac"],
-      #install-cli-linux:checked ~ .tabs label[for="install-cli-linux"] {
-        color: var(--text);
-        border-left-color: var(--ochre);
-        background: var(--pane);
-      }
-      #install-app-mac:focus-visible ~ .tabs label[for="install-app-mac"],
-      #install-app-linux:focus-visible ~ .tabs label[for="install-app-linux"],
-      #install-cli-mac:focus-visible ~ .tabs label[for="install-cli-mac"],
-      #install-cli-linux:focus-visible ~ .tabs label[for="install-cli-linux"] {
-        outline: 2px solid var(--ochre);
-        outline-offset: -2px;
-      }
-      #install .panel {
-        display: none;
-        flex: 1 1 auto;
-        min-width: 0;
-        padding: 14px 18px 16px;
-      }
-      #install-app-mac:checked ~ .panel.app-mac,
-      #install-app-linux:checked ~ .panel.app-linux,
-      #install-cli-mac:checked ~ .panel.cli-mac,
-      #install-cli-linux:checked ~ .panel.cli-linux {
-        display: block;
-      }
-      #install .panel h3 {
-        margin: 0 0 8px;
-        font-size: 1rem;
-        font-weight: 600;
-      }
-      #install .panel p {
-        margin: 0 0 10px;
-        color: var(--muted);
-        max-width: 70ch;
-      }
-      #install .panel p:last-child {
-        margin-bottom: 0;
-      }
-      #install .panel pre {
-        margin: 0 0 10px;
-        padding: 10px 12px;
-        background: var(--ground);
-        border: 1px solid var(--rule);
-        border-radius: 6px;
-        overflow-x: auto;
-        color: var(--text);
-      }
-
-      /* The disclosures -- the proof and the snapshots -- on demand.
-         Scoped to the class, not to one id: a rule written as `#proof
-         summary` left the next <details class="strip"> unstyled (#129). */
-      .strip > summary {
-        cursor: pointer;
-        list-style: none;
-        display: flex;
-        flex-wrap: wrap;
-        align-items: baseline;
-        gap: 4px 12px;
-      }
-      .strip > summary::-webkit-details-marker {
-        display: none;
-      }
-      .strip > summary h2 {
-        margin: 0;
-      }
-      /* The one sign it opens: a small triangle in the accent, turning. */
-      .strip > summary h2::before {
-        content: "";
-        display: inline-block;
-        width: 0;
-        height: 0;
-        margin-right: 10px;
-        vertical-align: 2px;
-        border: 5px solid transparent;
-        border-left: 7px solid var(--ochre);
+        flex-basis: auto;
         border-right: 0;
-        transition: transform 120ms ease-out;
+        border-bottom: 1px solid var(--rule);
       }
-      .strip[open] > summary h2::before {
-        transform: rotate(90deg);
-      }
-      .strip > summary .hint {
-        color: var(--muted);
-      }
-      .strip[open] > summary .hint {
-        display: none;
-      }
-      /* Four checks, two by two: they are parallel, none comes first. */
       .strip .checks {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 14px;
-        margin-top: 14px;
+        grid-template-columns: 1fr;
       }
-      .strip .check {
-        border: 1px solid var(--rule);
-        border-radius: 6px;
-        padding: 12px 14px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #start .prompt::after {
+        animation: none;
       }
-      .strip .check h3 {
-        margin: 0 0 8px;
-        font-size: 1rem;
-        font-weight: 600;
+      .strip > summary h2::before {
+        transition: none;
       }
-      .strip .check p {
-        margin: 0 0 8px;
-        color: var(--muted);
-      }
-      .strip .check p:last-child {
-        margin-bottom: 0;
-      }
-      .strip .check button {
-        font: inherit;
-        color: #161a21;
-        background: var(--sky);
-        border: 0;
-        border-radius: 6px;
-        padding: 6px 14px;
-        cursor: pointer;
-      }
-      .strip .check button:disabled {
-        opacity: 0.6;
-        cursor: wait;
-      }
-      #verify-results {
-        overflow-x: auto;
-      }
-      #verify-results table {
-        border-collapse: collapse;
-        margin: 12px 0 0;
-        width: 100%;
-      }
-      #verify-results td {
-        padding: 3px 6px 3px 0;
-        color: var(--muted);
-        white-space: nowrap;
-      }
-      #verify-results td:last-child {
-        padding-left: 6px;
-        color: var(--moss);
-      }
-      #verify-results tr.ok td:first-child {
-        color: var(--moss);
-      }
-      #verify-results tr.bad td {
-        color: var(--ember);
-      }
-      #verify-results p {
-        margin: 12px 0 0;
-      }
-      #verify-results p.ok {
-        color: var(--moss);
-      }
-      #verify-results p.bad {
-        color: var(--ember);
-      }
-      #verify-commit {
-        margin: 8px 0 0;
-        color: var(--muted);
-      }
-
-      footer {
-        margin: 28px 0 32px;
-        color: var(--muted);
-      }
-
-      @media (max-width: 720px) {
-        header.mast {
-          gap: 8px 16px;
-          padding-top: 14px;
-        }
-        header.mast h1 {
-          font-size: 1.6rem;
-        }
-        #term-wrap {
-          height: 40vh;
-          min-height: 240px;
-        }
-        #install {
-          flex-direction: column;
-        }
-        #install .tabs {
-          flex-basis: auto;
-          border-right: 0;
-          border-bottom: 1px solid var(--rule);
-        }
-        .strip .checks {
-          grid-template-columns: 1fr;
-        }
-      }
-      @media (prefers-reduced-motion: reduce) {
-        #start .prompt::after {
-          animation: none;
-        }
-        .strip > summary h2::before {
-          transition: none;
-        }
-      }
+    }
     </style>
     <link rel="stylesheet" href="./agent.css" />
   </head>
@@ -695,8 +695,7 @@
         id="notebook"
         aria-label="Jupyter notebook"
         data-testid="notebook"
-      >
-      </section>
+      ></section>
 
       <section
         class="pane"
@@ -704,8 +703,14 @@
         aria-label="Datasette"
         data-testid="datasette"
         hidden
-      >
-      </section>
+      ></section>
+      <section
+        class="pane"
+        id="preview"
+        aria-label="Preview"
+        data-testid="preview"
+        hidden
+      ></section>
 
       <section
         class="pane"
@@ -713,8 +718,7 @@
         aria-label="Local agent"
         data-testid="agent"
         hidden
-      >
-      </section>
+      ></section>
 
       <section class="strip" aria-labelledby="install-title">
         <h2 id="install-title">Run it on your machine</h2>

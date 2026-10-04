@@ -61,8 +61,8 @@ Deno.test("static build writes every file the pages need", async () => {
       "playground.yurtimg.parts.json",
       "_headers",
       "_redirects",
-      "apps/datasette/service-worker.js",
-      "apps/datasette/unavailable.html",
+      "apps/bridge-sw.js",
+      "apps/_bridge/unavailable.html",
       "verify.js",
       "integrity.json",
       "agent.css",
@@ -82,7 +82,7 @@ Deno.test("static build writes every file the pages need", async () => {
   );
   assertStringIncludes(
     await Deno.readTextFile(new URL("dist/_redirects", repoRoot)),
-    "/apps/datasette/:session/* /apps/datasette/unavailable.html 200",
+    "/apps/:app/:session/* /apps/_bridge/unavailable.html 200",
   );
   // Notebook 7's commands open tree/, consoles/ and edit/ in new tabs; each is
   // an app the JupyterLite build must emit, or Pages answers with the home
