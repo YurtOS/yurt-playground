@@ -28,6 +28,8 @@ export class GuestHttpError extends Error {
     this.name = "GuestHttpError";
   }
 }
+
+export const GUEST_HTTP_TIMEOUT_MS = 30_000;
 const HEADER_LIMIT = 64 * 1024;
 const BODY_LIMIT = 16 * 1024 * 1024;
 const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
@@ -196,7 +198,7 @@ export async function requestGuestHttp(
     }
     if (ALLOWED.has(key.toLowerCase())) requestHeaders.push([key, value]);
   }
-  const timeout = options.timeoutMs ?? 30_000;
+  const timeout = options.timeoutMs ?? GUEST_HTTP_TIMEOUT_MS;
   if (!Number.isFinite(timeout) || timeout <= 0) {
     throw new GuestHttpError("guest HTTP deadline", 504);
   }
@@ -224,7 +226,7 @@ export async function requestGuestHttp(
     cancel(options.signal.reason ?? new DOMException("Aborted", "AbortError"));
   const timer = setTimeout(
     () => cancel(new GuestHttpError("guest HTTP deadline", 504)),
-    Math.min(timeout, 30_000),
+    Math.min(timeout, GUEST_HTTP_TIMEOUT_MS),
   );
   options.signal.addEventListener("abort", abort, { once: true });
   try {
