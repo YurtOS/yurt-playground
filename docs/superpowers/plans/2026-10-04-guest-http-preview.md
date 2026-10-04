@@ -76,6 +76,13 @@ rationale.
 
 ## Task 1: Registry, ports, per-app qualification
 
+**Approved design decision (user approval in this conversation, 2026-10-04):**
+retain Datasette's `inlineScriptHashes` in `pins.datasette` and supply preview's
+empty list from `appInlineScriptHashes`. `undefined` means unqualified;
+Datasette's pins validator still requires a non-empty list. The spec's Security
+model and sections 2 and 8 now reflect this choice. No further approval is
+required for this decision.
+
 **Files:**
 
 - Create: `src/guest_apps.ts`
@@ -116,18 +123,24 @@ Deno.test("registry ids, ports and prefixes", () => {
 });
 
 Deno.test("preview is always qualified with no inline scripts; datasette follows pins", () => {
+  const pin = (sha256: string, rev: string) => ({
+    repo: "YurtOS/example",
+    rev,
+    build: "build.sh",
+    path: "artifact",
+    sha256,
+  });
   const pins = parsePins({
-    kernelWasm: { url: "u", sha256: "a".repeat(64), rev: "r" },
-    image: { url: "u", sha256: "b".repeat(64), rev: "c".repeat(40) },
+    kernelWasm: pin("a".repeat(64), "d".repeat(40)),
+    image: pin("b".repeat(64), "c".repeat(40)),
   });
   assertEquals(appInlineScriptHashes(pins, "preview"), []);
   assertEquals(appInlineScriptHashes(pins, "datasette"), undefined);
 });
 ```
 
-Check `parsePin`'s required fields in `src/pins.ts` (around line 40-60) and
-adjust the literal if it needs other keys; the point is a pins object with no
-`datasette` entry.
+The literal uses the valid `pin()` shape from `tests/datasette_pins_test.ts` and
+intentionally has no `datasette` entry.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -421,13 +434,17 @@ git commit -m "feat: bounded per-session cookie jar"
 **Files:**
 
 - Create: `src/slot_queue.ts`
+- Modify: `src/guest_http.ts` (export the existing HTTP timeout constant)
 - Test: `tests/slot_queue_test.ts`
 
 **Interfaces:**
 
 - Consumes: `GuestHttpError` from `src/guest_http.ts` (exists today:
-  `new GuestHttpError(message, status = 502)`) and `GUEST_HTTP_TIMEOUT_MS`
-  (added in Task 4; until then use a local `30_000` and switch in Task 4).
+  `new GuestHttpError(message, status = 502)`).
+- Produces first: `export const GUEST_HTTP_TIMEOUT_MS = 30_000` in
+  `src/guest_http.ts`; replace both `timeoutMs ?? 30_000` and
+  `Math.min(timeout, 30_000)` with the constant. Make this behavior-preserving
+  extraction before Step 1 so the new test's named import resolves.
 - Produces:
   - `interface SlotLimits { perSession: number; global: number; maxWaiting: number; waitMs: number }`
   - `SLOT_LIMITS: SlotLimits` =
@@ -673,13 +690,14 @@ export class SlotQueue {
 
 - [ ] **Step 4: Run tests**
 
-Run: `deno test --no-check tests/slot_queue_test.ts` Expected: PASS (5 tests, no
-leaked timers).
+Run: `deno test --no-check tests/slot_queue_test.ts tests/guest_http_test.ts`
+Expected: PASS (7 slot-queue/budget/deadline tests, plus the existing HTTP
+suite; no leaked timers). Also `deno check src/slot_queue.ts src/guest_http.ts`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-deno fmt && git add src/slot_queue.ts tests/slot_queue_test.ts
+deno fmt && git add src/slot_queue.ts src/guest_http.ts tests/slot_queue_test.ts
 git commit -m "feat: bounded FIFO slot queue for guest requests"
 ```
 
@@ -701,13 +719,12 @@ git commit -m "feat: bounded FIFO slot queue for guest requests"
   - `GUEST_METHODS: ReadonlySet<string>`
     - `GuestHttpOptions` gains `app: GuestAppId`, `body?: ArrayBuffer`,
       `referrer?: string` (a guest path inside the prefix), `cookie?: string`,
-      and `onBuffer?: (bytes: number) => void`, called with the length of each
-      response body chunk before it is buffered, so the caller can enforce the
-      shared per-session budget; a throw aborts the request
-  - `export const GUEST_HTTP_TIMEOUT_MS = 30_000` replaces the two `30_000`
-    literals in `requestGuestHttp` (`timeoutMs ?? 30_000` and
-    `Math.min(timeout, 30_000)`); the deadline starts when the request is
-    dialed, i.e. after any queue wait
+      and `onBuffer?: (bytes: number) => void`, which reserves response-body
+      storage before allocation/read, including any final concatenation copy. A
+      throw aborts the request before that allocation/read. Reservations stay
+      charged until the request settles (conservative accounting).
+  - Reuse `GUEST_HTTP_TIMEOUT_MS = 30_000`, exported in Task 3; the deadline
+    starts when the request is dialed, i.e. after any queue wait
   - `GuestHttpReply` gains `setCookies?: string[]` (coordinator-only: raw
     `Set-Cookie` values from the response head; never forwarded)
   - `validateGuestPath(app: GuestAppId, session, prefix, path, port?)`
@@ -729,6 +746,9 @@ if (
 Fix every caller to pass `"datasette"` for now (Tasks 6-9 replace these with the
 real app):
 
+Add `app: GuestAppId` to `GuestHttpOptions` and its type import in this step,
+before updating the option literals. This mechanical commit must type-check.
+
 Run: `grep -rn "validateGuestPath(" src tests`
 
 Expected callers: `src/guest_http.ts` (inside `requestGuestHttp`: use
@@ -741,6 +761,10 @@ Expected callers: `src/guest_http.ts` (inside `requestGuestHttp`: use
 Run:
 `deno test --no-check --allow-read --allow-net tests/guest_http_test.ts tests/datasette_test.ts tests/datasette_routes_test.ts tests/datasette_protocol_test.ts`
 Expected: PASS (behavior unchanged).
+
+Run
+`deno check src/guest_http.ts src/datasette.ts src/datasette_protocol.ts src/datasette_routes.ts tests/guest_http_test.ts`
+before committing (with the pinned kernel checkout available).
 
 - [ ] **Step 2: Commit the mechanical change**
 
@@ -831,9 +855,12 @@ Deno.test("body over 16 MiB is 413; body on GET is 400; unknown method is 405", 
     GuestHttpError,
     "body",
   );
-  // deno-lint-ignore no-explicit-any
   await assertRejects(
-    () => requestGuestHttp(never, options({ method: "TRACE" as any })),
+    () =>
+      requestGuestHttp(
+        never,
+        options({ method: "TRACE" as GuestHttpOptions["method"] }),
+      ),
     GuestHttpError,
     "method",
   );
@@ -866,7 +893,7 @@ Deno.test("Set-Cookie is collected and stripped; trailer Set-Cookie is dropped; 
   assertEquals(new Headers(reply.headers).get("location"), prefix + "home");
 });
 
-Deno.test("onBuffer sees every response chunk and can abort the request", async () => {
+Deno.test("onBuffer reserves a fixed-length response once, before reading its body", async () => {
   const wire = "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789";
   const seen: number[] = [];
   await requestGuestHttp(
@@ -874,10 +901,25 @@ Deno.test("onBuffer sees every response chunk and can abort the request", async 
     options({ onBuffer: (n) => seen.push(n) }),
   );
   assertEquals(seen.reduce((a, b) => a + b, 0), 10);
+  let reads = 0;
+  let closed = false;
+  const conn: GuestConnection = {
+    write: async () => {},
+    read: async () => {
+      reads++;
+      if (reads === 1) {
+        return enc.encode("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n");
+      }
+      throw new Error("body read before budget approval");
+    },
+    close: async () => {
+      closed = true;
+    },
+  };
   await assertRejects(
     () =>
       requestGuestHttp(
-        async () => connection(wire).conn,
+        async () => conn,
         options({
           onBuffer: () => {
             throw new GuestHttpError("session buffer limit", 503);
@@ -887,6 +929,8 @@ Deno.test("onBuffer sees every response chunk and can abort the request", async 
     GuestHttpError,
     "buffer limit",
   );
+  assertEquals(reads, 1);
+  assertEquals(closed, true);
 });
 
 Deno.test("HEAD, OPTIONS 204 and 304 carry no body and do not hang", async () => {
@@ -906,9 +950,15 @@ Deno.test("HEAD, OPTIONS 204 and 304 carry no body and do not hang", async () =>
 });
 ```
 
-Also delete or rewrite the existing test that asserts
-`"guest cookies unsupported"` (`grep -n "cookie" tests/guest_http_test.ts`); the
-new Set-Cookie test replaces it.
+Update the existing tests in `tests/guest_http_test.ts` explicitly:
+
+- In
+  `guest HTTP decodes fragmented length body and sends only permitted headers`,
+  remove the `Authorization: secret` input pair; keep the assertion that the
+  caller's `Cookie: secret` is not sent. Add a separate positive assertion that
+  `Authorization: Bearer example` is forwarded unchanged.
+- Remove `"Set-Cookie: secret=1\r\n"` from the `invalid` framing table. It is
+  now supported; the new Set-Cookie collection/stripping test covers it.
 
 - [ ] **Step 4: Run to verify failure**
 
@@ -959,6 +1009,8 @@ export interface GuestHttpOptions {
   referrer?: string;
   /** The jar's `Cookie` header value for this request. */
   cookie?: string;
+  /** Reserve body storage before allocation/read; includes concatenation copies. */
+  onBuffer?: (bytes: number) => void;
   signal: AbortSignal;
   timeoutMs?: number;
 }
@@ -1029,9 +1081,35 @@ the 400. `validateGuestPath(options.app, ...)` replaces the `"datasette"`
 literal from Step 1.) Then `await race(conn.write(wire));` replaces the old
 write. Drop the old inline `request` string.
 
-Buffering: in the body-reading `append` helper, call
-`options.onBuffer?.(bytes.length)` before pushing each chunk (the existing 16
-MiB check stays).
+Buffering: reserve before allocating body storage, not in `append`:
+
+- Fixed `Content-Length`: after the existing 16 MiB check, call
+  `options.onBuffer?.(length)` **before** `reader.exact(length)`. Use that
+  returned buffer directly as the reply body; do not copy it into another
+  `Uint8Array(total)`.
+- Chunked: validate each chunk size against the 16 MiB aggregate limit, then
+  call `options.onBuffer?.(size)` **before** `reader.exact(size)`. `append` only
+  records the already-reserved buffer and updates the total.
+- EOF-delimited: retain the bounded `reader.take(8192)` transport scratch read;
+  after checking the aggregate body limit, reserve `part.length` **before**
+  `part.slice()` creates retained body storage. The reader's bounded
+  transport/header scratch is separate from the body-storage budget.
+- For chunked/EOF bodies, return the sole chunk directly when there is only one.
+  If multiple chunks require concatenation, reserve an additional `total` bytes
+  **before** `new Uint8Array(total)`. Keep both the chunk reservations and the
+  final-buffer reservation charged until the request settles. An empty or
+  bodyless response needs no reservation.
+- Do not invoke `onBuffer` again in `append`, or charge the returned body again
+  in the coordinator. All reservations, including a failed read after a
+  successful reservation, are released by Task 9's outer `finally`.
+
+Add framing-specific tests alongside the fixed-length test above: (a) a chunked
+response whose size line arrives separately from its body rejects an over-budget
+reservation before the next body read; (b) EOF body copies reserve their bytes;
+(c) two 4-byte chunks reserve `[4, 4, 8]`, and a 12-byte budget rejects the
+final 8-byte reservation instead of allocating the concatenation; (d) a sole
+chunk returns without a second reservation. Assert connection closure on
+rejection and exact returned bytes on successful reads.
 
 Response side: delete the `if (k === "set-cookie") fail(...)` line and the
 `|| k === "set-cookie"` in the trailer check (trailer `Set-Cookie` is now simply
@@ -1253,6 +1331,11 @@ export function guestResponse(
 becomes the full method list. Update its callers in `datasette_routes.ts` to
 pass `"Datasette"` for now (Task 7 passes the real title).
 
+In `tests/datasette_bridge_e2e.ts`, update the POST-405 `allow` expectation to
+`"GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"` in this same commit. POST still
+returns 405 until Task 7; only the policy header changes here. Run
+`deno run --allow-all tests/datasette_bridge_e2e.ts` alongside the unit tests.
+
 - [ ] **Step 4: Run tests**
 
 Run:
@@ -1271,7 +1354,7 @@ deno fmt && git add -A && git commit -m "feat: allow-list guest response headers
 
 **Files:**
 
-- Modify: `src/datasette_protocol.ts`
+- Modify: `src/datasette_protocol.ts`, `tests/datasette_bridge_e2e.ts`
 - Test: `tests/datasette_protocol_test.ts` (update + add)
 
 **Interfaces:**
@@ -1420,6 +1503,14 @@ replace the literal with the real app). Run the whole fast suite:
 `deno test --no-check --allow-read --allow-write --allow-env --allow-net tests/datasette_*_test.ts tests/guest_http_test.ts`
 Expected: PASS.
 
+Migrate `tests/datasette_bridge_e2e.ts` in this same task: add
+`app: "datasette"` to the raw `ownerJs` registration and the fake
+`Coordinator`'s `datasette-state` replies, and to other fixture messages where
+the envelope rules require it. Keep HTTP replies and aborts session-keyed.
+Retain the old SW URL/scope until Task 11 changes registration. Run
+`deno run --allow-all tests/datasette_bridge_e2e.ts` and require PASS before
+this commit; do not defer the protocol-fixture migration to Task 11 or 13.
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -1433,7 +1524,8 @@ deno fmt && git add -A && git commit -m "feat: protocol messages carry app, meth
 **Files:**
 
 - Modify: `src/datasette_routes.ts` (`respond`, owner prefix handling),
-  `src/datasette_service_worker.ts` (fetch filter, message handler)
+  `src/datasette_service_worker.ts` (fetch filter, message handler),
+  `tests/datasette_bridge_e2e.ts` (matching behavior assertions)
 - Test: `tests/datasette_routes_test.ts` (update + add)
 
 **Interfaces:**
@@ -1456,7 +1548,12 @@ Behavior to implement in `respond` (order matters):
 5. Body (non-GET/HEAD): `const blob = await request.blob()`;
    `blob.size > 16 MiB` -> 413; `body = await blob.arrayBuffer()`.
 6. Mapped referrer: for unsafe methods, if the referrer pathname starts with the
-   app prefix, `referrer = pathname + search`, else omitted.
+   app prefix, form `candidate = pathname + search` and call
+   `validateGuestPath(app, session, prefix, candidate)` in a `try`. Forward it
+   as `referrer` only on success; omit it when validation fails (for example an
+   encoded slash `%2f`). Keep the same-origin requirement in step 4. An invalid
+   optional referrer must not make `parseGuestRequest` silently discard an
+   otherwise valid request.
 7. Header allow-list: the request-side names from Global Constraints (minus
    `cookie`), read with `request.headers.get`.
 8. `owner.port.postMessage({ type: "datasette-http", app, session, requestId,
@@ -1478,15 +1575,40 @@ the (now app-aware) register message.
 
 Read the existing `tests/datasette_routes_test.ts` first and reuse its
 owner/`MessageChannel` fixtures. Add tests with these assertions (each builds a
-`Request` for `https://playground.test/apps/preview/<session>/...` with the
-fixture's `origin`, registers an owner for `preview`, and inspects what arrives
-on the owner port or the returned `Response`):
+`Request` for `http://playground/apps/preview/<session>/...` with the fixture's
+`origin`, registers an owner for `preview`, and inspects what arrives on the
+owner port or the returned `Response`):
+
+Add `assertStringIncludes` to the assertion imports and import
+`parseGuestRequest` for the invalid-mapped-referrer regression below.
+
+Deno 2.7.14's `Request` does not expose `referrer`, `destination` or
+`referrerPolicy`. Use this helper for every new route-test request (including
+`get()` and `documentRequest()`), explicitly supplying the metadata the browser
+would expose. The no-referrer unit case models an already-stripped referrer;
+Task 13 verifies that the browser actually strips it.
+
+```ts
+const origin = "http://playground";
+function browserRequest(
+  url: string,
+  init: RequestInit & { destination?: string } = {},
+): Request {
+  const { referrer = "", referrerPolicy = "", destination = "", ...rest } =
+    init;
+  return Object.defineProperties(new Request(url, rest), {
+    referrer: { value: referrer },
+    referrerPolicy: { value: referrerPolicy },
+    destination: { value: destination },
+  });
+}
+```
 
 ```ts
 Deno.test("POST is forwarded with body, mapped referrer and allow-listed headers only", async () => {
   // registered owner for app "preview"; answer every datasette-http with 204
   const res = await routes.respond(
-    new Request(`${origin}${prefix}form`, {
+    browserRequest(`${origin}${prefix}form`, {
       method: "POST",
       body: new Uint8Array([1, 2, 3]),
       headers: {
@@ -1513,7 +1635,7 @@ Deno.test("POST is forwarded with body, mapped referrer and allow-listed headers
 Deno.test("cross-site, empty and invalid referrers on unsafe methods are 403; GET is unaffected", async () => {
   for (const referrer of ["https://evil.test/", "", "about:client"]) {
     const res = await routes.respond(
-      new Request(`${origin}${prefix}form`, {
+      browserRequest(`${origin}${prefix}form`, {
         method: "POST",
         body: "x",
         referrer,
@@ -1523,7 +1645,7 @@ Deno.test("cross-site, empty and invalid referrers on unsafe methods are 403; GE
   }
   assertEquals(
     (await routes.respond(
-      new Request(`${origin}${prefix}x`, { referrer: "https://evil.test/" }),
+      browserRequest(`${origin}${prefix}x`, { referrer: "https://evil.test/" }),
     )).status,
     204,
   );
@@ -1531,7 +1653,7 @@ Deno.test("cross-site, empty and invalid referrers on unsafe methods are 403; GE
 
 Deno.test("a stripped referrer (no-referrer policy) cannot POST", async () => {
   const res = await routes.respond(
-    new Request(`${origin}${prefix}form`, {
+    browserRequest(`${origin}${prefix}form`, {
       method: "POST",
       body: "x",
       referrerPolicy: "no-referrer",
@@ -1542,7 +1664,7 @@ Deno.test("a stripped referrer (no-referrer policy) cannot POST", async () => {
 
 Deno.test("body over 16 MiB is 413 before forwarding", async () => {
   const res = await routes.respond(
-    new Request(`${origin}${prefix}form`, {
+    browserRequest(`${origin}${prefix}form`, {
       method: "POST",
       body: new Uint8Array(16 * 1024 * 1024 + 1),
       referrer: `${origin}${prefix}`,
@@ -1553,9 +1675,9 @@ Deno.test("body over 16 MiB is 413 before forwarding", async () => {
 });
 
 Deno.test("top-level document navigations are refused with an explanatory page", async () => {
-  // Request.destination is read-only; build a stand-in object with the Request
-  // fields respond() reads, or use Object.defineProperty(req, "destination", { value: "document" }).
-  const res = await routes.respond(documentRequest(`${origin}${prefix}`));
+  const res = await routes.respond(
+    browserRequest(`${origin}${prefix}`, { destination: "document" }),
+  );
   assertEquals(res.status, 403);
   assertStringIncludes(await res.text(), "preview panel");
 });
@@ -1594,6 +1716,12 @@ registered owner that answers `datasette-http` after `ownerDelayMs`;
 REQUEST_DEADLINE_MS` and asserting
 that.)
 
+Add a successful POST case whose same-origin referrer is
+`${origin}${prefix}page%2fpart`. Assert that the owner receives a request with
+no `referrer`, that `parseGuestRequest` accepts it, and that the route returns
+the owner's 204 promptly instead of waiting for the deadline. Close each
+fixture's routes and both MessagePorts in `finally`.
+
 - [ ] **Step 2: Run to verify failure**
 
 Run: `deno test --no-check --allow-read tests/datasette_routes_test.ts`
@@ -1620,12 +1748,21 @@ worker.addEventListener("fetch", (event) => {
 The `datasette-register` branch in the message handler is unchanged (the parsed
 message already carries `app`).
 
+Update bridge acceptance in this same task: the detached top-level navigation
+now expects 403 instead of 503, with the explanatory page text. The same-origin
+POST to the fake owner now succeeds, so its result expects `post: 200` and
+`allow: null` instead of the old 405/Allow pair. Keep the HEAD checks. Add a
+browser POST with `referrerPolicy: "no-referrer"` that expects 403. Do not
+postpone these assertion changes to the page-mount migration.
+
 - [ ] **Step 4: Run tests**
 
 Run:
 `deno test --no-check --allow-read --allow-net tests/datasette_routes_test.ts tests/datasette_protocol_test.ts tests/datasette_policy_test.ts`
 Expected: PASS. Also
-`deno check src/datasette_routes.ts src/datasette_service_worker.ts`.
+`deno check src/datasette_routes.ts src/datasette_service_worker.ts`. Also run
+`deno run --allow-all tests/datasette_bridge_e2e.ts`; require PASS before
+committing the changed route behavior.
 
 - [ ] **Step 5: Commit**
 
@@ -1748,6 +1885,16 @@ temporarily constructing
 `new GuestApp(datasetteSpec, { ...,
 asset: (name, signal) => cachedFetch(name, signal), portBusy: async () => false })`
 (Task 9 implements `portBusy` and the multi-app attach).
+
+Define `cachedFetch` here; it does not exist in the current source. Replace
+`let seed` with an attach-local `Map<string, Uint8Array>`. The async helper
+checks `signal.throwIfAborted()`, returns the cached bytes for `name` if
+present, otherwise fetches `/demo/${name}` with that signal, rejects a non-OK
+response, reads its bytes, rejects more than 64 KiB, checks the signal again,
+and only then caches the successful bytes by name. Names come from the static
+app specs. Keep the supervisor's 30 s cancellation wrapper. Test two different
+asset names, cache reuse, a failed/aborted fetch not being cached, and the 64
+KiB cap.
 
 - [ ] **Step 2: Recreate `src/datasette.ts`**
 
@@ -1908,7 +2055,7 @@ Deno.test("bursts queue instead of failing: 20 parallel requests all complete wi
 
 Deno.test("stopping while requests are queued rejects them promptly", async () => {
   // hold 4 slots open, queue 3 more, then app.stop()
-  await assertRejects(() => queued[0], GuestHttpError);
+  await assertRejects(() => queued[0], DOMException);
   // resolves well under the 30 s queue wait (the supervisor's per-request abort fires)
 });
 
@@ -1939,8 +2086,26 @@ Deno.test("full request/reply/abort path through handleGuestAppMessage with two 
   }, send);
   await pending;
   assertEquals(sent.at(-1)!.type, "datasette-error");
-  // an abort for A's session never touches B's request:
+  // Start a separate pending request r3 on B; wait until its controller exists.
+  // An abort for A's session must not touch this request on B:
+  const pendingB = handleGuestAppMessage(
+    apps,
+    httpRequest("preview", sessionB, "r3", "GET", prefixB + "slow"),
+    send,
+  );
+  await bRequestStarted;
+  await handleGuestAppMessage(apps, {
+    type: "datasette-abort",
+    session: sessionA,
+    requestId: "r3",
+  }, send);
   assertEquals(bControllerAborted, false);
+  await handleGuestAppMessage(apps, {
+    type: "datasette-abort",
+    session: sessionB,
+    requestId: "r3",
+  }, send);
+  await pendingB;
 });
 
 Deno.test("port ownership: busy port fails start; ECONNREFUSED is free", async () => {
@@ -1998,7 +2163,11 @@ async request(r: GuestAppRequest): Promise<GuestHttpReply> {
 
 `#jar = new CookieJar()`; call `this.#jar.clear()` in `stop()`, `reset()` and
 `#exit`. `#cancelRequests()` already aborts every controller, which also rejects
-queued waiters (the abort listener in `SlotQueue.acquire`).
+queued waiters (the abort listener in `SlotQueue.acquire`). Preserve the
+existing no-reason `controller.abort()` behavior: direct requests reject with
+`DOMException`/`AbortError`; the message handler maps cancellation to its
+existing 503 reply. Attach rejection handlers before calling `stop()` so the
+test does not create unhandled rejected promises.
 
 The 64 MiB per-session buffered-bytes cap uses `ByteBudget` (Task 3), one per
 `GuestApp` session (create a fresh `#budget = new ByteBudget()` in `start()`).
@@ -2006,15 +2175,16 @@ Reserve **before** queueing so queued uploads count:
 
 ```ts
 const reserved = { bytes: 0 };
-const take = (n: number) => { this.#budget.take(n); reserved.bytes += n; };
+const budget = this.#budget; // cleanup always uses this request's session budget
+const take = (n: number) => { budget.take(n); reserved.bytes += n; };
 try {
   take(r.body?.byteLength ?? 0);                 // before acquire()
   const release = await this.deps.queue.acquire(r.session, controller.signal);
   try {
-    ... await this.#probe({ ..., onBuffer: take }) ...   // response chunks
+    ... await this.#probe({ ..., onBuffer: take }) ...   // response allocations
   } finally { release(); }
 } finally {
-  this.#budget.give(reserved.bytes);              // success, error or abort
+  budget.give(reserved.bytes);                   // success, error or abort
   ...
 }
 ```
@@ -2023,13 +2193,25 @@ A request cancelled while queued (stop, abort, queue timeout) therefore gives
 its bytes back through the same `finally`. Tests: (a) with a 100-byte budget,
 queued bodies past the cap are rejected 503 immediately while earlier ones are
 still waiting; (b) aborting a queued request frees its reservation (a following
-request fits); (c) a response whose chunks exceed the remaining budget fails 503
-and leaves the budget empty; (d) the budget is empty after every request
-settles. Note the SW holds a request body (blob) before forwarding; the 16 MiB
-per-request limit bounds that side.
+request fits); (c) fixed-length/chunk reservations and final concatenation
+reservations that exceed the remaining budget fail 503 before allocating that
+storage; (d) success, read failure, reservation failure and abort each return
+exactly that request's reservations, preserving other active requests' charges;
+(e) all charges are zero once all requests settle. Response concatenation may
+temporarily require twice the payload size, and both copies count. The SW reads
+the blob before applying its 16 MiB forwarding limit; that limit does not bound
+the SW's initial blob allocation.
 
 `attachGuestApps` / `handleGuestAppMessage` follow the interface above; the
 coordinator (`coordinator_worker.ts`) changes:
+
+For each qualified registry id, capture `const port = session.guestPorts[id]`.
+Use that captured port for `servicePort`, `portBusy`, the
+`session.dialSandboxPort(port)` closure in `request`, and the forced
+`{ ...request, port }` HTTP options. Replace every current
+`session.guestPorts.datasette` access in the attach helper. Test simultaneous
+requests for both apps: Datasette dials 8001 and preview dials 8002, regardless
+of message content.
 
 - `let datasette: DatasetteDemo` ->
   `let apps: Map<GuestAppId, GuestApp> | undefined`.
@@ -2066,9 +2248,9 @@ deno fmt && git add -A && git commit -m "feat: coordinator queue, cookie jar, po
 
 - Create: `public/demo/preview_server.py` (guest script, served by the page
   bundle like `datasette_seed.py`), `src/preview.ts` (the spec),
-  `public/demo/preview_index.html`
+  `public/demo/preview_index.html`, `public/demo/preview_app.js`
 - Modify: `src/datasette.ts`'s `attachGuestApps` (register `previewSpec`),
-  `scripts/build-static.ts:42` list (add the two demo files)
+  `scripts/build-static.ts:42` list (add the three demo files)
 - Test: `tests/preview_spec_test.ts`, `tests/preview_server_test.ts`
 
 **Interfaces:**
@@ -2109,7 +2291,7 @@ with a clear message if absent; CI has python) on a free port with a temp
 ```ts
 // readiness marker, static types, traversal, POST login flow, SCRIPT_NAME links
 Deno.test("preview server contract", async () => {
-  const { port, stop, base } = await startPreview({
+  const { stop, base } = await startPreview({
     "index.html": "<h1>hi</h1>",
     "app.mjs": "export {}",
     "x.wasm": "\0asm",
@@ -2119,17 +2301,23 @@ Deno.test("preview server contract", async () => {
       await (await fetch(base + "__ready")).text(),
       "yurt-preview-ready",
     );
+    const module = await fetch(base + "app.mjs");
+    await module.arrayBuffer();
     assertEquals(
-      (await fetch(base + "app.mjs")).headers.get("content-type")?.startsWith(
+      module.headers.get("content-type")?.startsWith(
         "text/javascript",
       ),
       true,
     );
+    const wasm = await fetch(base + "x.wasm");
+    await wasm.arrayBuffer();
     assertEquals(
-      (await fetch(base + "x.wasm")).headers.get("content-type"),
+      wasm.headers.get("content-type"),
       "application/wasm",
     );
-    assertEquals((await fetch(base + "..%2f..%2fetc/passwd")).status, 404);
+    const traversal = await fetch(base + "..%2f..%2fetc/passwd");
+    await traversal.arrayBuffer();
+    assertEquals(traversal.status, 404);
     // Host Deno fetch has no cookie jar: capture the CSRF cookie and replay it.
     const form = await fetch(base + "form");
     const csrfCookie = form.headers.get("set-cookie")!.split(";")[0]; // yurt_csrf=<token>
@@ -2144,6 +2332,7 @@ Deno.test("preview server contract", async () => {
       },
       body: "name=Ada&csrf=" + token,
     });
+    await post.arrayBuffer();
     assertEquals(post.status, 303);
     // Enforcement: the same field without the cookie, or with a wrong token, is 403.
     const noCookie = await fetch(base + "form", {
@@ -2153,6 +2342,16 @@ Deno.test("preview server contract", async () => {
     });
     assertEquals(noCookie.status, 403);
     await noCookie.body?.cancel();
+    const wrongToken = await fetch(base + "form", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: csrfCookie,
+      },
+      body: "name=Ada&csrf=wrong",
+    });
+    await wrongToken.arrayBuffer();
+    assertEquals(wrongToken.status, 403);
     assertEquals(post.headers.get("location"), PREFIX); // SCRIPT_NAME-based, inside the prefix
     assertEquals(
       post.headers.get("set-cookie")?.includes("yurt_name=Ada"),
@@ -2194,7 +2393,7 @@ unconditionally;
 `spawnLine = exec python3 ${dir}/preview_server.py <port> <prefix> ${dir}/site`;
 `isReady` as above. `public/demo/preview_index.html` references an external
 `app.js` (no inline scripts) and includes the cookie greeting and a link to
-`form`. Add both demo files to the `scripts/build-static.ts` copy list
+`form`. Add all three demo files to the `scripts/build-static.ts` copy list
 (`"demo/preview_server.py"`, `"demo/preview_index.html"`,
 `"demo/preview_app.js"`).
 
@@ -2219,7 +2418,8 @@ deno fmt && git add -A && git commit -m "feat: wsgiref preview app (guest server
   `#datasette`, line ~701)
 - Create: `public/apps/_bridge/unavailable.html` (moved from
   `public/apps/datasette/unavailable.html`)
-- Test: `tests/datasette_page_test.ts` (update + add)
+- Test: `tests/datasette_page_test.ts` (preserve pure control tests),
+  `tests/datasette_bridge_e2e.ts` (browser UI assertions described in Task 13)
 
 **Interfaces:**
 
@@ -2241,7 +2441,9 @@ Changes inside the mount (all from the code read at plan time):
    `datasette-state` and `guest-app-qualification` are filtered by `app`.
    Incoming `datasette-response`/`datasette-error` are matched by `session` +
    `requestId` exactly as today (they carry no `app`), and `datasette-abort`
-   posts keep `session` + `requestId` only.
+   posts keep `session` + `requestId` only. In `bind`'s request relay use
+   `coordinator.postMessage(request, request.body ? [request.body] : [])` so
+   uploads transfer to the coordinator without an extra structured-clone copy.
 2. SW registration:
    `navigator.serviceWorker.register("/apps/bridge-sw.js",
    { scope: "/apps/" })`.
@@ -2254,10 +2456,10 @@ Changes inside the mount (all from the code read at plan time):
      if (new URL(r.scope).pathname === "/apps/datasette/") await r.unregister();
    }
    ```
-3. Qualification: handle `guest-app-qualification`;
-   `qualified = hashes !==
-   undefined` (an empty list is valid);
-   `hashes = msg.apps[app] ?? []`.
+3. Qualification: handle `guest-app-qualification`; read
+   `const nextHashes = msg.apps[app]`, then set
+   `qualified = nextHashes !== undefined` (an empty list is valid) and
+   `hashes = nextHashes ?? []`.
 4. Two panels share one SW registration and one `message` listener per tab. Keep
    per-app owner state inside each mount (they already are closure-local); the
    SW owner map is per session, so the two mounts do not collide. Do not share
@@ -2290,22 +2492,20 @@ Changes inside the mount (all from the code read at plan time):
 
 - [ ] **Step 1: Write the failing tests**
 
-In `tests/datasette_page_test.ts` (read its existing harness first; it bundles
-the page against a fake coordinator): assert (a) the mount registers
-`/apps/bridge-sw.js` with scope `/apps/` and unregisters a pre-existing
-`/apps/datasette/` registration first; (b) a `guest-app-qualification` message
-with `apps: { preview: [] }` un-hides the preview panel and leaves the Datasette
-panel hidden; (c) a `datasette-state` message for `app: "preview"` does not
-change the Datasette panel; (d) Start posts
-`{ type: "datasette-start", app:
-"preview", requestId }`; (e) the iframe `src`
-is `/apps/preview/<session>/`.
+`tests/datasette_page_test.ts` only tests the pure `datasetteControls` helper;
+it has no DOM or service-worker harness. Keep those assertions unchanged. Write
+Task 13's browser panel assertions (a)-(e) now in the existing `uiJs` / fake
+`Coordinator` harness in `tests/datasette_bridge_e2e.ts`, which already bundles
+`src/datasette_page.ts` and launches Chromium. The protocol and POST/top-level
+assertions were already migrated in Tasks 5-7. Update the fixture's SW URLs and
+scope here alongside the page registration change, and extend its fake
+coordinator for both apps and qualification. Failures must exercise the missing
+per-app mounts rather than stale protocol messages or assertions.
 
 - [ ] **Step 2: Run to verify failure**
 
-Run:
-`deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run tests/datasette_page_test.ts`
-Expected: FAIL.
+Run: `deno run --allow-all tests/datasette_bridge_e2e.ts` Expected: FAIL on the
+new per-app panel assertions.
 
 - [ ] **Step 3: Implement** per the numbered list.
       `git mv
@@ -2314,7 +2514,9 @@ Expected: FAIL.
 
 - [ ] **Step 4: Run tests**
 
-Same command. Expected: PASS. `deno check src/datasette_page.ts src/page.ts`.
+Same browser command. Expected: PASS. Also run
+`deno test --no-check tests/datasette_page_test.ts` and
+`deno check src/datasette_page.ts src/page.ts`.
 
 - [ ] **Step 5: Commit**
 
@@ -2393,14 +2595,23 @@ deno fmt && git add -A && git commit -m "build: move the bridge SW and unavailab
 - Create: `tests/preview_e2e.ts`
 - Modify: `tests/datasette_e2e.ts` (lines 13 and 48 only),
   `tests/datasette_bridge_e2e.ts`, `tests/guest_http_e2e.ts`,
-  `tests/fixtures/guest_http_worker.ts`, `.github/workflows/ci.yml` (add
-  `tests/preview_e2e.ts` wherever `tests/datasette_e2e.ts` runs)
+  `tests/fixtures/guest_http_worker.ts`, `.github/workflows/ci.yml`,
+  `.github/workflows/deploy-pages.yml`
 - Test: the e2e files themselves
 
 **Interfaces:**
 
 - Consumes: everything above; requires `YURT_KERNEL_ROOT` and the playground
   image (see `tests/datasette_e2e.ts` header for the setup it assumes).
+- These e2e files are executable scripts, not `Deno.test` suites. Run each with
+  `deno run --allow-all`. Require the pinned artifacts for guest acceptance
+  (`PLAYGROUND_REQUIRE_ARTIFACTS=1`); a skip is not a pass.
+- CI: add `preview` to `.github/workflows/ci.yml`'s ordinary `acceptance` scene
+  matrix, which invokes `tests/${scene}_e2e.ts`. Keep the separate
+  Datasette-qualified `datasette-acceptance` job unchanged. In
+  `deploy-pages.yml`, add `deno run --allow-all tests/preview_e2e.ts` before the
+  Datasette qualification conditional, alongside the bridge and guest HTTP
+  scripts. Preview acceptance must run even when Datasette is unqualified.
 
 - [ ] **Step 1: Keep Datasette e2e green**
 
@@ -2410,8 +2621,22 @@ In `tests/datasette_e2e.ts` replace the two reads of
 matches stay. In `tests/datasette_bridge_e2e.ts`, `tests/guest_http_e2e.ts` and
 `tests/fixtures/guest_http_worker.ts` update the hard-coded path/port/message
 fields (`app`, `/apps/bridge-sw.js`). Run
-`deno test --no-check ... tests/datasette_e2e.ts`; expected PASS with no
-assertion changes.
+`deno run --allow-all tests/datasette_e2e.ts` with qualified pins; expected PASS
+with no assertion changes in that file. The bridge protocol and route-behavior
+assertions were migrated in Tasks 5-7, and its SW URL/scope in Task 11; retain
+those changes here rather than deferring their introduction to this task. Run
+the bridge and guest HTTP scripts separately with `deno run --allow-all`.
+
+**Browser panel assertions (written during Task 11):** extend the real `uiJs` /
+fake `Coordinator` browser fixture in `datasette_bridge_e2e.ts` with both mounts
+and separate app sessions. Assert (a) registration uses `/apps/bridge-sw.js`
+with scope `/apps/`, after unregistering an old `/apps/datasette/` registration;
+(b) `{ apps: { preview: [] } }` qualification unhides only preview; (c) a
+preview state message leaves Datasette's panel unchanged; (d) Start sends
+`app: "preview"`; (e) its iframe URL is `/apps/preview/<session>/`. Include an
+HTTP reply without `app` and a body transfer through the page, proving that
+session routing and upload transfer work with both panels mounted. Close browser
+contexts in `finally`.
 
 - [ ] **Step 2: Write `tests/preview_e2e.ts`**
 
@@ -2419,12 +2644,21 @@ Model it on `tests/datasette_e2e.ts` (same server/browser/CSP-watch/external-
 request guards). Scenario, each an `assertEquals`/locator wait:
 
 1. Start the sandbox, click **Start preview**, wait for `#preview iframe`.
-2. Frame shows the default index; a request for `app.mjs` returns
-   `text/javascript` and the page's script ran (proves `nosniff` does not break
-   the guest MIME table); `x.wasm` fetch returns `application/wasm`.
+   Before subsequent requests, use the terminal's guest command path to write
+   test-only fixtures under `/home/user/demos/preview/site/` and wait for the
+   command's successful completion: `app.mjs` setting
+   `document.body.dataset.moduleLoaded = "yes"`, a valid empty `x.wasm`
+   (`00 61 73 6d 01 00 00 00`), and `burst.html` referencing 24 distinct
+   external `burst-N.js` files. Each burst script increments
+   `document.body.dataset.loaded`. Generate these with one finite guest Python
+   command; no inline scripts and no additional shipped default files.
+2. Frame shows the default index and loads its shipped `app.js`; request and
+   dynamically import the test-only `app.mjs` from the frame, checking
+   `text/javascript` and the `moduleLoaded` marker. Check that `x.wasm` returns
+   `application/wasm`. These verify the guest MIME table under `nosniff`.
 3. **Burst:** the served `burst.html` page loads 24 small images/scripts in
-   parallel; all 24 load (Review Focus 1). Create it in the guest from the
-   terminal in step 6 or ship it as a second default file.
+   parallel; all 24 load and the counter reaches 24 (Review Focus 1). Use the
+   fixtures already installed in step 1, then navigate back to the index.
 4. **POST + cookie + redirect:** submit the form; the iframe lands back on the
    prefixed index showing the cookie-backed greeting (Review Focus 3); reload
    and the greeting persists (jar replayed `Cookie`); `document.cookie` in the
@@ -2451,13 +2685,24 @@ request guards). Scenario, each an `assertEquals`/locator wait:
 
 - [ ] **Step 3: Run**
 
-Run:
-`deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run tests/preview_e2e.ts tests/datasette_e2e.ts`
-Expected: PASS. If the pre-check dial or `rc=-111` classification misbehaves in
-step 8, record the real error text from the guest dial in a comment on
-`isConnRefused` and fix the regex (the plan assumes `connect: rc=-111`, per the
-kernel's `sandbox_port.ts`; a refusal reported on first read instead of connect
-would need a one-byte read probe).
+Run these executable scripts separately:
+
+```bash
+PLAYGROUND_REQUIRE_ARTIFACTS=1 deno run --allow-all tests/preview_e2e.ts
+deno run --allow-all tests/datasette_bridge_e2e.ts
+PLAYGROUND_REQUIRE_ARTIFACTS=1 deno run --allow-all tests/guest_http_e2e.ts
+```
+
+With a qualified exact Datasette kernel/image pair, also run
+`PLAYGROUND_REQUIRE_ARTIFACTS=1 deno run --allow-all tests/datasette_e2e.ts`. If
+that pair is unavailable, report Datasette acceptance as unverified and keep its
+qualification gate; preview's mandatory CI/deploy run is unaffected. Expected:
+PASS for every invoked script, with hosted CI green before claiming completion.
+If the pre-check dial or `rc=-111` classification misbehaves in step 8, record
+the real error text from the guest dial in a comment on `isConnRefused` and fix
+the regex (the plan assumes `connect: rc=-111`, per the kernel's
+`sandbox_port.ts`; a refusal reported on first read instead of connect would
+need a one-byte read probe).
 
 - [ ] **Step 4: Commit**
 
@@ -2474,12 +2719,12 @@ deno fmt && git add -A && git commit -m "test: preview e2e and datasette e2e on 
 - Modify: `docs/superpowers/specs/2026-10-03-guest-http-preview-design.md`,
   `public/demo/README.md`
 
-- [ ] **Step 1:** Update the spec where the plan made concrete choices:
-  - Section 8 / pins: per-app qualification is
-    `appInlineScriptHashes(pins, app)`; the preview app's empty list lives in
-    the registry accessor, not in `artifacts/pins.json`; the validator keeps
-    requiring a non-empty list for Datasette. Remove the claim that the pins
-    validator must accept empty lists.
+- [ ] **Step 1:** Verify the final implementation remains consistent with the
+      approved Task 1 hash-storage decision and the reconciled spec:
+  - Per-app qualification is `appInlineScriptHashes(pins, app)`; the preview
+    app's empty list lives in the registry accessor, not in
+    `artifacts/pins.json`; the validator keeps requiring a non-empty list for
+    Datasette. The spec already records this user-approved choice; preserve it.
   - Section 3: cookie replacement is allowed when the total still fits (not
     unconditionally).
   - Registry: ids `datasette` / `preview`, ports 8001 / 8002.
@@ -2509,11 +2754,11 @@ migration/unregister (11, 13); known limits (14). **Gap to confirm during Task
 1:** `scripts/datasette-qualified.ts` reads `pins.datasette` directly; it keeps
 working unchanged, so no edit is planned.
 
-**Placeholder scan:** Tasks 7, 8, 9 and 11 describe edits to existing large
-files as precise replacement lists rather than whole-file listings; each lists
-the exact symbols and strings and has a test that fails first. The test bodies
-in Tasks 7, 9 and 11 are written against fixtures in files the implementer must
-read first (stated in each step).
+**Test scaffolding:** Tasks 7 and 9 require the stated fixture extensions; Task
+7 supplies browser metadata explicitly for Deno route tests. Task 11 uses the
+existing Chromium/fake-coordinator harness in `datasette_bridge_e2e.ts`, not the
+pure `datasette_page_test.ts` controls suite. Task 13 runs executable scripts
+and creates its guest-only fixtures before using them.
 
 **Type consistency:** `GuestAppId`/`appPrefix` (Task 1) are the only way
 prefixes are built after Task 4; `GuestMethod`/`GUEST_METHODS` (Task 4) feed
@@ -2521,4 +2766,4 @@ Tasks 6-7; `GuestHttpReply.setCookies?` (Task 4) is consumed only in Task 9;
 `SlotQueue.acquire` (Task 3) is called only in `GuestApp.request` (Task 9);
 `GuestAppSpec`/`GuestAppContext` (Task 8) are implemented by `datasetteSpec`
 (Task 8) and `previewSpec` (Task 10); message `type` names stay `datasette-*`
-with an added `app` (Tasks 6, 7, 9, 11).
+with `app` only on the message variants listed in Task 6 (Tasks 6, 7, 9, 11).

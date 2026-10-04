@@ -52,19 +52,24 @@ package whose static assets are known (Datasette today), or the `wsgiref`
 preview app serving files from the user's own session, which gets the same trust
 as the user's own terminal. The latter is a trust decision, not a verification:
 the served directory has no known asset set, and text pasted in from elsewhere
-runs with the same access, so the demo is for the user's own files. Arbitrary or unqualified apps stay disabled;
-making them safe needs a separate origin and its own design.
+runs with the same access, so the demo is for the user's own files. Arbitrary or
+unqualified apps stay disabled; making them safe needs a separate origin and its
+own design.
 
-**Inline scripts.** The document policy permits inline scripts only by hash.
-Each qualified app's registry entry carries its own static `inlineScriptHashes`
-(today's single `pins.datasette` list, generalized to a per-app list pinned with
-the image). Consequence, stated up front: apps whose pages have per-request
-inline scripts (a CSRF token or nonce inside a `<script>`) cannot be supported,
-and apps with static inline scripts (Django admin, Flask templates) work only
-after their hashes are listed. The `wsgiref` demo has an empty hash list: its served pages must use external
-`.js` files, and a user's file with an inline `<script>` or `onclick=` is blocked
-by design (the demo's page says so). The pins validator must therefore accept an
-empty `inlineScriptHashes` for such apps.
+**Inline scripts.** The document policy permits inline scripts only by hash. The
+`appInlineScriptHashes(pins, app)` accessor returns each app's permitted hashes:
+Datasette's list stays in `pins.datasette`, qualified against the exact
+kernel/image pair; preview returns an empty list under the user-file trust
+decision above. `undefined` means unqualified. This storage choice was approved
+by the user in the plan-review conversation on 2026-10-04. Consequence, stated
+up front: apps whose pages have per-request inline scripts (a CSRF token or
+nonce inside a `<script>`) cannot be supported, and apps with static inline
+scripts (Django admin, Flask templates) work only after their hashes are listed.
+The `wsgiref` demo has an empty hash list: its served pages must use external
+`.js` files, and a user's file with an inline `<script>` or `onclick=` is
+blocked by design (the demo's page says so). Preview's empty list lives in the
+accessor, not in `artifacts/pins.json`; Datasette's pins validator continues to
+require a non-empty `inlineScriptHashes` list.
 
 ## Design
 
@@ -91,13 +96,15 @@ section 4 turns their redirects into a 502 and body links cannot be rewritten
 
 ### 2. Registry and supervisor
 
-A static record per qualified app in the page bundle, pinned with the image:
-`id`, guest `port`, readiness predicate, `inlineScriptHashes`. The port lives
-only in coordinator state, never in page or SW messages (`BROWSER_GUEST_PORTS`
-in `boot.ts` becomes a map over the registry). A shared supervisor extracted
-from `DatasetteDemo` owns spawn, readiness, stop-releases-listener and reset;
-each app supplies its commands. Apps are independent: one tab may run both, with
-no new per-app limits beyond the caps in section 3.
+A static registry in the page bundle defines app `id`, guest `port` and title;
+the app spec supplies the readiness predicate. Hashes and qualification come
+from `appInlineScriptHashes(pins, app)`, with Datasette's exact-artifact checks
+preserved and preview's empty list supplied by the accessor. The port lives only
+in coordinator state, never in page or SW messages (`BROWSER_GUEST_PORTS` in
+`boot.ts` becomes a map over the registry). A shared supervisor extracted from
+`DatasetteDemo` owns spawn, readiness, stop-releases-listener and reset; each
+app supplies its commands. Apps are independent: one tab may run both, with no
+new per-app limits beyond the caps in section 3.
 
 Transport scope: phase 1 is **browser tab only**. Only the browser session has
 `guestPorts`; the desktop host's `GET /ws/port/<n>` accepts only the five kernel
@@ -130,21 +137,22 @@ parallel subresource requests, so excess requests **queue** in the coordinator
 (FIFO, bounded to 64 waiting per session) and wait up to 30 s for a slot; only a
 full queue or an expired wait gets 503. The dial cap stays at or below the
 default listen backlog (5) of single-threaded servers such as `wsgiref`, so
-queued requests never reach the guest as ECONNREFUSED. At most 64 MiB of buffered
-request plus response bytes per session (excess gets 503). Cookie jar: at most
-50 cookies per `(app, session)`, 4 KiB per cookie, 32 KiB total. A `Set-Cookie`
-over the per-cookie size is ignored; a new cookie over the count or total is
-rejected (replacing an existing name is always allowed), and rejections are
-logged. The 32 KiB total keeps the injected `Cookie` header (plus prefix) under
-the 64 KiB request-line limit of `wsgiref`/`http.server`; the client also checks
-the final request head against that limit and answers 431 itself rather than
-sending it. The 413/503/431 unit tests use these numbers.
+queued requests never reach the guest as ECONNREFUSED. At most 64 MiB of
+buffered request plus response bytes per session (excess gets 503). Cookie jar:
+at most 50 cookies per `(app, session)`, 4 KiB per cookie, 32 KiB total. A
+`Set-Cookie` over the per-cookie size is ignored; a new cookie over the count or
+total is rejected (replacing an existing name is always allowed), and rejections
+are logged. The 32 KiB total keeps the injected `Cookie` header (plus prefix)
+under the 64 KiB request-line limit of `wsgiref`/`http.server`; the client also
+checks the final request head against that limit and answers 431 itself rather
+than sending it. The 413/503/431 unit tests use these numbers.
 
 Request header allow-list: accept, accept-language, if-none-match,
 if-modified-since, if-match, if-unmodified-since, range, if-range, content-type,
-x-requested-with, x-csrf-token, x-csrftoken, x-xsrf-token, authorization. `Cookie` is not allow-listed (forbidden for the SW; the
-coordinator injects the jar, section 5). Dropped: hop-by-hop headers, `Upgrade`,
-`Expect`, proxy headers, anything else.
+x-requested-with, x-csrf-token, x-csrftoken, x-xsrf-token, authorization.
+`Cookie` is not allow-listed (forbidden for the SW; the coordinator injects the
+jar, section 5). Dropped: hop-by-hop headers, `Upgrade`, `Expect`, proxy
+headers, anything else.
 
 **Cross-site check.** For unsafe methods (anything but GET/HEAD/OPTIONS) the SW
 requires `new URL(request.referrer).origin` to equal the playground origin and
@@ -179,8 +187,7 @@ to the browser-visible prefix; a root-absolute path **outside** the prefix is an
 escape and stays a 502 (the browser would resolve `/login` against the
 playground origin root and reach the playground's own routes, outside the
 bridge). Inside-prefix mapping is an identity, not a rewrite: the guest already
-emitted prefixed URLs. The browser follows
-and replays POST/redirect/GET.
+emitted prefixed URLs. The browser follows and replays POST/redirect/GET.
 
 ### 5. Cookies: bridge-managed jar
 
@@ -249,7 +256,7 @@ Phase 1 parametrizes the Datasette-specific constants by app id and port and
 adds the pieces above; it does **not** rename the `datasette_*` modules (a
 rename for a second consumer is churn; rename when a third appears). The
 following sites carry `/apps/datasette/`, port 8001 or the single
-`pins.datasette` record and must change together:
+`pins.datasette` record and must be updated or verified for compatibility:
 
 - `src/guest_http.ts` (`validateGuestPath`), `src/datasette_protocol.ts`
   (`parseGuestRequest`, `parseOwnerMessage`), `src/datasette_routes.ts` (respond
@@ -257,7 +264,9 @@ following sites carry `/apps/datasette/`, port 8001 or the single
   `src/datasette_page.ts` (SW URL and scope), `src/datasette.ts:87`.
 - `scripts/datasette-qualified.ts` (reads `pins.datasette`),
   `tests/datasette_pins_test.ts` (pins schema) and the `src/pins.ts` validation,
-  which currently requires a non-empty `inlineScriptHashes`.
+  which continues to require a non-empty `inlineScriptHashes` for Datasette.
+  These keep their existing schema and qualification checks; add the shared
+  `appInlineScriptHashes` accessor in `src/pins.ts` without weakening them.
 - `src/boot.ts:73,76` (`guestPorts: Readonly<{datasette:number}>`,
   `BROWSER_GUEST_PORTS = { datasette: 8001 }`), `src/pins.ts` and
   `src/coordinator_worker.ts` (the `pins.datasette` qualification and the
@@ -289,8 +298,8 @@ e2e tests use fresh profiles and never exercise the unregister path).
 ## Phase 1 acceptance
 
 - `tests/datasette_e2e.ts` keeps passing. Its two reads of
-  `pins.datasette!.inlineScriptHashes` (lines 13 and 48) move to the per-app pins
-  accessor in the same change; no assertions change.
+  `pins.datasette!.inlineScriptHashes` (lines 13 and 48) move to the per-app
+  pins accessor in the same change; no assertions change.
 - New e2e with a stdlib `wsgiref` guest server (behind the `SCRIPT_NAME`
   wrapper): serves HTML and a static asset (including `.mjs` and `.wasm`, to
   prove `nosniff` does not break the guest's own MIME table); a POST form with a
