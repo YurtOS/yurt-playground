@@ -1755,6 +1755,13 @@ POST to the fake owner now succeeds, so its result expects `post: 200` and
 browser POST with `referrerPolicy: "no-referrer"` that expects 403. Do not
 postpone these assertion changes to the page-mount migration.
 
+In the bridge fixture's owner-page console guard, replace the expected
+`"status of 405"` exclusion with `"status of 403"`. Chromium reports the
+intentional no-referrer POST's 403 as a failed-resource console error from the
+frame. Keep collecting all other console errors and keep
+`assertEquals(violations, [])`; there is no longer an expected 405 in this
+owner-page scenario.
+
 - [ ] **Step 4: Run tests**
 
 Run:
