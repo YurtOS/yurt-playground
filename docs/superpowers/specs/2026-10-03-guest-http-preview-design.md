@@ -48,9 +48,11 @@ Guest code can come from untrusted packages. With `allow-same-origin` and
 `script-src 'self'`, a guest-served script reaches `window.parent`, the
 coordinator, `window.yurt`, other apps' frames (same origin) and all origin
 storage. That is acceptable only for a **qualified** app: a pinned, audited
-package whose static assets are known (Datasette today), or content the user
-authored in their own session (the `wsgiref` preview app), which gets the same
-trust as the user's own terminal. Arbitrary or unqualified apps stay disabled;
+package whose static assets are known (Datasette today), or the `wsgiref`
+preview app serving files from the user's own session, which gets the same trust
+as the user's own terminal. The latter is a trust decision, not a verification:
+the served directory has no known asset set, and text pasted in from elsewhere
+runs with the same access, so the demo is for the user's own files. Arbitrary or unqualified apps stay disabled;
 making them safe needs a separate origin and its own design.
 
 **Inline scripts.** The document policy permits inline scripts only by hash.
@@ -59,7 +61,10 @@ Each qualified app's registry entry carries its own static `inlineScriptHashes`
 the image). Consequence, stated up front: apps whose pages have per-request
 inline scripts (a CSRF token or nonce inside a `<script>`) cannot be supported,
 and apps with static inline scripts (Django admin, Flask templates) work only
-after their hashes are listed. The `wsgiref` demo serves no inline script.
+after their hashes are listed. The `wsgiref` demo has an empty hash list: its served pages must use external
+`.js` files, and a user's file with an inline `<script>` or `onclick=` is blocked
+by design (the demo's page says so). The pins validator must therefore accept an
+empty `inlineScriptHashes` for such apps.
 
 ## Design
 
@@ -119,15 +124,25 @@ holds the blob first), then `arrayBuffer()`, transferred SW -> owner ->
 coordinator without copies. The client sends an explicit `Content-Length`;
 browser-chunked bodies are buffered, never forwarded chunked.
 
-Limits (starting values, tunable by measurement): at most 8 in-flight requests
-per session and 16 globally (excess gets 503); at most 64 MiB of buffered
-request plus response bytes per session (excess gets 503); cookie jar at most 50
-cookies per `(app, session)`, 4 KiB per cookie, 64 KiB total. The 413/503 unit
-tests use these numbers.
+Limits (starting values, tunable by measurement): at most 4 requests dialed to
+the guest concurrently per session and 16 globally. A page load fires many
+parallel subresource requests, so excess requests **queue** in the coordinator
+(FIFO, bounded to 64 waiting per session) and wait up to 30 s for a slot; only a
+full queue or an expired wait gets 503. The dial cap stays at or below the
+default listen backlog (5) of single-threaded servers such as `wsgiref`, so
+queued requests never reach the guest as ECONNREFUSED. At most 64 MiB of buffered
+request plus response bytes per session (excess gets 503). Cookie jar: at most
+50 cookies per `(app, session)`, 4 KiB per cookie, 32 KiB total. A `Set-Cookie`
+over the per-cookie size is ignored; a new cookie over the count or total is
+rejected (replacing an existing name is always allowed), and rejections are
+logged. The 32 KiB total keeps the injected `Cookie` header (plus prefix) under
+the 64 KiB request-line limit of `wsgiref`/`http.server`; the client also checks
+the final request head against that limit and answers 431 itself rather than
+sending it. The 413/503/431 unit tests use these numbers.
 
 Request header allow-list: accept, accept-language, if-none-match,
-if-modified-since, range, if-range, content-type, x-requested-with,
-authorization. `Cookie` is not allow-listed (forbidden for the SW; the
+if-modified-since, if-match, if-unmodified-since, range, if-range, content-type,
+x-requested-with, x-csrf-token, x-csrftoken, x-xsrf-token, authorization. `Cookie` is not allow-listed (forbidden for the SW; the
 coordinator injects the jar, section 5). Dropped: hop-by-hop headers, `Upgrade`,
 `Expect`, proxy headers, anything else.
 
@@ -136,9 +151,12 @@ requires `new URL(request.referrer).origin` to equal the playground origin and
 answers 403 otherwise, including an empty or stripped referrer. This stops other
 sites from driving an app through the playground URL (the session UUID is secret
 only from other origins). It is a cross-site check only: any same-origin
-document can still reach any app (Security model). Consequence: an app that sets
-`Referrer-Policy: no-referrer` (or any policy that strips the origin) cannot
-POST; its safe requests are unaffected.
+document can still reach any app (Security model). Consequence: a page whose
+referrer is stripped cannot POST; its safe requests are unaffected. The response
+`Referrer-Policy` header is dropped (section 6), so the paths that strip it are
+`<meta name="referrer">`, `referrerpolicy` attributes on forms, links or the
+iframe, and `rel=noreferrer`. The test covers a form with
+`referrerpolicy="no-referrer"`.
 
 **Origin/Referer toward the guest** are synthesized as a browser on the app's
 own page would send them: none on safe methods; on unsafe methods `Origin` =
@@ -158,7 +176,10 @@ Isolation between apps comes with a separate-origin design.
 3xx pass through. `Location` handling is explicit: an absolute URL on the guest
 origin whose path is inside the prefix, or a path inside the prefix, is mapped
 to the browser-visible prefix; a root-absolute path **outside** the prefix is an
-escape and stays a 502 (it would otherwise double-prefix). The browser follows
+escape and stays a 502 (the browser would resolve `/login` against the
+playground origin root and reach the playground's own routes, outside the
+bridge). Inside-prefix mapping is an identity, not a rewrite: the guest already
+emitted prefixed URLs. The browser follows
 and replays POST/redirect/GET.
 
 ### 5. Cookies: bridge-managed jar
@@ -190,7 +211,9 @@ forbidden request header attached after the SW. So:
   Clear-Site-Data, Report-To/Reporting-Endpoints/NEL, Permissions-Policy,
   Origin-Agent-Cluster, Access-Control-*, Speculation-Rules, Set-Cookie. The
   spec does not rely on whether the browser would honor these on synthetic
-  responses. Dropped headers are logged for debugging.
+  responses. Only the explicit drop list above is logged (one line per header
+  name per session); ordinary headers outside the allow-list (`Date`, `Server`,
+  `Connection`) are dropped silently.
 - The document CSP (with the app's `inlineScriptHashes`) is applied to **every**
   guest response, not only `text/html` (SVG/XHTML/XML with script and sniffed
   content otherwise run with no policy), with `X-Content-Type-Options: nosniff`
@@ -232,6 +255,9 @@ following sites carry `/apps/datasette/`, port 8001 or the single
   (`parseGuestRequest`, `parseOwnerMessage`), `src/datasette_routes.ts` (respond
   regex), `src/datasette_service_worker.ts` (fetch filter, reserved paths),
   `src/datasette_page.ts` (SW URL and scope), `src/datasette.ts:87`.
+- `scripts/datasette-qualified.ts` (reads `pins.datasette`),
+  `tests/datasette_pins_test.ts` (pins schema) and the `src/pins.ts` validation,
+  which currently requires a non-empty `inlineScriptHashes`.
 - `src/boot.ts:73,76` (`guestPorts: Readonly<{datasette:number}>`,
   `BROWSER_GUEST_PORTS = { datasette: 8001 }`), `src/pins.ts` and
   `src/coordinator_worker.ts` (the `pins.datasette` qualification and the
@@ -262,7 +288,9 @@ e2e tests use fresh profiles and never exercise the unregister path).
 
 ## Phase 1 acceptance
 
-- `tests/datasette_e2e.ts` passes unchanged.
+- `tests/datasette_e2e.ts` keeps passing. Its two reads of
+  `pins.datasette!.inlineScriptHashes` (lines 13 and 48) move to the per-app pins
+  accessor in the same change; no assertions change.
 - New e2e with a stdlib `wsgiref` guest server (behind the `SCRIPT_NAME`
   wrapper): serves HTML and a static asset (including `.mjs` and `.wasm`, to
   prove `nosniff` does not break the guest's own MIME table); a POST form with a
@@ -278,8 +306,8 @@ e2e tests use fresh profiles and never exercise the unregister path).
 ## Known limits (stated, not hidden)
 
 - Cookies are HttpOnly to the page: JS-read cookies break (section 5).
-- Apps that set `Referrer-Policy: no-referrer` (or strip the origin) cannot POST
-  (section 3).
+- Pages whose referrer is stripped (meta referrer, `referrerpolicy`,
+  `rel=noreferrer`) cannot POST (section 3).
 - Apps that build absolute URLs into bodies (JSON `next_url`, Flask `_external`,
   Django `build_absolute_uri`) emit `http://127.0.0.1:<port>/...` links, which
   point at the user's real localhost, not the sandbox. `Location` headers are
