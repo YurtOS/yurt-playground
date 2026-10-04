@@ -43,8 +43,8 @@ const STATIC_FILES = [
   "demo/preview_server.py",
   "demo/preview_index.html",
   "demo/preview_app.js",
-  "apps/datasette/service-worker.js",
-  "apps/datasette/unavailable.html",
+  "apps/bridge-sw.js",
+  "apps/_bridge/unavailable.html",
   "worker_bootstrap.js",
   "playground-bridge.js",
   "verify.js",
@@ -150,7 +150,7 @@ export async function buildStaticSite(): Promise<void> {
   );
   await Deno.writeTextFile(
     join(distDir, "_redirects"),
-    "/apps/datasette/:session/* /apps/datasette/unavailable.html 200\n",
+    "/apps/:app/:session/* /apps/_bridge/unavailable.html 200\n",
   );
   await writeLlmRuntime();
   await Deno.writeTextFile(join(distDir, "_headers"), await siteHeaders());

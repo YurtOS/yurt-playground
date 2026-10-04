@@ -236,19 +236,19 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
     return notFound();
   }
   if (
-    pathname.startsWith("/apps/datasette/") &&
-    !["/apps/datasette/service-worker.js", "/apps/datasette/unavailable.html"]
+    pathname.startsWith("/apps/") &&
+    !["/apps/bridge-sw.js", "/apps/_bridge/unavailable.html"]
       .includes(pathname)
   ) {
     const html = await Deno.readTextFile(
-      join(publicDir, "apps/datasette/unavailable.html"),
+      join(publicDir, "apps/_bridge/unavailable.html"),
     );
     return new Response(req.method === "HEAD" ? null : html, {
       headers: {
         ...ISOLATION_HEADERS,
         "content-type": "text/html; charset=utf-8",
         "Content-Security-Policy": documentPolicy(
-          "/apps/datasette/unavailable.html",
+          "/apps/_bridge/unavailable.html",
           [],
         ),
         "cache-control": "no-store",

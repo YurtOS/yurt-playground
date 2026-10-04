@@ -104,7 +104,7 @@ Deno.test("only the root owner may frame same-origin guest documents", () => {
     assertStringIncludes(documentPolicy(path, []), "frame-src 'self'");
     assertStringIncludes(documentPolicy(path, []), "form-action 'none'");
   }
-  for (const path of ["/terminal.html", "/apps/datasette/unavailable.html"]) {
+  for (const path of ["/terminal.html", "/apps/_bridge/unavailable.html"]) {
     assertStringIncludes(documentPolicy(path, []), "frame-src 'none'");
   }
   const file = headersFile({}, [], []);
