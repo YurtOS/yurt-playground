@@ -18,6 +18,7 @@ import {
 import { partsFetch } from "./image_parts.ts";
 import { parsePins, type Pins } from "./pins.ts";
 import type { Spawner } from "./executions.ts";
+import { GUEST_APPS, type GuestAppId } from "./guest_apps.ts";
 
 export type PlaygroundTerm = {
   cols: number;
@@ -70,10 +71,13 @@ export type BrowserPlaygroundSession = Omit<PlaygroundSession, "spawn"> & {
   dispose: () => void;
   spawn: (line: string) => Promise<ResidentHandle>;
   /** Guest services reserved by this browser session; Jupyter ports stay dynamic. */
-  guestPorts: Readonly<{ datasette: number }>;
+  guestPorts: Readonly<Record<GuestAppId, number>>;
 };
 
-const BROWSER_GUEST_PORTS = { datasette: 8001 } as const;
+const BROWSER_GUEST_PORTS: Readonly<Record<GuestAppId, number>> = {
+  datasette: GUEST_APPS.datasette.port,
+  preview: GUEST_APPS.preview.port,
+};
 
 export type ResidentHandle = {
   pid: number;
