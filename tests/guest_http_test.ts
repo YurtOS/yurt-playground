@@ -53,7 +53,7 @@ Deno.test("guest HTTP decodes fragmented length body and sends only permitted he
     options({
       headers: [["Accept", "text/plain"], ["Cookie", "secret"], [
         "Authorization",
-        "secret",
+        "Bearer example",
       ]],
     }),
   );
@@ -65,6 +65,7 @@ Deno.test("guest HTTP decodes fragmented length body and sends only permitted he
     "Connection: close\r\nAccept-Encoding: identity\r\n",
   );
   assertEquals(c.written().includes("secret"), false);
+  assertStringIncludes(c.written(), "Authorization: Bearer example\r\n");
   assertEquals(c.closed(), 1);
 });
 Deno.test("guest HTTP uses the service port supplied by the browser session", async () => {
@@ -123,7 +124,6 @@ const invalid = [
   "Content-Length: 1x\r\n",
   "Transfer-Encoding: gzip\r\n",
   "Content-Encoding: gzip\r\n",
-  "Set-Cookie: secret=1\r\n",
   "bad header\r\n",
   "Content-Length: 16777217\r\n",
 ];
@@ -317,4 +317,267 @@ Deno.test("guest HTTP trailer bytes share the header limit", async () => {
     () => requestGuestHttp(async () => c.conn, options()),
     GuestHttpError,
   );
+});
+
+Deno.test("POST sends binary body with length, Origin, mapped Referer, and jar cookie", async () => {
+  const c = connection("HTTP/1.1 204 No Content\r\n\r\n");
+  const body = new Uint8Array([0xff, 0x00, 0xfe, 0x80]).buffer;
+  await requestGuestHttp(
+    async () => c.conn,
+    options({
+      method: "POST",
+      path: prefix + "form",
+      body,
+      referrer: prefix + "page?x=1",
+      headers: [["Content-Type", "application/octet-stream"], [
+        "X-CSRF-Token",
+        "t",
+      ], ["Cookie", "evil=1"]],
+      cookie: "sid=1",
+    }),
+  );
+  const wire = c.written();
+  assertStringIncludes(wire, "POST " + prefix + "form HTTP/1.1\r\n");
+  assertStringIncludes(wire, "Content-Length: 4\r\n");
+  assertStringIncludes(wire, "Origin: http://127.0.0.1:8001\r\n");
+  assertStringIncludes(
+    wire,
+    `Referer: http://127.0.0.1:8001${prefix}page?x=1\r\n`,
+  );
+  assertStringIncludes(wire, "X-CSRF-Token: t\r\n");
+  assertStringIncludes(wire, "Cookie: sid=1\r\n");
+  assertEquals(wire.includes("evil=1"), false);
+});
+
+Deno.test("empty POST sends zero length; GET omits Origin and Referer", async () => {
+  const post = connection("HTTP/1.1 204 No Content\r\n\r\n");
+  await requestGuestHttp(async () => post.conn, options({ method: "POST" }));
+  assertStringIncludes(post.written(), "Content-Length: 0\r\n");
+  const get = connection("HTTP/1.1 204 No Content\r\n\r\n");
+  await requestGuestHttp(async () => get.conn, options({ referrer: prefix }));
+  assertEquals(/Origin:|Referer:/.test(get.written()), false);
+});
+
+Deno.test("request body bytes follow the head unchanged", async () => {
+  const bytes = new Uint8Array([0, 1, 2, 255]);
+  const writes: Uint8Array[] = [];
+  const conn: GuestConnection = {
+    write: async (b) => {
+      writes.push(b.slice());
+    },
+    read: async () => enc.encode("HTTP/1.1 204 No Content\r\n\r\n"),
+    close: async () => {},
+  };
+  await requestGuestHttp(
+    async () => conn,
+    options({ method: "PUT", body: bytes.buffer }),
+  );
+  const wire = new Uint8Array(writes.reduce((n, b) => n + b.length, 0));
+  let at = 0;
+  for (const b of writes) {
+    wire.set(b, at);
+    at += b.length;
+  }
+  assertEquals([...wire.slice(-4)], [0, 1, 2, 255]);
+});
+
+Deno.test("invalid methods and request body sizes fail before dialing", async () => {
+  const never = async (): Promise<GuestConnection> => {
+    throw new Error("must not dial");
+  };
+  const big = new ArrayBuffer(16 * 1024 * 1024 + 1);
+  const tooBig = await assertRejects(
+    () => requestGuestHttp(never, options({ method: "POST", body: big })),
+    GuestHttpError,
+  );
+  assertEquals((tooBig as GuestHttpError).status, 413);
+  const onGet = await assertRejects(
+    () => requestGuestHttp(never, options({ body: new ArrayBuffer(1) })),
+    GuestHttpError,
+  );
+  assertEquals((onGet as GuestHttpError).status, 400);
+  const unknown = await assertRejects(
+    () =>
+      requestGuestHttp(
+        never,
+        options({ method: "TRACE" as GuestHttpOptions["method"] }),
+      ),
+    GuestHttpError,
+  );
+  assertEquals((unknown as GuestHttpError).status, 405);
+});
+
+Deno.test("oversized request head fails with 431 before dialing", async () => {
+  let dialed = false;
+  const err = await assertRejects(() =>
+    requestGuestHttp(async () => {
+      dialed = true;
+      return connection("").conn;
+    }, options({ cookie: "a=" + "x".repeat(64 * 1024) })), GuestHttpError);
+  assertEquals((err as GuestHttpError).status, 431);
+  assertEquals(dialed, false);
+});
+
+Deno.test("response head Set-Cookie is collected and stripped while trailer cookie is ignored", async () => {
+  const c = connection(
+    `HTTP/1.1 303 See Other\r\nSet-Cookie: sid=1; Path=${prefix}\r\nSet-Cookie: b=2\r\nLocation: ${prefix}home\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nSet-Cookie: trailer=1\r\n\r\n`,
+  );
+  const reply = await requestGuestHttp(
+    async () => c.conn,
+    options({ method: "POST" }),
+  );
+  assertEquals(reply.setCookies, [`sid=1; Path=${prefix}`, "b=2"]);
+  assertEquals(new Headers(reply.headers).get("set-cookie"), null);
+  assertEquals(new Headers(reply.headers).get("location"), prefix + "home");
+});
+
+Deno.test("fixed response reserves before body read and closes on rejection", async () => {
+  const seen: number[] = [];
+  const c = connection(
+    "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789",
+    4,
+  );
+  const reply = await requestGuestHttp(
+    async () => c.conn,
+    options({ onBuffer: (n) => seen.push(n) }),
+  );
+  assertEquals(dec.decode(reply.body), "0123456789");
+  assertEquals(seen, [10]);
+  let reads = 0;
+  let closed = false;
+  const conn: GuestConnection = {
+    write: async () => {},
+    read: async () => {
+      reads++;
+      if (reads === 1) {
+        return enc.encode("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n");
+      }
+      throw new Error("body read before budget approval");
+    },
+    close: async () => {
+      closed = true;
+    },
+  };
+  await assertRejects(
+    () =>
+      requestGuestHttp(
+        async () => conn,
+        options({
+          onBuffer: () => {
+            throw new GuestHttpError("session buffer limit", 503);
+          },
+        }),
+      ),
+    GuestHttpError,
+    "buffer limit",
+  );
+  assertEquals(reads, 1);
+  assertEquals(closed, true);
+});
+
+Deno.test("chunk reservation precedes body read and rejected chunk closes", async () => {
+  let reads = 0;
+  let closed = false;
+  const parts = [
+    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+    "4\r\n",
+  ];
+  const conn: GuestConnection = {
+    write: async () => {},
+    read: async () => {
+      reads++;
+      if (reads <= parts.length) return enc.encode(parts[reads - 1]);
+      throw new Error("chunk body read before reservation");
+    },
+    close: async () => {
+      closed = true;
+    },
+  };
+  await assertRejects(
+    () =>
+      requestGuestHttp(
+        async () => conn,
+        options({
+          onBuffer: () => {
+            throw new GuestHttpError("budget", 503);
+          },
+        }),
+      ),
+    GuestHttpError,
+    "budget",
+  );
+  assertEquals(reads, 2);
+  assertEquals(closed, true);
+});
+
+Deno.test("EOF body copies reserve retained bytes", async () => {
+  const seen: number[] = [];
+  const c = connection("HTTP/1.1 200 OK\r\n\r\nhello", 4096);
+  const r = await requestGuestHttp(
+    async () => c.conn,
+    options({ onBuffer: (n) => seen.push(n) }),
+  );
+  assertEquals(dec.decode(r.body), "hello");
+  assertEquals(seen, [5]);
+});
+
+Deno.test("multiple chunks reserve their final copy before allocation", async () => {
+  const wire =
+    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nabcd\r\n4\r\nefgh\r\n0\r\n\r\n";
+  const seen: number[] = [];
+  const c = connection(wire, 4096);
+  const r = await requestGuestHttp(
+    async () => c.conn,
+    options({ onBuffer: (n) => seen.push(n) }),
+  );
+  assertEquals(dec.decode(r.body), "abcdefgh");
+  assertEquals(seen, [4, 4, 8]);
+  let charged = 0;
+  const rejected = connection(wire, 4096);
+  await assertRejects(
+    () =>
+      requestGuestHttp(
+        async () => rejected.conn,
+        options({
+          onBuffer: (n) => {
+            if (charged + n > 12) throw new GuestHttpError("budget", 503);
+            charged += n;
+          },
+        }),
+      ),
+    GuestHttpError,
+    "budget",
+  );
+  assertEquals(charged, 8);
+  assertEquals(rejected.closed(), 1);
+});
+
+Deno.test("one chunk returns with one reservation", async () => {
+  const seen: number[] = [];
+  const c = connection(
+    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nabcd\r\n0\r\n\r\n",
+    4096,
+  );
+  const r = await requestGuestHttp(
+    async () => c.conn,
+    options({ onBuffer: (n) => seen.push(n) }),
+  );
+  assertEquals(dec.decode(r.body), "abcd");
+  assertEquals(seen, [4]);
+});
+
+Deno.test("OPTIONS 204 and HEAD and 304 finish without response bodies", async () => {
+  for (
+    const [method, wire] of [
+      ["HEAD", "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\n"],
+      ["OPTIONS", "HTTP/1.1 204 No Content\r\nAllow: GET\r\n\r\n"],
+      ["GET", "HTTP/1.1 304 Not Modified\r\n\r\n"],
+    ] as const
+  ) {
+    const r = await requestGuestHttp(
+      async () => connection(wire).conn,
+      options({ method }),
+    );
+    assertEquals(r.body.byteLength, 0);
+  }
 });

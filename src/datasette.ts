@@ -3,6 +3,7 @@ import {
   GuestHttpError,
   type GuestHttpOptions,
   type GuestHttpReply,
+  type GuestMethod,
   validateGuestPath,
 } from "./guest_http.ts";
 import { requestGuestHttp } from "./guest_http.ts";
@@ -39,7 +40,7 @@ const quote = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
 type DemoRequest = {
   session: string;
   requestId: string;
-  method: "GET" | "HEAD";
+  method: GuestMethod;
   path: string;
   headers: [string, string][];
 };
