@@ -58,7 +58,7 @@ type FailurePane = {
 function readFailurePane(page: Page): Promise<FailurePane> {
   return page.evaluate(() => {
     const hidden = (id: string) =>
-      document.querySelector<HTMLElement>(`#${id}`)!.hidden;
+      Boolean(document.querySelector<HTMLElement>(`#${id}`)!.hidden);
     return {
       status: document.querySelector("#status")!.textContent,
       start: hidden("start"),

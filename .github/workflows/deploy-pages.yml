@@ -56,7 +56,7 @@ jobs:
     needs: secrets-present
     if: needs.secrets-present.outputs.present == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,6 +82,24 @@ jobs:
         run: |
           deno task build-static
           test -f dist/_headers
+      - name: Install Chromium
+        working-directory: playground
+        run: node node_modules/playwright/cli.js install chromium
+      - name: Preview acceptance before publication
+        timeout-minutes: 20
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+          PLAYGROUND_REQUIRE_ARTIFACTS: "1"
+        run: |
+          deno run --allow-all tests/datasette_bridge_e2e.ts
+          deno run --allow-all tests/guest_http_e2e.ts
+          deno run --allow-all tests/preview_e2e.ts
+          if [ "$(deno run --allow-read scripts/datasette-qualified.ts)" = "true" ]; then
+            deno run --allow-all tests/datasette_e2e.ts
+          else
+            echo "Datasette acceptance not run: no qualified published pair"
+          fi
       # Wrangler itself, not an action: `cloudflare/pages-action` (which
       # wrapped it) was removed from GitHub on 2026-09-18 and every deploy
       # failed with "Unable to resolve action"; the pinned Wrangler CLI is

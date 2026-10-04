@@ -65,6 +65,14 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
     out: join(repoRoot, "public/boot.bundle.js"),
     importMap: importMapPath,
   });
+  await Deno.mkdir(join(repoRoot, "public/apps"), {
+    recursive: true,
+  });
+  await bundle(kernelPath, {
+    entry: join(repoRoot, "src/datasette_service_worker.ts"),
+    out: join(repoRoot, "public/apps/bridge-sw.js"),
+    importMap: importMapPath,
+  });
   const coordinatorOut = join(repoRoot, "public/coordinator.bundle.js");
   await bundle(kernelPath, {
     entry: join(repoRoot, "src/coordinator_worker.ts"),

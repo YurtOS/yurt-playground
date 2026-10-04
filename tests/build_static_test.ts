@@ -60,6 +60,9 @@ Deno.test("static build writes every file the pages need", async () => {
       "yurt_kernel.wasm",
       "playground.yurtimg.parts.json",
       "_headers",
+      "_redirects",
+      "apps/bridge-sw.js",
+      "apps/_bridge/unavailable.html",
       "verify.js",
       "integrity.json",
       "agent.css",
@@ -73,6 +76,14 @@ Deno.test("static build writes every file the pages need", async () => {
     const stat = await Deno.stat(new URL(`dist/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/${file} is empty`);
   }
+  assertEquals(
+    await Deno.readFile(new URL("dist/demo/datasette_seed.py", repoRoot)),
+    await Deno.readFile(new URL("public/demo/datasette_seed.py", repoRoot)),
+  );
+  assertStringIncludes(
+    await Deno.readTextFile(new URL("dist/_redirects", repoRoot)),
+    "/apps/:app/:session/* /apps/_bridge/unavailable.html 200",
+  );
   // Notebook 7's commands open tree/, consoles/ and edit/ in new tabs; each is
   // an app the JupyterLite build must emit, or Pages answers with the home
   // page at the wrong path and a Start button that does nothing (#73).
@@ -124,7 +135,8 @@ Deno.test("static build writes every file the pages need", async () => {
   ) {
     assertStringIncludes(headers, value);
   }
-  const [siteRule, jupyterRule] = headers.split("/jupyter/*");
+  const [siteRule, jupyterAndOwner] = headers.split("/jupyter/*");
+  const [jupyterRule] = jupyterAndOwner.split("\n/\n");
   assertEquals(siteRule.includes("'unsafe-eval'"), false);
   assertEquals(jupyterRule.includes("'unsafe-eval'"), true);
   // The model download is the home page's; JupyterLite stays on the origin.
