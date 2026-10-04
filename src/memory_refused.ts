@@ -8,7 +8,8 @@
  * shell says `can't fork`, and nothing in the sandbox can fix it. The
  * kernel's JS host reports each refusal (`onGuestMemoryRefused`); a guest
  * that only hit its own memory limit is an ordinary ENOMEM and is not
- * reported. Reloading the page frees it all.
+ * reported. Reloading the page frees it all. The page's banner
+ * (`#memory-refused` in index.html) names no engine: every engine can refuse.
  */
 
 type RefusalSource = {
@@ -23,6 +24,9 @@ export function watchGuestMemoryRefusals(
   host: unknown,
   notify: () => void,
 ): void {
+  // `unknown`, not `RefusalSource`: a KernelHostInterface without the hook
+  // (the pinned kernel until #3116 ships) shares no member with that weak
+  // type, so passing one is a type error (TS2559).
   const source = host as RefusalSource;
   if (typeof source.onGuestMemoryRefused !== "function") return;
   let told = false;
@@ -38,7 +42,3 @@ export function watchGuestMemoryRefusals(
   subscribed = true;
   if (told) unsubscribe();
 }
-
-/** What the page says. Engine-neutral: every engine can refuse. */
-export const MEMORY_REFUSED_MESSAGE =
-  "The browser ran out of memory for new processes. Reload the page to continue.";

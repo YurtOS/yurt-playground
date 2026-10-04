@@ -1,8 +1,5 @@
 import { assertEquals } from "@std/assert";
-import {
-  MEMORY_REFUSED_MESSAGE,
-  watchGuestMemoryRefusals,
-} from "../src/memory_refused.ts";
+import { watchGuestMemoryRefusals } from "../src/memory_refused.ts";
 
 /** A kernel host with the refusal hook, fired by hand. */
 function fakeHost() {
@@ -52,9 +49,23 @@ Deno.test("a refusal reported while subscribing is told once and unsubscribed", 
   assertEquals(listeners.size, 0);
 });
 
-Deno.test("the message names no engine: Chrome and Firefox refuse too", () => {
+Deno.test("the banner is a tab-level note that names no engine", () => {
+  const html = Deno.readTextFileSync(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const banner = html.match(
+    /<p id="memory-refused"[^>]*>([\s\S]*?)<\/p>/,
+  );
+  if (banner === null) throw new Error("no #memory-refused paragraph");
+  const text = banner[1].replace(/<button[\s\S]*<\/button>/, "")
+    .replace(/\s+/g, " ").trim();
   assertEquals(
-    MEMORY_REFUSED_MESSAGE,
+    text,
     "The browser ran out of memory for new processes. Reload the page to continue.",
+  );
+  // Outside the terminal pane, which is overflow: hidden and scrolls away.
+  assertEquals(
+    html.indexOf('id="memory-refused"') < html.indexOf('class="pane"'),
+    true,
   );
 });

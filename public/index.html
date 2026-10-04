@@ -95,7 +95,8 @@
       }
 
       #mobile-note,
-      #another-tab-note {
+      #another-tab-note,
+      #memory-refused {
         border-left: 3px solid var(--ember);
         background: var(--pane);
         color: var(--text);
@@ -208,19 +209,6 @@
         margin: 0;
         color: var(--muted);
         max-width: 60ch;
-      }
-      #memory-refused {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 8px 12px;
-        color: var(--text);
-        background: var(--ground);
-        border-bottom: 1px solid var(--rule);
-        border-left: 3px solid var(--ember);
-      }
-      #memory-refused[hidden] {
-        display: none;
       }
       #failed {
         position: absolute;
@@ -626,6 +614,19 @@
         browser is the safe choice.
       </p>
 
+      <p id="memory-refused" data-testid="memory-refused" role="alert" hidden>
+        The browser ran out of memory for new processes. Reload the page to
+        continue.
+        <button
+          type="button"
+          id="memory-refused-reload"
+          data-testid="memory-refused-reload"
+          class="bar-action"
+        >
+          Reload
+        </button>
+      </p>
+
       <section class="pane" aria-label="terminal">
         <div class="bar">
           <span class="name">Terminal</span>
@@ -647,21 +648,6 @@
             data-online="true"
             title="This tab's network state. The sandbox keeps working without it."
           >online</span>
-        </div>
-        <div
-          id="memory-refused"
-          data-testid="memory-refused"
-          role="alert"
-          hidden
-        >
-          <span id="memory-refused-text"></span>
-          <button
-            type="button"
-            id="memory-refused-reload"
-            data-testid="memory-refused-reload"
-          >
-            Reload
-          </button>
         </div>
         <div id="term-wrap">
           <div id="term"></div>

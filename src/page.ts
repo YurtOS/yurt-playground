@@ -16,7 +16,6 @@ import {
   type YurtTransport,
 } from "./agent_api.ts";
 import type { ExecOptions } from "./executions.ts";
-import { MEMORY_REFUSED_MESSAGE } from "./memory_refused.ts";
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -265,12 +264,7 @@ function boot(
         sandboxGone();
       }
     }
-    if (msg.type === "memory-refused") {
-      const banner = byId("memory-refused");
-      byId("memory-refused-text").textContent = MEMORY_REFUSED_MESSAGE;
-      byId("memory-refused-reload").onclick = () => location.reload();
-      banner.hidden = false;
-    }
+    if (msg.type === "memory-refused") byId("memory-refused").hidden = false;
     if (msg.type === "out") {
       terminalEmpty = false;
       term.write(new Uint8Array(msg.bytes));
@@ -419,6 +413,11 @@ async function runPage(): Promise<void> {
   // The boot memory has been read (and cleared) by now; a test that plants
   // one for the next load must wait for this, or this load consumes it.
   document.documentElement.dataset.settled = "";
+  // Only a reload frees what the browser refused (yurtos-kernel#2996).
+  byId("memory-refused-reload").addEventListener(
+    "click",
+    () => location.reload(),
+  );
   // The workspace opens with one action; `?start` (the old terminal page's
   // redirect, and the acceptance tests) skips it.
   if (start === null || new URL(location.href).searchParams.has("start")) {
