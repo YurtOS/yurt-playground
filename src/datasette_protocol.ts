@@ -1,11 +1,13 @@
 // deno-lint-ignore-file no-control-regex
 // HTTP framing deliberately rejects ASCII control bytes.
 import {
+  GUEST_METHODS,
   type GuestHttpReply,
   type GuestMethod,
   type HeaderPairs,
   validateGuestPath,
 } from "./guest_http.ts";
+import { appPrefix, type GuestAppId, isGuestAppId } from "./guest_apps.ts";
 export type DatasetteState =
   | "stopped"
   | "starting"
@@ -22,11 +24,14 @@ export interface DatasetteSnapshot {
 }
 export interface GuestRequest {
   type: "datasette-http";
+  app: GuestAppId;
   session: string;
   requestId: string;
   method: GuestMethod;
   path: string;
   headers: HeaderPairs;
+  body?: ArrayBuffer;
+  referrer?: string;
 }
 export interface GuestAbort {
   type: "datasette-abort";
@@ -47,10 +52,12 @@ export type GuestReply =
   };
 export interface LifecycleMessage {
   type: "datasette-start" | "datasette-stop" | "datasette-reset";
+  app: GuestAppId;
   requestId: string;
 }
 export interface LifecycleReply {
   type: "datasette-state";
+  app: GuestAppId;
   requestId?: string;
   snapshot: DatasetteSnapshot;
 }
@@ -64,6 +71,7 @@ export interface OwnerMessage {
     | "datasette-unregister";
   session: string;
   nonce: string;
+  app?: GuestAppId;
   prefix?: string;
   hashes?: string[];
 }
@@ -93,17 +101,30 @@ function headers(value: unknown): value is HeaderPairs {
 export function parseGuestRequest(value: unknown): GuestRequest | undefined {
   const v = object(value);
   if (
-    !v || !scoped(v) || !headers(v.headers) || typeof v.path !== "string" ||
+    !v || !scoped(v) || !isGuestAppId(v.app) || !headers(v.headers) ||
+    typeof v.path !== "string" ||
     v.type !== "datasette-http" ||
-    (v.method !== "GET" && v.method !== "HEAD")
+    !GUEST_METHODS.has(v.method as string) ||
+    (v.body !== undefined &&
+      (!(v.body instanceof ArrayBuffer) ||
+        v.body.byteLength > 16 * 1024 * 1024)) ||
+    (v.referrer !== undefined && typeof v.referrer !== "string")
   ) return;
   try {
     validateGuestPath(
-      "datasette",
+      v.app,
       v.session as string,
-      `/apps/datasette/${v.session}/`,
+      appPrefix(v.app, v.session as string),
       v.path,
     );
+    if (v.referrer !== undefined) {
+      validateGuestPath(
+        v.app,
+        v.session as string,
+        appPrefix(v.app, v.session as string),
+        v.referrer as string,
+      );
+    }
   } catch {
     return;
   }
@@ -127,7 +148,7 @@ export function parseGuestReply(value: unknown): GuestReply | undefined {
   ) return v as unknown as GuestReply;
   if (
     v.type === "datasette-error" &&
-    [405, 502, 503, 504].includes(v.code as number) &&
+    [400, 403, 405, 413, 431, 502, 503, 504].includes(v.code as number) &&
     typeof v.message === "string"
   ) return v as unknown as GuestReply;
 }
@@ -136,7 +157,7 @@ export function parseLifecycleMessage(
 ): LifecycleMessage | undefined {
   const v = object(value);
   if (
-    v && id(v.requestId) &&
+    v && id(v.requestId) && isGuestAppId(v.app) &&
     ["datasette-start", "datasette-stop", "datasette-reset"].includes(
       v.type as string,
     )
@@ -158,8 +179,9 @@ export function parseOwnerMessage(value: unknown): OwnerMessage | undefined {
   ) return;
   if (
     v.type === "datasette-register" &&
-    (v.prefix !== `/apps/datasette/${v.session}/` || !Array.isArray(v.hashes) ||
-      !v.hashes.length ||
+    (!isGuestAppId(v.app) ||
+      v.prefix !== appPrefix(v.app, v.session as string) ||
+      !Array.isArray(v.hashes) ||
       !v.hashes.every((hash) =>
         typeof hash === "string" && /^sha256-[A-Za-z0-9+/]{43}=$/.test(hash)
       ))

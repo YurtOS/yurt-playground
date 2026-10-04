@@ -10,8 +10,8 @@ const session='33333333-3333-4333-8333-333333333333',prefix='/apps/datasette/'+s
 class Coordinator extends EventTarget {
   emit(data){this.dispatchEvent(new MessageEvent('message',{data}));}
   postMessage(m){
-    if(m.type==='datasette-start') this.emit({type:'datasette-state',snapshot:{state:'running',session,prefix}});
-    if(m.type==='datasette-stop'||m.type==='datasette-reset') this.emit({type:'datasette-state',snapshot:{state:'stopped'}});
+    if(m.type==='datasette-start') this.emit({type:'datasette-state',app:'datasette',snapshot:{state:'running',session,prefix}});
+    if(m.type==='datasette-stop'||m.type==='datasette-reset') this.emit({type:'datasette-state',app:'datasette',snapshot:{state:'stopped'}});
     if(m.type==='datasette-http') {
       let body='<html><body><h1>Guest UI</h1><a href="'+prefix+'orders.csv">CSV</a></body></html>',headers=[['content-type','text/html']];
       if(m.path.includes('orders.json')) {body='[{"product":"Mug","revenue_cents":8400},{"product":"Notebook","revenue_cents":4000},{"product":"Pen","revenue_cents":2000}]';headers=[['content-type','application/json']];}
@@ -51,7 +51,7 @@ async function bind(nonce=crypto.randomUUID()) {
       channel.port1.postMessage({type:'datasette-response',session,requestId:m.requestId,status:200,headers:[['Content-Type',type]],body:new TextEncoder().encode(body).buffer});
     }
   };});
-  channel.port1.start();registration.active.postMessage({type:'datasette-register',session,prefix,nonce,hashes:['sha256-'+ 'A'.repeat(43)+'=']},[channel.port2]);
+  channel.port1.start();registration.active.postMessage({type:'datasette-register',app:'datasette',session,prefix,nonce,hashes:['sha256-'+ 'A'.repeat(43)+'=']},[channel.port2]);
   await registered;
 }
 navigator.serviceWorker.addEventListener('message',e=>{if(e.data.type==='datasette-find-owner'&&e.data.session===session)bind(e.data.nonce).catch(console.error);});

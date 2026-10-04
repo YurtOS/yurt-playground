@@ -33,6 +33,7 @@ Deno.test("Datasette routes bind replies to the registered owner channel", async
   try {
     await f.routes.register(client, {
       type: "datasette-register",
+      app: "datasette",
       session,
       prefix,
       nonce: "n",
@@ -68,6 +69,7 @@ Deno.test("Datasette routes reject a foreign owner claiming an existing session"
   try {
     await f.routes.register(client, {
       type: "datasette-register",
+      app: "datasette",
       session,
       prefix,
       nonce: "n",
@@ -76,6 +78,7 @@ Deno.test("Datasette routes reject a foreign owner claiming an existing session"
     await assertRejects(() =>
       f.routes.register({ ...client, id: "other" }, {
         type: "datasette-register",
+        app: "datasette",
         session,
         prefix,
         nonce: "n",
@@ -114,6 +117,7 @@ Deno.test("Datasette unregister cancels pending requests and ignores stale repli
   try {
     await f.routes.register(client, {
       type: "datasette-register",
+      app: "datasette",
       session,
       prefix,
       nonce: "n",
@@ -141,6 +145,7 @@ Deno.test("Datasette worker recovery finds the exact uncontrolled root owner", a
       const msg = value as { session: string; nonce: string };
       void routes.register(c, {
         type: "datasette-register",
+        app: "datasette",
         session: msg.session,
         prefix,
         nonce: msg.nonce,
@@ -187,6 +192,7 @@ Deno.test("Datasette worker recovery refuses multiple root owner claims", async 
       const msg = value as { nonce: string };
       void routes.register(clients[i], {
         type: "datasette-register",
+        app: "datasette",
         session,
         prefix,
         nonce: msg.nonce,
@@ -225,6 +231,7 @@ Deno.test("concurrent recovery requests wait for all owner claims", async () => 
       const register = () =>
         routes.register(clients[i], {
           type: "datasette-register",
+          app: "datasette",
           session,
           prefix,
           nonce: msg.nonce,

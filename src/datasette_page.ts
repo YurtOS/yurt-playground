@@ -164,6 +164,7 @@ export function mountDatasette(
       current.start();
       (target ?? registration!.active)!.postMessage({
         type: "datasette-register",
+        app: "datasette",
         session,
         prefix,
         hashes,
@@ -298,6 +299,7 @@ export function mountDatasette(
       downloads.set(requestId, { session, timer });
       coordinator.postMessage({
         type: "datasette-http",
+        app: "datasette",
         session,
         requestId,
         method: "GET",
@@ -307,7 +309,11 @@ export function mountDatasette(
       });
     } else {
       if (action === "stop" || action === "reset") unbind();
-      coordinator.postMessage({ type: `datasette-${action}`, requestId });
+      coordinator.postMessage({
+        type: `datasette-${action}`,
+        app: "datasette",
+        requestId,
+      });
     }
   };
   root.addEventListener("click", click);

@@ -240,6 +240,7 @@ export class DatasetteRoutes {
         }
         owner.port.postMessage({
           type: "datasette-http",
+          app: "datasette",
           session,
           requestId,
           method,

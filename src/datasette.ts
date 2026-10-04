@@ -465,7 +465,8 @@ export function attachDatasette(
           ),
         { ...request, port: session.guestPorts.datasette },
       ),
-    changed: (snapshot) => options.send({ type: "datasette-state", snapshot }),
+    changed: (snapshot) =>
+      options.send({ type: "datasette-state", app: "datasette", snapshot }),
   });
 }
 
@@ -487,12 +488,14 @@ export async function handleDatasetteMessage(
         : demo.reset());
       send({
         type: "datasette-state",
+        app: "datasette",
         requestId: lifecycle.requestId,
         snapshot,
       });
     } catch (error) {
       send({
         type: "datasette-state",
+        app: "datasette",
         requestId: lifecycle.requestId,
         snapshot: demo?.snapshot.state === "stuck" ? demo.snapshot : {
           state: "failed",
