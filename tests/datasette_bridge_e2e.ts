@@ -24,7 +24,7 @@ class Coordinator extends EventTarget {
 const coordinator=new Coordinator();window.coordinator=coordinator;
 mountDatasette(document.getElementById('demo'),coordinator,true);
 mountDatasette(document.getElementById('desktop'),coordinator,false);
-window.qualify=()=>coordinator.emit({type:'datasette-qualification',hashes:['sha256-'+'A'.repeat(43)+'=']});
+window.qualify=()=>coordinator.emit({type:'guest-app-qualification',apps:{datasette:[]}});
 window.uiReady=true;
 `;
 const policy =

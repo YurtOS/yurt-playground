@@ -1,3 +1,5 @@
+import { CookieJar } from "./cookie_jar.ts";
+import { ByteBudget, type SlotQueue } from "./slot_queue.ts";
 import type { ResidentHandle } from "./boot.ts";
 import {
   GuestHttpError,
@@ -28,6 +30,7 @@ export interface GuestAppSpec {
   isReady(reply: GuestHttpReply): boolean;
 }
 export interface GuestAppDependencies {
+  queue: SlotQueue;
   uuid(): string;
   now(): number;
   servicePort: number;
@@ -64,6 +67,8 @@ export class GuestApp {
   #starting?: Promise<DatasetteSnapshot>;
   #setup: Promise<void> = Promise.resolve();
   #cleanup: Promise<unknown> = Promise.resolve();
+  #jar = new CookieJar();
+  #budget = new ByteBudget();
   #requests = new Map<string, AbortController>();
   constructor(
     readonly spec: GuestAppSpec,
@@ -77,6 +82,7 @@ export class GuestApp {
     this.deps.changed(this.snapshot);
   }
   #cancelRequests() {
+    this.#jar.clear();
     for (const c of this.#requests.values()) c.abort();
     this.#requests.clear();
   }
@@ -98,6 +104,7 @@ export class GuestApp {
     }
     const generation = ++this.#generation;
     const controller = this.#startup = new AbortController();
+    this.#budget = new ByteBudget();
     const session = this.deps.uuid();
     const prefix = appPrefix(this.spec.id, session);
     validateGuestPath(this.spec.id, session, prefix, prefix);
@@ -379,14 +386,43 @@ export class GuestApp {
     }
     const controller = new AbortController();
     this.#requests.set(key, controller);
+    const budget = this.#budget;
+    let reserved = 0;
+    const take = (bytes: number) => {
+      controller.signal.throwIfAborted();
+      budget.take(bytes);
+      reserved += bytes;
+    };
     try {
-      return await this.#probe({
-        ...r,
-        app: this.spec.id,
-        prefix: this.#snapshot.prefix!,
-        signal: controller.signal,
-      });
+      take(r.body?.byteLength ?? 0);
+      const release = await this.deps.queue.acquire(
+        r.session,
+        controller.signal,
+      );
+      try {
+        const cookie = this.#jar.header(r.path, Date.now()) || undefined;
+        const { setCookies, ...reply } = await this.#probe({
+          ...r,
+          app: this.spec.id,
+          prefix: this.#snapshot.prefix!,
+          signal: controller.signal,
+          cookie,
+          onBuffer: take,
+        });
+        controller.signal.throwIfAborted();
+        for (const raw of setCookies ?? []) {
+          if (this.#jar.set(raw, r.path, Date.now()) === "rejected") {
+            console.warn(
+              `${this.spec.title}: cookie jar full, Set-Cookie rejected`,
+            );
+          }
+        }
+        return reply;
+      } finally {
+        release();
+      }
     } finally {
+      budget.give(reserved);
       if (this.#requests.get(key) === controller) this.#requests.delete(key);
     }
   }

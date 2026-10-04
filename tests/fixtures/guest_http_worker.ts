@@ -68,8 +68,8 @@ self.onmessage = async (e) => {
       );
       await finite("printf original > /home/user/demo_http/value");
       self.postMessage({
-        type: "datasette-qualification",
-        hashes: ["sha256-" + "A".repeat(43) + "="],
+        type: "guest-app-qualification",
+        apps: { datasette: ["sha256-" + "A".repeat(43) + "="] },
       });
       return;
     }

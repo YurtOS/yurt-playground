@@ -6,6 +6,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { GuestApp, type GuestAppDependencies } from "../src/guest_app.ts";
+import { SlotQueue } from "../src/slot_queue.ts";
 import { datasetteSpec } from "../src/datasette.ts";
 import type { GuestHttpReply } from "../src/guest_http.ts";
 const session = "11111111-1111-4111-8111-111111111111";
@@ -23,6 +24,7 @@ function fixture() {
   let lastSnapshot: unknown;
   let now = 0;
   const deps: GuestAppDependencies = {
+    queue: new SlotQueue(),
     uuid: () => session,
     now: () => now,
     servicePort: 8123,
@@ -262,12 +264,12 @@ Deno.test("Datasette aborts readiness when the resident exits during startup", a
   assertStringIncludes(s.error!, "resident exited");
 });
 Deno.test("Datasette messages fail closed without qualification and relay guest bytes", async () => {
-  const { handleDatasetteMessage } = await import("../src/datasette.ts");
+  const { handleGuestAppMessage } = await import("../src/datasette.ts");
   const messages: unknown[] = [];
   const send = (msg: unknown) => {
     messages.push(msg);
   };
-  await handleDatasetteMessage(undefined, {
+  await handleGuestAppMessage(undefined, {
     type: "datasette-start",
     app: "datasette",
     requestId: "start",
@@ -276,7 +278,7 @@ Deno.test("Datasette messages fail closed without qualification and relay guest 
   const f = fixture();
   const d = new GuestApp(datasetteSpec, f.deps);
   await d.start();
-  await handleDatasetteMessage(d, {
+  await handleGuestAppMessage(new Map([["datasette", d]]), {
     type: "datasette-http",
     app: "datasette",
     session,
@@ -290,8 +292,8 @@ Deno.test("Datasette messages fail closed without qualification and relay guest 
   assert(msg.body instanceof ArrayBuffer);
   await d.stop();
 });
-Deno.test("Datasette handler ignores Preview lifecycle commands", async () => {
-  const { handleDatasetteMessage } = await import("../src/datasette.ts");
+Deno.test("Guest app handler fails closed for unavailable Preview lifecycle commands", async () => {
+  const { handleGuestAppMessage } = await import("../src/datasette.ts");
   const f = fixture();
   const demo = new GuestApp(datasetteSpec, f.deps);
   const replies: unknown[] = [];
@@ -301,24 +303,25 @@ Deno.test("Datasette handler ignores Preview lifecycle commands", async () => {
       const type of ["datasette-start", "datasette-stop", "datasette-reset"]
     ) {
       assertEquals(
-        await handleDatasetteMessage(demo, {
+        await handleGuestAppMessage(new Map([["datasette", demo]]), {
           type,
           app: "preview",
           requestId: "preview-lifecycle",
         }, send),
-        false,
+        true,
       );
     }
     assertEquals(demo.snapshot.state, "stopped");
-    assertEquals(replies, []);
+    assertEquals(replies.length, 3);
+    assertStringIncludes(JSON.stringify(replies), "qualified");
   } finally {
     await demo.stop();
   }
 });
-Deno.test("Datasette handler leaves Preview HTTP requests to the Preview app", async () => {
-  const { handleDatasetteMessage } = await import("../src/datasette.ts");
+Deno.test("Guest app handler fails closed for unavailable Preview HTTP", async () => {
+  const { handleGuestAppMessage } = await import("../src/datasette.ts");
   const replies: unknown[] = [];
-  const handled = await handleDatasetteMessage(undefined, {
+  const handled = await handleGuestAppMessage(undefined, {
     type: "datasette-http",
     app: "preview",
     session,
@@ -327,8 +330,8 @@ Deno.test("Datasette handler leaves Preview HTTP requests to the Preview app", a
     path: `/apps/preview/${session}/`,
     headers: [],
   }, (reply) => replies.push(reply));
-  assertEquals(handled, false);
-  assertEquals(replies, []);
+  assertEquals(handled, true);
+  assertStringIncludes(JSON.stringify(replies), '"code":503');
 });
 Deno.test("Datasette stale startup diagnostics cannot overwrite Stop", async () => {
   const f = fixture(),

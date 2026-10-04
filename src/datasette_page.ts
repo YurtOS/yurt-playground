@@ -220,12 +220,13 @@ export function mountDatasette(
   }, 2000);
   const receive = (e: MessageEvent) => {
     const msg = e.data;
-    if (msg?.type === "datasette-qualification") {
-      qualified = msg.hashes instanceof Array && msg.hashes.length > 0 &&
-        msg.hashes.every((h: unknown) =>
+    if (msg?.type === "guest-app-qualification") {
+      const appHashes = msg.apps?.datasette;
+      qualified = appHashes instanceof Array &&
+        appHashes.every((h: unknown) =>
           typeof h === "string" && /^sha256-[A-Za-z0-9+/]{43}=$/.test(h)
         );
-      hashes = qualified ? [...msg.hashes] : [];
+      hashes = qualified ? [...appHashes] : [];
       render();
       return;
     }

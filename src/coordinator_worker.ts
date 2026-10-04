@@ -36,11 +36,10 @@ import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 
 installCoordinatorWorkerProxy();
-import {
-  attachDatasette,
-  DatasetteDemo,
-  handleDatasetteMessage,
-} from "./datasette.ts";
+import { attachGuestApps, handleGuestAppMessage } from "./datasette.ts";
+import { GUEST_APPS, type GuestAppId } from "./guest_apps.ts";
+import { appInlineScriptHashes } from "./pins.ts";
+import type { GuestApp } from "./guest_app.ts";
 import type { GuestReply, LifecycleReply } from "./datasette_protocol.ts";
 type ToWorker =
   // `kernelPorts` set: the desktop app's native sandbox (see native.ts),
@@ -79,7 +78,10 @@ type ToWorker =
   | { type: "yurt-list"; req: number };
 
 type FromWorker =
-  | { type: "datasette-qualification"; hashes: string[] }
+  | {
+    type: "guest-app-qualification";
+    apps: Partial<Record<GuestAppId, string[]>>;
+  }
   | GuestReply
   | LifecycleReply
   | { type: "status"; text: string }
@@ -116,7 +118,7 @@ type FromWorker =
 let jupyter: JupyterTransport | undefined;
 let launchSession: PlaygroundSession | undefined;
 let executions: ExecutionRegistry | undefined;
-let datasette: DatasetteDemo | undefined;
+let apps: Map<GuestAppId, GuestApp> | undefined;
 
 async function serveYurt(msg: ToWorker): Promise<void> {
   if (
@@ -211,7 +213,7 @@ function workerTerm(init: { cols: number; rows: number }): PlaygroundTerm {
 
 self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
-  if (await handleDatasetteMessage(datasette, msg, post)) return;
+  if (await handleGuestAppMessage(apps, msg, post)) return;
   await serveYurt(msg);
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
@@ -316,16 +318,20 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       executions = new ExecutionRegistry(session.process, session.signal);
     }
     const pins = kernelPorts === undefined ? await browserPins() : undefined;
-    const qualification = pins?.datasette;
     post({
-      type: "datasette-qualification",
-      hashes: qualification?.inlineScriptHashes ?? [],
+      type: "guest-app-qualification",
+      apps: Object.fromEntries(
+        Object.values(GUEST_APPS).flatMap(({ id }) => {
+          const hashes = pins && appInlineScriptHashes(pins, id);
+          return hashes === undefined ? [] : [[id, hashes]];
+        }),
+      ),
     });
     if (
       pins !== undefined && browserSession !== undefined &&
       executions !== undefined
     ) {
-      datasette = attachDatasette(browserSession, pins, {
+      apps = attachGuestApps(browserSession, pins, {
         executions,
         send: post,
       });
