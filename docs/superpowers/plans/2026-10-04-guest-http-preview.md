@@ -426,11 +426,17 @@ git commit -m "feat: bounded per-session cookie jar"
 **Interfaces:**
 
 - Consumes: `GuestHttpError` from `src/guest_http.ts` (exists today:
-  `new GuestHttpError(message, status = 502)`).
+  `new GuestHttpError(message, status = 502)`) and `GUEST_HTTP_TIMEOUT_MS`
+  (added in Task 4; until then use a local `30_000` and switch in Task 4).
 - Produces:
   - `interface SlotLimits { perSession: number; global: number; maxWaiting: number; waitMs: number }`
   - `SLOT_LIMITS: SlotLimits` =
     `{ perSession: 4, global: 16, maxWaiting: 64, waitMs: 30_000 }`
+    - `class ByteBudget { constructor(limit = 64 * 1024 * 1024); take(bytes: number): void; give(bytes: number): void }`
+      (`take` throws a 503 `GuestHttpError("session buffer limit")` when the sum
+      would exceed `limit`; `give` never goes below zero)
+  - `REQUEST_DEADLINE_MS = SLOT_LIMITS.waitMs + GUEST_HTTP_TIMEOUT_MS + 5_000`
+    (the end-to-end SW deadline: queue wait + client deadline + slack)
   - `class SlotQueue { constructor(limits?: SlotLimits); acquire(session: string, signal?: AbortSignal): Promise<() => void> }`
     The resolved function releases the slot (idempotent). A full per-session
     queue, an expired wait, or an abort rejects (503 `GuestHttpError`, or the
@@ -440,9 +446,14 @@ git commit -m "feat: bounded per-session cookie jar"
 
 ```ts
 // tests/slot_queue_test.ts
-import { assertEquals, assertRejects } from "@std/assert";
-import { SlotQueue } from "../src/slot_queue.ts";
-import { GuestHttpError } from "../src/guest_http.ts";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  ByteBudget,
+  REQUEST_DEADLINE_MS,
+  SLOT_LIMITS,
+  SlotQueue,
+} from "../src/slot_queue.ts";
+import { GUEST_HTTP_TIMEOUT_MS, GuestHttpError } from "../src/guest_http.ts";
 
 const limits = { perSession: 2, global: 3, maxWaiting: 2, waitMs: 50 };
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -506,6 +517,24 @@ Deno.test("full queue and expired wait are 503", async () => {
   held.forEach((r) => r());
 });
 
+Deno.test("ByteBudget rejects over the limit and frees on give", () => {
+  const b = new ByteBudget(100);
+  b.take(60);
+  assertThrows(() => b.take(41), GuestHttpError, "buffer limit");
+  b.take(40);
+  b.give(60);
+  b.take(60);
+  b.give(1_000); // never negative
+  b.take(100);
+});
+
+Deno.test("end-to-end deadline covers queue wait plus client deadline", () => {
+  assertEquals(
+    REQUEST_DEADLINE_MS >= SLOT_LIMITS.waitMs + GUEST_HTTP_TIMEOUT_MS,
+    true,
+  );
+});
+
 Deno.test("abort removes a waiter and frees its queue position", async () => {
   const q = new SlotQueue({ ...limits, perSession: 1, waitMs: 5000 });
   const held = await q.acquire("s");
@@ -527,7 +556,23 @@ found).
 
 ```ts
 // src/slot_queue.ts
-import { GuestHttpError } from "./guest_http.ts";
+import { GUEST_HTTP_TIMEOUT_MS, GuestHttpError } from "./guest_http.ts";
+/** Per-session cap on buffered request plus response bytes. Reserved before a
+ * request is queued, so queued uploads count, and released on completion or
+ * cancellation. */
+export class ByteBudget {
+  #used = 0;
+  constructor(private readonly limit = 64 * 1024 * 1024) {}
+  take(bytes: number) {
+    if (this.#used + bytes > this.limit) {
+      throw new GuestHttpError("session buffer limit", 503);
+    }
+    this.#used += bytes;
+  }
+  give(bytes: number) {
+    this.#used = Math.max(0, this.#used - bytes);
+  }
+}
 export interface SlotLimits {
   perSession: number;
   global: number;
@@ -540,6 +585,11 @@ export const SLOT_LIMITS: SlotLimits = {
   maxWaiting: 64,
   waitMs: 30_000,
 };
+/** End-to-end deadline the SW applies to one request: queue wait, then the
+ * client's own deadline, plus slack. A shorter SW deadline would 504 requests
+ * that waited in the queue and then ran normally. */
+export const REQUEST_DEADLINE_MS = SLOT_LIMITS.waitMs +
+  GUEST_HTTP_TIMEOUT_MS + 5_000;
 interface Waiter {
   session: string;
   grant(release: () => void): void;
@@ -649,8 +699,15 @@ git commit -m "feat: bounded FIFO slot queue for guest requests"
 - Produces (all exported from `src/guest_http.ts`):
   - `type GuestMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"`
   - `GUEST_METHODS: ReadonlySet<string>`
-  - `GuestHttpOptions` gains `app: GuestAppId`, `body?: ArrayBuffer`,
-    `referrer?: string` (a guest path inside the prefix), `cookie?: string`
+    - `GuestHttpOptions` gains `app: GuestAppId`, `body?: ArrayBuffer`,
+      `referrer?: string` (a guest path inside the prefix), `cookie?: string`,
+      and `onBuffer?: (bytes: number) => void`, called with the length of each
+      response body chunk before it is buffered, so the caller can enforce the
+      shared per-session budget; a throw aborts the request
+  - `export const GUEST_HTTP_TIMEOUT_MS = 30_000` replaces the two `30_000`
+    literals in `requestGuestHttp` (`timeoutMs ?? 30_000` and
+    `Math.min(timeout, 30_000)`); the deadline starts when the request is
+    dialed, i.e. after any queue wait
   - `GuestHttpReply` gains `setCookies?: string[]` (coordinator-only: raw
     `Set-Cookie` values from the response head; never forwarded)
   - `validateGuestPath(app: GuestAppId, session, prefix, path, port?)`
@@ -809,6 +866,29 @@ Deno.test("Set-Cookie is collected and stripped; trailer Set-Cookie is dropped; 
   assertEquals(new Headers(reply.headers).get("location"), prefix + "home");
 });
 
+Deno.test("onBuffer sees every response chunk and can abort the request", async () => {
+  const wire = "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789";
+  const seen: number[] = [];
+  await requestGuestHttp(
+    async () => connection(wire, 4).conn,
+    options({ onBuffer: (n) => seen.push(n) }),
+  );
+  assertEquals(seen.reduce((a, b) => a + b, 0), 10);
+  await assertRejects(
+    () =>
+      requestGuestHttp(
+        async () => connection(wire).conn,
+        options({
+          onBuffer: () => {
+            throw new GuestHttpError("session buffer limit", 503);
+          },
+        }),
+      ),
+    GuestHttpError,
+    "buffer limit",
+  );
+});
+
 Deno.test("HEAD, OPTIONS 204 and 304 carry no body and do not hang", async () => {
   for (
     const [method, wire] of [
@@ -948,6 +1028,10 @@ wire.set(body, head.length);
 the 400. `validateGuestPath(options.app, ...)` replaces the `"datasette"`
 literal from Step 1.) Then `await race(conn.write(wire));` replaces the old
 write. Drop the old inline `request` string.
+
+Buffering: in the body-reading `append` helper, call
+`options.onBuffer?.(bytes.length)` before pushing each chunk (the existing 16
+MiB check stays).
 
 Response side: delete the `if (k === "set-cookie") fail(...)` line and the
 `|| k === "set-cookie"` in the trailer check (trailer `Set-Cookie` is now simply
@@ -1200,7 +1284,21 @@ deno fmt && git add -A && git commit -m "feat: allow-list guest response headers
   - `LifecycleReply { type: "datasette-state"; app: GuestAppId; requestId?; snapshot }`
   - `OwnerMessage` register variant additionally has `app: GuestAppId`; its
     `prefix` must equal `appPrefix(app, session)` and `hashes` may be empty.
-  - `GuestReply` error `code` accepts `[403, 405, 413, 431, 502, 503, 504]`.
+    - `GuestReply` error `code` accepts `[403, 405, 413, 431, 502, 503, 504]`.
+- **Envelope rules (every later task follows these):**
+  - Messages that start or select an app carry `app`: `datasette-http`
+    (request), lifecycle messages, `datasette-state`, `datasette-register`,
+    `guest-app-qualification`.
+  - Messages that belong to an in-flight request or a bound session are
+    correlated by `session` + `requestId` only and carry **no** `app`:
+    `datasette-response`, `datasette-error`, `datasette-abort`,
+    `datasette-registered`, `datasette-ping`, `datasette-pong`,
+    `datasette-find-owner`, `datasette-unregister`. A session UUID is unique
+    across apps, so this is unambiguous.
+  - Consumers therefore filter replies by `session` (as today) and filter
+    `datasette-state` / qualification by `app`. The coordinator resolves an
+    abort by asking every app to abort `(session, requestId)`; apps that do not
+    own it ignore it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1366,7 +1464,12 @@ Behavior to implement in `respond` (order matters):
 9. `guestResponse(reply, method, owner.hashes, onDrop)` where `onDrop` logs
    `"dropped guest response header <name>"` once per `(session, name)` (keep a
    `Set<string>` keyed `session + ":" + name`, cleared in `#drop`).
-10. Error pages use `bridgeErrorResponse(..., GUEST_APPS[app].title)`.
+10. Deadline: replace `this.deps.requestTimeoutMs ?? 30_000` with
+    `this.deps.requestTimeoutMs ?? REQUEST_DEADLINE_MS` (imported from
+    `src/slot_queue.ts`: queue wait + client deadline + slack). The coordinator
+    queues first and the client deadline only starts at dial, so a request that
+    waited 20 s and ran 15 s must succeed.
+11. Error pages use `bridgeErrorResponse(..., GUEST_APPS[app].title)`.
 
 Owner registration stays keyed by session; `owner.prefix` and `hashes` come from
 the (now app-aware) register message.
@@ -1466,8 +1569,30 @@ Deno.test("guest response headers are filtered and drops are logged once per nam
 });
 ```
 
-(`documentRequest`, `get`, `received`, `logged` are small local helpers in the
-test file; write them against the existing fixture.)
+```ts
+Deno.test("the SW deadline covers queue wait plus execution, and still fires", async () => {
+  // Scaled stand-in for "waited 20 s in the queue, ran 15 s": the owner answers
+  // after 200 ms against a 300 ms route deadline -> success, not 504.
+  const slowOk = makeRoutes({ requestTimeoutMs: 300, ownerDelayMs: 200 });
+  assertEquals((await slowOk.respond(get())).status, 204);
+  // An owner slower than the deadline is a 504 through the same route.
+  const tooSlow = makeRoutes({ requestTimeoutMs: 300, ownerDelayMs: 600 });
+  assertEquals((await tooSlow.respond(get())).status, 504);
+  // The production default is the shared constant, never a bare 30 s.
+  assertEquals(defaultRequestTimeoutMs(), REQUEST_DEADLINE_MS);
+});
+```
+
+(`documentRequest`, `get`, `received`, `logged`, `makeRoutes` and
+`defaultRequestTimeoutMs` are small local helpers in the test file; write them
+against the existing fixture. `makeRoutes` builds a `DatasetteRoutes` with a
+registered owner that answers `datasette-http` after `ownerDelayMs`;
+`defaultRequestTimeoutMs` reads the constant the route uses when
+`requestTimeoutMs` is omitted, for example by exporting it from
+`datasette_routes.ts` as
+`export const DEFAULT_REQUEST_TIMEOUT_MS =
+REQUEST_DEADLINE_MS` and asserting
+that.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1742,9 +1867,10 @@ deno fmt && git add -A && git commit -m "refactor: extract GuestApp supervisor a
       }
     },
     ```
-  - `handleGuestAppMessage(apps, value, send): Promise<boolean>` routes
-    lifecycle/abort/http messages by `msg.app`; `datasette-state` replies carry
-    `app`; the HTTP reply path forwards `body` as before.
+    - `handleGuestAppMessage(apps, value, send): Promise<boolean>` routes
+      lifecycle and `datasette-http` messages by `msg.app`, and aborts by
+      session (see below); `datasette-state` replies carry `app`; the HTTP reply
+      path forwards `body` as before.
   - Coordinator posts
     `{ type: "guest-app-qualification", apps:
     Partial<Record<GuestAppId, string[]>> }`
@@ -1784,6 +1910,37 @@ Deno.test("stopping while requests are queued rejects them promptly", async () =
   // hold 4 slots open, queue 3 more, then app.stop()
   await assertRejects(() => queued[0], GuestHttpError);
   // resolves well under the 30 s queue wait (the supervisor's per-request abort fires)
+});
+
+Deno.test("full request/reply/abort path through handleGuestAppMessage with two apps", async () => {
+  // apps = Map { datasette -> GuestApp A, preview -> GuestApp B }, both running
+  // with different sessions; `send` collects replies.
+  await handleGuestAppMessage(
+    apps,
+    httpRequest("preview", sessionB, "r1", "GET", prefixB + "x"),
+    send,
+  );
+  const reply = sent.find((m) => m.type === "datasette-response")!;
+  assertEquals([reply.session, reply.requestId, "app" in reply], [
+    sessionB,
+    "r1",
+    false,
+  ]);
+  // abort carries no app and still reaches the owning app's in-flight request:
+  const pending = handleGuestAppMessage(
+    apps,
+    httpRequest("preview", sessionB, "r2", "GET", prefixB + "slow"),
+    send,
+  );
+  await handleGuestAppMessage(apps, {
+    type: "datasette-abort",
+    session: sessionB,
+    requestId: "r2",
+  }, send);
+  await pending;
+  assertEquals(sent.at(-1)!.type, "datasette-error");
+  // an abort for A's session never touches B's request:
+  assertEquals(bControllerAborted, false);
 });
 
 Deno.test("port ownership: busy port fails start; ECONNREFUSED is free", async () => {
@@ -1843,12 +2000,33 @@ async request(r: GuestAppRequest): Promise<GuestHttpReply> {
 `#exit`. `#cancelRequests()` already aborts every controller, which also rejects
 queued waiters (the abort listener in `SlotQueue.acquire`).
 
-The 64 MiB per-session buffered-bytes cap: track
-`#buffered += (r.body?.byteLength ?? 0)` before the dial and
-`+= reply.body.byteLength` after; if `#buffered` would exceed 64 MiB reject with
-`GuestHttpError("session buffer limit", 503)`; decrement when the reply or error
-is delivered. Add one unit test (a request whose body pushes past the cap while
-another holds 64 MiB).
+The 64 MiB per-session buffered-bytes cap uses `ByteBudget` (Task 3), one per
+`GuestApp` session (create a fresh `#budget = new ByteBudget()` in `start()`).
+Reserve **before** queueing so queued uploads count:
+
+```ts
+const reserved = { bytes: 0 };
+const take = (n: number) => { this.#budget.take(n); reserved.bytes += n; };
+try {
+  take(r.body?.byteLength ?? 0);                 // before acquire()
+  const release = await this.deps.queue.acquire(r.session, controller.signal);
+  try {
+    ... await this.#probe({ ..., onBuffer: take }) ...   // response chunks
+  } finally { release(); }
+} finally {
+  this.#budget.give(reserved.bytes);              // success, error or abort
+  ...
+}
+```
+
+A request cancelled while queued (stop, abort, queue timeout) therefore gives
+its bytes back through the same `finally`. Tests: (a) with a 100-byte budget,
+queued bodies past the cap are rejected 503 immediately while earlier ones are
+still waiting; (b) aborting a queued request frees its reservation (a following
+request fits); (c) a response whose chunks exceed the remaining budget fails 503
+and leaves the budget empty; (d) the budget is empty after every request
+settles. Note the SW holds a request body (blob) before forwarding; the 16 MiB
+per-request limit bounds that side.
 
 `attachGuestApps` / `handleGuestAppMessage` follow the interface above; the
 coordinator (`coordinator_worker.ts`) changes:
@@ -1862,8 +2040,10 @@ coordinator (`coordinator_worker.ts`) changes:
   (empty object on desktop).
 - `handleDatasetteMessage(datasette, msg, post)` ->
   `handleGuestAppMessage(apps, msg, post)`.
-- `GuestReply | LifecycleReply` types unchanged (replies carry `app` where
-  `LifecycleReply` defines it).
+- `GuestReply` stays without `app` (envelope rules, Task 6); `LifecycleReply`
+  carries it. `handleGuestAppMessage` resolves `datasette-abort` by calling
+  `app.abort(session, requestId)` on every app (a no-op where the request is not
+  owned).
 
 - [ ] **Step 4: Run tests**
 
@@ -1909,11 +2089,13 @@ Server contract (`public/demo/preview_server.py`, stdlib only):
   correct `Content-Type` (`mimetypes` plus `.mjs` -> `text/javascript`, `.wasm`
   -> `application/wasm`); path traversal (`..`, absolute) -> 404; directory ->
   `index.html`.
-- `GET /form` renders a form posting to `SCRIPT_NAME + "/form"`; `POST /form`
-  (urlencoded `name=...`, plus a hidden `csrf` field the server checks against
-  the session cookie) sets `Set-Cookie: yurt_name=<value>; Path=<prefix>`, and
-  answers `303` with `Location: SCRIPT_NAME + "/"` (relative-safe). The index
-  page shows the cookie-backed greeting.
+- `GET /form` renders a form posting to `SCRIPT_NAME + "/form"` with a hidden
+  `csrf` field, and sets `Set-Cookie: yurt_csrf=<same token>; Path=<prefix>`
+  (double-submit token). `POST /form` (urlencoded `name=...&csrf=...`) answers
+  `403` unless the `csrf` field equals the `yurt_csrf` cookie, otherwise sets
+  `Set-Cookie: yurt_name=<value>; Path=<prefix>`, and answers `303` with
+  `Location: SCRIPT_NAME + "/"` (relative-safe). The index page shows the
+  cookie-backed greeting.
 - The server logs one line per request to stdout (`method path status`) so
   requests appear in `server.log`.
 - Single-threaded (`wsgiref` default), listen backlog default.
@@ -1948,14 +2130,29 @@ Deno.test("preview server contract", async () => {
       "application/wasm",
     );
     assertEquals((await fetch(base + "..%2f..%2fetc/passwd")).status, 404);
+    // Host Deno fetch has no cookie jar: capture the CSRF cookie and replay it.
+    const form = await fetch(base + "form");
+    const csrfCookie = form.headers.get("set-cookie")!.split(";")[0]; // yurt_csrf=<token>
+    const token = csrfFrom(await form.text());
+    assertEquals(csrfCookie, "yurt_csrf=" + token);
     const post = await fetch(base + "form", {
       method: "POST",
       redirect: "manual",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: "name=Ada&csrf=" +
-        csrfFrom(await (await fetch(base + "form")).text()),
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        cookie: csrfCookie,
+      },
+      body: "name=Ada&csrf=" + token,
     });
     assertEquals(post.status, 303);
+    // Enforcement: the same field without the cookie, or with a wrong token, is 403.
+    const noCookie = await fetch(base + "form", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "name=Ada&csrf=" + token,
+    });
+    assertEquals(noCookie.status, 403);
+    await noCookie.body?.cancel();
     assertEquals(post.headers.get("location"), PREFIX); // SCRIPT_NAME-based, inside the prefix
     assertEquals(
       post.headers.get("set-cookie")?.includes("yurt_name=Ada"),
@@ -1970,9 +2167,12 @@ Deno.test("preview server contract", async () => {
 `tests/preview_spec_test.ts`: `previewSpec.spawnLine(prefix, 8002)` contains the
 port and prefix (shell-quoted), `readyPath(prefix) === prefix + "__ready"`,
 `isReady` is true only for `200` + body `yurt-preview-ready`, `prepare` writes
-the server script and the default `site/index.html` **only when absent** (a
-second `prepare` does not overwrite an edited file), and `reset` restores the
-default index.
+the server script (always) and the default `site/index.html` and `site/app.js`
+**only when absent** (a second `prepare` does not overwrite an edited file), and
+`reset` restores both defaults. With a fake `ctx` recording `finite`/`asset`
+calls, assert the installed set is exactly `preview_server.py`,
+`preview_index.html` -> `site/index.html` and `preview_app.js` -> `site/app.js`,
+so the index's `<script src="app.js">` has a file to load.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1987,8 +2187,10 @@ use `wsgiref.simple_server` with a `WSGIRequestHandler` subclass whose
 `log_message` writes `"%s %s %s"` to stdout and flushes). `src/preview.ts`
 follows `datasetteSpec`'s shape: `prepare` runs `mkdir -p ${dir}/site`, installs
 the script via `ctx.asset("preview_server.py")`, and installs `site/index.html`
-from `ctx.asset("preview_index.html")` only if `[ -e ${dir}/site/index.html ]`
-fails;
+from `ctx.asset("preview_index.html")` and `site/app.js` from
+`ctx.asset("preview_app.js")`, each only if `[ -e <target> ]` fails (one
+`finite` per file, so an edited file survives a restart); `reset` rewrites both
+unconditionally;
 `spawnLine = exec python3 ${dir}/preview_server.py <port> <prefix> ${dir}/site`;
 `isReady` as above. `public/demo/preview_index.html` references an external
 `app.js` (no inline scripts) and includes the cookie greeting and a link to
@@ -2034,9 +2236,12 @@ deno fmt && git add -A && git commit -m "feat: wsgiref preview app (guest server
 
 Changes inside the mount (all from the code read at plan time):
 
-1. Prefix/messages: every `coordinator.postMessage` and every `datasette-*`
-   reply filter gains `app` (`msg.app === app`); registration message includes
-   `app`.
+1. Prefix/messages (envelope rules, Task 6): outgoing `datasette-http`,
+   lifecycle and `datasette-register` messages gain `app`; incoming
+   `datasette-state` and `guest-app-qualification` are filtered by `app`.
+   Incoming `datasette-response`/`datasette-error` are matched by `session` +
+   `requestId` exactly as today (they carry no `app`), and `datasette-abort`
+   posts keep `session` + `requestId` only.
 2. SW registration:
    `navigator.serviceWorker.register("/apps/bridge-sw.js",
    { scope: "/apps/" })`.
