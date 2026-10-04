@@ -13,6 +13,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 function options(extra: Partial<GuestHttpOptions> = {}): GuestHttpOptions {
   return {
+    app: "datasette",
     session,
     prefix,
     method: "GET",

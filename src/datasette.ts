@@ -85,7 +85,7 @@ export class DatasetteDemo {
     const controller = this.#startup = new AbortController();
     const session = this.deps.uuid();
     const prefix = `/apps/datasette/${session}/`;
-    validateGuestPath(session, prefix, prefix);
+    validateGuestPath("datasette", session, prefix, prefix);
     this.#set({ state: "starting", session, prefix });
     let started = 0;
     this.#setup = (async () => {
@@ -304,6 +304,7 @@ export class DatasetteDemo {
           const remaining = deadline - this.deps.now();
           if (remaining <= 0) break;
           const response = await this.#probe({
+            app: "datasette",
             session,
             prefix,
             method: "GET",
@@ -321,7 +322,7 @@ export class DatasetteDemo {
             const origin = `http://127.0.0.1:${this.deps.servicePort}`;
             path = new URL(location, origin + path).pathname +
               new URL(location, origin + path).search;
-            validateGuestPath(session, prefix, path);
+            validateGuestPath("datasette", session, prefix, path);
             continue;
           }
           if (
@@ -382,6 +383,7 @@ export class DatasetteDemo {
     try {
       return await this.#probe({
         ...r,
+        app: "datasette",
         prefix: this.#snapshot.prefix!,
         signal: controller.signal,
       });

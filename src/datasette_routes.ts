@@ -187,7 +187,7 @@ export class DatasetteRoutes {
       const session = match[1],
         prefix = `/apps/datasette/${session}/`,
         path = url.pathname + url.search;
-      validateGuestPath(session, prefix, path);
+      validateGuestPath("datasette", session, prefix, path);
       request.signal.throwIfAborted();
       const deadline = performance.now() +
         (this.deps.requestTimeoutMs ?? 30_000);

@@ -85,6 +85,7 @@ self.onmessage = async (e) => {
           const r = await requestGuestHttp(
             () => Promise.resolve(guest.dialSandboxPort(8001)),
             {
+              app: "datasette",
               session: sessionId,
               prefix,
               path: prefix,
@@ -139,7 +140,7 @@ self.onmessage = async (e) => {
       try {
         const reply = await requestGuestHttp(
           () => Promise.resolve(guest.dialSandboxPort(8001)),
-          { ...request, prefix, signal: controller.signal },
+          { ...request, app: "datasette", prefix, signal: controller.signal },
         );
         self.postMessage({
           ...reply,

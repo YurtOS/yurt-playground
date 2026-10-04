@@ -1,5 +1,6 @@
 // deno-lint-ignore-file no-control-regex
 // HTTP framing deliberately rejects ASCII control bytes.
+import { appPrefix, type GuestAppId, isGuestAppId } from "./guest_apps.ts";
 export type GuestMethod = "GET" | "HEAD";
 export type HeaderPairs = [string, string][];
 export interface GuestConnection {
@@ -13,6 +14,7 @@ export interface GuestHttpReply {
   body: ArrayBuffer;
 }
 export interface GuestHttpOptions {
+  app: GuestAppId;
   session: string;
   prefix: string;
   method: GuestMethod;
@@ -55,12 +57,16 @@ function fail(message: string): never {
   throw new GuestHttpError(message);
 }
 export function validateGuestPath(
+  app: GuestAppId,
   session: string,
   prefix: string,
   path: string,
   port = 8001,
 ): void {
-  if (!UUID.test(session) || prefix !== `/apps/datasette/${session}/`) {
+  if (
+    !isGuestAppId(app) || !UUID.test(session) ||
+    prefix !== appPrefix(app, session)
+  ) {
     fail("invalid session prefix");
   }
   if (
@@ -182,6 +188,7 @@ export async function requestGuestHttp(
   options: GuestHttpOptions,
 ): Promise<GuestHttpReply> {
   validateGuestPath(
+    options.app,
     options.session,
     options.prefix,
     options.path,

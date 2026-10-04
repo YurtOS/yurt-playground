@@ -99,6 +99,7 @@ export function parseGuestRequest(value: unknown): GuestRequest | undefined {
   ) return;
   try {
     validateGuestPath(
+      "datasette",
       v.session as string,
       `/apps/datasette/${v.session}/`,
       v.path,
