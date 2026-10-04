@@ -86,6 +86,36 @@ Deno.test("GuestApp refuses a busy service port before spawning", async () => {
     false,
   );
 });
+Deno.test("GuestApp skips an asset requested after Start is stopped", async () => {
+  const { deps, spec } = fixture();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const finite = deps.finite;
+  deps.finite = async (...args) => {
+    if (args[0] === "prepare preview") {
+      entered.resolve();
+      await release.promise;
+    }
+    return finite(...args);
+  };
+  let assetCalls = 0;
+  deps.asset = async () => {
+    assetCalls++;
+    return bytes("asset");
+  };
+  spec.prepare = async (ctx) => {
+    await ctx.finite("prepare preview");
+    await ctx.asset("preview.py");
+  };
+  const app = new GuestApp(spec, deps);
+  const starting = app.start();
+  await entered.promise;
+  const stopping = app.stop();
+  release.resolve();
+  await Promise.all([starting, stopping]);
+  assertEquals(assetCalls, 0);
+  assertEquals(app.snapshot.state, "stopped");
+});
 
 Deno.test("cachedFetch keys successful assets by name and reuses bytes", async () => {
   const original = globalThis.fetch;

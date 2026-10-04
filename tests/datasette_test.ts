@@ -377,6 +377,33 @@ Deno.test("Datasette Stop cancels a stalled seed before spawning a resident", as
   await starting;
   assertEquals(f.signals, []);
 });
+Deno.test("Datasette Stop during seed installation skips the Python seed command", async () => {
+  const f = fixture();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const finite = f.deps.finite;
+  f.deps.finite = async (...args) => {
+    if (args[0].includes("cat >")) {
+      entered.resolve();
+      await release.promise;
+    }
+    return finite(...args);
+  };
+  const d = new GuestApp(datasetteSpec, f.deps);
+  const starting = d.start();
+  await entered.promise;
+  const stopping = d.stop();
+  release.resolve();
+  await Promise.all([starting, stopping]);
+  assertEquals(
+    f.commands.some((command) =>
+      command.startsWith("exec python3") &&
+      command.includes("datasette_seed.py")
+    ),
+    false,
+  );
+  assertEquals(d.snapshot.state, "stopped");
+});
 Deno.test("Datasette reset keeps Start disabled until the seed transaction finishes", async () => {
   const f = fixture(),
     ready = Promise.withResolvers<void>(),

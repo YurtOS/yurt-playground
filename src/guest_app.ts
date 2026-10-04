@@ -332,12 +332,14 @@ export class GuestApp {
   #ctx(startup?: AbortSignal, generation?: number): GuestAppContext {
     return {
       finite: (line, stdin, timeoutMs) => {
+        startup?.throwIfAborted();
         if (generation !== undefined && generation !== this.#generation) {
           return Promise.reject(resetCancelled);
         }
         return this.#finite(line, stdin, timeoutMs);
       },
       asset: (name) => {
+        startup?.throwIfAborted();
         if (generation !== undefined && generation !== this.#generation) {
           return Promise.reject(resetCancelled);
         }
