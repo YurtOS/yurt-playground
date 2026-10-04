@@ -20,7 +20,11 @@ import {
   type SandboxSealImage,
   type UserProcess,
 } from "@yurt/kernel-host-interface-js";
-import { fetchPlaygroundBytes, playgroundHostState } from "./boot.ts";
+import {
+  fetchPlaygroundBytes,
+  loadPlaygroundKernel,
+  restorePlaygroundKernel,
+} from "./boot.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
 import {
@@ -145,7 +149,7 @@ async function bootFresh(
   }
   const guest = new Uint8Array(await response.arrayBuffer());
   post({ type: "status", text: "booting the kernel" });
-  const mk = await KernelHostInterface.load(kernel, playgroundHostState());
+  const mk = await loadPlaygroundKernel(kernel);
   const process = await mk.spawnUserProcessWithArgsAsync(guest, [s("primes")], {
     TERM: "xterm-256color",
   });
@@ -176,11 +180,7 @@ async function restoreStored(
       })),
     ),
   );
-  const restored = await KernelHostInterface.restore(
-    kernel,
-    stored.image,
-    playgroundHostState(),
-  );
+  const restored = await restorePlaygroundKernel(kernel, stored.image);
   try {
     const [process] = restored.processes;
     if (process === undefined) throw new Error("the image holds no process");

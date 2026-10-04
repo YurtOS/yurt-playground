@@ -34,7 +34,11 @@ import {
   type SandboxSealImage,
   type UserProcess,
 } from "@yurt/kernel-host-interface-js";
-import { fetchPlaygroundBytes, playgroundHostState } from "./boot.ts";
+import {
+  fetchPlaygroundBytes,
+  loadPlaygroundKernel,
+  restorePlaygroundKernel,
+} from "./boot.ts";
 import { partsFetch, PYTHON_SEAL_NAME } from "./image_parts.ts";
 import type { JupyterHeader, JupyterMessage } from "./jupyter_protocol.ts";
 import type {
@@ -819,7 +823,7 @@ async function bootFresh(
   kernelSha256: string,
 ): Promise<Live> {
   status("booting the kernel");
-  const mk = await KernelHostInterface.load(kernel, playgroundHostState());
+  const mk = await loadPlaygroundKernel(kernel);
   status("loading the image");
   const image = await fetchPlaygroundBytes("./playground.yurtimg");
   status("staging the Python stdlib");
@@ -836,11 +840,7 @@ async function restoreStored(
   kernel: Uint8Array,
   stored: StoredSnapshot,
 ): Promise<Live> {
-  const restored = await KernelHostInterface.restore(
-    kernel,
-    stored.image,
-    playgroundHostState(),
-  );
+  const restored = await restorePlaygroundKernel(kernel, stored.image);
   try {
     const [process] = restored.processes;
     if (process === undefined) throw new Error("the image holds no process");

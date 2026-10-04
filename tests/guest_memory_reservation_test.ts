@@ -19,39 +19,50 @@ Deno.test("each guest process reserves a quarter GiB, not the whole sandbox budg
   assert(GUEST_MEMORY_RESERVATION_BYTES >= 2 * 98 * MIB);
 });
 
-/** Every `KernelHostInterface.load(` / `.restore(` call in `src/`, as
- * `file: call text` up to its closing parenthesis. */
-function kernelBuildCalls(): string[] {
-  const calls: string[] = [];
-  const srcDir = new URL("../src/", import.meta.url);
-  for (const entry of Deno.readDirSync(srcDir)) {
-    if (!entry.isFile || !entry.name.endsWith(".ts")) continue;
-    const text = Deno.readTextFileSync(new URL(entry.name, srcDir));
-    for (const m of text.matchAll(/KernelHostInterface\.(load|restore)\(/g)) {
-      let depth = 0;
-      let end = m.index;
-      for (; end < text.length; end++) {
-        if (text[end] === "(") depth++;
-        if (text[end] === ")" && --depth === 0) break;
-      }
-      calls.push(`${entry.name}: ${text.slice(m.index, end + 1)}`);
+const KERNEL_BUILD = /KernelHostInterface\s*\.\s*(load|restore)\s*\(/g;
+
+/** Every `.ts` file under `src/`, recursively, as `[path, text]`. */
+function sourceFiles(
+  dir = new URL("../src/", import.meta.url),
+): [string, string][] {
+  const files: [string, string][] = [];
+  for (const entry of Deno.readDirSync(dir)) {
+    const url = new URL(entry.name + (entry.isDirectory ? "/" : ""), dir);
+    if (entry.isDirectory) files.push(...sourceFiles(url));
+    else if (entry.isFile && entry.name.endsWith(".ts")) {
+      files.push([url.pathname, Deno.readTextFileSync(url)]);
     }
   }
-  return calls;
+  return files;
 }
 
 Deno.test("every in-browser kernel load and restore reserves the playground's quarter GiB", () => {
   // The kernel applies the reservation wherever it builds a guest memory,
   // restore included: a worker that loads or restores with the default
-  // state puts its guests back on the whole sandbox budget.
-  const calls = kernelBuildCalls();
-  // bootPlayground's load, and a load and a restore in each of the
-  // notebook kernel and snapshot workers.
-  assert(calls.length >= 5, `found only ${calls.length}:\n${calls.join("\n")}`);
-  for (const call of calls) {
-    assert(
-      /playgroundHostState\(\)\s*,?\s*\)$/.test(call),
-      `does not pass playgroundHostState() last: ${call}`,
-    );
+  // state puts its guests back on the whole sandbox budget. So only
+  // loadPlaygroundKernel and restorePlaygroundKernel in boot.ts may build
+  // a kernel, and each passes playgroundHostState().
+  const outside: string[] = [];
+  let boot = "";
+  for (const [path, text] of sourceFiles()) {
+    if (path.endsWith("/src/boot.ts")) boot = text;
+    else if (text.match(KERNEL_BUILD)) outside.push(path);
   }
+  assertEquals(
+    outside,
+    [],
+    "build the kernel with loadPlaygroundKernel or restorePlaygroundKernel",
+  );
+  assertEquals([...boot.matchAll(KERNEL_BUILD)].map((m) => m[1]), [
+    "load",
+    "restore",
+  ]);
+  assert(
+    boot.includes("KernelHostInterface.load(kernel, playgroundHostState())"),
+  );
+  assert(
+    boot.includes(
+      "KernelHostInterface.restore(kernel, image, playgroundHostState())",
+    ),
+  );
 });

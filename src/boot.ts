@@ -209,10 +209,28 @@ export const GUEST_MEMORY_RESERVATION_BYTES = 256 * 1024 * 1024;
 export function playgroundHostState():
   & ReturnType<typeof defaultHostState>
   & { guestMemoryReservationBytes: number } {
-  // Object.assign, not a literal: a kernel older than the field ignores it.
-  return Object.assign(defaultHostState(), {
+  // Kernels older than yurtos-kernel#3115 do not read the field.
+  return {
+    ...defaultHostState(),
     guestMemoryReservationBytes: GUEST_MEMORY_RESERVATION_BYTES,
-  });
+  };
+}
+
+/** Load a kernel for an in-browser sandbox. Every page and worker goes
+ *  through this or {@link restorePlaygroundKernel}, so each one reserves
+ *  {@link GUEST_MEMORY_RESERVATION_BYTES} per guest process. */
+export function loadPlaygroundKernel(
+  kernel: Uint8Array,
+): Promise<KernelHostInterface> {
+  return KernelHostInterface.load(kernel, playgroundHostState());
+}
+
+/** Restore a sealed in-browser sandbox; see {@link loadPlaygroundKernel}. */
+export function restorePlaygroundKernel(
+  kernel: Uint8Array,
+  image: Parameters<typeof KernelHostInterface.restore>[1],
+): ReturnType<typeof KernelHostInterface.restore> {
+  return KernelHostInterface.restore(kernel, image, playgroundHostState());
 }
 
 export async function bootPlayground(
@@ -226,7 +244,7 @@ export async function bootPlayground(
   env.show("loading kernel");
   const kernel = await env.fetchBytes("./yurt_kernel.wasm");
   env.show("compiling kernel");
-  const mk = await KernelHostInterface.load(kernel, playgroundHostState());
+  const mk = await loadPlaygroundKernel(kernel);
   env.show("loading image");
   const image = await env.fetchBytes("./playground.yurtimg");
   env.show("unpacking image");
