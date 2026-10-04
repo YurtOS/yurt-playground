@@ -15,8 +15,9 @@ interface Cookie {
   created: number;
 }
 
+const encoder = new TextEncoder();
 const sizeOf = (cookie: { name: string; value: string }) =>
-  cookie.name.length + cookie.value.length;
+  encoder.encode(cookie.name + cookie.value).byteLength;
 
 const defaultPath = (requestPath: string) => {
   const path = requestPath.split("?")[0];

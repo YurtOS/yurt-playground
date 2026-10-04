@@ -54,6 +54,23 @@ Deno.test("limits: oversize ignored, count and total reject new, replace allowed
   assertEquals(jar.set("t8=" + "x".repeat(4000), P, t0), "rejected"); // > 32 KiB total
 });
 
+Deno.test("per-cookie limit counts UTF-8 bytes", () => {
+  const atLimit = new CookieJar();
+  assertEquals(atLimit.set("x=" + "€".repeat(1365), P, t0), "stored");
+
+  const overLimit = new CookieJar();
+  assertEquals(overLimit.set("x=" + "€".repeat(1366), P, t0), "ignored");
+});
+
+Deno.test("total jar limit counts UTF-8 bytes", () => {
+  const jar = new CookieJar();
+  for (let i = 0; i < 8; i++) {
+    const value = "€".repeat(1364) + "ab";
+    assertEquals(jar.set(`k${i}=${value}`, P, t0), "stored");
+  }
+  assertEquals(jar.set("extra=v", P, t0), "rejected");
+});
+
 Deno.test("malformed Set-Cookie is ignored", () => {
   const jar = new CookieJar();
   assertEquals(jar.set("novalue", P, t0), "ignored");
