@@ -107,7 +107,10 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   assertEquals(workflow.includes("scripts/build-all-ports.sh"), false);
   assertEquals(workflow.includes("dtolnay/rust-toolchain"), false);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
-  assertEquals(workflow.includes("playwright/cli.js install chromium"), true);
+  assertEquals(
+    workflow.includes("node node_modules/playwright/cli.js install chromium"),
+    true,
+  );
   // The browser artifacts are materialized by the site inputs (deno task
   // pin runs scripts/pin-artifacts.ts).
   assertEquals(workflow.includes("deno task pin"), true);

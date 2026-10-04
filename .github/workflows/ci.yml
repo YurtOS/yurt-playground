@@ -185,7 +185,7 @@ jobs:
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('playground/deno.json') }}
       - name: Install Chromium for browser acceptance
         working-directory: playground
-        run: deno run --allow-all node_modules/playwright/cli.js install chromium
+        run: node node_modules/playwright/cli.js install chromium
       # The deployable site, built from the inputs above: what the
       # acceptance below boots.
       - name: Build static site
@@ -217,7 +217,7 @@ jobs:
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
       - name: Install Chromium
         working-directory: playground
-        run: deno run --allow-all node_modules/playwright/cli.js install chromium
+        run: node node_modules/playwright/cli.js install chromium
       - name: Qualified Datasette acceptance
         timeout-minutes: 20
         working-directory: playground

@@ -84,7 +84,7 @@ jobs:
           test -f dist/_headers
       - name: Install Chromium
         working-directory: playground
-        run: deno run --allow-all node_modules/playwright/cli.js install chromium
+        run: node node_modules/playwright/cli.js install chromium
       - name: Preview acceptance before publication
         timeout-minutes: 20
         working-directory: playground
