@@ -5,17 +5,35 @@ import { bundleFixture } from "./datasette_harness.ts";
 const worker = await bundleFixture("src/datasette_service_worker.ts");
 const pageBundle = await bundleFixture("src/datasette_page.ts");
 const uiJs = String.raw`
-import {mountDatasette} from '/page.js';
-const session='33333333-3333-4333-8333-333333333333',prefix='/apps/datasette/'+session+'/';
+import * as panels from '/page.js';
+const {mountDatasette}=panels;
+const sessions={datasette:'33333333-3333-4333-8333-333333333333',preview:'44444444-4444-4444-8444-444444444444'};
+window.lifecycle=[];window.uploads=[];window.swCalls=[];window.swListeners=0;
+const old=await navigator.serviceWorker.register('/legacy-sw.js',{scope:'/apps/datasette/'});
+while(!old.active) await new Promise(r=>setTimeout(r,20));
+const unregister=ServiceWorkerRegistration.prototype.unregister;
+ServiceWorkerRegistration.prototype.unregister=function(){window.swCalls.push(['unregister',new URL(this.scope).pathname]);return unregister.call(this);};
+const register=navigator.serviceWorker.register.bind(navigator.serviceWorker);
+navigator.serviceWorker.register=(url,options)=>{window.swCalls.push(['register',url,options.scope]);return register(url,options);};
+const listen=navigator.serviceWorker.addEventListener.bind(navigator.serviceWorker);
+navigator.serviceWorker.addEventListener=(type,...args)=>{if(type==='message')window.swListeners++;return listen(type,...args);};
 class Coordinator extends EventTarget {
   emit(data){this.dispatchEvent(new MessageEvent('message',{data}));}
-  postMessage(m){
-    if(m.type==='datasette-start') this.emit({type:'datasette-state',app:'datasette',snapshot:{state:'running',session,prefix}});
-    if(m.type==='datasette-stop'||m.type==='datasette-reset') this.emit({type:'datasette-state',app:'datasette',snapshot:{state:'stopped'}});
+  postMessage(m,transfer=[]){
+    if(m.type==='datasette-http'&&m.body){
+      const original=m.body, transferred=transfer.includes(original);
+      m=structuredClone(m,{transfer});
+      window.uploads.push({app:m.app,transferred,detached:original.byteLength===0,body:new TextDecoder().decode(m.body)});
+    }
+    const session=sessions[m.app],prefix='/apps/'+m.app+'/'+session+'/';
+    if(['datasette-start','datasette-stop','datasette-reset'].includes(m.type))window.lifecycle.push({type:m.type,app:m.app});
+    if(m.type==='datasette-start') this.emit({type:'datasette-state',app:m.app,snapshot:{state:'running',session,prefix}});
+    if(m.type==='datasette-stop'||m.type==='datasette-reset') this.emit({type:'datasette-state',app:m.app,snapshot:{state:'stopped'}});
     if(m.type==='datasette-http') {
       let body='<html><body><h1>Guest UI</h1><a href="'+prefix+'orders.csv">CSV</a></body></html>',headers=[['content-type','text/html']];
       if(m.path.includes('orders.json')) {body='[{"product":"Mug","revenue_cents":8400},{"product":"Notebook","revenue_cents":4000},{"product":"Pen","revenue_cents":2000}]';headers=[['content-type','application/json']];}
       if(m.path.includes('orders.csv')) {body='product,revenue_cents\r\nMug,8400\r\nNotebook,4000\r\nPen,2000\r\n';headers=[['content-type','text/csv'],['content-disposition','attachment; filename="revenue.csv"']];}
+      if(m.body){body=new TextDecoder().decode(m.body);headers=[['content-type','text/plain']];}
       const send=()=>this.emit({type:'datasette-response',session,requestId:m.requestId,status:200,headers,body:new TextEncoder().encode(body).buffer});
       if(m.path.endsWith('/slow')) setTimeout(send,8000);else send();
     }
@@ -24,7 +42,8 @@ class Coordinator extends EventTarget {
 const coordinator=new Coordinator();window.coordinator=coordinator;
 mountDatasette(document.getElementById('demo'),coordinator,true);
 mountDatasette(document.getElementById('desktop'),coordinator,false);
-window.qualify=()=>coordinator.emit({type:'guest-app-qualification',apps:{datasette:[]}});
+panels.mountPreview(document.getElementById('preview'),coordinator,true);
+window.qualify=(apps={datasette:[],preview:[]})=>coordinator.emit({type:'guest-app-qualification',apps});
 window.uiReady=true;
 `;
 const policy =
@@ -35,7 +54,7 @@ const session = new URL(location.href).searchParams.get('session');
 const prefix = '/apps/datasette/' + session + '/';
 let registration;
 async function bind(nonce=crypto.randomUUID()) {
-  registration = await navigator.serviceWorker.register('/apps/datasette/service-worker.js',{scope:'/apps/datasette/'});
+  registration = await navigator.serviceWorker.register('/apps/bridge-sw.js',{scope:'/apps/'});
   const deadline=Date.now()+5000;
   while(!registration.active){if(Date.now()>deadline)throw new Error('activation timeout');await new Promise(r=>setTimeout(r,20));}
   const channel=new MessageChannel();
@@ -65,7 +84,15 @@ const server = Deno.serve({
   onListen: () => {},
 }, (req) => {
   const path = new URL(req.url).pathname;
-  if (path === "/apps/datasette/service-worker.js") {
+  if (path === "/legacy-sw.js") {
+    return new Response(
+      "self.addEventListener('install',()=>self.skipWaiting())",
+      {
+        headers: { ...headers, "Content-Type": "text/javascript" },
+      },
+    );
+  }
+  if (path === "/apps/bridge-sw.js") {
     return new Response(worker, {
       headers: { ...headers, "Content-Type": "text/javascript" },
     });
@@ -85,7 +112,7 @@ const server = Deno.serve({
       headers: { ...headers, "Content-Type": "text/javascript" },
     });
   }
-  if (path.startsWith("/apps/datasette/")) {
+  if (path.startsWith("/apps/")) {
     networkGuestRequests++;
     return new Response("NETWORK FALLBACK", {
       headers: { ...ISOLATION_HEADERS, "Content-Type": "text/html" },
@@ -93,7 +120,7 @@ const server = Deno.serve({
   }
   return new Response(
     new URL(req.url).searchParams.has("ui")
-      ? '<!doctype html><html><body><section id="demo"></section><section id="desktop"></section><script type="module" src="/ui.js"></script></body></html>'
+      ? '<!doctype html><html><body><section id="demo"></section><section id="desktop"></section><section id="preview" hidden></section><script type="module" src="/ui.js"></script></body></html>'
       : '<!doctype html><html><body><script src="/owner.js"></script></body></html>',
     { headers: { ...headers, "Content-Type": "text/html" } },
   );
@@ -101,8 +128,10 @@ const server = Deno.serve({
 const address = server.addr as Deno.NetAddr;
 const origin = `http://127.0.0.1:${address.port}`;
 const browser = await chromium.launch({ headless: true });
+const contexts: import("playwright").BrowserContext[] = [];
 try {
   const context = await browser.newContext();
+  contexts.push(context);
   context.setDefaultTimeout(15000);
   const first = "11111111-1111-4111-8111-111111111111",
     second = "22222222-2222-4222-8222-222222222222";
@@ -188,7 +217,7 @@ try {
   cdp.on("ServiceWorker.workerVersionUpdated", (event) => {
     for (const v of event.versions) {
       if (
-        v.scriptURL.endsWith("/apps/datasette/service-worker.js") &&
+        v.scriptURL.endsWith("/apps/bridge-sw.js") &&
         v.status === "activated"
       ) version = v.versionId;
     }
@@ -217,6 +246,7 @@ try {
   assertEquals(violations, []);
   await context.close();
   const uiContext = await browser.newContext({ acceptDownloads: true });
+  contexts.push(uiContext);
   uiContext.setDefaultTimeout(15000);
   const ui = await uiContext.newPage();
   ui.on("pageerror", (e) => console.error("UI:", e.message));
@@ -225,10 +255,46 @@ try {
     !!(window as unknown as { uiReady: boolean }).uiReady
   );
   assertEquals(await ui.locator("#demo").isHidden(), true);
+  await ui.evaluate(() =>
+    (window as unknown as { qualify(apps: unknown): void }).qualify({
+      preview: [],
+    })
+  );
+  assertEquals(await ui.locator("#demo").isHidden(), true);
+  assertEquals(await ui.locator("#preview").isHidden(), false);
+  assertEquals(await ui.locator("#preview [data-action=download]").count(), 0);
+  assertStringIncludes(
+    await ui.locator("#preview").innerText(),
+    "/home/user/demos/preview/site/",
+  );
+  await ui.getByRole("button", { name: "Start preview", exact: true }).click();
+  await ui.frameLocator("#preview iframe").getByRole("heading", {
+    name: "Guest UI",
+  }).waitFor();
+  assertEquals(
+    await ui.locator("#preview iframe").getAttribute("title"),
+    "Guest website preview",
+  );
+  assertEquals(
+    await ui.locator("#preview iframe").getAttribute("src"),
+    "/apps/preview/44444444-4444-4444-8444-444444444444/",
+  );
+  assertEquals(
+    await ui.locator("#demo [data-status]").textContent(),
+    "stopped",
+  );
+  assertEquals(
+    await ui.evaluate(() =>
+      (window as unknown as { lifecycle: unknown[] }).lifecycle
+    ),
+    [{ type: "datasette-start", app: "preview" }],
+  );
   await ui.evaluate(() => (window as unknown as { qualify(): void }).qualify());
   assertEquals(await ui.locator("#desktop").isHidden(), true);
   await ui.getByRole("button", { name: "Start Datasette" }).click();
-  await ui.frameLocator("iframe").getByRole("heading", { name: "Guest UI" })
+  await ui.frameLocator("#demo iframe").getByRole("heading", {
+    name: "Guest UI",
+  })
     .waitFor();
   await ui.evaluate(() => {
     (window as unknown as {
@@ -236,13 +302,81 @@ try {
     }).coordinator.emit({
       type: "datasette-state",
       app: "preview",
-      snapshot: { state: "stopped" },
+      snapshot: {
+        state: "running",
+        session: "44444444-4444-4444-8444-444444444444",
+        prefix: "/apps/preview/44444444-4444-4444-8444-444444444444/",
+      },
     });
   });
   assertEquals(await ui.locator("#demo iframe").count(), 1);
   assertEquals(
+    await ui.locator("#demo iframe").getAttribute("title"),
+    "Datasette database browser",
+  );
+  assertEquals(
     await ui.locator("#demo [data-status]").textContent(),
     "running",
+  );
+  assertEquals(
+    await ui.evaluate(() =>
+      (window as unknown as { swCalls: unknown[] }).swCalls
+    ),
+    [
+      ["unregister", "/apps/datasette/"],
+      ["register", "/apps/bridge-sw.js", "/apps/"],
+    ],
+  );
+  assertEquals(
+    await ui.evaluate(() =>
+      (window as unknown as { swListeners: number }).swListeners
+    ),
+    1,
+  );
+  assertEquals(
+    await ui.evaluate(async () =>
+      (await navigator.serviceWorker.getRegistrations()).map((r) =>
+        new URL(r.scope).pathname
+      )
+    ),
+    ["/apps/"],
+  );
+  for (const app of ["datasette", "preview"]) {
+    const panel = app === "datasette" ? "demo" : "preview";
+    assertEquals(
+      await ui.locator(`#${panel} iframe`).getAttribute("sandbox"),
+      "allow-scripts allow-same-origin allow-forms allow-downloads",
+    );
+    const frame = ui.frames().find((f) => f.url().includes(`/apps/${app}/`))!;
+    assertEquals(
+      await frame.evaluate(async () => {
+        const response = await fetch(new URL("upload", location.href), {
+          method: "POST",
+          body: "uploaded through page",
+        });
+        return { status: response.status, body: await response.text() };
+      }),
+      { status: 200, body: "uploaded through page" },
+    );
+  }
+  assertEquals(
+    await ui.evaluate(() =>
+      (window as unknown as { uploads: unknown[] }).uploads
+    ),
+    [
+      {
+        app: "datasette",
+        transferred: true,
+        detached: true,
+        body: "uploaded through page",
+      },
+      {
+        app: "preview",
+        transferred: true,
+        detached: true,
+        body: "uploaded through page",
+      },
+    ],
   );
   await ui.evaluate(() => {
     const original = ServiceWorker.prototype.postMessage;
@@ -284,7 +418,7 @@ try {
     { product: "Pen", revenue_cents: 2000 },
   ]);
   const csvPromise = ui.waitForEvent("download");
-  await ui.frameLocator("iframe").getByRole("link", {
+  await ui.frameLocator("#demo iframe").getByRole("link", {
     name: "CSV",
     exact: true,
   }).click();
@@ -293,17 +427,22 @@ try {
     await Deno.readTextFile((await csv.path())!),
     "product,revenue_cents\r\nMug,8400\r\nNotebook,4000\r\nPen,2000\r\n",
   );
-  await ui.getByRole("button", { name: "Stop", exact: true }).click();
-  assertEquals(await ui.locator("iframe").count(), 0);
+  await ui.locator("#demo").getByRole("button", { name: "Stop", exact: true })
+    .click();
+  assertEquals(await ui.locator("#demo iframe").count(), 0);
+  assertEquals(await ui.locator("#preview iframe").count(), 1);
   await ui.getByRole("button", { name: "Reset sample" }).click();
   await ui.getByRole("button", { name: "Start Datasette" }).click();
-  await ui.frameLocator("iframe").getByRole("heading", { name: "Guest UI" })
+  await ui.frameLocator("#demo iframe").getByRole("heading", {
+    name: "Guest UI",
+  })
     .waitFor();
   await uiContext.close();
   console.log(
-    "Datasette scoped bridge: navigation, form, asset CSP, two owners, HEAD/POST, eviction recovery, missing owner PASS",
+    "Guest app bridge: navigation, form, asset CSP, two owners, HEAD/POST, eviction recovery, missing owner, per-app panels, shared registration, upload transfer PASS",
   );
 } finally {
+  for (const context of contexts) await context.close();
   await browser.close();
   await server.shutdown();
 }
