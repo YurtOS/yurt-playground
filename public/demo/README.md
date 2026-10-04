@@ -23,3 +23,19 @@ and the rest of the site do not need it.
 ports supplies Datasette and SQLite. Initial seeding preserves an existing
 `orders.db`; `--reset` restores the sample and removes only its known sidecars,
 pid and log. It does not remove other files in that directory.
+
+## Website preview
+
+In the browser playground, **Start preview** serves your files from
+`/home/user/demos/preview/site/` through the guest's stdlib Python WSGI server
+on port 8002. Edit files in the terminal and refresh the preview frame. Restart
+preserves edits; **Reset** restores the sample `index.html` and `app.js`.
+
+Use external `.js` files: inline scripts and event handlers are blocked. The
+sample name form demonstrates POST, cookies and redirects. Cookies stay in a
+per-session bridge jar, are invisible to `document.cookie`, and are cleared on
+Stop or Reset. Open pages inside the preview panel; direct top-level navigation
+is refused. Streaming and WebSockets are not supported.
+
+Preview runs user-owned files with the same trust as the terminal. Datasette
+remains separately gated on its qualified kernel/image pins.

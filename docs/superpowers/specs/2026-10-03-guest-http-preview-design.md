@@ -1,6 +1,6 @@
 # Guest HTTP preview: generic "Yurtify" for web apps
 
-Status: draft, revised after six design reviews on PR #185. Issue:
+Status: approved 2026-10-04 after design and implementation-plan review. Issue:
 [#168](https://github.com/YurtOS/yurt-playground/issues/168). Builds on the
 scoped service-worker bridge from #173 (draft PR #176), which already serves
 unmodified upstream Datasette from the guest.
@@ -18,7 +18,7 @@ unqualified apps and any larger registry are separate designs, written when a
 real consumer needs them. Non-goals: hosted servers, host OS TCP, guest egress,
 a general reverse proxy.
 
-## What exists (verified against #176)
+## Starting point (before this implementation, verified against #176)
 
 - `dialSandboxPort` gives the page a raw byte stream to a guest listener. The
   port comes from coordinator state (`session.guestPorts.datasette`), never from
@@ -138,14 +138,20 @@ parallel subresource requests, so excess requests **queue** in the coordinator
 full queue or an expired wait gets 503. The dial cap stays at or below the
 default listen backlog (5) of single-threaded servers such as `wsgiref`, so
 queued requests never reach the guest as ECONNREFUSED. At most 64 MiB of
-buffered request plus response bytes per session (excess gets 503). Cookie jar:
-at most 50 cookies per `(app, session)`, 4 KiB per cookie, 32 KiB total. A
-`Set-Cookie` over the per-cookie size is ignored; a new cookie over the count or
-total is rejected (replacing an existing name is always allowed), and rejections
-are logged. The 32 KiB total keeps the injected `Cookie` header (plus prefix)
-under the 64 KiB request-line limit of `wsgiref`/`http.server`; the client also
-checks the final request head against that limit and answers 431 itself rather
-than sending it. The 413/503/431 unit tests use these numbers.
+buffered request plus response bytes per session (excess gets 503). Uploads
+reserve their bytes before queueing. Response reads and any final concatenation
+reserve before allocation; both retained copies count while concatenating. Every
+completion, failure or cancellation returns exactly that request's reservations
+to its original session budget. The request head and existing body are written
+in order, without allocating another full upload copy. Cookie jar: at most 50
+cookies per `(app, session)`, 4 KiB per cookie, 32 KiB total. A `Set-Cookie`
+over the per-cookie size is ignored; a new cookie over the count or total is
+rejected. Replacing an existing name and path is allowed only when the resulting
+total still fits. Sizes count UTF-8 name and value bytes; rejections are logged.
+The 32 KiB total keeps the injected `Cookie` header (plus prefix) under the 64
+KiB request-line limit of `wsgiref`/`http.server`; the client also checks the
+final request head against that limit and answers 431 itself rather than sending
+it. The 413/503/431 unit tests use these numbers.
 
 Request header allow-list: accept, accept-language, if-none-match,
 if-modified-since, if-match, if-unmodified-since, range, if-range, content-type,

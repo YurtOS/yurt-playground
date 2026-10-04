@@ -331,7 +331,7 @@ interface Cookie {
   created: number;
 }
 const sizeOf = (c: { name: string; value: string }) =>
-  c.name.length + c.value.length;
+  new TextEncoder().encode(c.name + c.value).byteLength;
 const dir = (requestPath: string) => {
   const p = requestPath.split("?")[0];
   const i = p.lastIndexOf("/");
@@ -1071,15 +1071,14 @@ const head = new TextEncoder().encode(
 if (head.length > HEADER_LIMIT) {
   throw new GuestHttpError("request headers exceed 64 KiB", 431);
 }
-const wire = new Uint8Array(head.length + body.length);
-wire.set(head);
-wire.set(body, head.length);
+await race(conn.write(head));
+if (body.length) await race(conn.write(body));
 ```
 
 (An empty-body `DELETE` is allowed; a non-empty body on `GET/HEAD/OPTIONS` is
 the 400. `validateGuestPath(options.app, ...)` replaces the `"datasette"`
-literal from Step 1.) Then `await race(conn.write(wire));` replaces the old
-write. Drop the old inline `request` string.
+literal from Step 1.) The ordered writes replace the old write without an extra
+full upload allocation. Drop the old inline `request` string.
 
 Buffering: reserve before allocating body storage, not in `append`:
 
@@ -1367,7 +1366,8 @@ deno fmt && git add -A && git commit -m "feat: allow-list guest response headers
   - `LifecycleReply { type: "datasette-state"; app: GuestAppId; requestId?; snapshot }`
   - `OwnerMessage` register variant additionally has `app: GuestAppId`; its
     `prefix` must equal `appPrefix(app, session)` and `hashes` may be empty.
-    - `GuestReply` error `code` accepts `[403, 405, 413, 431, 502, 503, 504]`.
+    - `GuestReply` error `code` accepts
+      `[400, 403, 405, 413, 431, 502, 503, 504]`.
 - **Envelope rules (every later task follows these):**
   - Messages that start or select an app carry `app`: `datasette-http`
     (request), lifecycle messages, `datasette-state`, `datasette-register`,
@@ -1491,7 +1491,7 @@ Expected: FAIL.
   v.prefix === appPrefix(v.app, v.session) && Array.isArray(v.hashes) &&
   v.hashes.every(<hash regex>)`
   (drop the `!v.hashes.length` rejection).
-- `parseGuestReply`: error codes `[403, 405, 413, 431, 502, 503, 504]`.
+- `parseGuestReply`: error codes `[400, 403, 405, 413, 431, 502, 503, 504]`.
 
 - [ ] **Step 4: Fix the compile fallout**
 
@@ -1500,7 +1500,7 @@ Run:
 `datasette.ts`, `datasette_page.ts` and `datasette_routes.ts` construct these
 messages; add `app: "datasette"` at each construction site for now (Tasks 7-11
 replace the literal with the real app). Run the whole fast suite:
-`deno test --no-check --allow-read --allow-write --allow-env --allow-net tests/datasette_*_test.ts tests/guest_http_test.ts`
+`deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run tests/datasette_*_test.ts tests/guest_http_test.ts`
 Expected: PASS.
 
 Migrate `tests/datasette_bridge_e2e.ts` in this same task: add
@@ -1881,8 +1881,14 @@ Add:
 ```ts
 #ctx(startup?: AbortSignal): GuestAppContext {
   return {
-    finite: (line, stdin, timeoutMs) => this.#finite(line, stdin, timeoutMs),
-    asset: (name) => this.#asset(name, startup),
+    finite: (line, stdin, timeoutMs) => {
+      startup?.throwIfAborted();
+      return this.#finite(line, stdin, timeoutMs);
+    },
+    asset: (name) => {
+      startup?.throwIfAborted();
+      return this.#asset(name, startup);
+    },
   };
 }
 ```
@@ -2490,8 +2496,7 @@ Changes inside the mount (all from the code read at plan time):
      aria-label="Preview"
      data-testid="preview"
      hidden
-   >
-   </section>
+   ></section>
    ```
 
    and in `src/page.ts` after the existing call:
@@ -2650,15 +2655,16 @@ contexts in `finally`.
 Model it on `tests/datasette_e2e.ts` (same server/browser/CSP-watch/external-
 request guards). Scenario, each an `assertEquals`/locator wait:
 
-1. Start the sandbox, click **Start preview**, wait for `#preview iframe`.
-   Before subsequent requests, use the terminal's guest command path to write
-   test-only fixtures under `/home/user/demos/preview/site/` and wait for the
-   command's successful completion: `app.mjs` setting
-   `document.body.dataset.moduleLoaded = "yes"`, a valid empty `x.wasm`
-   (`00 61 73 6d 01 00 00 00`), and `burst.html` referencing 24 distinct
-   external `burst-N.js` files. Each burst script increments
-   `document.body.dataset.loaded`. Generate these with one finite guest Python
-   command; no inline scripts and no additional shipped default files.
+1. Start the sandbox, wait for workspace readiness (as in `playground_e2e.ts`),
+   click **Start preview**, wait for `#preview iframe`. Before subsequent
+   requests, use the terminal's guest command path to write test-only fixtures
+   under `/home/user/demos/preview/site/` and wait for the command's successful
+   completion: `app.mjs` setting `document.body.dataset.moduleLoaded = "yes"`, a
+   valid empty `x.wasm` (`00 61 73 6d 01 00 00 00`), and `burst.html`
+   referencing 24 distinct external `burst-N.js` files. Each burst script
+   increments `document.body.dataset.loaded`. Generate these with one finite
+   guest Python command; no inline scripts and no additional shipped default
+   files.
 2. Frame shows the default index and loads its shipped `app.js`; request and
    dynamically import the test-only `app.mjs` from the frame, checking
    `text/javascript` and the `moduleLoaded` marker. Check that `x.wasm` returns
