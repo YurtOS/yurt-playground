@@ -150,13 +150,26 @@ Deno.test("app preview fallback serves the isolated unavailable page", async () 
 });
 
 Deno.test("bridge service worker path bypasses the app fallback", async () => {
-  const res = await handlePlaygroundRequest(
-    new Request("http://playground/apps/bridge-sw.js"),
-  );
-  assertEquals(res.status, 200);
-  assertEquals(
-    res.headers.get("content-type"),
-    "text/javascript; charset=utf-8",
-  );
-  await res.body?.cancel();
+  const path = new URL("../public/apps/bridge-sw.js", import.meta.url);
+  let previous: Uint8Array | undefined;
+  try {
+    previous = await Deno.readFile(path);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  try {
+    await Deno.writeTextFile(path, "// bridge fixture\n");
+    const res = await handlePlaygroundRequest(
+      new Request("http://playground/apps/bridge-sw.js"),
+    );
+    assertEquals(res.status, 200);
+    assertEquals(
+      res.headers.get("content-type"),
+      "text/javascript; charset=utf-8",
+    );
+    assertEquals(await res.text(), "// bridge fixture\n");
+  } finally {
+    if (previous) await Deno.writeFile(path, previous);
+    else await Deno.remove(path);
+  }
 });
