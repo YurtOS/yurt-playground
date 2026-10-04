@@ -227,7 +227,7 @@ export async function bootPlayground(
   env.show("compiling kernel");
   const mk = await KernelHostInterface.load(kernel, defaultHostState());
   let disposed = false;
-  const sweepTimers = new Set<number>();
+  const sweepTimers = new Set<ReturnType<typeof setTimeout>>();
   let disposePty = () => {};
   const disposeKernel = () => {
     if (disposed) return;

@@ -49,7 +49,7 @@ jobs:
           # Pinned, not v2.x: deno fmt's output changed between 2.x releases
           # (public/index.html reindents), so a floating formatter turns CI red
           # with no code change and disagrees with what developers run locally.
-          deno-version: v2.7.14
+          deno-version: v2.9.7
       # yurtos-kernel and yurt-jupyter are PRIVATE, and the default
       # GITHUB_TOKEN cannot read another private repository. Without a PAT stored as
       # KERNEL_CHECKOUT_TOKEN the integration job cannot check them out at all, so
@@ -167,6 +167,7 @@ jobs:
           agent,
           datasette_bridge,
           guest_http,
+          preview,
         ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -88,7 +88,9 @@ Deno.test("preview server serves prefixed static files and a cookie-backed form"
     assertEquals(post.headers.get("location"), PREFIX);
     assertStringIncludes(post.headers.get("set-cookie") ?? "", "yurt_name=Ada");
     await post.arrayBuffer();
-    for (const [cookie, csrf] of [["", token], [csrfCookie, "wrong"]]) {
+    for (
+      const [cookie, csrf] of [["", token], [csrfCookie, "wrong"]] as const
+    ) {
       const denied = await fetch(base + "form", {
         method: "POST",
         headers: {

@@ -37,7 +37,7 @@ function makeRoutes(
 ) {
   const received: Record<string, unknown>[] = [];
   const logged: string[] = [];
-  const timers: number[] = [];
+  const timers: ReturnType<typeof setTimeout>[] = [];
   const channel = new MessageChannel();
   const routes = new DatasetteRoutes({
     origin,
@@ -88,7 +88,6 @@ function fixture() {
     origin: "http://playground",
     client: async (id) => id === "owner" ? client : undefined,
     owners: async () => [client],
-    requestTimeoutMs: 30,
     recoveryMs: 10,
   });
   const channel = new MessageChannel();
@@ -387,7 +386,7 @@ Deno.test("request cancellation settles promptly while recovering a missing owne
     recoveryMs: 1000,
   });
   const controller = new AbortController();
-  let timer: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const response = routes.respond(
       new Request("http://playground" + prefix, { signal: controller.signal }),

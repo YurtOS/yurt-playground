@@ -41,6 +41,7 @@ async function finite(line: string, stdin?: string) {
 function state(state: string) {
   self.postMessage({
     type: "datasette-state",
+    app: "datasette",
     snapshot: { state, session: sessionId, prefix },
   });
 }

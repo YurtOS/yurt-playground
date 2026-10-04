@@ -515,19 +515,19 @@ Deno.test("every disclosure on the home page is styled, not just the proof", asy
   }
   const reducedMotion = [
     ...css.matchAll(
-      /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n[ ]{6}\}/g,
+      /^(?<indent>[ \t]*)@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(?<body>[\s\S]*?)^\k<indent>\}/gm,
     ),
   ];
   assertEquals(reducedMotion.length, 1, "expected one reduced-motion block");
   assertEquals(
     /#start \.prompt::after\s*\{[^}]*animation:\s*none/.test(
-      reducedMotion[0]?.[1] ?? "",
+      reducedMotion[0]?.groups?.body ?? "",
     ),
     true,
   );
   assertEquals(
     /\.strip\s*>\s*summary h2::before\s*\{[^}]*transition:\s*none/.test(
-      reducedMotion[0]?.[1] ?? "",
+      reducedMotion[0]?.groups?.body ?? "",
     ),
     true,
   );

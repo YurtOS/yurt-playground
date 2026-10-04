@@ -136,7 +136,10 @@ export function mountGuestApp(
     disposed = false;
   let binding: Promise<void> | undefined;
   const relays = new Map<string, MessagePort>();
-  const downloads = new Map<string, { session: string; timer: number }>();
+  const downloads = new Map<
+    string,
+    { session: string; timer: ReturnType<typeof setTimeout> }
+  >();
   const render = () => {
     const controls = datasetteControls(qualified, snapshot.state);
     root.hidden = controls.hidden;

@@ -94,6 +94,7 @@ jobs:
         run: |
           deno run --allow-all tests/datasette_bridge_e2e.ts
           deno run --allow-all tests/guest_http_e2e.ts
+          deno run --allow-all tests/preview_e2e.ts
           if [ "$(deno run --allow-read scripts/datasette-qualified.ts)" = "true" ]; then
             deno run --allow-all tests/datasette_e2e.ts
           else

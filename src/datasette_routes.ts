@@ -58,7 +58,7 @@ interface Recovery {
   nonce: string;
   claims: Set<string>;
   done: Promise<void>;
-  timer: number;
+  timer: ReturnType<typeof setTimeout> | undefined;
   resolve(): void;
   failed: boolean;
 }
@@ -159,7 +159,7 @@ export class DatasetteRoutes {
         nonce: crypto.randomUUID(),
         claims: new Set(),
         done: completion.promise,
-        timer: 0,
+        timer: undefined,
         resolve: completion.resolve,
         failed: false,
       };
