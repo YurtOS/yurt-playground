@@ -110,7 +110,7 @@ try {
   const other = await context.newPage();
   const violations: string[] = [];
   owner.on("console", (msg) => {
-    if (msg.type() === "error" && !msg.text().includes("status of 405")) {
+    if (msg.type() === "error" && !msg.text().includes("status of 403")) {
       violations.push(msg.text());
     }
   });
@@ -151,18 +151,25 @@ try {
   )!;
   const result = await frame.evaluate(async () => {
     const post = await fetch(location.pathname, { method: "POST", body: "x" });
+    const noReferrer = await fetch(location.pathname, {
+      method: "POST",
+      body: "x",
+      referrerPolicy: "no-referrer",
+    });
     const head = await fetch(location.pathname, { method: "HEAD" });
     return {
       post: post.status,
       allow: post.headers.get("allow"),
+      noReferrer: noReferrer.status,
       head: head.status,
       length: (await head.arrayBuffer()).byteLength,
       coep: head.headers.get("cross-origin-embedder-policy"),
     };
   });
   assertEquals(result, {
-    post: 405,
-    allow: "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
+    post: 200,
+    allow: null,
+    noReferrer: 403,
     head: 200,
     length: 0,
     coep: "require-corp",
@@ -201,7 +208,11 @@ try {
   await owner.close();
   const detached = await context.newPage();
   const response = await detached.goto(origin + `/apps/datasette/${first}/`);
-  assertEquals(response!.status(), 503);
+  assertEquals(response!.status(), 403);
+  assertStringIncludes(
+    await detached.locator("body").innerText(),
+    "preview panel",
+  );
   assertEquals(networkGuestRequests, 1);
   assertEquals(violations, []);
   await context.close();
