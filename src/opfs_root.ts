@@ -67,6 +67,15 @@ const DIRECTORY = "yurt-fs";
 const INPUT_SLICE = 1 << 20;
 
 /**
+ * The most this tab's upper file may hold: what the guest can write in
+ * total, as on memory staging, where the kernel's 1 GiB budget bounded it.
+ * OPFS itself is bounded only by the origin's quota, often tens of GB, and
+ * the file outlives the tab until a later visit sweeps it. Past the cap the
+ * guest sees a full disk (ENOSPC).
+ */
+export const UPPER_MAX_BYTES = 1 << 30;
+
+/**
  * Open the guest's root on OPFS. Every failure is a reason to stage into
  * memory instead, never a failed boot: a missing API, a refused quota, or
  * the image held by another tab (Safari's sync handles are exclusive).
@@ -77,6 +86,8 @@ export async function openGuestRoot(options: {
   /** The compressed image; called only when it has to be written. */
   fetchImage: () => Promise<Uint8Array>;
   show?: (text: string) => void;
+  /** Cap on the upper file; {@link UPPER_MAX_BYTES} by default. */
+  upperMaxBytes?: number;
 }): Promise<GuestRoot> {
   const { storage, imageSha256 } = options;
   if (storage === undefined) {
@@ -92,38 +103,51 @@ export async function openGuestRoot(options: {
 
     let wroteImage = false;
     let tarSize = await readDoneMarker(dir, doneName);
-    if (tarSize === undefined) {
-      const yurtimg = await options.fetchImage();
-      options.show?.("writing the image to browser storage");
-      const handle = await (await dir.getFileHandle(imageName, {
-        create: true,
-      })).createSyncAccessHandle();
-      try {
-        tarSize = writeDecompressed(handle, yurtimg);
-        handle.flush();
-      } finally {
-        handle.close();
+    let image: SyncAccessHandleLike;
+    for (;;) {
+      if (tarSize === undefined) {
+        const yurtimg = await options.fetchImage();
+        options.show?.("writing the image to browser storage");
+        const handle = await (await dir.getFileHandle(imageName, {
+          create: true,
+        })).createSyncAccessHandle();
+        try {
+          tarSize = writeDecompressed(handle, yurtimg);
+          handle.flush();
+        } finally {
+          handle.close();
+        }
+        await writeDoneMarker(dir, doneName, tarSize);
+        wroteImage = true;
       }
-      await writeDoneMarker(dir, doneName, tarSize);
-      wroteImage = true;
+      // Shared where the browser can share (Chrome's read-only mode lets
+      // several tabs read one file); elsewhere the option is ignored and
+      // the handle is exclusive to this tab.
+      image = await (await dir.getFileHandle(imageName))
+        .createSyncAccessHandle({ mode: "read-only" });
+      const stored = image.getSize();
+      if (stored === tarSize) break;
+      image.close();
+      if (wroteImage) {
+        throw new Error(`stored image is ${stored} bytes, expected ${tarSize}`);
+      }
+      // The marker names a size the image does not have: a write cut short
+      // after the marker was set (a second tab rewriting it, then closed).
+      // Drop the marker and write the image again, or every later boot
+      // would find the same mismatch and fall back to memory for good.
+      await dir.removeEntry(doneName);
+      tarSize = undefined;
     }
-    // Shared where the browser can share (Chrome's read-only mode lets
-    // several tabs read one file); elsewhere the option is ignored and the
-    // handle is exclusive to this tab.
-    const image = await (await dir.getFileHandle(imageName))
-      .createSyncAccessHandle({ mode: "read-only" });
     opened.push(image);
-    if (image.getSize() !== tarSize) {
-      throw new Error(
-        `stored image is ${image.getSize()} bytes, expected ${tarSize}`,
-      );
-    }
     const upper = await (await dir.getFileHandle(upperName, { create: true }))
       .createSyncAccessHandle();
     opened.push(upper);
     return {
       kind: "device",
-      device: SyncHandleYurtDevice.fromImageTar(image, upper),
+      device: SyncHandleYurtDevice.fromImageTar(
+        image,
+        capped(upper, options.upperMaxBytes ?? UPPER_MAX_BYTES),
+      ),
       wroteImage,
     };
   } catch (error) {
@@ -136,6 +160,33 @@ export async function openGuestRoot(options: {
     }
     return { kind: "memory", reason: storageFailure(error) };
   }
+}
+
+/** `handle`, refusing to grow past `maxBytes` with the error a full origin
+ * quota raises, which the device reports to the guest as ENOSPC. */
+function capped(
+  handle: SyncAccessHandleLike,
+  maxBytes: number,
+): SyncAccessHandleLike {
+  const full = () =>
+    new DOMException(
+      `the guest's files would pass ${maxBytes} bytes`,
+      "QuotaExceededError",
+    );
+  return {
+    read: (buffer, options) => handle.read(buffer, options),
+    write: (buffer, options = {}) => {
+      if ((options.at ?? 0) + buffer.byteLength > maxBytes) throw full();
+      return handle.write(buffer, options);
+    },
+    truncate: (size) => {
+      if (size > maxBytes) throw full();
+      handle.truncate(size);
+    },
+    getSize: () => handle.getSize(),
+    flush: () => handle.flush(),
+    close: () => handle.close(),
+  };
 }
 
 /** Remove what no live tab holds: other tabs' upper files (a live tab's

@@ -142,6 +142,73 @@ Deno.test("openGuestRoot falls back when another tab holds the image", async () 
   });
 });
 
+Deno.test("a done marker that disagrees with the stored image is dropped and the image written again", async () => {
+  // A tab closed mid-write can leave the marker naming the full size over a
+  // short image (Safari's exclusive handles make a second tab rewrite a
+  // good image). Every later boot used to fall back to memory for good.
+  const yurtimg = await fixtureImage();
+  await withStorage(async (storage) => {
+    const first = await openGuestRoot({
+      storage,
+      imageSha256: SHA,
+      fetchImage: () => Promise.resolve(yurtimg),
+    });
+    if (first.kind !== "device") throw new Error(JSON.stringify(first));
+    first.device.close();
+    const image = join(storage.path, "yurt-fs", `image-${SHA}.tar`);
+    await Deno.truncate(image, 512);
+
+    const repaired = await openGuestRoot({
+      storage: storage.otherTab(),
+      imageSha256: SHA,
+      fetchImage: () => Promise.resolve(yurtimg),
+    });
+    if (repaired.kind !== "device") throw new Error(JSON.stringify(repaired));
+    assertEquals(repaired.wroteImage, true);
+    assertEquals(decode(repaired.device.readFile("/etc/motd")).length, 30000);
+    repaired.device.close();
+
+    const reused = await openGuestRoot({
+      storage: storage.otherTab(),
+      imageSha256: SHA,
+      fetchImage: () => Promise.reject(new Error("no download needed")),
+    });
+    if (reused.kind !== "device") throw new Error(JSON.stringify(reused));
+    assertEquals(reused.wroteImage, false);
+    reused.device.close();
+  });
+});
+
+Deno.test("the guest's writes stop at the upper file's cap, as a full disk", async () => {
+  // OPFS is bounded only by the origin's quota (often tens of GB), and the
+  // upper file outlives the tab until the next visit sweeps it.
+  const yurtimg = await fixtureImage();
+  await withStorage(async (storage) => {
+    const root = await openGuestRoot({
+      storage,
+      imageSha256: SHA,
+      fetchImage: () => Promise.resolve(yurtimg),
+      upperMaxBytes: 1 << 20,
+    });
+    if (root.kind !== "device") throw new Error(JSON.stringify(root));
+    root.device.writeFile("/fits", new Uint8Array(512 * 1024));
+    const error = assertThrows(() =>
+      root.device.writeFile("/too-big", new Uint8Array(2 << 20))
+    ) as { errno?: number };
+    assertEquals(error.errno, 28, "ENOSPC");
+    // What did fit is intact, and the failed file left no chunks behind.
+    assertEquals(root.device.readFile("/fits")?.byteLength, 512 * 1024);
+    const upper = [...Deno.readDirSync(join(storage.path, "yurt-fs"))]
+      .find((entry) => entry.name.startsWith("upper-"))!;
+    assertEquals(
+      Deno.statSync(join(storage.path, "yurt-fs", upper.name)).size <=
+        1 << 20,
+      true,
+    );
+    root.device.close();
+  });
+});
+
 Deno.test("writeDecompressed streams the tar into the handle", async () => {
   const yurtimg = await fixtureImage();
   await withStorage(async (storage) => {
