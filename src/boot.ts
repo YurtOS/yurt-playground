@@ -209,7 +209,10 @@ export async function bootPlayground(
   const kernel = await env.fetchBytes("./yurt_kernel.wasm");
   env.show("compiling kernel");
   const mk = await KernelHostInterface.load(kernel, defaultHostState());
-  watchGuestMemoryRefusals(mk, () => env.memoryRefused?.());
+  const stopWatchingRefusals = watchGuestMemoryRefusals(
+    mk,
+    () => env.memoryRefused?.(),
+  );
   env.show("loading image");
   const image = await env.fetchBytes("./playground.yurtimg");
   env.show("unpacking image");
@@ -302,6 +305,9 @@ export async function bootPlayground(
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    // A stopped session's kernel must not raise the banner for whatever
+    // session the page runs next.
+    stopWatchingRefusals();
     stopPump();
     try {
       controller.current.pty.close();

@@ -1,4 +1,10 @@
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
+import {
+  hideMemoryRefused,
+  MEMORY_REFUSED_RELOAD_ID,
+  type MemoryRefusedMessage,
+  showMemoryRefused,
+} from "./memory_refused.ts";
 import { mountNotebook } from "./notebook.ts";
 import { mountAgentPane } from "./agent_pane.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
@@ -32,7 +38,7 @@ type FromWorker =
   | { type: "cell-stream"; id: string; chunk: JupyterStream }
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string }
-  | { type: "memory-refused" };
+  | MemoryRefusedMessage;
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
@@ -187,6 +193,8 @@ function boot(
 ): void {
   const kernelPorts = desktop?.kernelPorts;
   const status = byId("status");
+  // A refusal belongs to the session that had it.
+  hideMemoryRefused(byId);
   const term = createPlaygroundTerminal(byId("term"));
   // Classic worker: Chrome will not start a nested *module* Worker.
   // A classic coordinator can spawn the module guest bootstrap.
@@ -264,7 +272,7 @@ function boot(
         sandboxGone();
       }
     }
-    if (msg.type === "memory-refused") byId("memory-refused").hidden = false;
+    showMemoryRefused(msg, byId);
     if (msg.type === "out") {
       terminalEmpty = false;
       term.write(new Uint8Array(msg.bytes));
@@ -414,7 +422,7 @@ async function runPage(): Promise<void> {
   // one for the next load must wait for this, or this load consumes it.
   document.documentElement.dataset.settled = "";
   // Only a reload frees what the browser refused (yurtos-kernel#2996).
-  byId("memory-refused-reload").addEventListener(
+  byId(MEMORY_REFUSED_RELOAD_ID).addEventListener(
     "click",
     () => location.reload(),
   );
