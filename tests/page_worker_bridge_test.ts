@@ -7,6 +7,7 @@ import {
   GUEST_WORKER_ERROR,
   GUEST_WORKER_PORT,
   installCoordinatorWorkerProxy,
+  parseCreateGuestWorkerMessage,
 } from "../src/page_worker_bridge.ts";
 
 Deno.test("guest-worker factory messages use a reserved type", () => {
@@ -40,7 +41,10 @@ Deno.test("guest-worker failures become proxy error events", () => {
  * stand-in for the kernel's worker bootstrap: it installs `onmessage` on its
  * scope and answers with the scope's `postMessage`.
  */
-function wireBridge(bootstrap: (scope: GuestScope) => void) {
+function wireBridge(
+  bootstrap: (scope: GuestScope) => void,
+  direct = true,
+) {
   const originalWorker = globalThis.Worker;
   const originalPostMessage = (globalThis as { postMessage?: unknown })
     .postMessage;
@@ -64,7 +68,7 @@ function wireBridge(bootstrap: (scope: GuestScope) => void) {
       coordinator.dispatchEvent(new MessageEvent("message", { data, ports }))
     );
   };
-  installCoordinatorWorkerProxy();
+  installCoordinatorWorkerProxy(() => direct);
   const ProxyWorker = globalThis.Worker;
   const guests: FakeGuestWorker[] = [];
   class FakeGuestWorker {
@@ -195,4 +199,48 @@ Deno.test({
   } finally {
     restore();
   }
+});
+
+Deno.test({
+  name: "with the relay, a guest's messages still reach the coordinator",
+  sanitizeOps: false,
+  sanitizeResources: false,
+}, async () => {
+  // Safari before the per-process reservation is in effect: the page keeps
+  // relaying (src/guest_port_policy.ts).
+  const { ProxyWorker, guests, restore } = wireBridge((scope) => {
+    echoBootstrap(scope);
+    adoptGuestPort(scope);
+  }, false);
+  try {
+    const worker = new ProxyWorker("/worker_bootstrap.js", { type: "module" });
+    const replies: unknown[] = [];
+    worker.addEventListener("message", (event) => {
+      replies.push((event as MessageEvent).data);
+    });
+    worker.postMessage({ kind: "init" });
+    worker.postMessage({ kind: "relay" });
+    await settle();
+    assertEquals(replies, [{ echo: "init" }, { echo: "relay" }]);
+    assertEquals(guests[0].fromPage, [{ type: GUEST_WORKER_PORT }]);
+    worker.terminate();
+    await settle();
+    assertEquals(guests[0].terminated, true);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("the create request carries the coordinator's direct-port choice", () => {
+  const base = { type: CREATE_GUEST_WORKER, url: "/worker_bootstrap.js" };
+  assertEquals(
+    parseCreateGuestWorkerMessage({ ...base, direct: true })?.direct,
+    true,
+  );
+  assertEquals(
+    parseCreateGuestWorkerMessage({ ...base, direct: false })?.direct,
+    false,
+  );
+  // An older coordinator says nothing: relay, as before.
+  assertEquals(parseCreateGuestWorkerMessage(base)?.direct, false);
 });

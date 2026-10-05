@@ -9,6 +9,10 @@ export type CreateGuestWorkerMessage = {
   type: typeof CREATE_GUEST_WORKER;
   url: string;
   options?: WorkerOptions;
+  /** Hand the guest its port to the coordinator (true), or relay its
+   *  messages through the page as before (false); see
+   *  `src/guest_port_policy.ts`. */
+  direct: boolean;
 };
 
 type GuestWorkerErrorMessage = {
@@ -54,8 +58,15 @@ export function dispatchGuestWorkerProxyEvent(
  * has collected it, and a Memory relayed through the page also lived in
  * the page's heap. A failed allocation here collects only this heap, so
  * Safari ran out of memory for new processes after about 36 (#2996).
+ *
+ * `direct` decides that per guest. With it false the page relays the
+ * guest's messages as before: on Safari the direct port only helps once
+ * each process reserves less than the whole budget, and measured worse
+ * than the relay with 1 GiB reservations (`src/guest_port_policy.ts`).
  */
-export function installCoordinatorWorkerProxy(): void {
+export function installCoordinatorWorkerProxy(
+  direct: () => boolean = () => true,
+): void {
   self.Worker = class PageBackedWorker extends EventTarget {
     #port: MessagePort;
     #control: MessagePort;
@@ -80,6 +91,7 @@ export function installCoordinatorWorkerProxy(): void {
         type: CREATE_GUEST_WORKER,
         url: String(scriptURL),
         options,
+        direct: direct(),
       };
       self.postMessage(message, {
         transfer: [guest.port2, control.port2],
@@ -131,11 +143,16 @@ export function parseCreateGuestWorkerMessage(
   data: unknown,
 ): CreateGuestWorkerMessage | undefined {
   if (data === null || typeof data !== "object") return undefined;
-  const { type, url } = data as { type?: unknown; url?: unknown };
+  const { type, url, direct } = data as {
+    type?: unknown;
+    url?: unknown;
+    direct?: unknown;
+  };
   if (type !== CREATE_GUEST_WORKER || typeof url !== "string") {
     return undefined;
   }
-  return { type: CREATE_GUEST_WORKER, url };
+  // Anything but an explicit `true` relays, the behaviour before #2996.
+  return { type: CREATE_GUEST_WORKER, url, direct: direct === true };
 }
 
 export function attachGuestWorkerFactory(coordinator: Worker): void {
@@ -161,7 +178,20 @@ export function attachGuestWorkerFactory(coordinator: Worker): void {
       return;
     }
     const guest = new Worker(...start);
-    guest.postMessage({ type: GUEST_WORKER_PORT }, [guestPort]);
+    let relay: MessageChannel | undefined;
+    if (request.direct) {
+      guest.postMessage({ type: GUEST_WORKER_PORT }, [guestPort]);
+    } else {
+      // The relay: the guest still gets a port, but its other end is the
+      // page's, which forwards every message both ways.
+      relay = new MessageChannel();
+      const page = relay.port1;
+      page.onmessage = (event) =>
+        guestPort.postMessage(event.data, [...event.ports]);
+      guestPort.onmessage = (event) =>
+        page.postMessage(event.data, [...event.ports]);
+      guest.postMessage({ type: GUEST_WORKER_PORT }, [relay.port2]);
+    }
     guest.onerror = (event) => {
       fail(event.message || "guest worker failed");
     };
@@ -172,6 +202,10 @@ export function attachGuestWorkerFactory(coordinator: Worker): void {
       ) {
         guest.terminate();
         control.close();
+        if (relay !== undefined) {
+          relay.port1.close();
+          guestPort.close();
+        }
       }
     };
   });
