@@ -102,6 +102,35 @@ the current task.
 - Comments are short and explain non-obvious constraints, not the change
   history.
 
+## Keep PRs reviewable: ≤ ~1000 changed lines
+
+A PR must be reviewable as a single unit. Keep it to roughly **1000 changed
+lines (additions + deletions) of non-spec, non-doc content** — code, tests,
+fixtures, and config count; `docs/` (specs, plans, ADRs) and other prose-only
+files do not. Regenerated output (codegen, lockfiles, vendored or generated
+fixtures) also doesn't count, but must be isolated in its own commit and named
+as generated in the PR description. Huge PRs cannot be reviewed, so they get
+rubber-stamped or stall.
+
+- **Plan the split up front.** When planning, cut the work into slices that each
+  build, pass CI, and make sense alone (e.g. refactor or plumbing → behavior →
+  callers/migration → cleanup). Do not write the whole change and slice it
+  afterwards.
+- **Stack the PRs.** Each slice is its own PR based on the previous slice's
+  branch (the first on `main`); say "Stack: N/M, depends on #X" in each
+  description and keep the stack's overall goal in the first PR. Retarget to
+  `main` as lower PRs merge. Never merge a PR without an explicit order from the
+  user.
+- **Mechanical changes ride alone.** Renames, moves, and formatting-only changes
+  go in their own PR so reviewers can skim them; don't mix them with logic
+  changes.
+- **Over the limit anyway?** Only when a slice genuinely can't be split (an
+  atomic cutover) — state why in the PR description and ask the user before
+  opening it. Size is never a reason to skip tests; a slice's tests ship in that
+  slice.
+- If a PR you're working on is already over the limit, say so to the user and
+  propose a split rather than adding to it.
+
 ## Conventions
 
 - Commits: short imperative subject (`feat:`, `fix:`, `docs:`, `chore:`).
