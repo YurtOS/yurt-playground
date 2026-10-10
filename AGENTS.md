@@ -107,13 +107,13 @@ the current task.
 A PR must be reviewable as a single cohesive unit — one idea, one test strategy
 — that one reviewer (human or agent) can hold in mind and check in one pass.
 Size is a proxy for that, not the goal. Aim for roughly **1000 lines of new or
-changed logic**, weighted by review cost: tests count at about half
-(repetitive tests are cheap to check), while mechanical moves, renames,
-formatting-only changes, `docs/` (specs, plans, ADRs) and other prose-only
-files, and regenerated output (ABI codegen, lockfiles, vendored or generated
-fixtures) are free. Regenerated output must be isolated in its own commit and
-named as generated in the PR description. Huge PRs cannot be reviewed,
-so they get rubber-stamped or stall.
+changed logic**, weighted by review cost: tests count at about half (repetitive
+tests are cheap to check), while mechanical moves, renames, formatting-only
+changes, `docs/` (specs, plans, ADRs) and other prose-only files, and
+regenerated output (ABI codegen, lockfiles, vendored or generated fixtures) are
+free. Regenerated output must be isolated in its own commit and named as
+generated in the PR description. Huge PRs cannot be reviewed, so they get
+rubber-stamped or stall.
 
 This is a soft target, not a hard cap. Going over is fine, up to roughly 2-3k
 weighted lines, when the PR is one cohesive change that doesn't split cleanly;
