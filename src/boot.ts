@@ -16,6 +16,7 @@ import {
   fetchPinnedArtifact,
 } from "./artifact_fetch.ts";
 import { partsFetch } from "./image_parts.ts";
+import { watchGuestMemoryRefusals } from "./memory_refused.ts";
 import { parsePins, type Pins } from "./pins.ts";
 import type { Spawner } from "./executions.ts";
 
@@ -34,6 +35,8 @@ export type PlaygroundEnv = {
   fetchBytes: (path: string) => Promise<Uint8Array>;
   show: (text: string) => void;
   term: PlaygroundTerm;
+  /** The browser refused a new process its memory; only a reload helps. */
+  memoryRefused?: () => void;
 };
 
 export type PlaygroundSession = {
@@ -206,6 +209,10 @@ export async function bootPlayground(
   const kernel = await env.fetchBytes("./yurt_kernel.wasm");
   env.show("compiling kernel");
   const mk = await KernelHostInterface.load(kernel, defaultHostState());
+  const stopWatchingRefusals = watchGuestMemoryRefusals(
+    mk,
+    () => env.memoryRefused?.(),
+  );
   env.show("loading image");
   const image = await env.fetchBytes("./playground.yurtimg");
   env.show("unpacking image");
@@ -298,6 +305,9 @@ export async function bootPlayground(
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    // A stopped session's kernel must not raise the banner for whatever
+    // session the page runs next.
+    stopWatchingRefusals();
     stopPump();
     try {
       controller.current.pty.close();
