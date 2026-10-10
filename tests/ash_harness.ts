@@ -2,11 +2,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   bootPlayground,
+  type PlaygroundEnv,
   type PlaygroundSession,
   type PlaygroundTerm,
 } from "../src/boot.ts";
 import { handlePlaygroundRequest } from "../src/serve.ts";
 import { loadPins, resolveArtifacts } from "../src/pins.ts";
+import { FsOpfsDirectory } from "./opfs_fake.ts";
 
 export const repoRoot = join(fileURLToPath(import.meta.url), "../..");
 
@@ -121,11 +123,36 @@ export type AshSession = {
    * (src/executions.ts) takes these two. */
   process: NonNullable<PlaygroundSession["process"]>;
   signal: NonNullable<PlaygroundSession["signal"]>;
+  storage: PlaygroundSession["storage"];
 };
 
 export type AshSessionOptions = {
   requireArtifacts?: boolean;
+  /** Where the guest's root lives (src/opfs_root.ts). By default an
+   * on-disk stand-in for OPFS shared by this test module's sessions, so
+   * the tests boot as the browser does (and reuse one image copy);
+   * `() => Promise.resolve(null)` stages into kernel memory instead. */
+  storage?: PlaygroundEnv["storage"];
 };
+
+let testStorage: FsOpfsDirectory | undefined;
+
+/** One OPFS stand-in per test module, removed when the module unloads;
+ * each session is a tab of its own. */
+function moduleStorage(): FsOpfsDirectory {
+  if (testStorage === undefined) {
+    const dir = Deno.makeTempDirSync({ prefix: "yurt-playground-opfs-" });
+    globalThis.addEventListener("unload", () => {
+      try {
+        Deno.removeSync(dir, { recursive: true });
+      } catch {
+        // Already gone.
+      }
+    });
+    testStorage = new FsOpfsDirectory(dir);
+  }
+  return testStorage.otherTab();
+}
 
 export async function bootAshSession(
   options: AshSessionOptions = {},
@@ -135,6 +162,7 @@ export async function bootAshSession(
   }
   const term = memoryTerm();
   let shown = "";
+  const tab = options.storage === undefined ? moduleStorage() : undefined;
   const session = await bootPlayground({
     isolated: true,
     fetchBytes: fetchViaHandler,
@@ -142,6 +170,11 @@ export async function bootAshSession(
       shown = text;
     },
     term,
+    storage: options.storage ?? (() => Promise.resolve(tab)),
+    // As the page passes the pin: a reload with a complete OPFS copy then
+    // never fetches the image.
+    imageSha256: (await loadPins(join(repoRoot, "artifacts/pins.json")))
+      .image.sha256,
   });
   await waitFor(
     () => /[$#]/.test(term.output()) || term.output().length > 0,
@@ -155,9 +188,13 @@ export async function bootAshSession(
   return {
     term,
     shown: () => shown,
-    stop: () => session.stop(),
+    stop: () => {
+      session.stop();
+      tab?.closeAll();
+    },
     process: session.process,
     signal: session.signal,
+    storage: session.storage,
   };
 }
 
