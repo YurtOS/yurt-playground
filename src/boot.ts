@@ -194,6 +194,73 @@ function readGuestFile(
   return out;
 }
 
+/**
+ * The address space each guest process reserves on JavaScriptCore
+ * (yurtos-kernel#2996). A browser reserves a shared wasm memory's whole
+ * maximum up front, and Safari holds about 32 GiB of them per tab; every
+ * guest build declares 4 GiB, and the kernel's default is the whole 1 GiB
+ * sandbox budget, so a burst of a few dozen execs ran Safari out. A quarter
+ * GiB leaves room for more than 100 processes and several times what
+ * CPython needs here (ipykernel 81 MiB, a 2000x2000 NumPy matmul 98 MiB). A
+ * process that outgrows it gets ENOMEM; the sandbox budget still caps them
+ * all.
+ */
+export const GUEST_MEMORY_RESERVATION_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Whether this engine is JavaScriptCore (Safari, and every iOS browser),
+ * the one that runs out of shared-memory reservations. Chromium and Edge
+ * also say `AppleWebKit/`, always with a `Chrome/` token; Firefox and Deno
+ * say neither. The same test as the kernel's `workerTeardownWaitsOnCompiles`.
+ */
+export function engineCapsSharedMemoryReservations(
+  userAgent: string | undefined = globalThis.navigator?.userAgent,
+): boolean {
+  if (userAgent === undefined) return false;
+  return /AppleWebKit\//.test(userAgent) && !/Chrome\//.test(userAgent);
+}
+
+/**
+ * The host state every in-browser kernel is built with. Only on
+ * JavaScriptCore does it set a per-process reservation: V8 and SpiderMonkey
+ * reserve address space lazily and have no per-tab cap that a few dozen
+ * 1 GiB memories reach, so there each process keeps the whole sandbox
+ * budget (a 1.1 GB `np.zeros((12000, 12000))` or a large clang TU still
+ * fits), and the budget still caps them all together.
+ */
+export function playgroundHostState(
+  userAgent: string | undefined = globalThis.navigator?.userAgent,
+):
+  & ReturnType<typeof defaultHostState>
+  & { guestMemoryReservationBytes?: number } {
+  // Kernels older than yurtos-kernel#3115 do not read the field.
+  if (!engineCapsSharedMemoryReservations(userAgent)) {
+    return defaultHostState();
+  }
+  return {
+    ...defaultHostState(),
+    guestMemoryReservationBytes: GUEST_MEMORY_RESERVATION_BYTES,
+  };
+}
+
+/** Load a kernel for an in-browser sandbox. Every page and worker goes
+ *  through this or {@link restorePlaygroundKernel}, so on JavaScriptCore
+ *  each one reserves {@link GUEST_MEMORY_RESERVATION_BYTES} per guest
+ *  process (see {@link playgroundHostState}). */
+export function loadPlaygroundKernel(
+  kernel: Uint8Array,
+): Promise<KernelHostInterface> {
+  return KernelHostInterface.load(kernel, playgroundHostState());
+}
+
+/** Restore a sealed in-browser sandbox; see {@link loadPlaygroundKernel}. */
+export function restorePlaygroundKernel(
+  kernel: Uint8Array,
+  image: Parameters<typeof KernelHostInterface.restore>[1],
+): ReturnType<typeof KernelHostInterface.restore> {
+  return KernelHostInterface.restore(kernel, image, playgroundHostState());
+}
+
 export async function bootPlayground(
   env: PlaygroundEnv,
 ): Promise<PlaygroundSession> {
@@ -205,7 +272,7 @@ export async function bootPlayground(
   env.show("loading kernel");
   const kernel = await env.fetchBytes("./yurt_kernel.wasm");
   env.show("compiling kernel");
-  const mk = await KernelHostInterface.load(kernel, defaultHostState());
+  const mk = await loadPlaygroundKernel(kernel);
   env.show("loading image");
   const image = await env.fetchBytes("./playground.yurtimg");
   env.show("unpacking image");
