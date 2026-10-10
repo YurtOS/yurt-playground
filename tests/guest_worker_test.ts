@@ -56,7 +56,8 @@ Deno.test("only a well-formed create request crosses the coordinator boundary", 
       url: "./worker_bootstrap.ts",
       options: { type: "module" },
     }),
-    { type: CREATE_GUEST_WORKER, url: "./worker_bootstrap.ts" },
+    // No `direct: true`: relay, as an older coordinator expects.
+    { type: CREATE_GUEST_WORKER, url: "./worker_bootstrap.ts", direct: false },
   );
   for (
     const data of [
