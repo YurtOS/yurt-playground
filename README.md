@@ -24,6 +24,34 @@ page.
 | Works offline                                                | yes                                                                           | yes                                                        |
 | Needs                                                        | a desktop browser with cross-origin isolation (Chrome, Edge, Firefox, Safari) | any browser to display; nothing to install besides the app |
 
+## Supported packages
+
+The browser page, the desktop app and `yurt run playground` boot the same image
+(pinned in `artifacts/pins.json`). It contains:
+
+| Package                   | Version               | For                                                                                                                                   |
+| ------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| BusyBox                   | 1.37.0                | `ash` and 151 applets: core utilities, `grep`, `sed`, `awk`, `vi`, `less`, `tar`, `gzip`, `bzip2`, `unzip`, `wget`, `nc`, `ps`, `top` |
+| CPython, pip              | 3.14.4, 26.1          | `python3`; `pip`                                                                                                                      |
+| NumPy                     | 2.5.0                 | arrays                                                                                                                                |
+| ipykernel, IPython, pyzmq | 7.2.0, 9.13.0, 26.4.0 | the Jupyter kernel behind Notebook and Lab                                                                                            |
+
+All four are in the image. Nothing else can be installed into a running
+playground today:
+
+- The browser sandbox has no network, so neither `pkg install` nor `pip install`
+  can fetch anything there.
+- The image ships neither `pkg` nor a trusted-repository configuration yet. Once
+  an image carries both, `pkg update` and then `pkg install NAME` work in the
+  desktop app and under `yurt run`, which have a network. `pip install` of
+  pure-Python packages and matching wheels works there already. There is no
+  compiler in the image.
+
+Which packages are published, and which are coming, is tracked in
+[YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) (its signed
+`index.json` is the list) and
+[YurtOS/yurt-ports](https://github.com/YurtOS/yurt-ports), not here.
+
 ## Desktop app
 
 **macOS** (Apple Silicon). Open `Yurt-Playground-aarch64-apple-darwin.dmg` and
