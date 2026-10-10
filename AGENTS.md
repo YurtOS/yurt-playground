@@ -102,20 +102,30 @@ the current task.
 - Comments are short and explain non-obvious constraints, not the change
   history.
 
-## Keep PRs reviewable: ≤ ~1000 changed lines
+## Keep PRs reviewable
 
-A PR must be reviewable as a single unit. Keep it to roughly **1000 changed
-lines (additions + deletions) of non-spec, non-doc content** — code, tests,
-fixtures, and config count; `docs/` (specs, plans, ADRs) and other prose-only
-files do not. Regenerated output (codegen, lockfiles, vendored or generated
-fixtures) also doesn't count, but must be isolated in its own commit and named
-as generated in the PR description. Huge PRs cannot be reviewed, so they get
+A PR must be reviewable as a single cohesive unit — one idea, one test strategy
+— that one reviewer (human or agent) can hold in mind and check in one pass.
+Size is a proxy for that, not the goal. Aim for roughly **1000 lines of new or
+changed logic**, weighted by review cost: tests count at about half (repetitive
+tests are cheap to check), while mechanical moves, renames, formatting-only
+changes, `docs/` (specs, plans, ADRs) and other prose-only files, and
+regenerated output (ABI codegen, lockfiles, vendored or generated fixtures) are
+free. Regenerated output must be isolated in its own commit and named as
+generated in the PR description. Huge PRs cannot be reviewed, so they get
 rubber-stamped or stall.
 
-- **Plan the split up front.** When planning, cut the work into slices that each
-  build, pass CI, and make sense alone (e.g. refactor or plumbing → behavior →
-  callers/migration → cleanup). Do not write the whole change and slice it
-  afterwards.
+This is a soft target, not a hard cap. Going over is fine, up to roughly 2-3k
+weighted lines, when the PR is one cohesive change that doesn't split cleanly;
+say why in the PR description. Beyond that, ask the user before opening it.
+
+- **Plan the split up front.** During `superpowers:writing-plans`, cut the work
+  into slices that each build, pass CI, and make sense alone (e.g. refactor or
+  plumbing → behavior → callers/migration → cleanup). Do not write the whole
+  change and slice it afterwards.
+- **Don't slice just to hit a number.** Splitting a cohesive change into PRs
+  that can't be understood alone makes review harder, not easier. Split along
+  real seams, not line counts.
 - **Stack the PRs.** Each slice is its own PR based on the previous slice's
   branch (the first on `main`); say "Stack: N/M, depends on #X" in each
   description and keep the stack's overall goal in the first PR. Retarget to
@@ -124,12 +134,10 @@ rubber-stamped or stall.
 - **Mechanical changes ride alone.** Renames, moves, and formatting-only changes
   go in their own PR so reviewers can skim them; don't mix them with logic
   changes.
-- **Over the limit anyway?** Only when a slice genuinely can't be split (an
-  atomic cutover) — state why in the PR description and ask the user before
-  opening it. Size is never a reason to skip tests; a slice's tests ship in that
-  slice.
-- If a PR you're working on is already over the limit, say so to the user and
-  propose a split rather than adding to it.
+- Size is never a reason to skip tests or the red-test-first rule; a slice's
+  tests ship in that slice.
+- If a PR you're working on is already well over the target, say so to the user
+  and propose a split rather than adding to it.
 
 ## Conventions
 
