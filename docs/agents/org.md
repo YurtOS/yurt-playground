@@ -1,8 +1,8 @@
 # YurtOS organisation rules for agents
 
-These rules apply in every YurtOS repository. Each repository's `AGENTS.md`
-adds what is specific to it (build, the **Verification** section, layout,
-domain rules) and must not restate or contradict these. The canonical copy is
+These rules apply in every YurtOS repository. Each repository's `AGENTS.md` adds
+what is specific to it (build, the **Verification** section, layout, domain
+rules) and must not restate or contradict these. The canonical copy is
 `docs/agents/org.md` in YurtOS/yurtos-kernel; every other repository carries a
 verbatim copy at the same path. Change it there first, then sync the copies.
 
@@ -23,10 +23,10 @@ documented where the code lives (what Linux does, what we do, why).
 ## No legacy compatibility
 
 There are no external users and no backwards-compatibility constraints. When an
-interface needs a different shape, change it and update every caller,
-generated artifact and fixture in the same change. No `V1`/`V2` shims, no
-deprecated-but-callable stubs, no "clean up later". The guest↔kernel ABI
-follows each repository's `AGENTS.md`.
+interface needs a different shape, change it and update every caller, generated
+artifact and fixture in the same change. No `V1`/`V2` shims, no
+deprecated-but-callable stubs, no "clean up later". The guest↔kernel ABI follows
+each repository's `AGENTS.md`.
 
 ## KISS, except where security says otherwise
 
@@ -56,9 +56,9 @@ issue, then investigate.
 
 A check that cannot fail is not evidence. Before reporting something verified,
 state what the check would print if the claim were false. Make missing data an
-error, quote URLs and variables (zsh globs `?`, `*`, `[`), check exit codes,
-and prove a new test or gate can fail by introducing the defect it exists to
-catch and watching it go red, for the right reason, in the lane you claim.
+error, quote URLs and variables (zsh globs `?`, `*`, `[`), check exit codes, and
+prove a new test or gate can fail by introducing the defect it exists to catch
+and watching it go red, for the right reason, in the lane you claim.
 
 ## Workflow
 
@@ -72,9 +72,9 @@ catch and watching it go red, for the right reason, in the lane you claim.
   without a prior red test is incomplete. Tests must exercise behaviour, not
   names.
 - **Review.** Every non-trivial PR gets a full review from both a Claude agent
-  and a Codex agent before it is ready. Verify each finding before acting on
-  it; resolve it, rebut it with evidence, or defer it with a written reason in
-  the PR thread.
+  and a Codex agent before it is ready. Verify each finding before acting on it;
+  resolve it, rebut it with evidence, or defer it with a written reason in the
+  PR thread.
 - **Skills.** `.claude/skills/` holds `issue-to-mergeable-pr`,
   `drive-pr-to-mergeable`, `drive-doc-to-approved` and `drive-pr-stack`. Use
   them for issue-to-PR work and PR review loops. They add gates; they do not
@@ -88,8 +88,8 @@ catch and watching it go red, for the right reason, in the lane you claim.
 Never merge unless the user has authorized that merge: a message that names the
 PR and says merge ("merge #123"), or names it and says "merge if ready by our
 rules". The second authorizes the merge only once the PR is ready at the head
-being merged: review loop finished, Verification passing, required hosted
-checks green, ready report posted. Merge with `--match-head-commit`.
+being merged: review loop finished, Verification passing, required hosted checks
+green, ready report posted. Merge with `--match-head-commit`.
 
 "Looks good", "go ahead", "done", passing CI, an approving review, or urgency
 are not merge authorization; ask which PR numbers to merge. A push after an
@@ -97,30 +97,30 @@ approval voids it. Ask before closing a PR, too.
 
 ## Pull requests
 
-- Open PRs as drafts while the review loop runs; mark them ready
-  (`gh pr ready`) when sending the ready report.
+- Open PRs as drafts while the review loop runs; mark them ready (`gh pr ready`)
+  when sending the ready report.
 - Keep a PR reviewable as one cohesive unit. Aim for about 1000 lines of new or
-  changed logic: tests count about half; mechanical moves, renames,
-  formatting, prose and regenerated output count as free (put generated output
-  in its own commit). Up to 2-3k is fine for one change that does not split
-  cleanly, with the reason in the description; beyond that, ask first.
+  changed logic: tests count about half; mechanical moves, renames, formatting,
+  prose and regenerated output count as free (put generated output in its own
+  commit). Up to 2-3k is fine for one change that does not split cleanly, with
+  the reason in the description; beyond that, ask first.
 - Plan slices up front and stack them ("Stack: N/M, depends on #X"). Before
-  merging a parent, retarget its child to the parent's base. Mechanical
-  changes go in their own PR.
+  merging a parent, retarget its child to the parent's base. Mechanical changes
+  go in their own PR.
 - Name the issue. Use a closing keyword only when the PR fixes all of it.
 
 ## Git safety
 
-- Never amend or force-push a branch that has an open PR; add follow-up
-  commits. Squash work in progress only before the PR is first opened.
+- Never amend or force-push a branch that has an open PR; add follow-up commits.
+  Squash work in progress only before the PR is first opened.
 - Never bypass hooks (`--no-verify`). If a hook fails, fix the cause in a new
   commit; never amend after a failed commit.
 - Push safely: put the branch name in its own variable, `test -n` it, brace it,
   and redirect push output to a file. Never push a refspec built from an
   unchecked variable.
 - Before every push to a PR branch, confirm the PR is still open and unmerged.
-- Wait for a held pre-push lock; never work around it. Do not start a push
-  while your own long local gate run is still running.
+- Wait for a held pre-push lock; never work around it. Do not start a push while
+  your own long local gate run is still running.
 
 ## Conventions
 
@@ -128,5 +128,5 @@ approval voids it. Ask before closing a PR, too.
   `chore:`), with the attribution lines the session specifies.
 - Plans: `docs/superpowers/plans/YYYY-MM-DD-<slug>.md`; specs:
   `docs/superpowers/specs/YYYY-MM-DD-<slug>-design.md`.
-- Do not create markdown files speculatively, and keep test-only fixtures out
-  of production code paths.
+- Do not create markdown files speculatively, and keep test-only fixtures out of
+  production code paths.
