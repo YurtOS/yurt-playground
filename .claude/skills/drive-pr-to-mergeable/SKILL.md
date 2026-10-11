@@ -144,13 +144,12 @@ subsystems:
 
 ## Ready report
 
-Before reporting ready: run the full local gates from AGENTS.md
-(`deno fmt --check`, `deno lint`, `deno check '**/*.ts'`, `deno task test`) and
-confirm every required hosted check is green. A red required check means the PR
-is **blocked**, not ready. If the same check is proven red on the base too (the
-same failure on `origin/<base>` over repeated runs, and no flaky-test issue
-explains it), report **blocked (pre-existing)** with the evidence, without the
-ready phrase; the user decides.
+Before reporting ready: run the full local gate in the Verification section of
+AGENTS.md and confirm every required hosted check is green. A red required check
+means the PR is **blocked**, not ready. If the same check is proven red on the
+base too (the same failure on `origin/<base>` over repeated runs, and no
+flaky-test issue explains it), report **blocked (pre-existing)** with the
+evidence, without the ready phrase; the user decides.
 
 Summary comment on the PR, then tell the user: head SHA, rounds, issues filed,
 CI state, deferred items. End with: "Ready for merge — say 'merge #N' to

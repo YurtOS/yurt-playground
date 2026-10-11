@@ -105,9 +105,8 @@ and cleanup options: push and open the PR (below).
 
 **Phase 4: Execute.** superpowers:subagent-driven-development (or
 executing-plans) with test-driven-development and verification-before-completion
-(the AGENTS.md CI gates: `deno fmt --check`, `deno lint`,
-`deno check '**/*.ts'`, `deno task test`). Open a **non-draft** PR (or a stack,
-if the plan says so). Close any draft spec/plan PR.
+(the Verification section of AGENTS.md). Open a **non-draft** PR (or a stack, if
+the plan says so). Close any draft spec/plan PR.
 
 **Size tripwires.** A plan estimated at more than ~2x the size approved at Gate
 1 → back to Gate 1. During execution, a diff growing past ~2x the plan → stop,
