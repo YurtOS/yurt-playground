@@ -151,6 +151,9 @@ base too (the same failure on `origin/<base>` over repeated runs, and no
 flaky-test issue explains it), report **blocked (pre-existing)** with the
 evidence, without the ready phrase; the user decides.
 
+Mark the PR ready for review (`gh pr ready <N>`) once the review loop has ended
+and the gates pass.
+
 Summary comment on the PR, then tell the user: head SHA, rounds, issues filed,
 CI state, deferred items. End with: "Ready for merge — say 'merge #N' to
 authorize." Then wait.
