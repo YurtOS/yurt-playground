@@ -4,6 +4,11 @@ export const TERMINATE_GUEST_WORKER = "yurt-terminate";
 export const GUEST_WORKER_ERROR = "yurt-guest-worker-error";
 /** The page's first and only message to a guest: the port to its host. */
 export const GUEST_WORKER_PORT = "yurt-guest-worker-port";
+/** The `performance.mark` the page leaves per guest, naming the path its
+ *  messages take, so a test or a person in devtools can tell which one an
+ *  engine got (`performance.getEntriesByName(...)`). */
+export const GUEST_PORT_DIRECT_MARK = "yurt-guest-port-direct";
+export const GUEST_PORT_RELAY_MARK = "yurt-guest-port-relay";
 
 export type CreateGuestWorkerMessage = {
   type: typeof CREATE_GUEST_WORKER;
@@ -178,6 +183,9 @@ export function attachGuestWorkerFactory(coordinator: Worker): void {
       return;
     }
     const guest = new Worker(...start);
+    globalThis.performance?.mark?.(
+      request.direct ? GUEST_PORT_DIRECT_MARK : GUEST_PORT_RELAY_MARK,
+    );
     let relay: MessageChannel | undefined;
     if (request.direct) {
       guest.postMessage({ type: GUEST_WORKER_PORT }, [guestPort]);

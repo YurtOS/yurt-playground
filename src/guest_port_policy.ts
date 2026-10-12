@@ -13,19 +13,16 @@
  * `playgroundHostState`). Anything else on JavaScriptCore keeps the relay.
  */
 import * as kernelHostInterface from "@yurt/kernel-host-interface-js";
-
-/** JavaScriptCore: `AppleWebKit/` without `Chrome/` (Safari and every iOS
- *  browser), the kernel's `workerTeardownWaitsOnCompiles` test. */
-function isJavaScriptCore(userAgent: string | undefined): boolean {
-  if (userAgent === undefined) return false;
-  return /AppleWebKit\//.test(userAgent) && !/Chrome\//.test(userAgent);
-}
+import {
+  engineCapsSharedMemoryReservations as isJavaScriptCore,
+  playgroundHostState,
+} from "./boot.ts";
 
 export function directGuestPort(options: {
   userAgent?: string;
   kernel?: Record<string, unknown>;
   /** The per-process reservation this playground passes the kernel, if
-   *  any. Nothing on this branch sets one; #179 does. */
+   *  any; see {@link playgroundGuestPortIsDirect}. */
   reservationBytes?: number;
 } = {}): boolean {
   const userAgent = "userAgent" in options
@@ -36,4 +33,24 @@ export function directGuestPort(options: {
     (kernelHostInterface as unknown as Record<string, unknown>);
   return typeof kernel.guestMemoryMaximumPages === "function" &&
     options.reservationBytes !== undefined;
+}
+
+/**
+ * The decision every coordinator makes: {@link directGuestPort} with the
+ * reservation the playground actually builds its kernels with
+ * (`playgroundHostState`, set on JavaScriptCore only).
+ */
+export function playgroundGuestPortIsDirect(options: {
+  userAgent?: string;
+  kernel?: Record<string, unknown>;
+} = {}): boolean {
+  const userAgent = "userAgent" in options
+    ? options.userAgent
+    : globalThis.navigator?.userAgent;
+  return directGuestPort({
+    userAgent,
+    kernel: options.kernel,
+    reservationBytes: playgroundHostState(userAgent)
+      .guestMemoryReservationBytes,
+  });
 }

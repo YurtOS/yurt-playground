@@ -1,5 +1,8 @@
 import { assertEquals } from "@std/assert";
-import { directGuestPort } from "../src/guest_port_policy.ts";
+import {
+  directGuestPort,
+  playgroundGuestPortIsDirect,
+} from "../src/guest_port_policy.ts";
 
 const SAFARI_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
@@ -52,8 +55,54 @@ Deno.test("Safari keeps the relay until a per-process reservation is in effect",
   );
 });
 
-Deno.test("as wired on this branch (no reservation passed), Safari relays", () => {
-  // The coordinators call directGuestPort() with no reservation until #179
-  // supplies one, so whatever kernel is bundled, Safari keeps the relay.
-  assertEquals(directGuestPort({ userAgent: SAFARI_UA }), false);
+Deno.test("the coordinators pass the playground's own reservation, so Safari goes direct on a #3115 kernel", () => {
+  // What the three coordinators call. #179 sets a quarter GiB per process
+  // on JavaScriptCore only (playgroundHostState); that must reach the
+  // policy, or Safari silently stays on the relay.
+  assertEquals(
+    playgroundGuestPortIsDirect({ userAgent: SAFARI_UA, kernel: WITH_3115 }),
+    true,
+  );
+  assertEquals(
+    playgroundGuestPortIsDirect({ userAgent: SAFARI_UA, kernel: WITHOUT_3115 }),
+    false,
+    "a kernel without #3115 keeps Safari on the relay",
+  );
+  for (const userAgent of [CHROME_UA, FIREFOX_UA]) {
+    assertEquals(
+      playgroundGuestPortIsDirect({ userAgent, kernel: WITHOUT_3115 }),
+      true,
+    );
+  }
+});
+
+Deno.test("the bundled kernel host honours per-process reservations, so Safari takes the direct port", () => {
+  // The kernel the playground pins (artifacts/pins.json) must include
+  // yurtos-kernel#3115; a pin that drops it would put Safari back on the
+  // relay without anything else turning red.
+  assertEquals(playgroundGuestPortIsDirect({ userAgent: SAFARI_UA }), true);
+});
+
+Deno.test("every coordinator decides its guests' port with the playground's reservation", async () => {
+  // A coordinator that calls installCoordinatorWorkerProxy() bare, or
+  // directGuestPort() without the reservation, keeps Safari on the relay
+  // however the policy is tested above.
+  const src = new URL("../src/", import.meta.url);
+  const installers: string[] = [];
+  for await (const entry of Deno.readDir(src)) {
+    if (!entry.isFile || !entry.name.endsWith(".ts")) continue;
+    const text = await Deno.readTextFile(new URL(entry.name, src));
+    const calls = [
+      ...text.matchAll(/installCoordinatorWorkerProxy\(([^;]*)\);/g),
+    ]
+      .map((match) => match[1].replace(/\s+/g, ""));
+    if (calls.length === 0) continue;
+    installers.push(entry.name);
+    assertEquals(calls, ["()=>playgroundGuestPortIsDirect()"], entry.name);
+  }
+  assertEquals(installers.sort(), [
+    "coordinator_worker.ts",
+    "notebook_kernel_worker.ts",
+    "snapshot_worker.ts",
+  ]);
 });

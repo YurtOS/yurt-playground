@@ -46,7 +46,7 @@ import type {
   JupyterRequestChannel,
 } from "./jupyter_transport.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
-import { directGuestPort } from "./guest_port_policy.ts";
+import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import {
   clearSnapshot,
   loadSnapshot,
@@ -59,7 +59,7 @@ import { stagedPath } from "./notebook_stage.ts";
 import { stageYurtimg, writeRamfsFile } from "./stage.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
 
-installCoordinatorWorkerProxy(() => directGuestPort());
+installCoordinatorWorkerProxy(() => playgroundGuestPortIsDirect());
 
 const GUEST_PATH = `./${PYTHON_SEAL_NAME}`;
 const CELL_SERVER_PATH = "./demo/cell_server.py";

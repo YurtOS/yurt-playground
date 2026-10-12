@@ -4,11 +4,14 @@ import {
   attachGuestWorkerFactory,
   CREATE_GUEST_WORKER,
   dispatchGuestWorkerProxyEvent,
+  GUEST_PORT_DIRECT_MARK,
+  GUEST_PORT_RELAY_MARK,
   GUEST_WORKER_ERROR,
   GUEST_WORKER_PORT,
   installCoordinatorWorkerProxy,
   parseCreateGuestWorkerMessage,
 } from "../src/page_worker_bridge.ts";
+import { playgroundGuestPortIsDirect } from "../src/guest_port_policy.ts";
 
 Deno.test("guest-worker factory messages use a reserved type", () => {
   assertEquals(CREATE_GUEST_WORKER, "yurt-create-guest-worker");
@@ -43,7 +46,7 @@ Deno.test("guest-worker failures become proxy error events", () => {
  */
 function wireBridge(
   bootstrap: (scope: GuestScope) => void,
-  direct = true,
+  direct: boolean | (() => boolean) = true,
 ) {
   const originalWorker = globalThis.Worker;
   const originalPostMessage = (globalThis as { postMessage?: unknown })
@@ -68,7 +71,9 @@ function wireBridge(
       coordinator.dispatchEvent(new MessageEvent("message", { data, ports }))
     );
   };
-  installCoordinatorWorkerProxy(() => direct);
+  installCoordinatorWorkerProxy(
+    typeof direct === "function" ? direct : () => direct,
+  );
   const ProxyWorker = globalThis.Worker;
   const guests: FakeGuestWorker[] = [];
   class FakeGuestWorker {
@@ -244,3 +249,53 @@ Deno.test("the create request carries the coordinator's direct-port choice", () 
   // An older coordinator says nothing: relay, as before.
   assertEquals(parseCreateGuestWorkerMessage(base)?.direct, false);
 });
+
+const SAFARI_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
+  "(KHTML, like Gecko) Version/26.6.2 Safari/605.1.15";
+
+for (
+  const [kernel, mark, label] of [
+    [{ guestMemoryMaximumPages: () => 0 }, GUEST_PORT_DIRECT_MARK, "direct"],
+    [{}, GUEST_PORT_RELAY_MARK, "relayed"],
+  ] as const
+) {
+  Deno.test({
+    name: `Safari's guests are ${label} as the coordinators decide it`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+  }, async () => {
+    // The coordinators' own decision (the playground's reservation through
+    // the policy) drives the page's factory end to end, and the page marks
+    // which path it took: the mark the Safari measurement reads.
+    performance.clearMarks();
+    const { ProxyWorker, guests, restore } = wireBridge(
+      (scope) => {
+        echoBootstrap(scope);
+        adoptGuestPort(scope);
+      },
+      () => playgroundGuestPortIsDirect({ userAgent: SAFARI_UA, kernel }),
+    );
+    try {
+      const worker = new ProxyWorker("/worker_bootstrap.js", {
+        type: "module",
+      });
+      const replies: unknown[] = [];
+      worker.addEventListener("message", (event) => {
+        replies.push((event as MessageEvent).data);
+      });
+      worker.postMessage({ kind: "init" });
+      await settle();
+      assertEquals(replies, [{ echo: "init" }]);
+      assertEquals(guests[0].fromPage, [{ type: GUEST_WORKER_PORT }]);
+      assertEquals(performance.getEntriesByName(mark).length, 1);
+      assertEquals(
+        performance.getEntriesByType("mark").map((entry) => entry.name),
+        [mark],
+      );
+      worker.terminate();
+    } finally {
+      restore();
+    }
+  });
+}
