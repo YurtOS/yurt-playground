@@ -4,10 +4,10 @@ import {
   attachGuestWorkerFactory,
   CREATE_GUEST_WORKER,
   dispatchGuestWorkerProxyEvent,
-  GUEST_PORT_DIRECT_MARK,
-  GUEST_PORT_RELAY_MARK,
+  GUEST_PORT_COUNTS,
   GUEST_WORKER_ERROR,
   GUEST_WORKER_PORT,
+  guestPortCounts,
   installCoordinatorWorkerProxy,
   parseCreateGuestWorkerMessage,
 } from "../src/page_worker_bridge.ts";
@@ -255,9 +255,9 @@ const SAFARI_UA =
   "(KHTML, like Gecko) Version/26.6.2 Safari/605.1.15";
 
 for (
-  const [kernel, mark, label] of [
-    [{ guestMemoryMaximumPages: () => 0 }, GUEST_PORT_DIRECT_MARK, "direct"],
-    [{}, GUEST_PORT_RELAY_MARK, "relayed"],
+  const [kernel, path, label] of [
+    [{ guestMemoryMaximumPages: () => 0 }, "direct", "direct"],
+    [{}, "relay", "relayed"],
   ] as const
 ) {
   Deno.test({
@@ -267,8 +267,8 @@ for (
   }, async () => {
     // The coordinators' own decision (the playground's reservation through
     // the policy) drives the page's factory end to end, and the page marks
-    // which path it took: the mark the Safari measurement reads.
-    performance.clearMarks();
+    // which path it took: the count the Safari measurement reads.
+    delete (globalThis as Record<string, unknown>)[GUEST_PORT_COUNTS];
     const { ProxyWorker, guests, restore } = wireBridge(
       (scope) => {
         echoBootstrap(scope);
@@ -288,11 +288,11 @@ for (
       await settle();
       assertEquals(replies, [{ echo: "init" }]);
       assertEquals(guests[0].fromPage, [{ type: GUEST_WORKER_PORT }]);
-      assertEquals(performance.getEntriesByName(mark).length, 1);
-      assertEquals(
-        performance.getEntriesByType("mark").map((entry) => entry.name),
-        [mark],
-      );
+      assertEquals(guestPortCounts(), {
+        direct: path === "direct" ? 1 : 0,
+        relay: path === "relay" ? 1 : 0,
+      });
+      assertEquals(performance.getEntriesByType("mark"), []);
       worker.terminate();
     } finally {
       restore();

@@ -4,11 +4,17 @@ export const TERMINATE_GUEST_WORKER = "yurt-terminate";
 export const GUEST_WORKER_ERROR = "yurt-guest-worker-error";
 /** The page's first and only message to a guest: the port to its host. */
 export const GUEST_WORKER_PORT = "yurt-guest-worker-port";
-/** The `performance.mark` the page leaves per guest, naming the path its
- *  messages take, so a test or a person in devtools can tell which one an
- *  engine got (`performance.getEntriesByName(...)`). */
-export const GUEST_PORT_DIRECT_MARK = "yurt-guest-port-direct";
-export const GUEST_PORT_RELAY_MARK = "yurt-guest-port-relay";
+/** The page's count of guests per path their messages take, so a test or a
+ *  person in devtools can tell which one an engine got
+ *  (`globalThis.__yurtGuestPorts`). Two counters, not a `performance.mark`
+ *  per guest: a page that runs for hours starts thousands of processes, and
+ *  marks are never collected. */
+export const GUEST_PORT_COUNTS = "__yurtGuestPorts";
+export type GuestPortCounts = { direct: number; relay: number };
+export function guestPortCounts(): GuestPortCounts {
+  const scope = globalThis as unknown as Record<string, GuestPortCounts>;
+  return scope[GUEST_PORT_COUNTS] ??= { direct: 0, relay: 0 };
+}
 
 export type CreateGuestWorkerMessage = {
   type: typeof CREATE_GUEST_WORKER;
@@ -183,9 +189,7 @@ export function attachGuestWorkerFactory(coordinator: Worker): void {
       return;
     }
     const guest = new Worker(...start);
-    globalThis.performance?.mark?.(
-      request.direct ? GUEST_PORT_DIRECT_MARK : GUEST_PORT_RELAY_MARK,
-    );
+    guestPortCounts()[request.direct ? "direct" : "relay"]++;
     let relay: MessageChannel | undefined;
     if (request.direct) {
       guest.postMessage({ type: GUEST_WORKER_PORT }, [guestPort]);

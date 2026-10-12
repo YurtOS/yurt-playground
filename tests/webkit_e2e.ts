@@ -16,10 +16,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
-import {
-  GUEST_PORT_DIRECT_MARK,
-  GUEST_PORT_RELAY_MARK,
-} from "../src/page_worker_bridge.ts";
+import { GUEST_PORT_COUNTS } from "../src/page_worker_bridge.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const EXECS = 40;
@@ -85,10 +82,12 @@ if (import.meta.main) {
       }
       return { ok, failures: failures.slice(0, 3) };
     }, EXECS);
-    const marks = await page.evaluate(([direct, relay]) => ({
-      direct: performance.getEntriesByName(direct).length,
-      relay: performance.getEntriesByName(relay).length,
-    }), [GUEST_PORT_DIRECT_MARK, GUEST_PORT_RELAY_MARK]);
+    const marks = await page.evaluate(
+      (name) =>
+        (globalThis as unknown as Record<string, unknown>)[name] ??
+          { direct: 0, relay: 0 },
+      GUEST_PORT_COUNTS,
+    ) as { direct: number; relay: number };
     console.log(
       "execs:",
       JSON.stringify(result),
