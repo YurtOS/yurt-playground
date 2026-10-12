@@ -29,12 +29,12 @@ page.
 The browser page, the desktop app and `yurt run playground` boot the same image
 (pinned in `artifacts/pins.json`). It contains:
 
-| Package                   | Version               | For                                                                                                                                   |
-| ------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| BusyBox                   | 1.37.0                | `ash` and 151 applets: core utilities, `grep`, `sed`, `awk`, `vi`, `less`, `tar`, `gzip`, `bzip2`, `unzip`, `wget`, `nc`, `ps`, `top` |
-| CPython, pip              | 3.14.4, 26.1          | `python3`; `pip`                                                                                                                      |
-| NumPy                     | 2.5.0                 | arrays                                                                                                                                |
-| ipykernel, IPython, pyzmq | 7.2.0, 9.13.0, 26.4.0 | the Jupyter kernel behind Notebook and Lab                                                                                            |
+| Package                   | Version               | For                                                                                                                                           |
+| ------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| BusyBox                   | 1.37.0                | 151 applets, `ash` among them: core utilities, `grep`, `sed`, `awk`, `vi`, `less`, `tar`, `gzip`, `bzip2`, `unzip`, `wget`, `nc`, `ps`, `top` |
+| CPython, pip              | 3.14.7, 26.1          | `python3`; `pip`                                                                                                                              |
+| NumPy                     | 2.5.0                 | arrays                                                                                                                                        |
+| ipykernel, IPython, pyzmq | 7.2.0, 9.13.0, 26.4.0 | the Jupyter kernel behind Notebook and Lab                                                                                                    |
 
 All four are in the image. Nothing else can be installed into a running
 playground today:
