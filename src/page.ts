@@ -5,7 +5,7 @@ import {
   type MemoryRefusedMessage,
   showMemoryRefused,
 } from "./memory_refused.ts";
-import { mountNotebook } from "./notebook.ts";
+import { mountNotebook, type NotebookView } from "./notebook.ts";
 import { mountAgentPane } from "./agent_pane.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
@@ -118,10 +118,11 @@ function watchNetwork(net: HTMLElement): void {
 }
 
 /**
- * Phones get no Start: an iPhone downloads everything and Safari reloads
- * the tab at "starting Jupyter", since the boot needs around a gigabyte in
- * one tab. Tablets get the note and may try; iPadOS reports a Mac, so the
- * coarse pointer on a narrow screen is what identifies one.
+ * Phones get no Start: phone browsers give one tab too little memory for
+ * the boot (iPhone Safari reloaded the tab at "starting Jupyter", #68), and
+ * `?start-anyway` lets one try regardless. Tablets get the note and may
+ * try; iPadOS reports a Mac, so the coarse pointer on a narrow screen is
+ * what identifies one.
  */
 function deviceClass(): "phone" | "tablet" | "desktop" {
   const uaData = (navigator as { userAgentData?: { mobile?: boolean } })
@@ -173,6 +174,10 @@ function showFailure(
   reason?: string,
 ): void {
   byId("start").hidden = true;
+  // A phone is not a boot that failed: nothing was started.
+  byId("failed-title").textContent = why === "phone"
+    ? "The sandbox does not run on phones"
+    : "The sandbox did not start";
   const failed = byId("failed");
   for (const p of failed.querySelectorAll<HTMLElement>("[data-why]")) {
     p.hidden = p.dataset.why !== why;
@@ -185,7 +190,7 @@ function showFailure(
 
 /** Boot the sandbox into the page: the terminal pane and the cell. */
 function boot(
-  notebook: ReturnType<typeof mountNotebook>,
+  notebook: NotebookView,
   execute: { current: (id: string, code: string) => void },
   interruptCell: { current: (id: string) => void },
   desktop: DesktopInfo | undefined,
@@ -224,6 +229,7 @@ function boot(
     }
     status.textContent = "failed";
     showFailure(deviceClass() === "tablet" ? "tablet" : "error", message);
+    notebook.unavailable("no sandbox");
   };
   // window.yurt (src/agent_api.ts): a driver's view of the same sandbox.
   // Requests go to the worker with a number the reply echoes.
@@ -406,14 +412,17 @@ async function runPage(): Promise<void> {
   if (desktop === undefined) {
     const device = deviceClass();
     if (device === "tablet") byId("mobile-note").hidden = false;
+    // Read (and clear) the boot memory either way, so `?start-anyway`
+    // does not leave it for the next load.
     const cutOff = cutOffBoot();
-    if (device === "phone" || cutOff !== undefined) {
-      byId("status").textContent = "failed";
-      showFailure(device === "phone" ? "phone" : "reloaded", cutOff);
+    const anyway = new URL(location.href).searchParams.has("start-anyway");
+    if (!anyway && (device === "phone" || cutOff !== undefined)) {
+      const phone = device === "phone";
+      byId("status").textContent = phone ? "not on phones" : "failed";
+      showFailure(phone ? "phone" : "reloaded", phone ? undefined : cutOff);
+      notebook.unavailable(phone ? "not on phones" : "no sandbox");
       yurtState.failed(
-        device === "phone"
-          ? "not on a phone"
-          : `a previous boot was cut off at ${cutOff}`,
+        phone ? "not on phones" : `a previous boot was cut off at ${cutOff}`,
       );
       return;
     }

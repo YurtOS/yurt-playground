@@ -313,6 +313,10 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
   for (const why of ["phone", "tablet", "reloaded", "error"]) {
     assertEquals(html.includes(`data-why="${why}"`), true, why);
   }
+  // The phone refusal names its way out, and states no stale measurement.
+  assertEquals(html.includes('id="failed-title"'), true);
+  assertEquals(html.includes('href="./?start-anyway"'), true);
+  assertEquals(html.includes("around a gigabyte"), false);
   const unsupported = await Deno.readTextFile(
     new URL("../public/unsupported.html", import.meta.url),
   );
