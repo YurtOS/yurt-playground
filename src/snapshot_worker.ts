@@ -26,6 +26,7 @@ import {
   restorePlaygroundKernel,
 } from "./boot.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
+import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
 import {
   clearSnapshot,
@@ -35,7 +36,7 @@ import {
   storeSnapshot,
 } from "./snapshot_store.ts";
 
-installCoordinatorWorkerProxy();
+installCoordinatorWorkerProxy(() => playgroundGuestPortIsDirect());
 
 const SEAL_INTERVAL_MS = 2000;
 const SIGKILL = 9;

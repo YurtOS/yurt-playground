@@ -31,12 +31,13 @@ import type {
 } from "./jupyter_transport.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
+import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import {
   type MemoryRefusedMessage,
   memoryRefusedMessage,
 } from "./memory_refused.ts";
 
-installCoordinatorWorkerProxy();
+installCoordinatorWorkerProxy(() => playgroundGuestPortIsDirect());
 type ToWorker =
   // `kernelPorts` set: the desktop app's native sandbox (see native.ts),
   // reached over WebSockets; otherwise the kernel boots in this worker.

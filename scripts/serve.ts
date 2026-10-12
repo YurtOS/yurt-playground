@@ -35,6 +35,8 @@ export function kernelImportMap(
         `${kernelPath}/packages/kernel-host-interface-js/mod.ts`,
       "@yurt/tar-image":
         `${kernelPath}/packages/runner/src/vfs/tar-image-root-provider.ts`,
+      "@yurt/worker-bootstrap":
+        `${kernelPath}/packages/kernel-host-interface-js/kernel-host-interface/worker_bootstrap.ts`,
       "@xterm/xterm": "npm:@xterm/xterm@5.5.0",
       "@xterm/addon-fit": "npm:@xterm/addon-fit@0.10.0",
       fzstd: "npm:fzstd@0.1.1",
@@ -80,12 +82,12 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
       "self.location.href",
     ),
   );
+  // The guest Worker: the kernel's bootstrap behind the port the page hands
+  // it (src/page_worker_bridge.ts).
   await bundle(kernelPath, {
-    entry: join(
-      kernelPath,
-      "packages/kernel-host-interface-js/kernel-host-interface/worker_bootstrap.ts",
-    ),
+    entry: join(repoRoot, "src/guest_worker_entry.ts"),
     out: join(repoRoot, "public/worker_bootstrap.js"),
+    importMap: importMapPath,
   });
   // The continuous-snapshot demo (public/snapshot.html): its own page and
   // its own classic coordinator, with the same import.meta rewrite.

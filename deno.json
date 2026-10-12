@@ -10,7 +10,8 @@
     "fzstd": "npm:fzstd@0.1.1",
     "@litert-lm/core": "npm:@litert-lm/core@0.17.1",
     "@yurt/kernel-host-interface-js": "../yurtos-kernel/packages/kernel-host-interface-js/mod.ts",
-    "@yurt/tar-image": "../yurtos-kernel/packages/runner/src/vfs/tar-image-root-provider.ts"
+    "@yurt/tar-image": "../yurtos-kernel/packages/runner/src/vfs/tar-image-root-provider.ts",
+    "@yurt/worker-bootstrap": "../yurtos-kernel/packages/kernel-host-interface-js/kernel-host-interface/worker_bootstrap.ts"
   },
   "nodeModulesDir": "auto",
   "compilerOptions": {

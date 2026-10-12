@@ -154,7 +154,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scene: [playground, jupyterlite, snapshot, notebook_snapshot, agent]
+        scene: [
+          playground,
+          jupyterlite,
+          snapshot,
+          notebook_snapshot,
+          agent,
+          webkit,
+        ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -163,15 +170,24 @@ jobs:
       - uses: ./playground/.github/actions/site-inputs
         with:
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-      # Playwright's Chromium, keyed on the pinned playwright version: a hit
-      # makes `install chromium` a no-op.
+      # Playwright's browsers, keyed on the pinned playwright version: a hit
+      # makes the install a no-op. The `webkit` scene runs JavaScriptCore
+      # (#2996's engine) and needs its system libraries too.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('playground/deno.json') }}
-      - name: Install Chromium for browser acceptance
+          key: playwright-${{ matrix.scene == 'webkit' && 'webkit-' || '' }}${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('playground/deno.json') }}
+      - name: Install the browser for browser acceptance
         working-directory: playground
-        run: deno run --allow-all node_modules/playwright/cli.js install chromium
+        env:
+          BROWSER: ${{ matrix.scene == 'webkit' && 'webkit' || 'chromium' }}
+        run: |
+          set -euo pipefail
+          if [ "$BROWSER" = webkit ]; then
+            deno run --allow-all node_modules/playwright/cli.js install --with-deps webkit
+          else
+            deno run --allow-all node_modules/playwright/cli.js install chromium
+          fi
       # The deployable site, built from the inputs above: what the
       # acceptance below boots.
       - name: Build static site
