@@ -313,10 +313,21 @@ done
 # dispatched at today's revision would not match the artifacts already built.
 if [ "$resume" = 1 ] && [ "$pins_only" = 0 ]; then
   if [ -z "$train" ]; then
-    newest=$(jq -r .train "$state_dir"/*.json 2>/dev/null | sort -V | tail -1)
-    train=$(jq -r --argjson v "$validate" \
-      'select(.validate == $v and (.train | endswith("-validate")) == ($v == 1)) | .train' \
-      "$state_dir"/*.json 2>/dev/null | sort -V | tail -1)
+    # Newest first by modification time: every step rewrites its train's
+    # state file, so the file written last is the train last worked on.
+    # Labels do not order by time (X-validate sorts after X, and two trains
+    # on one day fall back to the order of their kernel shas).
+    newest="" train=""
+    while IFS= read -r file; do
+      [ -n "$file" ] || continue
+      label=$(jq -r .train "$file")
+      [ -n "$newest" ] || newest=$label
+      if [ -z "$train" ] && jq -e --argjson v "$validate" \
+        'select(.validate == $v and (.train | endswith("-validate")) == ($v == 1))' \
+        "$file" >/dev/null; then
+        train=$label
+      fi
+    done < <(ls -t "$state_dir"/*.json 2>/dev/null)
     # Without --train, resume only the train that is plainly meant: the
     # newest one of its kind, started today. A rehearsal newer than every
     # real train means the caller forgot --validate.

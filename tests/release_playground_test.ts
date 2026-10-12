@@ -261,9 +261,10 @@ Deno.test("resume watches a recorded kernel run without resolving its tag", asyn
 
 /** A project whose release script stops before the image step, a `gh` that
  * answers `auth status`, `run view` with `runView` and `run watch` with
- * `watchExit`, and a state directory holding `trains`. */
+ * `watchExit`, and a state directory holding `trains`, each state file last
+ * written `minutesAgo` before now (the order a bare --resume goes by). */
 async function resumeFixture(
-  trains: { train: string; validate: 0 | 1 }[],
+  trains: { train: string; validate: 0 | 1; minutesAgo?: number }[],
   gh: { runView: string; watchExit: number },
 ) {
   const dir = await Deno.makeTempDir({ prefix: "release-resume-" });
@@ -286,9 +287,10 @@ async function resumeFixture(
   const stateDir = join(dir, "state/yurt-playground/releases");
   await Deno.mkdir(stateDir, { recursive: true });
   const sha = "a".repeat(40);
-  for (const { train, validate } of trains) {
+  for (const { train, validate, minutesAgo = 0 } of trains) {
+    const file = join(stateDir, `${train}.json`);
     await Deno.writeTextFile(
-      join(stateDir, `${train}.json`),
+      file,
       JSON.stringify({
         train,
         kernel_sha: sha,
@@ -299,6 +301,8 @@ async function resumeFixture(
         steps: { kernel_wasm: { run_id: 123 } },
       }),
     );
+    const written = new Date(Date.now() - minutesAgo * 60_000);
+    await Deno.utime(file, written, written);
   }
   const bin = join(dir, "bin");
   await Deno.mkdir(bin);
@@ -330,7 +334,7 @@ Deno.test("a bare --resume does not pass over a newer rehearsal to an older real
   // 2026-10-12: `--resume` after a failed rehearsal resumed the abandoned
   // real train playground-2026.09.29-c48d70d and dispatched its native run.
   const fixture = await resumeFixture([
-    { train: "playground-2026.09.29-c48d70d", validate: 0 },
+    { train: "playground-2026.09.29-c48d70d", validate: 0, minutesAgo: 60 },
     { train: `playground-${today}-5ddc591-validate`, validate: 1 },
   ], { runView: "completed/success", watchExit: 0 });
   try {
@@ -383,6 +387,40 @@ Deno.test("a failed rehearsal step names the command that resumes it", async () 
       output,
       `failed; fix it, then scripts/release-playground.sh --resume --train ${train} --validate`,
     );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+Deno.test("a bare --resume takes the real train written after its own rehearsal", async () => {
+  // Labels do not order by time: X-validate sorts after X. With the
+  // rehearsal left unfinished and the real train X the one last worked on,
+  // --resume means X.
+  const train = `playground-${today}-5ddc591`;
+  const fixture = await resumeFixture([
+    { train: `${train}-validate`, validate: 1, minutesAgo: 60 },
+    { train, validate: 0 },
+  ], { runView: "completed/success", watchExit: 0 });
+  try {
+    const { code, output } = await fixture.run("--resume");
+    assertEquals(code, 0, output);
+    assertStringIncludes(output, `train   ${train}`);
+    assertStringIncludes(output, "REACHED_IMAGE_STEP");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+Deno.test("a bare --resume takes the train written last, not the higher kernel sha", async () => {
+  // Two trains on one day tie on the date; the label then orders by sha.
+  const fixture = await resumeFixture([
+    { train: `playground-${today}-fffffff`, validate: 0, minutesAgo: 60 },
+    { train: `playground-${today}-0000000`, validate: 0 },
+  ], { runView: "completed/success", watchExit: 0 });
+  try {
+    const { code, output } = await fixture.run("--resume");
+    assertEquals(code, 0, output);
+    assertStringIncludes(output, `train   playground-${today}-0000000`);
   } finally {
     await fixture.cleanup();
   }
