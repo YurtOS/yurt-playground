@@ -48,6 +48,10 @@ type ToWorker =
     isolated: boolean;
     kernelPorts?: KernelPorts;
     apiToken?: string;
+    // A tablet gets the shell only: ipykernel's memory is what a tablet
+    // browser refuses first (iPadOS stopped spawning after ~13 processes
+    // while Jupyter started), so it is never launched there.
+    noJupyter?: boolean;
   }
   | { type: "in"; text: string }
   | { type: "resize"; rows: number; cols: number }
@@ -80,6 +84,8 @@ type FromWorker =
   | { type: "out"; bytes: number[] }
   | { type: "error"; message: string }
   | { type: "notebook-ready" }
+  // The shell is the whole session (`noJupyter`): booted, nothing follows.
+  | { type: "shell-ready" }
   | {
     type: "cell-result";
     id: string;
@@ -303,6 +309,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       );
     if (session.process !== undefined && session.signal !== undefined) {
       executions = new ExecutionRegistry(session.process, session.signal);
+    }
+    if (msg.noJupyter === true) {
+      post({ type: "status", text: "" });
+      post({ type: "shell-ready" });
+      return;
     }
     post({ type: "status", text: "starting Jupyter" });
     launchSession = session;
