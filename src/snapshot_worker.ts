@@ -14,14 +14,17 @@
  * `Atomics.wait`, which the window thread may not do.
  */
 import {
-  defaultHostState,
   KernelHostInterface,
   pumpPtyMaster,
   s,
   type SandboxSealImage,
   type UserProcess,
 } from "@yurt/kernel-host-interface-js";
-import { fetchPlaygroundBytes } from "./boot.ts";
+import {
+  fetchPlaygroundBytes,
+  loadPlaygroundKernel,
+  restorePlaygroundKernel,
+} from "./boot.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 import { directGuestPort } from "./guest_port_policy.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
@@ -147,7 +150,7 @@ async function bootFresh(
   }
   const guest = new Uint8Array(await response.arrayBuffer());
   post({ type: "status", text: "booting the kernel" });
-  const mk = await KernelHostInterface.load(kernel, defaultHostState());
+  const mk = await loadPlaygroundKernel(kernel);
   const process = await mk.spawnUserProcessWithArgsAsync(guest, [s("primes")], {
     TERM: "xterm-256color",
   });
@@ -178,11 +181,7 @@ async function restoreStored(
       })),
     ),
   );
-  const restored = await KernelHostInterface.restore(
-    kernel,
-    stored.image,
-    defaultHostState(),
-  );
+  const restored = await restorePlaygroundKernel(kernel, stored.image);
   try {
     const [process] = restored.processes;
     if (process === undefined) throw new Error("the image holds no process");

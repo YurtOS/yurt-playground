@@ -49,7 +49,10 @@
 #                   the train's own artifacts (the pinned ones may be a
 #                   kernel rev behind the runtime) -- then the prereleases
 #                   are deleted; nothing is pinned, no PR is opened
-#   --resume        continue a train from its state file
+#   --resume        continue a train from its state file. Without --train,
+#                   only the newest train of its kind (add --validate for a
+#                   rehearsal) and only if it started today; a failure
+#                   prints the exact command to resume it
 #   --check         dispatch nothing, write nothing: is everything up to date?
 #                   One row per pin (each repo's main vs the pinned rev, the
 #                   image and the seal at one rev, the guest SDK the train
@@ -120,6 +123,13 @@ done
 
 say() { printf '\033[1m==> %s\033[0m\n' "$*" >&2; }
 die() { echo "release-playground: $*" >&2; exit 1; }
+# The command that resumes this train, spelled out: a rehearsal needs
+# --validate as well, and a bare --resume picks the newest *real* train,
+# which once resumed an abandoned one instead of the rehearsal that failed.
+resume_command() {
+  printf 'scripts/release-playground.sh --resume --train %s%s' \
+    "${train%-validate}" "$( [ "$validate" = 1 ] && echo ' --validate')"
+}
 source "$root/scripts/lib/kernel-release.sh"
 
 for tool in gh jq git; do
@@ -303,10 +313,31 @@ done
 # dispatched at today's revision would not match the artifacts already built.
 if [ "$resume" = 1 ] && [ "$pins_only" = 0 ]; then
   if [ -z "$train" ]; then
-    train=$(jq -r --argjson v "$validate" \
-      'select(.validate == $v and (.train | endswith("-validate")) == ($v == 1)) | .train' \
-      "$state_dir"/*.json 2>/dev/null | sort -V | tail -1)
+    # Newest first by modification time: every step rewrites its train's
+    # state file, so the file written last is the train last worked on.
+    # Labels do not order by time (X-validate sorts after X, and two trains
+    # on one day fall back to the order of their kernel shas).
+    newest="" train=""
+    while IFS= read -r file; do
+      [ -n "$file" ] || continue
+      label=$(jq -r .train "$file")
+      [ -n "$newest" ] || newest=$label
+      if [ -z "$train" ] && jq -e --argjson v "$validate" \
+        'select(.validate == $v and (.train | endswith("-validate")) == ($v == 1))' \
+        "$file" >/dev/null; then
+        train=$label
+      fi
+    done < <(ls -t "$state_dir"/*.json 2>/dev/null)
+    # Without --train, resume only the train that is plainly meant: the
+    # newest one of its kind, started today. A rehearsal newer than every
+    # real train means the caller forgot --validate.
+    if [ "$validate" = 0 ] && [[ "$newest" == *-validate ]] && [ "$newest" != "$train" ]; then
+      die "the newest train is the rehearsal $newest; resume it with: scripts/release-playground.sh --resume --train ${newest%-validate} --validate"
+    fi
     [ -n "$train" ] || die "nothing to resume$( [ "$validate" = 1 ] && echo ' (rehearsal)'); pass --train"
+    today=$(date -u +%Y.%m.%d)
+    [[ "$train" == "playground-$today-"* ]] \
+      || die "the newest $( [ "$validate" = 1 ] && echo rehearsal || echo train), $train, did not start today ($today); to resume it anyway: $(resume_command)"
   fi
   train=${train%-validate}; [ "$validate" = 0 ] || train="$train-validate"
   state=$state_dir/$train.json
@@ -316,7 +347,13 @@ if [ "$resume" = 1 ] && [ "$pins_only" = 0 ]; then
     [ -z "${!var}" ] || [ "${!var}" = "$recorded" ] || die "--${var//_/-} ${!var} is not the train's ($recorded)"
     printf -v "$var" '%s' "$recorded"
   done
-  [ "$(jq -r .build_image "$state")" = true ] || image_release=$(jq -r .image_release "$state")
+  # A hand-cut image (and its seal) as given, `owner/repo@tag`: a bare tag
+  # would resolve to yurt-packages, and a seal left out would carry the old
+  # pin through. State files from before image_repo recorded only the tag.
+  if [ "$(jq -r .build_image "$state")" != true ]; then
+    image_release=$(jq -r 'if .image_repo then "\(.image_repo)@\(.image_release)" else .image_release end' "$state")
+    seal_release=$(jq -r 'if (.seal_release // "") != "" then "\(.seal_repo)@\(.seal_release)" else "" end' "$state")
+  fi
 fi
 
 # ---- revisions -----------------------------------------------------------
@@ -372,7 +409,7 @@ if [ "$pins_only" = 0 ]; then
     if [ "$resume" = 0 ]; then
       for spec in "${rehearsal_releases[@]}"; do
         gh release view "${spec#*:}" --repo "${spec%%:*}" >/dev/null 2>&1 \
-          && die "${spec%%:*} still has ${spec#*:} from an unfinished rehearsal; --resume it, or delete them (gh release delete ${spec#*:} --repo ${spec%%:*} --yes --cleanup-tag)"
+          && die "${spec%%:*} still has ${spec#*:} from an unfinished rehearsal; resume it ($(resume_command)), or delete them (gh release delete ${spec#*:} --repo ${spec%%:*} --yes --cleanup-tag)"
       done
     fi
   fi
@@ -403,8 +440,10 @@ if [ "$resume" = 1 ]; then
 else
   [ -f "$state" ] && die "$state exists; --resume it, or pick --train"
   jq -n --arg train "$train" --arg kernel "$kernel_sha" --arg ports "$ports_sha" --arg sandbox "$sandbox_sha" \
-    --arg image "$image_release" --argjson build_image "$build_image" --argjson validate "$validate" \
-    '{train:$train, kernel_sha:$kernel, ports_sha:$ports, sandbox_sha:$sandbox, image_release:$image, build_image:($build_image == 1), validate:$validate, steps:{}}' \
+    --arg image "$image_release" --arg image_repo "$image_repo" --argjson build_image "$build_image" --argjson validate "$validate" \
+    --arg seal "${seal_release:-}" --arg seal_repo "${seal_repo:-}" \
+    '{train:$train, kernel_sha:$kernel, ports_sha:$ports, sandbox_sha:$sandbox, image_release:$image, image_repo:$image_repo,
+      seal_release:$seal, seal_repo:$seal_repo, build_image:($build_image == 1), validate:$validate, steps:{}}' \
     > "$state"
 fi
 step_get() { jq -r ".steps[\"$1\"].$2 // empty" "$state"; }
@@ -458,7 +497,7 @@ dispatch_and_watch() {
     step_set "$step" conclusion '"success"'
   else
     step_set "$step" conclusion '"failure"'
-    die "$workflow run $run_id failed; fix and --resume (the step reruns)"
+    die "$workflow run $run_id failed; fix it, then $(resume_command) (the step reruns)"
   fi
 }
 
@@ -629,7 +668,7 @@ if [ "$pr_state" != MERGED ]; then
   # here is the page's CI against the new pins, fix and --resume).
   say "waiting for the checks on $pr_url"
   gh pr checks "$pr_url" --repo YurtOS/yurt-playground --watch --fail-fast >/dev/null \
-    || die "checks failed on $pr_url; fix and --resume"
+    || die "checks failed on $pr_url; fix them, then $(resume_command)"
   gh pr merge "$pr_url" --repo YurtOS/yurt-playground --squash --delete-branch
 fi
 say "deploy: gh run list --repo YurtOS/yurt-playground --workflow deploy-pages.yml"

@@ -2,6 +2,9 @@ import type { JupyterReply, JupyterStream } from "./jupyter.ts";
 
 export type NotebookView = {
   ready(): void;
+  /** No sandbox is coming (a phone, a boot that died): say so instead of
+   * "waiting for the sandbox", and keep the cell disabled. */
+  unavailable(state: string): void;
   /** What the running cell has printed so far (yurt-playground#131). */
   stream(id: string, chunk: JupyterStream): void;
   result(id: string, reply: JupyterReply): void;
@@ -149,6 +152,12 @@ export function mountNotebook(
       editor.disabled = false;
       button.disabled = false;
       status.textContent = "ready";
+    },
+    unavailable(state) {
+      editor.disabled = true;
+      button.disabled = true;
+      stop.hidden = true;
+      status.textContent = state;
     },
     stream(id, chunk) {
       if (!pending.has(id)) return;

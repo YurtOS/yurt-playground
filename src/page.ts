@@ -1,5 +1,11 @@
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
-import { mountNotebook } from "./notebook.ts";
+import {
+  hideMemoryRefused,
+  MEMORY_REFUSED_RELOAD_ID,
+  type MemoryRefusedMessage,
+  showMemoryRefused,
+} from "./memory_refused.ts";
+import { mountNotebook, type NotebookView } from "./notebook.ts";
 import { mountAgentPane } from "./agent_pane.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
@@ -22,6 +28,7 @@ type FromWorker =
   | { type: "out"; bytes: number[] }
   | { type: "error"; message: string }
   | { type: "notebook-ready" }
+  | { type: "shell-ready" }
   | {
     type: "yurt-reply";
     req: number;
@@ -31,7 +38,8 @@ type FromWorker =
   }
   | { type: "cell-stream"; id: string; chunk: JupyterStream }
   | { type: "cell-result"; id: string; result: JupyterReply }
-  | { type: "cell-error"; id: string; message: string };
+  | { type: "cell-error"; id: string; message: string }
+  | MemoryRefusedMessage;
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
@@ -111,10 +119,11 @@ function watchNetwork(net: HTMLElement): void {
 }
 
 /**
- * Phones get no Start: an iPhone downloads everything and Safari reloads
- * the tab at "starting Jupyter", since the boot needs around a gigabyte in
- * one tab. Tablets get the note and may try; iPadOS reports a Mac, so the
- * coarse pointer on a narrow screen is what identifies one.
+ * Phones get no Start: phone browsers give one tab too little memory for
+ * the boot (iPhone Safari reloaded the tab at "starting Jupyter", #68), and
+ * `?start-anyway` lets one try regardless. Tablets get the note and may
+ * try; iPadOS reports a Mac, so the coarse pointer on a narrow screen is
+ * what identifies one.
  */
 function deviceClass(): "phone" | "tablet" | "desktop" {
   const uaData = (navigator as { userAgentData?: { mobile?: boolean } })
@@ -166,6 +175,10 @@ function showFailure(
   reason?: string,
 ): void {
   byId("start").hidden = true;
+  // A phone is not a boot that failed: nothing was started.
+  byId("failed-title").textContent = why === "phone"
+    ? "The sandbox does not run on phones"
+    : "The sandbox did not start";
   const failed = byId("failed");
   for (const p of failed.querySelectorAll<HTMLElement>("[data-why]")) {
     p.hidden = p.dataset.why !== why;
@@ -178,14 +191,17 @@ function showFailure(
 
 /** Boot the sandbox into the page: the terminal pane and the cell. */
 function boot(
-  notebook: ReturnType<typeof mountNotebook>,
+  notebook: NotebookView,
   execute: { current: (id: string, code: string) => void },
   interruptCell: { current: (id: string) => void },
   desktop: DesktopInfo | undefined,
   stopWatchingForAnotherSandbox: () => void,
+  shellOnly: boolean,
 ): void {
   const kernelPorts = desktop?.kernelPorts;
   const status = byId("status");
+  // A refusal belongs to the session that had it.
+  hideMemoryRefused(byId);
   const term = createPlaygroundTerminal(byId("term"));
   // Classic worker: Chrome will not start a nested *module* Worker.
   // A classic coordinator can spawn the module guest bootstrap.
@@ -215,6 +231,7 @@ function boot(
     }
     status.textContent = "failed";
     showFailure(deviceClass() === "tablet" ? "tablet" : "error", message);
+    notebook.unavailable("no sandbox");
   };
   // window.yurt (src/agent_api.ts): a driver's view of the same sandbox.
   // Requests go to the worker with a number the reply echoes.
@@ -263,12 +280,18 @@ function boot(
         sandboxGone();
       }
     }
+    showMemoryRefused(msg, byId);
     if (msg.type === "out") {
       terminalEmpty = false;
       term.write(new Uint8Array(msg.bytes));
     }
     if (msg.type === "notebook-ready") {
       notebook.ready();
+      status.textContent = "running";
+      rememberBooting(undefined);
+    }
+    // A tablet's whole session is the shell; once it runs the boot is over.
+    if (msg.type === "shell-ready") {
       status.textContent = "running";
       rememberBooting(undefined);
     }
@@ -305,6 +328,7 @@ function boot(
     isolated: globalThis.crossOriginIsolated === true,
     kernelPorts,
     apiToken: desktop?.apiToken,
+    noJupyter: shellOnly,
   });
 }
 
@@ -361,12 +385,43 @@ async function runPage(): Promise<void> {
     (id, code) => execute.current(id, code),
     (id) => interruptCell.current(id),
   );
-  // The local agent (#140) drives the same sandbox through window.yurt; its
-  // Run starts the sandbox the way the Start button does, and only then.
-  void mountAgentPane(byId("agent"), {
-    yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
-    start: () => document.getElementById("start-sandbox")?.click(),
-  });
+  // A tablet gets the Linux shell only. Jupyter (this cell, the Notebook and
+  // JupyterLab pages) and the agent need more memory than a tablet browser
+  // gives one tab: iPadOS refused new processes after ~13 while ipykernel
+  // started. The desktop app runs natively and keeps everything.
+  const device = deviceClass();
+  const shellOnly = desktop === undefined && device === "tablet";
+  // Only the in-tab kernel has the memory problem; the desktop app's page
+  // runs the sandbox natively. A phone, and a tab the browser reloaded
+  // mid-boot, get no sandbox unless `?start-anyway`. Read (and clear) the
+  // boot memory either way, so `?start-anyway` does not leave it for the
+  // next load.
+  const cutOff = desktop === undefined ? cutOffBoot() : undefined;
+  const refused = desktop === undefined &&
+    !new URL(location.href).searchParams.has("start-anyway") &&
+    (device === "phone" || cutOff !== undefined);
+  const phone = device === "phone";
+  if (shellOnly) {
+    for (const id of ["notebook", "agent"]) byId(id).hidden = true;
+    for (const testid of ["choose-notebook", "choose-lab"]) {
+      const link = document.querySelector<HTMLElement>(
+        `[data-testid=${testid}]`,
+      );
+      if (link) link.hidden = true;
+    }
+  } else {
+    // The local agent (#140) drives the same sandbox through window.yurt; its
+    // Run starts the sandbox the way the Start button does, and only then.
+    // With the boot refused there is no sandbox to start, so the pane says
+    // so instead of offering a Run that does nothing (#197).
+    void mountAgentPane(byId("agent"), {
+      yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
+      start: () => document.getElementById("start-sandbox")?.click(),
+      unavailable: refused
+        ? (phone ? "not on phones" : "no sandbox")
+        : undefined,
+    });
+  }
   const start = document.getElementById("start");
   const begin = () => {
     if (start) start.hidden = true;
@@ -389,21 +444,17 @@ async function runPage(): Promise<void> {
       interruptCell,
       desktop,
       stopWatchingForAnotherSandbox,
+      shellOnly,
     );
   };
-  // Only the in-tab kernel has the memory problem; the desktop app's page
-  // runs the sandbox natively.
   if (desktop === undefined) {
-    const device = deviceClass();
     if (device === "tablet") byId("mobile-note").hidden = false;
-    const cutOff = cutOffBoot();
-    if (device === "phone" || cutOff !== undefined) {
-      byId("status").textContent = "failed";
-      showFailure(device === "phone" ? "phone" : "reloaded", cutOff);
+    if (refused) {
+      byId("status").textContent = phone ? "not on phones" : "failed";
+      showFailure(phone ? "phone" : "reloaded", phone ? undefined : cutOff);
+      notebook.unavailable(phone ? "not on phones" : "no sandbox");
       yurtState.failed(
-        device === "phone"
-          ? "not on a phone"
-          : `a previous boot was cut off at ${cutOff}`,
+        phone ? "not on phones" : `a previous boot was cut off at ${cutOff}`,
       );
       return;
     }
@@ -411,6 +462,11 @@ async function runPage(): Promise<void> {
   // The boot memory has been read (and cleared) by now; a test that plants
   // one for the next load must wait for this, or this load consumes it.
   document.documentElement.dataset.settled = "";
+  // Only a reload frees what the browser refused (yurtos-kernel#2996).
+  byId(MEMORY_REFUSED_RELOAD_ID).addEventListener(
+    "click",
+    () => location.reload(),
+  );
   // The workspace opens with one action; `?start` (the old terminal page's
   // redirect, and the acceptance tests) skips it.
   if (start === null || new URL(location.href).searchParams.has("start")) {

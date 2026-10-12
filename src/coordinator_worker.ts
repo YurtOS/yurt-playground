@@ -32,6 +32,10 @@ import type {
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 import { directGuestPort } from "./guest_port_policy.ts";
+import {
+  type MemoryRefusedMessage,
+  memoryRefusedMessage,
+} from "./memory_refused.ts";
 
 installCoordinatorWorkerProxy(() => directGuestPort());
 type ToWorker =
@@ -45,6 +49,10 @@ type ToWorker =
     isolated: boolean;
     kernelPorts?: KernelPorts;
     apiToken?: string;
+    // A tablet gets the shell only: ipykernel's memory is what a tablet
+    // browser refuses first (iPadOS stopped spawning after ~13 processes
+    // while Jupyter started), so it is never launched there.
+    noJupyter?: boolean;
   }
   | { type: "in"; text: string }
   | { type: "resize"; rows: number; cols: number }
@@ -72,9 +80,13 @@ type ToWorker =
 
 type FromWorker =
   | { type: "status"; text: string }
+  // The browser refused a new process its memory (src/memory_refused.ts).
+  | MemoryRefusedMessage
   | { type: "out"; bytes: number[] }
   | { type: "error"; message: string }
   | { type: "notebook-ready" }
+  // The shell is the whole session (`noJupyter`): booted, nothing follows.
+  | { type: "shell-ready" }
   | {
     type: "cell-result";
     id: string;
@@ -288,6 +300,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         }),
       show: (text: string) => post({ type: "status", text }),
       term: workerTerm({ cols: msg.cols, rows: msg.rows }),
+      memoryRefused: () => post(memoryRefusedMessage()),
     };
     session = kernelPorts === undefined
       ? await bootPlayground(env)
@@ -297,6 +310,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       );
     if (session.process !== undefined && session.signal !== undefined) {
       executions = new ExecutionRegistry(session.process, session.signal);
+    }
+    if (msg.noJupyter === true) {
+      post({ type: "status", text: "" });
+      post({ type: "shell-ready" });
+      return;
     }
     post({ type: "status", text: "starting Jupyter" });
     launchSession = session;

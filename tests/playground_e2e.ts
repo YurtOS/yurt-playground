@@ -50,6 +50,8 @@ async function installChoicesWorkByKeyboard(page: Page): Promise<void> {
 
 type FailurePane = {
   status: string | null;
+  title: string | null;
+  notebook: string | null;
   start: boolean;
   why: string[];
   reason: string | null;
@@ -61,6 +63,8 @@ function readFailurePane(page: Page): Promise<FailurePane> {
       document.querySelector<HTMLElement>(`#${id}`)!.hidden;
     return {
       status: document.querySelector("#status")!.textContent,
+      title: document.querySelector("#failed-title")!.textContent,
+      notebook: document.querySelector("#notebook-status")!.textContent,
       start: hidden("start"),
       why: [...document.querySelectorAll<HTMLElement>("#failed [data-why]")]
         .filter((p) => !p.hidden).map((p) => p.dataset.why!),
@@ -79,8 +83,142 @@ function expectPane(name: string, got: FailurePane, want: FailurePane): void {
   }
 }
 
+/** A tablet runs the Linux shell only: no Python cell, no Notebook or
+ * JupyterLab link, no agent, and no ipykernel in the guest — iPadOS refused
+ * new processes after ~13 while ipykernel started. The boot ends at the
+ * shell, and a later reload is not mistaken for a boot cut off midway. */
+async function tabletIsShellOnly(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  url: string,
+): Promise<void> {
+  const context = await browser.newContext(devices["iPad Pro 11"]);
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const seen: string[] = [];
+    (globalThis as { __statuses?: string[] }).__statuses = seen;
+    document.addEventListener("DOMContentLoaded", () => {
+      const status = document.querySelector("#status");
+      if (status === null) return;
+      new MutationObserver(() => seen.push(status.textContent ?? ""))
+        .observe(status, {
+          childList: true,
+          characterData: true,
+          subtree: true,
+        });
+    });
+  });
+  await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(
+    () => document.querySelector("#status")?.textContent === "running",
+    undefined,
+    { timeout: 180_000 },
+  );
+  const state = await page.evaluate(async () => {
+    const yurt = (globalThis as unknown as {
+      yurt: {
+        exec(
+          cmd: string,
+        ): Promise<{ code: number; stdout: Uint8Array | string }>;
+      };
+    }).yurt;
+    const text = (b: Uint8Array | string) =>
+      typeof b === "string" ? b : new TextDecoder().decode(b);
+    const ps = await yurt.exec("ps");
+    const echo = await yurt.exec("echo shell-only");
+    const shown = (sel: string) => {
+      const el = document.querySelector<HTMLElement>(sel);
+      return el !== null && el.offsetParent !== null;
+    };
+    return {
+      statuses: (globalThis as { __statuses?: string[] }).__statuses ?? [],
+      notebook: shown("#notebook"),
+      agent: shown("#agent"),
+      notebookLink: shown("[data-testid=choose-notebook]"),
+      labLink: shown("[data-testid=choose-lab]"),
+      tabletNote: shown("#mobile-note"),
+      ipykernel: text(ps.stdout).includes("ipykernel"),
+      echo: text(echo.stdout).trim(),
+      booting: sessionStorage.getItem("yurt-playground-booting"),
+    };
+  });
+  const problems = [
+    state.statuses.some((s) => s.includes("Jupyter")) &&
+    `status mentioned Jupyter: ${JSON.stringify(state.statuses)}`,
+    state.notebook && "Python pane shown",
+    state.agent && "agent pane shown",
+    state.notebookLink && "Notebook link shown",
+    state.labLink && "JupyterLab link shown",
+    !state.tabletNote && "tablet note hidden",
+    state.ipykernel && "ipykernel is running",
+    state.echo !== "shell-only" && `shell answered ${state.echo}`,
+    state.booting !== null && `boot memory left: ${state.booting}`,
+  ].filter(Boolean);
+  if (problems.length > 0) {
+    throw new Error(`tablet shell-only: ${problems.join("; ")}`);
+  }
+  await context.close();
+}
+
+/** The agent pane on a phone (#197): the page refuses the boot, so there is
+ * no sandbox for the agent's Run to start, and the pane says so instead of
+ * offering a download and a Run that does nothing. `?start-anyway` gets the
+ * sandbox's Start, and with it the agent's. WebGPU is stubbed: headless
+ * Chromium has none, and without it the pane never offers a Run anyway. */
+export async function phoneAgentIsUnavailable(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  url: string,
+): Promise<void> {
+  const phone = await browser.newContext(devices["iPhone 13"]);
+  await phone.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, "gpu", {
+      configurable: true,
+      get: () => ({ requestAdapter: () => Promise.resolve({}) }),
+    });
+  });
+  const page = await phone.newPage();
+  const agent = () =>
+    page.evaluate(() => {
+      const q = (id: string) =>
+        document.querySelector<HTMLElement>(`[data-testid=${id}]`);
+      return {
+        shown: document.querySelector<HTMLElement>("#agent")!
+          .offsetParent !== null,
+        status: q("agent-status")?.textContent ?? null,
+        unavailable: q("agent-unavailable") !== null,
+        start: q("agent-start") !== null,
+        run: q("agent-run") !== null,
+      };
+    });
+  await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
+  await page.getByTestId("boot-failed").waitFor({ state: "visible" });
+  await page.getByTestId("agent-status").waitFor({ state: "visible" });
+  const refused = await agent();
+  const want = {
+    shown: true,
+    status: "not on phones",
+    unavailable: true,
+    start: false,
+    run: false,
+  };
+  if (JSON.stringify(refused) !== JSON.stringify(want)) {
+    throw new Error(
+      `phone agent: want ${JSON.stringify(want)}, got ${
+        JSON.stringify(refused)
+      }`,
+    );
+  }
+  await page.goto(`${url}/?start-anyway`, { waitUntil: "domcontentloaded" });
+  await page.getByTestId("agent-start").waitFor({ state: "visible" });
+  const anyway = await agent();
+  if (anyway.unavailable || !anyway.run) {
+    throw new Error(`phone agent ?start-anyway: ${JSON.stringify(anyway)}`);
+  }
+  await phone.close();
+}
+
 /** What the page knows before and after a boot it could not finish: a phone
- * is refused at Start (an iPhone is reloaded at "starting Jupyter"); a boot
+ * is not offered Start (an iPhone was reloaded at "starting Jupyter"), and
+ * says so as a refusal, not a failure, unless `?start-anyway`; a boot
  * that dies in-page explains itself in the terminal's place, with the likely
  * cause on a tablet; and a tab the browser reloaded mid-boot says so on the
  * next load instead of offering a fresh Start. */
@@ -124,11 +262,25 @@ async function bootFailuresAreExplained(
   await phonePage.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
   await failed(phonePage);
   expectPane("phone", await readFailurePane(phonePage), {
-    status: "failed",
+    status: "not on phones",
+    title: "The sandbox does not run on phones",
+    notebook: "not on phones",
     start: true,
     why: ["phone"],
     reason: null,
   });
+  // `?start-anyway`: the same phone gets the Start button and no refusal.
+  await phonePage.goto(`${url}/?start-anyway`, {
+    waitUntil: "domcontentloaded",
+  });
+  await phonePage.getByTestId("start-sandbox").waitFor({ state: "visible" });
+  const anyway = await phonePage.evaluate(() => ({
+    failed: document.querySelector<HTMLElement>("#failed")!.hidden,
+    notebook: document.querySelector("#notebook-status")!.textContent,
+  }));
+  if (!anyway.failed || anyway.notebook !== "waiting for the sandbox") {
+    throw new Error(`phone ?start-anyway: ${JSON.stringify(anyway)}`);
+  }
   await phone.close();
 
   const reason = "fetch ./yurt_kernel.wasm failed: 503";
@@ -145,6 +297,8 @@ async function bootFailuresAreExplained(
     await failed(page);
     expectPane(tablet ? "tablet" : "desktop", await readFailurePane(page), {
       status: "failed",
+      title: "The sandbox did not start",
+      notebook: "no sandbox",
       start: true,
       why: [tablet ? "tablet" : "error"],
       reason,
@@ -169,6 +323,8 @@ async function bootFailuresAreExplained(
   await failed(page);
   expectPane("reloaded", await readFailurePane(page), {
     status: "failed",
+    title: "The sandbox did not start",
+    notebook: "no sandbox",
     start: true,
     why: ["reloaded"],
     reason: "starting Jupyter",
@@ -533,6 +689,8 @@ if (import.meta.main) {
     // `boot-failed` hidden past its 30 s wait (main run 35141812840).
     await page.close();
     await bootFailuresAreExplained(browser, server.url);
+    await tabletIsShellOnly(browser, server.url);
+    await phoneAgentIsUnavailable(browser, server.url);
   } finally {
     await browser.close();
     await server.shutdown();
