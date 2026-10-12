@@ -582,7 +582,7 @@ function finishCell(frame: Exclude<GuestFrame, { t: "ready" }>): void {
 // ── Periodic seals ──────────────────────────────────────────────────────
 
 let sealEveryMs = DEFAULT_SEAL_EVERY_MS;
-let sealTimer: number | undefined;
+let sealTimer: ReturnType<typeof setInterval> | undefined;
 /** The tick in flight, so a Suspend click waits for it instead of being
  *  dropped (`sealing` was a double-click guard before ticks existed). */
 let tickInFlight: Promise<void> | undefined;

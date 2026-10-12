@@ -35,7 +35,7 @@ if (Deno.env.get("FAKE_HOST_MODE") === "fail") {
 /** `promise`, or a rejection naming `what` after 15 s: a hang fails the
  * test instead of stalling the suite. */
 function within<T>(promise: Promise<T>, what: string): Promise<T> {
-  let timer: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`timed out: ${what}`)), 15_000);
   });

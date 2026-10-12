@@ -82,7 +82,7 @@ let sealing = false;
 /** Set by `reset`: the seal loop is stopped and nothing is stored again
  *  until the page reloads, so "forget" stays forgotten. */
 let forgotten = false;
-let sealTimer: number | undefined;
+let sealTimer: ReturnType<typeof setInterval> | undefined;
 let outputBytes = 0;
 
 function attachTerminal(

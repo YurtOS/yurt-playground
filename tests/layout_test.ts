@@ -72,7 +72,7 @@ Deno.test("every test file runs in exactly one CI shard, and the workflow runs t
   // requires; losing it blocks every pull request on a check nobody sends.
   assertEquals(workflow.includes("name: integration (cross-repo)"), true);
   assertEquals(
-    /needs: \[checks, tests, acceptance\]/.test(workflow),
+    /needs: \[checks, tests, acceptance, datasette-acceptance\]/.test(workflow),
     true,
     "the aggregate gate must wait for every leg",
   );
@@ -107,14 +107,17 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   assertEquals(workflow.includes("scripts/build-all-ports.sh"), false);
   assertEquals(workflow.includes("dtolnay/rust-toolchain"), false);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
-  assertEquals(workflow.includes("playwright/cli.js install chromium"), true);
+  assertEquals(
+    workflow.includes("node node_modules/playwright/cli.js install chromium"),
+    true,
+  );
   // The browser artifacts are materialized by the site inputs (deno task
   // pin runs scripts/pin-artifacts.ts).
   assertEquals(workflow.includes("deno task pin"), true);
   // One job per scene since #123, so the scene is the matrix value and the
   // run line is templated; every `tests/<scene>_e2e.ts` must exist.
   const scenes = workflow.match(/scene: \[([^\]]+)\]/)?.[1]
-    .split(",").map((s) => s.trim()) ?? [];
+    .split(",").map((s) => s.trim()).filter(Boolean) ?? [];
   assertEquals(scenes.includes("playground"), true, `scenes: ${scenes}`);
   assertEquals(
     workflow.includes("deno run --allow-all tests/${{ matrix.scene }}_e2e.ts"),
@@ -140,11 +143,21 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   }
   assertEquals(
     e2eFiles.filter((s) =>
-      s !== "desktop" && s !== "agent_webgpu" && !scenes.includes(s)
+      s !== "desktop" && s !== "agent_webgpu" && s !== "datasette" &&
+      !scenes.includes(s)
     ),
     [],
     "an e2e scene exists that no acceptance job runs",
   );
+  assertEquals(
+    workflow.includes("needs.checks.outputs.datasette == 'true'"),
+    true,
+  );
+  assertEquals(
+    workflow.includes("deno run --allow-all tests/datasette_e2e.ts"),
+    true,
+  );
+  assertEquals(workflow.includes('[ "$DATASETTE" = "success" ]'), true);
   // The notebook interface is accepted too -- its own job since #123.
   assertEquals(scenes.includes("jupyterlite"), true);
   // Browser acceptance is a required step, not a repository-variable opt-in:
@@ -505,19 +518,19 @@ Deno.test("every disclosure on the home page is styled, not just the proof", asy
   }
   const reducedMotion = [
     ...css.matchAll(
-      /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n[ ]{6}\}/g,
+      /^(?<indent>[ \t]*)@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{(?<body>[\s\S]*?)^\k<indent>\}/gm,
     ),
   ];
   assertEquals(reducedMotion.length, 1, "expected one reduced-motion block");
   assertEquals(
     /#start \.prompt::after\s*\{[^}]*animation:\s*none/.test(
-      reducedMotion[0]?.[1] ?? "",
+      reducedMotion[0]?.groups?.body ?? "",
     ),
     true,
   );
   assertEquals(
     /\.strip\s*>\s*summary h2::before\s*\{[^}]*transition:\s*none/.test(
-      reducedMotion[0]?.[1] ?? "",
+      reducedMotion[0]?.groups?.body ?? "",
     ),
     true,
   );

@@ -1,3 +1,5 @@
+import type { GuestAppId } from "./guest_apps.ts";
+
 export type ArtifactPin = {
   repo: string;
   rev: string;
@@ -9,7 +11,28 @@ export type ArtifactPin = {
 export type Pins = {
   kernelWasm: ArtifactPin;
   image: ArtifactPin;
+  datasette?: DatasetteQualification;
+  datasetteDiagnostic?: string;
 };
+
+export type DatasetteQualification = {
+  version: "0.65.5";
+  imageSha256: string;
+  kernelSha256: string;
+  portsRev: string;
+  inlineScriptHashes: string[];
+};
+
+/** Inline-script hashes a qualified app's pages may carry; `undefined` means
+ * the app is not qualified for this image. The preview server serves the
+ * user's own files with no inline scripts, so its list is empty by design. */
+export function appInlineScriptHashes(
+  pins: Pins,
+  app: GuestAppId,
+): string[] | undefined {
+  if (app === "preview") return [];
+  return pins.datasette?.inlineScriptHashes;
+}
 
 export type ArtifactSource = "artifacts" | "siblings" | "urls";
 
@@ -63,11 +86,44 @@ export function parsePins(raw: unknown): Pins {
   if (raw === null || typeof raw !== "object") {
     throw new PinResolutionError("pins.json must be an object", 1);
   }
-  const value = raw as { kernelWasm?: unknown; image?: unknown };
-  return {
+  const value = raw as {
+    kernelWasm?: unknown;
+    image?: unknown;
+    datasette?: unknown;
+  };
+  const pins: Pins = {
     kernelWasm: parsePin(value.kernelWasm, "kernelWasm"),
     image: parsePin(value.image, "image"),
   };
+  if (value.datasette !== undefined) {
+    const q = value.datasette as Partial<DatasetteQualification> | null;
+    if (
+      q && typeof q === "object" && q.version === "0.65.5" &&
+      q.imageSha256 === pins.image.sha256 &&
+      q.kernelSha256 === pins.kernelWasm.sha256 &&
+      q.portsRev === pins.image.rev &&
+      /^[0-9a-f]{64}$/.test(q.imageSha256) &&
+      /^[0-9a-f]{64}$/.test(q.kernelSha256) &&
+      /^[0-9a-f]{40}$/.test(q.portsRev) &&
+      Array.isArray(q.inlineScriptHashes) && q.inlineScriptHashes.length > 0 &&
+      q.inlineScriptHashes.length <= 32 &&
+      q.inlineScriptHashes.every((hash) =>
+        typeof hash === "string" && /^sha256-[A-Za-z0-9+/]{43}=$/.test(hash)
+      )
+    ) {
+      pins.datasette = {
+        version: q.version,
+        imageSha256: q.imageSha256,
+        kernelSha256: q.kernelSha256,
+        portsRev: q.portsRev,
+        inlineScriptHashes: [...q.inlineScriptHashes],
+      };
+    } else {
+      pins.datasetteDiagnostic =
+        "Datasette qualification is malformed or does not match the pinned artifacts";
+    }
+  }
+  return pins;
 }
 
 export async function loadPins(path: string): Promise<Pins> {

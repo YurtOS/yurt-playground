@@ -125,3 +125,14 @@ publishes nothing; `--pins-only` regenerates the pins from releases cut by hand.
 ## License
 
 Apache-2.0.
+
+## Datasette preview
+
+The browser demo uses upstream Datasette on the guest's SQLite database at
+`/home/user/demos/datasette/orders.db`. The playground owns the deterministic
+seed and reset script; the ports repository owns the application and image.
+Start is available only when `pins.json` contains a qualified Datasette record
+matching the published image and kernel. Desktop support is a separate
+follow-up. Stop preserves the database; Reset restores the twelve sample orders.
+A resident server has no execution-registry deadline. Its pid and log live
+beside the sample database, and stop signals only its tracked process.

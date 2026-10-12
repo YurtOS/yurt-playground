@@ -140,7 +140,6 @@ export function whileAnotherSandboxRuns(
   silentRounds = 3,
 ): () => void {
   if (!supported) return () => {};
-  let timer = 0;
   let silent = 0;
   // `clearInterval` cannot cancel a probe already in flight, and `gone`
   // must be called at most once however many overlap.
@@ -149,7 +148,7 @@ export function whileAnotherSandboxRuns(
     stopped = true;
     clearInterval(timer);
   };
-  timer = setInterval(async () => {
+  const timer = setInterval(async () => {
     const another = await anotherSandboxRunning(timeoutMs, name);
     if (stopped) return;
     if (another) {

@@ -468,7 +468,7 @@ export class ExecutionRegistry {
 /** A sleep that can be cut short, so a process exiting mid-poll leaves no
  * timer behind. */
 class Tick {
-  #timer: number | undefined;
+  #timer: ReturnType<typeof setTimeout> | undefined;
   #resolve: (() => void) | undefined;
   wait(ms: number): Promise<void> {
     return new Promise((resolve) => {

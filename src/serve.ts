@@ -235,6 +235,26 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   } catch {
     return notFound();
   }
+  if (
+    pathname.startsWith("/apps/") &&
+    !["/apps/bridge-sw.js", "/apps/_bridge/unavailable.html"]
+      .includes(pathname)
+  ) {
+    const html = await Deno.readTextFile(
+      join(publicDir, "apps/_bridge/unavailable.html"),
+    );
+    return new Response(req.method === "HEAD" ? null : html, {
+      headers: {
+        ...ISOLATION_HEADERS,
+        "content-type": "text/html; charset=utf-8",
+        "Content-Security-Policy": documentPolicy(
+          "/apps/_bridge/unavailable.html",
+          [],
+        ),
+        "cache-control": "no-store",
+      },
+    });
+  }
   const llm = await handleLlmFile(pathname);
   if (llm !== null) return llm;
   if (pathname === "/integrity.json") {

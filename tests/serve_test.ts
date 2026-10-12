@@ -125,3 +125,51 @@ Deno.test("dev server applies Pages' directory rule to the Jupyter apps", async 
   assertEquals(bare.headers.get("Cross-Origin-Opener-Policy"), isolation.coop);
   await bare.body?.cancel();
 });
+
+Deno.test("app preview fallback serves the isolated unavailable page", async () => {
+  const res = await handlePlaygroundRequest(
+    new Request(
+      "http://playground/apps/preview/12345678-1234-1234-1234-123456789abc/x",
+    ),
+  );
+  assertEquals(res.status, 200);
+  assertEquals(res.headers.get("Cross-Origin-Opener-Policy"), isolation.coop);
+  assertEquals(
+    res.headers.get("Cross-Origin-Embedder-Policy"),
+    isolation.coep,
+  );
+  assertEquals(
+    res.headers.get("Cross-Origin-Resource-Policy"),
+    isolation.corp,
+  );
+  assertEquals(
+    res.headers.get("content-type"),
+    "text/html; charset=utf-8",
+  );
+  assertEquals((await res.text()).includes("unavailable"), true);
+});
+
+Deno.test("bridge service worker path bypasses the app fallback", async () => {
+  const path = new URL("../public/apps/bridge-sw.js", import.meta.url);
+  let previous: Uint8Array | undefined;
+  try {
+    previous = await Deno.readFile(path);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  try {
+    await Deno.writeTextFile(path, "// bridge fixture\n");
+    const res = await handlePlaygroundRequest(
+      new Request("http://playground/apps/bridge-sw.js"),
+    );
+    assertEquals(res.status, 200);
+    assertEquals(
+      res.headers.get("content-type"),
+      "text/javascript; charset=utf-8",
+    );
+    assertEquals(await res.text(), "// bridge fixture\n");
+  } finally {
+    if (previous) await Deno.writeFile(path, previous);
+    else await Deno.remove(path);
+  }
+});
