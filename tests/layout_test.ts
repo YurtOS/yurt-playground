@@ -114,7 +114,7 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   // One job per scene since #123, so the scene is the matrix value and the
   // run line is templated; every `tests/<scene>_e2e.ts` must exist.
   const scenes = workflow.match(/scene: \[([^\]]+)\]/)?.[1]
-    .split(",").map((s) => s.trim()) ?? [];
+    .split(",").map((s) => s.trim()).filter((s) => s !== "") ?? [];
   assertEquals(scenes.includes("playground"), true, `scenes: ${scenes}`);
   assertEquals(
     workflow.includes("deno run --allow-all tests/${{ matrix.scene }}_e2e.ts"),
