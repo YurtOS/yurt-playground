@@ -28,6 +28,7 @@ type FromWorker =
   | { type: "out"; bytes: number[] }
   | { type: "error"; message: string }
   | { type: "notebook-ready" }
+  | { type: "shell-ready" }
   | {
     type: "yurt-reply";
     req: number;
@@ -195,6 +196,7 @@ function boot(
   interruptCell: { current: (id: string) => void },
   desktop: DesktopInfo | undefined,
   stopWatchingForAnotherSandbox: () => void,
+  shellOnly: boolean,
 ): void {
   const kernelPorts = desktop?.kernelPorts;
   const status = byId("status");
@@ -288,6 +290,11 @@ function boot(
       status.textContent = "running";
       rememberBooting(undefined);
     }
+    // A tablet's whole session is the shell; once it runs the boot is over.
+    if (msg.type === "shell-ready") {
+      status.textContent = "running";
+      rememberBooting(undefined);
+    }
     if (msg.type === "yurt-reply") {
       const waiter = pending.get(msg.req);
       pending.delete(msg.req);
@@ -321,6 +328,7 @@ function boot(
     isolated: globalThis.crossOriginIsolated === true,
     kernelPorts,
     apiToken: desktop?.apiToken,
+    noJupyter: shellOnly,
   });
 }
 
@@ -377,12 +385,27 @@ async function runPage(): Promise<void> {
     (id, code) => execute.current(id, code),
     (id) => interruptCell.current(id),
   );
-  // The local agent (#140) drives the same sandbox through window.yurt; its
-  // Run starts the sandbox the way the Start button does, and only then.
-  void mountAgentPane(byId("agent"), {
-    yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
-    start: () => document.getElementById("start-sandbox")?.click(),
-  });
+  // A tablet gets the Linux shell only. Jupyter (this cell, the Notebook and
+  // JupyterLab pages) and the agent need more memory than a tablet browser
+  // gives one tab: iPadOS refused new processes after ~13 while ipykernel
+  // started. The desktop app runs natively and keeps everything.
+  const shellOnly = desktop === undefined && deviceClass() === "tablet";
+  if (shellOnly) {
+    for (const id of ["notebook", "agent"]) byId(id).hidden = true;
+    for (const testid of ["choose-notebook", "choose-lab"]) {
+      const link = document.querySelector<HTMLElement>(
+        `[data-testid=${testid}]`,
+      );
+      if (link) link.hidden = true;
+    }
+  } else {
+    // The local agent (#140) drives the same sandbox through window.yurt; its
+    // Run starts the sandbox the way the Start button does, and only then.
+    void mountAgentPane(byId("agent"), {
+      yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
+      start: () => document.getElementById("start-sandbox")?.click(),
+    });
+  }
   const start = document.getElementById("start");
   const begin = () => {
     if (start) start.hidden = true;
@@ -405,6 +428,7 @@ async function runPage(): Promise<void> {
       interruptCell,
       desktop,
       stopWatchingForAnotherSandbox,
+      shellOnly,
     );
   };
   // Only the in-tab kernel has the memory problem; the desktop app's page

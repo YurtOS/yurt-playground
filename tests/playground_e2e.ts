@@ -83,6 +83,82 @@ function expectPane(name: string, got: FailurePane, want: FailurePane): void {
   }
 }
 
+/** A tablet runs the Linux shell only: no Python cell, no Notebook or
+ * JupyterLab link, no agent, and no ipykernel in the guest — iPadOS refused
+ * new processes after ~13 while ipykernel started. The boot ends at the
+ * shell, and a later reload is not mistaken for a boot cut off midway. */
+async function tabletIsShellOnly(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  url: string,
+): Promise<void> {
+  const context = await browser.newContext(devices["iPad Pro 11"]);
+  const page = await context.newPage();
+  await page.addInitScript(() => {
+    const seen: string[] = [];
+    (globalThis as { __statuses?: string[] }).__statuses = seen;
+    document.addEventListener("DOMContentLoaded", () => {
+      const status = document.querySelector("#status");
+      if (status === null) return;
+      new MutationObserver(() => seen.push(status.textContent ?? ""))
+        .observe(status, {
+          childList: true,
+          characterData: true,
+          subtree: true,
+        });
+    });
+  });
+  await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(
+    () => document.querySelector("#status")?.textContent === "running",
+    undefined,
+    { timeout: 180_000 },
+  );
+  const state = await page.evaluate(async () => {
+    const yurt = (globalThis as unknown as {
+      yurt: {
+        exec(
+          cmd: string,
+        ): Promise<{ code: number; stdout: Uint8Array | string }>;
+      };
+    }).yurt;
+    const text = (b: Uint8Array | string) =>
+      typeof b === "string" ? b : new TextDecoder().decode(b);
+    const ps = await yurt.exec("ps");
+    const echo = await yurt.exec("echo shell-only");
+    const shown = (sel: string) => {
+      const el = document.querySelector<HTMLElement>(sel);
+      return el !== null && el.offsetParent !== null;
+    };
+    return {
+      statuses: (globalThis as { __statuses?: string[] }).__statuses ?? [],
+      notebook: shown("#notebook"),
+      agent: shown("#agent"),
+      notebookLink: shown("[data-testid=choose-notebook]"),
+      labLink: shown("[data-testid=choose-lab]"),
+      tabletNote: shown("#mobile-note"),
+      ipykernel: text(ps.stdout).includes("ipykernel"),
+      echo: text(echo.stdout).trim(),
+      booting: sessionStorage.getItem("yurt-playground-booting"),
+    };
+  });
+  const problems = [
+    state.statuses.some((s) => s.includes("Jupyter")) &&
+    `status mentioned Jupyter: ${JSON.stringify(state.statuses)}`,
+    state.notebook && "Python pane shown",
+    state.agent && "agent pane shown",
+    state.notebookLink && "Notebook link shown",
+    state.labLink && "JupyterLab link shown",
+    !state.tabletNote && "tablet note hidden",
+    state.ipykernel && "ipykernel is running",
+    state.echo !== "shell-only" && `shell answered ${state.echo}`,
+    state.booting !== null && `boot memory left: ${state.booting}`,
+  ].filter(Boolean);
+  if (problems.length > 0) {
+    throw new Error(`tablet shell-only: ${problems.join("; ")}`);
+  }
+  await context.close();
+}
+
 /** What the page knows before and after a boot it could not finish: a phone
  * is not offered Start (an iPhone was reloaded at "starting Jupyter"), and
  * says so as a refusal, not a failure, unless `?start-anyway`; a boot
@@ -556,6 +632,7 @@ if (import.meta.main) {
     // `boot-failed` hidden past its 30 s wait (main run 35141812840).
     await page.close();
     await bootFailuresAreExplained(browser, server.url);
+    await tabletIsShellOnly(browser, server.url);
   } finally {
     await browser.close();
     await server.shutdown();
