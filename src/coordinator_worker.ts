@@ -31,6 +31,10 @@ import type {
 } from "./jupyter_transport.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
+import {
+  type MemoryRefusedMessage,
+  memoryRefusedMessage,
+} from "./memory_refused.ts";
 
 installCoordinatorWorkerProxy();
 type ToWorker =
@@ -71,6 +75,8 @@ type ToWorker =
 
 type FromWorker =
   | { type: "status"; text: string }
+  // The browser refused a new process its memory (src/memory_refused.ts).
+  | MemoryRefusedMessage
   | { type: "out"; bytes: number[] }
   | { type: "error"; message: string }
   | { type: "notebook-ready" }
@@ -287,6 +293,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         }),
       show: (text: string) => post({ type: "status", text }),
       term: workerTerm({ cols: msg.cols, rows: msg.rows }),
+      memoryRefused: () => post(memoryRefusedMessage()),
     };
     session = kernelPorts === undefined
       ? await bootPlayground(env)

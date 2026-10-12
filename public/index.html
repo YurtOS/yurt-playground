@@ -95,7 +95,8 @@
       }
 
       #mobile-note,
-      #another-tab-note {
+      #another-tab-note,
+      #memory-refused {
         border-left: 3px solid var(--ember);
         background: var(--pane);
         color: var(--text);
@@ -611,6 +612,19 @@
         and workers that keep running in the background; mobile browsers often
         allow neither, so the boot may stall or the tab may reload. A desktop
         browser is the safe choice.
+      </p>
+
+      <p id="memory-refused" data-testid="memory-refused" role="alert" hidden>
+        The browser ran out of memory for new processes. Reload the page to
+        continue.
+        <button
+          type="button"
+          id="memory-refused-reload"
+          data-testid="memory-refused-reload"
+          class="bar-action"
+        >
+          Reload
+        </button>
       </p>
 
       <section class="pane" aria-label="terminal">
