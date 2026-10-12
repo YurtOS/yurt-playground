@@ -1,10 +1,10 @@
 {
-  "train": "playground-2026.10.12-5ddc591",
+  "train": "playground-2026.10.12-5ddc591.2",
   "kernelWasm": {
     "repo": "YurtOS/yurtos-kernel",
     "rev": "5ddc591c149732433f364a6dab4cd21596265e0f",
     "releaseRepo": "YurtOS/yurt-sandbox",
-    "release": "kernel-wasm-playground-2026.10.12-5ddc591",
+    "release": "kernel-wasm-playground-2026.10.12-5ddc591.2",
     "build": "scripts/build-kernel-wasm.sh",
     "path": "target/kernel-wasm/release/yurt_kernel.wasm",
     "sha256": "b12cbcb3249cfa709d8e114bbdd019197a7c13a8636921f2faa7668231e96286"
@@ -20,31 +20,31 @@
   },
   "desktopHost": {
     "repo": "YurtOS/yurt-sandbox",
-    "rev": "435f6a1e873fa5a90102e0c9c086435137f0ae2c",
+    "rev": "0c3700ffbc652c1d439032200e9f5d7e75f5ebae",
     "releaseRepo": "YurtOS/yurt-sandbox",
-    "release": "desktop-host-playground-2026.10.12-5ddc591",
+    "release": "desktop-host-playground-2026.10.12-5ddc591.2",
     "build": "scripts/build-desktop-host.sh",
     "sha256": {
-      "aarch64-apple-darwin": "919831825d496a1746e6fe9921b7f6d0bbaecbd13cf6f1fc13ea788b1afdca8a",
-      "x86_64-unknown-linux-gnu": "1636ea363d95717b4bb7c89ce4293f1818afd2f72faeb84f266ca32a306c05cf",
-      "aarch64-unknown-linux-gnu": "029731160c6755b421eae811b68b80f1419c886f798710fae82e0da7f65ad18f"
+      "aarch64-apple-darwin": "70de096c007105fee1f10a08fdf61a3c395e1c43f34e3107277dc29730db201b",
+      "x86_64-unknown-linux-gnu": "d9c32c20a9bcd15171da2e75a10835a6bc11319796b9b55145cfc26e3b500218",
+      "aarch64-unknown-linux-gnu": "74b44317a2dc199a3fe787b0400273473d25243078f3ea13a2043e0dd6ddfb1c"
     }
   },
   "yurtCli": {
     "repo": "YurtOS/yurt-sandbox",
-    "rev": "435f6a1e873fa5a90102e0c9c086435137f0ae2c",
+    "rev": "0c3700ffbc652c1d439032200e9f5d7e75f5ebae",
     "releaseRepo": "YurtOS/yurt-sandbox",
-    "release": "yurt-cli-playground-2026.10.12-5ddc591",
+    "release": "yurt-cli-playground-2026.10.12-5ddc591.2",
     "build": "scripts/build-yurt-cli.sh",
     "assets": {
       "aarch64-apple-darwin": "yurt-aarch64-apple-darwin.tar.gz",
-      "x86_64-unknown-linux-gnu": "yurt_0.1.3+playground.2026.10.12.5ddc591_amd64.deb",
-      "aarch64-unknown-linux-gnu": "yurt_0.1.3+playground.2026.10.12.5ddc591_arm64.deb"
+      "x86_64-unknown-linux-gnu": "yurt_0.1.3+playground.2026.10.12.5ddc591.2_amd64.deb",
+      "aarch64-unknown-linux-gnu": "yurt_0.1.3+playground.2026.10.12.5ddc591.2_arm64.deb"
     },
     "sha256": {
-      "aarch64-apple-darwin": "a5f8132f2841f54887223164c8a90e6c69c1ab04c3ce1d3bccde3902512111bd",
-      "x86_64-unknown-linux-gnu": "b87a9b51477954f1eb3aecd41c02641d2749eabd6c3ff425141195648623daf7",
-      "aarch64-unknown-linux-gnu": "4a8fc4dfca50b66d29cb361e9d118f46d2656beb34583fd53ea4969a2e900707"
+      "aarch64-apple-darwin": "82f306620ffc485a9a805f1037058c237a7ceeac2f652d32c54547e9e15a1f07",
+      "x86_64-unknown-linux-gnu": "9c44c65e9dcb7474781780f0cf1e161c748efa430d1fcab89787081ea26b5954",
+      "aarch64-unknown-linux-gnu": "7013fdf8875a0acdf05d370fe27efe9074a6fb5e0763ead0a662b2567968476a"
     }
   },
   "pythonSeal": {
