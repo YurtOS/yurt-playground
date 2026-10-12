@@ -425,3 +425,73 @@ Deno.test("a bare --resume takes the train written last, not the higher kernel s
     await fixture.cleanup();
   }
 });
+
+Deno.test("--resume keeps the repository of an --image-release train's image and seal", async () => {
+  // #196: the state file recorded only the image's tag, so a resumed train
+  // looked for it in yurt-packages and failed at the sidecar fetch, and the
+  // --python-seal-release given at the start was dropped.
+  const dir = await Deno.makeTempDir({ prefix: "release-resume-image-" });
+  try {
+    const root = join(dir, "project");
+    await Deno.mkdir(join(root, "scripts/lib"), { recursive: true });
+    await Deno.copyFile(
+      join(repoRoot, "scripts/lib/kernel-release.sh"),
+      join(root, "scripts/lib/kernel-release.sh"),
+    );
+    const scriptPath = join(root, "scripts/release-playground.sh");
+    const source = await Deno.readTextFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+    );
+    // Stop once the state file is written; report what [3] and [4] would use.
+    await Deno.writeTextFile(
+      scriptPath,
+      `${
+        source.split("# ---- dispatch + watch one workflow")[0]
+      }\nfi\nprintf 'IMAGE=%s@%s SEAL=%s@%s\\n' "$image_repo" "$image_release" "\${seal_repo:-}" "\${seal_release:-}"\n`,
+    );
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    await Deno.writeTextFile(
+      join(bin, "gh"),
+      "#!/bin/sh\ncase \"$1 $2\" in\n  'auth status'|'release view') exit 0;;\n  *) echo \"unexpected gh call: $*\" >&2; exit 1;;\nesac\n",
+    );
+    await Deno.chmod(join(bin, "gh"), 0o755);
+    const run = async (...args: string[]) => {
+      const result = await command("bash", [scriptPath, ...args], {
+        env: {
+          PATH: `${bin}:${Deno.env.get("PATH") ?? ""}`,
+          XDG_STATE_HOME: join(dir, "state"),
+        },
+      });
+      const output = new TextDecoder().decode(result.stdout) +
+        new TextDecoder().decode(result.stderr);
+      assertEquals(result.code, 0, output);
+      return output;
+    };
+
+    const train = "playground-2026.10.12-5ddc591";
+    const sha = "a".repeat(40);
+    const image = "YurtOS/yurt-ports@playground-image-x";
+    const seal = "YurtOS/yurt-ports@python-seal-x";
+    const started = await run(
+      "--train",
+      train,
+      "--kernel-sha",
+      sha,
+      "--ports-sha",
+      sha,
+      "--sandbox-sha",
+      sha,
+      "--image-release",
+      image,
+      "--python-seal-release",
+      seal,
+    );
+    assertStringIncludes(started, `IMAGE=${image} SEAL=${seal}`);
+
+    const resumed = await run("--resume", "--train", train);
+    assertStringIncludes(resumed, `IMAGE=${image} SEAL=${seal}`);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

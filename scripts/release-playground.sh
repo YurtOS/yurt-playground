@@ -347,7 +347,13 @@ if [ "$resume" = 1 ] && [ "$pins_only" = 0 ]; then
     [ -z "${!var}" ] || [ "${!var}" = "$recorded" ] || die "--${var//_/-} ${!var} is not the train's ($recorded)"
     printf -v "$var" '%s' "$recorded"
   done
-  [ "$(jq -r .build_image "$state")" = true ] || image_release=$(jq -r .image_release "$state")
+  # A hand-cut image (and its seal) as given, `owner/repo@tag`: a bare tag
+  # would resolve to yurt-packages, and a seal left out would carry the old
+  # pin through. State files from before image_repo recorded only the tag.
+  if [ "$(jq -r .build_image "$state")" != true ]; then
+    image_release=$(jq -r 'if .image_repo then "\(.image_repo)@\(.image_release)" else .image_release end' "$state")
+    seal_release=$(jq -r 'if (.seal_release // "") != "" then "\(.seal_repo)@\(.seal_release)" else "" end' "$state")
+  fi
 fi
 
 # ---- revisions -----------------------------------------------------------
@@ -434,8 +440,10 @@ if [ "$resume" = 1 ]; then
 else
   [ -f "$state" ] && die "$state exists; --resume it, or pick --train"
   jq -n --arg train "$train" --arg kernel "$kernel_sha" --arg ports "$ports_sha" --arg sandbox "$sandbox_sha" \
-    --arg image "$image_release" --argjson build_image "$build_image" --argjson validate "$validate" \
-    '{train:$train, kernel_sha:$kernel, ports_sha:$ports, sandbox_sha:$sandbox, image_release:$image, build_image:($build_image == 1), validate:$validate, steps:{}}' \
+    --arg image "$image_release" --arg image_repo "$image_repo" --argjson build_image "$build_image" --argjson validate "$validate" \
+    --arg seal "${seal_release:-}" --arg seal_repo "${seal_repo:-}" \
+    '{train:$train, kernel_sha:$kernel, ports_sha:$ports, sandbox_sha:$sandbox, image_release:$image, image_repo:$image_repo,
+      seal_release:$seal, seal_repo:$seal_repo, build_image:($build_image == 1), validate:$validate, steps:{}}' \
     > "$state"
 fi
 step_get() { jq -r ".steps[\"$1\"].$2 // empty" "$state"; }
