@@ -608,7 +608,7 @@
       </p>
 
       <p id="mobile-note" data-testid="mobile-note" hidden>
-        This looks like a tablet. The sandbox needs around a gigabyte of memory
+        This looks like a tablet. The sandbox needs a lot of memory in one tab
         and workers that keep running in the background; mobile browsers often
         allow neither, so the boot may stall or the tab may reload. A desktop
         browser is the safe choice.
@@ -672,14 +672,14 @@
             </p>
           </div>
           <div id="failed" data-testid="boot-failed" hidden>
-            <h2>The sandbox did not start</h2>
+            <h2 id="failed-title">The sandbox did not start</h2>
             <p data-why="phone" hidden>
-              Not on a phone: the boot needs around a gigabyte of memory in one
-              tab, and a phone browser reloads the tab well before that. An
-              iPhone downloads everything and is cut off at
-              <code>starting Jupyter</code>. Open this page in a desktop
-              browser; the app and the command line below run the same sandbox
-              natively.
+              Phone browsers give one tab too little memory for the sandbox and
+              reload the tab during the boot (iPhone Safari did, at
+              <code>starting Jupyter</code>), so this page does not start it
+              here. Open it in a desktop browser; the app and the command line
+              below run the same sandbox natively. To try on this phone anyway,
+              open <a href="./?start-anyway">this page with ?start-anyway</a>.
             </p>
             <p data-why="tablet" hidden>
               This is a tablet, and mobile browsers rarely give a tab the memory
@@ -689,7 +689,7 @@
             <p data-why="reloaded" hidden>
               The browser reloaded this tab while the sandbox was starting. That
               is what a browser does to a tab that outgrows the memory it is
-              allowed; the boot needs around a gigabyte. The last thing the page
+              allowed, and the boot needs a lot of it. The last thing the page
               said before the reload:
             </p>
             <p data-why="error">The browser reported:</p>
