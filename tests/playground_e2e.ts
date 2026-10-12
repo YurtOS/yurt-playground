@@ -159,6 +159,63 @@ async function tabletIsShellOnly(
   await context.close();
 }
 
+/** The agent pane on a phone (#197): the page refuses the boot, so there is
+ * no sandbox for the agent's Run to start, and the pane says so instead of
+ * offering a download and a Run that does nothing. `?start-anyway` gets the
+ * sandbox's Start, and with it the agent's. WebGPU is stubbed: headless
+ * Chromium has none, and without it the pane never offers a Run anyway. */
+export async function phoneAgentIsUnavailable(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  url: string,
+): Promise<void> {
+  const phone = await browser.newContext(devices["iPhone 13"]);
+  await phone.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, "gpu", {
+      configurable: true,
+      get: () => ({ requestAdapter: () => Promise.resolve({}) }),
+    });
+  });
+  const page = await phone.newPage();
+  const agent = () =>
+    page.evaluate(() => {
+      const q = (id: string) =>
+        document.querySelector<HTMLElement>(`[data-testid=${id}]`);
+      return {
+        shown: document.querySelector<HTMLElement>("#agent")!
+          .offsetParent !== null,
+        status: q("agent-status")?.textContent ?? null,
+        unavailable: q("agent-unavailable") !== null,
+        start: q("agent-start") !== null,
+        run: q("agent-run") !== null,
+      };
+    });
+  await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
+  await page.getByTestId("boot-failed").waitFor({ state: "visible" });
+  await page.getByTestId("agent-status").waitFor({ state: "visible" });
+  const refused = await agent();
+  const want = {
+    shown: true,
+    status: "not on phones",
+    unavailable: true,
+    start: false,
+    run: false,
+  };
+  if (JSON.stringify(refused) !== JSON.stringify(want)) {
+    throw new Error(
+      `phone agent: want ${JSON.stringify(want)}, got ${
+        JSON.stringify(refused)
+      }`,
+    );
+  }
+  await page.goto(`${url}/?start-anyway`, { waitUntil: "domcontentloaded" });
+  await page.getByTestId("agent-start").waitFor({ state: "visible" });
+  const anyway = await agent();
+  if (anyway.unavailable || !anyway.run) {
+    throw new Error(`phone agent ?start-anyway: ${JSON.stringify(anyway)}`);
+  }
+  await phone.close();
+}
+
 /** What the page knows before and after a boot it could not finish: a phone
  * is not offered Start (an iPhone was reloaded at "starting Jupyter"), and
  * says so as a refusal, not a failure, unless `?start-anyway`; a boot
@@ -633,6 +690,7 @@ if (import.meta.main) {
     await page.close();
     await bootFailuresAreExplained(browser, server.url);
     await tabletIsShellOnly(browser, server.url);
+    await phoneAgentIsUnavailable(browser, server.url);
   } finally {
     await browser.close();
     await server.shutdown();

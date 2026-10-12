@@ -389,7 +389,18 @@ async function runPage(): Promise<void> {
   // JupyterLab pages) and the agent need more memory than a tablet browser
   // gives one tab: iPadOS refused new processes after ~13 while ipykernel
   // started. The desktop app runs natively and keeps everything.
-  const shellOnly = desktop === undefined && deviceClass() === "tablet";
+  const device = deviceClass();
+  const shellOnly = desktop === undefined && device === "tablet";
+  // Only the in-tab kernel has the memory problem; the desktop app's page
+  // runs the sandbox natively. A phone, and a tab the browser reloaded
+  // mid-boot, get no sandbox unless `?start-anyway`. Read (and clear) the
+  // boot memory either way, so `?start-anyway` does not leave it for the
+  // next load.
+  const cutOff = desktop === undefined ? cutOffBoot() : undefined;
+  const refused = desktop === undefined &&
+    !new URL(location.href).searchParams.has("start-anyway") &&
+    (device === "phone" || cutOff !== undefined);
+  const phone = device === "phone";
   if (shellOnly) {
     for (const id of ["notebook", "agent"]) byId(id).hidden = true;
     for (const testid of ["choose-notebook", "choose-lab"]) {
@@ -401,9 +412,14 @@ async function runPage(): Promise<void> {
   } else {
     // The local agent (#140) drives the same sandbox through window.yurt; its
     // Run starts the sandbox the way the Start button does, and only then.
+    // With the boot refused there is no sandbox to start, so the pane says
+    // so instead of offering a Run that does nothing (#197).
     void mountAgentPane(byId("agent"), {
       yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
       start: () => document.getElementById("start-sandbox")?.click(),
+      unavailable: refused
+        ? (phone ? "not on phones" : "no sandbox")
+        : undefined,
     });
   }
   const start = document.getElementById("start");
@@ -431,17 +447,9 @@ async function runPage(): Promise<void> {
       shellOnly,
     );
   };
-  // Only the in-tab kernel has the memory problem; the desktop app's page
-  // runs the sandbox natively.
   if (desktop === undefined) {
-    const device = deviceClass();
     if (device === "tablet") byId("mobile-note").hidden = false;
-    // Read (and clear) the boot memory either way, so `?start-anyway`
-    // does not leave it for the next load.
-    const cutOff = cutOffBoot();
-    const anyway = new URL(location.href).searchParams.has("start-anyway");
-    if (!anyway && (device === "phone" || cutOff !== undefined)) {
-      const phone = device === "phone";
+    if (refused) {
       byId("status").textContent = phone ? "not on phones" : "failed";
       showFailure(phone ? "phone" : "reloaded", phone ? undefined : cutOff);
       notebook.unavailable(phone ? "not on phones" : "no sandbox");

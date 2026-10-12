@@ -44,11 +44,43 @@ async function offeredModels(): Promise<LocalModel[]> {
 
 export async function mountAgentPane(
   root: HTMLElement,
-  sandbox: { yurt: () => Yurt; start: () => void },
+  sandbox: {
+    yurt: () => Yurt;
+    start: () => void;
+    /** Set when the page will not start a sandbox (a phone, a boot the
+     * browser cut off): the pane says why, in the status like the Python
+     * cell's, and offers neither the download nor a Run (#197). */
+    unavailable?: string;
+  },
 ): Promise<void> {
   const models = await offeredModels();
   if (models.length === 0) return;
   root.hidden = false;
+  if (sandbox.unavailable !== undefined) {
+    root.replaceChildren(
+      el(
+        "div",
+        { className: "bar" },
+        el("span", { className: "name", textContent: "Agent" }),
+        el("span", {
+          id: "agent-status",
+          testid: "agent-status",
+          textContent: sandbox.unavailable,
+        }),
+      ),
+      el(
+        "div",
+        { id: "agent-intro" },
+        el(
+          "p",
+          { className: "unsupported", testid: "agent-unavailable" },
+          "The agent works in this page's sandbox, and the sandbox does not " +
+            "start here.",
+        ),
+      ),
+    );
+    return;
+  }
   const gpu = (navigator as Navigator & { gpu?: GPU }).gpu;
   const adapter = await gpu?.requestAdapter().catch(() => null);
 
