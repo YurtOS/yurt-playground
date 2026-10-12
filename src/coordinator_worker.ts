@@ -6,6 +6,7 @@
 import {
   bootPlayground,
   fetchPlaygroundBytes,
+  pinnedImageSha256,
   type PlaygroundTerm,
 } from "./boot.ts";
 import {
@@ -73,7 +74,9 @@ type FromWorker =
   | { type: "status"; text: string }
   | { type: "out"; bytes: number[] }
   | { type: "error"; message: string }
-  | { type: "notebook-ready" }
+  // `note` says where the guest's files are when that is not browser
+  // storage (yurtos-kernel#3081): the status line carries it.
+  | { type: "notebook-ready"; note?: string }
   | {
     type: "cell-result";
     id: string;
@@ -287,6 +290,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         }),
       show: (text: string) => post({ type: "status", text }),
       term: workerTerm({ cols: msg.cols, rows: msg.rows }),
+      imageSha256: kernelPorts === undefined
+        ? await pinnedImageSha256()
+        : undefined,
     };
     session = kernelPorts === undefined
       ? await bootPlayground(env)
@@ -313,7 +319,12 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       clearInterval(ticking);
     }
     subscribeJupyter(jupyter);
-    post({ type: "notebook-ready" });
+    post({
+      type: "notebook-ready",
+      note: session.storage?.kind === "memory"
+        ? `files in memory: ${session.storage.reason}`
+        : undefined,
+    });
   } catch (error) {
     try {
       session?.stop();

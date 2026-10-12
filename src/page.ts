@@ -21,7 +21,7 @@ type FromWorker =
   | { type: "status"; text: string }
   | { type: "out"; bytes: number[] }
   | { type: "error"; message: string }
-  | { type: "notebook-ready" }
+  | { type: "notebook-ready"; note?: string }
   | {
     type: "yurt-reply";
     req: number;
@@ -269,7 +269,7 @@ function boot(
     }
     if (msg.type === "notebook-ready") {
       notebook.ready();
-      status.textContent = "running";
+      status.textContent = msg.note ? `running · ${msg.note}` : "running";
       rememberBooting(undefined);
     }
     if (msg.type === "yurt-reply") {
