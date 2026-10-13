@@ -1,5 +1,6 @@
 import {
   defaultHostState,
+  KERNEL_PID,
   KernelHostInterface,
   METHOD,
   pumpPtyMaster,
@@ -18,7 +19,16 @@ import {
 import { partsFetch } from "./image_parts.ts";
 import { watchGuestMemoryRefusals } from "./memory_refused.ts";
 import { parsePins, type Pins } from "./pins.ts";
-import type { Spawner } from "./executions.ts";
+import type { Spawner, WaitStatus } from "./executions.ts";
+import {
+  decodeWaitRecord,
+  WAIT_RECORD_LEN,
+  waitRequest,
+} from "./wait_record.ts";
+
+/** Linux errnos the host's reap tells apart. */
+const ECHILD = 10;
+const EAGAIN = 11;
 
 export type PlaygroundTerm = {
   cols: number;
@@ -325,21 +335,41 @@ export async function bootPlayground(
     // Reap it at its exit: the host is its parent, so nothing in the guest
     // waits for it, and until the host does it stays in the process table
     // as a zombie (yurt-playground#148, yurtos-kernel#2813). Its output is
-    // in guest files, not in the per-pid buffers the reap drops. Best
-    // effort, as the kernel runner's `reapRootBestEffort`: the exit status
-    // is already known, and a failed wait must not replace it.
+    // in guest files, not in the per-pid buffers the reap drops. The reap
+    // is where the wait status is: the kernel's record, read whole, since
+    // `runStartAsync`'s number folds a signal death into 128+n and
+    // `reapHostChild`'s cannot tell exit 9 from SIGKILL (#204). Best
+    // effort, as the kernel runner's `reapRootBestEffort`: a failed wait
+    // leaves `runStartAsync`'s number, and must not replace it.
+    let status: WaitStatus | undefined;
+    const reap = () => {
+      const { rc, response } = mk.kernelSyscall(
+        METHOD.SYS_WAIT,
+        KERNEL_PID,
+        waitRequest(process.pid),
+        WAIT_RECORD_LEN,
+      );
+      const n = Number(rc);
+      // Not an exited child of the host: nothing to reap, and no status.
+      if (n === -ECHILD || n === -EAGAIN) return;
+      if (n !== WAIT_RECORD_LEN) throw new Error(`SYS_WAIT rc=${rc}`);
+      status = decodeWaitRecord(response);
+    };
     const start = process.runStartAsync.bind(process);
     process.runStartAsync = () =>
       start().finally(() => {
         try {
-          mk.reapHostChild(process.pid);
+          reap();
         } catch (error) {
           console.warn(
             `reap host-parented pid ${process.pid} failed: ${error}`,
           );
         }
       });
-    return process;
+    return Object.assign(process, {
+      /** Its wait status, once `runStartAsync` has settled and reaped it. */
+      waitStatus: (): WaitStatus | undefined => status,
+    });
   };
   env.show("starting ash");
   // Not a group leader: attaching the terminal makes the login shell a
@@ -461,7 +491,7 @@ export async function bootPlayground(
         );
       const exited = process.runStartAsync().then((rc) => {
         done = true;
-        return rc;
+        return process.waitStatus() ?? rc;
       }, (error) => {
         done = true;
         throw error;

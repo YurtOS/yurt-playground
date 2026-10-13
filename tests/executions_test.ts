@@ -3,9 +3,12 @@ import {
   buildExecLine,
   ExecutionRegistry,
   MAX_ACTIVE_EXECUTIONS,
+  signalName,
   signalNumber,
   type SpawnedProcess,
+  type WaitStatus,
 } from "../src/executions.ts";
+import { decodeWaitRecord, waitRequest } from "../src/wait_record.ts";
 
 /** A process that says what it was told to and exits when asked. */
 class FakeProcess implements SpawnedProcess {
@@ -14,8 +17,10 @@ class FakeProcess implements SpawnedProcess {
   stdin: Uint8Array | undefined;
   #out: Uint8Array[] = [];
   #err: Uint8Array[] = [];
-  #resolve!: (code: number) => void;
-  exited: Promise<number> = new Promise((resolve) => this.#resolve = resolve);
+  #resolve!: (status: WaitStatus | number) => void;
+  exited: Promise<WaitStatus | number> = new Promise((resolve) =>
+    this.#resolve = resolve
+  );
   constructor(readonly line: string, stdin?: Uint8Array) {
     this.stdin = stdin;
   }
@@ -30,8 +35,10 @@ class FakeProcess implements SpawnedProcess {
   takeStderr() {
     return take(this.#err);
   }
-  exit(code: number) {
-    this.#resolve(code);
+  /** A number is a host that reports only that; a `WaitStatus` is the
+   * guest's own. */
+  exit(status: WaitStatus | number) {
+    this.#resolve(status);
   }
 }
 
@@ -95,6 +102,7 @@ Deno.test("exec collects both streams, the status, and hands stdin to the spawne
   assertEquals(result, {
     code: 3,
     signal: null,
+    coreDumped: false,
     timedOut: false,
     stdout: "hello",
     stderr: "warn\n",
@@ -241,4 +249,72 @@ Deno.test("concurrent spawns cannot exceed the active limit", async () => {
     await reg.wait(a.value);
     void i;
   }
+});
+
+const exited = (code: number): WaitStatus => ({
+  code,
+  signal: null,
+  coreDumped: false,
+});
+const signalled = (signal: number, coreDumped = false): WaitStatus => ({
+  code: null,
+  signal,
+  coreDumped,
+});
+
+Deno.test("a signal death the page did not send is a signal, never 128+n (#204)", async () => {
+  const { reg, spawned } = registry();
+  const id = await reg.spawn("kill -TERM $$");
+  spawned[0].exit(signalled(15));
+  const result = await reg.wait(id);
+  assertEquals("code" in result ? result.code : "stuck", null);
+  assertEquals("signal" in result ? result.signal : "stuck", "SIGTERM");
+  assertEquals("coreDumped" in result ? result.coreDumped : "stuck", false);
+});
+
+Deno.test("a caller's signal that a handler caught, then exit 130, is code 130 (#204)", async () => {
+  const { reg, spawned, signals } = registry({ killExits: false });
+  const id = await reg.spawn("trap 'exit 130' INT; sleep 100");
+  await reg.kill(id, "SIGINT");
+  spawned[0].exit(exited(130));
+  const result = await reg.wait(id);
+  assertEquals(signals, [[spawned[0].pid, 2]]);
+  assertEquals("code" in result ? result.code : "stuck", 130);
+  assertEquals("signal" in result ? result.signal : "stuck", null);
+});
+
+Deno.test("an exit status is the code, and a core dump is said", async () => {
+  const { reg, spawned } = registry();
+  const three = await reg.spawn("exit 3");
+  spawned[0].exit(exited(3));
+  assertEquals((await reg.wait(three) as { code: number }).code, 3);
+  const segv = await reg.spawn("crash");
+  spawned[1].exit(signalled(11, true));
+  const result = await reg.wait(segv);
+  assertEquals("signal" in result ? result.signal : "stuck", "SIGSEGV");
+  assertEquals("coreDumped" in result ? result.coreDumped : "stuck", true);
+});
+
+Deno.test("signal numbers are named as Linux names them", () => {
+  assertEquals(signalName(9), "SIGKILL");
+  assertEquals(signalName(31), "SIGSYS");
+  assertEquals(signalName(34), "SIGRTMIN");
+  assertEquals(signalName(40), "SIGRTMIN+6");
+});
+
+Deno.test("the kernel's wait record keeps exit 9 and SIGKILL apart", () => {
+  const record = (code: number, signal: number, flags: number) => {
+    const bytes = new Uint8Array(32);
+    const view = new DataView(bytes.buffer);
+    view.setInt32(0, 42, true);
+    view.setInt32(4, code, true);
+    view.setInt32(8, signal, true);
+    view.setInt32(12, flags, true);
+    return bytes;
+  };
+  assertEquals(decodeWaitRecord(record(9, 0, 0)), exited(9));
+  assertEquals(decodeWaitRecord(record(0, 9, 0)), signalled(9));
+  assertEquals(decodeWaitRecord(record(0, 3, 1)), signalled(3, true));
+  assertThrows(() => decodeWaitRecord(new Uint8Array(16)), Error, "32");
+  assertEquals([...waitRequest(0x0102)], [2, 1, 0, 0, 1, 0, 0, 0]);
 });
