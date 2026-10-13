@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import { KernelHostInterface } from "@yurt/kernel-host-interface-js";
+import { KernelHostInterface, METHOD } from "@yurt/kernel-host-interface-js";
 import { bootPlayground, fetchPlaygroundBytes } from "../src/boot.ts";
 import {
   assertNoTouchFailure,
@@ -343,11 +343,20 @@ Deno.test({
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
-    const reap = KernelHostInterface.prototype.reapHostChild;
+    // The reap is the host's nonblocking SYS_WAIT, which also reads the
+    // wait status (#204); a failure there leaves runStartAsync's number.
+    const syscall = KernelHostInterface.prototype.kernelSyscall;
     const warn = console.warn;
     const warned: string[] = [];
-    KernelHostInterface.prototype.reapHostChild = () => {
-      throw new Error("stubbed reap failure");
+    KernelHostInterface.prototype.kernelSyscall = function (
+      this: KernelHostInterface,
+      methodId: number,
+      ...rest: [number, Uint8Array, number]
+    ) {
+      if (methodId === METHOD.SYS_WAIT) {
+        throw new Error("stubbed reap failure");
+      }
+      return syscall.call(this, methodId, ...rest);
     };
     console.warn = (...args: unknown[]) => warned.push(args.join(" "));
     try {
@@ -370,7 +379,7 @@ Deno.test({
         session.stop();
       }
     } finally {
-      KernelHostInterface.prototype.reapHostChild = reap;
+      KernelHostInterface.prototype.kernelSyscall = syscall;
       console.warn = warn;
     }
   },
