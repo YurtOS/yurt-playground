@@ -28,6 +28,7 @@ Deno.test("Stop during sandbox spawn kills the process when it appears", async (
       Promise.resolve({
         code: null,
         signal: "SIGTERM",
+        coreDumped: false,
         timedOut: false,
         stdout: "",
         stderr: "",
@@ -50,6 +51,7 @@ Deno.test("exec preserves nonzero exit results and the default output limit", as
         Promise.resolve({
           code: 7,
           signal: null,
+          coreDumped: false,
           timedOut: false,
           stdout: "partial",
           stderr: "failure",
@@ -107,6 +109,7 @@ Deno.test("read_file returns text from a quoted sandbox path", async () => {
         Promise.resolve({
           code: 0,
           signal: null,
+          coreDumped: false,
           timedOut: false,
           stdout: "first\nsecond\n",
           stderr: "",

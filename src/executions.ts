@@ -10,11 +10,18 @@
  * state a CPU-bound guest can reach (yurtos-kernel#2811).
  */
 
+/** How the process ended, as `waitpid(2)` reports it: exactly one of
+ * `code` (`WIFEXITED`, the `WEXITSTATUS`) and `signal` (`WIFSIGNALED`, the
+ * `WTERMSIG`) is set, whoever sent the signal. A signal death is never
+ * folded into `code` 128+n -- that is a shell's convention, and a process
+ * that handles SIGINT and exits 130 reports `code` 130. */
 export type Exit = {
-  /** Numeric status, or null when a signal ended the process. */
+  /** The exit status, or null when a signal ended the process. */
   code: number | null;
   /** "SIGKILL" etc., or null on a normal exit. */
   signal: string | null;
+  /** `WCOREDUMP`: the signal death left a core dump. */
+  coreDumped: boolean;
   timedOut: boolean;
 };
 
@@ -44,6 +51,7 @@ export type Result = ((Exit & Output) | Stuck) & { error?: string };
 const EMPTY_RESULT: Result = {
   code: null,
   signal: null,
+  coreDumped: false,
   timedOut: false,
   stdout: "",
   stderr: "",
@@ -72,11 +80,19 @@ export const RETENTION_MS = 10 * 60 * 1000;
 /** After the kill, how long to wait for the exit before declaring `Stuck`. */
 export const KILL_GRACE_MS = 2000;
 
+/** The guest's wait status for a process: what `waitpid(2)` decodes. */
+export type WaitStatus =
+  | { code: number; signal: null; coreDumped: false }
+  | { code: null; signal: number; coreDumped: boolean };
+
 /** What a host gives back for a started shell line. */
 export type SpawnedProcess = {
   pid: number;
-  /** Resolves with the exit status once the process is done. */
-  exited: Promise<number>;
+  /** Resolves once the process is done: with its wait status, or, from a
+   * host that reports only a number (the native session's `exitCode`),
+   * that number -- which cannot tell a signal death from an exit, so the
+   * registry falls back to what it sent (see `#ended`). */
+  exited: Promise<WaitStatus | number>;
   /** Bytes produced since the last take, drained. */
   takeStdout(): Uint8Array;
   takeStderr(): Uint8Array;
@@ -149,6 +165,54 @@ const SIGNALS: Record<string, number> = {
   SIGTERM: 15,
 };
 
+/** The name of every Linux signal number below the real-time range. */
+const SIGNAL_NAMES = [
+  "",
+  "SIGHUP",
+  "SIGINT",
+  "SIGQUIT",
+  "SIGILL",
+  "SIGTRAP",
+  "SIGABRT",
+  "SIGBUS",
+  "SIGFPE",
+  "SIGKILL",
+  "SIGUSR1",
+  "SIGSEGV",
+  "SIGUSR2",
+  "SIGPIPE",
+  "SIGALRM",
+  "SIGTERM",
+  "SIGSTKFLT",
+  "SIGCHLD",
+  "SIGCONT",
+  "SIGSTOP",
+  "SIGTSTP",
+  "SIGTTIN",
+  "SIGTTOU",
+  "SIGURG",
+  "SIGXCPU",
+  "SIGXFSZ",
+  "SIGVTALRM",
+  "SIGPROF",
+  "SIGWINCH",
+  "SIGIO",
+  "SIGPWR",
+  "SIGSYS",
+];
+/** Linux's SIGRTMIN as the C library sees it (glibc and musl reserve two). */
+const SIGRTMIN = 34;
+
+/** "SIGTERM" for 15; a real-time signal as "SIGRTMIN+n", as `kill -l`
+ * names it. */
+export function signalName(signal: number): string {
+  if (signal > 0 && signal < SIGNAL_NAMES.length) return SIGNAL_NAMES[signal];
+  if (signal >= SIGRTMIN && signal <= 64) {
+    return signal === SIGRTMIN ? "SIGRTMIN" : `SIGRTMIN+${signal - SIGRTMIN}`;
+  }
+  return `SIG${signal}`;
+}
+
 export function signalNumber(signal: string): number {
   const name = signal.toUpperCase().startsWith("SIG")
     ? signal.toUpperCase()
@@ -204,7 +268,8 @@ type Execution = {
   done: Promise<Result>;
   /** The exit of a process that was reported stuck and then died. */
   late?: Result;
-  /** The last signal sent (by the deadline or a caller), for the report. */
+  /** The last signal sent (by the deadline or a caller): the report's
+   * guess for a host that gives only a number (see `#ended`). */
   killed?: string;
   /** When SIGKILL went out: the grace period for the Stuck report runs
    * from here, and only from here -- a caller's TERM is the process's to
@@ -290,6 +355,7 @@ export class ExecutionRegistry {
         ...this.#output(execution),
         code: null,
         signal: null,
+        coreDumped: false,
         timedOut: execution.timedOut,
         error: error instanceof Error ? error.message : String(error),
       };
@@ -300,13 +366,13 @@ export class ExecutionRegistry {
   async #run(execution: Execution, opts: ExecOptions): Promise<Result> {
     const { process, stdout, stderr } = execution;
     let exited = false;
-    let code = 0;
-    const exit = process.exited.then((c) => {
+    let status: WaitStatus | number = 0;
+    const exit = process.exited.then((s) => {
       exited = true;
-      code = c;
+      status = s;
     }, () => {
       exited = true;
-      code = -1;
+      status = -1;
     });
     const tick = new Tick();
     const deadline = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -346,10 +412,7 @@ export class ExecutionRegistry {
           this.#finish(execution);
           execution.late = {
             ...this.#output(execution),
-            code: execution.killed === undefined || code === 0 ? code : null,
-            signal: execution.killed === undefined || code === 0
-              ? null
-              : execution.killed,
+            ...this.#ended(execution, status),
             timedOut: execution.timedOut,
           };
         });
@@ -361,22 +424,35 @@ export class ExecutionRegistry {
     stdout.push(process.takeStdout());
     stderr.push(process.takeStderr());
     this.#finish(execution);
-    // A process that the deadline killed reports the signal, not a status;
-    // one that exited on its own before the kill landed keeps its status.
-    if (execution.killed !== undefined && code !== 0) {
-      return {
-        ...this.#output(execution),
-        code: null,
-        signal: execution.killed,
-        timedOut: execution.timedOut,
-      };
-    }
     return {
       ...this.#output(execution),
-      code,
-      signal: null,
+      ...this.#ended(execution, status),
       timedOut: execution.timedOut,
     };
+  }
+
+  /** How the process ended. A wait status is the guest's and is reported
+   * as it is: a signal death is a `signal` whoever sent it, and an exit is
+   * a `code` even after a signal of the caller's that a handler caught
+   * (yurt-playground#204). A bare number is all some hosts report, and it
+   * cannot tell the two apart: then a process that was signalled and did
+   * not exit 0 is taken to have died of the last signal sent, and any
+   * other is taken to have exited with the number. */
+  #ended(
+    execution: Execution,
+    status: WaitStatus | number,
+  ): Pick<Exit, "code" | "signal" | "coreDumped"> {
+    if (typeof status !== "number") {
+      return {
+        code: status.code,
+        signal: status.signal === null ? null : signalName(status.signal),
+        coreDumped: status.coreDumped,
+      };
+    }
+    if (execution.killed !== undefined && status !== 0) {
+      return { code: null, signal: execution.killed, coreDumped: false };
+    }
+    return { code: status, signal: null, coreDumped: false };
   }
 
   #finish(execution: Execution): void {
@@ -437,6 +513,7 @@ export class ExecutionRegistry {
       ...raw,
       code: result.code,
       signal: result.signal,
+      coreDumped: result.coreDumped,
       timedOut: result.timedOut,
     };
   }

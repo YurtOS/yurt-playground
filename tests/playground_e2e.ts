@@ -499,6 +499,10 @@ if (import.meta.main) {
             cmd: string,
             opts?: Record<string, unknown>,
           ): Promise<Record<string, unknown>>;
+          spawn(cmd: string): Promise<{
+            kill(signal?: string): Promise<void>;
+            wait(): Promise<Record<string, unknown>>;
+          }>;
           fs: {
             read(p: string): Promise<Uint8Array>;
             write(
@@ -549,7 +553,32 @@ if (import.meta.main) {
       const survivors = (await y.exec(
         'for p in $(ps | awk \'$4=="sleep" && $5=="60" {print $1}\'); do kill -0 $p 2>/dev/null && echo alive $p; done; echo checked',
       )).stdout;
+      // #204: the guest's wait status, not what the page did. An exit is a
+      // code; a signal death is a signal whoever sent it, never 128+n; and
+      // a handler that exits 130 is code 130, the page's SIGINT included.
+      const exit3 = await y.exec("exit 3");
+      const termed = await y.exec("kill -TERM $$");
+      const handled = await y.exec(
+        "trap 'exit 130' INT; kill -INT $$; sleep 5; exit 1",
+      );
+      const trapping = await y.spawn(
+        "trap 'exit 130' INT; while :; do sleep 0.1; done",
+      );
+      await new Promise((r) => setTimeout(r, 1000));
+      await trapping.kill("SIGINT");
+      const interrupted = await trapping.wait();
+      const waited = (r: Record<string, unknown>) => ({
+        code: r.code,
+        signal: r.signal,
+      });
+      const ended = {
+        exit3: waited(exit3),
+        termed: waited(termed),
+        handled: waited(handled),
+        interrupted: waited(interrupted),
+      };
       return {
+        ended,
         status,
         attr,
         both,
@@ -616,6 +645,16 @@ if (import.meta.main) {
       driven.timed.timedOut === true && driven.timed.signal === "SIGKILL" &&
         driven.ms < 10000 && driven.survivors === "checked\n",
       { timed: driven.timed, survivors: driven.survivors },
+    );
+    const ended = (got: unknown, code: number | null, signal: string | null) =>
+      JSON.stringify(got) === JSON.stringify({ code, signal });
+    expect(
+      "wait status (#204)",
+      ended(driven.ended.exit3, 3, null) &&
+        ended(driven.ended.termed, null, "SIGTERM") &&
+        ended(driven.ended.handled, 130, null) &&
+        ended(driven.ended.interrupted, 130, null),
+      driven.ended,
     );
     console.log(
       `playground e2e: window.yurt drove the sandbox (timeout in ${driven.ms} ms)`,

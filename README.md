@@ -88,6 +88,16 @@ flags; `yurt.spawn` for a handle with `wait()` and `kill(signal)`;
 for "idle", "booting", "running" or "failed". Every command is a process of the
 page's own, not a keystroke in the terminal.
 
+`code` and `signal` are the process's wait status, as `waitpid(2)` gives it,
+whoever sent the signal: a normal exit is `code` (the exit status) with
+`signal: null`; a signal death is `signal` (`"SIGTERM"`, `"SIGKILL"`, ...) with
+`code: null`, and `coreDumped` says whether it dumped core. A signal death is
+never reported as `code` 128+n -- that is only a shell's convention -- so
+`kill -TERM $$` gives `signal: "SIGTERM"`, while a process that catches the
+page's SIGINT and exits 130 gives `code: 130`. In the desktop app the host
+reports a single number, so there a signal is inferred from the kill the page
+sent.
+
 The desktop app also serves the same thing over HTTP for a program on the
 machine, on the launcher's loopback port under `/api/`. The token is printed
 once (`API token: …`) and left in `~/.yurt/playground.json` (mode 0600) while
