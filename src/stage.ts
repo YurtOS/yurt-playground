@@ -19,6 +19,8 @@ const NEG_EEXIST = -17;
  * host-control ids, the same as `SYS_CHOWN` above. */
 const KERNEL_VFS_SET_METADATA = 33;
 const S_IFDIR = 0o040_000;
+const S_IFREG = 0o100_000;
+const S_IFLNK = 0o120_000;
 const MODE_PERM_MASK = 0o7777;
 const NANOS_PER_SECOND = 1_000_000_000n;
 const REGISTER_FILE_CHUNK_HEADER_BYTES = 12;
@@ -42,18 +44,11 @@ export function setPidCredentials(
 }
 
 const SYS_CHOWN = 0x1_0023;
-const SYS_LCHOWN = 0x1_01D2;
-
-export function ownershipMethodForEntry(type: string): number {
-  return type === "symlink" ? SYS_LCHOWN : SYS_CHOWN;
-}
-
 function chownPath(
   mk: KernelHostInterface,
   path: string,
   uid: number,
   gid: number,
-  method: number,
 ): void {
   const pathBytes = s(path);
   const req = new Uint8Array(8 + pathBytes.byteLength);
@@ -61,23 +56,42 @@ function chownPath(
   view.setUint32(0, uid >>> 0, true);
   view.setUint32(4, gid >>> 0, true);
   req.set(pathBytes, 8);
-  const { rc } = mk.syscall(method, req, 0);
+  const { rc } = mk.syscall(SYS_CHOWN, req, 0);
   if (Number(rc) !== 0) {
     throw new Error(`chown ${path} ${uid}:${gid} failed: rc=${rc}`);
   }
 }
 
-/** Apply the image's mode, owner, and mtime to a staged directory. */
-function setDirectoryMetadata(
+/** The `st_mode` type bits for an image entry: the kernel stores the mode
+ * verbatim, so the node's kind travels with its permission bits (the tar
+ * mode has none). A hardlink is staged as its own copy of the target's
+ * bytes, so it is a regular file. */
+function entryTypeBits(type: string): number {
+  if (type === "dir") return S_IFDIR;
+  if (type === "symlink") return S_IFLNK;
+  return S_IFREG;
+}
+
+/** Apply the image's mode, owner, and mtime to a staged entry. */
+function setEntryMetadata(
   mk: KernelHostInterface,
   path: string,
-  entry: { mode: number; uid: number; gid: number; mtime: number },
+  entry: {
+    type: string;
+    mode: number;
+    uid: number;
+    gid: number;
+    mtime: number;
+  },
 ): void {
   const pathBytes = s(path);
   const req = new Uint8Array(20 + pathBytes.byteLength);
   const view = new DataView(req.buffer);
-  // The kernel stores this mode verbatim, so include the directory type.
-  view.setUint32(0, (S_IFDIR | (entry.mode & MODE_PERM_MASK)) >>> 0, true);
+  view.setUint32(
+    0,
+    (entryTypeBits(entry.type) | (entry.mode & MODE_PERM_MASK)) >>> 0,
+    true,
+  );
   view.setUint32(4, entry.uid >>> 0, true);
   view.setUint32(8, entry.gid >>> 0, true);
   view.setBigUint64(
@@ -142,23 +156,22 @@ export async function stageYurtimg(
       // Dangling or non-file symlink: valid VFS entry, not a module.
     }
   }
-  for (const [path, entry] of Object.entries(index.entries)) {
-    if (entry.type === "dir") continue;
-    if (entry.uid === 0 && entry.gid === 0) continue;
-    if (!include(path)) continue;
-    chownPath(
-      mk,
-      path,
-      entry.uid,
-      entry.gid,
-      ownershipMethodForEntry(entry.type),
-    );
+  // The install calls above give a file the ramfs default (0644, or 0755
+  // when its content is wasm) and every node the stager's root identity,
+  // so apply what the image records -- mode, owner and mtime -- to every
+  // staged entry (YurtOS/yurtos-kernel#3611: a 0755 `pip` launcher staged
+  // 0644 and failed exec with EACCES). One pass after all structure, as the
+  // runner's `stageImage` and Wasmtime's `boot_disk` do: a recorded 0700
+  // directory applied early would refuse the entries staged beneath it.
+  // Directories go last for the same reason, should the lookup ever check
+  // search permission.
+  const entries = Object.entries(index.entries);
+  for (const [path, entry] of entries) {
+    if (entry.type === "dir" || !include(path)) continue;
+    setEntryMetadata(mk, path, entry);
   }
-  // Apply these modes last: mkdir, symlink, and chown above are
-  // permission-checked, and root still needs search permission through ancestors.
-  for (const [path, entry] of Object.entries(index.entries)) {
-    if (entry.type !== "dir") continue;
-    setDirectoryMetadata(mk, path, entry);
+  for (const [path, entry] of entries) {
+    if (entry.type === "dir") setEntryMetadata(mk, path, entry);
   }
 }
 
@@ -246,7 +259,7 @@ export function writeRamfsFile(
     }
   }
   if (owner !== undefined) {
-    chownPath(mk, path, owner.uid, owner.gid, SYS_CHOWN);
+    chownPath(mk, path, owner.uid, owner.gid);
   }
 }
 

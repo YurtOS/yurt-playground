@@ -518,6 +518,10 @@ if (import.meta.main) {
       const status = y.status;
       const attr = document.documentElement.dataset.yurtStatus;
       const both = await y.exec("echo out; echo err 1>&2; exit 7");
+      // yurtos-kernel#3611: `pip` is a `#!/usr/local/bin/python3` script the
+      // image records 0755; staged with the ramfs default 0644, exec failed
+      // with "Permission denied".
+      const pip = await y.exec("ls -l /usr/local/bin/pip; pip --version");
       const piped = await y.exec("cat | tr a-z A-Z", { stdin: "fed\n" });
       // Not `yes | head`: a writer on a reader-less pipe gets no EPIPE in
       // the guest yet and would spin until the timeout.
@@ -582,6 +586,7 @@ if (import.meta.main) {
         status,
         attr,
         both,
+        pip,
         piped,
         bounded,
         read,
@@ -606,6 +611,13 @@ if (import.meta.main) {
       driven.both.stdout === "out\n" && driven.both.stderr === "err\n" &&
         driven.both.code === 7,
       driven.both,
+    );
+    expect(
+      "the image's pip launcher execs (yurtos-kernel#3611)",
+      driven.pip.code === 0 &&
+        /^-rwxr-xr-x\s/.test(driven.pip.stdout as string) &&
+        (driven.pip.stdout as string).includes("\npip "),
+      driven.pip,
     );
     expect(
       "stdin into a pipeline",

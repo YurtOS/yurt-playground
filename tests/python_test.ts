@@ -67,6 +67,21 @@ Deno.test("playground's pip fails fast without network", async () => {
   });
 });
 
+// yurtos-kernel#3611: `pip` is a `#!/usr/local/bin/python3` launcher the
+// image records 0755. Staged with the ramfs default 0644, the login user's
+// exec of it failed with "Permission denied".
+Deno.test("playground execs the image's pip launcher", async () => {
+  await withPythonSession(async ({ term }) => {
+    const out = await typeCommand(
+      term,
+      "pip --version; echo pip-rc=$?",
+      180_000,
+    );
+    assertStringIncludes(out, "pip-rc=0");
+    assertStringIncludes(out, "/usr/local/lib/python3.14/site-packages/pip");
+  });
+});
+
 Deno.test("playground runs an interactive Python 3 REPL", async () => {
   await withPythonSession(async ({ term }) => {
     const before = term.output().length;
