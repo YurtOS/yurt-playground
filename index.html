@@ -208,6 +208,28 @@
             tiers (nightmonkey #3). Tracked in yurt-ports #110.
           </li>
         </ul>
+        <h2>Go</h2>
+        <ul>
+          <li>
+            <strong>Go runs on Yurt as Linux:</strong> yurt-go adds a
+            <code>GOOS=linux GOARCH=wasm32</code> port on top of upstream Go's
+            wasm32 work (golang/go#63131, not merged upstream yet). Go programs
+            build into ordinary Yurt processes that use Linux system calls, not
+            WASI.
+          </li>
+          <li>
+            <strong>The Go toolchain runs inside the sandbox:</strong> the
+            yurt-ports <code>go</code> package (Go 1.28.0-devel, 57 MB)
+            installs <code>go</code> and <code>gofmt</code> under
+            <code>/usr/lib/go</code>, so <code>go build</code> and
+            <code>go test</code> work in a sandbox. The GitHub CLI
+            (<code>gh</code>) is built with it.
+          </li>
+          <li>
+            Neither is in the playground image yet. Go programs run on one
+            thread, and signals reach them only between system calls.
+          </li>
+        </ul>
         <h2>Kernel fixes in review</h2>
         <ul>
           <li>
