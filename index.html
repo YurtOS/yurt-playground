@@ -160,6 +160,30 @@
             measurements only. The default node is unchanged.
           </li>
         </ul>
+        <h2>Dynamic loading (<code>dlopen</code>)</h2>
+        <ul>
+          <li>
+            A shared library's constructors run inside the guest after it is
+            loaded, so a constructor can make system calls, and can call
+            <code>dlopen</code>, <code>dlsym</code> and <code>dlclose</code>
+            itself, without deadlocking (kernel #3642, yurt-toolchain #271).
+          </li>
+          <li>
+            Loading a library that depends on another one (a
+            <code>NEEDED</code> entry) no longer deadlocks on the desktop host
+            (kernel #3649).
+          </li>
+          <li>
+            <code>dlclose</code> and <code>dlsym</code> reject handles the
+            loader does not own instead of misusing them (yurt-toolchain #263,
+            #265).
+          </li>
+          <li>
+            The libc side ships with the next guest SDK release. Still in
+            progress: a shared <code>libc.so</code> so ordinary CPython native
+            extensions can load (yurt-toolchain #180, #236; yurt-ports #173).
+          </li>
+        </ul>
         <h2>Kernel fixes in review</h2>
         <ul>
           <li>
