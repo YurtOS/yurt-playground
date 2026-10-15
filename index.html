@@ -105,6 +105,9 @@
         border-radius: 3px;
         padding: 0 4px;
       }
+      .pane.upcoming {
+        border-left-color: var(--sky);
+      }
       a {
         color: var(--sky);
       }
@@ -117,6 +120,78 @@
   <body>
     <main data-testid="releases">
       <a class="wordmark" href="https://yurt-playground.pages.dev/">Yurt</a>
+      <article class="pane upcoming" id="upcoming">
+        <h1>Upcoming</h1>
+        <p class="date">
+          Updated 2026-10-15 · not released yet; plans may change
+        </p>
+        <p>
+          Work that is merged or in review for the next train. None of it is
+          on the live playground yet.
+        </p>
+        <h2>Merged, waiting for the next train</h2>
+        <ul>
+          <li>
+            <strong><code>yurt warm</code></strong> precompiles the image's
+            programs without a daemon. The Linux installers and
+            <code>yurt pull</code> run it, so the first <code>node</code> or
+            <code>python3</code> no longer pays the compile cost (a cold first
+            <code>node</code> took 49 s, a warm one 0.7 s). The daemon also
+            warms the caches in the background when it starts (yurt-sandbox
+            #334, #337).
+          </li>
+          <li>
+            <strong>Node.js fixes</strong> from yurt-node #29, #31, #33 and
+            #36: <code>util.inspect(err)</code> formats <code>err.stack</code>
+            the way V8 does, <code>AsyncLocalStorage</code> keeps its context
+            across promise jobs, every bundled component's license text is
+            packaged, and 24 more Node tests are enabled. These need a new
+            yurt-node release.
+          </li>
+          <li>
+            <strong>Opt-in Node startup cache</strong> (yurt-node #38):
+            <code>YURT_NODE_STENCIL_CACHE</code> keeps parsed ES modules on
+            disk; <code>gemini --version</code> drops from 2.2 s to 1.4 s. Off
+            by default.
+          </li>
+          <li>
+            <strong>Experimental JS-to-wasm tier</strong> (yurt-node #42): a
+            separate opt-in node build with the NightMonkey JIT, for
+            measurements only. The default node is unchanged.
+          </li>
+        </ul>
+        <h2>Kernel fixes in review</h2>
+        <ul>
+          <li>
+            <code>SIGCONT</code> resumes a stopped process instead of killing
+            it on the desktop host (#3637).
+          </li>
+          <li>
+            A blocking write on a full AF_UNIX stream socket waits and writes
+            the full count instead of returning <code>EAGAIN</code> (#3606).
+          </li>
+          <li>
+            A non-blocking TCP <code>connect</code> returns
+            <code>EINPROGRESS</code> right away instead of blocking the whole
+            sandbox for up to 30 s, and a blocking one honours
+            <code>SO_SNDTIMEO</code> and signals (#3607, #3601, #3653). This is
+            the stall Node's <code>net</code> hit when trying several
+            addresses.
+          </li>
+        </ul>
+        <h2>Planned</h2>
+        <ul>
+          <li>
+            Ctrl-C and <code>kill -INT</code> reach a CPU-bound Python program,
+            so <code>KeyboardInterrupt</code> works (#2811). It builds on signal
+            work still in review.
+          </li>
+          <li>
+            Guest SDK 0.0.27+ and, with it, the return of checkpoint sealing
+            (kernel #3497–#3499).
+          </li>
+        </ul>
+      </article>
       <article class="pane" id="playground-2026.10.15-230cfe2.2">
         <h1>playground-2026.10.15-230cfe2.2</h1>
         <p class="date">2026-10-15 · replaces playground-2026.10.13-68259fc</p>
