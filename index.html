@@ -154,11 +154,6 @@
             disk; <code>gemini --version</code> drops from 2.2 s to 1.4 s. Off
             by default.
           </li>
-          <li>
-            <strong>Experimental JS-to-wasm tier</strong> (yurt-node #42): a
-            separate opt-in node build with the NightMonkey JIT, for
-            measurements only. The default node is unchanged.
-          </li>
         </ul>
         <h2>Dynamic loading (<code>dlopen</code>)</h2>
         <ul>
@@ -182,6 +177,35 @@
             The libc side ships with the next guest SDK release. Still in
             progress: a shared <code>libc.so</code> so ordinary CPython native
             extensions can load (yurt-toolchain #180, #236; yurt-ports #173).
+          </li>
+        </ul>
+        <h2>JavaScript JIT (experimental)</h2>
+        <p>
+          Node on Yurt runs SpiderMonkey's interpreter. The JIT work adds a
+          tier that compiles hot JavaScript to WebAssembly inside the guest
+          (NightMonkey) and mounts it through the kernel's JIT interface. It is
+          not in the image and stays off by default.
+        </p>
+        <ul>
+          <li>
+            <strong>Opt-in node build</strong> with NightMonkey (yurt-node
+            #42), for measurements. On the desktop host, Octane benchmarks ran
+            2&ndash;47&times; faster and hot loops up to 178&times;. Compiling
+            costs 0.3&ndash;24 s per run, only the first batch of code is
+            compiled so far, and Gemini CLI does not speed up yet.
+          </li>
+          <li>
+            <strong>Kernel JIT interface:</strong> compiled modules can be up to
+            64 MiB instead of 1 MiB (kernel #3324), and JIT start helpers can
+            make system calls (kernel #3334). Both merged.
+          </li>
+          <li>
+            <strong>Still open:</strong> slot reservation and module loads over
+            1 MiB on the browser host (kernel #2981, #3319), JIT code visible to
+            every thread and kept across <code>fork</code> (#2984, #2985),
+            fork and checkpoints across JIT frames (#3335), compiling more than
+            the first batch, and taking upstream NightMonkey's MIR and baseline
+            tiers (nightmonkey #3). Tracked in yurt-ports #110.
           </li>
         </ul>
         <h2>Kernel fixes in review</h2>
