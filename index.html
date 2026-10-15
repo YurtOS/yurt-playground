@@ -330,6 +330,712 @@
           </li>
         </ul>
       </article>
+      <article class="pane" id="playground-2026.10.13-68259fc">
+        <h1>playground-2026.10.13-68259fc</h1>
+        <p class="date">
+          2026-10-13 · replaces playground-2026.10.12-5ddc591.2
+        </p>
+        <p>
+          Socket and thread fixes in the kernel, and a tablet now gets the Linux
+          shell only.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Version</th>
+            </tr>
+            <tr>
+              <td>Kernel</td>
+              <td>yurtos-kernel 68259fc</td>
+            </tr>
+            <tr>
+              <td>Image</td>
+              <td>yurt-ports af46718</td>
+            </tr>
+            <tr>
+              <td>Desktop host and yurt CLI</td>
+              <td>yurt-sandbox a3da76a</td>
+            </tr>
+          </table>
+        </div>
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            A process that exits while its pthreads are still running no longer
+            kills the sandbox (#3556)
+          </li>
+          <li>On a tablet the page runs the Linux shell only (#195)</li>
+        </ul>
+        <h2>Kernel</h2>
+        <ul>
+          <li>
+            AF_UNIX sockets: names are taken at <code>bind</code>, with correct
+            <code>EADDRINUSE</code>, <code>ENOENT</code> and autobind behaviour
+            (#3562)
+          </li>
+          <li>
+            Loopback TCP: <code>shutdown(SHUT_WR)</code> delivers EOF to the
+            peer, and a linger-0 close resets it (#3557)
+          </li>
+          <li>
+            A process ending with live pthreads no longer kills the sandbox
+            (#3556)
+          </li>
+          <li>
+            The browser host keeps every executor scratch range for reuse
+            (yurt-playground#203) (#3555)
+          </li>
+          <li>CI and test changes</li>
+        </ul>
+        <h2>Image</h2>
+        <ul>
+          <li>
+            No change to the image contents; JavaScript agent-runtime spike work
+            and documentation (#204, #205, #207, #208, #209, #210)
+          </li>
+        </ul>
+        <h2>yurt CLI and desktop host</h2>
+        <ul>
+          <li>
+            <code>yurt cp</code> keeps the host file's permission bits when
+            copying in (#324)
+          </li>
+        </ul>
+        <h2>Playground page</h2>
+        <ul>
+          <li>A tablet runs the Linux shell only (#195)</li>
+          <li>The agent pane says why when no sandbox will start (#202)</li>
+          <li>
+            <code>window.yurt</code> reports the guest's wait status (#205)
+          </li>
+          <li>
+            Guest Workers talk to the coordinator over a direct MessagePort
+            (#181)
+          </li>
+          <li>
+            Release tooling: <code>--resume</code> keeps an <code
+            >--image-release</code> train's repos (#201)
+          </li>
+        </ul>
+      </article>
+
+      <article class="pane" id="playground-2026.10.12-5ddc591.2">
+        <h1>playground-2026.10.12-5ddc591.2</h1>
+        <p class="date">2026-10-12 · replaces playground-2026.10.12-5ddc591</p>
+        <p>
+          A respin of the same kernel and image with a re-pinned desktop host
+          and CLI, and clearer messages on phones.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Version</th>
+            </tr>
+            <tr>
+              <td>Kernel</td>
+              <td>yurtos-kernel 5ddc591</td>
+            </tr>
+            <tr>
+              <td>Image</td>
+              <td>yurt-ports 50aba58</td>
+            </tr>
+            <tr>
+              <td>Desktop host and yurt CLI</td>
+              <td>yurt-sandbox 0c3700f</td>
+            </tr>
+          </table>
+        </div>
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            On a phone the page says "not on phones" instead of "failed", and
+            <code>?start-anyway</code> lets you try anyway (#192)
+          </li>
+        </ul>
+        <h2>yurt CLI and desktop host</h2>
+        <ul>
+          <li>
+            The desktop host and CLI are pinned to train
+            playground-2026.10.12-5ddc591 (#322)
+          </li>
+        </ul>
+        <h2>Playground page</h2>
+        <ul>
+          <li>
+            Phones get "not on phones" instead of "failed", with <code
+            >?start-anyway</code> to try anyway (#192)
+          </li>
+          <li>The page lists the supported packages (#183)</li>
+          <li>
+            Release tooling: <code>--resume</code> names the train it means, and
+            failures print the exact resume command (#193)
+          </li>
+        </ul>
+      </article>
+
+      <article class="pane" id="playground-2026.10.12-5ddc591">
+        <h1>playground-2026.10.12-5ddc591</h1>
+        <p class="date">2026-10-12 · replaces playground-2026.09.27-a3198c7</p>
+        <p>
+          Two weeks of kernel work (filesystem sync, HostFS xattrs,
+          capabilities, signals, CPU accounting and browser-host memory) on
+          guest SDK 0.0.26, and new image packages including git, Perl, Go, jq
+          and gh.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Version</th>
+            </tr>
+            <tr>
+              <td>Kernel</td>
+              <td>yurtos-kernel 5ddc591</td>
+            </tr>
+            <tr>
+              <td>Image</td>
+              <td>yurt-ports 50aba58</td>
+            </tr>
+            <tr>
+              <td>Desktop host and yurt CLI</td>
+              <td>yurt-sandbox 435f6a1</td>
+            </tr>
+          </table>
+        </div>
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            New image packages: git, Perl 5.44, Go, jq, gh, rtk, gettext tools,
+            the <code>xz</code> command and Datasette (#148, #154, #188, #144,
+            #186, #185, #139, #187, #192)
+          </li>
+          <li>CPython 3.14.7 (#165)</li>
+          <li>
+            <code>epoll</code> uses the guest's 16-byte <code
+            >epoll_event</code>, with guest SDK 0.0.26 (#3014, #3538)
+          </li>
+          <li>
+            <code>fsync</code>, <code>fdatasync</code>, <code>syncfs</code> and
+            <code>sync</code> reach the backing store (#3150)
+          </li>
+          <li>
+            The page shows a reload banner when the browser refuses a process
+            its memory (#180)
+          </li>
+        </ul>
+        <h2>Kernel</h2>
+        <ul>
+          <li>
+            Guest SDK 0.0.26, with musl's 16-byte <code>epoll_event</code>
+            (#3538)
+          </li>
+          <li>
+            <code>epoll</code> uses the guest's 16-byte <code
+            >epoll_event</code>, not a 12-byte wire format (#3014)
+          </li>
+          <li>
+            <code>fsync</code>, <code>fdatasync</code>, <code>syncfs</code> and
+            <code>sync</code> reach the backing store (#3150), with follow-ups
+            (#3157, #3180, #3178, #3209, #3276, #3297)
+          </li>
+          <li>
+            HostFS extended attributes, in the native and in-memory backends and
+            the browser host (#3455, #3457, #3432)
+          </li>
+          <li>
+            HostFS <code>rmdir</code> works (it was always <code>EROFS</code>)
+            (#3461)
+          </li>
+          <li>
+            HostFS truncate: no runtime SIGBUS, and the guest gets SIGBUS past
+            EOF (#3118)
+          </li>
+          <li>
+            Capability sets: <code>capset</code>, securebits, bounding and
+            ambient sets, and exec (#3434)
+          </li>
+          <li>
+            <code>chown</code> family is authorized on fsuid/fsgid and <code
+            >CAP_CHOWN</code>, like Linux (#3392); one DAC-override rule (#3433)
+          </li>
+          <li>
+            <code>chmod</code>, <code>chown</code>, <code>truncate</code> and
+            <code>utimens</code> follow a terminal symlink (#3042)
+          </li>
+          <li>
+            A trailing slash on a non-directory is <code>ENOTDIR</code> (#3057)
+          </li>
+          <li>
+            <code>/proc/filesystems</code>, with one filesystem-type list behind
+            <code>mount(2)</code> (#3195)
+          </li>
+          <li>
+            <code>mount(2)</code> accepts the atime, sync, dirsync, mand,
+            nosymfollow and iversion flags (#3040), enforces <code
+            >MS_REMOUNT</code> read-only (#3049), and honours tmpfs mount
+            options (#3062)
+          </li>
+          <li>The running executable is exposed through procfs (#2967)</li>
+          <li>
+            <code>/proc/cpuinfo</code> reports each host's real Wasm feature set
+            (#2990)
+          </li>
+          <li>
+            Overlay filesystem: renames of populated directories work (#3187);
+            renaming a lower-layer directory is <code>EXDEV</code> (#3211);
+            base-layer link counts are reported (#3190)
+          </li>
+          <li>
+            Blocking <code>eventfd</code>, <code>timerfd</code> and <code
+            >splice</code>/<code>tee</code> waits park instead of spinning
+            (#3055)
+          </li>
+          <li>
+            Signals: a blocked signal stays pending even when ignored (#3027); a
+            process signal reaches the parked leader (#3011); an ignored or
+            blocked fault signal is forced to <code>SIG_DFL</code> (#3041); a
+            trapping process dies by the matching signal (#3142)
+          </li>
+          <li>
+            CPU accounting: <code>wait4</code>/<code>waitid</code> report the
+            child's own rusage (#3054); process CPU timers count exited threads
+            (#3103); exec keeps discarded threads' CPU time (#3087); fork, spawn
+            and exec set-up is charged correctly (#3058, #3086, #3075)
+          </li>
+          <li>
+            <code>setitimer</code> no longer expires early when busy (#3148)
+          </li>
+          <li>
+            <code>RLIMIT_CORE</code> defaults to <code>{0,
+              RLIM_INFINITY}</code>, as on Linux (#3145)
+          </li>
+          <li>
+            <code>getrandom</code> above 1 MiB returns a short count, not <code
+            >E2BIG</code> (#3048)
+          </li>
+          <li>
+            <code>MAP_FIXED</code> over more than 1 MiB of a mapping no longer
+            returns <code>EFAULT</code> (#3099)
+          </li>
+          <li>
+            <code>pread64</code>/<code>pwrite64</code> reject a negative offset
+            before checking the fd (#3322)
+          </li>
+          <li>
+            Sockets: AF_UNIX keeps <code>SOCK_NONBLOCK</code>/<code
+            >SOCK_CLOEXEC</code> across connect/listen (#3096); UNIX datagram
+            <code>SO_SNDBUF</code> and whole-message sends (#3349); UDP receiver
+            overflow drops instead of blocking the sender (#3340); exit closes
+            host sockets (#3098)
+          </li>
+          <li>
+            Orphans nothing can wait for are released in a sandbox without init
+            (#3007)
+          </li>
+          <li>
+            One process can use the sandbox's whole memory, and memory is
+            reported truthfully (#3005)
+          </li>
+          <li>
+            Browser host: guest memories are sized to what each guest needs, not
+            the 1 GiB budget (#3115, #3001); a refused memory fails exec with
+            <code>ENOMEM</code> (#3122) and is reported to the page (#3116); a
+            refused thread TLS block fails <code>pthread_create</code> with
+            <code>EAGAIN</code> (#3126)
+          </li>
+          <li>
+            Browser host: guest processes and threads start on a pre-started
+            Worker (#3339), and per-syscall and per-fork host cost is cut
+            (#3239)
+          </li>
+          <li>
+            Browser host: <code>execve</code> from a pthread or a shared <code
+            >vfork()</code> child (#3133, #3104); pty reads no longer starve
+            guest syscalls (#3003); alarms fire correctly (#3056, #3085);
+            long-lived Workers on Safari (#3108)
+          </li>
+          <li>
+            Native host: <code>execve</code> while a thread is in <code
+            >vfork()</code>, and <code>vfork</code> from a pthread (#3138); fork
+            + exit + wait is about 5x faster (#3238)
+          </li>
+          <li>
+            Native host: a complete host-to-Linux errno table (#3213, #3267),
+            and broker diagnostics shown as Linux errnos (#3273)
+          </li>
+          <li>
+            JIT mounts: table-slot reservation and wider instruction decoding
+            (#2995, #2988, #3524); JIT start helpers can re-enter syscalls
+            (#3334)
+          </li>
+          <li>
+            A missing files helper is named instead of a bare <code
+            >ENOENT</code> (#3097)
+          </li>
+          <li>
+            <code>yurt commit</code>'s disk sync stays out of <code>/dev</code>
+            and <code>/proc</code> (#3084)
+          </li>
+          <li>
+            Checkpoint and restore fixes (#3251, #3253, #3257, #3305), and
+            sealed-host executor regions are reused on restore (#3000)
+          </li>
+          <li>
+            Wasm cache memory is bounded and staged modules are reused (#3037)
+          </li>
+          <li>OPFS host I/O for the browser host (#3082, #3179)</li>
+          <li>
+            CPython runtime loader and relocation repairs are preserved (#3078)
+          </li>
+          <li>CI and test changes</li>
+        </ul>
+        <h2>Image</h2>
+        <ul>
+          <li>
+            New packages: git (#148), Perl 5.44 (#154), Go (#188), jq (#144), gh
+            (#186), rtk (#185), gettext tools (#139)
+          </li>
+          <li>The <code>xz</code> command (#187)</li>
+          <li>Datasette, from upstream (#192)</li>
+          <li>
+            CPython 3.14.7 (#165), with <code>signal.pthread_kill</code>, <code
+            >sigwaitinfo</code> and <code>sigtimedwait</code> (#160) and more
+            Linux syscalls enabled (#172)
+          </li>
+          <li>SQLite is built thread-safe (#190)</li>
+          <li>curl handles IPFS and IPNS URLs (#132)</li>
+          <li>
+            BusyBox <code>ps</code> prints its column header (#152), and ash
+            blocks job-control signals across fork (#162)
+          </li>
+          <li>
+            Boot sets <code>/</code> to 0755 and <code>/tmp</code> to 1777
+            (#151)
+          </li>
+          <li>CI and build changes</li>
+        </ul>
+        <h2>yurt CLI and desktop host</h2>
+        <ul>
+          <li>
+            <code>yurt</code> explains on a machine's first run that each
+            program's first start compiles (#306, #314)
+          </li>
+          <li>
+            <code>yurt pull</code> has help, <code>--version</code> carries the
+            train, and <code>yurt cp</code> names a missing sandbox (#305)
+          </li>
+          <li>
+            <code>yurt cp</code> writes only where the sandbox user could (#304)
+          </li>
+          <li>
+            The daemon removes a sandbox whose create reply reached nobody
+            (#303)
+          </li>
+          <li>
+            <code>yurt-desktop-host</code> stops on stdin EOF or SIGTERM during
+            boot (#310)
+          </li>
+          <li>CI, build and dependency changes</li>
+        </ul>
+        <h2>Playground page</h2>
+        <ul>
+          <li>
+            A reload banner when the browser refuses a process its memory (#180)
+          </li>
+          <li>
+            Each guest process reserves 256 MiB, not the 1 GiB sandbox budget
+            (#179)
+          </li>
+          <li>Notebook tracebacks start at the user's cell (#158)</li>
+          <li>
+            The agent's model is stored in 64 MiB parts, so it persists in
+            Safari (#162)
+          </li>
+          <li>
+            The page reaps every process it spawns (#155), runs each exec in its
+            own session and signals its group (#156), and gives the exec stdin
+            staging file to the login user (#157)
+          </li>
+          <li>
+            Desktop: the launcher cleans up on signals and runs once per user
+            (#159); release checksums, a menu icon and <code>yurt-playground
+              --version</code> (#160)
+          </li>
+          <li>Page text and small UI fixes (#161)</li>
+          <li>
+            The kernel is taken from a pre-built kernel release (#145, #165)
+          </li>
+        </ul>
+      </article>
+
+      <article class="pane" id="playground-2026.09.27-a3198c7">
+        <h1>playground-2026.09.27-a3198c7</h1>
+        <p class="date">2026-09-27 · replaces playground-2026.09.22-1617082</p>
+        <p>
+          A local WebGPU agent pane and the ability to stop a running cell, curl
+          in the image, and guest SDK 0.0.25.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Version</th>
+            </tr>
+            <tr>
+              <td>Kernel</td>
+              <td>yurtos-kernel a3198c7</td>
+            </tr>
+            <tr>
+              <td>Image</td>
+              <td>yurt-ports fccbd6b</td>
+            </tr>
+            <tr>
+              <td>Desktop host and yurt CLI</td>
+              <td>yurt-sandbox 0298333</td>
+            </tr>
+          </table>
+        </div>
+        <h2>Highlights</h2>
+        <ul>
+          <li>A local WebGPU agent pane (#143)</li>
+          <li>
+            Stop a running cell, and see what it prints while it runs (#138)
+          </li>
+          <li>curl and CA certificates in the image (#125)</li>
+        </ul>
+        <h2>Kernel</h2>
+        <ul>
+          <li>Guest SDK 0.0.25 (#2969)</li>
+          <li>
+            rlimit resources 10 to 15 are accepted at Linux's defaults (#2958)
+          </li>
+          <li>
+            The process address space is reported as vsize, so <code>ps</code>
+            stops saying SW (#2936)
+          </li>
+          <li>
+            The sandbox user has no password, rather than an empty one (#2935)
+          </li>
+          <li>
+            <code>files.*</code> operations run as the guest helper (#2929)
+          </li>
+          <li>
+            A fork child's GOT TLS relocation is fixed without resetting
+            inherited TLS (#2946)
+          </li>
+          <li>
+            A write to a readerless session pipe is not clamped (#2940); the
+            replay ring frees a pipes session's pipe (#2933); SIGPIPE is
+            restored before a broker command runs (#2943)
+          </li>
+          <li>HostFS file writes are sent in capped chunks (#2942)</li>
+          <li>
+            An exited process's thread-host registration is retired (#2957)
+          </li>
+          <li>
+            JIT mounts: generic signatures, guest import bindings and
+            host-assigned table base (#2954, #2963)
+          </li>
+          <li>
+            Continuous checkpoints: repeatable compaction, lossless decoding and
+            retained overlay generations (#2930, #2941, #2947)
+          </li>
+          <li>kernel.wasm is published as a GitHub Release (#2974)</li>
+          <li>CI and test changes</li>
+        </ul>
+        <h2>Image</h2>
+        <ul>
+          <li>
+            curl and CA certificates (#125), with WebSocket protocols enabled
+            (#131)
+          </li>
+          <li>
+            BusyBox <code>tar</code> creates archives, not only reads them
+            (#103)
+          </li>
+          <li>
+            <code>/usr/libexec/yurt-files</code> ships in the image (#109)
+          </li>
+          <li>
+            Rust crate ports: Rustix, filetime and libc 0.2.189, published as
+            Cargo registry outputs (#107, #106, #127)
+          </li>
+          <li>
+            libc++ is taken from the SDK sysroot when the SDK ships it (#142)
+          </li>
+          <li>CI, test and build changes</li>
+        </ul>
+        <h2>yurt CLI and desktop host</h2>
+        <ul>
+          <li>
+            <code>yurt pull playground</code> works with no token and no desktop
+            app (#279)
+          </li>
+          <li>
+            <code>yurt cp</code> moves files over the 8 MiB frame limit in
+            pieces (#290)
+          </li>
+          <li>
+            A foreground run takes its sandbox with it when the client is killed
+            (#283)
+          </li>
+          <li>
+            <code>yurt build</code> installs <code
+            >/usr/libexec/yurt-files</code> into images (#291)
+          </li>
+          <li>CI, test, docs and dependency changes</li>
+        </ul>
+        <h2>Playground page</h2>
+        <ul>
+          <li>A local WebGPU agent pane (#143)</li>
+          <li>
+            Stop a running cell, and see what it prints while it runs (#138)
+          </li>
+          <li>Staging applies the image's directory modes (#141)</li>
+          <li>Each install choice has its own accessible name (#139)</li>
+          <li>The "another tab" note goes away when that tab closes (#136)</li>
+          <li>Every disclosure on the home page is styled (#135)</li>
+          <li>
+            The playground image is published beside the installers (#128)
+          </li>
+          <li>
+            A security policy for reporting boundary issues privately (#127)
+          </li>
+          <li>CI changes</li>
+        </ul>
+      </article>
+
+      <article class="pane" id="playground-2026.09.22-1617082">
+        <h1>playground-2026.09.22-1617082</h1>
+        <p class="date">2026-09-22 · replaces playground-2026.09.21-7eb03a7</p>
+        <p>
+          Kernel fixes for shared mappings, suspend and pipes on guest SDK
+          0.0.23, and Intel macOS is dropped.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Version</th>
+            </tr>
+            <tr>
+              <td>Kernel</td>
+              <td>yurtos-kernel 1617082</td>
+            </tr>
+            <tr>
+              <td>Image</td>
+              <td>yurt-ports 13e258c</td>
+            </tr>
+            <tr>
+              <td>Desktop host and yurt CLI</td>
+              <td>yurt-sandbox a7f2081</td>
+            </tr>
+          </table>
+        </div>
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            Intel macOS is no longer supported: no download, build target or
+            release asset (#121)
+          </li>
+        </ul>
+        <h2>Kernel</h2>
+        <ul>
+          <li>Guest SDK 0.0.22, then 0.0.23 (#2911, #2921)</li>
+          <li>
+            A <code>MAP_SHARED</code> overlay follows the file it maps when the
+            file grows (#2924)
+          </li>
+          <li>A host-spawned process's fds 0 to 2 are real pipes (#2833)</li>
+          <li>
+            Suspending a sandbox during an exec holds the reply until resume
+            (#2906)
+          </li>
+          <li>
+            <code>session.close</code> and a blocking <code>sandbox.exec</code>
+            leave the dispatcher with their command (#2897)
+          </li>
+          <li>
+            Worker threads are joined before sandbox teardown is reported
+            (#2914)
+          </li>
+          <li>A process killed by a trap names the signal (#2922)</li>
+          <li>Parked-fork backoff is bounded per drain (#2885, #2870)</li>
+          <li>
+            Fork and seal share one Asyncify continuation (#2926), and
+            incremental seals avoid a full memory copy (#2923)
+          </li>
+          <li>
+            tty runtime operation numbers are pinned to the ABI contract (#2872)
+          </li>
+          <li>CI, test and script changes</li>
+        </ul>
+        <h2>Image</h2>
+        <ul>
+          <li>The playground session broker is preserved and verified (#99)</li>
+          <li>Linux-musl target metadata is canonicalized (#62)</li>
+          <li>Test changes</li>
+        </ul>
+        <h2>yurt CLI and desktop host</h2>
+        <ul>
+          <li>
+            <code>yurt exec -i</code> with piped stdin runs the command on a
+            pipe session (#277)
+          </li>
+          <li>Inline guest files can be staged for sandbox runs (#276)</li>
+          <li>
+            Intel macOS is dropped from the desktop host, CLI and release builds
+            (#274)
+          </li>
+          <li>Test changes</li>
+        </ul>
+        <h2>Playground page</h2>
+        <ul>
+          <li>
+            Desktop: the notebook kernel runs in the page's own host session,
+            not as a job of the user's shell (#122)
+          </li>
+          <li>
+            Intel macOS is dropped: no download, build target or release asset
+            (#121)
+          </li>
+          <li>
+            Release tooling: the pin PR is merged after its checks, and <code
+            >--resume</code> finds it (#120)
+          </li>
+        </ul>
+      </article>
+
+      <article class="pane" id="playground-2026.09.21-7eb03a7">
+        <h1>playground-2026.09.21-7eb03a7</h1>
+        <p class="date">2026-09-21 · first train</p>
+        <p>
+          The first release train: kernel, image, desktop host and yurt CLI
+          built and released together from these revisions.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Version</th>
+            </tr>
+            <tr>
+              <td>Kernel</td>
+              <td>yurtos-kernel 7eb03a7</td>
+            </tr>
+            <tr>
+              <td>Image</td>
+              <td>yurt-ports 883849d</td>
+            </tr>
+            <tr>
+              <td>Desktop host and yurt CLI</td>
+              <td>yurt-sandbox 328c873</td>
+            </tr>
+          </table>
+        </div>
+      </article>
     </main>
   </body>
 </html>
