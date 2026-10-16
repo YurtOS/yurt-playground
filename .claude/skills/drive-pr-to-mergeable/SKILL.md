@@ -48,29 +48,40 @@ so in the round comment). A PR that has more than doubled during review → tell
 the user (unattended: note it in the round comment); it is often a design
 signal.
 
-## Split reviews for large diffs
+## Review large diffs by aspect
 
 Decide every round, measured on the whole PR diff against `<base>` (PRs grow
-during review). Above roughly 1,500 changed lines, or when it spans several
-subsystems:
+during review), and by production lines (new or changed logic outside tests, see
+the PR-size rule in the canonical
+[organization rules](https://github.com/YurtOS/yurtos-kernel/blob/main/docs/agents/org.md)),
+not total lines. Above roughly 1,500 production lines, or when the change spans
+several subsystems, review it by **aspect**, not by file slice:
 
-- Partition along logical seams (package/subsystem, or groups of commits) into
-  2-4 slices. Each slice gets both reviewers in parallel, with a short PR
-  summary. A slice's scope is its own paths **plus every seam it touches**: the
-  calls, types, wire formats, ordering and ownership it shares with other
-  slices, reading the other side of each seam as needed. A slice cannot be
-  reviewed without its boundaries, so both sides of every seam get reviewed.
-  Claude: a reviewer agent working in the PR worktree, given
-  `git diff origin/<base>...HEAD -- <paths>` and its seams. Codex:
-  `codex exec -s read-only -c model_reasoning_effort=<effort> "Review git diff origin/<base>...HEAD -- <paths>, including its interfaces with <other slices>. …"`.
-- Later rounds: same slices, scoped to the delta (`<last-reviewed-sha>...HEAD`
-  within each slice's paths, plus its seams and the previous findings). A delta
-  small enough for one reviewer pair is not split.
-- Merge: dedupe (seam findings often arrive from both sides) into the round's
-  one comment (Loop step 3), with a slice column. If the parts cannot be
-  separated cleanly, use fewer, larger slices.
-- Slice reviewers run the tests and probes for their slice, not just read the
-  diff. A finding that came from running something is the strongest kind.
+- Pick 3-6 aspects: the concerns that cut across the whole change, for example
+  publication and rollback, path scope and error ordering, device and metadata
+  lifetime, syscall and host integration, tests and mutation evidence, docs and
+  preservation. Name them from the PR's own risks; the same aspect set is used
+  every round.
+- Every aspect reviewer reads the **whole** diff against `<base>` (Claude: a
+  reviewer agent in the PR worktree; Codex:
+  `codex exec -s read-only -c model_reasoning_effort=<effort> "Review git diff origin/<base>...HEAD for one aspect only: <aspect>. …"`)
+  and reports only findings in its aspect, with the code it ran. Both reviewers
+  run every aspect. Aspects replace path slices because the defects in a coupled
+  change live in the seams between files, and a path slice can only see its own
+  side of them.
+- Give each reviewer a short PR summary, the aspect's acceptance points from the
+  linked issue, and the previous findings in that aspect.
+- Later rounds: same aspects, scoped to the delta (`<last-reviewed-sha>...HEAD`)
+  plus that aspect's previous findings. A delta small enough for one reviewer
+  pair is not split by aspect.
+- Merge: dedupe (one defect often appears under two aspects) into the round's
+  one comment (Loop step 3), with an aspect column.
+- Reviewers run the tests and probes for their aspect, not just read the diff. A
+  finding that came from running something is the strongest kind. A high
+  test-to-code ratio marks the aspect that needs the most attention.
+- Path slicing is still fine for a PR that is genuinely several independent
+  changes, but that is a signal to split the PR (the PR-size rule), not to slice
+  the review.
 
 ## Preconditions
 
@@ -85,7 +96,7 @@ subsystems:
 ## Loop
 
 1. **Review** at the current head SHA, both reviewers in parallel (large diff →
-   split as in "Split reviews for large diffs"):
+   by aspect, as in "Review large diffs by aspect"):
    - Claude: `/code-review <level> <PR#>`, after fast-forwarding any local copy
      of the PR branch in the main checkout (the skill can read a stale local
      branch).
@@ -110,7 +121,7 @@ subsystems:
    (`<root-id>`: the thread's first comment, `in_reply_to_id` when present);
    issue-level comments and review bodies with one top-level reply that lists
    each disposition.
-3. **Post** one PR comment per round, merged across reviewers (and slices):
+3. **Post** one PR comment per round, merged across reviewers (and aspects):
    round, head SHA reviewed, findings by severity and source, including findings
    taken from the conversation (compact table).
 4. **Verify, then fix.** Reproduce every finding (probe / red test / run it). A
