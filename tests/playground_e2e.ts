@@ -310,6 +310,15 @@ async function bootFailuresAreExplained(
       userAgent: IPADOS_SAFARI_UA,
       viewport: { width: 1194, height: 834 },
     },
+    // A Mac under DevTools touch emulation reports one touch point: still a
+    // Mac (an iPad reports 5).
+    {
+      name: "Mac Safari, emulated touch",
+      tablet: false,
+      userAgent: IPADOS_SAFARI_UA,
+      viewport: { width: 1194, height: 834 },
+      hasTouch: true,
+    },
   ];
   for (const { name, tablet, maxTouchPoints, ...options } of scenes) {
     const context = await browser.newContext(options);
