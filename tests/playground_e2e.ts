@@ -390,6 +390,14 @@ async function bootFailuresAreExplained(
       maxTouchPoints: 5,
     },
     { name: "desktop", tablet: false },
+    // A phone-sized screen alone is not a phone: the small-screen rule for
+    // Android's "Desktop site" also needs a coarse pointer (#216).
+    {
+      name: "small screen, fine pointer",
+      tablet: false,
+      viewport: { width: 980, height: 2180 },
+      screen: { width: 412, height: 915 },
+    },
     // The same UA without touch is a Mac, whatever the CI runner's OS.
     {
       name: "Mac Safari",
