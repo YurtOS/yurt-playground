@@ -123,11 +123,13 @@
       <article class="pane upcoming" id="upcoming">
         <h1>Upcoming</h1>
         <p class="date">
-          Updated 2026-10-15 · not released yet; plans may change
+          Updated 2026-10-17 · not released yet; plans may change
         </p>
         <p>
           Work that is merged or in review for the next train. None of it is
-          on the live playground yet.
+          on the live playground yet. The next train waits for the kernel
+          fixes still in review, so it ships them together with everything
+          below.
         </p>
         <h2>Merged, waiting for the next train</h2>
         <ul>
@@ -247,6 +249,51 @@
             <code>SO_SNDTIMEO</code> and signals (#3607, #3601, #3653). This is
             the stall Node's <code>net</code> hit when trying several
             addresses.
+          </li>
+        </ul>
+        <h2>Fixes from this week's code review</h2>
+        <p>
+          We reviewed every change merged between 2026-10-12 and 2026-10-16.
+          Nothing serious turned up; these are the fixes.
+        </p>
+        <ul>
+          <li>
+            <strong>Playground (merged):</strong> iPads in landscape and
+            13&Prime; iPads are treated as tablets and run the Linux shell only
+            (#211), and a process killed by a real-time signal is named
+            correctly (<code>SIGRTMIN</code> is 35 in the guest; #212).
+          </li>
+          <li>
+            <strong>Kernel (in review):</strong> file writes no longer read
+            the clock while holding the kernel lock, which could deadlock a
+            sandbox when another thread slept until a wall-clock time; loopback
+            TCP reports the same poll flags as Linux after the peer closes or
+            resets; <code>epoll_ctl</code> on a closed fd returns
+            <code>EBADF</code>; hard links in the image keep their target's
+            metadata in the browser.
+          </li>
+          <li>
+            <strong>Node.js (in review):</strong> TLS servers refuse client
+            renegotiation; zlib, crypto and Buffer range checks can no longer
+            wrap on 32-bit wasm; <code>hkdf</code> rejects lengths over the
+            limit. More Node fixes (<code>execSync</code> timeouts,
+            <code>require()</code> of async ES modules, <code>fs.cpSync</code>,
+            CLI options) are still being worked on.
+          </li>
+          <li>
+            <strong><code>yurt</code> CLI (in review):</strong> copying a tree
+            again over read-only files works; Ctrl-C is never silently dropped
+            by <code>yurt exec -i</code>; idle time is counted from when a
+            sandbox is running; <code>~/.yurt/sandboxes.json</code> is private
+            to the user; the installers warm the cache the user's
+            <code>yurt</code> actually reads.
+          </li>
+          <li>
+            <strong>Image (in review):</strong> every downloaded source and
+            tool is checked against a pinned SHA-256, and file modes no longer
+            depend on the build machine's umask. The image will also include
+            the full licence texts for Node's bundled components, including
+            SpiderMonkey's MPL-2.0.
           </li>
         </ul>
         <h2>Planned</h2>
