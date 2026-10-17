@@ -132,7 +132,11 @@ function watchNetwork(net: HTMLElement): void {
  * Android Chrome's "Desktop site" sends a Linux desktop UA with
  * `userAgentData.mobile` false and lays out at 980 px, but its screen and
  * coarse pointer stay the phone's. Chrome's own phone/tablet line is a
- * smallest screen side of 600 dp (#216).
+ * smallest screen side of 600 dp (#216). An Android tablet in "Desktop
+ * site", which Chrome turns on by default on large tablets, sends the same
+ * override with a tablet's screen. Its `navigator.platform` is Chrome's
+ * reduced Android value, "Linux armv81", whatever the UA override; Chrome
+ * on a Linux PC or a Chromebook reports "Linux x86_64" (#217).
  */
 function deviceClass(): "phone" | "tablet" | "desktop" {
   const uaData = (navigator as { userAgentData?: { mobile?: boolean } })
@@ -149,6 +153,7 @@ function deviceClass(): "phone" | "tablet" | "desktop" {
   if (coarse && Math.min(screen.width, screen.height) < 600) return "phone";
   if (
     /Android|Silk/i.test(ua) ||
+    navigator.platform === "Linux armv81" ||
     (coarse && innerWidth < 900)
   ) return "tablet";
   return "desktop";

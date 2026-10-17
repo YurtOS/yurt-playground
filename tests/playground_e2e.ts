@@ -389,7 +389,34 @@ async function bootFailuresAreExplained(
       hasTouch: true,
       maxTouchPoints: 5,
     },
+    // An Android tablet in Chrome's "Desktop site", which Chrome turns on
+    // by default on large tablets: the phone's override (#216), but with a
+    // tablet's screen. Only `navigator.platform` still says Android: Chrome
+    // reports its reduced "Linux armv81" whatever the UA override (#217).
+    {
+      name: "Android Chrome, desktop site, tablet",
+      tablet: true,
+      userAgent: ANDROID_DESKTOP_SITE_UA,
+      viewport: { width: 1280, height: 800 },
+      screen: { width: 1280, height: 800 },
+      hasTouch: true,
+      maxTouchPoints: 10,
+      platform: "Linux armv81",
+    },
     { name: "desktop", tablet: false },
+    // The same screen, touch and UA on a Linux PC (a touchscreen laptop
+    // with touch as its primary pointer) is a desktop: Chrome on Linux
+    // reports "Linux x86_64" (#217).
+    {
+      name: "Linux Chrome, touchscreen",
+      tablet: false,
+      userAgent: ANDROID_DESKTOP_SITE_UA,
+      viewport: { width: 1280, height: 800 },
+      screen: { width: 1280, height: 800 },
+      hasTouch: true,
+      maxTouchPoints: 10,
+      platform: "Linux x86_64",
+    },
     // A phone-sized screen alone is not a phone: the small-screen rule for
     // Android's "Desktop site" also needs a coarse pointer (#216).
     {
@@ -415,7 +442,9 @@ async function bootFailuresAreExplained(
       hasTouch: true,
     },
   ];
-  for (const { name, tablet, maxTouchPoints, ...options } of scenes) {
+  for (
+    const { name, tablet, maxTouchPoints, platform, ...options } of scenes
+  ) {
     const context = await browser.newContext(options);
     const page = await context.newPage();
     // Chromium's touch emulation reports one touch point; an iPad reports 5.
@@ -425,6 +454,14 @@ async function bootFailuresAreExplained(
           get: () => points,
         });
       }, maxTouchPoints);
+    }
+    // Headless Chromium reports the runner's own platform.
+    if (platform !== undefined) {
+      await page.addInitScript((value) => {
+        Object.defineProperty(Navigator.prototype, "platform", {
+          get: () => value,
+        });
+      }, platform);
     }
     await page.route(
       "**/yurt_kernel.wasm",
