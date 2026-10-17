@@ -284,18 +284,41 @@ async function bootFailuresAreExplained(
   await phone.close();
 
   const reason = "fetch ./yurt_kernel.wasm failed: 503";
-  for (const tablet of [true, false]) {
-    const context = await browser.newContext(
-      tablet ? devices["iPad Pro 11"] : {},
-    );
+  const scenes = [
+    { name: "tablet", tablet: true, ...devices["iPad Pro 11"] },
+    // What a real iPad sends: iPadOS Safari asks for the desktop site, so
+    // its UA is a Mac's, and in landscape it is wider than any phone-sized
+    // cutoff. Only its touch points tell it from a Mac (#195). Playwright's
+    // iPad descriptor says "iPad" and would not catch this.
+    {
+      name: "iPadOS Safari, landscape",
+      tablet: true,
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+      viewport: { width: 1194, height: 834 },
+      hasTouch: true,
+      maxTouchPoints: 5,
+    },
+    { name: "desktop", tablet: false },
+  ];
+  for (const { name, tablet, maxTouchPoints, ...options } of scenes) {
+    const context = await browser.newContext(options);
     const page = await context.newPage();
+    // Chromium's touch emulation reports one touch point; an iPad reports 5.
+    if (maxTouchPoints !== undefined) {
+      await page.addInitScript((points) => {
+        Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
+          get: () => points,
+        });
+      }, maxTouchPoints);
+    }
     await page.route(
       "**/yurt_kernel.wasm",
       (route) => route.fulfill({ status: 503 }),
     );
     await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
     await failed(page);
-    expectPane(tablet ? "tablet" : "desktop", await readFailurePane(page), {
+    expectPane(name, await readFailurePane(page), {
       status: "failed",
       title: "The sandbox did not start",
       notebook: "no sandbox",
