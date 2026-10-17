@@ -216,6 +216,10 @@ export async function phoneAgentIsUnavailable(
   await phone.close();
 }
 
+/** iPadOS Safari asks for the desktop site: its UA is a Mac Safari's. */
+const IPADOS_SAFARI_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+
 /** What the page knows before and after a boot it could not finish: a phone
  * is not offered Start (an iPhone was reloaded at "starting Jupyter"), and
  * says so as a refusal, not a failure, unless `?start-anyway`; a boot
@@ -293,13 +297,19 @@ async function bootFailuresAreExplained(
     {
       name: "iPadOS Safari, landscape",
       tablet: true,
-      userAgent:
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+      userAgent: IPADOS_SAFARI_UA,
       viewport: { width: 1194, height: 834 },
       hasTouch: true,
       maxTouchPoints: 5,
     },
     { name: "desktop", tablet: false },
+    // The same UA without touch is a Mac, whatever the CI runner's OS.
+    {
+      name: "Mac Safari",
+      tablet: false,
+      userAgent: IPADOS_SAFARI_UA,
+      viewport: { width: 1194, height: 834 },
+    },
   ];
   for (const { name, tablet, maxTouchPoints, ...options } of scenes) {
     const context = await browser.newContext(options);
