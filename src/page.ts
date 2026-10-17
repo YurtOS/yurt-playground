@@ -122,14 +122,19 @@ function watchNetwork(net: HTMLElement): void {
  * Phones get no Start: phone browsers give one tab too little memory for
  * the boot (iPhone Safari reloaded the tab at "starting Jupyter", #68), and
  * `?start-anyway` lets one try regardless. Tablets get the note and may
- * try; iPadOS reports a Mac, so the coarse pointer on a narrow screen is
- * what identifies one.
+ * try. iPadOS Safari reports a Mac, at any width (a 13" iPad in landscape
+ * is wider than many laptops). An iPad reports 5 touch points, a Mac 0
+ * (1 under DevTools touch emulation), so more than one identifies it (#195).
  */
 function deviceClass(): "phone" | "tablet" | "desktop" {
   const uaData = (navigator as { userAgentData?: { mobile?: boolean } })
     .userAgentData;
   const ua = navigator.userAgent;
-  if (/iPad/.test(ua)) return "tablet";
+  if (
+    /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)
+  ) {
+    return "tablet";
+  }
   if (uaData?.mobile === true || /iPhone|iPod|Android.*Mobile/i.test(ua)) {
     return "phone";
   }
