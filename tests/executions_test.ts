@@ -299,7 +299,7 @@ Deno.test("signal numbers are named as the guest's libc names them", () => {
   assertEquals(signalName(9), "SIGKILL");
   assertEquals(signalName(31), "SIGSYS");
   // The image's C library is musl, which keeps 32-34 for itself: a guest
-  // python3 says SIGRTMIN is 35 and `Signals(35).name` is "SIGRTMIN".
+  // python3 says SIGRTMIN is 35. Real-time signals count up from there.
   assertEquals(signalName(34), "SIG34");
   assertEquals(signalName(35), "SIGRTMIN");
   assertEquals(signalName(41), "SIGRTMIN+6");

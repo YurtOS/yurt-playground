@@ -206,9 +206,8 @@ const SIGNAL_NAMES = [
  * apply: nothing in the image links glibc. */
 const SIGRTMIN = 35;
 
-/** "SIGTERM" for 15; a real-time signal as "SIGRTMIN+n", as Linux's
- * `kill -l` and a guest python3's `signal.Signals` name it; the libc's
- * reserved 32-34 as "SIG32".."SIG34". */
+/** "SIGTERM" for 15; a real-time signal as "SIGRTMIN+n", counted from the
+ * guest libc's SIGRTMIN; the libc's reserved 32-34 as "SIG32".."SIG34". */
 export function signalName(signal: number): string {
   if (signal > 0 && signal < SIGNAL_NAMES.length) return SIGNAL_NAMES[signal];
   if (signal >= SIGRTMIN && signal <= 64) {
