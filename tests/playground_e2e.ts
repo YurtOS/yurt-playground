@@ -261,6 +261,39 @@ async function bootFailuresAreExplained(
       page.off("pageerror", onError);
     }
   };
+  // iPhone Safari with "Request Desktop Website" sends the Mac Safari UA,
+  // reports 5 touch points like an iPad, and lays out at 980 px; only its
+  // screen, 390 px wide, says phone (#214).
+  const desktopModeIPhone = await browser.newContext({
+    userAgent: IPADOS_SAFARI_UA,
+    viewport: { width: 980, height: 1700 },
+    screen: { width: 390, height: 844 },
+    hasTouch: true,
+  });
+  const desktopModePage = await desktopModeIPhone.newPage();
+  await desktopModePage.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
+      get: () => 5,
+    });
+  });
+  await desktopModePage.goto(`${url}/?start`, {
+    waitUntil: "domcontentloaded",
+  });
+  await failed(desktopModePage);
+  expectPane(
+    "iPhone Safari, desktop website",
+    await readFailurePane(desktopModePage),
+    {
+      status: "not on phones",
+      title: "The sandbox does not run on phones",
+      notebook: "not on phones",
+      start: true,
+      why: ["phone"],
+      reason: null,
+    },
+  );
+  await desktopModeIPhone.close();
+
   const phone = await browser.newContext(devices["iPhone 13"]);
   const phonePage = await phone.newPage();
   await phonePage.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
@@ -299,6 +332,19 @@ async function bootFailuresAreExplained(
       tablet: true,
       userAgent: IPADOS_SAFARI_UA,
       viewport: { width: 1194, height: 834 },
+      // iOS reports the portrait screen in either orientation.
+      screen: { width: 834, height: 1194 },
+      hasTouch: true,
+      maxTouchPoints: 5,
+    },
+    // The narrowest iPad, at 744 px, is still not a phone (an iPhone's
+    // screen is 440 px at most).
+    {
+      name: "iPadOS Safari, iPad mini",
+      tablet: true,
+      userAgent: IPADOS_SAFARI_UA,
+      viewport: { width: 744, height: 1133 },
+      screen: { width: 744, height: 1133 },
       hasTouch: true,
       maxTouchPoints: 5,
     },
