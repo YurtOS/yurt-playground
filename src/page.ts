@@ -129,6 +129,10 @@ function watchNetwork(net: HTMLElement): void {
  * points, and lays out at 980 px; its screen still says phone. iOS reports
  * the portrait screen in either orientation: at most 440 px on an iPhone,
  * at least 744 on an iPad (#214).
+ * Android Chrome's "Desktop site" sends a Linux desktop UA with
+ * `userAgentData.mobile` false and lays out at 980 px, but its screen and
+ * coarse pointer stay the phone's. Chrome's own phone/tablet line is a
+ * smallest screen side of 600 dp (#216).
  */
 function deviceClass(): "phone" | "tablet" | "desktop" {
   const uaData = (navigator as { userAgentData?: { mobile?: boolean } })
@@ -141,9 +145,11 @@ function deviceClass(): "phone" | "tablet" | "desktop" {
   if (uaData?.mobile === true || /iPhone|iPod|Android.*Mobile/i.test(ua)) {
     return "phone";
   }
+  const coarse = matchMedia("(pointer: coarse)").matches;
+  if (coarse && Math.min(screen.width, screen.height) < 600) return "phone";
   if (
     /Android|Silk/i.test(ua) ||
-    (matchMedia("(pointer: coarse)").matches && innerWidth < 900)
+    (coarse && innerWidth < 900)
   ) return "tablet";
   return "desktop";
 }
