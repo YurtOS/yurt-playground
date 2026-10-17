@@ -220,6 +220,10 @@ export async function phoneAgentIsUnavailable(
 const IPADOS_SAFARI_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
 
+/** Android Chrome's "Desktop site" UA: a Linux desktop's, no "Android". */
+const ANDROID_DESKTOP_SITE_UA =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+
 /** What the page knows before and after a boot it could not finish: a phone
  * is not offered Start (an iPhone was reloaded at "starting Jupyter"), and
  * says so as a refusal, not a failure, unless `?start-anyway`; a boot
@@ -294,6 +298,43 @@ async function bootFailuresAreExplained(
   );
   await desktopModeIPhone.close();
 
+  // Android Chrome's "Desktop site" sends a Linux desktop UA and
+  // `userAgentData.mobile` false, and ignores the viewport meta tag, so it
+  // lays out at 980 px; its screen and coarse pointer are the phone's
+  // (Chromium: ContentUtils SetUserAgentOverride, #216).
+  const desktopSiteAndroid = await browser.newContext({
+    userAgent: ANDROID_DESKTOP_SITE_UA,
+    viewport: { width: 980, height: 2180 },
+    screen: { width: 412, height: 915 },
+    hasTouch: true,
+  });
+  const desktopSitePage = await desktopSiteAndroid.newPage();
+  await desktopSitePage.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
+      get: () => 5,
+    });
+    Object.defineProperty(Navigator.prototype, "userAgentData", {
+      get: () => ({ mobile: false, platform: "Linux", brands: [] }),
+    });
+  });
+  await desktopSitePage.goto(`${url}/?start`, {
+    waitUntil: "domcontentloaded",
+  });
+  await failed(desktopSitePage);
+  expectPane(
+    "Android Chrome, desktop site",
+    await readFailurePane(desktopSitePage),
+    {
+      status: "not on phones",
+      title: "The sandbox does not run on phones",
+      notebook: "not on phones",
+      start: true,
+      why: ["phone"],
+      reason: null,
+    },
+  );
+  await desktopSiteAndroid.close();
+
   const phone = await browser.newContext(devices["iPhone 13"]);
   const phonePage = await phone.newPage();
   await phonePage.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
@@ -349,6 +390,14 @@ async function bootFailuresAreExplained(
       maxTouchPoints: 5,
     },
     { name: "desktop", tablet: false },
+    // A phone-sized screen alone is not a phone: the small-screen rule for
+    // Android's "Desktop site" also needs a coarse pointer (#216).
+    {
+      name: "small screen, fine pointer",
+      tablet: false,
+      viewport: { width: 980, height: 2180 },
+      screen: { width: 412, height: 915 },
+    },
     // The same UA without touch is a Mac, whatever the CI runner's OS.
     {
       name: "Mac Safari",
