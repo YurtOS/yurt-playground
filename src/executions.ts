@@ -200,11 +200,14 @@ const SIGNAL_NAMES = [
   "SIGPWR",
   "SIGSYS",
 ];
-/** Linux's SIGRTMIN as the C library sees it (glibc and musl reserve two). */
-const SIGRTMIN = 34;
+/** SIGRTMIN as the guest's C library sees it. The image is built against
+ * musl, which keeps 32-34 for itself (`__libc_current_sigrtmin()` is 35 in
+ * the guest SDK's libc.a; a guest python3 reports 35). glibc's 34 does not
+ * apply: nothing in the image links glibc. */
+const SIGRTMIN = 35;
 
-/** "SIGTERM" for 15; a real-time signal as "SIGRTMIN+n", as `kill -l`
- * names it. */
+/** "SIGTERM" for 15; a real-time signal as "SIGRTMIN+n", counted from the
+ * guest libc's SIGRTMIN; the libc's reserved 32-34 as "SIG32".."SIG34". */
 export function signalName(signal: number): string {
   if (signal > 0 && signal < SIGNAL_NAMES.length) return SIGNAL_NAMES[signal];
   if (signal >= SIGRTMIN && signal <= 64) {
