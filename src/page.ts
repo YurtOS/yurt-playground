@@ -125,16 +125,19 @@ function watchNetwork(net: HTMLElement): void {
  * try. iPadOS Safari reports a Mac, at any width (a 13" iPad in landscape
  * is wider than many laptops). An iPad reports 5 touch points, a Mac 0
  * (1 under DevTools touch emulation), so more than one identifies it (#195).
+ * iPhone Safari's "Request Desktop Website" sends the same Mac UA and touch
+ * points, and lays out at 980 px; its screen still says phone. iOS reports
+ * the portrait screen in either orientation: at most 440 px on an iPhone,
+ * at least 744 on an iPad (#214).
  */
 function deviceClass(): "phone" | "tablet" | "desktop" {
   const uaData = (navigator as { userAgentData?: { mobile?: boolean } })
     .userAgentData;
   const ua = navigator.userAgent;
-  if (
-    /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)
-  ) {
-    return "tablet";
+  if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) {
+    return Math.min(screen.width, screen.height) < 600 ? "phone" : "tablet";
   }
+  if (/iPad/.test(ua)) return "tablet";
   if (uaData?.mobile === true || /iPhone|iPod|Android.*Mobile/i.test(ua)) {
     return "phone";
   }
