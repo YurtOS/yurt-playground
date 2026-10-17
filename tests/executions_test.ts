@@ -295,11 +295,15 @@ Deno.test("an exit status is the code, and a core dump is said", async () => {
   assertEquals("coreDumped" in result ? result.coreDumped : "stuck", true);
 });
 
-Deno.test("signal numbers are named as Linux names them", () => {
+Deno.test("signal numbers are named as the guest's libc names them", () => {
   assertEquals(signalName(9), "SIGKILL");
   assertEquals(signalName(31), "SIGSYS");
-  assertEquals(signalName(34), "SIGRTMIN");
-  assertEquals(signalName(40), "SIGRTMIN+6");
+  // The image's C library is musl, which keeps 32-34 for itself: a guest
+  // python3 says SIGRTMIN is 35 and `Signals(35).name` is "SIGRTMIN".
+  assertEquals(signalName(34), "SIG34");
+  assertEquals(signalName(35), "SIGRTMIN");
+  assertEquals(signalName(41), "SIGRTMIN+6");
+  assertEquals(signalName(64), "SIGRTMIN+29");
 });
 
 Deno.test("the kernel's wait record keeps exit 9 and SIGKILL apart", () => {
