@@ -77,11 +77,16 @@ async function assertSuspendResumeOff(): Promise<void> {
       fail("the site still ships suspend-resume.ipynb");
     }
     const page = await browser.newPage();
-    // The suspend/resume kernel's bridge loads only when that kernel starts.
+    // The suspend/resume kernel's bridge loads only when that kernel starts;
+    // the sandbox kernel's own bridge is the control that requests are seen.
     const bridgeRequests: string[] = [];
+    let sandboxBridgeRequested = false;
     page.on("request", (request) => {
       if (request.url().includes("snapshot-bridge.js")) {
         bridgeRequests.push(request.url());
+      }
+      if (request.url().includes("playground-bridge.js")) {
+        sandboxBridgeRequested = true;
       }
     });
     await page.goto(`${server.url}/jupyter/lab/index.html`, {
@@ -113,15 +118,20 @@ async function assertSuspendResumeOff(): Promise<void> {
       { hasText: "Python 3 (Yurt sandbox)" },
     ).click();
     await page.locator(".jp-Notebook").first().waitFor({ timeout: 60_000 });
+    // Before the session starts the toolbar reads "No Kernel" with an idle
+    // indicator, so the kernel's name is required too (as jupyterlite_e2e).
     await page.waitForFunction(
       () =>
-        ["idle", "busy"].includes(
-          document.querySelector(".jp-Notebook-ExecutionIndicator")
-            ?.getAttribute("data-status") ?? "",
-        ),
+        document.querySelector(".jp-Toolbar-kernelName")?.textContent
+            ?.includes("Yurt sandbox") === true &&
+        document.querySelector(".jp-Notebook-ExecutionIndicator")
+            ?.getAttribute("data-status") === "idle",
       undefined,
       { timeout: 420_000 },
     );
+    if (!sandboxBridgeRequested) {
+      fail("the sandbox kernel started without fetching its bridge");
+    }
     if (bridgeRequests.length !== 0) {
       fail(`the suspend/resume bridge was fetched: ${bridgeRequests}`);
     }
