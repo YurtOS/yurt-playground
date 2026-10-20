@@ -10,6 +10,9 @@
     "no_sourcemaps": true,
     "contents": [
       "files"
+    ],
+    "extra_ignore_contents": [
+      "/suspend-resume\\.ipynb$"
     ]
   },
   "FederatedExtensionAddon": {

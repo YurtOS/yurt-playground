@@ -15,6 +15,7 @@ import {
   s,
   type UserProcess,
 } from "@yurt/kernel-host-interface-js";
+import { NOTEBOOK_SUSPEND_RESUME } from "../jupyterlite/yurt-kernel/src/suspend_resume.ts";
 import { PYTHON_SEAL_NAME } from "../src/image_parts.ts";
 import { stagedPath } from "../src/notebook_stage.ts";
 import { stageYurtimg, writeRamfsFile } from "../src/stage.ts";
@@ -114,6 +115,9 @@ async function bootCellServer(): Promise<CellServer | undefined> {
 Deno.test({
   name:
     "the notebook kernel's CPython seals mid-cell and resumes at the next prime",
+  // Notebook Suspend/Resume is off: the kernel's checkpoint admission
+  // refuses python3-seal.wasm (yurtos-kernel#3924).
+  ignore: !NOTEBOOK_SUSPEND_RESUME,
   // Like the other tests that boot a host: the killed guest's exit and the
   // host's own timers settle after the test body, later on a slow runner.
   sanitizeOps: false,

@@ -6,6 +6,7 @@ import {
   REPO_ROOT,
   SHARDS,
 } from "../scripts/ci-shards.ts";
+import { NOTEBOOK_SUSPEND_RESUME } from "../jupyterlite/yurt-kernel/src/suspend_resume.ts";
 
 /** A workflow's text with the repository's own composite actions inlined
  *  where they are used (`uses: ./playground/.github/actions/<name>`), so
@@ -476,6 +477,40 @@ Deno.test("the cell can be stopped, and its output cannot push the page away", a
   const pane = css.match(/#notebook-output \{([^}]*)\}/)?.[1] ?? "";
   assertEquals(/max-height:/.test(pane), true, "no max-height on the pane");
   assertEquals(/overflow-y:\s*auto/.test(pane), true, "the pane cannot scroll");
+});
+
+Deno.test("the page and the site offer the notebook's Suspend/Resume only when it is on", async () => {
+  // Off for yurtos-kernel#3924 (see suspend_resume.ts). The labextension
+  // reads the flag itself; these are the static lines that go with it.
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const config = JSON.parse(
+    await Deno.readTextFile(
+      new URL("../jupyterlite/jupyter_lite_config.json", import.meta.url),
+    ),
+  ) as { LiteBuildConfig: { extra_ignore_contents?: string[] } };
+  const ignored = (config.LiteBuildConfig.extra_ignore_contents ?? []).some(
+    (pattern) => new RegExp(pattern).test("/suspend-resume.ipynb"),
+  );
+  assertEquals(
+    html.includes("?path=suspend-resume.ipynb"),
+    NOTEBOOK_SUSPEND_RESUME,
+    "public/index.html links the suspend/resume notebook iff the flag is on",
+  );
+  assertEquals(
+    html.includes('data-testid="notebook-snapshot-off"'),
+    !NOTEBOOK_SUSPEND_RESUME,
+    "public/index.html says the notebook demo is unavailable iff it is off",
+  );
+  assertEquals(
+    ignored,
+    !NOTEBOOK_SUSPEND_RESUME,
+    "jupyter_lite_config.json leaves suspend-resume.ipynb out iff it is off",
+  );
+  // The terminal demo seals primes.wasm, not the notebook's CPython: it
+  // stays whatever the flag says.
+  assertEquals(html.includes('href="./snapshot.html"'), true);
 });
 
 Deno.test("every disclosure on the home page is styled, not just the proof", async () => {

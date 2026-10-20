@@ -10,10 +10,15 @@
  * blobs in artifacts/, public/demo/python3-seal.wasm from
  * scripts/install-pinned-artifacts.sh, and the site from jupyterlite/build.sh).
  * Skips without the CPython blob unless PLAYGROUND_REQUIRE_ARTIFACTS is set.
+ *
+ * While NOTEBOOK_SUSPEND_RESUME is off (yurtos-kernel#3924) the seal scenes
+ * are skipped, and this checks instead that the site offers none of it: no
+ * `yurt-snapshot` kernelspec, no suspend-resume.ipynb, no panel.
  */
 import { chromium, type Page } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { NOTEBOOK_SUSPEND_RESUME } from "../jupyterlite/yurt-kernel/src/suspend_resume.ts";
 import { ensureBundle } from "../scripts/serve.ts";
 import { PYTHON_SEAL_NAME } from "../src/image_parts.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
@@ -47,7 +52,68 @@ async function waitForPanelState(
   );
 }
 
-if (import.meta.main) {
+/** The site with Suspend/Resume off: JupyterLab's launcher offers the
+ * sandbox kernel and not the suspend/resume one, the contents leave the
+ * notebook out, and no panel is mounted. */
+async function assertSuspendResumeOff(): Promise<void> {
+  await ensureBundle(
+    Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel"),
+  );
+  await Deno.stat(join(repoRoot, "public/jupyter/index.html")).catch(() =>
+    fail("public/jupyter is missing; run jupyterlite/build.sh first")
+  );
+  const server = startPlaygroundServer(0);
+  const browser = await chromium.launch();
+  try {
+    const listing = await fetch(`${server.url}/jupyter/api/contents/all.json`)
+      .then((r) => r.json()) as { content: Array<{ name: string }> };
+    const names = listing.content.map((entry) => entry.name);
+    if (!names.includes("welcome.ipynb")) {
+      fail(`the site's contents lack welcome.ipynb: ${names}`);
+    }
+    if (names.includes("suspend-resume.ipynb")) {
+      fail("the site still ships suspend-resume.ipynb");
+    }
+    const page = await browser.newPage();
+    await page.goto(`${server.url}/jupyter/lab/index.html`, {
+      waitUntil: "domcontentloaded",
+    });
+    // Both specs are registered in one activation, so once the sandbox
+    // kernel's card is up the suspend/resume one would be too.
+    const labels = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll(".jp-LauncherCard-label")].map((e) =>
+          e.textContent ?? ""
+        )
+      );
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll(".jp-LauncherCard-label")].some((e) =>
+          e.textContent?.includes("Python 3 (Yurt sandbox)")
+        ),
+      undefined,
+      { timeout: 120_000 },
+    );
+    const offered = await labels();
+    if (offered.some((label) => label.includes("suspend/resume"))) {
+      fail(`the launcher offers the suspend/resume kernel: ${offered}`);
+    }
+    if (await page.locator(".yurt-snapshot-panel").count() !== 0) {
+      fail("the Suspend/Resume panel is mounted");
+    }
+    console.log(
+      "notebook snapshot e2e: seal scenes skipped, notebook Suspend/Resume " +
+        "is off (yurtos-kernel#3924); the site offers none of it",
+    );
+  } finally {
+    await browser.close();
+    await server.shutdown();
+  }
+}
+
+if (import.meta.main && !NOTEBOOK_SUSPEND_RESUME) {
+  await assertSuspendResumeOff();
+} else if (import.meta.main) {
   try {
     await Deno.stat(join(repoRoot, "public", PYTHON_SEAL_NAME));
   } catch {

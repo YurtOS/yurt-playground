@@ -11,6 +11,8 @@
  * - `yurt-snapshot`: one CPython process in a sandbox that can be suspended
  *   (sealed into IndexedDB) and resumed, mid-cell, through
  *   `/snapshot-bridge.js`. A floating panel carries the two buttons.
+ *   Registered only while NOTEBOOK_SUSPEND_RESUME is on (off for
+ *   yurtos-kernel#3924; see ./suspend_resume.ts).
  *
  * Both bridges present the same send/receive pair, so one kernel class
  * serves both specs.
@@ -23,6 +25,7 @@ import { INotebookTracker, NotebookActions } from "@jupyterlab/notebook";
 import type { KernelMessage } from "@jupyterlab/services";
 import { IKernel, IKernelClient, IKernelSpecs } from "@jupyterlite/services";
 import { ISignal, Signal } from "@lumino/signaling";
+import { NOTEBOOK_SUSPEND_RESUME } from "./suspend_resume";
 
 type RequestChannel = "shell" | "control" | "stdin";
 type Channel = RequestChannel | "iopub";
@@ -608,6 +611,9 @@ const plugin: JupyterFrontEndPlugin<void> = {
         return kernel;
       },
     });
+    // Off, nothing below runs: no spec, no panel, no seal
+    // (yurtos-kernel#3924).
+    if (!NOTEBOOK_SUSPEND_RESUME) return;
     kernelspecs.register({
       spec: {
         name: "yurt-snapshot",
