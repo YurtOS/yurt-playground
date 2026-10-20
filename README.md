@@ -151,7 +151,10 @@ A second kernelspec, _Python 3 (Yurt, suspend/resume)_, runs one CPython process
 built so the sandbox can be sealed (`scripts/build-python-seal.sh`): its
 notebook has Suspend and Resume buttons, and a cell that is printing when you
 suspend carries on at the same line when you resume, from the image in the
-browser's IndexedDB. `src/notebook_kernel_worker.ts` is the whole kernel.
+browser's IndexedDB. `src/notebook_kernel_worker.ts` is the whole kernel. It is
+off for now (`NOTEBOOK_SUSPEND_RESUME` in
+`jupyterlite/yurt-kernel/src/suspend_resume.ts`, yurtos-kernel#3924): the
+current kernel refuses to seal that CPython build.
 
 A new release of all of that is one train,
 `playground-<YYYY.MM.DD>-<kernel rev>`, cut by `scripts/release-playground.sh`:

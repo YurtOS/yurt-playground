@@ -13,7 +13,8 @@
  *
  * While NOTEBOOK_SUSPEND_RESUME is off (yurtos-kernel#3924) the seal scenes
  * are skipped, and this checks instead that the site offers none of it: no
- * `yurt-snapshot` kernelspec, no suspend-resume.ipynb, no panel.
+ * `yurt-snapshot` kernelspec, no suspend-resume.ipynb, and a running
+ * sandbox kernel fetches no suspend/resume bridge and mounts no panel.
  */
 import { chromium, type Page } from "playwright";
 import { dirname, join } from "node:path";
@@ -54,7 +55,8 @@ async function waitForPanelState(
 
 /** The site with Suspend/Resume off: JupyterLab's launcher offers the
  * sandbox kernel and not the suspend/resume one, the contents leave the
- * notebook out, and no panel is mounted. */
+ * notebook out, and a notebook on the sandbox kernel loads neither the
+ * suspend/resume bridge nor its panel. */
 async function assertSuspendResumeOff(): Promise<void> {
   await ensureBundle(
     Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel"),
@@ -75,6 +77,13 @@ async function assertSuspendResumeOff(): Promise<void> {
       fail("the site still ships suspend-resume.ipynb");
     }
     const page = await browser.newPage();
+    // The suspend/resume kernel's bridge loads only when that kernel starts.
+    const bridgeRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("snapshot-bridge.js")) {
+        bridgeRequests.push(request.url());
+      }
+    });
     await page.goto(`${server.url}/jupyter/lab/index.html`, {
       waitUntil: "domcontentloaded",
     });
@@ -97,6 +106,24 @@ async function assertSuspendResumeOff(): Promise<void> {
     const offered = await labels();
     if (offered.some((label) => label.includes("suspend/resume"))) {
       fail(`the launcher offers the suspend/resume kernel: ${offered}`);
+    }
+    // Starting the sandbox kernel must not load the suspend/resume bridge.
+    await page.locator(
+      '.jp-LauncherCard[data-category="Notebook"]',
+      { hasText: "Python 3 (Yurt sandbox)" },
+    ).click();
+    await page.locator(".jp-Notebook").first().waitFor({ timeout: 60_000 });
+    await page.waitForFunction(
+      () =>
+        ["idle", "busy"].includes(
+          document.querySelector(".jp-Notebook-ExecutionIndicator")
+            ?.getAttribute("data-status") ?? "",
+        ),
+      undefined,
+      { timeout: 420_000 },
+    );
+    if (bridgeRequests.length !== 0) {
+      fail(`the suspend/resume bridge was fetched: ${bridgeRequests}`);
     }
     if (await page.locator(".yurt-snapshot-panel").count() !== 0) {
       fail("the Suspend/Resume panel is mounted");
