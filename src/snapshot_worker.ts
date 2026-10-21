@@ -167,11 +167,14 @@ async function restoreStored(
   size: { cols: number; rows: number },
 ): Promise<Live> {
   post({ type: "status", text: "restoring the sandbox" });
-  const cursor = stored.image.processes[0]?.snapshot.cursor;
+  // The withheld syscall's 56-byte envelope starts with its number (i64).
+  const envelope = stored.image.processes[0]?.snapshot.checkpoint.envelope;
   console.log(
-    "[snapshot] restoring: cursor nr",
-    cursor
-      ? new DataView(cursor.buffer, cursor.byteOffset).getBigInt64(0, true)
+    "[snapshot] restoring: withheld syscall nr",
+    envelope
+      ? String(
+        new DataView(envelope.buffer, envelope.byteOffset).getBigInt64(0, true),
+      )
       : "?",
     "waits",
     JSON.stringify(
