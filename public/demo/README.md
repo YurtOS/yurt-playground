@@ -2,7 +2,7 @@
 
 `primes.wasm` is the prime finder from yurt-sandbox's
 `tests/fixtures/checkpoint/primes.c`, built with the guest SDK the kernel pin
-uses (0.0.29 for kernel e7f57ddb8) and nothing else:
+uses (0.0.29 for kernel 22366efa7) and nothing else:
 
     source yurtos-kernel/target/yurt-sdk/env.sh
     "$YURT_CC" -O2 primes.c -o primes.wasm
