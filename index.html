@@ -123,91 +123,56 @@
       <article class="pane upcoming" id="upcoming">
         <h1>Upcoming</h1>
         <p class="date">
-          Updated 2026-10-17 · not released yet; plans may change
+          Updated 2026-10-21 · not released yet; plans may change
         </p>
         <p>
-          Work that is merged or in review for the next train. None of it is
-          on the live playground yet. The next train waits for the kernel
-          fixes still in review, so it ships them together with everything
-          below.
+          Work that is in progress or in review for a later train. None of it is
+          on the live playground yet.
         </p>
-        <h2>Merged, waiting for the next train</h2>
-        <ul>
-          <li>
-            <strong><code>yurt warm</code></strong> precompiles the image's
-            programs without a daemon. The Linux installers and
-            <code>yurt pull</code> run it, so the first <code>node</code> or
-            <code>python3</code> no longer pays the compile cost (a cold first
-            <code>node</code> took 49 s, a warm one 0.7 s). The daemon also
-            warms the caches in the background when it starts (yurt-sandbox
-            #334, #337).
-          </li>
-          <li>
-            <strong>Node.js fixes</strong> from yurt-node #29, #31, #33 and
-            #36: <code>util.inspect(err)</code> formats <code>err.stack</code>
-            the way V8 does, <code>AsyncLocalStorage</code> keeps its context
-            across promise jobs, every bundled component's license text is
-            packaged, and 24 more Node tests are enabled. These need a new
-            yurt-node release.
-          </li>
-          <li>
-            <strong>Opt-in Node startup cache</strong> (yurt-node #38):
-            <code>YURT_NODE_STENCIL_CACHE</code> keeps parsed ES modules on
-            disk; <code>gemini --version</code> drops from 2.2 s to 1.4 s. Off
-            by default.
-          </li>
-        </ul>
         <h2>Dynamic loading (<code>dlopen</code>)</h2>
         <ul>
           <li>
-            A shared library's constructors run inside the guest after it is
-            loaded, so a constructor can make system calls, and can call
-            <code>dlopen</code>, <code>dlsym</code> and <code>dlclose</code>
-            itself, without deadlocking (kernel #3642, yurt-toolchain #271).
+            The kernel and libc sides of <code>dlopen</code> ship in
+            playground-2026.10.20-22366ef. Still in progress: a shared
+            <code>libc.so</code>, so ordinary CPython native extensions can load
+            (yurt-toolchain #180, #236; yurt-ports #173).
           </li>
           <li>
-            Loading a library that depends on another one (a
-            <code>NEEDED</code> entry) no longer deadlocks on the desktop host
-            (kernel #3649).
-          </li>
-          <li>
-            <code>dlclose</code> and <code>dlsym</code> reject handles the
-            loader does not own instead of misusing them (yurt-toolchain #263,
-            #265).
-          </li>
-          <li>
-            The libc side ships with the next guest SDK release. Still in
-            progress: a shared <code>libc.so</code> so ordinary CPython native
-            extensions can load (yurt-toolchain #180, #236; yurt-ports #173).
+            Remaining fork corners: a half-loaded library at fork time, and the
+            browser host matching the desktop host (kernel #3683, #3681).
           </li>
         </ul>
         <h2>JavaScript JIT (experimental)</h2>
         <p>
-          Node on Yurt runs SpiderMonkey's interpreter. The JIT work adds a
-          tier that compiles hot JavaScript to WebAssembly inside the guest
+          Node on Yurt runs SpiderMonkey's interpreter. The JIT work adds a tier
+          that compiles hot JavaScript to WebAssembly inside the guest
           (NightMonkey) and mounts it through the kernel's JIT interface. It is
           not in the image and stays off by default.
         </p>
         <ul>
           <li>
-            <strong>Opt-in node build</strong> with NightMonkey (yurt-node
-            #42), for measurements. On the desktop host, Octane benchmarks ran
+            <strong>Opt-in node build</strong> with NightMonkey (yurt-node #42),
+            for measurements. On the desktop host, Octane benchmarks ran
             2&ndash;47&times; faster and hot loops up to 178&times;. Compiling
             costs 0.3&ndash;24 s per run, only the first batch of code is
             compiled so far, and Gemini CLI does not speed up yet.
           </li>
           <li>
-            <strong>Kernel JIT interface:</strong> compiled modules can be up to
-            64 MiB instead of 1 MiB (kernel #3324), and JIT start helpers can
-            make system calls (kernel #3334). Both merged.
+            <strong>SpiderMonkey source:</strong> node now builds from the
+            <code>yurt</code> branch of YurtOS/firefox, with the 32-bit wasm
+            (ILP32) build fixes (yurt-node #83, in review).
           </li>
           <li>
-            <strong>Still open:</strong> slot reservation and module loads over
-            1 MiB on the browser host (kernel #2981, #3319), JIT code visible to
-            every thread and kept across <code>fork</code> (#2984, #2985),
-            fork and checkpoints across JIT frames (#3335), compiling more than
-            the first batch, and taking upstream NightMonkey's MIR and baseline
-            tiers (nightmonkey #3). Tracked in yurt-ports #110.
+            <strong>Upstream tiers:</strong> NightMonkey takes upstream's MIR
+            and baseline tiers and keeps compiling inside the guest (nightmonkey
+            #8, in review).
+          </li>
+          <li>
+            <strong>Kernel:</strong> JIT code now survives <code>fork</code>
+            on the desktop host (kernel #3677). Still open: slot reservation and
+            module loads over 1 MiB on the browser host (#2981, #3319), JIT code
+            visible to every thread (#2984), and fork and checkpoints across JIT
+            frames (#3335). Tracked in yurt-ports #110.
           </li>
         </ul>
         <h2>Go</h2>
@@ -221,11 +186,11 @@
           </li>
           <li>
             <strong>The Go toolchain runs inside the sandbox:</strong> the
-            yurt-ports <code>go</code> package (Go 1.28.0-devel, 57 MB)
-            installs <code>go</code> and <code>gofmt</code> under
+            yurt-ports <code>go</code> package (Go 1.28.0-devel, 57 MB) installs
+            <code>go</code> and <code>gofmt</code> under
             <code>/usr/lib/go</code>, so <code>go build</code> and
-            <code>go test</code> work in a sandbox. The GitHub CLI
-            (<code>gh</code>) is built with it.
+            <code>go test</code> work in a sandbox. The GitHub CLI (<code
+            >gh</code>) is built with it.
           </li>
           <li>
             Neither is in the playground image yet. Go programs run on one
@@ -235,77 +200,601 @@
         <h2>Kernel fixes in review</h2>
         <ul>
           <li>
-            <code>SIGCONT</code> resumes a stopped process instead of killing
-            it on the desktop host (#3637).
+            epoll keeps registrations on stdin, stdout and stderr, honours
+            <code>EPOLLEXCLUSIVE</code> and ignores unknown event bits (#3837).
           </li>
           <li>
-            A blocking write on a full AF_UNIX stream socket waits and writes
-            the full count instead of returning <code>EAGAIN</code> (#3606).
+            Root can search and create in a directory that has no execute bits,
+            as on Linux (#3714).
           </li>
           <li>
-            A non-blocking TCP <code>connect</code> returns
-            <code>EINPROGRESS</code> right away instead of blocking the whole
-            sandbox for up to 30 s, and a blocking one honours
-            <code>SO_SNDTIMEO</code> and signals (#3607, #3601, #3653). This is
-            the stall Node's <code>net</code> hit when trying several
-            addresses.
-          </li>
-        </ul>
-        <h2>Fixes from this week's code review</h2>
-        <p>
-          We reviewed every change merged between 2026-10-12 and 2026-10-16.
-          Nothing serious turned up; these are the fixes.
-        </p>
-        <ul>
-          <li>
-            <strong>Playground (merged):</strong> iPads in landscape and
-            13&Prime; iPads are treated as tablets and run the Linux shell only
-            (#211), and a process killed by a real-time signal is named
-            correctly (<code>SIGRTMIN</code> is 35 in the guest; #212).
+            <code>mount</code> with <code>MS_BIND</code> and
+            <code>MS_MOVE</code> (#3107).
           </li>
           <li>
-            <strong>Kernel (in review):</strong> file writes no longer read
-            the clock while holding the kernel lock, which could deadlock a
-            sandbox when another thread slept until a wall-clock time; loopback
-            TCP reports the same poll flags as Linux after the peer closes or
-            resets; <code>epoll_ctl</code> on a closed fd returns
-            <code>EBADF</code>; hard links in the image keep their target's
-            metadata in the browser.
+            <code>waitid</code> fills in <code>siginfo</code> in the caller's
+            layout (#3908).
           </li>
           <li>
-            <strong>Node.js (in review):</strong> TLS servers refuse client
-            renegotiation; zlib, crypto and Buffer range checks can no longer
-            wrap on 32-bit wasm; <code>hkdf</code> rejects lengths over the
-            limit. More Node fixes (<code>execSync</code> timeouts,
-            <code>require()</code> of async ES modules, <code>fs.cpSync</code>,
-            CLI options) are still being worked on.
-          </li>
-          <li>
-            <strong><code>yurt</code> CLI (in review):</strong> copying a tree
-            again over read-only files works; Ctrl-C is never silently dropped
-            by <code>yurt exec -i</code>; idle time is counted from when a
-            sandbox is running; <code>~/.yurt/sandboxes.json</code> is private
-            to the user; the installers warm the cache the user's
-            <code>yurt</code> actually reads.
-          </li>
-          <li>
-            <strong>Image (in review):</strong> every downloaded source and
-            tool is checked against a pinned SHA-256, and file modes no longer
-            depend on the build machine's umask. The image will also include
-            the full licence texts for Node's bundled components, including
-            SpiderMonkey's MPL-2.0.
+            A TCP send to a host socket never blocks the whole sandbox; a
+            blocking send waits for room instead (#3325).
           </li>
         </ul>
         <h2>Planned</h2>
         <ul>
           <li>
             Ctrl-C and <code>kill -INT</code> reach a CPU-bound Python program,
-            so <code>KeyboardInterrupt</code> works (#2811). It builds on signal
-            work still in review.
+            so <code>KeyboardInterrupt</code> works (#2811).
+          </li>
+        </ul>
+      </article>
+      <article class="pane" id="playground-2026.10.20-22366ef">
+        <h1>playground-2026.10.20-22366ef</h1>
+        <p class="date">
+          2026-10-21 · replaces playground-2026.10.15-230cfe2.2
+        </p>
+        <p>
+          This train moves everything to Guest SDK 0.0.29, brings a new Node.js
+          build with many fixes, brings back checkpoint sealing, and ships the
+          kernel side of <code>dlopen</code> with a large set of kernel and CLI
+          fixes.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Version</th>
+            </tr>
+            <tr>
+              <td>Kernel</td>
+              <td>yurtos-kernel 22366ef (kernel-v0.0.10)</td>
+            </tr>
+            <tr>
+              <td>Image</td>
+              <td>yurt-ports d16fa4f</td>
+            </tr>
+            <tr>
+              <td>Desktop host and yurt CLI</td>
+              <td>yurt-sandbox a97c787</td>
+            </tr>
+            <tr>
+              <td>Guest SDK</td>
+              <td>0.0.29 (was 0.0.26)</td>
+            </tr>
+          </table>
+        </div>
+
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            <strong>Guest SDK 0.0.29 everywhere.</strong> The kernel, the image
+            and Node are all built with it. Time values in
+            <code>rusage</code>, <code>itimerval</code>, <code>ppoll</code>,
+            <code>timex</code> and socket timeouts are 64-bit (#3638).
           </li>
           <li>
-            Guest SDK 0.0.27+ and, with it, the return of checkpoint sealing
-            (kernel #3497–#3499).
+            <strong>Old programs that start threads now get an error.</strong>
+            A program built with Guest SDK 0.0.26 or older that starts a thread
+            gets <code>EAGAIN</code> (Python says "can't start new thread")
+            instead of running the thread on the main stack and corrupting
+            memory (#3906). Rebuild such programs with 0.0.27 or later. Images
+            saved from earlier trains carry programs built with 0.0.26, so they
+            are affected.
+          </li>
+          <li>
+            <strong>Node.js 22.23.3-yurt.3</strong> replaces yurt.2, with the
+            license texts of every bundled component and many fixes (see below).
+          </li>
+          <li>
+            <strong>Checkpoint sealing is back</strong> (kernel
+            #3497&ndash;#3499). The kernel records each module's execution state
+            again. On the browser host only programs built for checkpoints
+            (Guest SDK 0.0.27 or later) are sealed; anything else is refused
+            instead of sealed into an image that cannot resume. The desktop host
+            refuses these seals for now.
+          </li>
+          <li>
+            <strong>Notebook Suspend/Resume works.</strong> The notebook's
+            sealable Python is now a C-only CPython built for checkpoints, which
+            the kernel accepts, so a running cell can be suspended and resumed
+            where it stopped (yurt-ports #242, kernel #3924). The image's regular
+            <code>python3</code> is unchanged.
+          </li>
+          <li>
+            <strong>No more first-run compile wait after install.</strong>
+            <code>yurt warm</code> precompiles the image's programs; the Linux
+            installers and <code>yurt pull</code> run it (a cold first
+            <code>node</code> took 49 s, a warm one 0.7 s).
+          </li>
+        </ul>
+
+        <h2>Kernel</h2>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Area</th>
+              <th>Change</th>
+              <th>Issue</th>
+            </tr>
+            <tr>
+              <td>Processes</td>
+              <td>
+                <code>SIGCONT</code> resumes a stopped process instead of ending
+                its sleep, so <code>^Z</code> and <code>fg</code> work
+              </td>
+              <td>#3637, #3640</td>
+            </tr>
+            <tr>
+              <td>Processes</td>
+              <td>
+                A <code>vfork</code> child calling <code>abort()</code> no
+                longer breaks signals in its parent (browser host)
+              </td>
+              <td>#3140, #3144</td>
+            </tr>
+            <tr>
+              <td>Threads</td>
+              <td>
+                A thread whose stack can't be set up is refused with
+                <code>EAGAIN</code> instead of sharing the main stack
+              </td>
+              <td>#3850, #3906</td>
+            </tr>
+            <tr>
+              <td>Threads</td>
+              <td>
+                An unknown scheduling policy returns <code>EINVAL</code>
+              </td>
+              <td>#3833</td>
+            </tr>
+            <tr>
+              <td>Files</td>
+              <td>
+                <code>pread</code> reads more than 1 MiB at once, and reports
+                <code>EBADF</code>, <code>ESPIPE</code> and
+                <code>EFAULT</code> like Linux
+              </td>
+              <td>#3842</td>
+            </tr>
+            <tr>
+              <td>Files</td>
+              <td>
+                Bound AF_UNIX sockets show up in <code>ls</code> and
+                <code>readdir</code>
+              </td>
+              <td>#3598, #3830</td>
+            </tr>
+            <tr>
+              <td>Files</td>
+              <td>
+                <code>fcntl</code> record locks are released only by a real
+                <code>close</code>, not by spawning a child
+              </td>
+              <td>#3705, #3769</td>
+            </tr>
+            <tr>
+              <td>Files</td>
+              <td>
+                Opening a FIFO counts the opener before it waits, so its peer
+                sees a live end
+              </td>
+              <td>#3317</td>
+            </tr>
+            <tr>
+              <td>Files</td>
+              <td>
+                A <code>pipe</code> that fails with <code>EMFILE</code> no
+                longer leaks a descriptor
+              </td>
+              <td>#3694, #3796</td>
+            </tr>
+            <tr>
+              <td>Files</td>
+              <td>
+                A file write racing a clock change no longer deadlocks the
+                sandbox
+              </td>
+              <td>#3707</td>
+            </tr>
+            <tr>
+              <td>Files</td>
+              <td>
+                A hard link in the image keeps its target's mode, owner and
+                mtime
+              </td>
+              <td>#3733</td>
+            </tr>
+            <tr>
+              <td>Files</td>
+              <td>
+                The <code>FS_IOC_GETFLAGS</code> ioctl works on tmpfs files
+              </td>
+              <td>#3539, #3451</td>
+            </tr>
+            <tr>
+              <td>Sockets</td>
+              <td>
+                A non-blocking TCP <code>connect</code> returns
+                <code>EINPROGRESS</code> at once; a blocking one no longer
+                freezes the sandbox for up to 30 s and honours
+                <code>SO_SNDTIMEO</code> and signals
+              </td>
+              <td>#3601, #3607, #3651</td>
+            </tr>
+            <tr>
+              <td>Sockets</td>
+              <td>
+                A blocking write on a full AF_UNIX stream socket waits and
+                writes everything instead of returning <code>EAGAIN</code>
+              </td>
+              <td>#3606, #3643</td>
+            </tr>
+            <tr>
+              <td>Sockets</td>
+              <td>
+                Loopback TCP reports the same poll flags as Linux after the peer
+                closes or resets
+              </td>
+              <td>#3722</td>
+            </tr>
+            <tr>
+              <td>Sockets</td>
+              <td>
+                An accepted AF_UNIX socket starts with its own default options
+              </td>
+              <td>#3603, #3756, #3772</td>
+            </tr>
+            <tr>
+              <td>epoll</td>
+              <td>
+                <code>EPOLLET</code> reports a new edge on every write, so Tokio
+                programs no longer stall waiting for a wake-up
+              </td>
+              <td>#3564, #3577</td>
+            </tr>
+            <tr>
+              <td>epoll</td>
+              <td>
+                <code>epoll_ctl</code> on a closed fd returns
+                <code>EBADF</code> for every operation
+              </td>
+              <td>#3575, #3730</td>
+            </tr>
+            <tr>
+              <td>procfs</td>
+              <td>
+                <code>/proc/sys/kernel/hostname</code> and
+                <code>domainname</code> read correctly through
+                <code>aio_read</code>
+              </td>
+              <td>#3604, #3781</td>
+            </tr>
+            <tr>
+              <td>Time</td>
+              <td>
+                64-bit time values in <code>rusage</code>,
+                <code>itimerval</code>, <code>ppoll</code>, <code>timex</code>
+                and socket timeouts, matching Guest SDK 0.0.29
+              </td>
+              <td>#3638</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                A shared library's constructors run inside the guest, so they
+                can make system calls and call <code>dlopen</code> themselves
+              </td>
+              <td>#3639, #3642</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                Loading a library that depends on another one no longer
+                deadlocks on the desktop host
+              </td>
+              <td>#3641, #3649</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                A <code>fork</code> child keeps the libraries its parent loaded,
+                at the same addresses (desktop host)
+              </td>
+              <td>#3662, #3672, #3677</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                A library constructor can <code>fork</code> (desktop host)
+              </td>
+              <td>#3876</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                A process that <code>dlclose</code>s a library gets a fresh copy
+                on its next <code>dlopen</code>, even if another process still
+                holds it
+              </td>
+              <td>#3681, #3703</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                Two exported names for one function give the same
+                <code>dlsym</code> address
+              </td>
+              <td>#3851</td>
+            </tr>
+            <tr>
+              <td>JIT interface</td>
+              <td>
+                JIT modules can be up to 64 MiB, and JIT code survives
+                <code>fork</code> on the desktop host
+              </td>
+              <td>#3324, #3677</td>
+            </tr>
+            <tr>
+              <td>Checkpoints</td>
+              <td>
+                Checkpoint sealing returns: the browser host seals only programs
+                built for checkpoints, and the desktop host refuses seals
+              </td>
+              <td>#3497, #3498, #3499</td>
+            </tr>
+            <tr>
+              <td>Build</td>
+              <td>
+                The browser host type-checks under the page's DOM types, and the
+                Guest Compat tests pass with Guest SDK 0.0.29
+              </td>
+              <td>#3902, #3923</td>
+            </tr>
+            <tr>
+              <td>Performance</td>
+              <td>
+                Pipe and socket reads copy in slices instead of a byte at a time
+              </td>
+              <td>#3317</td>
+            </tr>
+            <tr>
+              <td>Performance</td>
+              <td>
+                <code>EPOLLET</code> wake-ups visit only ready members
+              </td>
+              <td>#3635, #3670</td>
+            </tr>
+            <tr>
+              <td>Performance</td>
+              <td>
+                A library loaded in a browser Worker is compiled once, not four
+                times
+              </td>
+              <td>#3860, #3866</td>
+            </tr>
+            <tr>
+              <td>Performance</td>
+              <td>
+                Less work per suspend and resume when libraries are loaded
+                (desktop host)
+              </td>
+              <td>#3883, #3901</td>
+            </tr>
+            <tr>
+              <td>Hardening</td>
+              <td>
+                New files and device nodes drop <code>S_ISGID</code> unless the
+                creator is in the group, and take the identity that passed the
+                permission check
+              </td>
+              <td>#3715, #3719</td>
+            </tr>
+            <tr>
+              <td>Hardening</td>
+              <td>
+                An open that waits on the host keeps its own credentials and
+                stops if its process exits
+              </td>
+              <td>#3717, #3746, #3776</td>
+            </tr>
+            <tr>
+              <td>Hardening</td>
+              <td>
+                File creation respects a policy that denies the clock
+              </td>
+              <td>#3716</td>
+            </tr>
+            <tr>
+              <td>Hardening</td>
+              <td>
+                Empty UDP datagrams count against the receive buffer, so a guest
+                can't grow a kernel queue without bound
+              </td>
+              <td>#3351, #3887</td>
+            </tr>
+            <tr>
+              <td>Hardening</td>
+              <td>
+                ioctl output pointers and netlink route messages are checked
+              </td>
+              <td>#3451, #3436</td>
+            </tr>
+            <tr>
+              <td>Hardening</td>
+              <td>
+                On macOS, a guest swapping a FIFO in for a file can no longer
+                block the desktop host
+              </td>
+              <td>#3888</td>
+            </tr>
+          </table>
+        </div>
+
+        <h2>Image</h2>
+        <ul>
+          <li>
+            Every program is built with Guest SDK 0.0.29 and Rust 1.98.1
+            (yurt-rust release rust-v1.98.1-0.0.8)
+          </li>
+          <li>Node.js 22.23.3-yurt.3 (#239); Gemini CLI stays at 0.64.0</li>
+          <li>CPython's <code>select.epoll</code> is available (#235)</li>
+          <li>
+            SQLite is stock, with no Yurt changes, so it uses
+            <code>mmap</code> and WAL like on Linux (#234)
+          </li>
+          <li>
+            Every downloaded source is checked against a pinned SHA-256, and
+            file modes no longer depend on the build machine's umask (#221,
+            #222)
+          </li>
+          <li>
+            The notebook's sealable CPython is C-only (no zmq, numpy or C++), so
+            the checkpoint host accepts it; the seal build fails if the kernel
+            would refuse its output (#242)
+          </li>
+          <li>Build fixes for the new SDK (#230, #231, #241)</li>
+        </ul>
+
+        <h2>Node.js</h2>
+        <p>
+          yurt-node release node-v22.23.3-yurt.3, built with Guest SDK 0.0.29.
+        </p>
+        <ul>
+          <li>
+            The license text of every bundled component is packaged, including
+            SpiderMonkey's MPL-2.0 (yurt-node #33)
+          </li>
+          <li>
+            <code>process.on('SIGINT')</code> and other signal handlers run
+            (#30)
+          </li>
+          <li>
+            <code>util.inspect(err)</code> formats <code>err.stack</code> as V8
+            does (#29), and <code>AsyncLocalStorage</code> keeps its context
+            across promise jobs (#31)
+          </li>
+          <li>
+            <code>fetch</code> sends request bodies, follows redirects the way
+            the Fetch standard does, and checks the body against
+            <code>Content-Length</code> (#57, #64, #74)
+          </li>
+          <li>
+            TLS refuses renegotiation and handles issuer chains and
+            <code>dhparam</code>; HTTP honours
+            <code>--max-http-header-size</code> (#43, #55)
+          </li>
+          <li>
+            <code>fs.cpSync</code>, <code>opendirSync</code> and
+            <code>fs.watchFile</code> work, without fd leaks (#53)
+          </li>
+          <li>
+            <code>execSync</code> and <code>spawnSync</code> honour
+            <code>timeout</code> and <code>maxBuffer</code> (#49)
+          </li>
+          <li>
+            <code>require()</code> of an ES module with top-level
+            <code>await</code> fails with the right error, and dynamic
+            <code>import()</code> works in plain scripts (#50, #62)
+          </li>
+          <li>
+            <code>process.env</code> is the real C environment, and changing
+            <code>TZ</code> changes the time zone (#60, #67)
+          </li>
+          <li>
+            Command-line options take values the way Node does (#52)
+          </li>
+          <li>
+            WebAssembly function references keep working across calls (#54)
+          </li>
+          <li>
+            Range checks in Buffer, zlib and crypto can't wrap on 32-bit wasm
+            (#45, #70, #71)
+          </li>
+          <li>
+            Opt-in startup cache: <code>YURT_NODE_STENCIL_CACHE</code> keeps
+            parsed ES modules on disk; <code>gemini --version</code> drops from
+            2.2 s to 1.4 s. Off by default (#38, #73, #79, #81)
+          </li>
+          <li>24 more Node tests are enabled (#36)</li>
+        </ul>
+
+        <h2>yurt CLI and desktop host</h2>
+        <ul>
+          <li>
+            <code>yurt warm</code> precompiles the image's programs without a
+            daemon; the installers and <code>yurt pull</code> run it, and the
+            daemon warms the caches in the background when it starts (#334,
+            #337, #342, #343)
+          </li>
+          <li>
+            <code>yurt exec -i</code> never drops a signal, and stops its
+            command when the client goes away (#339)
+          </li>
+          <li>
+            A sandbox's idle time counts from when it is running (#339)
+          </li>
+          <li>
+            <code>yurt cp -r</code> again over read-only files it copied works
+            (#338)
+          </li>
+          <li>
+            <code>~/.yurt/sandboxes.json</code> is private to the user (#340)
+          </li>
+          <li>
+            The daemon stays responsive while it warms caches or restores a
+            checkpoint (#346, #348, #351)
+          </li>
+          <li>
+            Error messages name their cause once, and a failed command no longer
+            says "request refused as malformed" (#345, #350, #353)
+          </li>
+        </ul>
+
+        <h2>Playground page</h2>
+        <ul>
+          <li>
+            iPads in landscape, 13&Prime; iPads and Android tablets asking for
+            the desktop site are treated as tablets and run the Linux shell only
+            (#211, #219)
+          </li>
+          <li>
+            Phones asking for the desktop site are treated as phones (#215,
+            #218)
+          </li>
+          <li>
+            A process killed by a real-time signal is named correctly (<code
+            >SIGRTMIN</code> is 35 in the guest; #212)
+          </li>
+          <li>
+            The snapshot demo's program is rebuilt with Guest SDK 0.0.29 so the
+            checkpoint host accepts it (#223)
+          </li>
+        </ul>
+
+        <h2>Not in this release</h2>
+        <ul>
+          <li>
+            <strong>A shared <code>libc.so</code></strong> for ordinary CPython
+            native extensions (yurt-toolchain #180, #236).
+          </li>
+          <li>
+            <strong>The NightMonkey JIT</strong> stays out of the image.
+          </li>
+        </ul>
+
+        <h2>Known issues</h2>
+        <ul>
+          <li>
+            Programs built with Guest SDK 0.0.26 or older can't start threads
+            (see Highlights). Rebuild them with 0.0.27 or later.
+          </li>
+          <li>
+            Gemini CLI takes a long time to start the first time in the browser
+            (JS host). Startup under the desktop host is quicker.
+          </li>
+          <li>
+            On iPad Safari the shell-only page can run out of memory after many
+            commands (playground #200).
           </li>
         </ul>
       </article>
