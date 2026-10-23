@@ -5,6 +5,7 @@
  * and the seal loop run in `snapshot_worker.ts`; guest Workers are created
  * here on the coordinator's behalf, as on the main page.
  */
+import { mountMemoryRefusedBanner } from "./memory_refused.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import { RESTORE_MARKER } from "./snapshot_store.ts";
@@ -108,6 +109,9 @@ export function startSnapshotDemo(): void {
       case "error":
         began = "failed";
         status.textContent = `error: ${msg.message}`;
+        break;
+      case "memory-refused":
+        mountMemoryRefusedBanner(document);
         break;
     }
   };

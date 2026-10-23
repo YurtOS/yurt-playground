@@ -25,6 +25,11 @@ import {
   loadPlaygroundKernel,
   restorePlaygroundKernel,
 } from "./boot.ts";
+import {
+  type MemoryRefusedMessage,
+  memoryRefusedMessage,
+  watchGuestMemoryRefusals,
+} from "./memory_refused.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
@@ -59,7 +64,9 @@ export type SnapshotDemoFromWorker =
   | { type: "sealed"; sealedAt: number; bytes: number; ms: number }
   /** The stored image is gone and no seal follows. */
   | { type: "forgotten" }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  /** The browser refused a process its memory: only a reload helps. */
+  | MemoryRefusedMessage;
 
 function post(message: SnapshotDemoFromWorker): void {
   self.postMessage(message);
@@ -151,6 +158,8 @@ async function bootFresh(
   const guest = new Uint8Array(await response.arrayBuffer());
   post({ type: "status", text: "booting the kernel" });
   const mk = await loadPlaygroundKernel(kernel);
+  // Before the spawn: the guest's own memory is the first one refused.
+  watchGuestMemoryRefusals(mk, () => post(memoryRefusedMessage()));
   const process = await mk.spawnUserProcessWithArgsAsync(guest, [s("primes")], {
     TERM: "xterm-256color",
   });
@@ -185,6 +194,7 @@ async function restoreStored(
     ),
   );
   const restored = await restorePlaygroundKernel(kernel, stored.image);
+  watchGuestMemoryRefusals(restored.host, () => post(memoryRefusedMessage()));
   try {
     const [process] = restored.processes;
     if (process === undefined) throw new Error("the image holds no process");
