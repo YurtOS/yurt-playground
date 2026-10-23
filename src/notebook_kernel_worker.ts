@@ -46,6 +46,7 @@ import type {
   JupyterRequestChannel,
 } from "./jupyter_transport.ts";
 import {
+  isGuestMemoryRefusal,
   type MemoryRefusedMessage,
   memoryRefusedMessage,
   watchGuestMemoryRefusals,
@@ -851,7 +852,13 @@ async function restoreStored(
   kernel: Uint8Array,
   stored: StoredSnapshot,
 ): Promise<Live> {
-  const restored = await restorePlaygroundKernel(kernel, stored.image);
+  const restored = await restorePlaygroundKernel(kernel, stored.image).catch(
+    (error) => {
+      // Refused before there was a host to watch: say so here.
+      if (isGuestMemoryRefusal(error)) post(memoryRefusedMessage());
+      throw error;
+    },
+  );
   watchGuestMemoryRefusals(restored.host, () => post(memoryRefusedMessage()));
   try {
     const [process] = restored.processes;
@@ -1059,6 +1066,9 @@ async function start(isolated: boolean): Promise<void> {
       post({ type: "notebook-ready" });
       return;
     } catch (error) {
+      // A refused memory is the browser's, not the image's: a reload
+      // restores it, so it is kept, and a fresh boot would be refused too.
+      if (isGuestMemoryRefusal(error)) throw error;
       await clearSnapshot(NOTEBOOK_KEY);
       status(
         `stored image could not be restored (${

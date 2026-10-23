@@ -52,6 +52,28 @@ export function showMemoryRefused(
   }
 }
 
+/**
+ * Whether `error` is the browser refusing a guest its memory: the kernel's
+ * `GuestMemoryExhausted` with `engineRefused`, anywhere on its cause chain.
+ * A restore builds its guests' memories before it returns the host a watch
+ * could be put on, so a refusal there reaches no listener and arrives only
+ * as this error. Matched by name, not `instanceof`, so the page bundles that
+ * import this file do not pull in the kernel host.
+ */
+export function isGuestMemoryRefusal(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+    if (
+      current.name === "GuestMemoryExhausted" &&
+      (current as { engineRefused?: unknown }).engineRefused === true
+    ) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+
 /** Fixed to the top: JupyterLite lays its shell out over the whole body, so
  *  an element in the flow would sit behind it. The colours are index.html's
  *  `--ember` and `--pane`. */

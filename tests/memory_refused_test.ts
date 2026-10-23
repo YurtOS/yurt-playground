@@ -1,6 +1,8 @@
 import { assert, assertEquals } from "@std/assert";
+import { GuestMemoryExhausted } from "@yurt/kernel-host-interface-js";
 import {
   hideMemoryRefused,
+  isGuestMemoryRefusal,
   MEMORY_REFUSED_BANNER_ID,
   MEMORY_REFUSED_MESSAGE_TYPE,
   MEMORY_REFUSED_RELOAD_ID,
@@ -253,4 +255,39 @@ Deno.test("the snapshot demo and both notebook kernels show the banner (#213)", 
       .test(source("lite_bridge.ts")),
     "lite_bridge.ts mounts the banner",
   );
+});
+
+Deno.test("a restore's refusal is recognised from its error", () => {
+  // The kernel's own error, so a rename there turns this red.
+  const refused = new GuestMemoryExhausted("Out of memory", {
+    engineRefused: true,
+  });
+  assert(isGuestMemoryRefusal(refused));
+  assert(isGuestMemoryRefusal(new Error("restore failed", { cause: refused })));
+  // The guest's own budget is an ordinary ENOMEM: a reload does not help.
+  assert(!isGuestMemoryRefusal(new GuestMemoryExhausted("budget spent")));
+  assert(!isGuestMemoryRefusal(new Error("bad image")));
+  assert(!isGuestMemoryRefusal("Out of memory"));
+});
+
+Deno.test("a refused restore shows the banner and keeps the stored image", () => {
+  // `restore` builds its guests' memories before a watch can be put on the
+  // host it returns: the refusal comes back only as the error.
+  for (const worker of ["snapshot_worker.ts", "notebook_kernel_worker.ts"]) {
+    const text = source(worker);
+    assert(
+      /restorePlaygroundKernel\(kernel, stored\.image\)\.catch\(\s*\(error\) => \{[^}]*if \(isGuestMemoryRefusal\(error\)\) post\(memoryRefusedMessage\(\)\);\s*throw error;/
+        .test(text),
+      `${worker} reports a refusal thrown by the restore`,
+    );
+    // The start path drops an image it cannot restore and boots fresh;
+    // not for a refusal, which a reload fixes.
+    const keep = text.indexOf("if (isGuestMemoryRefusal(error)) throw error;");
+    assert(keep !== -1, `${worker} rethrows a refused restore`);
+    const clear = text.indexOf("await clearSnapshot(", keep);
+    assert(
+      clear !== -1 && text.slice(keep, clear).split("\n").length < 8,
+      `${worker} rethrows before it clears the stored image`,
+    );
+  }
 });
