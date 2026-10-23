@@ -10,6 +10,10 @@
  * that only hit its own memory limit is an ordinary ENOMEM and is not
  * reported. Reloading the page frees it all. The page's banner
  * (`#memory-refused` in index.html) names no engine: every engine can refuse.
+ *
+ * Every page that boots a kernel shows it: the main page from its static
+ * banner, and the snapshot demo and both JupyterLite notebook kernels from
+ * `mountMemoryRefusedBanner` (yurt-playground#213).
  */
 
 type RefusalSource = {
@@ -22,6 +26,9 @@ type RefusalSource = {
 export const MEMORY_REFUSED_MESSAGE_TYPE = "memory-refused";
 export const MEMORY_REFUSED_BANNER_ID = "memory-refused";
 export const MEMORY_REFUSED_RELOAD_ID = "memory-refused-reload";
+/** The banner's words; index.html's static banner says the same. */
+export const MEMORY_REFUSED_TEXT =
+  "The browser ran out of memory for new processes. Reload the page to continue.";
 
 export type MemoryRefusedMessage = {
   type: typeof MEMORY_REFUSED_MESSAGE_TYPE;
@@ -43,6 +50,76 @@ export function showMemoryRefused(
   if (message.type === MEMORY_REFUSED_MESSAGE_TYPE) {
     byId(MEMORY_REFUSED_BANNER_ID).hidden = false;
   }
+}
+
+/**
+ * Whether `error` is the browser refusing a guest its memory: the kernel's
+ * `GuestMemoryExhausted` with `engineRefused`, anywhere on its cause chain.
+ * A restore builds its guests' memories before it returns the host a watch
+ * could be put on, so a refusal there reaches no listener and arrives only
+ * as this error. Matched by name, not `instanceof`, so the page bundles that
+ * import this file do not pull in the kernel host.
+ */
+export function isGuestMemoryRefusal(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+    if (
+      current.name === "GuestMemoryExhausted" &&
+      (current as { engineRefused?: unknown }).engineRefused === true
+    ) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+}
+
+/** Fixed to the top: JupyterLite lays its shell out over the whole body, so
+ *  an element in the flow would sit behind it. The colours are index.html's
+ *  `--ember` and `--pane`. */
+const MOUNTED_BANNER_STYLE = [
+  "position: fixed",
+  "top: 0",
+  "left: 0",
+  "right: 0",
+  "z-index: 10000",
+  "margin: 0",
+  "padding: 12px 14px",
+  "border-left: 3px solid #e08a7a",
+  "background: #1c212a",
+  "color: #e6e1d7",
+  "font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+].join("; ");
+
+/**
+ * Page side, for a page without index.html's static banner: show the same
+ * banner, built on the first refusal and found again on any later one.
+ * Reload is the only way out, so the banner has no close control.
+ */
+export function mountMemoryRefusedBanner(
+  doc: Document,
+  reload: () => void = () => location.reload(),
+): HTMLElement {
+  const existing = doc.getElementById(MEMORY_REFUSED_BANNER_ID);
+  if (existing !== null) {
+    existing.hidden = false;
+    return existing;
+  }
+  const banner = doc.createElement("p");
+  banner.id = MEMORY_REFUSED_BANNER_ID;
+  banner.dataset.testid = MEMORY_REFUSED_BANNER_ID;
+  banner.setAttribute("role", "alert");
+  banner.style.cssText = MOUNTED_BANNER_STYLE;
+  banner.textContent = `${MEMORY_REFUSED_TEXT} `;
+  const button = doc.createElement("button");
+  button.type = "button";
+  button.id = MEMORY_REFUSED_RELOAD_ID;
+  button.dataset.testid = MEMORY_REFUSED_RELOAD_ID;
+  button.textContent = "Reload";
+  button.addEventListener("click", () => reload());
+  banner.append(button);
+  doc.body.prepend(banner);
+  return banner;
 }
 
 /** Page side: a new session starts without the banner. */

@@ -1,9 +1,14 @@
 import { assert, assertEquals } from "@std/assert";
+import { GuestMemoryExhausted } from "@yurt/kernel-host-interface-js";
 import {
   hideMemoryRefused,
+  isGuestMemoryRefusal,
   MEMORY_REFUSED_BANNER_ID,
+  MEMORY_REFUSED_MESSAGE_TYPE,
   MEMORY_REFUSED_RELOAD_ID,
+  MEMORY_REFUSED_TEXT,
   memoryRefusedMessage,
+  mountMemoryRefusedBanner,
   showMemoryRefused,
   watchGuestMemoryRefusals,
 } from "../src/memory_refused.ts";
@@ -66,10 +71,9 @@ Deno.test("the banner is a tab-level note that names no engine", () => {
   if (banner === null) throw new Error("no #memory-refused paragraph");
   const text = banner[1].replace(/<button[\s\S]*<\/button>/, "")
     .replace(/\s+/g, " ").trim();
-  assertEquals(
-    text,
-    "The browser ran out of memory for new processes. Reload the page to continue.",
-  );
+  // The pages that build their banner (`mountMemoryRefusedBanner`) say
+  // the same words.
+  assertEquals(text, MEMORY_REFUSED_TEXT);
   // Outside the terminal pane, which is overflow: hidden and scrolls away.
   assertEquals(
     html.indexOf('id="memory-refused"') < html.indexOf('class="pane"'),
@@ -138,4 +142,152 @@ Deno.test("a refusal reaches the banner: kernel, coordinator, page, index.html",
     /stopWatchingRefusals\(\)/.test(source("boot.ts")),
     "the session's stop() stops watching",
   );
+});
+
+/** Just enough of `document` for `mountMemoryRefusedBanner`. */
+function fakeDocument() {
+  type Node = {
+    tag: string;
+    id: string;
+    hidden: boolean;
+    type: string;
+    textContent: string;
+    dataset: Record<string, string>;
+    attributes: Map<string, string>;
+    style: { cssText: string };
+    children: Node[];
+    clicks: (() => void)[];
+    setAttribute(name: string, value: string): void;
+    append(child: Node): void;
+    addEventListener(event: string, listener: () => void): void;
+  };
+  const all: Node[] = [];
+  const body: Node[] = [];
+  const doc = {
+    getElementById: (id: string) => all.find((n) => n.id === id) ?? null,
+    createElement(tag: string): Node {
+      const node: Node = {
+        tag,
+        id: "",
+        hidden: false,
+        type: "",
+        textContent: "",
+        dataset: {},
+        attributes: new Map(),
+        style: { cssText: "" },
+        children: [],
+        clicks: [],
+        setAttribute(name, value) {
+          node.attributes.set(name, value);
+        },
+        append(child) {
+          node.children.push(child);
+          all.push(child);
+        },
+        addEventListener(event, listener) {
+          if (event === "click") node.clicks.push(listener);
+        },
+      };
+      return node;
+    },
+    body: {
+      prepend(node: Node) {
+        body.unshift(node);
+        all.push(node);
+      },
+    },
+  };
+  return { doc: doc as unknown as Document, body };
+}
+
+Deno.test("a page without the static banner builds the same one, once", () => {
+  const { doc, body } = fakeDocument();
+  let reloads = 0;
+  const banner = mountMemoryRefusedBanner(doc, () => reloads++);
+  assertEquals(body.length, 1);
+  assertEquals(banner.id, MEMORY_REFUSED_BANNER_ID);
+  assertEquals(body[0].attributes.get("role"), "alert");
+  assertEquals(body[0].textContent.trim(), MEMORY_REFUSED_TEXT);
+  // Above JupyterLite's shell, which covers the whole body.
+  assert(/position: fixed/.test(body[0].style.cssText));
+  const [reload] = body[0].children;
+  assertEquals(reload.id, MEMORY_REFUSED_RELOAD_ID);
+  assertEquals(reload.textContent, "Reload");
+  for (const click of reload.clicks) click();
+  assertEquals(reloads, 1);
+  // A second refusal finds it rather than stacking another.
+  assertEquals(mountMemoryRefusedBanner(doc, () => reloads++), banner);
+  assertEquals(body.length, 1);
+});
+
+Deno.test("the snapshot demo and both notebook kernels show the banner (#213)", () => {
+  // Each worker that boots or restores a kernel watches that kernel and
+  // posts the message; each page side that receives it mounts the banner.
+  const watch =
+    /watchGuestMemoryRefusals\((mk|restored\.host), \(\) => post\(memoryRefusedMessage\(\)\)\)/g;
+  for (const worker of ["snapshot_worker.ts", "notebook_kernel_worker.ts"]) {
+    const text = source(worker);
+    const watched = [...text.matchAll(watch)].map((m) => m[1]).sort();
+    assertEquals(
+      watched,
+      ["mk", "restored.host"],
+      `${worker} watches its booted and its restored kernel`,
+    );
+    assert(
+      /loadPlaygroundKernel\(kernel\);\n(.*\n){0,3}.*watchGuestMemoryRefusals\(mk,/
+        .test(text),
+      `${worker} watches the booted kernel before its guest starts`,
+    );
+  }
+  assertEquals(MEMORY_REFUSED_MESSAGE_TYPE, "memory-refused");
+  for (const page of ["snapshot_page.ts", "snapshot_bridge.ts"]) {
+    assert(
+      /case "memory-refused":\s*mountMemoryRefusedBanner\(document\);/.test(
+        source(page),
+      ),
+      `${page} mounts the banner`,
+    );
+  }
+  // The ipykernel notebook runs on the main page's coordinator, which
+  // already posts the message (checked above); its bridge must show it.
+  assert(
+    /msg\.type === MEMORY_REFUSED_MESSAGE_TYPE\) \{[^}]*mountMemoryRefusedBanner\(document\)/
+      .test(source("lite_bridge.ts")),
+    "lite_bridge.ts mounts the banner",
+  );
+});
+
+Deno.test("a restore's refusal is recognised from its error", () => {
+  // The kernel's own error, so a rename there turns this red.
+  const refused = new GuestMemoryExhausted("Out of memory", {
+    engineRefused: true,
+  });
+  assert(isGuestMemoryRefusal(refused));
+  assert(isGuestMemoryRefusal(new Error("restore failed", { cause: refused })));
+  // The guest's own budget is an ordinary ENOMEM: a reload does not help.
+  assert(!isGuestMemoryRefusal(new GuestMemoryExhausted("budget spent")));
+  assert(!isGuestMemoryRefusal(new Error("bad image")));
+  assert(!isGuestMemoryRefusal("Out of memory"));
+});
+
+Deno.test("a refused restore shows the banner and keeps the stored image", () => {
+  // `restore` builds its guests' memories before a watch can be put on the
+  // host it returns: the refusal comes back only as the error.
+  for (const worker of ["snapshot_worker.ts", "notebook_kernel_worker.ts"]) {
+    const text = source(worker);
+    assert(
+      /restorePlaygroundKernel\(kernel, stored\.image\)\.catch\(\s*\(error\) => \{[^}]*if \(isGuestMemoryRefusal\(error\)\) post\(memoryRefusedMessage\(\)\);\s*throw error;/
+        .test(text),
+      `${worker} reports a refusal thrown by the restore`,
+    );
+    // The start path drops an image it cannot restore and boots fresh;
+    // not for a refusal, which a reload fixes.
+    const keep = text.indexOf("if (isGuestMemoryRefusal(error)) throw error;");
+    assert(keep !== -1, `${worker} rethrows a refused restore`);
+    const clear = text.indexOf("await clearSnapshot(", keep);
+    assert(
+      clear !== -1 && text.slice(keep, clear).split("\n").length < 8,
+      `${worker} rethrows before it clears the stored image`,
+    );
+  }
 });

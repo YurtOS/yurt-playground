@@ -6,6 +6,7 @@
  * Bundled to `public/snapshot-bridge.js` and imported by the `jupyterlite/`
  * extension at runtime for the `yurt-snapshot` kernelspec.
  */
+import { mountMemoryRefusedBanner } from "./memory_refused.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import type {
@@ -102,6 +103,9 @@ export function startSnapshotKernel(
         // record (the cell finished during the reopen: its output shows
         // up, nothing executes twice); not when the guest died.
         if (!msg.answerable) pendingCell = undefined;
+        return;
+      case "memory-refused":
+        mountMemoryRefusedBanner(document);
         return;
     }
   };

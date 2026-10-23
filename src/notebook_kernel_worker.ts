@@ -45,6 +45,12 @@ import type {
   JupyterChannel,
   JupyterRequestChannel,
 } from "./jupyter_transport.ts";
+import {
+  isGuestMemoryRefusal,
+  type MemoryRefusedMessage,
+  memoryRefusedMessage,
+  watchGuestMemoryRefusals,
+} from "./memory_refused.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import {
@@ -128,7 +134,9 @@ export type NotebookKernelFromWorker =
    *  rather than executed again -- the notebook should still run it to
    *  show that; not answerable (the guest died): re-running it would
    *  execute it, so the notebook must not. */
-  | { type: "pending-cell-cleared"; answerable: boolean };
+  | { type: "pending-cell-cleared"; answerable: boolean }
+  /** The browser refused a process its memory: only a reload helps. */
+  | MemoryRefusedMessage;
 
 function post(message: NotebookKernelFromWorker): void {
   self.postMessage(message);
@@ -825,6 +833,9 @@ async function bootFresh(
 ): Promise<Live> {
   status("booting the kernel");
   const mk = await loadPlaygroundKernel(kernel);
+  // A suspended kernel is disposed with its guests, so a watch never
+  // outlives the kernel it watches.
+  watchGuestMemoryRefusals(mk, () => post(memoryRefusedMessage()));
   status("loading the image");
   const image = await fetchPlaygroundBytes("./playground.yurtimg");
   status("staging the Python stdlib");
@@ -841,7 +852,14 @@ async function restoreStored(
   kernel: Uint8Array,
   stored: StoredSnapshot,
 ): Promise<Live> {
-  const restored = await restorePlaygroundKernel(kernel, stored.image);
+  const restored = await restorePlaygroundKernel(kernel, stored.image).catch(
+    (error) => {
+      // Refused before there was a host to watch: say so here.
+      if (isGuestMemoryRefusal(error)) post(memoryRefusedMessage());
+      throw error;
+    },
+  );
+  watchGuestMemoryRefusals(restored.host, () => post(memoryRefusedMessage()));
   try {
     const [process] = restored.processes;
     if (process === undefined) throw new Error("the image holds no process");
@@ -1048,6 +1066,9 @@ async function start(isolated: boolean): Promise<void> {
       post({ type: "notebook-ready" });
       return;
     } catch (error) {
+      // A refused memory is the browser's, not the image's: a reload
+      // restores it, so it is kept, and a fresh boot would be refused too.
+      if (isGuestMemoryRefusal(error)) throw error;
       await clearSnapshot(NOTEBOOK_KEY);
       status(
         `stored image could not be restored (${

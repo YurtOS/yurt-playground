@@ -8,6 +8,11 @@
  */
 import { desktopInfo } from "./native.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
+import {
+  MEMORY_REFUSED_MESSAGE_TYPE,
+  type MemoryRefusedMessage,
+  mountMemoryRefusedBanner,
+} from "./memory_refused.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import type {
@@ -40,7 +45,8 @@ type FromWorker =
     channel: JupyterChannel;
   }
   | { type: "cell-result" }
-  | { type: "cell-error" };
+  | { type: "cell-error" }
+  | MemoryRefusedMessage;
 
 let bridge: PlaygroundKernelBridge | undefined;
 
@@ -80,6 +86,9 @@ export function startPlaygroundKernel(
       for (const listener of messageListeners) {
         listener(msg.message, msg.channel);
       }
+    } else if (msg.type === MEMORY_REFUSED_MESSAGE_TYPE) {
+      // The coordinator posts it from `bootPlayground` (src/boot.ts).
+      mountMemoryRefusedBanner(document);
     }
   };
   worker.onerror = (event) => {
