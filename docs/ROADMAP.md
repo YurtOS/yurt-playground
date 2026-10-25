@@ -62,7 +62,8 @@ Planned for the next one or two trains. These are in progress, not finished.
 - **Install packages in the browser tab.** Why: the tab has no network, so
   `pkg install` cannot download there. A _Packages_ control fetches a package
   for the sandbox, and the sandbox's own `pkg` verifies its signature and
-  installs it, as on the desktop. Built in this repository; it needs the base
+  installs it, as on the desktop. Draft PR
+  [#231](https://github.com/YurtOS/yurt-playground/pull/231); it needs the base
   image above, and packages republished in the current format with real
   signatures (the builds published today are refused).
 - **Python native extensions loaded from a `.so` at run time**, rather than
