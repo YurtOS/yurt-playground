@@ -39,9 +39,11 @@ export const TRUSTED_REPOS_PATH = "/etc/yurt-pkg/trusted-repos.toml";
 export const TRUST_ROOT_PATH =
   "/etc/yurt-pkg/sigstore-trust-root/trusted_root.json";
 
-/** Each install's copy of the repository and its configuration, removed
- * once `pkg` is done with it. */
-export const STAGING_ROOT = "/var/cache/yurt-pkg/browser";
+/** Each run's copy of the repository and its configuration, removed once
+ * `pkg` is done with it. One path for every run (the page runs one install
+ * at a time): the repository's URL in pkg's cache then stays the same, and
+ * pkg does not warn that it changed. */
+export const STAGING_DIR = "/var/cache/yurt-pkg/browser/staging";
 
 /** The browser installs' repository cache, apart from the image's default
  * one, so that a cache the image may ship cannot refuse the first install
@@ -519,10 +521,10 @@ export async function installPackage(
       );
     }),
   );
-  /** Stage the repository copy, with `archives` (by repository path), in
-   * a directory of its own, and run `pkg` on it. */
+  /** Stage the repository copy, with `archives` (by repository path), and
+   * run `pkg` on it. */
   const run = (archives: Map<string, Uint8Array>) => {
-    const dir = `${STAGING_ROOT}/${crypto.randomUUID()}`;
+    const dir = STAGING_DIR;
     const mirror = `${dir}/repo`;
     const config = browserTrustedRepos(trusted, `file://${mirror}/`);
     // Copies: the catalog keeps its own, and staged files are transferred.

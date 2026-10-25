@@ -15,7 +15,7 @@ import {
   sha256Hex,
   sizeRefusal,
   type StagedFile,
-  STAGING_ROOT,
+  STAGING_DIR,
   TABLET_MAX_BYTES,
 } from "../src/packages.ts";
 
@@ -186,20 +186,20 @@ Deno.test("a tablet refuses what a desktop browser installs", () => {
 });
 
 Deno.test("pkg update runs unless pkg's cache holds this index; the copy is removed", () => {
-  const script = installScript(`${STAGING_ROOT}/t`, "zsh", "official");
+  const script = installScript(STAGING_DIR, "zsh", "official");
   const lines = script.split("\n");
-  assertEquals(lines[0], `cleanup() { sudo rm -rf '${STAGING_ROOT}/t'; }`);
+  assertEquals(lines[0], `cleanup() { sudo rm -rf '${STAGING_DIR}'; }`);
   assertEquals(lines[1], "trap cleanup EXIT");
   assertEquals(
     lines.filter((line) => line.includes("sudo pkg --etc-root")),
     [
-      `  sudo pkg --etc-root '${STAGING_ROOT}/t/etc' --cache-root '${CACHE_ROOT}' update || exit 1`,
-      `sudo pkg --etc-root '${STAGING_ROOT}/t/etc' --cache-root '${CACHE_ROOT}' install 'zsh'`,
+      `  sudo pkg --etc-root '${STAGING_DIR}/etc' --cache-root '${CACHE_ROOT}' update || exit 1`,
+      `sudo pkg --etc-root '${STAGING_DIR}/etc' --cache-root '${CACHE_ROOT}' install 'zsh'`,
     ],
   );
   assertEquals(
     lines.includes(
-      `if ! sudo cmp -s '${CACHE_ROOT}/official/current/index.json' '${STAGING_ROOT}/t/repo/index.json'; then`,
+      `if ! sudo cmp -s '${CACHE_ROOT}/official/current/index.json' '${STAGING_DIR}/repo/index.json'; then`,
     ),
     true,
   );
@@ -301,7 +301,7 @@ Deno.test("pkg plans the install; the page stages exactly what it names", async 
     "repo/artifacts/greet/0.1.0/greet-0.1.0-yurt_0.yurtpkg.bundle",
   ];
   for (const [i, { files, script, dir }] of runs.entries()) {
-    assertEquals(dir.startsWith(`${STAGING_ROOT}/`), true);
+    assertEquals(dir, STAGING_DIR);
     const staged = Object.fromEntries(
       files.map((f) => [f.path.slice(dir.length + 1), f.bytes]),
     );
@@ -320,7 +320,6 @@ Deno.test("pkg plans the install; the page stages exactly what it names", async 
     );
     assertEquals(script, installScript(dir, "greet", "official"));
   }
-  assertEquals(runs[0].dir === runs[1].dir, false);
   assertEquals(
     messages.at(-1),
     "greet: verifying and installing (pkg install greet)",
