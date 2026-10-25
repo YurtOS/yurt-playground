@@ -476,7 +476,7 @@ Deno.test("a release the page cannot fetch fails only its own install", async ()
     const [extra, message] of [
       [{ url: "https://example.test/greet.yurtpkg" }, "unsupported path"],
       [{ url: "artifacts/%2e%2e/x.yurtpkg" }, "unsupported path"],
-      [{ size: "big" as unknown as number }, "bad size"],
+      [{ size: "big" as unknown as number }, "which the index does not list"],
     ] as const
   ) {
     const fetcher = await fakeRepo(new Uint8Array([1]), extra);
@@ -502,7 +502,12 @@ Deno.test("a release the page cannot read is left out of the list, not fatal to 
   const file = parsePackageFile(
     new TextEncoder().encode(JSON.stringify({
       name: "x",
-      versions: [null, { url: "a.yurtpkg" }, version("1.0.0", "yurt_0")],
+      versions: [
+        null,
+        { url: "a.yurtpkg" },
+        version("2.0.0", "yurt_0", { size: -1 }),
+        version("1.0.0", "yurt_0"),
+      ],
     })),
   );
   assertEquals(file.versions.length, 1);

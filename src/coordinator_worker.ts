@@ -32,6 +32,7 @@ import type {
 } from "./jupyter_transport.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
+import { STAGING_DIR } from "./packages.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import {
   type MemoryRefusedMessage,
@@ -152,6 +153,17 @@ async function servePackages(msg: ToWorker): Promise<void> {
   const session = packageSession;
   if (session?.process === undefined || session.writeFiles === undefined) {
     reply(false, undefined, "this sandbox does not install packages");
+    return;
+  }
+  // Only the staging copy: the files are written as root.
+  if (
+    msg.dir !== STAGING_DIR ||
+    msg.files.some((file) =>
+      !file.path.startsWith(`${STAGING_DIR}/`) ||
+      file.path.split("/").some((part) => part === "..")
+    )
+  ) {
+    reply(false, undefined, "package files outside the staging directory");
     return;
   }
   const spawn = session.process;

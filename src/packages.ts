@@ -121,6 +121,9 @@ export function parseIndex(bytes: Uint8Array): RepoIndex {
     if (typeof entry?.url !== "string") {
       throw new Error(`index.json: ${name} has no url`);
     }
+    // pkg also takes an absolute metadata URL, but the page stages every
+    // metadata file in the copy `pkg update` reads, so an index that uses
+    // one cannot be installed from in the browser at all.
     checkRelative(entry.url, `index.json ${name}`);
   }
   return index;
@@ -133,22 +136,21 @@ export function parsePackageFile(bytes: Uint8Array): PackageFile {
   }
   // A release the page cannot read is left out of the list, not fatal to
   // it; a plan that names it then fails that install alone.
+  // The size: the limits and every download's bound count on it.
   file.versions = file.versions.filter((v) =>
     typeof v?.version === "string" && typeof v.build === "string" &&
-    typeof v.url === "string" && Array.isArray(v.depends)
+    typeof v.url === "string" && Array.isArray(v.depends) &&
+    typeof v.sha256 === "string" && Number.isSafeInteger(v.size) &&
+    v.size >= 0
   );
   return file;
 }
 
 /** A release the page can download: a repository-relative URL (pkg also
- * takes absolute ones, which the page does not fetch) and a size the
- * limits and the download's bound can count on. Checked per release, so
- * one the page cannot fetch fails only its own installs. */
+ * takes absolute ones, which the page does not fetch). Checked per
+ * release, so one the page cannot fetch fails only its own installs. */
 function checkRelease(release: Release): Release {
   checkRelative(release.url, `${release.name} ${release.version}`);
-  if (!Number.isSafeInteger(release.size) || release.size < 0) {
-    throw new Error(`${release.name} ${release.version}: bad size`);
-  }
   return release;
 }
 
