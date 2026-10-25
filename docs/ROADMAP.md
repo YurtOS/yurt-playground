@@ -49,13 +49,8 @@ What you can use today.
 Planned for the next one or two trains. These are in progress, not finished.
 
 - **Upload files into the browser sandbox.** Why: today you can download your
-  home directory but not bring your own files or data in.
-- **The Go toolchain in the image** (`go` and `gofmt`). Why: `go build`,
-  `go run`, `go test` and `go vet` already work inside a desktop sandbox; this
-  puts them in the playground. Go runs on Yurt as an ordinary Linux program,
-  using a port that builds on upstream Go's
-  [wasm32 work](https://github.com/golang/go/issues/63131), which is not merged
-  upstream yet.
+  home directory but not bring your own files or data in. In review as
+  [#230](https://github.com/YurtOS/yurt-playground/pull/230).
 - **Python native extensions loaded at run time.** Why: the kernel side of
   `dlopen` has shipped; a shared C library is the remaining piece for ordinary
   CPython extension modules to load.
@@ -77,10 +72,19 @@ Bigger directions. Each needs design work, and the order is not fixed.
 - **Open files from your device.** Beyond a one-off upload: opening a file or
   folder from your device in the sandbox and saving changes back. Being
   explored.
-- **Go in the browser and on iPad.** Running the Go toolchain in the tab, not
-  only on the desktop. The open questions are download size (the toolchain is
-  about 57 MB) and the per-tab process and memory limits of tablet browsers,
-  since `go build` starts several compiler and linker processes.
+- **Go in the browser and on iPad.** Go runs on Yurt as an ordinary Linux
+  program, using a port that builds on upstream Go's
+  [wasm32 work](https://github.com/golang/go/issues/63131), which is not merged
+  upstream yet. In a desktop sandbox the Go toolchain (`go`, `gofmt`) already
+  builds, runs, tests and vets programs. Go programs cannot run in the browser
+  sandbox yet: the browser sandbox runs only programs that share the one memory
+  it provides, as C, Rust and Python programs already do, while Go's linker
+  gives each program a memory of its own, so `go version` in the tab fails with
+  "Exec format error". A change to Go's linker is in progress. The toolchain is
+  also large (about 41 MB to download and about 150 MB unpacked, all held in the
+  tab's memory), so it would be an opt-in download rather than part of the
+  default image. On iPad the per-tab process and memory limits are a further
+  question, since `go build` starts several compiler and linker processes.
 - **More of the playground on tablets.** iPad browsers limit the processes and
   memory one tab can use, which is why tablets get the shell only today and why
   a long shell session can still run out of memory
@@ -110,8 +114,9 @@ Bigger directions. Each needs design work, and the order is not fixed.
   stops). Host folders you mount are on disk directly.
 - **Tablets run the shell only**, with no Jupyter or agent pane. Phones are told
   the sandbox needs a desktop-class browser.
-- **Go (when it ships) is single-threaded**, and signals reach a Go program only
-  between system calls.
+- **Go is not in the playground**, and Go programs cannot run in the browser
+  sandbox yet. In a desktop sandbox they run on one thread, and signals reach
+  them only between system calls.
 - **Gemini CLI is slow to start the first time in the browser**; it starts
   faster in the desktop app.
 - **The first boot in the browser takes 30 to 60 seconds** while the tab
