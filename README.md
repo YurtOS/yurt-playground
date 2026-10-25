@@ -61,18 +61,19 @@ does not carry `pkg` yet, so nothing can be installed into it today.
   `sudo`. `pip install` of pure-Python packages and matching wheels works there
   already.
 - **Browser:** the sandbox has no network, so the page fetches for it. Press
-  _Packages_ in the terminal's bar, then _Install_ next to a package; the status
-  line shows the download and then `installed NAME`, and the package's command
-  runs in the terminal. The page downloads the repository's signed index, the
-  package metadata, and the archives with their Sigstore bundles, and lays them
-  out in the sandbox as a file-backed copy of the repository. The sandbox's own
-  `pkg` then runs `update` and `install` against that copy, trusting the signing
-  identity and Sigstore trust root the image configures for the real repository,
-  so every check it makes on the desktop (index and archive signatures, every
-  sha256 and size the index names, the archive's own metadata) runs unchanged.
-  Its rollback protection starts from an empty cache in each session, as on a
-  fresh desktop sandbox. `sudo pkg install` typed in the browser terminal still
-  fails: only the _Packages_ control can download.
+  _Packages_ in the terminal's bar, then _Install_ next to a package; the line
+  below the list shows the download and then `installed NAME` (or why pkg
+  refused), and the package's command runs in the terminal. The page downloads
+  the repository's signed index, the package metadata, and the archives with
+  their Sigstore bundles, and lays them out in the sandbox as a file-backed copy
+  of the repository. The sandbox's own `pkg` then runs `update` and `install`
+  against that copy, trusting the signing identity and Sigstore trust root the
+  image configures for the real repository, so every check it makes on the
+  desktop (index and archive signatures, every sha256 and size the index names,
+  the archive's own metadata) runs unchanged. Its rollback protection starts
+  from an empty cache in each session, as on a fresh desktop sandbox.
+  `sudo pkg install` typed in the browser terminal still fails: only the
+  _Packages_ control can download.
   - Installed packages live in the tab's memory, like every file there, and a
     reload loses them
     ([#81](https://github.com/YurtOS/yurt-playground/issues/81)).

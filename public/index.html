@@ -703,10 +703,9 @@
             Install a package from
             <a href="https://github.com/YurtOS/yurt-packages"
             >YurtOS/yurt-packages</a> into this sandbox: press
-            <em>Install</em>, wait for <code>installed</code> in the status
-            line, then run the package's command in the terminal. The sandbox
-            has no network, so this page downloads the package, and the
-            sandbox's own
+            <em>Install</em>, wait for <code>installed</code> below the list,
+            then run the package's command in the terminal. The sandbox has no
+            network, so this page downloads the package, and the sandbox's own
             <code>pkg</code> checks its signature and installs it, as
             <code>sudo pkg install NAME</code> does in a sandbox with a network.
           </p>
@@ -723,6 +722,13 @@
           <table>
             <tbody id="packages-list" data-testid="packages-list"></tbody>
           </table>
+          <p
+            id="packages-status"
+            data-testid="packages-status"
+            role="status"
+            aria-live="polite"
+          >
+          </p>
         </div>
         <div id="term-wrap">
           <div id="term"></div>

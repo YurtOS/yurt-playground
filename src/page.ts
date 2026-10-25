@@ -469,13 +469,15 @@ function wireUpload(): void {
 
 /** The "Packages" control: the repository's packages, each with an
  * Install (src/packages.ts). One install at a time; progress and the
- * outcome land in the status line. */
+ * outcome land in the panel's own status line. */
 function wirePackages(smallDevice: boolean): void {
   const toggle = byId("packages-toggle") as HTMLButtonElement;
   const panel = byId("packages");
   const state = byId("packages-state");
   const list = byId("packages-list");
-  const status = byId("status");
+  // Its own line: the terminal's status is rewritten by the boot (Jupyter
+  // starts after the shell), which would bury an install's outcome.
+  const status = byId("packages-status");
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
   const install = async (name: string) => {

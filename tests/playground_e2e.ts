@@ -581,7 +581,7 @@ async function packagesInstallAndRun(page: Page): Promise<void> {
     undefined,
     { timeout: 300_000 },
   );
-  const status = await page.locator("#status").textContent();
+  const status = await page.getByTestId("packages-status").textContent();
   if (status !== `installed ${name}`) {
     throw new Error(`packages: install ${name}: ${status}`);
   }
