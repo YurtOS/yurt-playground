@@ -63,8 +63,9 @@ does not carry `pkg` yet, so nothing can be installed into it today.
   identity and Sigstore trust root the image configures for the real repository,
   so every check it makes on the desktop (index and archive signatures, every
   sha256 and size the index names, the archive's own metadata) runs unchanged.
-  `pkg install` typed in the browser terminal still fails: only the _Packages_
-  control can download.
+  Its rollback protection starts from an empty cache in each session, as on a
+  fresh desktop sandbox. `pkg install` typed in the browser terminal still
+  fails: only the _Packages_ control can download.
   - Installed packages live in the tab's memory, like every file there, and a
     reload loses them
     ([#81](https://github.com/YurtOS/yurt-playground/issues/81)).

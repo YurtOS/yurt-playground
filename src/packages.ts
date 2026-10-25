@@ -23,12 +23,16 @@
 export const PACKAGE_REPO_URL =
   "https://raw.githubusercontent.com/YurtOS/yurt-packages/main/";
 
-/** The origins `connect-src` must allow for {@link PACKAGE_REPO_URL}. */
-export const PACKAGE_ORIGINS = ["https://raw.githubusercontent.com"];
+/** What `connect-src` must allow for {@link PACKAGE_REPO_URL}: that
+ * repository's files, not every file the host serves. */
+export const PACKAGE_SOURCES = [
+  "https://raw.githubusercontent.com/YurtOS/yurt-packages/",
+];
 
 /** The repository the image's trust configuration must name: the one entry
- * of `trusted-repos.toml` whose signing identity the browser copy reuses. */
-const TRUSTED_REPO_MARK = "YurtOS/yurt-packages";
+ * of `trusted-repos.toml` whose signing identity the browser copy reuses,
+ * found by these two consecutive path segments of its URL. */
+const TRUSTED_REPO = ["YurtOS", "yurt-packages"];
 
 /** The image's `pkg` configuration (yurt-pkg docs/pkg.md, "Trust Inputs"). */
 export const TRUSTED_REPOS_PATH = "/etc/yurt-pkg/trusted-repos.toml";
@@ -39,10 +43,16 @@ export const TRUST_ROOT_PATH =
  * once `pkg` is done with it. */
 export const STAGING_ROOT = "/var/cache/yurt-pkg/browser";
 
-/** The index version `pkg update` last accepted in this sandbox. `pkg`
- * refuses an index no newer than its cache (rollback protection), so the
- * same index is not offered twice; its cached copy serves the next install. */
-export const UPDATED_MARKER = "/var/lib/yurt-pkg/browser-index-version";
+/** The browser installs' repository cache, apart from the image's default
+ * one, so that a cache the image may ship cannot refuse the first install
+ * as a rollback. */
+export const CACHE_ROOT = "/var/cache/yurt-pkg/browser-repos";
+
+/** The index version `pkg update` last accepted into {@link CACHE_ROOT}.
+ * `pkg` refuses an index no newer than its cache (rollback protection), so
+ * the same index is not offered twice; its cached copy serves the next
+ * install. */
+export const UPDATED_MARKER = "/var/cache/yurt-pkg/browser-index-version";
 
 /** A tablet tab runs out of memory well before a desktop one does (#200):
  * there, an install that downloads more than this is refused. */
@@ -174,10 +184,66 @@ export function latestRelease(file: PackageFile): Release | undefined {
   return { ...best, name: file.name };
 }
 
-/** The archives installing `name` needs: the package and, transitively, the
- * latest release of each dependency, in no particular order. Archives the
- * guest's resolver does not pick are staged for nothing; a pick this does
- * not foresee fails the install in `pkg` with the archive it could not find. */
+type Comparator = { op: string; version: number[]; pre: boolean };
+
+/** Whether `version` meets a dependency requirement, read as the `semver`
+ * crate `pkg` resolves with reads it: comma-separated comparators, all of
+ * which must hold; a bare version means `^`. A pre-release meets only a
+ * requirement that names one. */
+export function satisfies(version: string, req: string): boolean {
+  if (version.includes("-") && !req.includes("-")) return false;
+  const parts = (v: string) =>
+    v.split("+")[0].split("-")[0].split(".").map((n) => Number(n));
+  const comparators: Comparator[] = req.split(",").map((raw) => {
+    const match =
+      /^\s*(\^|~|=|>=|<=|>|<)?\s*([0-9*xX.]+(?:-[0-9A-Za-z.-]+)?)\s*$/
+        .exec(raw);
+    if (match === null) throw new Error(`cannot read requirement ${req}`);
+    const nums = match[2].split("-")[0].split(".")
+      .filter((n) => !/^[*xX]$/.test(n)).map((n) => Number(n));
+    return { op: match[1] ?? "^", version: nums, pre: match[2].includes("-") };
+  });
+  const v = parts(version);
+  const cmp = (bound: number[]) =>
+    compareVersions(v.join("."), bound.concat([0, 0, 0]).slice(0, 3).join("."));
+  return comparators.every(({ op, version: bound }) => {
+    if (bound.length === 0) return true; // `*`
+    const [major, minor, patch] = [bound[0], bound[1], bound[2]];
+    // The exclusive upper end of a partial or caret/tilde range.
+    const upper = (() => {
+      if (op === "~" || (op !== "^" && bound.length < 3)) {
+        return bound.length === 1 ? [major + 1, 0, 0] : [major, minor + 1, 0];
+      }
+      if (major > 0 || bound.length === 1) return [major + 1, 0, 0];
+      if (minor > 0 || bound.length === 2) return [0, minor + 1, 0];
+      return [0, 0, patch + 1];
+    })();
+    switch (op) {
+      case "^":
+      case "~":
+      case "=":
+        return cmp(bound) >= 0 &&
+          (op === "=" && bound.length === 3
+            ? cmp(bound) === 0
+            : cmp(upper) < 0);
+      case ">":
+        return bound.length === 3 ? cmp(bound) > 0 : cmp(upper) >= 0;
+      case ">=":
+        return cmp(bound) >= 0;
+      case "<":
+        return cmp(bound) < 0;
+      default: // "<="
+        return bound.length === 3 ? cmp(bound) <= 0 : cmp(upper) < 0;
+    }
+  });
+}
+
+/** The archives installing `name` needs: the package's latest release and,
+ * transitively, the latest release of each dependency that meets the
+ * requirements seen for it, in no particular order. Archives the guest's
+ * resolver does not pick are staged for nothing; a pick this does not
+ * foresee (requirements that conflict, which `pkg` backtracks over) fails
+ * the install in `pkg` with the archive it could not find. */
 export async function installClosure(
   index: RepoIndex,
   name: string,
@@ -185,6 +251,7 @@ export async function installClosure(
 ): Promise<Release[]> {
   const releases: Release[] = [];
   const seen = new Set<string>();
+  const reqs = new Map<string, string[]>();
   const queue = [name];
   while (queue.length > 0) {
     const next = queue.shift()!;
@@ -197,12 +264,26 @@ export async function installClosure(
           : `${name} depends on ${next}, which the repository does not publish`,
       );
     }
-    const release = latestRelease(await metadata(next));
+    const file = await metadata(next);
+    const wanted = reqs.get(next) ?? [];
+    const release = latestRelease({
+      ...file,
+      versions: file.versions.filter((v) =>
+        wanted.every((req) => satisfies(v.version, req))
+      ),
+    });
     if (release === undefined) {
-      throw new Error(`${next} has no release that is not yanked`);
+      throw new Error(
+        `${next} has no release that is not yanked${
+          wanted.length ? ` and meets ${wanted.join(", ")}` : ""
+        }`,
+      );
     }
     releases.push(release);
-    for (const dep of release.depends) queue.push(dep.name);
+    for (const dep of release.depends) {
+      reqs.set(dep.name, [...(reqs.get(dep.name) ?? []), dep.req]);
+      queue.push(dep.name);
+    }
   }
   return releases;
 }
@@ -246,12 +327,15 @@ function repoTables(toml: string): TomlRepo[] {
  * bytes are.
  */
 export function browserTrustedRepos(toml: string, mirrorUrl: string): string {
-  const repo = repoTables(toml).find((table) =>
-    (table.values.url ?? "").includes(TRUSTED_REPO_MARK)
-  );
+  const repo = repoTables(toml).find((table) => {
+    const segments = (table.values.url ?? "").split("/");
+    return segments.some((segment, i) =>
+      segment === TRUSTED_REPO[0] && segments[i + 1] === TRUSTED_REPO[1]
+    );
+  });
   if (repo === undefined) {
     throw new Error(
-      `${TRUSTED_REPOS_PATH} does not trust ${TRUSTED_REPO_MARK}`,
+      `${TRUSTED_REPOS_PATH} does not trust ${TRUSTED_REPO.join("/")}`,
     );
   }
   for (const key of ["id", "signing_subject", "signing_issuer"]) {
@@ -281,6 +365,7 @@ export function installScript(
   name: string,
   indexVersion: number,
 ): string {
+  const pkg = `pkg --etc-root ${q(`${dir}/etc`)} --cache-root ${q(CACHE_ROOT)}`;
   const etc = `${dir}/etc`;
   return [
     `cleanup() { rm -rf ${q(dir)}; }`,
@@ -296,10 +381,10 @@ export function installScript(
     `if [ "$(cat ${q(UPDATED_MARKER)} 2>/dev/null)" != ${
       q(String(indexVersion))
     } ]; then`,
-    `  pkg --etc-root ${q(etc)} update || exit 1`,
+    `  ${pkg} update || exit 1`,
     `  echo ${q(String(indexVersion))} > ${q(UPDATED_MARKER)}`,
     "fi",
-    `pkg --etc-root ${q(etc)} install ${q(name)}`,
+    `${pkg} install ${q(name)}`,
   ].join("\n");
 }
 
@@ -384,7 +469,10 @@ export const fetchWithProgress: Fetcher = async (url, onBytes) => {
 export type Catalog = {
   index: RepoIndex;
   indexBytes: Uint8Array;
-  /** Fetched with the index, so the two always match. */
+  /** Fetched with the index, not at each install, so a republish between
+   * opening the list and an install cannot pair them. (Right after a
+   * publish, the host's CDN can still serve files from both commits for a
+   * few minutes; `pkg` refuses such a mix, and a retry later works.) */
   indexBundle: Uint8Array;
   metadata: Map<string, { bytes: Uint8Array; file: PackageFile }>;
 };

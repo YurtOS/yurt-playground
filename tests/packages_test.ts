@@ -1,6 +1,7 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   browserTrustedRepos,
+  CACHE_ROOT,
   installClosure,
   installPackage,
   installScript,
@@ -12,6 +13,7 @@ import {
   parseIndex,
   parsePackageFile,
   type RepoIndex,
+  satisfies,
   sha256Hex,
   sizeRefusal,
   type StagedFile,
@@ -93,6 +95,77 @@ Deno.test("the release pkg picks: highest version, then build, never yanked", ()
       versions: [version("1.0.0", "yurt_0", { yanked: true })],
     }),
     undefined,
+  );
+});
+
+Deno.test("requirements read as the semver crate reads them", () => {
+  const cases: [string, string, boolean][] = [
+    ["6.5.0", "^6.5", true],
+    ["6.9.1", "^6.5", true],
+    ["7.0.0", "^6.5", false],
+    ["6.4.9", "^6.5", false],
+    ["0.2.9", "^0.2.3", true],
+    ["0.3.0", "^0.2.3", false],
+    ["0.0.4", "^0.0.3", false],
+    ["1.2.9", "~1.2.3", true],
+    ["1.3.0", "~1.2.3", false],
+    ["1.9.0", "~1", true],
+    ["1.2.3", "=1.2.3", true],
+    ["1.2.4", "=1.2.3", false],
+    ["1.2.7", "=1.2", true],
+    ["1.3.0", ">1.2", true],
+    ["1.2.9", ">1.2", false],
+    ["1.2.9", "<=1.2", true],
+    ["1.3.0", "<=1.2", false],
+    ["2.0.0", ">=1.5, <2", false],
+    ["1.7.0", ">=1.5, <2", true],
+    ["9.9.9", "*", true],
+    ["1.4.0", "1.*", true],
+    ["2.0.0", "1.*", false],
+    ["2.0.0", "2", true],
+    ["2.0.0-rc.1", "^2.0.0", false],
+  ];
+  for (const [version, req, want] of cases) {
+    assertEquals(satisfies(version, req), want, `${version} ${req}`);
+  }
+});
+
+Deno.test("a dependency's release meets its requirement, not merely the latest", async () => {
+  const files: Record<string, PackageFile> = {
+    app: {
+      name: "app",
+      versions: [version("1.0.0", "yurt_0", {
+        depends: [{ name: "lib", req: "^1.2" }],
+      })],
+    },
+    lib: {
+      name: "lib",
+      versions: [version("1.4.0", "yurt_0"), version("2.0.0", "yurt_0")],
+    },
+  };
+  const index = {
+    schema: 1,
+    index_version: 1,
+    expires_at: "",
+    packages: {
+      app: { sha256: "", size: 1, url: "packages/app.json" },
+      lib: { sha256: "", size: 1, url: "packages/lib.json" },
+    },
+  } satisfies RepoIndex;
+  const closure = await installClosure(
+    index,
+    "app",
+    (name) => Promise.resolve(files[name]),
+  );
+  assertEquals(
+    closure.map((r) => `${r.name} ${r.version}`).sort(),
+    ["app 1.0.0", "lib 1.4.0"],
+  );
+  files.app.versions[0].depends[0].req = "^3";
+  await assertRejects(
+    () => installClosure(index, "app", (name) => Promise.resolve(files[name])),
+    Error,
+    "lib has no release that is not yanked and meets ^3",
   );
 });
 
@@ -246,8 +319,8 @@ Deno.test("pkg update runs once per index version; the copy is removed", () => {
   assertEquals(
     lines.filter((line) => line.includes("pkg --etc-root")),
     [
-      `  pkg --etc-root '${STAGING_ROOT}/t/etc' update || exit 1`,
-      `pkg --etc-root '${STAGING_ROOT}/t/etc' install 'zsh'`,
+      `  pkg --etc-root '${STAGING_ROOT}/t/etc' --cache-root '${CACHE_ROOT}' update || exit 1`,
+      `pkg --etc-root '${STAGING_ROOT}/t/etc' --cache-root '${CACHE_ROOT}' install 'zsh'`,
     ],
   );
   assertEquals(
