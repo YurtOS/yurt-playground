@@ -131,6 +131,12 @@ export function parsePackageFile(bytes: Uint8Array): PackageFile {
   if (typeof file?.name !== "string" || !Array.isArray(file.versions)) {
     throw new Error("package metadata: missing name or versions");
   }
+  // A release the page cannot read is left out of the list, not fatal to
+  // it; a plan that names it then fails that install alone.
+  file.versions = file.versions.filter((v) =>
+    typeof v?.version === "string" && typeof v.build === "string" &&
+    typeof v.url === "string" && Array.isArray(v.depends)
+  );
   return file;
 }
 

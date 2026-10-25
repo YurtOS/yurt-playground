@@ -161,7 +161,10 @@ async function servePackages(msg: ToWorker): Promise<void> {
     spawn(`exec /bin/sh -c ${quoted(script)}`, {
       maxOutputBytes: PKG_OUTPUT_BYTES,
     });
-  let result: { code: number | null; stdout: string; stderr: string };
+  let result:
+    | { code: number | null; stdout: string; stderr: string }
+    | undefined;
+  let failed: string | undefined;
   try {
     session.writeFiles(msg.files);
     // In the guest now: let the tab's copies go while `pkg` runs (up to
@@ -176,11 +179,8 @@ async function servePackages(msg: ToWorker): Promise<void> {
       stderr: decoder.decode(process.takeStderr()),
     };
   } catch (error) {
-    result = {
-      code: null,
-      stdout: "",
-      stderr: error instanceof Error ? error.message : String(error),
-    };
+    // Staging or the spawn failed, not pkg: said as that.
+    failed = error instanceof Error ? error.message : String(error);
   }
   // The script's trap removes the staged copy, unless the shell died by a
   // signal (the tab out of memory, say) or never ran; it may be hundreds of
@@ -188,7 +188,8 @@ async function servePackages(msg: ToWorker): Promise<void> {
   // the reply: the next run stages at the same path. Best effort.
   await run(`sudo rm -rf ${quoted(msg.dir)}`).then((p) => p.exited)
     .catch(() => {});
-  reply(true, result);
+  if (result === undefined) reply(false, undefined, failed);
+  else reply(true, result);
 }
 
 async function serveYurt(msg: ToWorker): Promise<void> {

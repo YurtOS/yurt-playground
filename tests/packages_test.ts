@@ -12,6 +12,7 @@ import {
   type PackageHost,
   type PackageVersion,
   parseIndex,
+  parsePackageFile,
   sha256Hex,
   sizeRefusal,
   type StagedFile,
@@ -495,4 +496,15 @@ Deno.test("a release the page cannot fetch fails only its own install", async ()
     );
     assertEquals(runs.length, 1);
   }
+});
+
+Deno.test("a release the page cannot read is left out of the list, not fatal to it", () => {
+  const file = parsePackageFile(
+    new TextEncoder().encode(JSON.stringify({
+      name: "x",
+      versions: [null, { url: "a.yurtpkg" }, version("1.0.0", "yurt_0")],
+    })),
+  );
+  assertEquals(file.versions.length, 1);
+  assertEquals(latestRelease(file)?.version, "1.0.0");
 });

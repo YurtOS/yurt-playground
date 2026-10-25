@@ -489,7 +489,7 @@ function wirePackages(smallDevice: boolean): void {
         tablet: smallDevice,
         progress: (message) => status.textContent = message,
       });
-      status.textContent = output === "nothing to install"
+      status.textContent = /^nothing to install$/m.test(output)
         ? `${name} is already installed`
         : `installed ${name}`;
       // Everything pkg installed with it (its dependencies) is installed too.
