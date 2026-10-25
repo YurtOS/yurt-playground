@@ -48,7 +48,15 @@
 #                   builders' repositories, so every step tests against
 #                   the train's own artifacts (the pinned ones may be a
 #                   kernel rev behind the runtime) -- then the prereleases
-#                   are deleted; nothing is pinned, no PR is opened
+#                   are deleted; nothing is pinned, no PR is opened.
+#                   One exception: the image ([2]) is built from main's
+#                   workflow only when --ports-sha and --kernel-sha are both
+#                   in their repositories' main history. Otherwise [2] runs
+#                   from a validate/<TRAIN> branch of yurt-ports made at its
+#                   main's head (deleted at the end) with publish=false: it
+#                   builds and smokes the image but publishes nothing, and
+#                   [3] tests against the image artifacts/pins.json pins.
+#                   A train that is not a rehearsal needs both on main.
 #   --resume        continue a train from its state file. Without --train,
 #                   only the newest train of its kind (add --validate for a
 #                   rehearsal) and only if it started today; a failure
@@ -432,6 +440,40 @@ host_release=$(release_tag "${host_release:-desktop-host-$train}")
 cli_repo=$(release_repo "${cli_release:-$sandbox_repo@x}")
 cli_release=$(release_tag "${cli_release:-yurt-cli-$train}")
 
+# ---- where the image builds ([2]) -----------------------------------------
+# yurt-ports' release-playground-image.yml refuses, from main, any ports or
+# kernel commit outside their repositories' main history: a job on main's
+# ref can write the cache every release restores. Such commits build from a
+# validate/<train> branch instead, which can write only its own scope, and
+# publish nothing. Decided when the train starts (so a real train stops
+# before its first dispatch) and recorded in the state file.
+image_ref=main
+image_publish=true
+# on_main DIR SHA: SHA is in the history of DIR's origin/main.
+on_main() {
+  git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 1
+  git -C "$1" fetch -q origin main 2>/dev/null || return 1
+  git -C "$1" merge-base --is-ancestor "$2" origin/main 2>/dev/null
+}
+decide_image_ref() {
+  local off_main=""
+  on_main "$ports_dir" "$ports_sha" || off_main="yurt-ports $ports_sha (checkout: $ports_dir)"
+  on_main "$kernel_dir" "$kernel_sha" || off_main="${off_main:+$off_main, }yurtos-kernel $kernel_sha (checkout: $kernel_dir)"
+  image_ref=main
+  image_publish=true
+  [ -n "$off_main" ] || return 0
+  [ "$validate" = 1 ] || die "not in main's history: $off_main. A train's image builds only from both mains; rehearse it with --validate"
+  image_ref=validate/$train
+  image_publish=false
+  say "image   built from yurt-ports $image_ref, not published ($off_main not on main); [3] tests against the pinned image"
+}
+if [ "$pins_only" = 0 ] && [ "$build_image" = 1 ] && [ "$resume" = 0 ]; then
+  decide_image_ref
+  if [ "$image_ref" != main ] && gh api "repos/$ports_repo/git/refs/heads/$image_ref" >/dev/null 2>&1; then
+    die "$ports_repo still has the branch $image_ref from an unfinished rehearsal; resume it ($(resume_command)), or delete it (gh api -X DELETE repos/$ports_repo/git/refs/heads/$image_ref)"
+  fi
+fi
+
 if [ "$pins_only" = 0 ]; then
 mkdir -p "$state_dir"
 state=$state_dir/$train.json
@@ -448,12 +490,28 @@ else
 fi
 step_get() { jq -r ".steps[\"$1\"].$2 // empty" "$state"; }
 step_set() { local tmp; tmp=$(mktemp); jq ".steps[\"$1\"].$2 = $3" "$state" > "$tmp" && mv "$tmp" "$state"; }
+# The image's ref: a new train's, decided above; a resumed train's, the one
+# recorded when it started (a state file from before this record decides
+# at [2]).
+if [ "$build_image" = 1 ]; then
+  if [ "$resume" = 0 ]; then
+    step_set image ref "\"$image_ref\""
+  elif [ -n "$(step_get image ref)" ]; then
+    image_ref=$(step_get image ref)
+    [ "$image_ref" = main ] || image_publish=false
+  fi
+fi
 
 # ---- dispatch + watch one workflow by correlation id ---------------------
 # gh workflow run returns nothing; the run is found by the id stamped in its
 # run-name (the workflows set run-name from the correlation_id input).
 dispatch_and_watch() {
   local step=$1 repo=$2 workflow=$3; shift 3
+  local ref=main
+  if [ "${1:-}" = "--ref" ]; then
+    ref=$2
+    shift 2
+  fi
   local kernel_sha_to_resolve=""
   if [ "${1:-}" = "--resolve-kernel-release" ]; then
     kernel_sha_to_resolve=$2
@@ -479,8 +537,8 @@ dispatch_and_watch() {
       set -- "$@" -f "kernel_release=$kernel_release"
     fi
     local cid="rel-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM$RANDOM"
-    say "dispatch $repo $workflow ($cid)"
-    gh workflow run "$workflow" --repo "$repo" --ref main "$@" -f "correlation_id=$cid"
+    say "dispatch $repo $workflow on $ref ($cid)"
+    gh workflow run "$workflow" --repo "$repo" --ref "$ref" "$@" -f "correlation_id=$cid"
     local tries=0
     while [ -z "$run_id" ]; do
       sleep 5
@@ -516,7 +574,14 @@ fi
 # all recorded in the state file. The smoke boots the image through the
 # yurt CLI the page pins today; the train's own CLI is tested against the
 # image in [3].
+# A published image goes through yurt-ports' protected `release`
+# environment: when it requires a reviewer, the watch below waits for that
+# approval.
 if [ "$build_image" = 1 ] && [ "$(step_get image conclusion)" != success ]; then
+  if [ -z "$(step_get image ref)" ]; then
+    decide_image_ref
+    step_set image ref "\"$image_ref\""
+  fi
   jupyter_payload=$(step_get image jupyter_payload_release)
   if [ -z "$jupyter_payload" ]; then
     jupyter_payload=$(gh api "repos/$packages_repo/releases" --paginate \
@@ -524,19 +589,35 @@ if [ "$build_image" = 1 ] && [ "$(step_get image conclusion)" != success ]; then
     [ -n "$jupyter_payload" ] && [ "$jupyter_payload" != null ] || die "no jupyter-payload release in $packages_repo"
     step_set image jupyter_payload_release "\"$jupyter_payload\""
   fi
-  dispatch_and_watch image "$ports_repo" release-playground-image.yml \
+  if [ "$image_ref" != main ] && ! gh api "repos/$ports_repo/git/refs/heads/$image_ref" >/dev/null 2>&1; then
+    # The branch carries main's workflow (and so its trust rules) at main's
+    # head; the commit it builds is the ports_sha input, not the branch.
+    ports_main=$(gh api "repos/$ports_repo/commits/main" --jq .sha)
+    say "create $ports_repo $image_ref at main ($ports_main)"
+    gh api -X POST "repos/$ports_repo/git/refs" -f "ref=refs/heads/$image_ref" -f "sha=$ports_main" >/dev/null
+  fi
+  dispatch_and_watch image "$ports_repo" release-playground-image.yml --ref "$image_ref" \
     -f "ports_sha=$ports_sha" -f "kernel_sha=$kernel_sha" \
     -f "yurt_cli_release=$(jq -r .yurtCli.release "$root/artifacts/pins.json")" \
     -f "yurt_cli_repo=$(jq -r ".yurtCli.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")" \
     -f "jupyter_payload_release=$jupyter_payload" \
-    -f "train=$train" -f "publish=true"
+    -f "train=$train" -f "publish=$image_publish"
+fi
+# An image built off main publishes nothing: [3] tests the train's host and
+# CLI against the image the page pins today.
+native_image_release=$image_release
+native_image_repo=$image_repo
+if [ "$image_publish" = false ]; then
+  native_image_release=$(jq -r .image.release "$root/artifacts/pins.json")
+  native_image_repo=$(jq -r ".image.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")
+  say "[3] tests against the pinned image $native_image_repo@$native_image_release"
 fi
 # [3] the desktop host and the CLI, one run
 if [ "$(step_get native conclusion)" != success ]; then
   dispatch_and_watch native "$sandbox_repo" release-native.yml \
     -f "sandbox_sha=$sandbox_sha" -f "kernel_sha=$kernel_sha" \
     -f "kernel_wasm_release=$kernel_wasm_release" -f "kernel_wasm_repo=$kernel_wasm_repo" \
-    -f "image_release=$image_release" -f "image_repo=$image_repo" \
+    -f "image_release=$native_image_release" -f "image_repo=$native_image_repo" \
     -f "train=$train" -f "publish=true"
 fi
 
@@ -549,6 +630,10 @@ if [ "$validate" = 1 ]; then
     gh release delete "${spec#*:}" --repo "${spec%%:*}" --yes --cleanup-tag \
       || die "could not delete ${spec%%:*} ${spec#*:}; delete the rest by hand (the next rehearsal refuses to start until then)"
   done
+  if [ "$image_ref" != main ] && gh api "repos/$ports_repo/git/refs/heads/$image_ref" >/dev/null 2>&1; then
+    gh api -X DELETE "repos/$ports_repo/git/refs/heads/$image_ref" \
+      || die "could not delete $ports_repo's branch $image_ref; delete it by hand (the next rehearsal refuses to start until then)"
+  fi
   rm -f "$state" # a finished rehearsal leaves nothing behind
   exit 0
 fi

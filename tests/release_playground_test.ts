@@ -567,3 +567,274 @@ esac
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+/** A train resumed after its kernel step, with yurt-ports and yurtos-kernel
+ * checkouts whose origin/main has `main` and whose PR branch has `pr`, and a
+ * `gh` that logs every call to `gh.log`: dispatches succeed, releases do not
+ * exist, and yurt-ports branches live in a marker directory (created by
+ * `api -X POST .../git/refs`, deleted by `api -X DELETE`). */
+async function imageStepFixture(
+  opts: {
+    validate: 0 | 1;
+    ports: "main" | "pr";
+    kernel: "main" | "pr";
+    fresh?: boolean;
+  },
+) {
+  const dir = await Deno.makeTempDir({ prefix: "release-image-ref-" });
+  const root = join(dir, "project");
+  await Deno.mkdir(join(root, "scripts/lib"), { recursive: true });
+  await Deno.mkdir(join(root, "artifacts"), { recursive: true });
+  await Deno.copyFile(
+    join(repoRoot, "scripts/lib/kernel-release.sh"),
+    join(root, "scripts/lib/kernel-release.sh"),
+  );
+  await Deno.copyFile(
+    join(repoRoot, "scripts/release-playground.sh"),
+    join(root, "scripts/release-playground.sh"),
+  );
+  await Deno.writeTextFile(
+    join(root, "artifacts/pins.json"),
+    JSON.stringify({
+      image: {
+        releaseRepo: "YurtOS/yurt-ports",
+        release: "playground-image-pinned",
+      },
+      yurtCli: {
+        releaseRepo: "YurtOS/yurt-sandbox",
+        release: "yurt-cli-pinned",
+      },
+    }),
+  );
+  const shas: Record<string, { main: string; pr: string }> = {};
+  for (const name of ["ports", "kernel"]) {
+    const origin = join(dir, `${name}-origin`);
+    await command("git", ["init", "-q", "-b", "main", origin]);
+    const commit = (msg: string) =>
+      git(
+        origin,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        msg,
+      );
+    await commit(`${name} main`);
+    const main = await git(origin, "rev-parse", "HEAD");
+    await git(origin, "checkout", "-qb", "pr");
+    await commit(`${name} pr`);
+    const pr = await git(origin, "rev-parse", "HEAD");
+    await git(origin, "checkout", "-q", "main");
+    await command("git", [
+      "clone",
+      "-q",
+      "--branch",
+      "main",
+      origin,
+      join(dir, name),
+    ]);
+    shas[name] = { main, pr };
+  }
+  const train = `playground-${today}-aaaaaaa${
+    opts.validate ? "-validate" : ""
+  }`;
+  const stateDir = join(dir, "state/yurt-playground/releases");
+  await Deno.mkdir(stateDir, { recursive: true });
+  const stateFile = join(stateDir, `${train}.json`);
+  if (!opts.fresh) {
+    await Deno.writeTextFile(
+      stateFile,
+      JSON.stringify({
+        train,
+        kernel_sha: shas.kernel[opts.kernel],
+        ports_sha: shas.ports[opts.ports],
+        sandbox_sha: "c".repeat(40),
+        image_release: `playground-image-${train}`,
+        image_repo: "YurtOS/yurt-ports",
+        build_image: true,
+        validate: opts.validate,
+        steps: {
+          kernel_wasm: { run_id: 1, conclusion: "success" },
+          image: { jupyter_payload_release: "jupyter-payload-x" },
+        },
+      }),
+    );
+  }
+  const bin = join(dir, "bin");
+  const refs = join(dir, "refs");
+  await Deno.mkdir(bin);
+  await Deno.mkdir(refs);
+  const log = join(dir, "gh.log");
+  await Deno.writeTextFile(
+    join(bin, "gh"),
+    `#!/bin/bash
+printf '%s\\n' "$*" >> "${log}"
+case "$*" in
+  "auth status") exit 0;;
+  "release view"*) exit 1;;
+  "api repos/YurtOS/yurt-ports/commits/main --jq .sha") echo ${shas.ports.main};;
+  "api -X POST repos/YurtOS/yurt-ports/git/refs -f ref=refs/heads/"*)
+    ref=\${6#ref=refs/heads/}; mkdir -p "${refs}/\$ref";;
+  "api -X DELETE repos/YurtOS/yurt-ports/git/refs/heads/"*)
+    rm -rf "${refs}/\${4#repos/YurtOS/yurt-ports/git/refs/heads/}";;
+  "api repos/YurtOS/yurt-ports/git/refs/heads/"*)
+    [ -d "${refs}/\${2#repos/YurtOS/yurt-ports/git/refs/heads/}" ];;
+  "workflow run"*) ;;
+  "run list"*) echo 456;;
+  "run watch"*) exit 0;;
+  *) echo "unexpected gh call: $*" >&2; exit 1;;
+esac
+`,
+  );
+  await Deno.chmod(join(bin, "gh"), 0o755);
+  const args = opts.fresh
+    ? [
+      "--kernel-sha",
+      shas.kernel[opts.kernel],
+      "--ports-sha",
+      shas.ports[opts.ports],
+      "--sandbox-sha",
+      "c".repeat(40),
+      "--train",
+      train.replace(/-validate$/, ""),
+    ]
+    : ["--resume", "--train", train.replace(/-validate$/, "")];
+  if (opts.validate) args.push("--validate");
+  const result = await command(
+    "bash",
+    [join(root, "scripts/release-playground.sh"), ...args],
+    {
+      env: {
+        PATH: `${bin}:${Deno.env.get("PATH") ?? ""}`,
+        XDG_STATE_HOME: join(dir, "state"),
+        YURT_KERNEL_ROOT: join(dir, "kernel"),
+        YURT_PORTS_ROOT: join(dir, "ports"),
+        YURT_SANDBOX_ROOT: join(dir, "missing-sandbox-checkout"),
+      },
+    },
+  );
+  const calls = (await Deno.readTextFile(log)).split("\n").filter((l) => l);
+  // Branches left behind, under refs/validate/.
+  let leftBranches = 0;
+  try {
+    leftBranches = [...Deno.readDirSync(join(refs, "validate"))].length;
+  } catch { /* none was ever made */ }
+  return {
+    train,
+    code: result.code,
+    output: new TextDecoder().decode(result.stdout) +
+      new TextDecoder().decode(result.stderr),
+    dispatches: calls.filter((c) => c.startsWith("workflow run")),
+    calls,
+    leftBranches,
+    stateLeft: await Deno.stat(stateFile).then(() => true, () => false),
+    cleanup: () => Deno.remove(dir, { recursive: true }),
+  };
+}
+
+Deno.test("a rehearsal of a ports commit off main builds the image from a validate branch and publishes nothing", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "pr",
+    kernel: "main",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    const [image, native] = f.dispatches;
+    assertStringIncludes(image, "release-playground-image.yml");
+    assertStringIncludes(image, `--ref validate/${f.train}`);
+    assertStringIncludes(image, "-f publish=false");
+    // The host and CLI are tested against the image the page pins today.
+    assertStringIncludes(native, "release-native.yml");
+    assertStringIncludes(native, "--ref main");
+    assertStringIncludes(native, "-f image_release=playground-image-pinned");
+    assertEquals(f.dispatches.length, 2, f.calls.join("\n"));
+    // The branch was made at yurt-ports main's head and is gone at the end.
+    assertStringIncludes(
+      f.calls.join("\n"),
+      `-f ref=refs/heads/validate/${f.train}`,
+    );
+    assertStringIncludes(
+      f.calls.join("\n"),
+      `api -X DELETE repos/YurtOS/yurt-ports/git/refs/heads/validate/${f.train}`,
+    );
+    assertEquals(f.leftBranches, 0, "the validate branch was not deleted");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a rehearsal of a kernel commit off main builds the image from a validate branch too", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "pr",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    assertStringIncludes(f.dispatches[0], `--ref validate/${f.train}`);
+    assertStringIncludes(f.dispatches[0], "-f publish=false");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a rehearsal of both mains builds the image from main and publishes its prereleases", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    const [image, native] = f.dispatches;
+    assertStringIncludes(image, "--ref main");
+    assertStringIncludes(image, "-f publish=true");
+    assertStringIncludes(
+      native,
+      `-f image_release=playground-image-${f.train}`,
+    );
+    assertEquals(
+      f.calls.some((c) => c.includes("git/refs")),
+      false,
+      f.calls.join("\n"),
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a real train with a ports commit off main stops before any dispatch", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "pr",
+    kernel: "main",
+  });
+  try {
+    assertEquals(f.code, 1, f.output);
+    assertStringIncludes(f.output, "rehearse it with --validate");
+    assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new real train with a kernel commit off main stops before its first dispatch and leaves no state", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "pr",
+    fresh: true,
+  });
+  try {
+    assertEquals(f.code, 1, f.output);
+    assertStringIncludes(f.output, "rehearse it with --validate");
+    assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
+    assertEquals(f.stateLeft, false, "a refused train left its state file");
+  } finally {
+    await f.cleanup();
+  }
+});
