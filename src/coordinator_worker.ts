@@ -21,6 +21,7 @@ import {
   type ExecOptions,
   type ExecutionRecord,
   ExecutionRegistry,
+  quoted,
   type RawResult,
   type Result,
 } from "./executions.ts";
@@ -76,7 +77,15 @@ type ToWorker =
   | { type: "yurt-spawn"; req: number; cmd: string; opts: ExecOptions }
   | { type: "yurt-wait"; req: number; id: string; raw: boolean }
   | { type: "yurt-kill"; req: number; id: string; signal?: string }
-  | { type: "yurt-list"; req: number };
+  | { type: "yurt-list"; req: number }
+  // A package install (src/packages.ts): the staged repository copy, then
+  // the script that runs `pkg` on it, as root.
+  | {
+    type: "pkg-run";
+    req: number;
+    files: { path: string; bytes: Uint8Array }[];
+    script: string;
+  };
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -112,11 +121,58 @@ type FromWorker =
     ok: boolean;
     value?: string | Result | RawResult | ExecutionRecord[] | null;
     error?: string;
+  }
+  | {
+    type: "pkg-reply";
+    req: number;
+    ok: boolean;
+    value?: { code: number | null; stdout: string; stderr: string };
+    error?: string;
   };
 
 let jupyter: JupyterTransport | undefined;
 let launchSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 let executions: ExecutionRegistry | undefined;
+/** The in-tab session, for package installs; the desktop app's has none
+ * (its sandbox has a network, and `pkg install` there needs no page). */
+let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
+
+/** The guest's `pkg` output is a few lines; a megabyte is plenty. */
+const PKG_OUTPUT_BYTES = 1024 * 1024;
+
+async function servePackages(msg: ToWorker): Promise<void> {
+  if (msg.type !== "pkg-run") return;
+  const reply = (
+    ok: boolean,
+    value?: { code: number | null; stdout: string; stderr: string },
+    error?: string,
+  ) => post({ type: "pkg-reply", req: msg.req, ok, value, error });
+  const session = packageSession;
+  if (session?.rootProcess === undefined || session.writeFiles === undefined) {
+    reply(false, undefined, "this sandbox does not install packages");
+    return;
+  }
+  try {
+    session.writeFiles(msg.files);
+    const process = await session.rootProcess(
+      `exec /bin/sh -c ${quoted(msg.script)}`,
+      { maxOutputBytes: PKG_OUTPUT_BYTES },
+    );
+    const status = await process.exited;
+    const decoder = new TextDecoder();
+    reply(true, {
+      code: typeof status === "number" ? status : status.code,
+      stdout: decoder.decode(process.takeStdout()),
+      stderr: decoder.decode(process.takeStderr()),
+    });
+  } catch (error) {
+    reply(
+      false,
+      undefined,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
 
 async function serveYurt(msg: ToWorker): Promise<void> {
   if (
@@ -212,6 +268,7 @@ function workerTerm(init: { cols: number; rows: number }): PlaygroundTerm {
 self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
   await serveYurt(msg);
+  await servePackages(msg);
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });
@@ -311,6 +368,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     if (session.process !== undefined && session.signal !== undefined) {
       executions = new ExecutionRegistry(session.process, session.signal);
     }
+    packageSession = session;
     if (msg.noJupyter === true) {
       post({ type: "status", text: "" });
       post({ type: "shell-ready" });

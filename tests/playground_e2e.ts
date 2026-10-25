@@ -6,6 +6,7 @@ import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
 import { EXECUTE_TIMEOUT_MS } from "../src/jupyter.ts";
 import { watchCspViolations } from "./csp_watch.ts";
+import { PACKAGE_REPO_URL } from "../src/packages.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -510,6 +511,97 @@ async function bootFailuresAreExplained(
   await context.close();
 }
 
+type Exec = { code: number | null; stdout: string; stderr: string };
+
+function exec(page: Page, cmd: string): Promise<Exec> {
+  return page.evaluate(
+    (cmd) =>
+      (globalThis as unknown as {
+        yurt: { exec(cmd: string): Promise<Exec> };
+      }).yurt.exec(cmd),
+    cmd,
+  );
+}
+
+/**
+ * "Packages": install a package through the real control and run it. The
+ * page downloads; the guest's own `pkg` verifies and installs
+ * (src/packages.ts). Skipped on an image without `pkg` (before the modular
+ * base image).
+ *
+ * PLAYGROUND_PKG_NAME (default `yurt-greet`) is the package and
+ * PLAYGROUND_PKG_RUN (default its name) the command that must then exit 0.
+ * PLAYGROUND_PKG_REPO=<dir> answers the page's repository requests from a
+ * local directory in the repository's layout, instead of YurtOS/yurt-packages;
+ * the guest's `pkg` still verifies what it is given.
+ */
+async function packagesInstallAndRun(page: Page): Promise<void> {
+  const name = Deno.env.get("PLAYGROUND_PKG_NAME") ?? "yurt-greet";
+  const run = Deno.env.get("PLAYGROUND_PKG_RUN") ?? name;
+  const localRepo = Deno.env.get("PLAYGROUND_PKG_REPO");
+  const image = await exec(
+    page,
+    "command -v pkg && test -r /etc/yurt-pkg/trusted-repos.toml",
+  );
+  if (image.code !== 0) {
+    console.log("playground e2e: Packages SKIPPED, the image has no pkg");
+    return;
+  }
+  if (localRepo !== undefined) {
+    await page.route(`${PACKAGE_REPO_URL}**`, async (route) => {
+      const path = route.request().url().slice(PACKAGE_REPO_URL.length);
+      try {
+        await route.fulfill({
+          body: Buffer.from(await Deno.readFile(join(localRepo, path))),
+          headers: { "access-control-allow-origin": "*" },
+        });
+      } catch {
+        await route.fulfill({ status: 404 });
+      }
+    });
+  }
+  const before = await exec(page, `command -v ${run.split(" ")[0]}`);
+  if (before.code === 0) {
+    throw new Error(`packages: ${run} is there before the install`);
+  }
+  await page.getByTestId("packages-toggle").click();
+  const install = page.locator(
+    `[data-testid=packages-list] button[data-package="${name}"]`,
+  );
+  await install.waitFor({ timeout: 60_000 });
+  await install.click();
+  await page.waitForFunction(
+    () => {
+      const state = document.querySelector<HTMLElement>("#packages")
+        ?.dataset.install;
+      return state === "done" || state === "failed";
+    },
+    undefined,
+    { timeout: 300_000 },
+  );
+  const status = await page.locator("#status").textContent();
+  if (status !== `installed ${name}`) {
+    throw new Error(`packages: install ${name}: ${status}`);
+  }
+  const listed = await exec(page, "pkg list");
+  if (!listed.stdout.split("\n").some((line) => line.startsWith(name))) {
+    throw new Error(
+      `packages: pkg list lacks ${name}: ${JSON.stringify(listed)}`,
+    );
+  }
+  const ran = await exec(page, run);
+  if (ran.code !== 0) {
+    throw new Error(
+      `packages: ${run} after the install: ${JSON.stringify(ran)}`,
+    );
+  }
+  console.log(
+    `playground e2e: Packages installed ${name}; \`${run}\` printed ${
+      JSON.stringify(ran.stdout.trim().split("\n")[0])
+    }`,
+  );
+}
+
 if (import.meta.main) {
   await ensureBundle(
     Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel"),
@@ -940,6 +1032,7 @@ if (import.meta.main) {
       throw new Error(`upload: ${JSON.stringify(uploaded)}`);
     }
     console.log(`playground e2e: Upload wrote 3 files (${big.length} bytes)`);
+    await packagesInstallAndRun(page);
     // The cell and the ash terminal share one VFS: a file written by Python
     // is read back by the shell in the xterm (#4).
     await page.getByTestId("notebook-input").fill(

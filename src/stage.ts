@@ -263,6 +263,19 @@ export function writeRamfsFile(
   }
 }
 
+/** {@link writeRamfsFile} after creating each missing parent directory
+ * (root's, as the kernel makes them). */
+export function writeRamfsTree(
+  mk: KernelHostInterface,
+  path: string,
+  bytes: Uint8Array,
+): void {
+  for (const parent of parentDirectories(path)) {
+    registerRamfsDirectory(mk, parent);
+  }
+  writeRamfsFile(mk, path, bytes);
+}
+
 function stageRamfsFile(
   mk: KernelHostInterface,
   host: Map<string, Uint8Array>,

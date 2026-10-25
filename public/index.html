@@ -153,6 +153,26 @@
       .bar-action[disabled] {
         cursor: progress;
       }
+      /* Packages: install from YurtOS/yurt-packages into this tab. */
+      #packages {
+        border-bottom: 1px solid var(--rule);
+        padding: 10px 12px;
+      }
+      #packages p {
+        margin: 0 0 8px;
+        color: var(--muted);
+        max-width: 72ch;
+      }
+      #packages table {
+        border-collapse: collapse;
+      }
+      #packages td {
+        padding: 2px 16px 2px 0;
+      }
+      #packages td.size {
+        color: var(--muted);
+        text-align: right;
+      }
       #term-wrap {
         position: relative;
         height: 50vh;
@@ -642,6 +662,18 @@
           >
             Upload
           </button>
+          <button
+            type="button"
+            id="packages-toggle"
+            data-testid="packages-toggle"
+            class="bar-action"
+            aria-expanded="false"
+            aria-controls="packages"
+            hidden
+            title="Install packages from YurtOS/yurt-packages into this tab's sandbox."
+          >
+            Packages
+          </button>
           <input
             type="file"
             id="upload-input"
@@ -665,6 +697,30 @@
             data-online="true"
             title="This tab's network state. The sandbox keeps working without it."
           >online</span>
+        </div>
+        <div id="packages" data-testid="packages" hidden>
+          <p>
+            Install a package from
+            <a href="https://github.com/YurtOS/yurt-packages"
+            >YurtOS/yurt-packages</a> into this sandbox: press
+            <em>Install</em>, wait for <code>installed</code> in the status
+            line, then run the package's command in the terminal. The sandbox
+            has no network, so this page downloads the package, and the
+            sandbox's own
+            <code>pkg</code> checks its signature and installs it, as
+            <code>pkg install NAME</code> does in the desktop app.
+          </p>
+          <p>
+            Installed packages live in this tab's memory, like every file here:
+            a reload loses them. A tablet has much less memory, so installs
+            larger than 16 MiB are refused there.
+          </p>
+          <p id="packages-state" data-testid="packages-state">
+            loading the package list
+          </p>
+          <table>
+            <tbody id="packages-list" data-testid="packages-list"></tbody>
+          </table>
         </div>
         <div id="term-wrap">
           <div id="term"></div>

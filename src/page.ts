@@ -8,6 +8,14 @@ import {
 import { mountNotebook, type NotebookView } from "./notebook.ts";
 import { mountAgentPane } from "./agent_pane.ts";
 import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
+import {
+  catalogRows,
+  formatBytes,
+  installPackage,
+  loadCatalog,
+  type PackageHost,
+  TRUSTED_REPOS_PATH,
+} from "./packages.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
 import {
@@ -31,7 +39,7 @@ type FromWorker =
   | { type: "notebook-ready" }
   | { type: "shell-ready" }
   | {
-    type: "yurt-reply";
+    type: "yurt-reply" | "pkg-reply";
     req: number;
     ok: boolean;
     value?: unknown;
@@ -41,6 +49,10 @@ type FromWorker =
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string }
   | MemoryRefusedMessage;
+
+/** The in-tab sandbox's side of a package install, once it boots; the
+ * desktop app's sandbox has a network and installs with `pkg` itself. */
+let packageHost: PackageHost | undefined;
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
@@ -88,6 +100,7 @@ const yurtState = (() => {
       set("running");
       byId("export-home").hidden = false;
       byId("upload-files").hidden = false;
+      byId("packages-toggle").hidden = packageHost === undefined;
       resolveReady();
     },
     failed(message: string) {
@@ -282,6 +295,25 @@ function boot(
       list: () => ask({ type: "yurt-list" }),
     };
   yurtState.connect(transport);
+  if (desktop === undefined) {
+    packageHost = {
+      readFile: (path) =>
+        (globalThis as unknown as { yurt: Yurt }).yurt.fs.read(path),
+      stageAndRun: (files, script) =>
+        new Promise((resolve, reject) => {
+          const req = nextReq++;
+          pending.set(req, {
+            resolve: resolve as (v: unknown) => void,
+            reject,
+          });
+          // The archives move to the worker, not copied: tens of MB.
+          worker.postMessage(
+            { type: "pkg-run", req, files, script },
+            files.map((file) => file.bytes.buffer as ArrayBuffer),
+          );
+        }),
+    };
+  }
   yurtState.set("booting");
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
@@ -316,7 +348,7 @@ function boot(
       status.textContent = "running";
       rememberBooting(undefined);
     }
-    if (msg.type === "yurt-reply") {
+    if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
       const waiter = pending.get(msg.req);
       pending.delete(msg.req);
       if (waiter === undefined) return;
@@ -430,6 +462,97 @@ function wireUpload(): void {
   });
 }
 
+/** The "Packages" control: the repository's packages, each with an
+ * Install (src/packages.ts). One install at a time; progress and the
+ * outcome land in the status line. */
+function wirePackages(tablet: boolean): void {
+  const toggle = byId("packages-toggle") as HTMLButtonElement;
+  const panel = byId("packages");
+  const state = byId("packages-state");
+  const list = byId("packages-list");
+  const status = byId("status");
+  let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
+  let busy = false;
+  const install = async (name: string, button: HTMLButtonElement) => {
+    if (packageHost === undefined || busy) return;
+    busy = true;
+    panel.dataset.install = "running";
+    for (const b of list.querySelectorAll("button")) b.disabled = true;
+    try {
+      await installPackage(name, {
+        host: packageHost,
+        tablet,
+        catalog,
+        progress: (message) => status.textContent = message,
+      });
+      status.textContent = `installed ${name}`;
+      button.textContent = "Installed";
+      panel.dataset.install = "done";
+    } catch (error) {
+      status.textContent = error instanceof Error
+        ? error.message
+        : String(error);
+      panel.dataset.install = "failed";
+    } finally {
+      busy = false;
+      for (const b of list.querySelectorAll("button")) {
+        b.disabled = b.textContent === "Installed";
+      }
+    }
+  };
+  let loading = false;
+  const show = async () => {
+    if (catalog !== undefined || loading) return;
+    loading = true;
+    try {
+      // Images before the modular base image have no `pkg` to install with.
+      const yurt = (globalThis as unknown as { yurt: Yurt }).yurt;
+      const image = await yurt.exec(
+        `command -v pkg >/dev/null && test -r ${TRUSTED_REPOS_PATH}`,
+      );
+      if (!("code" in image) || image.code !== 0) {
+        state.textContent =
+          "This sandbox's image has no pkg, so it cannot install packages.";
+        return;
+      }
+      catalog = await loadCatalog();
+    } catch (error) {
+      state.textContent = `could not load the package list: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      return;
+    } finally {
+      loading = false;
+    }
+    state.hidden = true;
+    for (const row of catalogRows(catalog)) {
+      const tr = document.createElement("tr");
+      const name = document.createElement("td");
+      name.textContent = row.name;
+      const version = document.createElement("td");
+      version.textContent = row.version;
+      const size = document.createElement("td");
+      size.className = "size";
+      size.textContent = formatBytes(row.size);
+      const action = document.createElement("td");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "bar-action";
+      button.textContent = "Install";
+      button.dataset.package = row.name;
+      button.addEventListener("click", () => install(row.name, button));
+      action.append(button);
+      tr.append(name, version, size, action);
+      list.append(tr);
+    }
+  };
+  toggle.addEventListener("click", () => {
+    panel.hidden = !panel.hidden;
+    toggle.setAttribute("aria-expanded", String(!panel.hidden));
+    if (!panel.hidden) void show();
+  });
+}
+
 async function runPage(): Promise<void> {
   watchNetwork(byId("net"));
   wireExportHome();
@@ -467,6 +590,7 @@ async function runPage(): Promise<void> {
   // started. The desktop app runs natively and keeps everything.
   const device = deviceClass();
   const shellOnly = desktop === undefined && device === "tablet";
+  wirePackages(device === "tablet");
   // Only the in-tab kernel has the memory problem; the desktop app's page
   // runs the sandbox natively. A phone, and a tab the browser reloaded
   // mid-boot, get no sandbox unless `?start-anyway`. Read (and clear) the
