@@ -147,6 +147,9 @@ Deno.test("paths the repository names stay inside the staged copy", () => {
       "file:///etc/passwd",
       "packages//x.json",
       "packages/%2e%2e/x.json",
+      "packages/x.json#a",
+      "packages/x.json?a",
+      "a:b/x.json",
     ]
   ) {
     assertThrows(

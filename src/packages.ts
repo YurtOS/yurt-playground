@@ -91,15 +91,14 @@ export function isPackageName(name: string): boolean {
   return NAME.test(name);
 }
 
-/** A repository-relative path the index or metadata names: no scheme, no
- * leading slash, no `..`, nothing that leaves the staged copy. */
+/** A repository-relative path the index or metadata names, which the page
+ * stages at the same path pkg's URL join reads: no leading slash, no `..`,
+ * and none of the characters a URL reads differently from a file name --
+ * `%` (an encoded `..` resolves as one), `?` and `#` (a query or fragment
+ * pkg drops), `:` (a scheme, which pkg takes as an absolute URL). */
 function checkRelative(path: string, what: string): string {
   if (
-    // `%`: an encoded `..` resolves as one, in the page's fetch and in
-    // pkg's URL join alike.
-    path === "" || path.startsWith("/") || path.includes("\\") ||
-    path.includes("%") ||
-    path.includes("://") ||
+    path === "" || path.startsWith("/") || /[\\%?#:]/.test(path) ||
     path.split("/").some((part) => part === "" || part === "." || part === "..")
   ) {
     throw new Error(`${what}: unsupported path ${JSON.stringify(path)}`);
