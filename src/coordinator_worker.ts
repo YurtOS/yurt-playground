@@ -161,6 +161,7 @@ async function servePackages(msg: ToWorker): Promise<void> {
     spawn(`exec /bin/sh -c ${quoted(script)}`, {
       maxOutputBytes: PKG_OUTPUT_BYTES,
     });
+  let result: { code: number | null; stdout: string; stderr: string };
   try {
     session.writeFiles(msg.files);
     // In the guest now: let the tab's copies go while `pkg` runs (up to
@@ -169,25 +170,25 @@ async function servePackages(msg: ToWorker): Promise<void> {
     const process = await run(msg.script);
     const status = await process.exited;
     const decoder = new TextDecoder();
-    reply(true, {
+    result = {
       code: typeof status === "number" ? status : status.code,
       stdout: decoder.decode(process.takeStdout()),
       stderr: decoder.decode(process.takeStderr()),
-    });
+    };
   } catch (error) {
-    reply(
-      false,
-      undefined,
-      error instanceof Error ? error.message : String(error),
-    );
-  } finally {
-    // The script's trap removes the staged copy, unless the shell died by
-    // a signal (the tab out of memory, say) or never ran; it may be
-    // hundreds of MB of the tab's memory, so it goes here too, whatever
-    // happened. Best effort: removing nothing is fine.
-    await run(`sudo rm -rf ${quoted(msg.dir)}`).then((p) => p.exited)
-      .catch(() => {});
+    result = {
+      code: null,
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+    };
   }
+  // The script's trap removes the staged copy, unless the shell died by a
+  // signal (the tab out of memory, say) or never ran; it may be hundreds of
+  // MB of the tab's memory, so it goes here too, whatever happened. Before
+  // the reply: the next run stages at the same path. Best effort.
+  await run(`sudo rm -rf ${quoted(msg.dir)}`).then((p) => p.exited)
+    .catch(() => {});
+  reply(true, result);
 }
 
 async function serveYurt(msg: ToWorker): Promise<void> {
