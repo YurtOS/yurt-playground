@@ -70,9 +70,9 @@ export type PlaygroundSession = {
   /** The same, handing the process back: what a driver's `exec` runs
    * (src/executions.ts). */
   process?: Spawner;
-  /** Write guest files from the host, root's and not writable by the
-   * login user, creating their directories: what a package install stages
-   * (src/packages.ts) before `sudo pkg` reads it. */
+  /** Write guest files from the host, root's (0644, in root's
+   * directories), creating their directories: what a package install
+   * stages (src/packages.ts) before `sudo pkg` reads it. */
   writeFiles?: (files: { path: string; bytes: Uint8Array }[]) => void;
   /** Deliver a signal to a process this page started. */
   signal?: (pid: number, signal: number) => Promise<void>;

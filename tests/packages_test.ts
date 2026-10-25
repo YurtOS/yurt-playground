@@ -98,8 +98,9 @@ Deno.test("the list shows the highest version, then build, never yanked", () => 
 
 Deno.test("the install's trust config is the image's identity, pointed at the copy", () => {
   const derived = browserTrustedRepos(TRUSTED, "file:///var/cache/x/repo/");
+  assertEquals(derived.id, "official");
   assertEquals(
-    derived,
+    derived.toml,
     [
       "[[repo]]",
       'id = "official"',
@@ -145,6 +146,7 @@ Deno.test("paths the repository names stay inside the staged copy", () => {
       "packages/../../x.json",
       "file:///etc/passwd",
       "packages//x.json",
+      "packages/%2e%2e/x.json",
     ]
   ) {
     assertThrows(
@@ -202,8 +204,8 @@ Deno.test("a tablet refuses what a desktop browser installs", () => {
   );
 });
 
-Deno.test("pkg update runs once per index version; the copy is removed", () => {
-  const script = installScript(`${STAGING_ROOT}/t`, "zsh", 17);
+Deno.test("pkg update runs unless pkg's cache holds this index; the copy is removed", () => {
+  const script = installScript(`${STAGING_ROOT}/t`, "zsh", "official");
   const lines = script.split("\n");
   assertEquals(lines[0], `cleanup() { sudo rm -rf '${STAGING_ROOT}/t'; }`);
   assertEquals(lines[1], "trap cleanup EXIT");
@@ -215,7 +217,9 @@ Deno.test("pkg update runs once per index version; the copy is removed", () => {
     ],
   );
   assertEquals(
-    lines.some((line) => line.includes("!= '17' ]; then")),
+    lines.includes(
+      `if ! sudo cmp -s '${CACHE_ROOT}/official/current/index.json' '${STAGING_ROOT}/t/repo/index.json'; then`,
+    ),
     true,
   );
 });
@@ -329,7 +333,7 @@ Deno.test("pkg plans the install; the page stages exactly what it names", async 
         .includes(`url = "file://${dir}/repo/"`),
       true,
     );
-    assertEquals(script, installScript(dir, "greet", 4));
+    assertEquals(script, installScript(dir, "greet", "official"));
   }
   assertEquals(runs[0].dir === runs[1].dir, false);
   assertEquals(

@@ -48,12 +48,6 @@ export const STAGING_ROOT = "/var/cache/yurt-pkg/browser";
  * as a rollback. */
 export const CACHE_ROOT = "/var/cache/yurt-pkg/browser-repos";
 
-/** The index version `pkg update` last accepted into {@link CACHE_ROOT}.
- * `pkg` refuses an index no newer than its cache (rollback protection), so
- * the same index is not offered twice; its cached copy serves the next
- * install. */
-export const UPDATED_MARKER = "/var/cache/yurt-pkg/browser-index-version";
-
 /** A tablet tab runs out of memory well before a desktop one does (#200):
  * there, an install whose archives add up to more than this is refused
  * (the index, metadata and signatures, a few KiB, are not counted). */
@@ -99,7 +93,10 @@ export function isPackageName(name: string): boolean {
  * leading slash, no `..`, nothing that leaves the staged copy. */
 function checkRelative(path: string, what: string): string {
   if (
+    // `%`: an encoded `..` resolves as one, in the page's fetch and in
+    // pkg's URL join alike.
     path === "" || path.startsWith("/") || path.includes("\\") ||
+    path.includes("%") ||
     path.includes("://") ||
     path.split("/").some((part) => part === "" || part === "." || part === "..")
   ) {
@@ -227,7 +224,10 @@ function repoTables(toml: string): TomlRepo[] {
  * identity is what `pkg` verifies against; the URL only says where the
  * bytes are.
  */
-export function browserTrustedRepos(toml: string, mirrorUrl: string): string {
+export function browserTrustedRepos(
+  toml: string,
+  mirrorUrl: string,
+): { toml: string; id: string } {
   const repo = repoTables(toml).find((table) => {
     const segments = (table.values.url ?? "").split("/");
     return segments.some((segment, i) =>
@@ -244,10 +244,14 @@ export function browserTrustedRepos(toml: string, mirrorUrl: string): string {
       throw new Error(`${TRUSTED_REPOS_PATH}: the repo has no ${key}`);
     }
   }
+  // pkg's own rule for an id, which names its cache directory.
+  if (!isPackageName(repo.values.id)) {
+    throw new Error(`${TRUSTED_REPOS_PATH}: bad repo id`);
+  }
   const lines = repo.lines.map((line) =>
     line.startsWith("url ") ? `url = ${JSON.stringify(mirrorUrl)}` : line
   );
-  return ["[[repo]]", ...lines, ""].join("\n");
+  return { toml: ["[[repo]]", ...lines, ""].join("\n"), id: repo.values.id };
 }
 
 function q(word: string): string {
@@ -258,17 +262,19 @@ function q(word: string): string {
  * The script the guest runs, as the login user, once the staged copy is in
  * `dir`: `pkg` writes where only root may, so it runs under `sudo`, as the
  * user would type it. The image's trust root goes next to the install's own
- * configuration; `pkg update` runs unless this index is the one already
- * accepted; then `pkg install`; and the staged copy is removed whatever
+ * configuration; `pkg update` runs unless pkg's cache already holds this
+ * very index (pkg refuses an index no newer than its cache, its rollback
+ * protection, so the same one is not offered twice); then `pkg install`; and the staged copy is removed whatever
  * happened, so the archives do not stay in memory next to what they
  * unpacked to.
  */
 export function installScript(
   dir: string,
   name: string,
-  indexVersion: number,
+  repoId: string,
 ): string {
   const etc = `${dir}/etc`;
+  const cached = `${CACHE_ROOT}/${repoId}/current/index.json`;
   const pkg = `sudo pkg --etc-root ${q(etc)} --cache-root ${q(CACHE_ROOT)}`;
   return [
     `cleanup() { sudo rm -rf ${q(dir)}; }`,
@@ -279,13 +285,8 @@ export function installScript(
     `sudo cp ${q(TRUST_ROOT_PATH)} ${
       q(`${etc}/yurt-pkg/sigstore-trust-root/trusted_root.json`)
     } || exit 1`,
-    `if [ "$(cat ${q(UPDATED_MARKER)} 2>/dev/null)" != ${
-      q(String(indexVersion))
-    } ]; then`,
+    `if ! sudo cmp -s ${q(cached)} ${q(`${dir}/repo/index.json`)}; then`,
     `  ${pkg} update || exit 1`,
-    `  echo ${q(String(indexVersion))} | sudo tee ${
-      q(UPDATED_MARKER)
-    } >/dev/null`,
     "fi",
     `${pkg} install ${q(name)}`,
   ].join("\n");
@@ -326,8 +327,9 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
 export type StagedFile = { path: string; bytes: Uint8Array };
 
 /** What an install needs from the sandbox: a guest file read as the login
- * user, and the staged files written (root's, so the user cannot change
- * them) then the script run as the login user. `dir`
+ * user, and the staged files written (root's: out of reach of an
+ * unprivileged process, though not of `sudo`; pkg's signature checks are
+ * the defence) then the script run as the login user. `dir`
  * holds every staged file; the script removes it, and the host removes
  * it again after the run, in case the script never ran or was killed. */
 export type PackageHost = {
@@ -512,6 +514,7 @@ export async function installPackage(
   const run = (archives: Map<string, Uint8Array>) => {
     const dir = `${STAGING_ROOT}/${crypto.randomUUID()}`;
     const mirror = `${dir}/repo`;
+    const config = browserTrustedRepos(trusted, `file://${mirror}/`);
     // Copies: the catalog keeps its own, and staged files are transferred.
     const files: StagedFile[] = [
       { path: `${mirror}/index.json`, bytes: catalog.indexBytes.slice() },
@@ -521,9 +524,7 @@ export async function installPackage(
       },
       {
         path: `${dir}/etc/yurt-pkg/trusted-repos.toml`,
-        bytes: new TextEncoder().encode(
-          browserTrustedRepos(trusted, `file://${mirror}/`),
-        ),
+        bytes: new TextEncoder().encode(config.toml),
       },
     ];
     for (const [dep, entry] of Object.entries(catalog.index.packages)) {
@@ -537,7 +538,7 @@ export async function installPackage(
     }
     return host.stageAndRun(
       files,
-      installScript(dir, name, catalog.index.index_version),
+      installScript(dir, name, config.id),
       dir,
     );
   };
