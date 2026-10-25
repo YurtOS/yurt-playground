@@ -176,6 +176,17 @@ Deno.test("paths the repository names stay inside the staged copy", () => {
     Error,
     "bad package name",
   );
+  assertThrows(
+    () =>
+      parsePackageFile(enc({
+        name: "x",
+        versions: [
+          version("1.0.0", "yurt_0", { size: "big" as unknown as number }),
+        ],
+      })),
+    Error,
+    "bad size",
+  );
 });
 
 Deno.test("a tablet refuses what a desktop browser installs", () => {
@@ -194,13 +205,13 @@ Deno.test("a tablet refuses what a desktop browser installs", () => {
 Deno.test("pkg update runs once per index version; the copy is removed", () => {
   const script = installScript(`${STAGING_ROOT}/t`, "zsh", 17);
   const lines = script.split("\n");
-  assertEquals(lines[0], `cleanup() { rm -rf '${STAGING_ROOT}/t'; }`);
+  assertEquals(lines[0], `cleanup() { sudo rm -rf '${STAGING_ROOT}/t'; }`);
   assertEquals(lines[1], "trap cleanup EXIT");
   assertEquals(
-    lines.filter((line) => line.includes("pkg --etc-root")),
+    lines.filter((line) => line.includes("sudo pkg --etc-root")),
     [
-      `  pkg --etc-root '${STAGING_ROOT}/t/etc' --cache-root '${CACHE_ROOT}' update || exit 1`,
-      `pkg --etc-root '${STAGING_ROOT}/t/etc' --cache-root '${CACHE_ROOT}' install 'zsh'`,
+      `  sudo pkg --etc-root '${STAGING_ROOT}/t/etc' --cache-root '${CACHE_ROOT}' update || exit 1`,
+      `sudo pkg --etc-root '${STAGING_ROOT}/t/etc' --cache-root '${CACHE_ROOT}' install 'zsh'`,
     ],
   );
   assertEquals(

@@ -50,9 +50,10 @@ tools as signed packages there. That base image is in progress in
 [YurtOS/yurt-ports](https://github.com/YurtOS/yurt-ports); the image pinned here
 does not carry `pkg` yet, so nothing can be installed into it today.
 
-- **Desktop app and `yurt run`:** the sandbox has a network, so `pkg update`,
-  then `pkg install NAME`, in the terminal. `pip install` of pure-Python
-  packages and matching wheels works there already.
+- **Desktop app and `yurt run`:** the sandbox has a network, so
+  `sudo pkg update`, then `sudo pkg install NAME`, in the terminal (`pkg` writes
+  system directories; the image gives the default user a passwordless `sudo`).
+  `pip install` of pure-Python packages and matching wheels works there already.
 - **Browser:** the sandbox has no network, so the page fetches for it. Press
   _Packages_ in the terminal's bar, then _Install_ next to a package; the status
   line shows the download and then `installed NAME`, and the package's command
@@ -64,7 +65,7 @@ does not carry `pkg` yet, so nothing can be installed into it today.
   so every check it makes on the desktop (index and archive signatures, every
   sha256 and size the index names, the archive's own metadata) runs unchanged.
   Its rollback protection starts from an empty cache in each session, as on a
-  fresh desktop sandbox. `pkg install` typed in the browser terminal still
+  fresh desktop sandbox. `sudo pkg install` typed in the browser terminal still
   fails: only the _Packages_ control can download.
   - Installed packages live in the tab's memory, like every file there, and a
     reload loses them

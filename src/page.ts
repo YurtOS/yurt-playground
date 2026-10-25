@@ -512,11 +512,11 @@ function wirePackages(smallDevice: boolean): void {
       // Images before the modular base image have no `pkg` to install with.
       const yurt = (globalThis as unknown as { yurt: Yurt }).yurt;
       const image = await yurt.exec(
-        `command -v pkg >/dev/null && test -r ${TRUSTED_REPOS_PATH}`,
+        `command -v pkg >/dev/null && command -v sudo >/dev/null && test -r ${TRUSTED_REPOS_PATH}`,
       );
       if (!("code" in image) || image.code !== 0) {
         state.textContent =
-          "This sandbox's image has no pkg, so it cannot install packages.";
+          "This sandbox's image has no pkg (or no sudo for it), so it cannot install packages.";
         return;
       }
       catalog = await loadCatalog();

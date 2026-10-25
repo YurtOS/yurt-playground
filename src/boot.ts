@@ -70,11 +70,9 @@ export type PlaygroundSession = {
   /** The same, handing the process back: what a driver's `exec` runs
    * (src/executions.ts). */
   process?: Spawner;
-  /** The same as root: the page's package installs (src/packages.ts),
-   * which write where the login user may not. Never handed to a driver. */
-  rootProcess?: Spawner;
-  /** Write guest files from the host, root's, creating their directories:
-   * what an install stages before `rootProcess` runs `pkg`. */
+  /** Write guest files from the host, root's and not writable by the
+   * login user, creating their directories: what a package install stages
+   * (src/packages.ts) before `sudo pkg` reads it. */
   writeFiles?: (files: { path: string; bytes: Uint8Array }[]) => void;
   /** Deliver a signal to a process this page started. */
   signal?: (pid: number, signal: number) => Promise<void>;
@@ -311,20 +309,15 @@ export async function bootPlayground(
     throw new Error("playground image is missing /bin/sh");
   }
 
-  /** `/bin/sh` with `argv`, as the login user in the login home (as root
-   * when `root` is set), leading its own process group unless `ownGroup`
-   * is false. */
-  const spawnShell = async (
-    argv: string[],
-    { ownGroup = true, root = false } = {},
-  ) => {
+  /** `/bin/sh` with `argv`, as the login user in the login home, leading
+   * its own process group unless `ownGroup` is false. */
+  const spawnShell = async (argv: string[], { ownGroup = true } = {}) => {
     const process = await mk.spawnUserProcessWithArgsAsync(
       sh,
       argv.map((arg) => s(arg)),
       { ...DEFAULT_ENV },
     );
-    // The host spawns as the kernel's own credentials, root's.
-    if (!root) setPidCredentials(mk, process.pid, LOGIN_UID, LOGIN_GID);
+    setPidCredentials(mk, process.pid, LOGIN_UID, LOGIN_GID);
     // Its own process group, which everything it starts inherits, so
     // `signal` below reaches a pipeline or a background job with it.
     // setpgid(0, 0) as the pid: target 0 is the caller, pgid 0 its pid.
@@ -446,88 +439,6 @@ export async function bootPlayground(
     }
   }).finally(stop);
 
-  /** A shell line as a process of the page's own, as the login user or as
-   * root: what `process` and `rootProcess` below run. */
-  const runLine: (
-    line: string,
-    io: Parameters<Spawner>[1],
-    root: boolean,
-  ) => ReturnType<Spawner> = async (line, io, root) => {
-    // The host keeps stdio per pid: a forked child's output lands in its
-    // own buffer (grouped after the parent's, not interleaved), and
-    // host-fed stdin never reaches a pipeline element
-    // (yurtos-kernel#2817). Guest files have neither problem, so the
-    // command's three streams are redirected through /tmp and the
-    // outputs read back once it has exited, bounded, by an exec'd
-    // `head` -- a single command, whose own stdout the host does
-    // capture. `line` ends in the exec of the command, so the redirects
-    // bind to the command and every child inherits them.
-    const tag = crypto.randomUUID();
-    const path = (name: string) => `/tmp/.yurt-exec-${tag}.${name}`;
-    const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-    const single = async (command: string) => {
-      const p = await spawnShell(["/bin/sh", "-c", command], { root });
-      p.closeStdin();
-      await p.runStartAsync();
-    };
-    let stdinRedirect = "< /dev/null";
-    if (io.stdin !== undefined) {
-      // From the host, not through a process: host-fed stdin passes the
-      // console line discipline (ICRNL, VEOF, VERASE, ISIG) and a 64 KiB
-      // buffer, so bytes would be altered or dropped; a file written by
-      // the kernel is exact at any size.
-      // The login user's, so its sweep below can remove it from the
-      // sticky /tmp.
-      writeRamfsFile(mk, path("in"), io.stdin, {
-        uid: LOGIN_UID,
-        gid: LOGIN_GID,
-      });
-      stdinRedirect = `< ${q(path("in"))}`;
-    }
-    const process = await spawnShell([
-      "/bin/sh",
-      "-c",
-      `${line} > ${q(path("out"))} 2> ${q(path("err"))} ${stdinRedirect}`,
-    ], { root });
-    process.closeStdin();
-    // Read back once the command has exited, one byte past the bound
-    // so the registry sees the cut and says so; the files go afterwards.
-    let done = false;
-    const sweep = () =>
-      void single(
-        `exec rm -f ${q(path("out"))} ${q(path("err"))} ${q(path("in"))}`,
-      );
-    const exited = process.runStartAsync().then((rc) => {
-      done = true;
-      return process.waitStatus() ?? rc;
-    }, (error) => {
-      done = true;
-      throw error;
-    });
-    // The registry reads the files right after the exit; the sweep comes
-    // well after, whichever way the exit went.
-    exited.finally(() => setTimeout(sweep, 5000)).catch(() => {});
-    const cap = io.maxOutputBytes + 1;
-    const taken = { out: false, err: false };
-    const take = (stream: "out" | "err") => {
-      if (!done || taken[stream]) return new Uint8Array();
-      taken[stream] = true;
-      return readGuestFile(mk, user.pid, path(stream), cap);
-    };
-    return {
-      pid: process.pid,
-      exited,
-      takeStdout: () => take("out"),
-      takeStderr: () => take("err"),
-      // The files are readable while the command runs: what a stuck
-      // process has written so far.
-      peek: () => ({
-        stdout: readGuestFile(mk, user.pid, path("out"), cap),
-        stderr: readGuestFile(mk, user.pid, path("err"), cap),
-      }),
-    };
-  };
-
   env.show("");
   return {
     stop,
@@ -542,8 +453,81 @@ export async function bootPlayground(
         // nothing here waits on it.
       });
     },
-    process: (line, io) => runLine(line, io, false),
-    rootProcess: (line, io) => runLine(line, io, true),
+    async process(line, io) {
+      // The host keeps stdio per pid: a forked child's output lands in its
+      // own buffer (grouped after the parent's, not interleaved), and
+      // host-fed stdin never reaches a pipeline element
+      // (yurtos-kernel#2817). Guest files have neither problem, so the
+      // command's three streams are redirected through /tmp and the
+      // outputs read back once it has exited, bounded, by an exec'd
+      // `head` -- a single command, whose own stdout the host does
+      // capture. `line` ends in the exec of the command, so the redirects
+      // bind to the command and every child inherits them.
+      const tag = crypto.randomUUID();
+      const path = (name: string) => `/tmp/.yurt-exec-${tag}.${name}`;
+      const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+      const single = async (command: string) => {
+        const p = await spawnShell(["/bin/sh", "-c", command]);
+        p.closeStdin();
+        await p.runStartAsync();
+      };
+      let stdinRedirect = "< /dev/null";
+      if (io.stdin !== undefined) {
+        // From the host, not through a process: host-fed stdin passes the
+        // console line discipline (ICRNL, VEOF, VERASE, ISIG) and a 64 KiB
+        // buffer, so bytes would be altered or dropped; a file written by
+        // the kernel is exact at any size.
+        // The login user's, so its sweep below can remove it from the
+        // sticky /tmp.
+        writeRamfsFile(mk, path("in"), io.stdin, {
+          uid: LOGIN_UID,
+          gid: LOGIN_GID,
+        });
+        stdinRedirect = `< ${q(path("in"))}`;
+      }
+      const process = await spawnShell([
+        "/bin/sh",
+        "-c",
+        `${line} > ${q(path("out"))} 2> ${q(path("err"))} ${stdinRedirect}`,
+      ]);
+      process.closeStdin();
+      // Read back once the command has exited, one byte past the bound
+      // so the registry sees the cut and says so; the files go afterwards.
+      let done = false;
+      const sweep = () =>
+        void single(
+          `exec rm -f ${q(path("out"))} ${q(path("err"))} ${q(path("in"))}`,
+        );
+      const exited = process.runStartAsync().then((rc) => {
+        done = true;
+        return process.waitStatus() ?? rc;
+      }, (error) => {
+        done = true;
+        throw error;
+      });
+      // The registry reads the files right after the exit; the sweep comes
+      // well after, whichever way the exit went.
+      exited.finally(() => setTimeout(sweep, 5000)).catch(() => {});
+      const cap = io.maxOutputBytes + 1;
+      const taken = { out: false, err: false };
+      const take = (stream: "out" | "err") => {
+        if (!done || taken[stream]) return new Uint8Array();
+        taken[stream] = true;
+        return readGuestFile(mk, user.pid, path(stream), cap);
+      };
+      return {
+        pid: process.pid,
+        exited,
+        takeStdout: () => take("out"),
+        takeStderr: () => take("err"),
+        // The files are readable while the command runs: what a stuck
+        // process has written so far.
+        peek: () => ({
+          stdout: readGuestFile(mk, user.pid, path("out"), cap),
+          stderr: readGuestFile(mk, user.pid, path("err"), cap),
+        }),
+      };
+    },
     writeFiles(files) {
       for (const { path, bytes } of files) writeRamfsTree(mk, path, bytes);
     },

@@ -541,10 +541,12 @@ async function packagesInstallAndRun(page: Page): Promise<void> {
   const localRepo = Deno.env.get("PLAYGROUND_PKG_REPO");
   const image = await exec(
     page,
-    "command -v pkg && test -r /etc/yurt-pkg/trusted-repos.toml",
+    "command -v pkg && command -v sudo && test -r /etc/yurt-pkg/trusted-repos.toml",
   );
   if (image.code !== 0) {
-    console.log("playground e2e: Packages SKIPPED, the image has no pkg");
+    console.log(
+      "playground e2e: Packages SKIPPED, the image has no pkg or sudo",
+    );
     return;
   }
   if (localRepo !== undefined) {

@@ -79,7 +79,7 @@ type ToWorker =
   | { type: "yurt-kill"; req: number; id: string; signal?: string }
   | { type: "yurt-list"; req: number }
   // A package install (src/packages.ts): the staged repository copy, then
-  // the script that runs `pkg` on it, as root.
+  // the script that runs `sudo pkg` on it, as the login user.
   | {
     type: "pkg-run";
     req: number;
@@ -150,13 +150,15 @@ async function servePackages(msg: ToWorker): Promise<void> {
     error?: string,
   ) => post({ type: "pkg-reply", req: msg.req, ok, value, error });
   const session = packageSession;
-  if (session?.rootProcess === undefined || session.writeFiles === undefined) {
+  if (session?.process === undefined || session.writeFiles === undefined) {
     reply(false, undefined, "this sandbox does not install packages");
     return;
   }
-  const rootProcess = session.rootProcess;
+  const spawn = session.process;
+  // As the login user, like everything else the page runs: the script
+  // gets root for `pkg` the way the user does, through `sudo`.
   const run = (script: string) =>
-    rootProcess(`exec /bin/sh -c ${quoted(script)}`, {
+    spawn(`exec /bin/sh -c ${quoted(script)}`, {
       maxOutputBytes: PKG_OUTPUT_BYTES,
     });
   try {
@@ -183,7 +185,7 @@ async function servePackages(msg: ToWorker): Promise<void> {
     // a signal (the tab out of memory, say) or never ran; it may be
     // hundreds of MB of the tab's memory, so it goes here too, whatever
     // happened. Best effort: removing nothing is fine.
-    await run(`rm -rf ${quoted(msg.dir)}`).then((p) => p.exited)
+    await run(`sudo rm -rf ${quoted(msg.dir)}`).then((p) => p.exited)
       .catch(() => {});
   }
 }

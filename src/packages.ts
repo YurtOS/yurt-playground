@@ -87,11 +87,12 @@ export type PackageFile = { name: string; versions: PackageVersion[] };
 /** One archive an install needs. */
 export type Release = PackageVersion & { name: string };
 
-const NAME = /^[a-z0-9][a-z0-9._+-]*$/;
+/** A package name as `pkg` accepts one (yurt-pkg-format's rule): safe as
+ * one path segment and as a shell word. */
+const NAME = /^[a-z0-9][a-z0-9._-]*$/;
 
-/** A package name as `pkg` accepts one, safe in a path and a shell word. */
 export function isPackageName(name: string): boolean {
-  return NAME.test(name) && !name.includes("..");
+  return NAME.test(name);
 }
 
 /** A repository-relative path the index or metadata names: no scheme, no
@@ -128,6 +129,10 @@ export function parsePackageFile(bytes: Uint8Array): PackageFile {
   }
   for (const version of file.versions) {
     checkRelative(version.url, `${file.name} ${version.version}`);
+    // The size limits and every download's bound count on it.
+    if (!Number.isSafeInteger(version.size) || version.size < 0) {
+      throw new Error(`${file.name} ${version.version}: bad size`);
+    }
   }
   return file;
 }
@@ -250,35 +255,37 @@ function q(word: string): string {
 }
 
 /**
- * The script the guest runs, as root, once the staged copy is in `dir`:
- * the image's trust root next to the install's own configuration, `pkg
- * update` unless this index is the one already accepted, `pkg install`,
- * and the staged copy removed whatever happened, so the archives do not
- * stay in memory next to what they unpacked to.
+ * The script the guest runs, as the login user, once the staged copy is in
+ * `dir`: `pkg` writes where only root may, so it runs under `sudo`, as the
+ * user would type it. The image's trust root goes next to the install's own
+ * configuration; `pkg update` runs unless this index is the one already
+ * accepted; then `pkg install`; and the staged copy is removed whatever
+ * happened, so the archives do not stay in memory next to what they
+ * unpacked to.
  */
 export function installScript(
   dir: string,
   name: string,
   indexVersion: number,
 ): string {
-  const pkg = `pkg --etc-root ${q(`${dir}/etc`)} --cache-root ${q(CACHE_ROOT)}`;
   const etc = `${dir}/etc`;
+  const pkg = `sudo pkg --etc-root ${q(etc)} --cache-root ${q(CACHE_ROOT)}`;
   return [
-    `cleanup() { rm -rf ${q(dir)}; }`,
+    `cleanup() { sudo rm -rf ${q(dir)}; }`,
     "trap cleanup EXIT",
-    "command -v pkg >/dev/null 2>&1 || " +
-    "{ echo 'this image has no pkg' >&2; exit 127; }",
-    `mkdir -p ${q(`${etc}/yurt-pkg/sigstore-trust-root`)} ${
-      q(UPDATED_MARKER.replace(/\/[^/]*$/, ""))
-    }`,
-    `cp ${q(TRUST_ROOT_PATH)} ${
+    "for tool in pkg sudo; do command -v $tool >/dev/null 2>&1 || " +
+    '{ echo "this image has no $tool" >&2; exit 127; }; done',
+    `sudo mkdir -p ${q(`${etc}/yurt-pkg/sigstore-trust-root`)} || exit 1`,
+    `sudo cp ${q(TRUST_ROOT_PATH)} ${
       q(`${etc}/yurt-pkg/sigstore-trust-root/trusted_root.json`)
     } || exit 1`,
     `if [ "$(cat ${q(UPDATED_MARKER)} 2>/dev/null)" != ${
       q(String(indexVersion))
     } ]; then`,
     `  ${pkg} update || exit 1`,
-    `  echo ${q(String(indexVersion))} > ${q(UPDATED_MARKER)}`,
+    `  echo ${q(String(indexVersion))} | sudo tee ${
+      q(UPDATED_MARKER)
+    } >/dev/null`,
     "fi",
     `${pkg} install ${q(name)}`,
   ].join("\n");
@@ -319,9 +326,10 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
 export type StagedFile = { path: string; bytes: Uint8Array };
 
 /** What an install needs from the sandbox: a guest file read as the login
- * user, and the staged files written then the script run as root. `dir`
- * holds every staged file; the script removes it, and so must the host
- * when it fails before the script runs. */
+ * user, and the staged files written (root's, so the user cannot change
+ * them) then the script run as the login user. `dir`
+ * holds every staged file; the script removes it, and the host removes
+ * it again after the run, in case the script never ran or was killed. */
 export type PackageHost = {
   readFile(path: string): Promise<Uint8Array>;
   stageAndRun(
@@ -464,8 +472,9 @@ function planReleases(stdout: string, catalog: Catalog): Release[] {
  * Two runs of `pkg install`. The first has the index and metadata but no
  * archive: `pkg` resolves the install with its own resolver, prints the
  * plan, and stops at the first archive it cannot fetch, before any install
- * transaction starts (what remains is `pkg update`'s cache and the
- * index-version marker). The page downloads exactly those archives, and the second run
+ * transaction starts. (It has run `pkg update`, and taken the installed
+ * state's lock, which also resumes transactions an earlier install left
+ * prepared.) The page downloads exactly those archives, and the second run
  * installs them.
  */
 export async function installPackage(
