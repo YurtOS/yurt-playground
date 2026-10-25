@@ -16,6 +16,7 @@ import {
   startGuestKernel,
 } from "./jupyter.ts";
 import { requestCellInterrupt } from "./cell_interrupt.ts";
+import { type StartReport, startSandbox } from "./coordinator_start.ts";
 import { bootNativePlayground } from "./native.ts";
 import {
   type ExecOptions,
@@ -89,14 +90,12 @@ type ToWorker =
   };
 
 type FromWorker =
-  | { type: "status"; text: string }
+  // status, error, shell-ready (the shell is the whole session), and
+  // python-missing / notebook-ready (src/coordinator_start.ts).
+  | StartReport
   // The browser refused a new process its memory (src/memory_refused.ts).
   | MemoryRefusedMessage
   | { type: "out"; bytes: number[] }
-  | { type: "error"; message: string }
-  | { type: "notebook-ready" }
-  // The shell is the whole session (`noJupyter`): booted, nothing follows.
-  | { type: "shell-ready" }
   | {
     type: "cell-result";
     id: string;
@@ -238,6 +237,9 @@ async function serveYurt(msg: ToWorker): Promise<void> {
   }
 }
 let kernelPorts: KernelPorts | undefined;
+/** The image has no python3 (src/coordinator_start.ts): a restart the
+ * frontend asks for gets the same answer, not "Jupyter is not ready". */
+let pythonMissing = false;
 /** Restarts are serialised: a second request waits for the first. */
 let restarting: Promise<void> = Promise.resolve();
 
@@ -309,7 +311,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   if (msg.type === "jupyter-restart") {
     restarting = restarting.then(async () => {
       if (launchSession === undefined) {
-        post({ type: "error", message: "Jupyter is not ready" });
+        post(
+          pythonMissing
+            ? { type: "python-missing" }
+            : { type: "error", message: "Jupyter is not ready" },
+        );
         return;
       }
       const previous = jupyter;
@@ -365,63 +371,44 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     return;
   }
   if (msg.type !== "start") return;
-  let session: Awaited<ReturnType<typeof bootPlayground>> | undefined;
-  try {
-    kernelPorts = msg.kernelPorts;
-    const env = {
-      isolated: msg.isolated,
-      fetchBytes: (path: string) =>
-        fetchPlaygroundBytes(path, (progress) => {
-          const percent = progress.total === undefined
-            ? `${progress.loaded} bytes`
-            : `${Math.round(progress.loaded / progress.total * 100)}%`;
-          post({ type: "status", text: `loading ${path}: ${percent}` });
-        }),
-      show: (text: string) => post({ type: "status", text }),
-      term: workerTerm({ cols: msg.cols, rows: msg.rows }),
-      memoryRefused: () => post(memoryRefusedMessage()),
-    };
-    session = kernelPorts === undefined
-      ? await bootPlayground(env)
-      : await bootNativePlayground(
+  kernelPorts = msg.kernelPorts;
+  const env = {
+    isolated: msg.isolated,
+    fetchBytes: (path: string) =>
+      fetchPlaygroundBytes(path, (progress) => {
+        const percent = progress.total === undefined
+          ? `${progress.loaded} bytes`
+          : `${Math.round(progress.loaded / progress.total * 100)}%`;
+        post({ type: "status", text: `loading ${path}: ${percent}` });
+      }),
+    show: (text: string) => post({ type: "status", text }),
+    term: workerTerm({ cols: msg.cols, rows: msg.rows }),
+    memoryRefused: () => post(memoryRefusedMessage()),
+  };
+  // Never stops the session once its shell is up (src/coordinator_start.ts).
+  const started = await startSandbox({
+    boot: () =>
+      kernelPorts === undefined ? bootPlayground(env) : bootNativePlayground(
         env,
         msg.apiToken === undefined ? undefined : { token: msg.apiToken },
-      );
-    if (session.process !== undefined && session.signal !== undefined) {
-      executions = new ExecutionRegistry(session.process, session.signal);
-    }
-    packageSession = session;
-    if (msg.noJupyter === true) {
-      post({ type: "status", text: "" });
-      post({ type: "shell-ready" });
-      return;
-    }
-    post({ type: "status", text: "starting Jupyter" });
-    launchSession = session;
-    // ipykernel's imports are JIT-bound: ~30 s on a laptop, minutes on a
-    // small or busy machine (yurt-playground#89). A count that moves is
-    // the difference between slow and stuck.
-    const started = Date.now();
-    const ticking = setInterval(() => {
-      const seconds = Math.round((Date.now() - started) / 1000);
-      post({ type: "status", text: `starting Jupyter (${seconds} s)` });
-    }, 5000);
-    try {
-      jupyter = await startGuestKernel(session, kernelPorts);
-    } finally {
-      clearInterval(ticking);
-    }
+      ),
+    booted: (session) => {
+      if (session.process !== undefined && session.signal !== undefined) {
+        executions = new ExecutionRegistry(session.process, session.signal);
+      }
+      packageSession = session;
+    },
+    // A restart relaunches on it, whether or not the first launch worked.
+    launching: (session) => launchSession = session,
+    noJupyter: msg.noJupyter === true,
+    startKernel: (session) => startGuestKernel(session, kernelPorts),
+    post: (report) => {
+      if (report.type === "python-missing") pythonMissing = true;
+      post(report);
+    },
+  });
+  if (started !== undefined) {
+    jupyter = started;
     subscribeJupyter(jupyter);
-    post({ type: "notebook-ready" });
-  } catch (error) {
-    try {
-      session?.stop();
-    } catch {
-      // The guest may already have stopped while startup failed.
-    }
-    post({
-      type: "error",
-      message: error instanceof Error ? error.message : String(error),
-    });
   }
 });

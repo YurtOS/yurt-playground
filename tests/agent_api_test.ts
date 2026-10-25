@@ -149,7 +149,7 @@ Deno.test("fs.export tars a directory in a process of its own and saves the arch
   const saved: Array<[string, Uint8Array]> = [];
   const archive = new Uint8Array([0x1f, 0x8b, 8, 0, 42]);
   const { transport, asked } = fakeTransport((cmd) =>
-    cmd.includes("tarfile") ? { stdout: archive } : {}
+    cmd.includes("tar -czf") ? { stdout: archive } : {}
   );
   const yurt = createYurt(transport, {
     current: () => "running",
@@ -159,13 +159,10 @@ Deno.test("fs.export tars a directory in a process of its own and saves the arch
   });
   await yurt.fs.export();
   const home = asked.at(-1)!;
-  assertEquals(
-    home.cmd.startsWith("cd '/home' && python3 -c "),
-    true,
-    home.cmd,
-  );
-  assertEquals(home.cmd.endsWith(" 'user' 'user'"), true, home.cmd);
-  assertEquals(home.cmd.includes("mode="), true, home.cmd);
+  // BusyBox tar, not Python's tarfile: the slim image has no python3, and
+  // its BusyBox (like the full image's) creates archives.
+  assertEquals(home.cmd, "cd '/home' && tar -czf - -- 'user'");
+  assertEquals(home.cmd.includes("python"), false, home.cmd);
   assertEquals(
     (home.opts.maxOutputBytes ?? 0) >= 256 * 1024 * 1024,
     true,
@@ -173,9 +170,11 @@ Deno.test("fs.export tars a directory in a process of its own and saves the arch
   );
   assertEquals(saved, [["user.tgz", archive]]);
   await yurt.fs.export("/tmp/work dir");
-  assertEquals(asked.at(-1)!.cmd.startsWith("cd '/tmp' && python3 -c "), true);
-  assertEquals(asked.at(-1)!.cmd.endsWith(" 'work dir' 'work dir'"), true);
+  assertEquals(asked.at(-1)!.cmd, "cd '/tmp' && tar -czf - -- 'work dir'");
   assertEquals(saved.at(-1)![0], "work dir.tgz");
+  // A name that starts with "-" is a name, not an option.
+  await yurt.fs.export("/tmp/-x");
+  assertEquals(asked.at(-1)!.cmd, "cd '/tmp' && tar -czf - -- '-x'");
   await assertRejects(() => yurt.fs.export("/"), PathError);
   await assertRejects(() => yurt.fs.export("relative"), PathError);
 });

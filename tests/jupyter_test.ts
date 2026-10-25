@@ -1,6 +1,7 @@
 import {
   buildKernelStopCommand,
   JUPYTER_CONNECTION_FILE,
+  JUPYTER_LOG_FILE,
   JUPYTER_PID_FILE,
 } from "../src/jupyter.ts";
 import { assertEquals, assertRejects } from "@std/assert";
@@ -490,4 +491,95 @@ Deno.test("interruptKernel asks on the control channel, where ipykernel can hear
   };
   await interruptKernel(transport);
   assertEquals(sent, [{ type: "interrupt_request", channel: "control" }]);
+});
+
+/// The slim base image has no python3: the launch's `exec python3` fails at
+/// once and no connection file is ever written. A session that sees the
+/// process end stops waiting then, instead of after the whole bound
+/// (CONNECTION_FILE_WAIT_SECONDS, four minutes) of "starting Jupyter".
+Deno.test("a kernel process that exits ends the connection-file wait at once", async () => {
+  const typed: string[] = [];
+  const handlers = new Set<(bytes: Uint8Array) => void>();
+  const log = new TextEncoder().encode(
+    "sh: exec: line 1: python3: not found\n",
+  );
+  const session = {
+    terminal: {
+      write(bytes: Uint8Array) {
+        const line = new TextDecoder().decode(bytes);
+        typed.push(line);
+        // The failed launch's stop line ends with an echo marker.
+        const marker = line.match(/echo (YURT_SHELL_DONE_)""(\w+)/);
+        if (marker !== null) {
+          const reply = new TextEncoder().encode(
+            `${marker[1]}${marker[2]}\n$ `,
+          );
+          for (const handler of handlers) handler(reply);
+        }
+        return Promise.resolve();
+      },
+    },
+    spawn: () => Promise.resolve({ exited: Promise.resolve(127) }),
+    readFile: (path: string) =>
+      Promise.resolve(path === JUPYTER_LOG_FILE ? log : undefined),
+    dialSandboxPort: () => {
+      throw new Error("not dialed in this test");
+    },
+    onOutput(handler: (bytes: Uint8Array) => void) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+  };
+  const started = performance.now();
+  const error = await assertRejects(
+    () => startGuestKernel(session, undefined, { pollMs: 1 }),
+    Error,
+    "exited before writing its connection file",
+  );
+  assertEquals(
+    (error as Error).message.includes("python3: not found"),
+    true,
+    "the kernel log names the cause",
+  );
+  assertEquals(
+    performance.now() - started < 5_000,
+    true,
+    "not the whole connection-file bound",
+  );
+});
+
+Deno.test("a kernel that wrote its connection file and then exited still gets it read", async () => {
+  const connection = JSON.stringify({
+    shell_port: 1,
+    iopub_port: 2,
+    stdin_port: 3,
+    control_port: 4,
+    hb_port: 5,
+    key: "k",
+    transport: "tcp",
+  });
+  const session = {
+    terminal: { write: () => Promise.resolve() },
+    spawn: () => Promise.resolve({ exited: Promise.resolve(0) }),
+    readFile: (path: string) =>
+      Promise.resolve(
+        path === JUPYTER_CONNECTION_FILE
+          ? new TextEncoder().encode(connection)
+          : undefined,
+      ),
+    dialSandboxPort: () => {
+      throw new Error("the transport is not dialed in this test");
+    },
+    onOutput: () => () => {},
+  };
+  // Past the file: the dial is where this one stops.
+  await assertRejects(
+    () =>
+      startGuestKernel(session, undefined, {
+        pollMs: 1,
+        connect: { attempts: 1, delayMs: 1 },
+      }),
+    Error,
+    "did not become ready",
+  );
 });

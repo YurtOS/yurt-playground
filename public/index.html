@@ -320,6 +320,20 @@
       #notebook-status {
         color: var(--muted);
       }
+      /* An image without python3: Install, and why it is not offered yet. */
+      #notebook .python-missing {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 12px 8px;
+      }
+      #notebook .python-missing[hidden] {
+        display: none;
+      }
+      #notebook .python-missing button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
       #notebook-output {
         margin: 0;
         padding: 0 12px 12px;
@@ -604,8 +618,9 @@
       <header class="mast">
         <h1>Yurt</h1>
         <p class="lead" id="lead">
-          A Linux sandbox that runs inside this browser tab: a shell, Python
-          3.14, NumPy, Jupyter. Nothing leaves the page.
+          A Linux sandbox that runs inside this browser tab: a shell, and a
+          Python cell when the sandbox's image has Python. Nothing leaves the
+          page.
         </p>
         <nav aria-label="interfaces">
           <a
@@ -743,9 +758,9 @@
             </button>
             <p>
               BusyBox <code>ash</code> on a real PTY, on the Yurt kernel
-              compiled to WebAssembly. Loads about 90 MB once, then boots here
-              in the tab; the cell below starts a Jupyter kernel on the same
-              machine.
+              compiled to WebAssembly. Loads the sandbox's image once, then
+              boots here in the tab; when the image has Python, the cell below
+              starts a Jupyter kernel on the same machine.
               <span id="offline-note"
               >The sandbox has no network:
                 <code>pip install</code> and <code>wget</code> fail by design

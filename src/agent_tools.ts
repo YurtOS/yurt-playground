@@ -107,3 +107,17 @@ export function waitForSandbox(
   if (yurt.status === "idle") start();
   return abortable(yurt.ready, signal);
 }
+
+/** Whether the sandbox has a python3, for the system prompt; a probe that
+ * fails says yes, the prompt the agent always had. */
+export async function sandboxHasPython(
+  tools: Tools,
+  signal: AbortSignal,
+): Promise<boolean> {
+  try {
+    const result = await tools.exec("command -v python3", signal);
+    return result.code === 0;
+  } catch {
+    return true;
+  }
+}

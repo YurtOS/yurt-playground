@@ -9,6 +9,8 @@ import {
   waitFor,
 } from "./ash_harness.ts";
 import { ExecutionRegistry } from "../src/executions.ts";
+import { buildExportLine, EXPORT_MAX_BYTES } from "../src/agent_api.ts";
+import { probePython } from "../src/coordinator_start.ts";
 
 Deno.test("bootPlayground fails closed when the page is not isolated", async () => {
   let shown = "";
@@ -492,6 +494,45 @@ Deno.test({
         }`,
         60_000,
       );
+    } finally {
+      session.stop();
+    }
+  },
+});
+
+/// The slim base image has no python3 and the full one has it; both have a
+/// BusyBox whose tar creates archives. On the pinned image the probe finds
+/// python3 (so Jupyter launches as before) and Download home's line
+/// archives the home with tar.
+Deno.test({
+  name:
+    "the pinned image has python3 for the probe and a tar for Download home",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootAshSession();
+    if (!session) return;
+    try {
+      assertEquals(await probePython(session.process), true);
+      const registry = new ExecutionRegistry(session.process, session.signal);
+      const archive = await registry.waitRaw(
+        await registry.spawn(buildExportLine("/home", "user"), {
+          maxOutputBytes: EXPORT_MAX_BYTES,
+        }),
+      );
+      assertEquals("code" in archive && archive.code, 0);
+      // gzip's magic, then a tar whose first member is the home itself.
+      assertEquals([...archive.stdout.slice(0, 2)], [0x1f, 0x8b]);
+      const tar = new Uint8Array(
+        await new Response(
+          new Blob([archive.stdout as BlobPart]).stream().pipeThrough(
+            new DecompressionStream("gzip"),
+          ),
+        ).arrayBuffer(),
+      );
+      const firstName = new TextDecoder().decode(tar.slice(0, 100))
+        .replace(/\0.*$/s, "");
+      assertEquals(firstName, "user/");
     } finally {
       session.stop();
     }

@@ -1,10 +1,29 @@
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
 
+/** What the cell says on an image without python3 (the slim base image). */
+export const PYTHON_MISSING_TEXT = "Python isn't installed in this sandbox yet";
+
+/**
+ * Whether the cell's Install button installs Python. The one switch for
+ * the later install change: until Python ships as a package the browser
+ * can install, the button is there but disabled, with `reason` next to it.
+ */
+export const PYTHON_INSTALL: { available: boolean; reason: string } = {
+  available: false,
+  reason: "Python packages are not published yet",
+};
+
 export type NotebookView = {
   ready(): void;
   /** No sandbox is coming (a phone, a boot that died): say so instead of
    * "waiting for the sandbox", and keep the cell disabled. */
   unavailable(state: string): void;
+  /** The image has no python3: the cell says so and offers Install
+   * (enabled only once `install.available`; {@link PYTHON_INSTALL}). */
+  pythonMissing(
+    install?: { available: boolean; reason: string },
+    onInstall?: () => void,
+  ): void;
   /** What the running cell has printed so far (yurt-playground#131). */
   stream(id: string, chunk: JupyterStream): void;
   result(id: string, reply: JupyterReply): void;
@@ -83,7 +102,22 @@ export function mountNotebook(
     spans.set(stream, span);
     output.append(span);
   }
-  root.append(bar, editor, actions, output);
+  // The python-missing row: hidden until an image without python3 boots.
+  const missing = document.createElement("div");
+  missing.className = "python-missing";
+  missing.dataset.testid = "python-missing";
+  missing.hidden = true;
+  const install = document.createElement("button");
+  install.type = "button";
+  install.className = "bar-action";
+  install.dataset.testid = "python-install";
+  install.textContent = "Install";
+  install.disabled = true;
+  const installReason = document.createElement("span");
+  installReason.dataset.testid = "python-install-reason";
+  installReason.style.color = "var(--muted)";
+  missing.append(install, installReason);
+  root.append(bar, editor, actions, missing, output);
   const pending = new Set<string>();
   /** What the pane should show; rendered at most once an animation frame.
    * A cell printing 30,000 lines sends hundreds of messages, and drawing
@@ -158,6 +192,19 @@ export function mountNotebook(
       button.disabled = true;
       stop.hidden = true;
       status.textContent = state;
+    },
+    pythonMissing(installState = PYTHON_INSTALL, onInstall) {
+      editor.disabled = true;
+      button.disabled = true;
+      stop.hidden = true;
+      status.textContent = PYTHON_MISSING_TEXT;
+      hint.textContent = "the shell above runs without it";
+      missing.hidden = false;
+      install.disabled = !installState.available || onInstall === undefined;
+      install.onclick = install.disabled ? null : () => onInstall?.();
+      installReason.textContent = installState.available
+        ? ""
+        : installState.reason;
     },
     stream(id, chunk) {
       if (!pending.has(id)) return;

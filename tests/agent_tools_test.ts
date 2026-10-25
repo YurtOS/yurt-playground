@@ -1,6 +1,11 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import type { Yurt } from "../src/agent_api.ts";
-import { createAgentTools, waitForSandbox } from "../src/agent_tools.ts";
+import type { Tools } from "../src/agent.ts";
+import {
+  createAgentTools,
+  sandboxHasPython,
+  waitForSandbox,
+} from "../src/agent_tools.ts";
 
 function sandbox(spawn: Yurt["spawn"]): Yurt {
   return { spawn } as unknown as Yurt;
@@ -140,4 +145,20 @@ Deno.test("Stop settles while waiting for the sandbox to boot", async () => {
   assertEquals(starts, 1);
   controller.abort();
   await assertRejects(() => waiting, Error, "cancelled");
+});
+
+Deno.test("the python probe reads command -v, and a failed probe keeps the old prompt", async () => {
+  const signal = new AbortController().signal;
+  const tools = (code: number | null, fail = false): Tools => ({
+    exec: (cmd) => {
+      assertEquals(cmd, "command -v python3");
+      return fail
+        ? Promise.reject(new Error("no slot"))
+        : Promise.resolve({ code, stdout: "", stderr: "" });
+    },
+    readFile: () => Promise.reject(new Error("unused")),
+  });
+  assertEquals(await sandboxHasPython(tools(0), signal), true);
+  assertEquals(await sandboxHasPython(tools(127), signal), false);
+  assertEquals(await sandboxHasPython(tools(0, true), signal), true);
 });

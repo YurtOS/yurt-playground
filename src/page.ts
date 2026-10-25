@@ -5,7 +5,12 @@ import {
   type MemoryRefusedMessage,
   showMemoryRefused,
 } from "./memory_refused.ts";
-import { mountNotebook, type NotebookView } from "./notebook.ts";
+import {
+  mountNotebook,
+  type NotebookView,
+  PYTHON_INSTALL,
+} from "./notebook.ts";
+import { createStatusLine, type StatusLine } from "./status_line.ts";
 import { mountAgentPane } from "./agent_pane.ts";
 import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
@@ -38,6 +43,8 @@ type FromWorker =
   | { type: "error"; message: string }
   | { type: "notebook-ready" }
   | { type: "shell-ready" }
+  // The image has no python3: the shell runs, Jupyter was not launched.
+  | { type: "python-missing" }
   | {
     type: "yurt-reply" | "pkg-reply";
     req: number;
@@ -231,9 +238,9 @@ function boot(
   desktop: DesktopInfo | undefined,
   stopWatchingForAnotherSandbox: () => void,
   shellOnly: boolean,
+  status: StatusLine,
 ): void {
   const kernelPorts = desktop?.kernelPorts;
-  const status = byId("status");
   // A refusal belongs to the session that had it.
   hideMemoryRefused(byId);
   const term = createPlaygroundTerminal(byId("term"));
@@ -252,6 +259,7 @@ function boot(
   // is on screen the status bar alone carries the message, so the shell
   // stays usable.
   let terminalEmpty = true;
+  let notebookReady = false;
   const sandboxGone = () => {
     stopAnnouncing();
     stopAnnouncing = () => {};
@@ -260,10 +268,15 @@ function boot(
   const fail = (message: string) => {
     rememberBooting(undefined);
     if (!terminalEmpty) {
-      status.textContent = `failed: ${message}`;
+      status.failure(`failed: ${message}`);
+      // The shell is up and stays; a Jupyter that did not start leaves
+      // the cell with nothing to wait for.
+      if (!notebookReady && !shellOnly) {
+        notebook.unavailable("Jupyter did not start");
+      }
       return;
     }
-    status.textContent = "failed";
+    status.failure("failed");
     showFailure(deviceClass() === "tablet" ? "tablet" : "error", message);
     notebook.unavailable("no sandbox");
   };
@@ -324,7 +337,7 @@ function boot(
     const msg = event.data;
     // The coordinator's empty status is "booted"; say so.
     if (msg.type === "status") {
-      status.textContent = msg.text || "running";
+      status.progress(msg.text || "running");
       rememberBooting(msg.text || "running");
       if (msg.text === "") yurtState.running();
     }
@@ -344,13 +357,23 @@ function boot(
       term.write(new Uint8Array(msg.bytes));
     }
     if (msg.type === "notebook-ready") {
+      notebookReady = true;
+      document.documentElement.dataset.python = "present";
       notebook.ready();
-      status.textContent = "running";
+      status.progress("running");
       rememberBooting(undefined);
     }
     // A tablet's whole session is the shell; once it runs the boot is over.
     if (msg.type === "shell-ready") {
-      status.textContent = "running";
+      status.progress("running");
+      rememberBooting(undefined);
+    }
+    // The slim image: the shell is the session until Python is installed.
+    // The boot is over here too, so a later reload is no cut-off boot.
+    if (msg.type === "python-missing") {
+      document.documentElement.dataset.python = "missing";
+      notebook.pythonMissing(PYTHON_INSTALL);
+      status.progress("running");
       rememberBooting(undefined);
     }
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
@@ -377,7 +400,7 @@ function boot(
   term.onResize((size) =>
     worker.postMessage({ type: "resize", rows: size.rows, cols: size.cols })
   );
-  status.textContent = "booting";
+  status.progress("booting");
   rememberBooting("booting");
   worker.postMessage({
     type: "start",
@@ -394,9 +417,8 @@ function boot(
  * own, so a stuck foreground command does not cost the session's files
  * (#81). Shown once the sandbox runs; disabled while an export is in
  * flight; a failure lands in the status line. */
-function wireExportHome(): void {
+function wireExportHome(status: StatusLine): void {
   const button = byId("export-home") as HTMLButtonElement;
-  const status = byId("status");
   button.addEventListener("click", async () => {
     const yurt = (globalThis as { yurt?: Yurt }).yurt;
     if (yurt === undefined) return;
@@ -404,9 +426,12 @@ function wireExportHome(): void {
     try {
       await yurt.fs.export();
     } catch (error) {
-      status.textContent = `download home failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      status.notice(
+        `download home failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { error: true },
+      );
     } finally {
       button.disabled = false;
     }
@@ -416,21 +441,22 @@ function wireExportHome(): void {
 /** The "Upload" control and a drop on the terminal: files from this device
  * into /home/user (src/upload.ts). Works once the sandbox runs; progress
  * and failures land in the status line. */
-function wireUpload(): void {
+function wireUpload(status: StatusLine): void {
   const button = byId("upload-files") as HTMLButtonElement;
   const input = byId("upload-input") as HTMLInputElement;
-  const status = byId("status");
   // One upload at a time, from the button or a drop.
   let busy = false;
   const upload = async (files: FileList | null) => {
     const yurt = (globalThis as { yurt?: Yurt }).yurt;
     if (yurt === undefined || files === null || files.length === 0) return;
     if (yurt.status !== "running") {
-      status.textContent = "upload: the sandbox is not running";
+      status.notice("upload: the sandbox is not running", { error: true });
       return;
     }
     if (busy) {
-      status.textContent = "upload: another upload is still running";
+      status.notice("upload: another upload is still running", {
+        error: true,
+      });
       return;
     }
     busy = true;
@@ -439,15 +465,17 @@ function wireUpload(): void {
       const written = await uploadFiles(
         yurt,
         Array.from(files),
-        (message) => status.textContent = message,
+        (message) => status.notice(message),
       );
-      status.textContent = written.length === 1
-        ? `uploaded ${written[0]}`
-        : `uploaded ${written.length} files to ${UPLOAD_DIR}`;
+      status.notice(
+        written.length === 1
+          ? `uploaded ${written[0]}`
+          : `uploaded ${written.length} files to ${UPLOAD_DIR}`,
+      );
     } catch (error) {
-      status.textContent = error instanceof Error
-        ? error.message
-        : String(error);
+      status.notice(error instanceof Error ? error.message : String(error), {
+        error: true,
+      });
     } finally {
       busy = false;
       button.disabled = false;
@@ -570,8 +598,11 @@ function wirePackages(smallDevice: boolean): void {
 
 async function runPage(): Promise<void> {
   watchNetwork(byId("net"));
-  wireExportHome();
-  wireUpload();
+  // One writer for #status: the boot's progress must not bury the outcome
+  // of a Download home or an Upload (src/status_line.ts).
+  const status = createStatusLine(byId("status"));
+  wireExportHome(status);
+  wireUpload(status);
   // The desktop app runs the sandbox natively; only the in-tab kernel needs
   // cross-origin isolation, and a page served without it cannot boot at all
   // and goes to the explanation.
@@ -580,12 +611,12 @@ async function runPage(): Promise<void> {
   // this machine and on the network, and the header should say which.
   if (desktop !== undefined) {
     byId("lead").textContent =
-      "A Linux sandbox running natively on this machine, shown in this tab: " +
-      "a shell, Python 3.14, NumPy, Jupyter, with network access.";
+      "A Linux sandbox running natively on this machine, shown in this tab, " +
+      "with network access.";
     byId("offline-note").hidden = true;
   }
   if (desktop === undefined && globalThis.crossOriginIsolated !== true) {
-    byId("status").textContent = "need COOP/COEP";
+    status.failure("need COOP/COEP");
     yurtState.failed("the page is not cross-origin isolated");
     globalThis.location.replace("./unsupported.html");
     throw new Error("not crossOriginIsolated");
@@ -661,12 +692,13 @@ async function runPage(): Promise<void> {
       desktop,
       stopWatchingForAnotherSandbox,
       shellOnly,
+      status,
     );
   };
   if (desktop === undefined) {
     if (device === "tablet") byId("mobile-note").hidden = false;
     if (refused) {
-      byId("status").textContent = phone ? "not on phones" : "failed";
+      status.failure(phone ? "not on phones" : "failed");
       showFailure(phone ? "phone" : "reloaded", phone ? undefined : cutOff);
       notebook.unavailable(phone ? "not on phones" : "no sandbox");
       yurtState.failed(

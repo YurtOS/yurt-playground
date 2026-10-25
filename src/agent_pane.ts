@@ -8,8 +8,17 @@
  * Hugging Face (src/llm_models.ts).
  */
 import type { Yurt } from "./agent_api.ts";
-import { createAgentTools, waitForSandbox } from "./agent_tools.ts";
-import { type AgentEvent, runAgent } from "./agent.ts";
+import {
+  createAgentTools,
+  sandboxHasPython,
+  waitForSandbox,
+} from "./agent_tools.ts";
+import {
+  type AgentEvent,
+  DEFAULT_LIMITS,
+  runAgent,
+  systemPrompt,
+} from "./agent.ts";
 import { isModelCached, loadLocalModel, type LocalLlm } from "./llm.ts";
 import { LOCAL_MODELS, type LocalModel, MAX_NUM_TOKENS } from "./llm_models.ts";
 
@@ -352,12 +361,17 @@ export async function mountAgentPane(
         transcript.append(el("li", { className: "stopped", textContent: why }));
       }
     };
+    const tools = createAgentTools(yurt);
+    // The slim image has no python3; the prompt must not promise one.
+    const python = await sandboxHasPython(tools, controller.signal);
     await runAgent(
       text,
       llm,
-      createAgentTools(yurt),
+      tools,
       onEvent,
       controller.signal,
+      DEFAULT_LIMITS,
+      systemPrompt(python),
     );
     finish();
   };

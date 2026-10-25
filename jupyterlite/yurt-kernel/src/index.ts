@@ -54,6 +54,8 @@ type SnapshotState =
 
 /** Shape of `/snapshot-bridge.js` (see `src/snapshot_bridge.ts`). */
 type SnapshotKernelBridge = PlaygroundKernelBridge & {
+  /** The worker's failures; absent from a bridge older than it. */
+  onError?(listener: (text: string) => void): () => void;
   suspend(): void;
   resume(): void;
   forget(): void;
@@ -184,8 +186,16 @@ function mountSnapshotPanel(b: SnapshotKernelBridge): void {
     suspend.disabled = state.state !== "running";
     resume.disabled = state.state !== "suspended";
     // A boot-time progress line ("starting Python") is stale once the
-    // state moved on; only a message after that is worth keeping.
-    statusLine.textContent = "";
+    // state moved on; only a message after that is worth keeping. A
+    // failure is kept: clearing it left a sandbox that did not boot (an
+    // image without python3) with an empty line and no word of why.
+    if (error === undefined) statusLine.textContent = "";
+  };
+  /** The last failure, shown until the reader acts again. */
+  let error: string | undefined;
+  const clearError = () => {
+    error = undefined;
+    delete panel.dataset.error;
   };
   panelStatus = (text) => {
     statusLine.textContent = text;
@@ -193,10 +203,21 @@ function mountSnapshotPanel(b: SnapshotKernelBridge): void {
   render(b.snapshot);
   b.onSnapshot(render);
   b.onStatus((text) => {
+    if (error === undefined) statusLine.textContent = text;
+  });
+  b.onError?.((text) => {
+    error = text;
+    panel.dataset.error = text;
     statusLine.textContent = text;
   });
-  suspend.addEventListener("click", () => b.suspend());
-  resume.addEventListener("click", () => b.resume());
+  suspend.addEventListener("click", () => {
+    clearError();
+    b.suspend();
+  });
+  resume.addEventListener("click", () => {
+    clearError();
+    b.resume();
+  });
   document.body.appendChild(panel);
 }
 
