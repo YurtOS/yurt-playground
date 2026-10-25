@@ -162,6 +162,9 @@ async function servePackages(msg: ToWorker): Promise<void> {
   let process;
   try {
     session.writeFiles(msg.files);
+    // In the guest now: let the tab's copies go while `pkg` runs (up to
+    // hundreds of MB).
+    msg.files = [];
     process = await run(msg.script);
   } catch (error) {
     // The script never ran, so nothing removed what was staged: up to

@@ -131,9 +131,8 @@ export function parsePackageFile(bytes: Uint8Array): PackageFile {
   return file;
 }
 
-/** Semantic-version order, as the `semver` crate `pkg` sorts with: the
- * numbers, then a pre-release below its release, its identifiers compared
- * numerically or as text; build metadata does not count. */
+/** Version order for the list's "latest" column: the numbers, then a
+ * pre-release below its release. What gets installed is `pkg`'s choice. */
 function compareVersions(a: string, b: string): number {
   const split = (v: string) => {
     const [core, pre] = v.split("+")[0].split(/-(.*)/s);
@@ -175,117 +174,13 @@ function compareReleases(a: PackageVersion, b: PackageVersion): number {
     buildNumber(a.build) - buildNumber(b.build);
 }
 
-/** The release `pkg install NAME` picks when nothing constrains it: the
- * highest version, then the highest build, never a yanked one. */
+/** The release the list shows: the highest version, then the highest
+ * build, never a yanked one. */
 export function latestRelease(file: PackageFile): Release | undefined {
   const candidates = file.versions.filter((version) => !version.yanked);
   if (candidates.length === 0) return undefined;
   const best = candidates.reduce((a, b) => compareReleases(a, b) >= 0 ? a : b);
   return { ...best, name: file.name };
-}
-
-type Comparator = { op: string; version: number[]; pre: boolean };
-
-/** Whether `version` meets a dependency requirement, read as the `semver`
- * crate `pkg` resolves with reads it: comma-separated comparators, all of
- * which must hold; a bare version means `^`. A pre-release meets only a
- * requirement that names one. */
-export function satisfies(version: string, req: string): boolean {
-  if (version.includes("-") && !req.includes("-")) return false;
-  const parts = (v: string) =>
-    v.split("+")[0].split("-")[0].split(".").map((n) => Number(n));
-  const comparators: Comparator[] = req.split(",").map((raw) => {
-    const match =
-      /^\s*(\^|~|=|>=|<=|>|<)?\s*([0-9*xX.]+(?:-[0-9A-Za-z.-]+)?)\s*$/
-        .exec(raw);
-    if (match === null) throw new Error(`cannot read requirement ${req}`);
-    const nums = match[2].split("-")[0].split(".")
-      .filter((n) => !/^[*xX]$/.test(n)).map((n) => Number(n));
-    return { op: match[1] ?? "^", version: nums, pre: match[2].includes("-") };
-  });
-  const v = parts(version);
-  const cmp = (bound: number[]) =>
-    compareVersions(v.join("."), bound.concat([0, 0, 0]).slice(0, 3).join("."));
-  return comparators.every(({ op, version: bound }) => {
-    if (bound.length === 0) return true; // `*`
-    const [major, minor, patch] = [bound[0], bound[1], bound[2]];
-    // The exclusive upper end of a partial or caret/tilde range.
-    const upper = (() => {
-      if (op === "~" || (op !== "^" && bound.length < 3)) {
-        return bound.length === 1 ? [major + 1, 0, 0] : [major, minor + 1, 0];
-      }
-      if (major > 0 || bound.length === 1) return [major + 1, 0, 0];
-      if (minor > 0 || bound.length === 2) return [0, minor + 1, 0];
-      return [0, 0, patch + 1];
-    })();
-    switch (op) {
-      case "^":
-      case "~":
-      case "=":
-        return cmp(bound) >= 0 &&
-          (op === "=" && bound.length === 3
-            ? cmp(bound) === 0
-            : cmp(upper) < 0);
-      case ">":
-        return bound.length === 3 ? cmp(bound) > 0 : cmp(upper) >= 0;
-      case ">=":
-        return cmp(bound) >= 0;
-      case "<":
-        return cmp(bound) < 0;
-      default: // "<="
-        return bound.length === 3 ? cmp(bound) <= 0 : cmp(upper) < 0;
-    }
-  });
-}
-
-/** The archives installing `name` needs: the package's latest release and,
- * transitively, the latest release of each dependency that meets the
- * requirements seen for it, in no particular order. Archives the guest's
- * resolver does not pick are staged for nothing; a pick this does not
- * foresee (requirements that conflict, which `pkg` backtracks over) fails
- * the install in `pkg` with the archive it could not find. */
-export async function installClosure(
-  index: RepoIndex,
-  name: string,
-  metadata: (name: string) => Promise<PackageFile>,
-): Promise<Release[]> {
-  const releases: Release[] = [];
-  const seen = new Set<string>();
-  const reqs = new Map<string, string[]>();
-  const queue = [name];
-  while (queue.length > 0) {
-    const next = queue.shift()!;
-    if (seen.has(next)) continue;
-    seen.add(next);
-    if (index.packages[next] === undefined) {
-      throw new Error(
-        next === name
-          ? `no package named ${next}`
-          : `${name} depends on ${next}, which the repository does not publish`,
-      );
-    }
-    const file = await metadata(next);
-    const wanted = reqs.get(next) ?? [];
-    const release = latestRelease({
-      ...file,
-      versions: file.versions.filter((v) =>
-        wanted.every((req) => satisfies(v.version, req))
-      ),
-    });
-    if (release === undefined) {
-      throw new Error(
-        `${next} has no release that is not yanked${
-          wanted.length ? ` and meets ${wanted.join(", ")}` : ""
-        }`,
-      );
-    }
-    releases.push(release);
-    for (const dep of release.depends) {
-      reqs.set(dep.name, [...(reqs.get(dep.name) ?? []), dep.req]);
-      queue.push(dep.name);
-    }
-  }
-  return releases;
 }
 
 type TomlRepo = { lines: string[]; values: Record<string, string> };
@@ -515,9 +410,47 @@ export function catalogRows(catalog: Catalog): {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Install `name`: download what it needs, stage it, and let the guest's
+/** `pkg`'s cause for a failure: it names the cause first and sums up last
+ * ("one or more repository updates failed"), so the first line that fails
+ * is the one. */
+function failure(
+  name: string,
+  result: { code: number | null; stdout: string; stderr: string },
+): Error {
+  const lines = `${result.stdout}${result.stderr}`.split("\n")
+    .filter((line) => line.trim() !== "");
+  const cause = lines.find((line) => /fail|error/i.test(line)) ??
+    lines.at(-1);
+  return new Error(
+    `pkg install ${name} failed: ${cause ?? `exit ${result.code}`}`,
+  );
+}
+
+/** The releases a `pkg install` plan names: it prints `install NAME
+ * VERSION-BUILD` for each before it fetches any archive. */
+function planReleases(stdout: string, catalog: Catalog): Release[] {
+  return [...stdout.matchAll(/^install (\S+) (\S+)$/gm)].map(([, n, vb]) => {
+    const release = catalog.metadata.get(n)?.file.versions.find((v) =>
+      `${v.version}-${v.build}` === vb
+    );
+    if (release === undefined) {
+      throw new Error(`pkg chose ${n} ${vb}, which the index does not list`);
+    }
+    return { ...release, name: n };
+  });
+}
+
+/**
+ * Install `name`: download what it needs, stage it, and let the guest's
  * `pkg` verify and install it. Resolves with `pkg`'s output; throws with
- * the reason when anything refuses. */
+ * the reason when anything refuses.
+ *
+ * Two runs of `pkg install`. The first has the index and metadata but no
+ * archive: `pkg` resolves the install with its own resolver, prints the
+ * plan, and stops at the first archive it cannot fetch, before it writes
+ * any state. The page downloads exactly those archives, and the second run
+ * installs them.
+ */
 export async function installPackage(
   name: string,
   options: {
@@ -526,7 +459,6 @@ export async function installPackage(
     progress: (message: string) => void;
     fetcher?: Fetcher;
     base?: string;
-    catalog?: Catalog;
   },
 ): Promise<string> {
   const { host, progress } = options;
@@ -536,45 +468,70 @@ export async function installPackage(
     throw new Error(`not a package name: ${JSON.stringify(name)}`);
   }
   progress(`${name}: reading the package index`);
-  const catalog = options.catalog ?? await loadCatalog(fetcher, base);
-  const releases = await installClosure(catalog.index, name, (dep) => {
-    const entry = catalog.metadata.get(dep);
-    if (entry === undefined) throw new Error(`no metadata for ${dep}`);
-    return Promise.resolve(entry.file);
-  });
+  // Fresh for every install: a few KiB, and a retry after a failed one
+  // must not stage the same bytes again.
+  const catalog = await loadCatalog(fetcher, base);
+  if (catalog.index.packages[name] === undefined) {
+    throw new Error(`no package named ${name}`);
+  }
+  const trusted = new TextDecoder().decode(
+    await host.readFile(TRUSTED_REPOS_PATH).catch(() => {
+      throw new Error(
+        `this image has no ${TRUSTED_REPOS_PATH}, so it cannot install packages`,
+      );
+    }),
+  );
+  /** Stage the repository copy, with `archives` (by repository path), in
+   * a directory of its own, and run `pkg` on it. */
+  const run = (archives: Map<string, Uint8Array>) => {
+    const dir = `${STAGING_ROOT}/${crypto.randomUUID()}`;
+    const mirror = `${dir}/repo`;
+    // Copies: the catalog keeps its own, and staged files are transferred.
+    const files: StagedFile[] = [
+      { path: `${mirror}/index.json`, bytes: catalog.indexBytes.slice() },
+      {
+        path: `${mirror}/index.json.bundle`,
+        bytes: catalog.indexBundle.slice(),
+      },
+      {
+        path: `${dir}/etc/yurt-pkg/trusted-repos.toml`,
+        bytes: new TextEncoder().encode(
+          browserTrustedRepos(trusted, `file://${mirror}/`),
+        ),
+      },
+    ];
+    for (const [dep, entry] of Object.entries(catalog.index.packages)) {
+      const meta = catalog.metadata.get(dep);
+      if (meta !== undefined) {
+        files.push({
+          path: `${mirror}/${entry.url}`,
+          bytes: meta.bytes.slice(),
+        });
+      }
+    }
+    for (const [path, bytes] of archives) {
+      files.push({ path: `${mirror}/${path}`, bytes });
+    }
+    return host.stageAndRun(
+      files,
+      installScript(dir, name, catalog.index.index_version),
+      dir,
+    );
+  };
+  progress(`${name}: resolving (pkg install ${name})`);
+  const planned = await run(new Map());
+  if (planned.code === 0) return `${planned.stdout}${planned.stderr}`.trim();
+  const releases = planReleases(planned.stdout, catalog);
+  if (
+    releases.length === 0 ||
+    !planned.stderr.includes("failed to fetch archive")
+  ) {
+    throw failure(name, planned);
+  }
   const total = releases.reduce((sum, release) => sum + release.size, 0);
   const refusal = sizeRefusal(total, options.tablet);
   if (refusal !== undefined) throw new Error(`${name}: ${refusal}`);
-  const trusted = await host.readFile(TRUSTED_REPOS_PATH).catch(() => {
-    throw new Error(
-      `this image has no ${TRUSTED_REPOS_PATH}, so it cannot install packages`,
-    );
-  });
-  const dir = `${STAGING_ROOT}/${crypto.randomUUID()}`;
-  const mirror = `${dir}/repo`;
-  const files: StagedFile[] = [
-    // Copies: the list keeps its own, and the staged files are transferred.
-    { path: `${mirror}/index.json`, bytes: catalog.indexBytes.slice() },
-    {
-      path: `${mirror}/index.json.bundle`,
-      bytes: catalog.indexBundle.slice(),
-    },
-    {
-      path: `${dir}/etc/yurt-pkg/trusted-repos.toml`,
-      bytes: new TextEncoder().encode(
-        browserTrustedRepos(
-          new TextDecoder().decode(trusted),
-          `file://${mirror}/`,
-        ),
-      ),
-    },
-  ];
-  for (const [dep, entry] of Object.entries(catalog.index.packages)) {
-    const meta = catalog.metadata.get(dep);
-    if (meta !== undefined) {
-      files.push({ path: `${mirror}/${entry.url}`, bytes: meta.bytes.slice() });
-    }
-  }
+  const archives = new Map<string, Uint8Array>();
   let done = 0;
   for (const release of releases) {
     const show = (received: number) =>
@@ -595,29 +552,15 @@ export async function installPackage(
         `${release.name}: the download does not match its sha256`,
       );
     }
-    files.push({ path: `${mirror}/${release.url}`, bytes });
-    files.push({
-      path: `${mirror}/${release.url}.bundle`,
-      bytes: await fetcher(`${base}${release.url}.bundle`),
-    });
+    archives.set(release.url, bytes);
+    archives.set(
+      `${release.url}.bundle`,
+      await fetcher(`${base}${release.url}.bundle`),
+    );
     done += release.size;
   }
   progress(`${name}: verifying and installing (pkg install ${name})`);
-  const result = await host.stageAndRun(
-    files,
-    installScript(dir, name, catalog.index.index_version),
-    dir,
-  );
-  const output = `${result.stdout}${result.stderr}`.trim();
-  if (result.code !== 0) {
-    // `pkg` names the cause first and sums up last ("one or more
-    // repository updates failed"): the first line that fails is the one.
-    const lines = output.split("\n").filter((line) => line.trim() !== "");
-    const cause = lines.find((line) => /fail|error/i.test(line)) ??
-      lines.at(-1);
-    throw new Error(
-      `pkg install ${name} failed: ${cause ?? `exit ${result.code}`}`,
-    );
-  }
-  return output;
+  const result = await run(archives);
+  if (result.code !== 0) throw failure(name, result);
+  return `${result.stdout}${result.stderr}`.trim();
 }

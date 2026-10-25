@@ -482,7 +482,6 @@ function wirePackages(tablet: boolean): void {
       await installPackage(name, {
         host: packageHost,
         tablet,
-        catalog,
         progress: (message) => status.textContent = message,
       });
       status.textContent = `installed ${name}`;

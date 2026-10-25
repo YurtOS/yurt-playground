@@ -2,7 +2,6 @@ import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   browserTrustedRepos,
   CACHE_ROOT,
-  installClosure,
   installPackage,
   installScript,
   latestRelease,
@@ -12,8 +11,6 @@ import {
   type PackageVersion,
   parseIndex,
   parsePackageFile,
-  type RepoIndex,
-  satisfies,
   sha256Hex,
   sizeRefusal,
   type StagedFile,
@@ -57,7 +54,7 @@ function version(
   };
 }
 
-Deno.test("the release pkg picks: highest version, then build, never yanked", () => {
+Deno.test("the list shows the highest version, then build, never yanked", () => {
   const file: PackageFile = {
     name: "x",
     versions: [
@@ -95,124 +92,6 @@ Deno.test("the release pkg picks: highest version, then build, never yanked", ()
       versions: [version("1.0.0", "yurt_0", { yanked: true })],
     }),
     undefined,
-  );
-});
-
-Deno.test("requirements read as the semver crate reads them", () => {
-  const cases: [string, string, boolean][] = [
-    ["6.5.0", "^6.5", true],
-    ["6.9.1", "^6.5", true],
-    ["7.0.0", "^6.5", false],
-    ["6.4.9", "^6.5", false],
-    ["0.2.9", "^0.2.3", true],
-    ["0.3.0", "^0.2.3", false],
-    ["0.0.4", "^0.0.3", false],
-    ["1.2.9", "~1.2.3", true],
-    ["1.3.0", "~1.2.3", false],
-    ["1.9.0", "~1", true],
-    ["1.2.3", "=1.2.3", true],
-    ["1.2.4", "=1.2.3", false],
-    ["1.2.7", "=1.2", true],
-    ["1.3.0", ">1.2", true],
-    ["1.2.9", ">1.2", false],
-    ["1.2.9", "<=1.2", true],
-    ["1.3.0", "<=1.2", false],
-    ["2.0.0", ">=1.5, <2", false],
-    ["1.7.0", ">=1.5, <2", true],
-    ["9.9.9", "*", true],
-    ["1.4.0", "1.*", true],
-    ["2.0.0", "1.*", false],
-    ["2.0.0", "2", true],
-    ["2.0.0-rc.1", "^2.0.0", false],
-  ];
-  for (const [version, req, want] of cases) {
-    assertEquals(satisfies(version, req), want, `${version} ${req}`);
-  }
-});
-
-Deno.test("a dependency's release meets its requirement, not merely the latest", async () => {
-  const files: Record<string, PackageFile> = {
-    app: {
-      name: "app",
-      versions: [version("1.0.0", "yurt_0", {
-        depends: [{ name: "lib", req: "^1.2" }],
-      })],
-    },
-    lib: {
-      name: "lib",
-      versions: [version("1.4.0", "yurt_0"), version("2.0.0", "yurt_0")],
-    },
-  };
-  const index = {
-    schema: 1,
-    index_version: 1,
-    expires_at: "",
-    packages: {
-      app: { sha256: "", size: 1, url: "packages/app.json" },
-      lib: { sha256: "", size: 1, url: "packages/lib.json" },
-    },
-  } satisfies RepoIndex;
-  const closure = await installClosure(
-    index,
-    "app",
-    (name) => Promise.resolve(files[name]),
-  );
-  assertEquals(
-    closure.map((r) => `${r.name} ${r.version}`).sort(),
-    ["app 1.0.0", "lib 1.4.0"],
-  );
-  files.app.versions[0].depends[0].req = "^3";
-  await assertRejects(
-    () => installClosure(index, "app", (name) => Promise.resolve(files[name])),
-    Error,
-    "lib has no release that is not yanked and meets ^3",
-  );
-});
-
-Deno.test("an install stages the package and its dependencies, transitively", async () => {
-  const files: Record<string, PackageFile> = {
-    zsh: {
-      name: "zsh",
-      versions: [version("5.9.0", "yurt_1", {
-        depends: [{ name: "ncurses", req: "^6.5" }],
-      })],
-    },
-    ncurses: {
-      name: "ncurses",
-      versions: [version("6.5.0", "yurt_0", {
-        depends: [{ name: "zlib", req: "^1" }],
-      })],
-    },
-    zlib: { name: "zlib", versions: [version("1.3.1", "yurt_0")] },
-    unrelated: { name: "unrelated", versions: [version("1.0.0", "yurt_0")] },
-  };
-  const index = {
-    schema: 1,
-    index_version: 1,
-    expires_at: "",
-    packages: Object.fromEntries(
-      Object.keys(files).map((name) => [
-        name,
-        { sha256: "", size: 1, url: `packages/${name}.json` },
-      ]),
-    ),
-  } satisfies RepoIndex;
-  const closure = await installClosure(
-    index,
-    "zsh",
-    (name) => Promise.resolve(files[name]),
-  );
-  assertEquals(closure.map((r) => r.name).sort(), ["ncurses", "zlib", "zsh"]);
-  await assertRejects(
-    () => installClosure(index, "nope", (name) => Promise.resolve(files[name])),
-    Error,
-    "no package named nope",
-  );
-  delete (index.packages as Record<string, unknown>).zlib;
-  await assertRejects(
-    () => installClosure(index, "zsh", (name) => Promise.resolve(files[name])),
-    Error,
-    "depends on zlib, which the repository does not publish",
   );
 });
 
@@ -370,24 +249,37 @@ async function fakeRepo(archive: Uint8Array) {
   };
 }
 
+/** The plan run fails at the first archive, as `pkg` does with none
+ * staged; the install run gets `install`. */
+const PLAN = {
+  code: 1,
+  stdout: "install greet 0.1.0-yurt_0\n",
+  stderr: "Error: failed to fetch archive for greet\n",
+};
+const INSTALLED = {
+  code: 0,
+  stdout: "install greet 0.1.0-yurt_0\n",
+  stderr: "",
+};
+
 function fakeHost(
-  result = { code: 0, stdout: "install greet 0.1.0-yurt_0\n", stderr: "" },
+  ...results: { code: number; stdout: string; stderr: string }[]
 ) {
-  const runs: { files: StagedFile[]; script: string }[] = [];
+  const runs: { files: StagedFile[]; script: string; dir: string }[] = [];
   const host: PackageHost = {
     readFile: () => Promise.resolve(new TextEncoder().encode(TRUSTED)),
-    stageAndRun: (files, script) => {
-      runs.push({ files, script });
-      return Promise.resolve(result);
+    stageAndRun: (files, script, dir) => {
+      runs.push({ files, script, dir });
+      return Promise.resolve(results[runs.length - 1]);
     },
   };
   return { host, runs };
 }
 
-Deno.test("an install hands the guest the repository's files, unchanged, under one copy", async () => {
+Deno.test("pkg plans the install; the page stages exactly what it names", async () => {
   const archive = new Uint8Array([1, 2, 3, 4, 5]);
   const fetcher = await fakeRepo(archive);
-  const { host, runs } = fakeHost();
+  const { host, runs } = fakeHost(PLAN, INSTALLED);
   const messages: string[] = [];
   const output = await installPackage("greet", {
     host,
@@ -396,35 +288,85 @@ Deno.test("an install hands the guest the repository's files, unchanged, under o
     progress: (m) => messages.push(m),
   });
   assertEquals(output, "install greet 0.1.0-yurt_0");
-  assertEquals(runs.length, 1);
-  const [{ files, script }] = runs;
-  const dir = files[0].path.slice(0, files[0].path.indexOf("/repo/"));
-  assertEquals(dir.startsWith(`${STAGING_ROOT}/`), true);
-  const staged = Object.fromEntries(
-    files.map((f) => [f.path.slice(dir.length + 1), f.bytes]),
-  );
-  assertEquals(Object.keys(staged).sort(), [
+  assertEquals(runs.length, 2);
+  const metadata = [
     "etc/yurt-pkg/trusted-repos.toml",
-    "repo/artifacts/greet/0.1.0/greet-0.1.0-yurt_0.yurtpkg",
-    "repo/artifacts/greet/0.1.0/greet-0.1.0-yurt_0.yurtpkg.bundle",
     "repo/index.json",
     "repo/index.json.bundle",
     "repo/packages/greet.json",
-  ]);
-  for (const [path, bytes] of Object.entries(staged)) {
-    if (!path.startsWith("repo/")) continue;
-    assertEquals(bytes, await fetcher(`${PACKAGE_REPO_URL}${path.slice(5)}`));
+  ];
+  const archives = [
+    "repo/artifacts/greet/0.1.0/greet-0.1.0-yurt_0.yurtpkg",
+    "repo/artifacts/greet/0.1.0/greet-0.1.0-yurt_0.yurtpkg.bundle",
+  ];
+  for (const [i, { files, script, dir }] of runs.entries()) {
+    assertEquals(dir.startsWith(`${STAGING_ROOT}/`), true);
+    const staged = Object.fromEntries(
+      files.map((f) => [f.path.slice(dir.length + 1), f.bytes]),
+    );
+    assertEquals(
+      Object.keys(staged).sort(),
+      (i === 0 ? metadata : [...metadata, ...archives]).sort(),
+    );
+    for (const [path, bytes] of Object.entries(staged)) {
+      if (!path.startsWith("repo/")) continue;
+      assertEquals(bytes, await fetcher(`${PACKAGE_REPO_URL}${path.slice(5)}`));
+    }
+    assertEquals(
+      new TextDecoder().decode(staged["etc/yurt-pkg/trusted-repos.toml"])
+        .includes(`url = "file://${dir}/repo/"`),
+      true,
+    );
+    assertEquals(script, installScript(dir, "greet", 4));
   }
-  assertEquals(
-    new TextDecoder().decode(staged["etc/yurt-pkg/trusted-repos.toml"])
-      .includes(`url = "file://${dir}/repo/"`),
-    true,
-  );
-  assertEquals(script, installScript(dir, "greet", 4));
+  assertEquals(runs[0].dir === runs[1].dir, false);
   assertEquals(
     messages.at(-1),
     "greet: verifying and installing (pkg install greet)",
   );
+});
+
+Deno.test("a plan names only releases the index lists", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1]));
+  const { host } = fakeHost({
+    ...PLAN,
+    stdout: "install greet 9.9.9-yurt_0\n",
+  });
+  await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+      }),
+    Error,
+    "pkg chose greet 9.9.9-yurt_0, which the index does not list",
+  );
+});
+
+Deno.test("an install with nothing to install downloads nothing", async () => {
+  let downloads = 0;
+  const repo = await fakeRepo(new Uint8Array([1]));
+  const fetcher = (url: string) => {
+    if (url.endsWith(".yurtpkg")) downloads++;
+    return repo(url);
+  };
+  const { host, runs } = fakeHost({
+    code: 0,
+    stdout: "nothing to install\n",
+    stderr: "",
+  });
+  assertEquals(
+    await installPackage("greet", {
+      host,
+      tablet: false,
+      fetcher,
+      progress: () => {},
+    }),
+    "nothing to install",
+  );
+  assertEquals([runs.length, downloads], [1, 0]);
 });
 
 Deno.test("a download that does not match the index is never handed over", async () => {
@@ -433,7 +375,7 @@ Deno.test("a download that does not match the index is never handed over", async
     url.endsWith(".yurtpkg")
       ? Promise.resolve(new Uint8Array([9, 9, 9]))
       : fetcher(url);
-  const { host, runs } = fakeHost();
+  const { host, runs } = fakeHost(PLAN);
   await assertRejects(
     () =>
       installPackage("greet", {
@@ -445,7 +387,8 @@ Deno.test("a download that does not match the index is never handed over", async
     Error,
     "does not match its sha256",
   );
-  assertEquals(runs.length, 0);
+  // The plan only: the corrupt archive never reaches the guest.
+  assertEquals(runs.length, 1);
 });
 
 Deno.test("a refusal from the guest's pkg names its cause, not its summary", async () => {
