@@ -634,6 +634,23 @@
           <span class="grow"></span>
           <button
             type="button"
+            id="upload-files"
+            data-testid="upload-files"
+            class="bar-action"
+            hidden
+            title="Copy files from this device into /home/user. A program built for the sandbox (a .wasm, a Go binary) or a #! script is made executable. You can also drop files on the terminal."
+          >
+            Upload
+          </button>
+          <input
+            type="file"
+            id="upload-input"
+            data-testid="upload-input"
+            multiple
+            hidden
+          >
+          <button
+            type="button"
             id="export-home"
             data-testid="export-home"
             class="bar-action"
