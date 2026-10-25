@@ -55,7 +55,7 @@ Planned for the next one or two trains. These are in progress, not finished.
 - **A modular image: a small base, the rest as packages.** Why: one image with
   everything is slow to load and still never has the tool you need. The base
   image keeps the small tools (`git`, `curl`, `jq`, `sqlite3`, `zsh`, `make`,
-  `perl`, `zstd`, `xz`, `rtk`, CA certificates) and adds the `pkg` client with a
+  `perl`, `zstd`, `xz`, CA certificates) and adds the `pkg` client with a
   trusted-repository configuration for
   [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages). In progress
   in [YurtOS/yurt-ports](https://github.com/YurtOS/yurt-ports).
@@ -130,8 +130,9 @@ Bigger directions. Each needs design work, and the order is not fixed.
   packages and matching wheels) and downloads work only in the desktop app.
 - **Installed packages in the browser are lost on reload**, like every other
   file there ([#81](https://github.com/YurtOS/yurt-playground/issues/81)), and a
-  tablet refuses installs larger than 16 MiB, since one tablet tab has much less
-  memory ([#200](https://github.com/YurtOS/yurt-playground/issues/200)).
+  tablet refuses installs whose package archives add up to more than 16 MiB,
+  since one tablet tab has much less memory
+  ([#200](https://github.com/YurtOS/yurt-playground/issues/200)).
 - **Files in the browser are kept in memory only.** A page reload starts a fresh
   sandbox and loses everything you wrote, except sandboxes saved by the
   suspend/resume notebook or the snapshot demo. Use "Download home" to keep your

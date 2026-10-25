@@ -43,8 +43,8 @@ All four are in the image.
 ### Installing more
 
 The image is becoming modular: a small base image (BusyBox, `git`, `curl`, `jq`,
-`sqlite3`, `zsh`, `make`, `perl`, `zstd`, `xz`, `rtk`, CA certificates) with the
-`pkg` client and a trusted-repository configuration for
+`sqlite3`, `zsh`, `make`, `perl`, `zstd`, `xz`, CA certificates) with the `pkg`
+client and a trusted-repository configuration for
 [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), and the heavy
 tools as signed packages there. That base image is in progress in
 [YurtOS/yurt-ports](https://github.com/YurtOS/yurt-ports); the image pinned here
@@ -71,8 +71,8 @@ does not carry `pkg` yet, so nothing can be installed into it today.
     ([#81](https://github.com/YurtOS/yurt-playground/issues/81)).
   - A tablet has much less memory for one tab
     ([#200](https://github.com/YurtOS/yurt-playground/issues/200)), so there an
-    install that downloads more than 16 MiB is refused. Elsewhere one install
-    downloads at most 256 MiB.
+    install whose package archives add up to more than 16 MiB is refused.
+    Elsewhere the limit is 256 MiB.
 
 Which packages are published, and which are coming, is tracked in
 [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) (its signed

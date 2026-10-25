@@ -55,7 +55,8 @@ export const CACHE_ROOT = "/var/cache/yurt-pkg/browser-repos";
 export const UPDATED_MARKER = "/var/cache/yurt-pkg/browser-index-version";
 
 /** A tablet tab runs out of memory well before a desktop one does (#200):
- * there, an install that downloads more than this is refused. */
+ * there, an install whose archives add up to more than this is refused
+ * (the index, metadata and signatures, a few KiB, are not counted). */
 export const TABLET_MAX_BYTES = 16 * 1024 * 1024;
 
 /** The most one install downloads on any device: the archives are held in
