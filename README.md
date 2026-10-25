@@ -69,7 +69,7 @@ does not carry `pkg` yet, so nothing can be installed into it today.
   - Installed packages live in the tab's memory, like every file there, and a
     reload loses them
     ([#81](https://github.com/YurtOS/yurt-playground/issues/81)).
-  - A tablet has much less memory for one tab
+  - A tablet or phone has much less memory for one tab
     ([#200](https://github.com/YurtOS/yurt-playground/issues/200)), so there an
     install whose package archives add up to more than 16 MiB is refused.
     Elsewhere the limit is 256 MiB.

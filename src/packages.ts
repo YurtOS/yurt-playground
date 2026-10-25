@@ -427,9 +427,14 @@ function failure(
   result: { code: number | null; stdout: string; stderr: string },
 ): Error {
   // stderr first: stdout repeats the plan, whose package names may say
-  // "error" (libgpg-error).
+  // "error" (libgpg-error). pkg's warnings ("transaction ... is failed")
+  // are not the cause; its own error is the line it starts with "Error:",
+  // or a "failed to ..." line it prints before summing up.
   const lines = `${result.stderr}\n${result.stdout}`.split("\n")
-    .filter((line) => line.trim() !== "" && !/^install \S+ \S+$/.test(line));
+    .filter((line) =>
+      line.trim() !== "" && !/^install \S+ \S+$/.test(line) &&
+      !line.startsWith("warning:")
+    );
   const cause = lines.find((line) => /fail|error/i.test(line)) ??
     lines.at(0);
   return new Error(
@@ -458,8 +463,9 @@ function planReleases(stdout: string, catalog: Catalog): Release[] {
  *
  * Two runs of `pkg install`. The first has the index and metadata but no
  * archive: `pkg` resolves the install with its own resolver, prints the
- * plan, and stops at the first archive it cannot fetch, before it writes
- * any state. The page downloads exactly those archives, and the second run
+ * plan, and stops at the first archive it cannot fetch, before any install
+ * transaction starts (what remains is `pkg update`'s cache and the
+ * index-version marker). The page downloads exactly those archives, and the second run
  * installs them.
  */
 export async function installPackage(

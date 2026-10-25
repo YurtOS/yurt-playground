@@ -130,8 +130,8 @@ Bigger directions. Each needs design work, and the order is not fixed.
   packages and matching wheels) and downloads work only in the desktop app.
 - **Installed packages in the browser are lost on reload**, like every other
   file there ([#81](https://github.com/YurtOS/yurt-playground/issues/81)), and a
-  tablet refuses installs whose package archives add up to more than 16 MiB,
-  since one tablet tab has much less memory
+  tablet or phone refuses installs whose package archives add up to more than 16
+  MiB, since one tab there has much less memory
   ([#200](https://github.com/YurtOS/yurt-playground/issues/200)).
 - **Files in the browser are kept in memory only.** A page reload starts a fresh
   sandbox and loses everything you wrote, except sandboxes saved by the

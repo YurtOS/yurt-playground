@@ -470,7 +470,7 @@ function wireUpload(): void {
 /** The "Packages" control: the repository's packages, each with an
  * Install (src/packages.ts). One install at a time; progress and the
  * outcome land in the status line. */
-function wirePackages(tablet: boolean): void {
+function wirePackages(smallDevice: boolean): void {
   const toggle = byId("packages-toggle") as HTMLButtonElement;
   const panel = byId("packages");
   const state = byId("packages-state");
@@ -486,7 +486,7 @@ function wirePackages(tablet: boolean): void {
     try {
       await installPackage(name, {
         host: packageHost,
-        tablet,
+        tablet: smallDevice,
         progress: (message) => status.textContent = message,
       });
       status.textContent = `installed ${name}`;
@@ -594,7 +594,8 @@ async function runPage(): Promise<void> {
   // started. The desktop app runs natively and keeps everything.
   const device = deviceClass();
   const shellOnly = desktop === undefined && device === "tablet";
-  wirePackages(device === "tablet");
+  // A phone that boots anyway (`?start-anyway`) has less memory still.
+  wirePackages(device !== "desktop");
   // Only the in-tab kernel has the memory problem; the desktop app's page
   // runs the sandbox natively. A phone, and a tab the browser reloaded
   // mid-boot, get no sandbox unless `?start-anyway`. Read (and clear) the

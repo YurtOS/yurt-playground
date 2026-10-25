@@ -418,10 +418,11 @@ Deno.test("the cause comes from pkg's errors, not from its other output", async 
   const fetcher = await fakeRepo(new Uint8Array([1]));
   const { host } = fakeHost(PLAN, {
     code: 1,
-    // stdout says "failed" too, and comes first in the output.
-    stdout: "warning: transaction t1 is failed; see pkg recover --list\n" +
-      "install greet 0.1.0-yurt_0\n",
-    stderr: "Error: no space left on device\n",
+    // pkg's warning says "failed" too, and comes first; a plan line in
+    // stdout could name a package "...-error".
+    stdout: "install greet 0.1.0-yurt_0\n",
+    stderr: "warning: transaction t1 is failed; Repair the cause and run " +
+      "pkg recover t1\nError: no space left on device\n",
   });
   await assertRejects(
     () =>

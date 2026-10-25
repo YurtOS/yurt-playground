@@ -173,16 +173,18 @@ async function servePackages(msg: ToWorker): Promise<void> {
       stderr: decoder.decode(process.takeStderr()),
     });
   } catch (error) {
-    // Whether the script (and its cleanup) ran is unknown; what was staged
-    // may be up to hundreds of MB of the tab's memory. Best effort; the
-    // cause reported is the write's, the spawn's or the wait's.
-    await run(`rm -rf ${quoted(msg.dir)}`).then((p) => p.exited)
-      .catch(() => {});
     reply(
       false,
       undefined,
       error instanceof Error ? error.message : String(error),
     );
+  } finally {
+    // The script's trap removes the staged copy, unless the shell died by
+    // a signal (the tab out of memory, say) or never ran; it may be
+    // hundreds of MB of the tab's memory, so it goes here too, whatever
+    // happened. Best effort: removing nothing is fine.
+    await run(`rm -rf ${quoted(msg.dir)}`).then((p) => p.exited)
+      .catch(() => {});
   }
 }
 
