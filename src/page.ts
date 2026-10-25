@@ -7,6 +7,7 @@ import {
 } from "./memory_refused.ts";
 import { mountNotebook, type NotebookView } from "./notebook.ts";
 import { mountAgentPane } from "./agent_pane.ts";
+import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
 import {
@@ -86,6 +87,7 @@ const yurtState = (() => {
     running() {
       set("running");
       byId("export-home").hidden = false;
+      byId("upload-files").hidden = false;
       resolveReady();
     },
     failed(message: string) {
@@ -374,9 +376,64 @@ function wireExportHome(): void {
   });
 }
 
+/** The "Upload" control and a drop on the terminal: files from this device
+ * into /home/user (src/upload.ts). Works once the sandbox runs; progress
+ * and failures land in the status line. */
+function wireUpload(): void {
+  const button = byId("upload-files") as HTMLButtonElement;
+  const input = byId("upload-input") as HTMLInputElement;
+  const status = byId("status");
+  // One upload at a time, from the button or a drop.
+  let busy = false;
+  const upload = async (files: FileList | null) => {
+    const yurt = (globalThis as { yurt?: Yurt }).yurt;
+    if (yurt === undefined || files === null || files.length === 0) return;
+    if (yurt.status !== "running") {
+      status.textContent = "upload: the sandbox is not running";
+      return;
+    }
+    if (busy) {
+      status.textContent = "upload: another upload is still running";
+      return;
+    }
+    busy = true;
+    button.disabled = true;
+    try {
+      const written = await uploadFiles(
+        yurt,
+        Array.from(files),
+        (message) => status.textContent = message,
+      );
+      status.textContent = written.length === 1
+        ? `uploaded ${written[0]}`
+        : `uploaded ${written.length} files to ${UPLOAD_DIR}`;
+    } catch (error) {
+      status.textContent = error instanceof Error
+        ? error.message
+        : String(error);
+    } finally {
+      busy = false;
+      button.disabled = false;
+      input.value = "";
+    }
+  };
+  button.addEventListener("click", () => input.click());
+  input.addEventListener("change", () => upload(input.files));
+  const target = byId("term-wrap");
+  target.addEventListener("dragover", (event) => {
+    if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
+  });
+  target.addEventListener("drop", (event) => {
+    if (!event.dataTransfer?.types.includes("Files")) return;
+    event.preventDefault();
+    upload(event.dataTransfer.files);
+  });
+}
+
 async function runPage(): Promise<void> {
   watchNetwork(byId("net"));
   wireExportHome();
+  wireUpload();
   // The desktop app runs the sandbox natively; only the in-tab kernel needs
   // cross-origin isolation, and a page served without it cannot boot at all
   // and goes to the explanation.

@@ -1,4 +1,5 @@
 import { chromium, devices, type Page } from "playwright";
+import { Buffer } from "node:buffer";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
@@ -882,6 +883,63 @@ if (import.meta.main) {
     console.log(
       `playground e2e: Download home saved ${archive.byteLength} bytes`,
     );
+    // "Upload": files from this device into /home/user through the real
+    // control. A #! script comes in executable, a plain file does not, and
+    // a few MB arrive intact (the in-tab write streams them through stdin).
+    const big = new Uint8Array(3 * 1024 * 1024);
+    for (let i = 0; i < big.length; i++) big[i] = (i * 7 + 3) & 0xff;
+    await page.getByTestId("upload-input").setInputFiles([
+      {
+        name: "hi.sh",
+        mimeType: "text/x-sh",
+        buffer: Buffer.from(new TextEncoder().encode(
+          "#!/bin/sh\necho uploaded-script-ran\n",
+        )),
+      },
+      {
+        name: "notes.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from(new TextEncoder().encode("plain\n")),
+      },
+      {
+        name: "big.bin",
+        mimeType: "application/octet-stream",
+        buffer: Buffer.from(big),
+      },
+    ]);
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#status")?.textContent?.startsWith(
+          "uploaded 3 files",
+        ),
+      undefined,
+      { timeout: 60_000 },
+    ).catch(async (e) => {
+      throw new Error(
+        `${e}; status=${await page.locator("#status").textContent()}`,
+      );
+    });
+    const uploaded = await page.evaluate(() =>
+      (globalThis as unknown as {
+        yurt: { exec(cmd: string): Promise<{ code: number; stdout: string }> };
+      }).yurt.exec(
+        "cd /home/user && ./hi.sh && wc -c < big.bin && sha256sum big.bin && [ -x notes.txt ] && echo notes-executable || echo notes-plain",
+      )
+    );
+    // The bytes too, not only their count: a transport that kept the length
+    // but changed bytes (line-discipline mangling) would pass a size check.
+    const bigSha = Array.from(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", big)),
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join("");
+    if (
+      uploaded.code !== 0 ||
+      uploaded.stdout.trim().split("\n").join(" ") !==
+        `uploaded-script-ran ${big.length} ${bigSha}  big.bin notes-plain`
+    ) {
+      throw new Error(`upload: ${JSON.stringify(uploaded)}`);
+    }
+    console.log(`playground e2e: Upload wrote 3 files (${big.length} bytes)`);
     // The cell and the ash terminal share one VFS: a file written by Python
     // is read back by the shell in the xterm (#4).
     await page.getByTestId("notebook-input").fill(
