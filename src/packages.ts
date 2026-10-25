@@ -74,7 +74,7 @@ export type PackageVersion = {
   url: string;
   sha256: string;
   size: number;
-  depends: { name: string; req: string }[];
+  depends?: { name: string; req: string }[];
   yanked: boolean;
 };
 
@@ -142,7 +142,7 @@ export function parsePackageFile(bytes: Uint8Array): PackageFile {
   // The size: the limits and every download's bound count on it.
   file.versions = file.versions.filter((v) =>
     typeof v?.version === "string" && typeof v.build === "string" &&
-    typeof v.url === "string" && Array.isArray(v.depends) &&
+    typeof v.url === "string" &&
     typeof v.sha256 === "string" && Number.isSafeInteger(v.size) &&
     v.size >= 0
   );
