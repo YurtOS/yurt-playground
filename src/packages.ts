@@ -332,16 +332,21 @@ export type PackageHost = {
 
 export type Fetcher = (
   url: string,
+  limit: number,
   onBytes?: (received: number) => void,
 ) => Promise<Uint8Array>;
 
-/** `fetch` with progress, failing on any status but 200. */
-export const fetchWithProgress: Fetcher = async (url, onBytes) => {
+/** The most an index, a signature or a package's metadata may be: they are
+ * a few KiB. */
+const METADATA_MAX_BYTES = 4 * 1024 * 1024;
+
+/** `fetch` with progress, failing on any status but 200, and as soon as
+ * the response passes `limit` bytes, so a response larger than the index
+ * says is never held whole (the tablet limit counts on it). */
+export const fetchWithProgress: Fetcher = async (url, limit, onBytes) => {
   const response = await fetch(url, { cache: "no-cache" });
   if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
-  if (response.body === null) {
-    return new Uint8Array(await response.arrayBuffer());
-  }
+  if (response.body === null) return new Uint8Array();
   const chunks: Uint8Array[] = [];
   let received = 0;
   const reader = response.body.getReader();
@@ -350,6 +355,10 @@ export const fetchWithProgress: Fetcher = async (url, onBytes) => {
     if (done) break;
     chunks.push(value);
     received += value.byteLength;
+    if (received > limit) {
+      await reader.cancel();
+      throw new Error(`${url}: larger than ${limit} bytes`);
+    }
     onBytes?.(received);
   }
   const out = new Uint8Array(received);
@@ -379,14 +388,14 @@ export async function loadCatalog(
   base: string = PACKAGE_REPO_URL,
 ): Promise<Catalog> {
   const [indexBytes, indexBundle] = await Promise.all([
-    fetcher(`${base}index.json`),
-    fetcher(`${base}index.json.bundle`),
+    fetcher(`${base}index.json`, METADATA_MAX_BYTES),
+    fetcher(`${base}index.json.bundle`, METADATA_MAX_BYTES),
   ]);
   const index = parseIndex(indexBytes);
   const metadata = new Map<string, { bytes: Uint8Array; file: PackageFile }>();
   await Promise.all(
     Object.entries(index.packages).map(async ([name, entry]) => {
-      const bytes = await fetcher(`${base}${entry.url}`);
+      const bytes = await fetcher(`${base}${entry.url}`, METADATA_MAX_BYTES);
       metadata.set(name, { bytes, file: parsePackageFile(bytes) });
     }),
   );
@@ -417,10 +426,12 @@ function failure(
   name: string,
   result: { code: number | null; stdout: string; stderr: string },
 ): Error {
-  const lines = `${result.stdout}${result.stderr}`.split("\n")
-    .filter((line) => line.trim() !== "");
+  // stderr first: stdout repeats the plan, whose package names may say
+  // "error" (libgpg-error).
+  const lines = `${result.stderr}\n${result.stdout}`.split("\n")
+    .filter((line) => line.trim() !== "" && !/^install \S+ \S+$/.test(line));
   const cause = lines.find((line) => /fail|error/i.test(line)) ??
-    lines.at(-1);
+    lines.at(0);
   return new Error(
     `pkg install ${name} failed: ${cause ?? `exit ${result.code}`}`,
   );
@@ -541,7 +552,7 @@ export async function installPackage(
         } of ${formatBytes(total)}`,
       );
     show(0);
-    const bytes = await fetcher(`${base}${release.url}`, show);
+    const bytes = await fetcher(`${base}${release.url}`, release.size, show);
     if (bytes.byteLength !== release.size) {
       throw new Error(
         `${release.name}: downloaded ${bytes.byteLength} bytes, the index says ${release.size}`,
@@ -555,7 +566,7 @@ export async function installPackage(
     archives.set(release.url, bytes);
     archives.set(
       `${release.url}.bundle`,
-      await fetcher(`${base}${release.url}.bundle`),
+      await fetcher(`${base}${release.url}.bundle`, METADATA_MAX_BYTES),
     );
     done += release.size;
   }

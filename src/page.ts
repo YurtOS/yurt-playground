@@ -307,10 +307,15 @@ function boot(
             reject,
           });
           // The archives move to the worker, not copied: tens of MB.
-          worker.postMessage(
-            { type: "pkg-run", req, files, script, dir },
-            files.map((file) => file.bytes.buffer as ArrayBuffer),
-          );
+          try {
+            worker.postMessage(
+              { type: "pkg-run", req, files, script, dir },
+              files.map((file) => file.bytes.buffer as ArrayBuffer),
+            );
+          } catch (error) {
+            pending.delete(req);
+            reject(error);
+          }
         }),
     };
   }

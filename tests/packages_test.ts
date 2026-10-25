@@ -2,6 +2,7 @@ import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   browserTrustedRepos,
   CACHE_ROOT,
+  fetchWithProgress,
   installPackage,
   installScript,
   latestRelease,
@@ -411,4 +412,57 @@ Deno.test("a refusal from the guest's pkg names its cause, not its summary", asy
     Error,
     "pkg install greet failed: failed to update official: verification failed: invalid Sigstore bundle",
   );
+});
+
+Deno.test("the cause comes from pkg's errors, not from its other output", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1]));
+  const { host } = fakeHost(PLAN, {
+    code: 1,
+    // stdout says "failed" too, and comes first in the output.
+    stdout: "warning: transaction t1 is failed; see pkg recover --list\n" +
+      "install greet 0.1.0-yurt_0\n",
+    stderr: "Error: no space left on device\n",
+  });
+  await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+      }),
+    Error,
+    "pkg install greet failed: Error: no space left on device",
+  );
+});
+
+Deno.test("a download larger than its limit stops before it is held whole", async () => {
+  const real = globalThis.fetch;
+  let pulled = 0;
+  globalThis.fetch = () => {
+    pulled = 0;
+    return Promise.resolve(
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            pulled++;
+            controller.enqueue(new Uint8Array(1024));
+            if (pulled === 100) controller.close();
+          },
+        }),
+      ),
+    );
+  };
+  try {
+    await assertRejects(
+      () => fetchWithProgress("https://example.test/x", 4096),
+      Error,
+      "larger than 4096 bytes",
+    );
+    assertEquals(pulled < 10, true, `pulled ${pulled} chunks`);
+    const whole = await fetchWithProgress("https://example.test/x", 100 * 1024);
+    assertEquals(whole.byteLength, 100 * 1024);
+  } finally {
+    globalThis.fetch = real;
+  }
 });
