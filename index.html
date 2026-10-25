@@ -132,7 +132,7 @@
       <article class="pane upcoming" id="upcoming">
         <h1>Upcoming</h1>
         <p class="date">
-          Updated 2026-10-23 · not released yet; plans may change
+          Updated 2026-10-25 · not released yet; plans may change
         </p>
         <p>
           Work that is in progress or in review for a later train. None of it is
@@ -151,10 +151,9 @@
             browser host matching the desktop host (kernel #3683, #3681).
           </li>
           <li>
-            Binding a runtime-loaded library's global data to the program's
-            symbols (kernel #3985) waits for stricter checks on the
-            thread-local storage of loaded libraries (kernel #3978). It goes in
-            a later train.
+            Thread-local storage in runtime-loaded libraries: the kernel commit
+            point has landed (kernel #4017); the Wasmtime and browser-host
+            halves are in review (kernel #4059, #4034).
           </li>
         </ul>
         <h2>JavaScript JIT (experimental)</h2>
@@ -212,70 +211,6 @@
             thread, and signals reach them only between system calls.
           </li>
         </ul>
-        <h2>Next train (planned for 2026-10-27)</h2>
-        <p>
-          The kernel from main with the fixes below. The Guest SDK stays at
-          0.0.29, so programs built for the current train keep running.
-        </p>
-        <h3>Merged</h3>
-        <ul>
-          <li>
-            A <code>#!</code> script on a host-mounted folder can name its
-            interpreter (#3961).
-          </li>
-          <li>
-            A TCP send to a host socket never blocks the whole sandbox; a
-            blocking send waits for room instead (#3325).
-          </li>
-          <li>
-            <code>waitid</code> fills in <code>siginfo</code> in the caller's
-            layout (#3908).
-          </li>
-          <li>
-            A program's data relocations are applied once, before its startup
-            constructors run (#3940).
-          </li>
-          <li>
-            On the browser host, libraries loaded at runtime run their
-            constructors (#3930).
-          </li>
-          <li>
-            <code>cmsg_len</code> is bounds-checked (#3936), and
-            <code>SO_BINDTODEVICE</code> reports the same result size as Linux
-            (#3927).
-          </li>
-          <li>
-            Image: <code>python3</code> is rebuilt as a plain Linux/musl
-            CPython (yurt-ports #236). zstd and pkgconf are new ports
-            (yurt-ports #134, #133).
-          </li>
-          <li>
-            Playground: the snapshot demo and both notebook kernels tell you to
-            reload when the browser runs out of memory for new processes, as the
-            main page already does (playground #226).
-          </li>
-        </ul>
-        <h3>In review for it</h3>
-        <ul>
-          <li>
-            epoll keeps registrations on stdin, stdout and stderr when another
-            fd is closed, honours <code>EPOLLEXCLUSIVE</code> and ignores
-            unknown event bits (#3837).
-          </li>
-          <li>
-            A process that loaded a library with its own memory can still fork:
-            <code>dlopen</code> refuses such a library instead (#3983).
-          </li>
-          <li>
-            <code>dlsym(handle)</code> also searches the library's dependencies,
-            as on Linux (#3986).
-          </li>
-          <li>
-            <code>recvmmsg</code> with <code>MSG_CMSG_CLOEXEC</code> marks
-            received file descriptors close-on-exec (#3956).
-          </li>
-          <li>Faster <code>fork</code> of a large program (#3988).</li>
-        </ul>
         <h2>Later trains</h2>
         <ul>
           <li>
@@ -296,6 +231,203 @@
           <li>
             Ctrl-C and <code>kill -INT</code> reach a CPU-bound Python program,
             so <code>KeyboardInterrupt</code> works (#2811).
+          </li>
+        </ul>
+      </article>
+      <article class="pane" id="playground-2026.10.25-f884f16">
+        <h1>playground-2026.10.25-f884f16</h1>
+        <p class="date">
+          2026-10-25 · replaces playground-2026.10.20-22366ef
+        </p>
+        <p>
+          A kernel train on the same Guest SDK (0.0.29), so programs built for
+          the previous train keep running. It fixes epoll on standard input and
+          output, makes runtime-loaded libraries behave more like Linux, writes
+          shared file mappings back reliably, and rebuilds the image's
+          <code>python3</code> as a plain Linux/musl CPython.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Version</th>
+            </tr>
+            <tr>
+              <td>Kernel</td>
+              <td>yurtos-kernel f884f16 (kernel-v0.0.11)</td>
+            </tr>
+            <tr>
+              <td>Image</td>
+              <td>yurt-ports 33ec0f1</td>
+            </tr>
+            <tr>
+              <td>Desktop host and yurt CLI</td>
+              <td>yurt-sandbox 071210a</td>
+            </tr>
+            <tr>
+              <td>Guest SDK</td>
+              <td>0.0.29 (unchanged)</td>
+            </tr>
+          </table>
+        </div>
+
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            <strong>epoll on stdin, stdout and stderr.</strong> A watch on a
+            standard stream survives closing an unrelated descriptor and ends
+            when its file's last descriptor goes, however that happens (close,
+            <code>dup2</code>, exec, exit). <code>EPOLLEXCLUSIVE</code> is
+            refused where Linux refuses it, and unknown event bits are ignored
+            (#3837).
+          </li>
+          <li>
+            <strong><code>python3</code> is a plain Linux/musl CPython</strong>
+            (yurt-ports #236, #245).
+          </li>
+          <li>
+            <strong>A <code>#!</code> script on a host-mounted folder</strong>
+            can name its interpreter, from <code>execve</code>,
+            <code>posix_spawn</code> and the shell (#3961).
+          </li>
+          <li>
+            <strong>Shared file mappings are written back</strong> at exit, on
+            a fatal signal and at exec (#3963), and <code>msync</code> reaches
+            host files (#4061).
+          </li>
+          <li>
+            <strong>A TCP send to a host socket never stalls the sandbox.</strong>
+            A blocking send waits for room instead (#3325).
+          </li>
+        </ul>
+
+        <h2>Kernel</h2>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Area</th>
+              <th>Change</th>
+              <th>Issue</th>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                <code>dlsym(handle)</code> also searches the library's
+                dependencies, breadth first, as on Linux
+              </td>
+              <td>#3885, #3986</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                <code>dlsym(RTLD_DEFAULT)</code> searches the default scope
+                (desktop host)
+              </td>
+              <td>#301, #3994</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                A library's global data imports bind to the program's symbols
+              </td>
+              <td>#3903, #3985</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                A library loaded in one thread is usable from every thread,
+                including one that loads it again
+              </td>
+              <td>#3665, #4033, #4044, #4045, #4057</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                <code>dlopen</code> refuses a library that defines its own
+                memory, so the process can still fork; a failed load leaves
+                nothing behind
+              </td>
+              <td>#3806, #3983, #4000</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                A program's data relocations are applied once, before its
+                constructors run; on the browser host, runtime-loaded
+                libraries run their constructors
+              </td>
+              <td>#3852, #3940, #3930</td>
+            </tr>
+            <tr>
+              <td>Memory</td>
+              <td>
+                <code>MAP_SHARED</code> file mappings are written back at exit,
+                signal death and exec; <code>/dev/shm</code> content survives
+                growth
+              </td>
+              <td>#3426, #3963, #4046, #4061</td>
+            </tr>
+            <tr>
+              <td>Sockets</td>
+              <td>
+                <code>MSG_CMSG_CLOEXEC</code> marks received descriptors
+                close-on-exec, including through <code>recvmmsg</code>
+              </td>
+              <td>#3937, #3955</td>
+            </tr>
+            <tr>
+              <td>Sockets</td>
+              <td>
+                <code>cmsg_len</code> is bounds-checked;
+                <code>SO_BINDTODEVICE</code> reports Linux's result size
+              </td>
+              <td>#3936, #3927</td>
+            </tr>
+            <tr>
+              <td>Processes</td>
+              <td>
+                <code>waitid</code> fills in <code>siginfo</code> in the
+                caller's layout and checks its output pointers
+              </td>
+              <td>#3908</td>
+            </tr>
+            <tr>
+              <td>Processes</td>
+              <td>Faster <code>fork</code> of a large program (desktop host)</td>
+              <td>#3809, #3988</td>
+            </tr>
+            <tr>
+              <td>Checkpoints</td>
+              <td>
+                Checkpoint chains are compacted durably through the inactive
+                manifest slot
+              </td>
+              <td>#2106, #3277</td>
+            </tr>
+            <tr>
+              <td>Runtime</td>
+              <td>Wasmtime 48.0.7 (security patch releases)</td>
+              <td>#4028</td>
+            </tr>
+          </table>
+        </div>
+
+        <h2>Image</h2>
+        <ul>
+          <li>
+            <code>python3</code> is configured as plain Linux/musl, and its
+            Linux API smoke now checks <code>os.getrandom</code> (yurt-ports
+            #236, #245).
+          </li>
+          <li>New ports: zstd and pkgconf (yurt-ports #134, #133).</li>
+        </ul>
+
+        <h2>Playground</h2>
+        <ul>
+          <li>
+            The snapshot demo and both notebook kernels tell you to reload when
+            the browser runs out of memory for new processes, as the main page
+            already does (playground #226).
           </li>
         </ul>
       </article>
