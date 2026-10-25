@@ -101,6 +101,31 @@ export async function stageYurtimg(
       ownershipMethodForEntry(entry.type),
     );
   }
+  applyImageModes(mk, index);
+}
+
+// What the kernel gives a staged file or directory when nothing sets it.
+const DEFAULT_FILE_MODE = 0o644;
+const DEFAULT_DIR_MODE = 0o755;
+
+// The image records each entry's permission bits; staging otherwise drops them,
+// which leaves every shell script without its execute bit ("Permission
+// denied"). Runs after chown, which clears setuid and setgid.
+function applyImageModes(
+  mk: KernelHostInterface,
+  index: {
+    entries: Record<string, { type: string; mode?: number }>;
+  },
+): void {
+  for (const [path, entry] of Object.entries(index.entries)) {
+    if (entry.mode === undefined || entry.type === "symlink") continue;
+    const mode = entry.mode & 0o7777;
+    const fallback = entry.type === "dir"
+      ? DEFAULT_DIR_MODE
+      : DEFAULT_FILE_MODE;
+    if (mode === fallback) continue;
+    mk.chmodRamfsPath(s(path), mode);
+  }
 }
 
 function imageDirectories(
