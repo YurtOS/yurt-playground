@@ -49,11 +49,12 @@ What you can use today.
 Planned for the next one or two trains. These are in progress, not finished.
 
 - **Upload files into the browser sandbox.** Why: today you can download your
-  home directory but not bring your own files or data in. In review as
+  home directory but not bring your own files or data in. Draft PR
   [#230](https://github.com/YurtOS/yurt-playground/pull/230).
-- **Python native extensions loaded at run time.** Why: the kernel side of
-  `dlopen` has shipped; a shared C library is the remaining piece for ordinary
-  CPython extension modules to load.
+- **Python native extensions loaded from a `.so` at run time**, rather than
+  built into Python as NumPy is today. Why: the kernel side of `dlopen` has
+  shipped; a shared C library is the remaining piece for ordinary CPython
+  extension modules to load.
 - **Thread-local storage in runtime-loaded libraries.** Why: libraries loaded
   with `dlopen` that keep per-thread state should behave as they do on Linux.
 
@@ -75,16 +76,18 @@ Bigger directions. Each needs design work, and the order is not fixed.
 - **Go in the browser and on iPad.** Go runs on Yurt as an ordinary Linux
   program, using a port that builds on upstream Go's
   [wasm32 work](https://github.com/golang/go/issues/63131), which is not merged
-  upstream yet. In a desktop sandbox the Go toolchain (`go`, `gofmt`) already
-  builds, runs, tests and vets programs. Go programs cannot run in the browser
-  sandbox yet: the browser sandbox runs only programs that share the one memory
-  it provides, as C, Rust and Python programs already do, while Go's linker
-  gives each program a memory of its own, so `go version` in the tab fails with
-  "Exec format error". A change to Go's linker is in progress. The toolchain is
-  also large (about 41 MB to download and about 150 MB unpacked, all held in the
-  tab's memory), so it would be an opt-in download rather than part of the
-  default image. On iPad the per-tab process and memory limits are a further
-  question, since `go build` starts several compiler and linker processes.
+  upstream yet. Built separately, the Go toolchain (`go`, `gofmt`) already
+  builds and tests programs in a desktop sandbox; it is not in the playground
+  image yet. Go programs cannot run in the browser sandbox yet: the browser
+  sandbox runs only programs that share the one memory it provides, as C, Rust
+  and Python programs already do, while Go's linker gives each program a memory
+  of its own, so `go version` in the tab fails with "Exec format error". A
+  change to Go's linker is in progress. The toolchain is also large: the full Go
+  package is about 57 MB, and a trimmed toolchain is about 40 MB to download and
+  about 150 MB once unpacked, all held in the tab's memory, so it would be an
+  opt-in download rather than part of the default image. On iPad the per-tab
+  process and memory limits are a further question, since `go build` starts
+  several compiler and linker processes.
 - **More of the playground on tablets.** iPad browsers limit the processes and
   memory one tab can use, which is why tablets get the shell only today and why
   a long shell session can still run out of memory
@@ -104,11 +107,12 @@ Bigger directions. Each needs design work, and the order is not fixed.
 
 ## Known limits today
 
-- **No network in the browser tab**, by design. `pip install` and downloads work
-  only in the desktop app.
+- **No network in the browser tab**, by design. `pip install` (pure-Python
+  packages and matching wheels) and downloads work only in the desktop app.
 - **Files in the browser are kept in memory only.** A page reload starts a fresh
-  sandbox and loses everything you wrote, except a sandbox saved by the
-  suspend/resume notebook. Use "Download home" to keep your files.
+  sandbox and loses everything you wrote, except sandboxes saved by the
+  suspend/resume notebook or the snapshot demo. Use "Download home" to keep your
+  files.
 - **On the desktop**, the root filesystem is also held in memory, and changes to
   it are written to disk at sync points (an explicit `sync`, or when the sandbox
   stops). Host folders you mount are on disk directly.
