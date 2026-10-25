@@ -95,10 +95,13 @@ export function isPackageName(name: string): boolean {
  * stages at the same path pkg's URL join reads: no leading slash, no `..`,
  * and none of the characters a URL reads differently from a file name --
  * `%` (an encoded `..` resolves as one), `?` and `#` (a query or fragment
- * pkg drops), `:` (a scheme, which pkg takes as an absolute URL). */
+ * pkg drops), `:` (a scheme, which pkg takes as an absolute URL), and
+ * spaces and control characters (URL parsers strip tabs and newlines). */
 function checkRelative(path: string, what: string): string {
   if (
-    path === "" || path.startsWith("/") || /[\\%?#:]/.test(path) ||
+    path === "" || path.startsWith("/") ||
+    // deno-lint-ignore no-control-regex
+    /[\\%?#:\x00-\x20\x7f]/.test(path) ||
     path.split("/").some((part) => part === "" || part === "." || part === "..")
   ) {
     throw new Error(`${what}: unsupported path ${JSON.stringify(path)}`);
