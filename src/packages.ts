@@ -349,13 +349,6 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
 /** A file for the guest: its path under the staged copy, and its bytes. */
 export type StagedFile = { path: string; bytes: Uint8Array };
 
-/** What an install needs from the sandbox: a guest file read as the login
- * user, and the staged files written (root's: out of reach of an
- * unprivileged process, though not of `sudo`; pkg's signature checks are
- * the defence) then the script run as the login user. Every staged file
- * is under {@link STAGING_DIR}; the script removes it, and the host
- * removes it again after the run, in case the script never ran or was
- * killed. */
 /** Whether every file is inside {@link STAGING_DIR}: what the worker
  * checks before it writes them as root. */
 export function onlyStaged(files: StagedFile[]): boolean {
@@ -365,6 +358,13 @@ export function onlyStaged(files: StagedFile[]): boolean {
   );
 }
 
+/** What an install needs from the sandbox: a guest file read as the login
+ * user, and the staged files written (root's: out of reach of an
+ * unprivileged process, though not of `sudo`; pkg's signature checks are
+ * the defence) then the script run as the login user. Every staged file
+ * is under {@link STAGING_DIR}; the script removes it, and the host
+ * removes it again after the run, in case the script never ran or was
+ * killed. */
 export type PackageHost = {
   readFile(path: string): Promise<Uint8Array>;
   stageAndRun(
