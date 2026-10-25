@@ -86,7 +86,7 @@ export async function connectJupyterWithRetries(
   throw new Error("Jupyter kernel did not become ready", { cause: lastError });
 }
 
-type KernelConnection = {
+export type KernelConnection = {
   shell_port: number;
   iopub_port: number;
   stdin_port: number;
@@ -96,10 +96,13 @@ type KernelConnection = {
   transport: "tcp";
 };
 
-async function readConnectionFile(
+export async function readConnectionFile(
   session: JupyterLaunchSession,
 ): Promise<KernelConnection> {
   const marker = "YURT_JUPYTER_CONNECTION_READY";
+  // The PTY echoes the typed command before the shell runs it. Quoting part of
+  // the marker keeps the echo from containing it; the shell's output does.
+  const typedMarker = marker.replace("READY", '"READY"');
   const bytes: number[] = [];
   let text = "";
   let resolveOutput: (() => void) | undefined;
@@ -113,7 +116,7 @@ async function readConnectionFile(
       encoder.encode(
         `i=0; while [ ! -s ${JUPYTER_CONNECTION_FILE} ] && [ $i -lt 60 ]; do ` +
           `sleep 1; i=$((i+1)); done; cat ${JUPYTER_CONNECTION_FILE}; ` +
-          `echo ${marker}\n`,
+          `echo ${typedMarker}\n`,
       ),
     );
     if (!text.includes(marker)) {
@@ -123,13 +126,14 @@ async function readConnectionFile(
         "Jupyter connection file timed out",
       );
     }
-    const jsonStart = text.indexOf("{");
-    const jsonEnd = text.lastIndexOf("}");
+    const answer = text.slice(0, text.indexOf(marker));
+    const jsonStart = answer.indexOf("{");
+    const jsonEnd = answer.lastIndexOf("}");
     if (jsonStart < 0 || jsonEnd < jsonStart) {
       throw new Error("Jupyter connection file was not printed");
     }
     const connection = JSON.parse(
-      text.slice(jsonStart, jsonEnd + 1),
+      answer.slice(jsonStart, jsonEnd + 1),
     ) as KernelConnection;
     if (connection.transport !== "tcp") {
       throw new Error("Jupyter transport is not tcp");

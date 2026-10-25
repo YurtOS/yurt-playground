@@ -14,7 +14,13 @@ import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 
 installCoordinatorWorkerProxy();
 type ToWorker =
-  | { type: "start"; cols: number; rows: number; isolated: boolean }
+  | {
+    type: "start";
+    cols: number;
+    rows: number;
+    isolated: boolean;
+    notebook?: boolean;
+  }
   | { type: "in"; text: string }
   | { type: "resize"; rows: number; cols: number }
   | { type: "cell"; id: string; code: string };
@@ -110,15 +116,27 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       show: (text) => post({ type: "status", text }),
       term: workerTerm({ cols: msg.cols, rows: msg.rows }),
     });
-    post({ type: "status", text: "starting Jupyter" });
-    jupyter = await startGuestKernel(session);
-    post({ type: "notebook-ready" });
   } catch (error) {
     try {
       session?.stop();
     } catch {
       // The guest may already have stopped while startup failed.
     }
+    post({
+      type: "error",
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+  if (msg.notebook === false) return;
+  // The shell is the user's and already usable: a Jupyter failure is
+  // reported, but must not stop it.
+  try {
+    post({ type: "status", text: "starting Jupyter" });
+    jupyter = await startGuestKernel(session);
+    post({ type: "status", text: "" });
+    post({ type: "notebook-ready" });
+  } catch (error) {
     post({
       type: "error",
       message: error instanceof Error ? error.message : String(error),

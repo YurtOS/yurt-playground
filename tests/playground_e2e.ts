@@ -49,7 +49,8 @@ if (import.meta.main) {
         ?.textContent === "2"
     );
     await page.getByTestId("notebook-input").fill(
-      "import numpy as np; np.array([1, 2]).sum()",
+      // numpy 2 reprs its scalars (np.int32(3)); int() keeps the check on numpy.
+      "import numpy as np; int(np.array([1, 2]).sum())",
     );
     await page.getByTestId("notebook-execute").click();
     await page.waitForFunction(() =>

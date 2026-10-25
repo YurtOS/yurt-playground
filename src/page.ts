@@ -51,6 +51,9 @@ function runPage(): void {
     cols: term.cols,
     rows: term.rows,
     isolated: true,
+    // `?notebook=off` boots just the shell: no Jupyter kernel typed into it
+    // and none competing for the sandbox's CPU, as when demoing a TUI.
+    notebook: new URLSearchParams(location.search).get("notebook") !== "off",
   });
 }
 
