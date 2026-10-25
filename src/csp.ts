@@ -6,11 +6,15 @@
  * site's own origin (`connect-src 'self'`), so notebook markdown, rich HTML
  * output or a broken frontend cannot phone out. One exception, outside
  * JupyterLite: the local agent's weights (#140) download from Hugging Face
- * ({@link MODEL_ORIGINS}); gigabytes do not fit the site's host. Scripts come from the origin
+ * ({@link MODEL_ORIGINS}); gigabytes do not fit the site's host. And the
+ * packages a user installs come from YurtOS/yurt-packages
+ * ({@link PACKAGE_SOURCES}, src/packages.ts). Scripts come from the origin
  * plus the inline bootstraps JupyterLite emits in its index pages, allowed
  * by hash; the WebAssembly kernel needs `'wasm-unsafe-eval'`. Styles allow
  * inline because JupyterLab sets them everywhere.
  */
+
+import { PACKAGE_SOURCES } from "./packages.ts";
 
 const INLINE_SCRIPT = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
 
@@ -78,8 +82,10 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "media-src 'self' blob:",
-    ["connect-src 'self'", ...(options.sameOriginOnly ? [] : MODEL_ORIGINS)]
-      .join(" "),
+    [
+      "connect-src 'self'",
+      ...(options.sameOriginOnly ? [] : [...MODEL_ORIGINS, ...PACKAGE_SOURCES]),
+    ].join(" "),
     "worker-src 'self'",
     "frame-src 'none'",
     "object-src 'none'",

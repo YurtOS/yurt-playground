@@ -49,8 +49,23 @@ What you can use today.
 Planned for the next one or two trains. These are in progress, not finished.
 
 - **Upload files into the browser sandbox.** Why: today you can download your
-  home directory but not bring your own files or data in. Draft PR
-  [#230](https://github.com/YurtOS/yurt-playground/pull/230).
+  home directory but not bring your own files or data in. Merged in
+  [#230](https://github.com/YurtOS/yurt-playground/pull/230); it ships with the
+  next train.
+- **A modular image: a small base, the rest as packages.** Why: one image with
+  everything is slow to load and still never has the tool you need. The base
+  image keeps the small tools (`git`, `curl`, `jq`, `sqlite3`, `zsh`, `make`,
+  `perl`, `zstd`, `xz`, CA certificates) and adds the `pkg` client with a
+  trusted-repository configuration for
+  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), and a
+  passwordless `sudo` for the default user, which `pkg` needs. In progress.
+- **Install packages in the browser tab.** Why: the tab has no network, so
+  `sudo pkg install` cannot download there. A _Packages_ control fetches a
+  package for the sandbox, and the sandbox's own `pkg` verifies its signature
+  and installs it, as on the desktop. Draft PR
+  [#231](https://github.com/YurtOS/yurt-playground/pull/231); it needs the base
+  image above, and packages republished in the current format with real
+  signatures (the builds published today are refused).
 - **Python native extensions loaded from a `.so` at run time**, rather than
   built into Python as NumPy is today. Why: the kernel side of `dlopen` has
   shipped; a shared C library is the remaining piece for ordinary CPython
@@ -62,6 +77,11 @@ Planned for the next one or two trains. These are in progress, not finished.
 
 Bigger directions. Each needs design work, and the order is not fixed.
 
+- **Go and `gh` as packages, and a current clang**, published in
+  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) when there is
+  demand for them, rather than in the base image. Planned: Go and `gh` are not
+  published there today, and the clang build there predates the current package
+  format.
 - **Files that survive a reload.** Durable storage for the browser sandbox, so a
   reload does not lose your work
   ([#81](https://github.com/YurtOS/yurt-playground/issues/81)). Saving the whole
@@ -109,6 +129,11 @@ Bigger directions. Each needs design work, and the order is not fixed.
 
 - **No network in the browser tab**, by design. `pip install` (pure-Python
   packages and matching wheels) and downloads work only in the desktop app.
+- **Installed packages in the browser are lost on reload**, like every other
+  file there ([#81](https://github.com/YurtOS/yurt-playground/issues/81)), and a
+  tablet or phone refuses installs whose downloads add up to more than 16 MiB,
+  since one tab there has much less memory
+  ([#200](https://github.com/YurtOS/yurt-playground/issues/200)).
 - **Files in the browser are kept in memory only.** A page reload starts a fresh
   sandbox and loses everything you wrote, except sandboxes saved by the
   suspend/resume notebook or the snapshot demo. Use "Download home" to keep your
