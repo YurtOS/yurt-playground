@@ -200,13 +200,19 @@ Deno.test("a tablet refuses what a desktop browser installs", () => {
 Deno.test("pkg update runs unless pkg's cache holds this index; the copy is removed", () => {
   const script = installScript("zsh", "official");
   const lines = script.split("\n");
-  assertEquals(lines[0], `cleanup() { sudo rm -rf '${STAGING_DIR}'; }`);
+  assertEquals(
+    lines[0],
+    `cleanup() { sudo rm -rf '${STAGING_DIR}'; rm -f "$err"; }`,
+  );
   assertEquals(lines[1], "trap cleanup EXIT");
   assertEquals(
     lines.filter((line) => line.includes("sudo pkg --etc-root")),
     [
       `  sudo pkg --etc-root '${STAGING_DIR}/etc' --cache-root '${CACHE_ROOT}' update || exit 1`,
-      `sudo pkg --etc-root '${STAGING_DIR}/etc' --cache-root '${CACHE_ROOT}' install 'zsh'`,
+      `sudo pkg --etc-root '${STAGING_DIR}/etc' --cache-root '${CACHE_ROOT}' install 'zsh' 2>"$err"`,
+      // Once more, after an update, when pkg says the signer changed.
+      `  sudo pkg --etc-root '${STAGING_DIR}/etc' --cache-root '${CACHE_ROOT}' update || exit 1`,
+      `  sudo pkg --etc-root '${STAGING_DIR}/etc' --cache-root '${CACHE_ROOT}' install 'zsh'`,
     ],
   );
   assertEquals(
@@ -532,6 +538,9 @@ Deno.test("the worker writes only inside the staging dir", () => {
       STAGING_DIR,
       `${STAGING_DIR}-other/x`,
       `${STAGING_DIR}/repo/../../../etc/passwd`,
+      `${STAGING_DIR}/./x`,
+      `${STAGING_DIR}//x`,
+      `${STAGING_DIR}/repo/`,
     ]
   ) {
     assertEquals(

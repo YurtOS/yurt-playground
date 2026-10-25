@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "index_version": 17,
+  "generated_at": "2026-09-22T06:12:06Z",
+  "expires_at": "2026-09-29T06:12:06Z",
+  "packages": {
+    "busybox": {
+      "sha256": "dfd846304721d4d0a51d88c0e4bf48e88260dfca709f1a47496901b25da1fefe",
+      "size": 529,
+      "url": "packages/busybox.json"
+    },
+    "clang": {
+      "sha256": "fbd2ac383553dcc05ddc82e5047b35861cda5e859498e31af4d1b1cfeae0c059",
+      "size": 525,
+      "url": "packages/clang.json"
+    },
+    "libcxx": {
+      "sha256": "212d42841aa3df1f33179bcb71abf68183e1f6f3c85e86acabee74685cd52282",
+      "size": 517,
+      "url": "packages/libcxx.json"
+    },
+    "ncurses": {
+      "sha256": "90145fac920be34a4657127dcc70feece80cfaa86b55542c13b4d66036e688dc",
+      "size": 526,
+      "url": "packages/ncurses.json"
+    },
+    "openssl": {
+      "sha256": "6b2db8e0bc1baaa8a928fed3fedb78154c9750afba298fca9ca97e26bf9fe873",
+      "size": 517,
+      "url": "packages/openssl.json"
+    },
+    "pkg": {
+      "sha256": "f26d91b91e1b4a18cbb134272ff56b0e8ee0105f85bef188e987c9ae333633a9",
+      "size": 1445,
+      "url": "packages/pkg.json"
+    },
+    "yurt-greet": {
+      "sha256": "957dce83d9b6e8f6951a9abe93030c31a7cf6cb96a6377841998cf4f0224e2c5",
+      "size": 534,
+      "url": "packages/yurt-greet.json"
+    },
+    "zlib": {
+      "sha256": "bc9b658de5a79de1fcc00c61767d0c83111e0e0d9d9f7da0ad5f12a78c5cc94f",
+      "size": 506,
+      "url": "packages/zlib.json"
+    },
+    "zsh": {
+      "sha256": "687f089c50afa4d80a0dc9b88d53b156920e30e2b21bd9212fef02f32c8b5155",
+      "size": 1148,
+      "url": "packages/zsh.json"
+    }
+  }
+}

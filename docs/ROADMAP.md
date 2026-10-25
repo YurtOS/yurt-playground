@@ -57,12 +57,12 @@ Planned for the next one or two trains. These are in progress, not finished.
   image keeps the small tools (`git`, `curl`, `jq`, `sqlite3`, `zsh`, `make`,
   `perl`, `zstd`, `xz`, CA certificates) and adds the `pkg` client with a
   trusted-repository configuration for
-  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages). In progress
-  in [YurtOS/yurt-ports](https://github.com/YurtOS/yurt-ports).
+  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), and a
+  passwordless `sudo` for the default user, which `pkg` needs. In progress.
 - **Install packages in the browser tab.** Why: the tab has no network, so
-  `pkg install` cannot download there. A _Packages_ control fetches a package
-  for the sandbox, and the sandbox's own `pkg` verifies its signature and
-  installs it, as on the desktop. Draft PR
+  `sudo pkg install` cannot download there. A _Packages_ control fetches a
+  package for the sandbox, and the sandbox's own `pkg` verifies its signature
+  and installs it, as on the desktop. Draft PR
   [#231](https://github.com/YurtOS/yurt-playground/pull/231); it needs the base
   image above, and packages republished in the current format with real
   signatures (the builds published today are refused).
@@ -131,8 +131,8 @@ Bigger directions. Each needs design work, and the order is not fixed.
   packages and matching wheels) and downloads work only in the desktop app.
 - **Installed packages in the browser are lost on reload**, like every other
   file there ([#81](https://github.com/YurtOS/yurt-playground/issues/81)), and a
-  tablet or phone refuses installs whose package archives add up to more than 16
-  MiB, since one tab there has much less memory
+  tablet or phone refuses installs whose downloads add up to more than 16 MiB,
+  since one tab there has much less memory
   ([#200](https://github.com/YurtOS/yurt-playground/issues/200)).
 - **Files in the browser are kept in memory only.** A page reload starts a fresh
   sandbox and loses everything you wrote, except sandboxes saved by the

@@ -523,22 +523,32 @@ function exec(page: Page, cmd: string): Promise<Exec> {
   );
 }
 
+/** A snapshot of YurtOS/yurt-packages as published at fa6ce22 (2026-10-25):
+ * the signed index, its bundle and every package's metadata, no archives.
+ * Its bundles are the repository's placeholder text, so the guest's `pkg`
+ * must refuse it; the signature check comes before the expiry check, so
+ * the outcome does not depend on the date. */
+const PACKAGES_SNAPSHOT = join(repoRoot, "tests/fixtures/yurt-packages");
+
 /**
- * "Packages": install a package through the real control and run it. The
- * page downloads; the guest's own `pkg` verifies and installs
- * (src/packages.ts). Skipped on an image without `pkg` (before the modular
- * base image).
+ * "Packages": install through the real control and check what the guest's
+ * `pkg` made of it (src/packages.ts). Skipped on an image without `pkg` and
+ * `sudo` (before the modular base image).
  *
- * PLAYGROUND_PKG_NAME (default `yurt-greet`) is the package and
- * PLAYGROUND_PKG_RUN (default its name) the command that must then exit 0.
- * PLAYGROUND_PKG_REPO=<dir> answers the page's repository requests from a
- * local directory in the repository's layout, instead of YurtOS/yurt-packages;
- * the guest's `pkg` still verifies what it is given.
+ * By default the page's repository requests are answered from
+ * PACKAGES_SNAPSHOT, and the install must fail closed: no network, and a
+ * result that does not change when the live repository is republished.
+ * PLAYGROUND_PKG_REPO=<dir> answers from another directory in the
+ * repository's layout instead, and PLAYGROUND_PKG_LIVE=1 from the live
+ * repository; both expect PLAYGROUND_PKG_NAME (default `yurt-greet`) to
+ * install and PLAYGROUND_PKG_RUN (default its name) to exit 0 after.
  */
-async function packagesInstallAndRun(page: Page): Promise<void> {
+async function packagesInstall(page: Page): Promise<void> {
   const name = Deno.env.get("PLAYGROUND_PKG_NAME") ?? "yurt-greet";
   const run = Deno.env.get("PLAYGROUND_PKG_RUN") ?? name;
-  const localRepo = Deno.env.get("PLAYGROUND_PKG_REPO");
+  const live = Deno.env.get("PLAYGROUND_PKG_LIVE") === "1";
+  const repo = Deno.env.get("PLAYGROUND_PKG_REPO");
+  const expectInstall = live || repo !== undefined;
   const image = await exec(
     page,
     "command -v pkg && command -v sudo && test -r /etc/yurt-pkg/trusted-repos.toml",
@@ -549,12 +559,18 @@ async function packagesInstallAndRun(page: Page): Promise<void> {
     );
     return;
   }
-  if (localRepo !== undefined) {
-    await page.route(`${PACKAGE_REPO_URL}**`, async (route) => {
-      const path = route.request().url().slice(PACKAGE_REPO_URL.length);
+  if (!live) {
+    const dir = repo ?? PACKAGES_SNAPSHOT;
+    // Nothing reaches GitHub: a file the directory lacks, or any other
+    // request to the host, is a 404.
+    await page.route("https://raw.githubusercontent.com/**", async (route) => {
+      const url = route.request().url();
       try {
+        if (!url.startsWith(PACKAGE_REPO_URL)) throw new Error(url);
         await route.fulfill({
-          body: Buffer.from(await Deno.readFile(join(localRepo, path))),
+          body: Buffer.from(
+            await Deno.readFile(join(dir, url.slice(PACKAGE_REPO_URL.length))),
+          ),
           headers: { "access-control-allow-origin": "*" },
         });
       } catch {
@@ -562,9 +578,10 @@ async function packagesInstallAndRun(page: Page): Promise<void> {
       }
     });
   }
-  const before = await exec(page, `command -v ${run.split(" ")[0]}`);
+  const command = run.split(" ")[0];
+  const before = await exec(page, `command -v ${command}`);
   if (before.code === 0) {
-    throw new Error(`packages: ${run} is there before the install`);
+    throw new Error(`packages: ${command} is there before the install`);
   }
   await page.getByTestId("packages-toggle").click();
   const install = page.locator(
@@ -581,14 +598,42 @@ async function packagesInstallAndRun(page: Page): Promise<void> {
     undefined,
     { timeout: 300_000 },
   );
-  const status = await page.getByTestId("packages-status").textContent();
-  if (status !== `installed ${name}`) {
-    throw new Error(`packages: install ${name}: ${status}`);
-  }
+  const state = await page.locator("#packages").getAttribute("data-install");
+  const status = await page.getByTestId("packages-status").textContent() ??
+    "";
   const listed = await exec(page, "sudo pkg list");
-  if (!listed.stdout.split("\n").some((line) => line.startsWith(`${name} `))) {
+  const isListed = listed.stdout.split("\n").some((line) =>
+    line.startsWith(`${name} `)
+  );
+  const after = await exec(page, `command -v ${command}`);
+  const staging = await exec(
+    page,
+    "ls -A /var/cache/yurt-pkg/browser/staging 2>/dev/null",
+  );
+  if (staging.stdout.trim() !== "") {
+    throw new Error(`packages: staging left behind: ${staging.stdout}`);
+  }
+  if (!expectInstall) {
+    const problems = [
+      state !== "failed" && `state ${state}`,
+      !new RegExp(`^pkg install ${name} failed: .*verification failed`)
+        .test(status) && `status ${JSON.stringify(status)}`,
+      isListed && `sudo pkg list has ${name}`,
+      after.code === 0 && `${command} is installed`,
+    ].filter(Boolean);
+    if (problems.length > 0) {
+      throw new Error(
+        `packages: the snapshot's placeholder signatures were not refused: ${
+          problems.join("; ")
+        }`,
+      );
+    }
+    console.log(`playground e2e: Packages refused ${name}: ${status}`);
+    return;
+  }
+  if (state !== "done" || status !== `installed ${name}` || !isListed) {
     throw new Error(
-      `packages: sudo pkg list lacks ${name}: ${JSON.stringify(listed)}`,
+      `packages: install ${name}: ${state} ${status} ${JSON.stringify(listed)}`,
     );
   }
   const ran = await exec(page, run);
@@ -1034,7 +1079,7 @@ if (import.meta.main) {
       throw new Error(`upload: ${JSON.stringify(uploaded)}`);
     }
     console.log(`playground e2e: Upload wrote 3 files (${big.length} bytes)`);
-    await packagesInstallAndRun(page);
+    await packagesInstall(page);
     // The cell and the ash terminal share one VFS: a file written by Python
     // is read back by the shell in the xterm (#4).
     await page.getByTestId("notebook-input").fill(

@@ -51,8 +51,8 @@ export const STAGING_DIR = "/var/cache/yurt-pkg/browser/staging";
 export const CACHE_ROOT = "/var/cache/yurt-pkg/browser-repos";
 
 /** A tablet tab runs out of memory well before a desktop one does (#200):
- * there, an install whose archives add up to more than this is refused
- * (the index, metadata and signatures, a few KiB, are not counted). */
+ * there, an install whose downloads (archives, signatures, index and
+ * metadata) add up to more than this is refused. */
 export const TABLET_MAX_BYTES = 16 * 1024 * 1024;
 
 /** The most one install downloads on any device: the archives are held in
@@ -299,8 +299,9 @@ export function installScript(name: string, repoId: string): string {
   const cached = `${CACHE_ROOT}/${repoId}/current/index.json`;
   const pkg = `sudo pkg --etc-root ${q(etc)} --cache-root ${q(CACHE_ROOT)}`;
   return [
-    `cleanup() { sudo rm -rf ${q(dir)}; }`,
+    `cleanup() { sudo rm -rf ${q(dir)}; rm -f "$err"; }`,
     "trap cleanup EXIT",
+    "err=$(mktemp) || exit 1",
     "for tool in pkg sudo; do command -v $tool >/dev/null 2>&1 || " +
     '{ echo "this image has no $tool" >&2; exit 127; }; done',
     '[ "$(sudo id -u)" = 0 ] || ' +
@@ -312,7 +313,18 @@ export function installScript(name: string, repoId: string): string {
     `if ! sudo cmp -s ${q(cached)} ${q(`${dir}/repo/index.json`)}; then`,
     `  ${pkg} update || exit 1`,
     "fi",
-    `${pkg} install ${q(name)}`,
+    `${pkg} install ${q(name)} 2>"$err"`,
+    "s=$?",
+    'cat "$err" >&2',
+    // The cached index is this one, but under another signing identity (a
+    // restored sandbox, a changed image): pkg wants an update first, which
+    // a changed identity lets through at the same version.
+    `if [ $s -ne 0 ] && grep -q 'trusted config for repo .* changed' "$err"; then`,
+    `  ${pkg} update || exit 1`,
+    `  ${pkg} install ${q(name)}`,
+    "  exit $?",
+    "fi",
+    "exit $s",
   ].join("\n");
 }
 
@@ -357,7 +369,9 @@ export type StagedFile = { path: string; bytes: Uint8Array };
 export function onlyStaged(files: StagedFile[]): boolean {
   return files.every((file) =>
     file.path.startsWith(`${STAGING_DIR}/`) &&
-    !file.path.split("/").some((part) => part === "..")
+    !file.path.slice(STAGING_DIR.length + 1).split("/").some((part) =>
+      part === "" || part === "." || part === ".."
+    )
   );
 }
 
@@ -586,9 +600,20 @@ export async function installPackage(
     throw failure(name, planned);
   }
   const total = releases.reduce((sum, release) => sum + release.size, 0);
-  const refusal = sizeRefusal(total, options.tablet);
-  if (refusal !== undefined) throw new Error(`${name}: ${refusal}`);
+  // The signatures first: they are small, and with the index and metadata
+  // they count against the limits too.
   const archives = new Map<string, Uint8Array>();
+  for (const release of releases) {
+    archives.set(
+      `${release.url}.bundle`,
+      await fetcher(`${base}${release.url}.bundle`, METADATA_MAX_BYTES),
+    );
+  }
+  const staged = [...archives.values()].reduce((s, b) => s + b.byteLength, 0) +
+    catalog.indexBytes.byteLength + catalog.indexBundle.byteLength +
+    [...catalog.metadata.values()].reduce((s, m) => s + m.bytes.byteLength, 0);
+  const refusal = sizeRefusal(total + staged, options.tablet);
+  if (refusal !== undefined) throw new Error(`${name}: ${refusal}`);
   let done = 0;
   for (const release of releases) {
     const show = (received: number) =>
@@ -610,10 +635,6 @@ export async function installPackage(
       );
     }
     archives.set(release.url, bytes);
-    archives.set(
-      `${release.url}.bundle`,
-      await fetcher(`${base}${release.url}.bundle`, METADATA_MAX_BYTES),
-    );
     done += release.size;
   }
   progress(`${name}: verifying and installing (pkg install ${name})`);

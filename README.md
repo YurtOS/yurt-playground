@@ -43,23 +43,22 @@ All four are in the image.
 ### Installing more
 
 The image is becoming modular: a small base image (BusyBox, `git`, `curl`, `jq`,
-`sqlite3`, `zsh`, `make`, `perl`, `zstd`, `xz`, CA certificates) with the `pkg`
-client and a trusted-repository configuration for
+`sqlite3`, `zsh`, `make`, `perl`, `zstd`, `xz`, CA certificates, and a
+passwordless `sudo` for the default user) with the `pkg` client and a
+trusted-repository configuration for
 [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), and the heavy
-tools as signed packages there. That base image is in progress in
-[YurtOS/yurt-ports](https://github.com/YurtOS/yurt-ports); the image pinned here
-does not carry `pkg` yet, so nothing can be installed into it today.
+tools as signed packages there. That base image is in progress; the image pinned
+here carries neither `pkg` nor `sudo` yet, so nothing can be installed into it
+today.
 
 - **Desktop app and `yurt run`:** the sandbox has a network, so
   `sudo pkg update`, then `sudo pkg install NAME`, in the terminal. Every `pkg`
   command needs root, `sudo pkg list` and `sudo pkg search` too: it locks and
   writes its cache and state under `/var/cache/yurt-pkg` and
-  `/var/lib/yurt-pkg`, and installs into system directories. That needs the base
-  image's passwordless `sudo` for the default user, which
-  [yurt-ports#249](https://github.com/YurtOS/yurt-ports/pull/249) adds and the
-  pinned image does not have yet; the browser's _Packages_ control uses the same
-  `sudo`. `pip install` of pure-Python packages and matching wheels works there
-  already.
+  `/var/lib/yurt-pkg`, and installs into system directories. That is what the
+  base image's passwordless `sudo` is for; the browser's _Packages_ control uses
+  the same `sudo`. `pip install` of pure-Python packages and matching wheels
+  works there already.
 - **Browser:** the sandbox has no network, so the page fetches for it. Press
   _Packages_ in the terminal's bar, then _Install_ next to a package; the line
   below the list shows the download and then `installed NAME` (or why pkg
@@ -79,16 +78,15 @@ does not carry `pkg` yet, so nothing can be installed into it today.
     ([#81](https://github.com/YurtOS/yurt-playground/issues/81)).
   - A tablet or phone has much less memory for one tab
     ([#200](https://github.com/YurtOS/yurt-playground/issues/200)), so there an
-    install whose package archives add up to more than 16 MiB is refused.
-    Elsewhere the limit is 256 MiB.
+    install whose downloads (archives, signatures, index and metadata) add up to
+    more than 16 MiB is refused. Elsewhere the limit is 256 MiB.
 
 Which packages are published, and which are coming, is tracked in
 [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) (its signed
-`index.json` is the list) and
-[YurtOS/yurt-ports](https://github.com/YurtOS/yurt-ports), not here. The builds
-published there today predate the current package format and carry placeholder
-signatures, so `pkg` refuses them, in the browser and on the desktop alike,
-until they are republished.
+`index.json` is the list), not here. The builds published in yurt-packages today
+predate the current package format and carry placeholder signatures, so `pkg`
+refuses them, in the browser and on the desktop alike, until they are
+republished.
 
 ## Desktop app
 

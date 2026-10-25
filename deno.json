@@ -81,6 +81,7 @@
       "public/notebook_kernel.bundle.js",
       "artifacts/jupyter-site-packages",
       "artifacts/playground.yurtimg.manifest.json",
+      "tests/fixtures/yurt-packages",
       "jupyterlite/files",
       "public/jupyter",
       "jupyterlite/yurt-kernel/node_modules",
