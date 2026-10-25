@@ -85,6 +85,8 @@ type ToWorker =
     req: number;
     files: { path: string; bytes: Uint8Array }[];
     script: string;
+    // Where the files are; the script removes it once it runs.
+    dir: string;
   };
 
 type FromWorker =
@@ -152,12 +154,29 @@ async function servePackages(msg: ToWorker): Promise<void> {
     reply(false, undefined, "this sandbox does not install packages");
     return;
   }
+  const rootProcess = session.rootProcess;
+  const run = (script: string) =>
+    rootProcess(`exec /bin/sh -c ${quoted(script)}`, {
+      maxOutputBytes: PKG_OUTPUT_BYTES,
+    });
+  let process;
   try {
     session.writeFiles(msg.files);
-    const process = await session.rootProcess(
-      `exec /bin/sh -c ${quoted(msg.script)}`,
-      { maxOutputBytes: PKG_OUTPUT_BYTES },
+    process = await run(msg.script);
+  } catch (error) {
+    // The script never ran, so nothing removed what was staged: up to
+    // hundreds of MB of the tab's memory. Best effort; the cause is the
+    // write's or the spawn's.
+    await run(`rm -rf ${quoted(msg.dir)}`).then((p) => p.exited)
+      .catch(() => {});
+    reply(
+      false,
+      undefined,
+      error instanceof Error ? error.message : String(error),
     );
+    return;
+  }
+  try {
     const status = await process.exited;
     const decoder = new TextDecoder();
     reply(true, {

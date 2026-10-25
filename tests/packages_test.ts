@@ -68,6 +68,25 @@ Deno.test("the release pkg picks: highest version, then build, never yanked", ()
   };
   const picked = latestRelease(file)!;
   assertEquals([picked.version, picked.build], ["1.10.0", "yurt_2"]);
+  // A pre-release sorts below its release, whatever its build (semver).
+  const pre = latestRelease({
+    name: "x",
+    versions: [
+      version("2.0.0-rc.2", "yurt_5"),
+      version("2.0.0", "yurt_1"),
+      version("2.0.0-rc.10", "yurt_9"),
+    ],
+  })!;
+  assertEquals(pre.version, "2.0.0");
+  const rc = latestRelease({
+    name: "x",
+    versions: [
+      version("2.0.0-rc.2", "yurt_5"),
+      version("2.0.0-rc.10", "yurt_0"),
+      version("2.0.0-beta", "yurt_9"),
+    ],
+  })!;
+  assertEquals(rc.version, "2.0.0-rc.10");
   assertEquals(
     latestRelease({
       name: "y",

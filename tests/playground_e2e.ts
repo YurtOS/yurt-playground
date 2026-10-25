@@ -584,7 +584,7 @@ async function packagesInstallAndRun(page: Page): Promise<void> {
     throw new Error(`packages: install ${name}: ${status}`);
   }
   const listed = await exec(page, "pkg list");
-  if (!listed.stdout.split("\n").some((line) => line.startsWith(name))) {
+  if (!listed.stdout.split("\n").some((line) => line.startsWith(`${name} `))) {
     throw new Error(
       `packages: pkg list lacks ${name}: ${JSON.stringify(listed)}`,
     );

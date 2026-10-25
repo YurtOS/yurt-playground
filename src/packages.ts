@@ -121,9 +121,37 @@ export function parsePackageFile(bytes: Uint8Array): PackageFile {
   return file;
 }
 
-function semver(version: string): number[] {
-  const core = version.split(/[-+]/)[0];
-  return core.split(".").map((part) => Number.parseInt(part, 10) || 0);
+/** Semantic-version order, as the `semver` crate `pkg` sorts with: the
+ * numbers, then a pre-release below its release, its identifiers compared
+ * numerically or as text; build metadata does not count. */
+function compareVersions(a: string, b: string): number {
+  const split = (v: string) => {
+    const [core, pre] = v.split("+")[0].split(/-(.*)/s);
+    return {
+      core: core.split(".").map((part) => Number.parseInt(part, 10) || 0),
+      pre: pre === undefined ? [] : pre.split("."),
+    };
+  };
+  const va = split(a);
+  const vb = split(b);
+  for (let i = 0; i < Math.max(va.core.length, vb.core.length); i++) {
+    const d = (va.core[i] ?? 0) - (vb.core[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  if (va.pre.length === 0 || vb.pre.length === 0) {
+    return vb.pre.length - va.pre.length;
+  }
+  for (let i = 0; i < Math.max(va.pre.length, vb.pre.length); i++) {
+    const x = va.pre[i];
+    const y = vb.pre[i];
+    if (x === undefined || y === undefined) return x === undefined ? -1 : 1;
+    const nx = /^\d+$/.test(x);
+    const ny = /^\d+$/.test(y);
+    if (nx && ny && Number(x) !== Number(y)) return Number(x) - Number(y);
+    if (nx !== ny) return nx ? -1 : 1;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
 }
 
 /** `pkg`'s build order: `yurt_N` by N; any other spelling counts as 0. */
@@ -133,13 +161,8 @@ function buildNumber(build: string): number {
 }
 
 function compareReleases(a: PackageVersion, b: PackageVersion): number {
-  const va = semver(a.version);
-  const vb = semver(b.version);
-  for (let i = 0; i < Math.max(va.length, vb.length); i++) {
-    const d = (va[i] ?? 0) - (vb[i] ?? 0);
-    if (d !== 0) return d;
-  }
-  return buildNumber(a.build) - buildNumber(b.build);
+  return compareVersions(a.version, b.version) ||
+    buildNumber(a.build) - buildNumber(b.build);
 }
 
 /** The release `pkg install NAME` picks when nothing constrains it: the
@@ -315,12 +338,15 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
 export type StagedFile = { path: string; bytes: Uint8Array };
 
 /** What an install needs from the sandbox: a guest file read as the login
- * user, and the staged files written then the script run as root. */
+ * user, and the staged files written then the script run as root. `dir`
+ * holds every staged file; the script removes it, and so must the host
+ * when it fails before the script runs. */
 export type PackageHost = {
   readFile(path: string): Promise<Uint8Array>;
   stageAndRun(
     files: StagedFile[],
     script: string,
+    dir: string,
   ): Promise<{ code: number | null; stdout: string; stderr: string }>;
 };
 
@@ -358,16 +384,21 @@ export const fetchWithProgress: Fetcher = async (url, onBytes) => {
 export type Catalog = {
   index: RepoIndex;
   indexBytes: Uint8Array;
+  /** Fetched with the index, so the two always match. */
+  indexBundle: Uint8Array;
   metadata: Map<string, { bytes: Uint8Array; file: PackageFile }>;
 };
 
-/** The repository's index and every package's metadata: a few KiB, all of
- * which `pkg update` reads. */
+/** The repository's index, its signature and every package's metadata: a
+ * few KiB, all of which `pkg update` reads. */
 export async function loadCatalog(
   fetcher: Fetcher = fetchWithProgress,
   base: string = PACKAGE_REPO_URL,
 ): Promise<Catalog> {
-  const indexBytes = await fetcher(`${base}index.json`);
+  const [indexBytes, indexBundle] = await Promise.all([
+    fetcher(`${base}index.json`),
+    fetcher(`${base}index.json.bundle`),
+  ]);
   const index = parseIndex(indexBytes);
   const metadata = new Map<string, { bytes: Uint8Array; file: PackageFile }>();
   await Promise.all(
@@ -376,7 +407,7 @@ export async function loadCatalog(
       metadata.set(name, { bytes, file: parsePackageFile(bytes) });
     }),
   );
-  return { index, indexBytes, metadata };
+  return { index, indexBytes, indexBundle, metadata };
 }
 
 /** What the menu lists for each package: its latest release and size. */
@@ -438,7 +469,7 @@ export async function installPackage(
     { path: `${mirror}/index.json`, bytes: catalog.indexBytes.slice() },
     {
       path: `${mirror}/index.json.bundle`,
-      bytes: await fetcher(`${base}index.json.bundle`),
+      bytes: catalog.indexBundle.slice(),
     },
     {
       path: `${dir}/etc/yurt-pkg/trusted-repos.toml`,
@@ -487,6 +518,7 @@ export async function installPackage(
   const result = await host.stageAndRun(
     files,
     installScript(dir, name, catalog.index.index_version),
+    dir,
   );
   const output = `${result.stdout}${result.stderr}`.trim();
   if (result.code !== 0) {
