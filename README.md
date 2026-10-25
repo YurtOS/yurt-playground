@@ -43,9 +43,9 @@ All four are in the image.
 ### Installing more
 
 The image is becoming modular: a small base image (BusyBox, `git`, `curl`, `jq`,
-`sqlite3`, `zsh`, `make`, `perl`, `zstd`, `xz`, CA certificates, and a
-passwordless `sudo` for the default user) with the `pkg` client and a
-trusted-repository configuration for
+`sqlite3`, `zsh`, `make`, `zstd`, `xz`, CA certificates, and a passwordless
+`sudo` for the default user) with the `pkg` client and a trusted-repository
+configuration for
 [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), and the heavy
 tools as signed packages there. That base image is in progress; the image pinned
 here carries neither `pkg` nor `sudo` yet, so nothing can be installed into it
