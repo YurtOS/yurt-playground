@@ -923,13 +923,19 @@ if (import.meta.main) {
       (globalThis as unknown as {
         yurt: { exec(cmd: string): Promise<{ code: number; stdout: string }> };
       }).yurt.exec(
-        "cd /home/user && ./hi.sh && wc -c < big.bin && [ -x notes.txt ] && echo notes-executable || echo notes-plain",
+        "cd /home/user && ./hi.sh && wc -c < big.bin && sha256sum big.bin && [ -x notes.txt ] && echo notes-executable || echo notes-plain",
       )
     );
+    // The bytes too, not only their count: a transport that kept the length
+    // but changed bytes (line-discipline mangling) would pass a size check.
+    const bigSha = Array.from(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", big)),
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join("");
     if (
       uploaded.code !== 0 ||
       uploaded.stdout.trim().split("\n").join(" ") !==
-        `uploaded-script-ran ${big.length} notes-plain`
+        `uploaded-script-ran ${big.length} ${bigSha}  big.bin notes-plain`
     ) {
       throw new Error(`upload: ${JSON.stringify(uploaded)}`);
     }

@@ -16,6 +16,12 @@ export function uploadTarget(name: string): string {
   return `${UPLOAD_DIR}/${base}`;
 }
 
+/** The largest file one upload takes: the cap `fs.read` and the desktop
+ * app's file route already use (FS_CONTENT_LIMIT). In the tab the bytes are
+ * held several times over on their way into a memory-only filesystem, so a
+ * larger file could take the sandbox down with everything in it. */
+export const UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
+
 const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
 
 /** The mode an uploaded file gets: a wasm module (a program built for the
@@ -39,18 +45,29 @@ type Writer = {
 
 /** Write `files` into the home one at a time, reporting each through
  * `progress`. Returns the paths written; the first failure is thrown with
- * the file's name, and the files before it stay written. */
+ * the file's name, and the files before it stay written. A name that cannot
+ * be a file or a file over UPLOAD_MAX_BYTES refuses the whole upload before
+ * anything is written. */
 export async function uploadFiles(
   yurt: Writer,
   files: Iterable<File>,
   progress: (message: string) => void,
 ): Promise<string[]> {
+  const queue = Array.from(files, (file) => {
+    if (file.size > UPLOAD_MAX_BYTES) {
+      throw new Error(
+        `cannot upload ${file.name}: ${file.name} is larger than ${
+          UPLOAD_MAX_BYTES / (1024 * 1024)
+        } MiB`,
+      );
+    }
+    return { file, path: uploadTarget(file.name) };
+  });
   const written: string[] = [];
-  for (const file of files) {
-    const path = uploadTarget(file.name);
+  for (const { file, path } of queue) {
     progress(`uploading ${file.name}`);
-    const bytes = new Uint8Array(await file.arrayBuffer());
     try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
       await yurt.fs.write(path, bytes, { mode: uploadMode(bytes) });
     } catch (error) {
       throw new Error(

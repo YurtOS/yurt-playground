@@ -383,10 +383,20 @@ function wireUpload(): void {
   const button = byId("upload-files") as HTMLButtonElement;
   const input = byId("upload-input") as HTMLInputElement;
   const status = byId("status");
+  // One upload at a time, from the button or a drop.
+  let busy = false;
   const upload = async (files: FileList | null) => {
     const yurt = (globalThis as { yurt?: Yurt }).yurt;
     if (yurt === undefined || files === null || files.length === 0) return;
-    if (yurt.status !== "running") return;
+    if (yurt.status !== "running") {
+      status.textContent = "upload: the sandbox is not running";
+      return;
+    }
+    if (busy) {
+      status.textContent = "upload: another upload is still running";
+      return;
+    }
+    busy = true;
     button.disabled = true;
     try {
       const written = await uploadFiles(
@@ -402,6 +412,7 @@ function wireUpload(): void {
         ? error.message
         : String(error);
     } finally {
+      busy = false;
       button.disabled = false;
       input.value = "";
     }
