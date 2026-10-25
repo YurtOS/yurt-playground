@@ -347,10 +347,9 @@ const METADATA_MAX_BYTES = 4 * 1024 * 1024;
 export const fetchWithProgress: Fetcher = async (url, limit, onBytes) => {
   const response = await fetch(url, { cache: "no-cache" });
   if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
-  if (response.body === null) return new Uint8Array();
   const chunks: Uint8Array[] = [];
   let received = 0;
-  const reader = response.body.getReader();
+  const reader = response.body!.getReader();
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -374,8 +373,8 @@ export const fetchWithProgress: Fetcher = async (url, limit, onBytes) => {
 export type Catalog = {
   index: RepoIndex;
   indexBytes: Uint8Array;
-  /** Fetched with the index, not at each install, so a republish between
-   * opening the list and an install cannot pair them. (Right after a
+  /** Fetched together with the index, not when the files are staged, so a
+   * republish in between cannot pair them. (Right after a
    * publish, the host's CDN can still serve files from both commits for a
    * few minutes; `pkg` refuses such a mix, and a retry later works.) */
   indexBundle: Uint8Array;
@@ -513,13 +512,10 @@ export async function installPackage(
       },
     ];
     for (const [dep, entry] of Object.entries(catalog.index.packages)) {
-      const meta = catalog.metadata.get(dep);
-      if (meta !== undefined) {
-        files.push({
-          path: `${mirror}/${entry.url}`,
-          bytes: meta.bytes.slice(),
-        });
-      }
+      files.push({
+        path: `${mirror}/${entry.url}`,
+        bytes: catalog.metadata.get(dep)!.bytes.slice(),
+      });
     }
     for (const [path, bytes] of archives) {
       files.push({ path: `${mirror}/${path}`, bytes });
