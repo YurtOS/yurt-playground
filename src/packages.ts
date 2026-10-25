@@ -108,12 +108,18 @@ function checkRelative(path: string, what: string): string {
 
 export function parseIndex(bytes: Uint8Array): RepoIndex {
   const index = JSON.parse(new TextDecoder().decode(bytes)) as RepoIndex;
-  if (index?.schema !== 1 || typeof index.packages !== "object") {
+  if (
+    index?.schema !== 1 || typeof index.packages !== "object" ||
+    index.packages === null
+  ) {
     throw new Error("index.json: not a schema 1 package index");
   }
   for (const [name, entry] of Object.entries(index.packages)) {
     if (!isPackageName(name)) {
       throw new Error(`index.json: bad package name ${JSON.stringify(name)}`);
+    }
+    if (typeof entry?.url !== "string") {
+      throw new Error(`index.json: ${name} has no url`);
     }
     checkRelative(entry.url, `index.json ${name}`);
   }
@@ -362,7 +368,7 @@ export type Fetcher = (
  * a few KiB. */
 const METADATA_MAX_BYTES = 4 * 1024 * 1024;
 
-/** `fetch` with progress, failing on any status but 200, and as soon as
+/** `fetch` with progress, failing unless the response is OK, and as soon as
  * the response passes `limit` bytes, so a response larger than the index
  * says is never held whole (the tablet limit counts on it). */
 export const fetchWithProgress: Fetcher = async (url, limit, onBytes) => {

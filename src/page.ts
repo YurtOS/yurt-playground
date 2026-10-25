@@ -478,19 +478,28 @@ function wirePackages(smallDevice: boolean): void {
   const status = byId("status");
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
-  const install = async (name: string, button: HTMLButtonElement) => {
+  const install = async (name: string) => {
     if (packageHost === undefined || busy) return;
     busy = true;
     panel.dataset.install = "running";
     for (const b of list.querySelectorAll("button")) b.disabled = true;
     try {
-      await installPackage(name, {
+      const output = await installPackage(name, {
         host: packageHost,
         tablet: smallDevice,
         progress: (message) => status.textContent = message,
       });
-      status.textContent = `installed ${name}`;
-      button.textContent = "Installed";
+      status.textContent = output === "nothing to install"
+        ? `${name} is already installed`
+        : `installed ${name}`;
+      // Everything pkg installed with it (its dependencies) is installed too.
+      const installed = new Set(
+        [...output.matchAll(/^install (\S+) /gm)].map((match) => match[1]),
+      );
+      installed.add(name);
+      for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
+        if (installed.has(b.dataset.package ?? "")) b.textContent = "Installed";
+      }
       panel.dataset.install = "done";
     } catch (error) {
       status.textContent = error instanceof Error
@@ -544,7 +553,7 @@ function wirePackages(smallDevice: boolean): void {
       button.className = "bar-action";
       button.textContent = "Install";
       button.dataset.package = row.name;
-      button.addEventListener("click", () => install(row.name, button));
+      button.addEventListener("click", () => install(row.name));
       action.append(button);
       tr.append(name, version, size, action);
       list.append(tr);
