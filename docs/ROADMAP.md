@@ -54,8 +54,8 @@ Planned for the next one or two trains. These are in progress, not finished.
   next train.
 - **A modular image: a small base, the rest as packages.** Why: one image with
   everything is slow to load and still never has the tool you need. The base
-  image keeps the small tools (`git`, `curl`, `jq`, `sqlite3`, `zsh`, `make`,
-  `zstd`, `xz`, CA certificates) and adds the `pkg` client with a
+  image keeps BusyBox and the small tools (`git`, `curl`, `jq`, `sqlite3`,
+  `zsh`, `make`, `zstd`, `xz`, CA certificates) and adds the `pkg` client with a
   trusted-repository configuration for
   [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), and a
   passwordless `sudo` for the default user, which `pkg` needs. In progress.
@@ -80,15 +80,16 @@ Planned for the next one or two trains. These are in progress, not finished.
 Bigger directions. Each needs design work, and the order is not fixed.
 
 - **A slim base image, with Python and Node as packages.** Why: CPython with its
-  libraries is about half of today's image and Node with the Gemini CLI about a
-  third, and both load into every tab, including on phones and tablets, where
-  memory is short
+  libraries is over two thirds of today's image and Node with the Gemini CLI
+  most of the rest, and both load into every tab, including on phones and
+  tablets, where memory is short
   ([#200](https://github.com/YurtOS/yurt-playground/issues/200)). The base would
   keep the shell, the command-line tools and `pkg`. The page would install
   Python when you open the Notebook, JupyterLab or the Python pane, and Node
   when you open the agent pane, pinned to the exact builds the page expects
-  (Suspend/Resume needs the matching sealable CPython). It needs signed packages
-  first, and while files do not survive a reload
+  (Suspend/Resume runs a separately pinned sealable CPython that needs the
+  matching standard library). It needs signed packages first, and while files do
+  not survive a reload
   ([#81](https://github.com/YurtOS/yurt-playground/issues/81)) a visitor who
   uses Python downloads it on every visit, so the gain is for visits that only
   use the shell.
