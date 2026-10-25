@@ -80,7 +80,6 @@ Bigger directions. Each needs design work, and the order is not fixed.
 - **Go, `gh` and clang as packages**, published in
   [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) when there is
   demand for them, rather than in the base image.
-
 - **Files that survive a reload.** Durable storage for the browser sandbox, so a
   reload does not lose your work
   ([#81](https://github.com/YurtOS/yurt-playground/issues/81)). Saving the whole
