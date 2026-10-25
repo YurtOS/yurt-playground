@@ -135,6 +135,11 @@ Deno.test("the install's trust config is the image's identity, pointed at the co
     Error,
     "cannot read",
   );
+  assertThrows(
+    () => browserTrustedRepos('[[repo]]\nid = "a\\U0001F600"\n', "file:///x/"),
+    Error,
+    "cannot read",
+  );
 });
 
 Deno.test("paths the repository names stay inside the staged copy", () => {

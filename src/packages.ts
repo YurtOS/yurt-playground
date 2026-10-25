@@ -210,7 +210,7 @@ type TomlRepo = { lines: string[]; values: Record<string, string> };
 
 /** The `[[repo]]` tables of a `trusted-repos.toml`, kept as their lines.
  * Only what the file format needs: a `[[repo]]` header, then `key = value`
- * lines with basic strings or integers. Anything else is refused rather
+ * lines with basic strings (no escapes) or integers. Anything else is refused rather
  * than guessed at. */
 function repoTables(toml: string): TomlRepo[] {
   const repos: TomlRepo[] = [];
@@ -221,7 +221,8 @@ function repoTables(toml: string): TomlRepo[] {
       repos.push({ lines: [], values: {} });
       continue;
     }
-    const match = /^([A-Za-z0-9_-]+)\s*=\s*("(?:[^"\\]|\\.)*"|-?\d+)\s*(#.*)?$/
+    // Strings without escapes: TOML's and JSON's escapes differ.
+    const match = /^([A-Za-z0-9_-]+)\s*=\s*("[^"\\]*"|-?\d+)\s*(#.*)?$/
       .exec(line);
     const current = repos.at(-1);
     if (match === null || current === undefined) {
@@ -485,7 +486,9 @@ function planReleases(stdout: string, catalog: Catalog): Release[] {
       `${v.version}-${v.build}` === vb
     );
     if (release === undefined) {
-      throw new Error(`pkg chose ${n} ${vb}, which the index does not list`);
+      throw new Error(
+        `pkg chose ${n} ${vb}, which the index does not list or the page cannot read`,
+      );
     }
     return checkRelease({ ...release, name: n });
   });
