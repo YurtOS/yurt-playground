@@ -77,9 +77,11 @@ Planned for the next one or two trains. These are in progress, not finished.
 
 Bigger directions. Each needs design work, and the order is not fixed.
 
-- **Go, `gh` and clang as packages**, published in
+- **Go and `gh` as packages, and a current clang**, published in
   [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) when there is
-  demand for them, rather than in the base image.
+  demand for them, rather than in the base image. Planned: Go and `gh` are not
+  published there today, and the clang build there predates the current package
+  format.
 - **Files that survive a reload.** Durable storage for the browser sandbox, so a
   reload does not lose your work
   ([#81](https://github.com/YurtOS/yurt-playground/issues/81)). Saving the whole

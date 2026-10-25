@@ -51,9 +51,11 @@ tools as signed packages there. That base image is in progress in
 does not carry `pkg` yet, so nothing can be installed into it today.
 
 - **Desktop app and `yurt run`:** the sandbox has a network, so
-  `sudo pkg update`, then `sudo pkg install NAME`, in the terminal (`pkg` writes
-  system directories as root). That needs the base image's passwordless `sudo`
-  for the default user, which
+  `sudo pkg update`, then `sudo pkg install NAME`, in the terminal. Every `pkg`
+  command needs root, `sudo pkg list` and `sudo pkg search` too: it locks and
+  writes its cache and state under `/var/cache/yurt-pkg` and
+  `/var/lib/yurt-pkg`, and installs into system directories. That needs the base
+  image's passwordless `sudo` for the default user, which
   [yurt-ports#249](https://github.com/YurtOS/yurt-ports/pull/249) adds and the
   pinned image does not have yet; the browser's _Packages_ control uses the same
   `sudo`. `pip install` of pure-Python packages and matching wheels works there
