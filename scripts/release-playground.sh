@@ -637,8 +637,15 @@ pr_url=$(jq -r .url <<<"$existing" 2>/dev/null || true)
 pr_state=$(jq -r .state <<<"$existing" 2>/dev/null || true)
 if [ -n "$pr_url" ]; then
   say "pin PR: $pr_url ($pr_state)"
-  seal_release_of_train=$(git -C "$root" fetch -q origin "$branch" 2>/dev/null \
-    && git -C "$root" show FETCH_HEAD:artifacts/pins.json | jq -r .pythonSeal.release)
+  # A merged PR's branch is gone (the merge below deletes it), so its pins
+  # are read from the merge commit.
+  pins_ref=$branch
+  if [ "$pr_state" = MERGED ]; then
+    pins_ref=$(gh pr view "$pr_url" --repo YurtOS/yurt-playground --json mergeCommit --jq .mergeCommit.oid)
+  fi
+  seal_release_of_train=$(git -C "$root" fetch -q origin "$pins_ref" 2>/dev/null \
+    && git -C "$root" show FETCH_HEAD:artifacts/pins.json | jq -r .pythonSeal.release) \
+    || die "cannot read artifacts/pins.json of $pr_url at $pins_ref"
 else
   [ -z "$(git -C "$root" status --porcelain --untracked-files=no | grep -v ' artifacts/pins.json$')" ] \
     || die "the playground checkout has uncommitted changes; commit or stash them first"

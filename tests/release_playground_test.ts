@@ -495,3 +495,75 @@ Deno.test("--resume keeps the repository of an --image-release train's image and
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("--resume reads a merged pin PR's pins after its branch is deleted", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "release-merged-pin-pr-" });
+  try {
+    const train = "playground-2026.10.25-aaaaaaa";
+    // origin: the merge commit holds the pins; the PR's branch is gone, as
+    // `gh pr merge --delete-branch` leaves it.
+    const origin = join(dir, "origin");
+    await command("git", ["init", "-q", origin]);
+    await Deno.mkdir(join(origin, "artifacts"));
+    await Deno.writeTextFile(
+      join(origin, "artifacts/pins.json"),
+      JSON.stringify({ pythonSeal: { release: `python-seal-${train}` } }),
+    );
+    const author = [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=t@example.invalid",
+    ];
+    await git(origin, "add", "artifacts/pins.json");
+    await git(origin, ...author, "commit", "-qm", `release: ${train}`);
+    const mergeSha = await git(origin, "rev-parse", "HEAD");
+    await git(origin, "config", "uploadpack.allowAnySHA1InWant", "true");
+    const root = join(dir, "project");
+    await command("git", ["clone", "-q", origin, root]);
+
+    const source = await Deno.readTextFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+    );
+    const block = source.split("# [4] the pin PR, merged on a yes")[1]
+      .split('if [ "$pr_state" != MERGED ]; then')[0];
+    const scriptPath = join(dir, "block.sh");
+    await Deno.writeTextFile(
+      scriptPath,
+      `set -euo pipefail
+say() { printf '==> %s\\n' "$*" >&2; }
+die() { echo "release-playground: $*" >&2; exit 1; }
+root=${JSON.stringify(root)}
+train=${JSON.stringify(train)}
+image_rev_note=
+# [4] the pin PR${block}
+printf 'SEAL=%s\\n' "$seal_release_of_train"
+`,
+    );
+
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    const pr = "https://github.com/YurtOS/yurt-playground/pull/1";
+    await Deno.writeTextFile(
+      join(bin, "gh"),
+      `#!/bin/sh
+case "$1 $2" in
+  'pr list') echo '{"url":"${pr}","state":"MERGED"}';;
+  'pr view') echo '${mergeSha}';;
+  *) echo "unexpected gh call: $*" >&2; exit 1;;
+esac
+`,
+    );
+    await Deno.chmod(join(bin, "gh"), 0o755);
+
+    const result = await command("bash", [scriptPath], {
+      env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` },
+    });
+    const output = new TextDecoder().decode(result.stdout) +
+      new TextDecoder().decode(result.stderr);
+    assertEquals(result.code, 0, output);
+    assertStringIncludes(output, `SEAL=python-seal-${train}`);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
