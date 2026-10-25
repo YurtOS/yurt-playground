@@ -1,3 +1,5 @@
+import { guestWorkerStart } from "./guest_worker.ts";
+
 export const CREATE_GUEST_WORKER = "yurt-create-guest-worker";
 export const TERMINATE_GUEST_WORKER = "yurt-terminate";
 export const GUEST_WORKER_ERROR = "yurt-guest-worker-error";
@@ -77,14 +79,29 @@ export function installCoordinatorWorkerProxy(): void {
   } as unknown as typeof Worker;
 }
 
-export function attachGuestWorkerFactory(coordinator: Worker): void {
+export type GuestWorkerFactoryOptions = {
+  /** Where the built `worker_bootstrap.js` is served from. */
+  origin?: string;
+  createWorker?: (url: string, options?: WorkerOptions) => Worker;
+};
+
+export function attachGuestWorkerFactory(
+  coordinator: Worker,
+  {
+    origin = globalThis.location?.origin ?? "",
+    createWorker = (url, options) => new Worker(url, options),
+  }: GuestWorkerFactoryOptions = {},
+): void {
   coordinator.addEventListener("message", (event: MessageEvent) => {
     const msg = event.data as CreateGuestWorkerMessage | { type?: string };
     if (msg?.type !== CREATE_GUEST_WORKER) return;
     const request = msg as CreateGuestWorkerMessage;
     const port = event.ports[0];
     if (port === undefined) return;
-    const guest = new Worker(request.url, request.options);
+    // WorkerHost names its bootstrap by source file (`worker_bootstrap.ts`);
+    // the page serves the built module.
+    const [url, options] = guestWorkerStart(request.url, origin);
+    const guest = createWorker(url, options);
     guest.onmessage = (guestEvent) => {
       port.postMessage(guestEvent.data, [...guestEvent.ports]);
     };
