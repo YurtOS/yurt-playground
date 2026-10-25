@@ -260,6 +260,9 @@ function boot(
   // stays usable.
   let terminalEmpty = true;
   let notebookReady = false;
+  // The cell already says why there is no kernel; an error after that
+  // (a restart refused) must not say "Jupyter did not start" over it.
+  let pythonMissing = false;
   const sandboxGone = () => {
     stopAnnouncing();
     stopAnnouncing = () => {};
@@ -271,7 +274,7 @@ function boot(
       status.failure(`failed: ${message}`);
       // The shell is up and stays; a Jupyter that did not start leaves
       // the cell with nothing to wait for.
-      if (!notebookReady && !shellOnly) {
+      if (!notebookReady && !shellOnly && !pythonMissing) {
         notebook.unavailable("Jupyter did not start");
       }
       return;
@@ -358,22 +361,21 @@ function boot(
     }
     if (msg.type === "notebook-ready") {
       notebookReady = true;
-      document.documentElement.dataset.python = "present";
       notebook.ready();
-      status.progress("running");
+      status.progress("running", { settled: true });
       rememberBooting(undefined);
     }
     // A tablet's whole session is the shell; once it runs the boot is over.
     if (msg.type === "shell-ready") {
-      status.progress("running");
+      status.progress("running", { settled: true });
       rememberBooting(undefined);
     }
     // The slim image: the shell is the session until Python is installed.
     // The boot is over here too, so a later reload is no cut-off boot.
     if (msg.type === "python-missing") {
-      document.documentElement.dataset.python = "missing";
+      pythonMissing = true;
       notebook.pythonMissing(PYTHON_INSTALL);
-      status.progress("running");
+      status.progress("running", { settled: true });
       rememberBooting(undefined);
     }
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {

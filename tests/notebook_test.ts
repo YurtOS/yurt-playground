@@ -128,14 +128,37 @@ const pageSource = () =>
 Deno.test("the page ends the boot on python-missing: no 'tab reloaded' memory, the cell's own state", () => {
   const page = pageSource();
   const handler = page.match(
-    /if \(msg\.type === "python-missing"\) \{([^}]*)\}/,
+    /if \(msg\.type === "python-missing"\) \{([^]*?)\n {4}\}/,
   );
   assert(handler !== null, "page.ts handles python-missing");
   // Left set, the next load reads a cut-off boot ("the browser reloaded
   // this tab ... memory") for a boot that finished.
   assert(/rememberBooting\(undefined\)/.test(handler[1]), handler[1]);
   assert(/notebook\.pythonMissing\(PYTHON_INSTALL\)/.test(handler[1]));
-  assert(/status\.progress\("running"\)/.test(handler[1]));
+  assert(/status\.progress\("running", \{ settled: true \}\)/.test(handler[1]));
+});
+
+Deno.test("a later error does not turn the python-missing cell into 'Jupyter did not start'", () => {
+  const page = pageSource();
+  assert(
+    /if \(msg\.type === "python-missing"\) \{[^}]*pythonMissing = true;/.test(
+      page,
+    ),
+  );
+  assert(
+    /if \(!notebookReady && !shellOnly && !pythonMissing\) \{\s*notebook\.unavailable\("Jupyter did not start"\);/
+      .test(page),
+  );
+  // The boot's settled states release an action's error from #status.
+  for (const settled of ["notebook-ready", "shell-ready", "python-missing"]) {
+    assert(
+      new RegExp(
+        `msg\\.type === "${settled}"\\) \\{[^}]*status\\.progress\\("running", \\{ settled: true \\}\\)`,
+      ).test(page),
+      settled,
+    );
+  }
+  assertEquals(/dataset\.python/.test(page), false, "no unused page state");
 });
 
 Deno.test("a Jupyter failure after the shell is up leaves the shell and says the cell has no kernel", () => {

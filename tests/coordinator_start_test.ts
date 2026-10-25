@@ -1,6 +1,8 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   probePython,
+  PYTHON_MISSING_EXIT,
+  PYTHON_PROBE_COMMAND,
   PYTHON_PROBE_LINE,
   type StartReport,
   startSandbox,
@@ -52,15 +54,50 @@ const transport: JupyterTransport = {
   close: () => Promise.resolve(),
 };
 
-Deno.test("the probe reads python3's presence from command -v's exit", async () => {
+Deno.test("only the probe's own exit code says python3 is missing", async () => {
+  assertEquals(PYTHON_MISSING_EXIT, 42);
   assertEquals(await probePython(fakeSpawner(exit(0)).spawn), true);
-  // BusyBox ash's `command -v` of a missing name exits 127.
-  assertEquals(await probePython(fakeSpawner(exit(127)).spawn), false);
-  assertEquals(await probePython(fakeSpawner(1).spawn), false);
+  assertEquals(await probePython(fakeSpawner(exit(42)).spawn), false);
+  assertEquals(await probePython(fakeSpawner(42).spawn), false);
+  // Any other code is not the probe's answer -- a failed redirect (a full
+  // /tmp), a shell that could not run it, a SIGKILL folded to 137, even
+  // `command -v`'s own 127 -- so the launch goes ahead as before.
+  for (const code of [1, 2, 126, 127, 137]) {
+    assertEquals(
+      await probePython(fakeSpawner(exit(code)).spawn),
+      undefined,
+      `exit ${code}`,
+    );
+    assertEquals(await probePython(fakeSpawner(code).spawn), undefined);
+  }
   const { spawn, lines } = fakeSpawner(0);
   await probePython(spawn);
   assertEquals(lines, [PYTHON_PROBE_LINE]);
-  assert(PYTHON_PROBE_LINE.includes("command -v python3"));
+  assertEquals(
+    PYTHON_PROBE_COMMAND,
+    "command -v python3 >/dev/null && exit 0; exit 42",
+  );
+  assertEquals(PYTHON_PROBE_LINE, `exec /bin/sh -c '${PYTHON_PROBE_COMMAND}'`);
+});
+
+Deno.test("a probe exit that is not the missing code launches Jupyter on the image", async () => {
+  for (const code of [1, 2, 137]) {
+    const session = fakeSession(fakeSpawner(exit(code)).spawn);
+    const posted: StartReport[] = [];
+    let launched = 0;
+    await startSandbox({
+      boot: () => Promise.resolve(session),
+      booted: () => {},
+      noJupyter: false,
+      startKernel: () => {
+        launched++;
+        return Promise.resolve(transport);
+      },
+      post: (report) => posted.push(report),
+    });
+    assertEquals(launched, 1, `exit ${code}`);
+    assertEquals(posted.at(-1), { type: "notebook-ready" });
+  }
 });
 
 Deno.test("a probe that cannot tell leaves the launch to go ahead", async () => {
@@ -83,7 +120,7 @@ Deno.test("a probe that cannot tell leaves the launch to go ahead", async () => 
 });
 
 Deno.test("an image without python3 keeps its shell and gets python-missing, not a Jupyter launch", async () => {
-  const session = fakeSession(fakeSpawner(exit(127)).spawn);
+  const session = fakeSession(fakeSpawner(exit(42)).spawn);
   const posted: StartReport[] = [];
   let launched = 0;
   let booted = 0;

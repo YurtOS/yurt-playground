@@ -1,6 +1,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import type { Yurt } from "../src/agent_api.ts";
 import type { Tools } from "../src/agent.ts";
+import { PYTHON_PROBE_COMMAND } from "../src/coordinator_start.ts";
 import {
   createAgentTools,
   sandboxHasPython,
@@ -147,11 +148,11 @@ Deno.test("Stop settles while waiting for the sandbox to boot", async () => {
   await assertRejects(() => waiting, Error, "cancelled");
 });
 
-Deno.test("the python probe reads command -v, and a failed probe keeps the old prompt", async () => {
+Deno.test("the agent probe says no python3 only on the missing code", async () => {
   const signal = new AbortController().signal;
   const tools = (code: number | null, fail = false): Tools => ({
     exec: (cmd) => {
-      assertEquals(cmd, "command -v python3");
+      assertEquals(cmd, PYTHON_PROBE_COMMAND);
       return fail
         ? Promise.reject(new Error("no slot"))
         : Promise.resolve({ code, stdout: "", stderr: "" });
@@ -159,6 +160,9 @@ Deno.test("the python probe reads command -v, and a failed probe keeps the old p
     readFile: () => Promise.reject(new Error("unused")),
   });
   assertEquals(await sandboxHasPython(tools(0), signal), true);
-  assertEquals(await sandboxHasPython(tools(127), signal), false);
+  assertEquals(await sandboxHasPython(tools(42), signal), false);
+  // Anything else cannot tell, and keeps the prompt the agent always had.
+  assertEquals(await sandboxHasPython(tools(127), signal), true);
+  assertEquals(await sandboxHasPython(tools(null), signal), true);
   assertEquals(await sandboxHasPython(tools(0, true), signal), true);
 });

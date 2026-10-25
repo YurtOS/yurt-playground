@@ -336,7 +336,12 @@ async function pollConnectionFile(
   const deadline = performance.now() + CONNECTION_FILE_WAIT_SECONDS * 1000;
   const decoder = new TextDecoder();
   let gone = false;
-  exited?.then(() => gone = true, () => gone = true);
+  /** The host's own failure to run the process, apart from an exit. */
+  let failed: string | undefined;
+  exited?.then(() => gone = true, (error) => {
+    failed = error instanceof Error ? error.message : String(error);
+    gone = true;
+  });
   for (;;) {
     // Read before deciding: a kernel that wrote the file and then exited
     // still gets its file read once.
@@ -360,7 +365,9 @@ async function pollConnectionFile(
     ? "(no log)"
     : decoder.decode(log).split("\n").slice(-30).join("\n");
   throw new Error(
-    gone
+    failed !== undefined
+      ? `the Jupyter kernel process failed to run: ${failed}; kernel log:\n${tail}`
+      : gone
       ? `the Jupyter kernel exited before writing its connection file; kernel log:\n${tail}`
       : `Jupyter connection file was not written within ${CONNECTION_FILE_WAIT_SECONDS} s; kernel log:\n${tail}`,
   );

@@ -548,6 +548,44 @@ Deno.test("a kernel process that exits ends the connection-file wait at once", a
   );
 });
 
+Deno.test("a kernel process the host failed to run is not reported as an exit", async () => {
+  const handlers = new Set<(bytes: Uint8Array) => void>();
+  const session = {
+    terminal: {
+      write(bytes: Uint8Array) {
+        const marker = new TextDecoder().decode(bytes).match(
+          /echo (YURT_SHELL_DONE_)""(\w+)/,
+        );
+        if (marker !== null) {
+          const reply = new TextEncoder().encode(
+            `${marker[1]}${marker[2]}\n$ `,
+          );
+          for (const handler of handlers) handler(reply);
+        }
+        return Promise.resolve();
+      },
+    },
+    spawn: () =>
+      Promise.resolve({
+        exited: Promise.reject(new Error("guest worker crashed")),
+      }),
+    readFile: () => Promise.resolve(undefined),
+    dialSandboxPort: () => {
+      throw new Error("not dialed in this test");
+    },
+    onOutput(handler: (bytes: Uint8Array) => void) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+  };
+  const error = await assertRejects(
+    () => startGuestKernel(session, undefined, { pollMs: 1 }),
+    Error,
+    "the Jupyter kernel process failed to run: guest worker crashed",
+  );
+  assertEquals((error as Error).message.includes("exited"), false);
+});
+
 Deno.test("a kernel that wrote its connection file and then exited still gets it read", async () => {
   const connection = JSON.stringify({
     shell_port: 1,

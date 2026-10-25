@@ -38,8 +38,6 @@ Deno.test("a failed Download home is not written over by the Jupyter ticker", ()
     error: true,
   });
   status.progress("starting Jupyter (10 s)");
-  status.progress("running");
-  fire();
   assertEquals(
     element.textContent,
     "download home failed: export /home/user: exit 1",
@@ -51,6 +49,30 @@ Deno.test("a failed Download home is not written over by the Jupyter ticker", ()
   assertEquals(element.textContent, "uploaded notes.txt");
   fire();
   assertEquals(element.textContent, "starting Jupyter (15 s)");
+});
+
+Deno.test("an action's error during boot gives way once the boot settles", () => {
+  // A drop on the terminal before the shell is up: the error must not hide
+  // the ticker and "running" for good.
+  const { element, status } = line();
+  status.progress("starting ash");
+  status.notice("upload: the sandbox is not running", { error: true });
+  status.progress("starting Jupyter (5 s)");
+  assertEquals(element.textContent, "upload: the sandbox is not running");
+  status.progress("running", { settled: true });
+  assertEquals(element.textContent, "running");
+  // After the boot, an action's error holds the line again.
+  status.notice("download home failed: exit 1", { error: true });
+  assertEquals(element.textContent, "download home failed: exit 1");
+});
+
+Deno.test("an error hold also ends after the long timeout", () => {
+  const { element, status, fire } = line();
+  status.progress("starting Jupyter (5 s)");
+  status.notice("download home failed: exit 1", { error: true });
+  status.progress("starting Jupyter (10 s)");
+  fire();
+  assertEquals(element.textContent, "starting Jupyter (10 s)");
 });
 
 Deno.test("a boot failure takes the line over any notice", () => {

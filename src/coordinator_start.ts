@@ -24,9 +24,19 @@ export type StartReport =
   | { type: "python-missing" }
   | { type: "notebook-ready" };
 
-/** The shell line that answers "is there a python3?" by its exit code.
- * `exec`'d like every line a Spawner runs, so its redirects bind here. */
-export const PYTHON_PROBE_LINE = "exec /bin/sh -c 'command -v python3'";
+/** The probe's own answer for "no python3": a code nothing else in the
+ * probe exits with. Any other nonzero exit -- a redirect that failed (a
+ * full /tmp), a shell that could not start, a SIGKILL folded to 137, even
+ * `command -v`'s own 127 -- is not an answer, and the launch goes ahead. */
+export const PYTHON_MISSING_EXIT = 42;
+
+/** The command that answers "is there a python3?": 0 yes, 42 no. */
+export const PYTHON_PROBE_COMMAND =
+  `command -v python3 >/dev/null && exit 0; exit ${PYTHON_MISSING_EXIT}`;
+
+/** The probe as a Spawner line, `exec`'d like every line a Spawner runs,
+ * so its redirects bind here. */
+export const PYTHON_PROBE_LINE = `exec /bin/sh -c '${PYTHON_PROBE_COMMAND}'`;
 
 /** The probe is one BusyBox builtin; a probe that takes longer than this
  * is a sandbox in trouble, and the launch goes ahead as before. */
@@ -52,9 +62,11 @@ export async function probePython(
     ]);
     if (status === undefined) return undefined;
     const code = typeof status === "number" ? status : status.code;
-    // A signal death says nothing about python3.
-    if (code === null) return undefined;
-    return code === 0;
+    if (code === 0) return true;
+    if (code === PYTHON_MISSING_EXIT) return false;
+    // A signal death, or any exit the probe itself did not choose, says
+    // nothing about python3.
+    return undefined;
   } catch {
     return undefined;
   } finally {
