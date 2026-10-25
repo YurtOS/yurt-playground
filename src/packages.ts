@@ -290,11 +290,8 @@ function q(word: string): string {
  * stay in memory next to what they unpacked to. `sudo` must give root: a
  * stand-in that runs the command as the caller would fail every write.
  */
-export function installScript(
-  dir: string,
-  name: string,
-  repoId: string,
-): string {
+export function installScript(name: string, repoId: string): string {
+  const dir = STAGING_DIR;
   const etc = `${dir}/etc`;
   const cached = `${CACHE_ROOT}/${repoId}/current/index.json`;
   const pkg = `sudo pkg --etc-root ${q(etc)} --cache-root ${q(CACHE_ROOT)}`;
@@ -355,15 +352,24 @@ export type StagedFile = { path: string; bytes: Uint8Array };
 /** What an install needs from the sandbox: a guest file read as the login
  * user, and the staged files written (root's: out of reach of an
  * unprivileged process, though not of `sudo`; pkg's signature checks are
- * the defence) then the script run as the login user. `dir`
- * holds every staged file; the script removes it, and the host removes
- * it again after the run, in case the script never ran or was killed. */
+ * the defence) then the script run as the login user. Every staged file
+ * is under {@link STAGING_DIR}; the script removes it, and the host
+ * removes it again after the run, in case the script never ran or was
+ * killed. */
+/** Whether every file is inside {@link STAGING_DIR}: what the worker
+ * checks before it writes them as root. */
+export function onlyStaged(files: StagedFile[]): boolean {
+  return files.every((file) =>
+    file.path.startsWith(`${STAGING_DIR}/`) &&
+    !file.path.split("/").some((part) => part === "..")
+  );
+}
+
 export type PackageHost = {
   readFile(path: string): Promise<Uint8Array>;
   stageAndRun(
     files: StagedFile[],
     script: string,
-    dir: string,
   ): Promise<{ code: number | null; stdout: string; stderr: string }>;
 };
 
@@ -564,11 +570,7 @@ export async function installPackage(
     for (const [path, bytes] of archives) {
       files.push({ path: `${mirror}/${path}`, bytes });
     }
-    return host.stageAndRun(
-      files,
-      installScript(dir, name, config.id),
-      dir,
-    );
+    return host.stageAndRun(files, installScript(name, config.id));
   };
   progress(`${name}: resolving (pkg install ${name})`);
   const planned = await run(new Map());

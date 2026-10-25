@@ -32,7 +32,7 @@ import type {
 } from "./jupyter_transport.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
-import { STAGING_DIR } from "./packages.ts";
+import { onlyStaged, STAGING_DIR } from "./packages.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import {
   type MemoryRefusedMessage,
@@ -86,8 +86,6 @@ type ToWorker =
     req: number;
     files: { path: string; bytes: Uint8Array }[];
     script: string;
-    // Where the files are; the script removes it once it runs.
-    dir: string;
   };
 
 type FromWorker =
@@ -156,13 +154,7 @@ async function servePackages(msg: ToWorker): Promise<void> {
     return;
   }
   // Only the staging copy: the files are written as root.
-  if (
-    msg.dir !== STAGING_DIR ||
-    msg.files.some((file) =>
-      !file.path.startsWith(`${STAGING_DIR}/`) ||
-      file.path.split("/").some((part) => part === "..")
-    )
-  ) {
+  if (!onlyStaged(msg.files)) {
     reply(false, undefined, "package files outside the staging directory");
     return;
   }
@@ -198,7 +190,7 @@ async function servePackages(msg: ToWorker): Promise<void> {
   // signal (the tab out of memory, say) or never ran; it may be hundreds of
   // MB of the tab's memory, so it goes here too, whatever happened. Before
   // the reply: the next run stages at the same path. Best effort.
-  await run(`sudo rm -rf ${quoted(msg.dir)}`).then((p) => p.exited)
+  await run(`sudo rm -rf ${quoted(STAGING_DIR)}`).then((p) => p.exited)
     .catch(() => {});
   if (result === undefined) reply(false, undefined, failed);
   else reply(true, result);

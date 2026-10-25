@@ -7,6 +7,7 @@ import {
   installScript,
   latestRelease,
   loadCatalog,
+  onlyStaged,
   PACKAGE_REPO_URL,
   type PackageFile,
   type PackageHost,
@@ -195,7 +196,7 @@ Deno.test("a tablet refuses what a desktop browser installs", () => {
 });
 
 Deno.test("pkg update runs unless pkg's cache holds this index; the copy is removed", () => {
-  const script = installScript(STAGING_DIR, "zsh", "official");
+  const script = installScript("zsh", "official");
   const lines = script.split("\n");
   assertEquals(lines[0], `cleanup() { sudo rm -rf '${STAGING_DIR}'; }`);
   assertEquals(lines[1], "trap cleanup EXIT");
@@ -276,10 +277,11 @@ function fakeHost(
   ...results: { code: number; stdout: string; stderr: string }[]
 ) {
   const runs: { files: StagedFile[]; script: string; dir: string }[] = [];
+  // Every run stages at the one staging dir.
   const host: PackageHost = {
     readFile: () => Promise.resolve(new TextEncoder().encode(TRUSTED)),
-    stageAndRun: (files, script, dir) => {
-      runs.push({ files, script, dir });
+    stageAndRun: (files, script) => {
+      runs.push({ files, script, dir: STAGING_DIR });
       return Promise.resolve(results[runs.length - 1]);
     },
   };
@@ -327,7 +329,7 @@ Deno.test("pkg plans the install; the page stages exactly what it names", async 
         .includes(`url = "file://${dir}/repo/"`),
       true,
     );
-    assertEquals(script, installScript(dir, "greet", "official"));
+    assertEquals(script, installScript("greet", "official"));
   }
   assertEquals(
     messages.at(-1),
@@ -517,4 +519,23 @@ Deno.test("a release the page cannot read is left out of the list, not fatal to 
   );
   assertEquals(file.versions.length, 1);
   assertEquals(latestRelease(file)?.version, "1.0.0");
+});
+
+Deno.test("the worker writes only inside the staging dir", () => {
+  const file = (path: string) => ({ path, bytes: new Uint8Array() });
+  assertEquals(onlyStaged([file(`${STAGING_DIR}/repo/index.json`)]), true);
+  for (
+    const path of [
+      "/etc/passwd",
+      STAGING_DIR,
+      `${STAGING_DIR}-other/x`,
+      `${STAGING_DIR}/repo/../../../etc/passwd`,
+    ]
+  ) {
+    assertEquals(
+      onlyStaged([file(`${STAGING_DIR}/repo/index.json`), file(path)]),
+      false,
+      path,
+    );
+  }
 });

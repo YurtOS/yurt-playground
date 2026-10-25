@@ -299,7 +299,7 @@ function boot(
     packageHost = {
       readFile: (path) =>
         (globalThis as unknown as { yurt: Yurt }).yurt.fs.read(path),
-      stageAndRun: (files, script, dir) =>
+      stageAndRun: (files, script) =>
         new Promise((resolve, reject) => {
           const req = nextReq++;
           pending.set(req, {
@@ -309,7 +309,7 @@ function boot(
           // The archives move to the worker, not copied: tens of MB.
           try {
             worker.postMessage(
-              { type: "pkg-run", req, files, script, dir },
+              { type: "pkg-run", req, files, script },
               files.map((file) => file.bytes.buffer as ArrayBuffer),
             );
           } catch (error) {
