@@ -124,14 +124,19 @@ export function parsePackageFile(bytes: Uint8Array): PackageFile {
   if (typeof file?.name !== "string" || !Array.isArray(file.versions)) {
     throw new Error("package metadata: missing name or versions");
   }
-  for (const version of file.versions) {
-    checkRelative(version.url, `${file.name} ${version.version}`);
-    // The size limits and every download's bound count on it.
-    if (!Number.isSafeInteger(version.size) || version.size < 0) {
-      throw new Error(`${file.name} ${version.version}: bad size`);
-    }
-  }
   return file;
+}
+
+/** A release the page can download: a repository-relative URL (pkg also
+ * takes absolute ones, which the page does not fetch) and a size the
+ * limits and the download's bound can count on. Checked per release, so
+ * one the page cannot fetch fails only its own installs. */
+function checkRelease(release: Release): Release {
+  checkRelative(release.url, `${release.name} ${release.version}`);
+  if (!Number.isSafeInteger(release.size) || release.size < 0) {
+    throw new Error(`${release.name} ${release.version}: bad size`);
+  }
+  return release;
 }
 
 /** Version order for the list's "latest" column: the numbers, then a
@@ -264,9 +269,10 @@ function q(word: string): string {
  * user would type it. The image's trust root goes next to the install's own
  * configuration; `pkg update` runs unless pkg's cache already holds this
  * very index (pkg refuses an index no newer than its cache, its rollback
- * protection, so the same one is not offered twice); then `pkg install`; and the staged copy is removed whatever
- * happened, so the archives do not stay in memory next to what they
- * unpacked to.
+ * protection, so the same one is not offered twice); then `pkg install`;
+ * and the staged copy is removed whatever happened, so the archives do not
+ * stay in memory next to what they unpacked to. `sudo` must give root: a
+ * stand-in that runs the command as the caller would fail every write.
  */
 export function installScript(
   dir: string,
@@ -281,6 +287,8 @@ export function installScript(
     "trap cleanup EXIT",
     "for tool in pkg sudo; do command -v $tool >/dev/null 2>&1 || " +
     '{ echo "this image has no $tool" >&2; exit 127; }; done',
+    '[ "$(sudo id -u)" = 0 ] || ' +
+    "{ echo 'sudo does not give root here' >&2; exit 126; }",
     `sudo mkdir -p ${q(`${etc}/yurt-pkg/sigstore-trust-root`)} || exit 1`,
     `sudo cp ${q(TRUST_ROOT_PATH)} ${
       q(`${etc}/yurt-pkg/sigstore-trust-root/trusted_root.json`)
@@ -304,7 +312,9 @@ export function sizeRefusal(
   tablet: boolean,
 ): string | undefined {
   if (tablet && bytes > TABLET_MAX_BYTES) {
-    return `${formatBytes(bytes)} is more than a tablet tab has memory for ` +
+    return `${
+      formatBytes(bytes)
+    } is more than a tablet or phone tab has memory for ` +
       `(the limit here is ${formatBytes(TABLET_MAX_BYTES)}); ` +
       "use a desktop browser or the desktop app";
   }
@@ -462,7 +472,7 @@ function planReleases(stdout: string, catalog: Catalog): Release[] {
     if (release === undefined) {
       throw new Error(`pkg chose ${n} ${vb}, which the index does not list`);
     }
-    return { ...release, name: n };
+    return checkRelease({ ...release, name: n });
   });
 }
 

@@ -6,12 +6,12 @@ import {
   installPackage,
   installScript,
   latestRelease,
+  loadCatalog,
   PACKAGE_REPO_URL,
   type PackageFile,
   type PackageHost,
   type PackageVersion,
   parseIndex,
-  parsePackageFile,
   sha256Hex,
   sizeRefusal,
   type StagedFile,
@@ -159,14 +159,6 @@ Deno.test("paths the repository names stay inside the staged copy", () => {
       Error,
       "unsupported path",
     );
-    assertThrows(
-      () =>
-        parsePackageFile(
-          enc({ name: "x", versions: [version("1.0.0", "yurt_0", { url })] }),
-        ),
-      Error,
-      "unsupported path",
-    );
   }
   assertThrows(
     () =>
@@ -177,17 +169,6 @@ Deno.test("paths the repository names stay inside the staged copy", () => {
       })),
     Error,
     "bad package name",
-  );
-  assertThrows(
-    () =>
-      parsePackageFile(enc({
-        name: "x",
-        versions: [
-          version("1.0.0", "yurt_0", { size: "big" as unknown as number }),
-        ],
-      })),
-    Error,
-    "bad size",
   );
 });
 
@@ -225,7 +206,10 @@ Deno.test("pkg update runs unless pkg's cache holds this index; the copy is remo
 });
 
 /** A repository of one package, served from memory. */
-async function fakeRepo(archive: Uint8Array) {
+async function fakeRepo(
+  archive: Uint8Array,
+  extra: Partial<PackageVersion> = {},
+) {
   const enc = (value: unknown) =>
     new TextEncoder().encode(JSON.stringify(value));
   const url = "artifacts/greet/0.1.0/greet-0.1.0-yurt_0.yurtpkg";
@@ -236,6 +220,7 @@ async function fakeRepo(archive: Uint8Array) {
         url,
         size: archive.byteLength,
         sha256: await sha256Hex(archive),
+        ...extra,
       }),
     ],
   });
@@ -480,5 +465,32 @@ Deno.test("a download larger than its limit stops before it is held whole", asyn
     assertEquals(whole.byteLength, 100 * 1024);
   } finally {
     globalThis.fetch = real;
+  }
+});
+
+Deno.test("a release the page cannot fetch fails only its own install", async () => {
+  for (
+    const [extra, message] of [
+      [{ url: "https://example.test/greet.yurtpkg" }, "unsupported path"],
+      [{ url: "artifacts/%2e%2e/x.yurtpkg" }, "unsupported path"],
+      [{ size: "big" as unknown as number }, "bad size"],
+    ] as const
+  ) {
+    const fetcher = await fakeRepo(new Uint8Array([1]), extra);
+    const { host, runs } = fakeHost(PLAN);
+    // The list still loads.
+    await loadCatalog(fetcher);
+    await assertRejects(
+      () =>
+        installPackage("greet", {
+          host,
+          tablet: false,
+          fetcher,
+          progress: () => {},
+        }),
+      Error,
+      message,
+    );
+    assertEquals(runs.length, 1);
   }
 });

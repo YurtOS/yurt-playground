@@ -52,7 +52,10 @@ does not carry `pkg` yet, so nothing can be installed into it today.
 
 - **Desktop app and `yurt run`:** the sandbox has a network, so
   `sudo pkg update`, then `sudo pkg install NAME`, in the terminal (`pkg` writes
-  system directories; the image gives the default user a passwordless `sudo`).
+  system directories as root). That needs the base image to give the default
+  user a passwordless `sudo`, which is planned for it
+  ([yurt-ports#249](https://github.com/YurtOS/yurt-ports/pull/249)) and not
+  there yet; the browser's _Packages_ control needs the same `sudo`.
   `pip install` of pure-Python packages and matching wheels works there already.
 - **Browser:** the sandbox has no network, so the page fetches for it. Press
   _Packages_ in the terminal's bar, then _Install_ next to a package; the status
