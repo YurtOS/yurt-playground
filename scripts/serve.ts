@@ -27,6 +27,9 @@ export async function ensureBundle(kernel = kernelRoot()): Promise<void> {
       "@yurt/tar-image":
         `${kernelPath}/packages/runner/src/vfs/tar-image-root-provider.ts`,
       "@xterm/xterm": "npm:@xterm/xterm@5.5.0",
+      "@xterm/addon-fit": "npm:@xterm/addon-fit@0.10.0",
+      "@xterm/addon-unicode11": "npm:@xterm/addon-unicode11@0.8.0",
+      "@xterm/addon-webgl": "npm:@xterm/addon-webgl@0.18.0",
       fzstd: "npm:fzstd@0.1.1",
     },
   };

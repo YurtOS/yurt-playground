@@ -49,7 +49,7 @@ const LOGIN_UID = 1000;
 const LOGIN_GID = 1000;
 const LOGIN_HOME = "/home/user";
 
-const DEFAULT_ENV: Record<string, string> = {
+export const DEFAULT_ENV: Record<string, string> = {
   HOME: LOGIN_HOME,
   PATH: "/bin:/usr/bin:/usr/local/bin",
   PYTHONHOME: "/usr/local",
@@ -57,6 +57,9 @@ const DEFAULT_ENV: Record<string, string> = {
   USER: LOGIN_USER,
   LOGNAME: LOGIN_USER,
   TERM: "xterm-256color",
+  COLORTERM: "truecolor",
+  LANG: "C.UTF-8",
+  PAGER: "less -R",
 };
 
 let pinsPromise: Promise<Pins> | undefined;

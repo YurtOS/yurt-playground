@@ -1,5 +1,9 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import { bootPlayground, fetchPlaygroundBytes } from "../src/boot.ts";
+import {
+  bootPlayground,
+  DEFAULT_ENV,
+  fetchPlaygroundBytes,
+} from "../src/boot.ts";
 import {
   assertNoTouchFailure,
   bootAshSession,
@@ -254,4 +258,14 @@ Deno.test({
       session.stop();
     }
   },
+});
+
+Deno.test("guest environment advertises UTF-8 and truecolor for TUIs", () => {
+  // btop++ refuses to start without a UTF-8 locale; lazygit and btop++ pick
+  // their color depth from COLORTERM.
+  assertEquals(DEFAULT_ENV.LANG, "C.UTF-8");
+  assertEquals(DEFAULT_ENV.COLORTERM, "truecolor");
+  assertEquals(DEFAULT_ENV.TERM, "xterm-256color");
+  // BusyBox less takes -R for color escapes; glow and git page through it.
+  assertEquals(DEFAULT_ENV.PAGER, "less -R");
 });

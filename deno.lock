@@ -3,6 +3,9 @@
   "specifiers": {
     "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/internal@^1.0.12": "1.0.14",
+    "npm:@xterm/addon-fit@0.10.0": "0.10.0_@xterm+xterm@5.5.0",
+    "npm:@xterm/addon-unicode11@0.8.0": "0.8.0_@xterm+xterm@5.5.0",
+    "npm:@xterm/addon-webgl@0.18.0": "0.18.0_@xterm+xterm@5.5.0",
     "npm:@xterm/xterm@5.5.0": "5.5.0",
     "npm:fzstd@0.1.1": "0.1.1",
     "npm:playwright@1.55.0": "1.55.0"
@@ -19,6 +22,24 @@
     }
   },
   "npm": {
+    "@xterm/addon-fit@0.10.0_@xterm+xterm@5.5.0": {
+      "integrity": "sha512-UFYkDm4HUahf2lnEyHvio51TNGiLK66mqP2JoATy7hRZeXaGMRDr00JiSF7m63vR5WKATF605yEggJKsw0JpMQ==",
+      "dependencies": [
+        "@xterm/xterm"
+      ]
+    },
+    "@xterm/addon-unicode11@0.8.0_@xterm+xterm@5.5.0": {
+      "integrity": "sha512-LxinXu8SC4OmVa6FhgwsVCBZbr8WoSGzBl2+vqe8WcQ6hb1r6Gj9P99qTNdPiFPh4Ceiu2pC8xukZ6+2nnh49Q==",
+      "dependencies": [
+        "@xterm/xterm"
+      ]
+    },
+    "@xterm/addon-webgl@0.18.0_@xterm+xterm@5.5.0": {
+      "integrity": "sha512-xCnfMBTI+/HKPdRnSOHaJDRqEpq2Ugy8LEj9GiY4J3zJObo3joylIFaMvzBwbYRg8zLtkO0KQaStCeSfoaI2/w==",
+      "dependencies": [
+        "@xterm/xterm"
+      ]
+    },
     "@xterm/xterm@5.5.0": {
       "integrity": "sha512-hqJHYaQb5OptNunnyAnkHyM8aCjZ1MEIDTQu1iIbbTD/xops91NB5yq1ZK/dC2JDbVWtF23zUtl9JE2NqwT87A=="
     },
@@ -48,6 +69,9 @@
   "workspace": {
     "dependencies": [
       "jsr:@std/assert@1",
+      "npm:@xterm/addon-fit@0.10.0",
+      "npm:@xterm/addon-unicode11@0.8.0",
+      "npm:@xterm/addon-webgl@0.18.0",
       "npm:@xterm/xterm@5.5.0",
       "npm:fzstd@0.1.1",
       "npm:playwright@1.55.0"
