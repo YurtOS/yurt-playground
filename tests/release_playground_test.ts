@@ -222,7 +222,9 @@ Deno.test("resume watches a recorded kernel run without resolving its tag", asyn
         sandbox_sha: sha,
         build_image: true,
         validate: 0,
-        steps: { kernel_wasm: { run_id: 123 } },
+        // Where [3] builds, recorded at the start (as every train since
+        // that record does).
+        steps: { kernel_wasm: { run_id: 123 }, native: { ref: "main" } },
       }),
     );
 
@@ -298,7 +300,9 @@ async function resumeFixture(
         sandbox_sha: sha,
         build_image: true,
         validate,
-        steps: { kernel_wasm: { run_id: 123 } },
+        // Where [3] builds, recorded at the start (as every train since
+        // that record does).
+        steps: { kernel_wasm: { run_id: 123 }, native: { ref: "main" } },
       }),
     );
     const written = new Date(Date.now() - minutesAgo * 60_000);
@@ -456,11 +460,32 @@ Deno.test("--resume keeps the repository of an --image-release train's image and
       "#!/bin/sh\ncase \"$1 $2\" in\n  'auth status'|'release view') exit 0;;\n  *) echo \"unexpected gh call: $*\" >&2; exit 1;;\nesac\n",
     );
     await Deno.chmod(join(bin, "gh"), 0o755);
+    // A real train builds only commits on main: one checkout whose
+    // origin/main has the commit, standing in for yurt-sandbox and
+    // yurtos-kernel.
+    const origin = join(dir, "origin");
+    await command("git", ["init", "-q", "-b", "main", origin]);
+    await git(
+      origin,
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@example.invalid",
+      "commit",
+      "--allow-empty",
+      "-qm",
+      "main",
+    );
+    const checkout = join(dir, "checkout");
+    await command("git", ["clone", "-q", origin, checkout]);
+    const sha = await git(origin, "rev-parse", "HEAD");
     const run = async (...args: string[]) => {
       const result = await command("bash", [scriptPath, ...args], {
         env: {
           PATH: `${bin}:${Deno.env.get("PATH") ?? ""}`,
           XDG_STATE_HOME: join(dir, "state"),
+          YURT_KERNEL_ROOT: checkout,
+          YURT_SANDBOX_ROOT: checkout,
         },
       });
       const output = new TextDecoder().decode(result.stdout) +
@@ -470,7 +495,6 @@ Deno.test("--resume keeps the repository of an --image-release train's image and
     };
 
     const train = "playground-2026.10.12-5ddc591";
-    const sha = "a".repeat(40);
     const image = "YurtOS/yurt-ports@playground-image-x";
     const seal = "YurtOS/yurt-ports@python-seal-x";
     const started = await run(
@@ -568,19 +592,33 @@ esac
   }
 });
 
-/** A train resumed after its kernel step, with yurt-ports and yurtos-kernel
- * checkouts whose origin/main has `main` and whose PR branch has `pr`, and a
- * `gh` that logs every call to `gh.log`: dispatches succeed, releases do not
- * exist, and yurt-ports branches live in a marker directory (created by
- * `api -X POST .../git/refs`, deleted by `api -X DELETE`). */
+/** A train resumed after its kernel step, with yurt-ports, yurtos-kernel and
+ * yurt-sandbox checkouts whose origin/main has `main` and whose PR branch has
+ * `pr` (each kernel commit carries a kernel-v* tag), and a `gh` that logs
+ * every call to `gh.log`: dispatches succeed, releases do not exist (except
+ * `imageRelease`), and yurt-ports and yurt-sandbox branches live in marker
+ * directories (created by `api -X POST .../git/refs`, deleted by
+ * `api -X DELETE`). */
 async function imageStepFixture(
   opts: {
     validate: 0 | 1;
     ports: "main" | "pr";
     kernel: "main" | "pr";
+    sandbox?: "main" | "pr";
     fresh?: boolean;
+    /** A hand-cut image (--image-release): [2] is skipped. */
+    imageRelease?: string;
+    /** A branch left in yurt-sandbox by an unfinished rehearsal. */
+    staleSandboxBranch?: boolean;
+    /** The [3] ref the resumed train's state file recorded. */
+    nativeRef?: string;
+    /** Where YURT_SANDBOX_ROOT points, under the fixture (a checkout by default). */
+    sandboxRoot?: string;
+    /** The kernel wasm run ([1]) fails. */
+    failKernelRun?: boolean;
   },
 ) {
+  const sandbox = opts.sandbox ?? "main";
   const dir = await Deno.makeTempDir({ prefix: "release-image-ref-" });
   const root = join(dir, "project");
   await Deno.mkdir(join(root, "scripts/lib"), { recursive: true });
@@ -607,7 +645,7 @@ async function imageStepFixture(
     }),
   );
   const shas: Record<string, { main: string; pr: string }> = {};
-  for (const name of ["ports", "kernel"]) {
+  for (const name of ["ports", "kernel", "sandbox"]) {
     const origin = join(dir, `${name}-origin`);
     await command("git", ["init", "-q", "-b", "main", origin]);
     const commit = (msg: string) =>
@@ -627,6 +665,10 @@ async function imageStepFixture(
     await git(origin, "checkout", "-qb", "pr");
     await commit(`${name} pr`);
     const pr = await git(origin, "rev-parse", "HEAD");
+    if (name === "kernel") {
+      await git(origin, "tag", "kernel-v0.0.1", main);
+      await git(origin, "tag", "kernel-v0.0.2-pr", pr);
+    }
     await git(origin, "checkout", "-q", "main");
     await command("git", [
       "clone",
@@ -651,7 +693,7 @@ async function imageStepFixture(
         train,
         kernel_sha: shas.kernel[opts.kernel],
         ports_sha: shas.ports[opts.ports],
-        sandbox_sha: "c".repeat(40),
+        sandbox_sha: shas.sandbox[sandbox],
         image_release: `playground-image-${train}`,
         image_repo: "YurtOS/yurt-ports",
         build_image: true,
@@ -659,6 +701,9 @@ async function imageStepFixture(
         steps: {
           kernel_wasm: { run_id: 1, conclusion: "success" },
           image: { jupyter_payload_release: "jupyter-payload-x" },
+          ...(opts.nativeRef !== undefined
+            ? { native: { ref: opts.nativeRef.replace("<train>", train) } }
+            : {}),
         },
       }),
     );
@@ -666,7 +711,13 @@ async function imageStepFixture(
   const bin = join(dir, "bin");
   const refs = join(dir, "refs");
   await Deno.mkdir(bin);
-  await Deno.mkdir(refs);
+  await Deno.mkdir(join(refs, "yurt-ports"), { recursive: true });
+  await Deno.mkdir(join(refs, "yurt-sandbox"), { recursive: true });
+  if (opts.staleSandboxBranch) {
+    await Deno.mkdir(join(refs, "yurt-sandbox", "validate", train), {
+      recursive: true,
+    });
+  }
   const log = join(dir, "gh.log");
   await Deno.writeTextFile(
     join(bin, "gh"),
@@ -674,17 +725,23 @@ async function imageStepFixture(
 printf '%s\\n' "$*" >> "${log}"
 case "$*" in
   "auth status") exit 0;;
+  "release view ${opts.imageRelease ?? "-"} "*) exit 0;;
   "release view"*) exit 1;;
   "api repos/YurtOS/yurt-ports/commits/main --jq .sha") echo ${shas.ports.main};;
-  "api -X POST repos/YurtOS/yurt-ports/git/refs -f ref=refs/heads/"*)
-    ref=\${6#ref=refs/heads/}; mkdir -p "${refs}/\$ref";;
-  "api -X DELETE repos/YurtOS/yurt-ports/git/refs/heads/"*)
-    rm -rf "${refs}/\${4#repos/YurtOS/yurt-ports/git/refs/heads/}";;
-  "api repos/YurtOS/yurt-ports/git/refs/heads/"*)
-    [ -d "${refs}/\${2#repos/YurtOS/yurt-ports/git/refs/heads/}" ];;
+  "api repos/YurtOS/yurt-sandbox/commits/main --jq .sha") echo ${shas.sandbox.main};;
+  "api repos/YurtOS/yurt-packages/releases --paginate"*) echo jupyter-payload-x;;
+  "api -X POST repos/YurtOS/"*"/git/refs -f ref=refs/heads/"*)
+    repo=\${4#repos/YurtOS/}; repo=\${repo%%/*}
+    ref=\${6#ref=refs/heads/}; mkdir -p "${refs}/\$repo/\$ref";;
+  "api -X DELETE repos/YurtOS/"*"/git/refs/heads/"*)
+    repo=\${4#repos/YurtOS/}; repo=\${repo%%/*}
+    rm -rf "${refs}/\$repo/\${4#repos/YurtOS/*/git/refs/heads/}";;
+  "api repos/YurtOS/"*"/git/refs/heads/"*)
+    repo=\${2#repos/YurtOS/}; repo=\${repo%%/*}
+    [ -d "${refs}/\$repo/\${2#repos/YurtOS/*/git/refs/heads/}" ];;
   "workflow run"*) ;;
   "run list"*) echo 456;;
-  "run watch"*) exit 0;;
+  "run watch"*) ${opts.failKernelRun ? "exit 1" : "exit 0"};;
   *) echo "unexpected gh call: $*" >&2; exit 1;;
 esac
 `,
@@ -697,9 +754,10 @@ esac
       "--ports-sha",
       shas.ports[opts.ports],
       "--sandbox-sha",
-      "c".repeat(40),
+      shas.sandbox[sandbox],
       "--train",
       train.replace(/-validate$/, ""),
+      ...(opts.imageRelease ? ["--image-release", opts.imageRelease] : []),
     ]
     : ["--resume", "--train", train.replace(/-validate$/, "")];
   if (opts.validate) args.push("--validate");
@@ -712,25 +770,33 @@ esac
         XDG_STATE_HOME: join(dir, "state"),
         YURT_KERNEL_ROOT: join(dir, "kernel"),
         YURT_PORTS_ROOT: join(dir, "ports"),
-        YURT_SANDBOX_ROOT: join(dir, "missing-sandbox-checkout"),
+        YURT_SANDBOX_ROOT: join(dir, opts.sandboxRoot ?? "sandbox"),
       },
     },
   );
   const calls = (await Deno.readTextFile(log)).split("\n").filter((l) => l);
-  // Branches left behind, under refs/validate/.
+  // Branches left behind, under refs/<repo>/validate/.
   let leftBranches = 0;
-  try {
-    leftBranches = [...Deno.readDirSync(join(refs, "validate"))].length;
-  } catch { /* none was ever made */ }
+  for (const repo of ["yurt-ports", "yurt-sandbox"]) {
+    try {
+      leftBranches +=
+        [...Deno.readDirSync(join(refs, repo, "validate"))].length;
+    } catch { /* none was ever made */ }
+  }
   return {
     train,
     code: result.code,
     output: new TextDecoder().decode(result.stdout) +
       new TextDecoder().decode(result.stderr),
+    shas,
     dispatches: calls.filter((c) => c.startsWith("workflow run")),
     calls,
     leftBranches,
     stateLeft: await Deno.stat(stateFile).then(() => true, () => false),
+    state: await Deno.readTextFile(stateFile).then(
+      (t) => JSON.parse(t),
+      () => undefined,
+    ),
     cleanup: () => Deno.remove(dir, { recursive: true }),
   };
 }
@@ -834,6 +900,234 @@ Deno.test("a new real train with a kernel commit off main stops before its first
     assertStringIncludes(f.output, "rehearse it with --validate");
     assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
     assertEquals(f.stateLeft, false, "a refused train left its state file");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a rehearsal of a sandbox commit off main builds the host and CLI from a validate branch and publishes nothing", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    sandbox: "pr",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    const [image, native] = f.dispatches;
+    assertStringIncludes(image, "--ref main");
+    assertStringIncludes(native, "release-native.yml");
+    assertStringIncludes(native, `--ref validate/${f.train}`);
+    assertStringIncludes(native, "-f publish=false");
+    assertStringIncludes(native, `-f sandbox_sha=${f.shas.sandbox.pr}`);
+    assertEquals(f.dispatches.length, 2, f.calls.join("\n"));
+    const calls = f.calls.join("\n");
+    // Made in yurt-sandbox at its main's head, gone at the end; yurt-ports
+    // gets no branch.
+    assertStringIncludes(
+      calls,
+      `api -X POST repos/YurtOS/yurt-sandbox/git/refs -f ref=refs/heads/validate/${f.train} -f sha=${f.shas.sandbox.main}`,
+    );
+    assertStringIncludes(
+      calls,
+      `api -X DELETE repos/YurtOS/yurt-sandbox/git/refs/heads/validate/${f.train}`,
+    );
+    assertEquals(calls.includes("POST repos/YurtOS/yurt-ports"), false, calls);
+    assertEquals(f.leftBranches, 0, "the validate branch was not deleted");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a rehearsal of a kernel commit off main builds the host and CLI from a validate branch as well as the image", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "pr",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    const [image, native] = f.dispatches;
+    assertStringIncludes(image, `--ref validate/${f.train}`);
+    assertStringIncludes(native, `--ref validate/${f.train}`);
+    assertStringIncludes(native, "-f publish=false");
+    assertEquals(f.leftBranches, 0, "a validate branch was not deleted");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new rehearsal of a sandbox commit off main records the validate branch and dispatches every step", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    sandbox: "pr",
+    fresh: true,
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    const [kernel, image, native] = f.dispatches;
+    assertStringIncludes(kernel, "release-kernel-wasm.yml");
+    assertStringIncludes(kernel, "--ref main");
+    assertStringIncludes(image, "--ref main");
+    assertStringIncludes(native, `--ref validate/${f.train}`);
+    assertStringIncludes(native, "-f publish=false");
+    assertEquals(f.leftBranches, 0, "the validate branch was not deleted");
+    assertEquals(f.stateLeft, false, "a finished rehearsal left its state");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new rehearsal stops while yurt-sandbox still has its validate branch", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    sandbox: "pr",
+    fresh: true,
+    staleSandboxBranch: true,
+  });
+  try {
+    assertEquals(f.code, 1, f.output);
+    assertStringIncludes(f.output, "from an unfinished rehearsal");
+    assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
+    assertEquals(f.stateLeft, false, "a refused train left its state file");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new real train with a sandbox commit off main stops before its first dispatch and leaves no state", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "main",
+    sandbox: "pr",
+    fresh: true,
+  });
+  try {
+    assertEquals(f.code, 1, f.output);
+    assertStringIncludes(f.output, "host and CLI build only from both mains");
+    assertStringIncludes(f.output, "rehearse it with --validate");
+    assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
+    assertEquals(f.stateLeft, false, "a refused train left its state file");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new real train with a hand-cut image and a kernel commit off main stops before the kernel step", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "pr",
+    fresh: true,
+    imageRelease: "playground-image-handcut",
+  });
+  try {
+    assertEquals(f.code, 1, f.output);
+    assertStringIncludes(f.output, "host and CLI build only from both mains");
+    assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
+    assertEquals(f.stateLeft, false, "a refused train left its state file");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a resumed real train from before the record, with a sandbox commit off main, stops before any dispatch", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "main",
+    sandbox: "pr",
+  });
+  try {
+    assertEquals(f.code, 1, f.output);
+    assertStringIncludes(f.output, "host and CLI build only from both mains");
+    assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a resumed rehearsal keeps its recorded validate branch for the host and CLI, unpublished", async () => {
+  // The sandbox commit is on main now; the record, not a new decision, says
+  // where [3] builds.
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    sandbox: "main",
+    nativeRef: "validate/<train>",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    const native = f.dispatches.find((d) => d.includes("release-native.yml"));
+    assertStringIncludes(native ?? "", `--ref validate/${f.train}`);
+    assertStringIncludes(native ?? "", "-f publish=false");
+    assertEquals(
+      f.output.includes("native  built from"),
+      false,
+      "the resumed train decided again",
+    );
+    assertEquals(f.leftBranches, 0, "the validate branch was not deleted");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a resumed real train keeps its recorded main for the host and CLI", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "main",
+    sandbox: "pr",
+    nativeRef: "main",
+  });
+  try {
+    // The record wins over the sandbox commit (off main here only to show
+    // no decision ran); the train stops later, at the pins.
+    const native = f.dispatches.find((d) => d.includes("release-native.yml"));
+    assertStringIncludes(native ?? "", "--ref main");
+    assertStringIncludes(native ?? "", "-f publish=true");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a train stops when it cannot check a commit against main", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    sandboxRoot: "missing-sandbox-checkout",
+  });
+  try {
+    assertEquals(f.code, 1, f.output);
+    assertStringIncludes(f.output, "no checkout at");
+    assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
+    assertEquals(f.stateLeft, false, "a refused train left its state file");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new train records where the host and CLI build before its first step", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    sandbox: "pr",
+    fresh: true,
+    failKernelRun: true,
+  });
+  try {
+    assertEquals(f.code, 1, f.output);
+    assertEquals(f.dispatches.length, 1, f.calls.join("\n"));
+    assertEquals(f.state?.steps?.native?.ref, `validate/${f.train}`);
   } finally {
     await f.cleanup();
   }

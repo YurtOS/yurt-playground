@@ -5,8 +5,9 @@
 # (a second train on the same day and rev gets .2, .3, ...); the artifacts are
 # built and published by CI from exact commits (yurt-sandbox's
 # release-kernel-wasm.yml and release-native.yml, yurt-ports'
-# release-playground-image.yml, each dispatched on its default branch with
-# immutable inputs), each as a release of the repository that built it --
+# release-playground-image.yml, each dispatched on its default branch --
+# or, for a rehearsal of commits off main, on a validate branch, see
+# --validate -- with immutable inputs), each as a release of the repository that built it --
 # no cross-repo write token exists; this script only sequences the
 # dispatches, resolves each run by a correlation id it minted (never "the
 # newest run"), generates artifacts/pins.json from the published releases'
@@ -36,6 +37,9 @@
 #   --kernel-sha    yurtos-kernel commit (default: origin/main of ../yurtos-kernel)
 #   --ports-sha     yurt-ports commit    (default: origin/main of ../yurt-ports)
 #   --sandbox-sha   yurt-sandbox commit  (default: origin/main of ../yurt-sandbox)
+#                   Each commit is checked against its checkout's origin/main
+#                   (YURT_KERNEL_ROOT, YURT_PORTS_ROOT, YURT_SANDBOX_ROOT
+#                   override the paths), so the checkouts must exist
 #   --image-release pin this playground-image release instead of building
 #                   one ([2] is skipped; the pythonSeal pin is carried
 #                   through unchanged unless --python-seal-release names a
@@ -56,7 +60,14 @@
 #                   main's head (deleted at the end) with publish=false: it
 #                   builds and smokes the image but publishes nothing, and
 #                   [3] tests against the image artifacts/pins.json pins.
-#                   A train that is not a rehearsal needs both on main.
+#                   Likewise the host and CLI ([3]) build from main's
+#                   workflow only when --sandbox-sha and --kernel-sha are
+#                   both in their repositories' main history; otherwise [3]
+#                   runs from a validate/<TRAIN> branch of yurt-sandbox made
+#                   at its main's head (deleted at the end) with
+#                   publish=false.
+#                   A train that is not a rehearsal needs all three on main
+#                   and stops before its first dispatch otherwise.
 #   --resume        continue a train from its state file. Without --train,
 #                   only the newest train of its kind (add --validate for a
 #                   rehearsal) and only if it started today; a failure
@@ -450,9 +461,12 @@ cli_release=$(release_tag "${cli_release:-yurt-cli-$train}")
 image_ref=main
 image_publish=true
 # on_main DIR SHA: SHA is in the history of DIR's origin/main.
+# A missing checkout or a failed fetch stops the train: it says nothing
+# about the commit, and must not pass for "off main".
 on_main() {
-  git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 1
-  git -C "$1" fetch -q origin main 2>/dev/null || return 1
+  git -C "$1" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "no checkout at $1 to check $2 against its main; clone it there or set its *_ROOT variable"
+  git -C "$1" fetch -q origin main 2>/dev/null || die "could not fetch origin main in $1"
   git -C "$1" merge-base --is-ancestor "$2" origin/main 2>/dev/null
 }
 decide_image_ref() {
@@ -471,6 +485,36 @@ if [ "$pins_only" = 0 ] && [ "$build_image" = 1 ] && [ "$resume" = 0 ]; then
   decide_image_ref
   if [ "$image_ref" != main ] && gh api "repos/$ports_repo/git/refs/heads/$image_ref" >/dev/null 2>&1; then
     die "$ports_repo still has the branch $image_ref from an unfinished rehearsal; resume it ($(resume_command)), or delete it (gh api -X DELETE repos/$ports_repo/git/refs/heads/$image_ref)"
+  fi
+fi
+
+# ---- where the host and CLI build ([3]) -----------------------------------
+# yurt-sandbox's release-native.yml builds, from main, only sandbox and
+# kernel commits in their repositories' main history (it builds both).
+# Other commits build from a validate/<train> branch instead, and publish
+# nothing. Decided when the train starts, for every train that dispatches
+# (so a real train with either commit off main stops before its first
+# dispatch, [1] included, whether or not it builds an image), and recorded
+# in the state file (a resumed train from before that record decides when
+# it resumes).
+native_ref=main
+native_publish=true
+decide_native_ref() {
+  local off_main=""
+  on_main "$sandbox_dir" "$sandbox_sha" || off_main="yurt-sandbox $sandbox_sha (checkout: $sandbox_dir)"
+  on_main "$kernel_dir" "$kernel_sha" || off_main="${off_main:+$off_main, }yurtos-kernel $kernel_sha (checkout: $kernel_dir)"
+  native_ref=main
+  native_publish=true
+  [ -n "$off_main" ] || return 0
+  [ "$validate" = 1 ] || die "not in main's history: $off_main. A train's host and CLI build only from both mains; rehearse it with --validate"
+  native_ref=validate/$train
+  native_publish=false
+  say "native  built from yurt-sandbox $native_ref, not published ($off_main not on main)"
+}
+if [ "$pins_only" = 0 ] && [ "$resume" = 0 ]; then
+  decide_native_ref
+  if [ "$native_ref" != main ] && gh api "repos/$sandbox_repo/git/refs/heads/$native_ref" >/dev/null 2>&1; then
+    die "$sandbox_repo still has the branch $native_ref from an unfinished rehearsal; resume it ($(resume_command)), or delete it (gh api -X DELETE repos/$sandbox_repo/git/refs/heads/$native_ref)"
   fi
 fi
 
@@ -500,6 +544,18 @@ if [ "$build_image" = 1 ]; then
     image_ref=$(step_get image ref)
     [ "$image_ref" = main ] || image_publish=false
   fi
+fi
+# The host and CLI's ref, the same way; a resumed train whose state file
+# predates this record (and whose [3] has not run) decides now, before any
+# dispatch.
+if [ "$resume" = 0 ]; then
+  step_set native ref "\"$native_ref\""
+elif [ -n "$(step_get native ref)" ]; then
+  native_ref=$(step_get native ref)
+  [ "$native_ref" = main ] || native_publish=false
+elif [ "$(step_get native conclusion)" != success ]; then
+  decide_native_ref
+  step_set native ref "\"$native_ref\""
 fi
 
 # ---- dispatch + watch one workflow by correlation id ---------------------
@@ -614,11 +670,18 @@ if [ "$image_publish" = false ]; then
 fi
 # [3] the desktop host and the CLI, one run
 if [ "$(step_get native conclusion)" != success ]; then
-  dispatch_and_watch native "$sandbox_repo" release-native.yml \
+  if [ "$native_ref" != main ] && ! gh api "repos/$sandbox_repo/git/refs/heads/$native_ref" >/dev/null 2>&1; then
+    # The branch carries main's workflow at main's head; the commits it
+    # builds are the sandbox_sha and kernel_sha inputs, not the branch.
+    sandbox_main=$(gh api "repos/$sandbox_repo/commits/main" --jq .sha)
+    say "create $sandbox_repo $native_ref at main ($sandbox_main)"
+    gh api -X POST "repos/$sandbox_repo/git/refs" -f "ref=refs/heads/$native_ref" -f "sha=$sandbox_main" >/dev/null
+  fi
+  dispatch_and_watch native "$sandbox_repo" release-native.yml --ref "$native_ref" \
     -f "sandbox_sha=$sandbox_sha" -f "kernel_sha=$kernel_sha" \
     -f "kernel_wasm_release=$kernel_wasm_release" -f "kernel_wasm_repo=$kernel_wasm_repo" \
     -f "image_release=$native_image_release" -f "image_repo=$native_image_repo" \
-    -f "train=$train" -f "publish=true"
+    -f "train=$train" -f "publish=$native_publish"
 fi
 
 if [ "$validate" = 1 ]; then
@@ -633,6 +696,10 @@ if [ "$validate" = 1 ]; then
   if [ "$image_ref" != main ] && gh api "repos/$ports_repo/git/refs/heads/$image_ref" >/dev/null 2>&1; then
     gh api -X DELETE "repos/$ports_repo/git/refs/heads/$image_ref" \
       || die "could not delete $ports_repo's branch $image_ref; delete it by hand (the next rehearsal refuses to start until then)"
+  fi
+  if [ "$native_ref" != main ] && gh api "repos/$sandbox_repo/git/refs/heads/$native_ref" >/dev/null 2>&1; then
+    gh api -X DELETE "repos/$sandbox_repo/git/refs/heads/$native_ref" \
+      || die "could not delete $sandbox_repo's branch $native_ref; delete it by hand (the next rehearsal refuses to start until then)"
   fi
   rm -f "$state" # a finished rehearsal leaves nothing behind
   exit 0
