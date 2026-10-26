@@ -150,3 +150,13 @@ say why in the PR description. Beyond that, ask the user before opening it.
 
 Read the skill before acting. If a skill applies, invoking it is mandatory — see
 `superpowers:using-superpowers`.
+
+## Worktree hygiene
+
+- Work in your own worktree. When you finish a PR (merged or closed) or a
+  review, remove the worktree you created for it (`git worktree remove`).
+  Confirm it is clean and the branch is pushed first, and push unpushed work to
+  a branch rather than losing it.
+- Delete only your own worktrees and build output, never another session's.
+  Build directories run to tens of GB per worktree; ask an owner before pruning
+  theirs.
