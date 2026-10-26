@@ -5,8 +5,9 @@
 # (a second train on the same day and rev gets .2, .3, ...); the artifacts are
 # built and published by CI from exact commits (yurt-sandbox's
 # release-kernel-wasm.yml and release-native.yml, yurt-ports'
-# release-playground-image.yml, each dispatched on its default branch with
-# immutable inputs), each as a release of the repository that built it --
+# release-playground-image.yml, each dispatched on its default branch --
+# or, for a rehearsal of commits off main, on a validate branch, see
+# --validate -- with immutable inputs), each as a release of the repository that built it --
 # no cross-repo write token exists; this script only sequences the
 # dispatches, resolves each run by a correlation id it minted (never "the
 # newest run"), generates artifacts/pins.json from the published releases'
@@ -36,6 +37,9 @@
 #   --kernel-sha    yurtos-kernel commit (default: origin/main of ../yurtos-kernel)
 #   --ports-sha     yurt-ports commit    (default: origin/main of ../yurt-ports)
 #   --sandbox-sha   yurt-sandbox commit  (default: origin/main of ../yurt-sandbox)
+#                   Each commit is checked against its checkout's origin/main
+#                   (YURT_KERNEL_ROOT, YURT_PORTS_ROOT, YURT_SANDBOX_ROOT
+#                   override the paths), so the checkouts must exist
 #   --image-release pin this playground-image release instead of building
 #                   one ([2] is skipped; the pythonSeal pin is carried
 #                   through unchanged unless --python-seal-release names a
@@ -457,9 +461,12 @@ cli_release=$(release_tag "${cli_release:-yurt-cli-$train}")
 image_ref=main
 image_publish=true
 # on_main DIR SHA: SHA is in the history of DIR's origin/main.
+# A missing checkout or a failed fetch stops the train: it says nothing
+# about the commit, and must not pass for "off main".
 on_main() {
-  git -C "$1" rev-parse --git-dir >/dev/null 2>&1 || return 1
-  git -C "$1" fetch -q origin main 2>/dev/null || return 1
+  git -C "$1" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "no checkout at $1 to check $2 against its main; clone it there or set its *_ROOT variable"
+  git -C "$1" fetch -q origin main 2>/dev/null || die "could not fetch origin main in $1"
   git -C "$1" merge-base --is-ancestor "$2" origin/main 2>/dev/null
 }
 decide_image_ref() {
@@ -488,7 +495,8 @@ fi
 # nothing. Decided when the train starts, for every train that dispatches
 # (so a real train with either commit off main stops before its first
 # dispatch, [1] included, whether or not it builds an image), and recorded
-# in the state file.
+# in the state file (a resumed train from before that record decides when
+# it resumes).
 native_ref=main
 native_publish=true
 decide_native_ref() {
@@ -537,13 +545,17 @@ if [ "$build_image" = 1 ]; then
     [ "$image_ref" = main ] || image_publish=false
   fi
 fi
-# The host and CLI's ref, the same way (a state file from before this
-# record decides at [3]).
+# The host and CLI's ref, the same way; a resumed train whose state file
+# predates this record (and whose [3] has not run) decides now, before any
+# dispatch.
 if [ "$resume" = 0 ]; then
   step_set native ref "\"$native_ref\""
 elif [ -n "$(step_get native ref)" ]; then
   native_ref=$(step_get native ref)
   [ "$native_ref" = main ] || native_publish=false
+elif [ "$(step_get native conclusion)" != success ]; then
+  decide_native_ref
+  step_set native ref "\"$native_ref\""
 fi
 
 # ---- dispatch + watch one workflow by correlation id ---------------------
@@ -658,10 +670,6 @@ if [ "$image_publish" = false ]; then
 fi
 # [3] the desktop host and the CLI, one run
 if [ "$(step_get native conclusion)" != success ]; then
-  if [ -z "$(step_get native ref)" ]; then
-    decide_native_ref
-    step_set native ref "\"$native_ref\""
-  fi
   if [ "$native_ref" != main ] && ! gh api "repos/$sandbox_repo/git/refs/heads/$native_ref" >/dev/null 2>&1; then
     # The branch carries main's workflow at main's head; the commits it
     # builds are the sandbox_sha and kernel_sha inputs, not the branch.
