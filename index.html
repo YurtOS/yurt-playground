@@ -132,7 +132,7 @@
       <article class="pane upcoming" id="upcoming">
         <h1>Upcoming</h1>
         <p class="date">
-          Updated 2026-10-25 · not released yet; plans may change
+          Updated 2026-10-26 · not released yet; plans may change
         </p>
         <p>
           Work that is in progress or in review for a later train. None of it is
@@ -147,13 +147,9 @@
             (yurt-toolchain #180, #236; yurt-ports #173).
           </li>
           <li>
-            Remaining fork corners: a half-loaded library at fork time, and the
-            browser host matching the desktop host (kernel #3683, #3681).
-          </li>
-          <li>
-            Thread-local storage in runtime-loaded libraries: the kernel commit
-            point has landed (kernel #4017); the Wasmtime and browser-host
-            halves are in review (kernel #4059, #4034).
+            Thread-local storage in runtime-loaded libraries ships for the
+            desktop host in playground-2026.10.26-3d32068; the browser-host half
+            is in progress (kernel #4034).
           </li>
         </ul>
         <h2>JavaScript JIT (experimental)</h2>
@@ -172,21 +168,11 @@
             compiled so far, and Gemini CLI does not speed up yet.
           </li>
           <li>
-            <strong>SpiderMonkey source:</strong> node now builds from the
-            <code>yurt</code> branch of YurtOS/firefox, with the 32-bit wasm
-            (ILP32) build fixes (yurt-node #83, in review).
-          </li>
-          <li>
-            <strong>Upstream tiers:</strong> NightMonkey takes upstream's MIR
-            and baseline tiers and keeps compiling inside the guest (nightmonkey
-            #8, in review).
-          </li>
-          <li>
             <strong>Kernel:</strong> JIT code now survives <code>fork</code>
             on the desktop host (kernel #3677). Still open: slot reservation and
-            module loads over 1 MiB on the browser host (#2981, #3319), JIT code
-            visible to every thread (#2984), and fork and checkpoints across JIT
-            frames (#3335). Tracked in yurt-ports #110.
+            module loads over 1 MiB on the browser host (#2981, #3319), and fork
+            and checkpoints across JIT frames (#3335). Tracked in yurt-ports
+            #110.
           </li>
         </ul>
         <h2>Go</h2>
@@ -217,20 +203,163 @@
             Root can search and create in a directory that has no execute bits,
             as on Linux (#3714).
           </li>
-          <li>
-            <code>mount</code> with <code>MS_BIND</code> and
-            <code>MS_MOVE</code> (#3107).
-          </li>
-          <li>
-            Guest SDK 0.0.30: <code>syscall(...)</code> takes any number of
-            arguments, including structs, in C.
-          </li>
         </ul>
         <h2>Planned</h2>
         <ul>
           <li>
             Ctrl-C and <code>kill -INT</code> reach a CPU-bound Python program,
             so <code>KeyboardInterrupt</code> works (#2811).
+          </li>
+        </ul>
+      </article>
+      <article class="pane" id="playground-2026.10.26-3d32068">
+        <h1>playground-2026.10.26-3d32068</h1>
+        <p class="date">
+          2026-10-26 · replaces playground-2026.10.25-f884f16
+        </p>
+        <p>
+          This train moves the Guest SDK from 0.0.29 to 0.0.31, and the image
+          gains everyday command line tools and a working <code>pkg
+            install</code>. The kernel adds bind and move mounts, thread-local
+          storage in <code>dlopen</code>'d libraries on the desktop host, and
+          live shared mappings of <code>memfd</code> and <code>/dev/shm</code>.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Version</th>
+            </tr>
+            <tr>
+              <td>Kernel</td>
+              <td>yurtos-kernel 3d32068 (kernel-v0.0.12)</td>
+            </tr>
+            <tr>
+              <td>Image</td>
+              <td>yurt-ports 0cf24f6</td>
+            </tr>
+            <tr>
+              <td>Desktop host and yurt CLI</td>
+              <td>yurt-sandbox 68e0034</td>
+            </tr>
+            <tr>
+              <td>Guest SDK</td>
+              <td>0.0.31 (was 0.0.29)</td>
+            </tr>
+          </table>
+        </div>
+
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            <strong>Guest SDK 0.0.31.</strong> The kernel and every program in
+            the image are built with it. <strong>Programs built with 0.0.29 keep
+              running; you don't need to rebuild them.</strong> We ran the
+            previous train's whole image (built with 0.0.29) on this train's
+            runtime: the shell, <code>python3</code> with threads,
+            <code>fork</code> and TLS, and <code>node</code> all work. Rebuild
+            with 0.0.31 to pick up two SDK changes. In C, <code
+            >syscall(...)</code>
+            takes any number of arguments, including structs (this was planned
+            as 0.0.30, which was never released on its own). And the loader now
+            tells the kernel when a library's constructors have finished, so
+            another thread is never handed a half-initialised library (#4063).
+            Programs built with 0.0.29 keep the previous train's behaviour for
+            both.
+          </li>
+          <li>
+            <strong>More tools in the image:</strong> <code>git</code>,
+            <code>curl</code>, <code>jq</code>, <code>sqlite3</code>,
+            <code>zsh</code>, <code>make</code>, <code>zstd</code>,
+            <code>xz</code>, <code>pkg</code> and <code>sudo</code>, with a CA
+            bundle so <code>curl</code> and <code>git</code> verify HTTPS
+            (yurt-ports #249). The default user has passwordless
+            <code>sudo</code>, as in a dev container.
+          </li>
+          <li>
+            <strong><code>pkg install</code> works</strong> against the signed
+            YurtOS/yurt-packages repository, for example
+            <code>sudo pkg install rtk</code>. The image ships its own
+            <code>busybox</code> outside pkg, so install the
+            <code>busybox</code> package into another root with
+            <code>--root</code>.
+          </li>
+          <li>
+            <strong><code>mount</code> with <code>MS_BIND</code>,
+              <code>MS_BIND|MS_REC</code> and <code>MS_MOVE</code></strong>
+            (#3107).
+          </li>
+          <li>
+            <strong>Thread-local storage in <code>dlopen</code>'d
+              libraries</strong> on the desktop host, in the loading thread and
+            its fork children (#4017, #4059).
+          </li>
+          <li>
+            <strong>Live <code>MAP_SHARED</code> for <code>memfd</code> and
+              <code>/dev/shm</code>:</strong> processes that map the same object
+            see each other's writes (#4067).
+          </li>
+        </ul>
+
+        <h2>Kernel</h2>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Area</th>
+              <th>Change</th>
+              <th>Issue</th>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                <code>dlsym(RTLD_DEFAULT)</code> searches the default scope on
+                the browser host too
+              </td>
+              <td>#4004, #4094</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                Browser host: an <code>RTLD_GLOBAL</code> library with a
+                dependency loads in a thread, and a thread binds a library's
+                imports breadth first, as on Linux
+              </td>
+              <td>#4107, #3991, #4112</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                Browser host: a <code>dlclose</code> that has to wait for
+                another thread is retried instead of being dropped
+              </td>
+              <td>#4006, #4115</td>
+            </tr>
+            <tr>
+              <td>Dynamic loading</td>
+              <td>
+                A library whose constructors are still running in one thread is
+                not handed to another thread half initialised
+              </td>
+              <td>#4063, #4070</td>
+            </tr>
+            <tr>
+              <td>Memory</td>
+              <td>
+                Shared mappings: lifetime, permission and write-back fixes
+              </td>
+              <td>#3101, #3258</td>
+            </tr>
+          </table>
+        </div>
+
+        <h2>Playground</h2>
+        <ul>
+          <li>
+            Upload files from your device into the sandbox (playground #230).
+          </li>
+          <li>
+            Install packages from YurtOS/yurt-packages in the browser tab
+            (playground #231).
           </li>
         </ul>
       </article>
