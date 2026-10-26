@@ -54,18 +54,20 @@ Planned for the next one or two trains. These are in progress, not finished.
   next train.
 - **A modular image: a small base, the rest as packages.** Why: one image with
   everything is slow to load and still never has the tool you need. The base
-  image keeps the small tools (`git`, `curl`, `jq`, `sqlite3`, `zsh`, `make`,
-  `perl`, `zstd`, `xz`, CA certificates) and adds the `pkg` client with a
+  image keeps BusyBox and the small tools (`git`, `curl`, `jq`, `sqlite3`,
+  `zsh`, `make`, `zstd`, `xz`, CA certificates) and adds the `pkg` client with a
   trusted-repository configuration for
   [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), and a
   passwordless `sudo` for the default user, which `pkg` needs. In progress.
 - **Install packages in the browser tab.** Why: the tab has no network, so
   `sudo pkg install` cannot download there. A _Packages_ control fetches a
   package for the sandbox, and the sandbox's own `pkg` verifies its signature
-  and installs it, as on the desktop. Draft PR
+  and installs it, as on the desktop. Merged in
   [#231](https://github.com/YurtOS/yurt-playground/pull/231); it needs the base
   image above, and packages republished in the current format with real
-  signatures (the builds published today are refused).
+  signatures (the builds published today are refused). Real signing for
+  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) is in
+  progress.
 - **Python native extensions loaded from a `.so` at run time**, rather than
   built into Python as NumPy is today. Why: the kernel side of `dlopen` has
   shipped; a shared C library is the remaining piece for ordinary CPython
@@ -77,11 +79,25 @@ Planned for the next one or two trains. These are in progress, not finished.
 
 Bigger directions. Each needs design work, and the order is not fixed.
 
-- **Go and `gh` as packages, and a current clang**, published in
+- **A slim base image, with Python and Node as packages.** Why: CPython with its
+  libraries is over two thirds of today's image and Node with the Gemini CLI
+  most of the rest, and both load into every tab, including on phones and
+  tablets, where memory is short
+  ([#200](https://github.com/YurtOS/yurt-playground/issues/200)). The base would
+  keep the shell, the command-line tools and `pkg`. The page would install
+  Python when you open the Notebook, JupyterLab or the Python pane, and Node
+  when you open the agent pane, pinned to the exact builds the page expects
+  (Suspend/Resume runs a separately pinned sealable CPython that needs the
+  matching standard library). It needs signed packages first, and while files do
+  not survive a reload
+  ([#81](https://github.com/YurtOS/yurt-playground/issues/81)) a visitor who
+  uses Python downloads it on every visit, so the gain is for visits that only
+  use the shell.
+- **Go, `gh` and Perl as packages, and a current clang**, published in
   [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) when there is
-  demand for them, rather than in the base image. Planned: Go and `gh` are not
-  published there today, and the clang build there predates the current package
-  format.
+  demand for them, rather than in the base image. Planned: Go, `gh` and Perl are
+  not published there today, and the clang build there predates the current
+  package format.
 - **Files that survive a reload.** Durable storage for the browser sandbox, so a
   reload does not lose your work
   ([#81](https://github.com/YurtOS/yurt-playground/issues/81)). Saving the whole
