@@ -56,7 +56,14 @@
 #                   main's head (deleted at the end) with publish=false: it
 #                   builds and smokes the image but publishes nothing, and
 #                   [3] tests against the image artifacts/pins.json pins.
-#                   A train that is not a rehearsal needs both on main.
+#                   Likewise the host and CLI ([3]) build from main's
+#                   workflow only when --sandbox-sha and --kernel-sha are
+#                   both in their repositories' main history; otherwise [3]
+#                   runs from a validate/<TRAIN> branch of yurt-sandbox made
+#                   at its main's head (deleted at the end) with
+#                   publish=false.
+#                   A train that is not a rehearsal needs all three on main
+#                   and stops before its first dispatch otherwise.
 #   --resume        continue a train from its state file. Without --train,
 #                   only the newest train of its kind (add --validate for a
 #                   rehearsal) and only if it started today; a failure
@@ -474,6 +481,35 @@ if [ "$pins_only" = 0 ] && [ "$build_image" = 1 ] && [ "$resume" = 0 ]; then
   fi
 fi
 
+# ---- where the host and CLI build ([3]) -----------------------------------
+# yurt-sandbox's release-native.yml builds, from main, only sandbox and
+# kernel commits in their repositories' main history (it builds both).
+# Other commits build from a validate/<train> branch instead, and publish
+# nothing. Decided when the train starts, for every train that dispatches
+# (so a real train with either commit off main stops before its first
+# dispatch, [1] included, whether or not it builds an image), and recorded
+# in the state file.
+native_ref=main
+native_publish=true
+decide_native_ref() {
+  local off_main=""
+  on_main "$sandbox_dir" "$sandbox_sha" || off_main="yurt-sandbox $sandbox_sha (checkout: $sandbox_dir)"
+  on_main "$kernel_dir" "$kernel_sha" || off_main="${off_main:+$off_main, }yurtos-kernel $kernel_sha (checkout: $kernel_dir)"
+  native_ref=main
+  native_publish=true
+  [ -n "$off_main" ] || return 0
+  [ "$validate" = 1 ] || die "not in main's history: $off_main. A train's host and CLI build only from both mains; rehearse it with --validate"
+  native_ref=validate/$train
+  native_publish=false
+  say "native  built from yurt-sandbox $native_ref, not published ($off_main not on main)"
+}
+if [ "$pins_only" = 0 ] && [ "$resume" = 0 ]; then
+  decide_native_ref
+  if [ "$native_ref" != main ] && gh api "repos/$sandbox_repo/git/refs/heads/$native_ref" >/dev/null 2>&1; then
+    die "$sandbox_repo still has the branch $native_ref from an unfinished rehearsal; resume it ($(resume_command)), or delete it (gh api -X DELETE repos/$sandbox_repo/git/refs/heads/$native_ref)"
+  fi
+fi
+
 if [ "$pins_only" = 0 ]; then
 mkdir -p "$state_dir"
 state=$state_dir/$train.json
@@ -500,6 +536,14 @@ if [ "$build_image" = 1 ]; then
     image_ref=$(step_get image ref)
     [ "$image_ref" = main ] || image_publish=false
   fi
+fi
+# The host and CLI's ref, the same way (a state file from before this
+# record decides at [3]).
+if [ "$resume" = 0 ]; then
+  step_set native ref "\"$native_ref\""
+elif [ -n "$(step_get native ref)" ]; then
+  native_ref=$(step_get native ref)
+  [ "$native_ref" = main ] || native_publish=false
 fi
 
 # ---- dispatch + watch one workflow by correlation id ---------------------
@@ -614,11 +658,22 @@ if [ "$image_publish" = false ]; then
 fi
 # [3] the desktop host and the CLI, one run
 if [ "$(step_get native conclusion)" != success ]; then
-  dispatch_and_watch native "$sandbox_repo" release-native.yml \
+  if [ -z "$(step_get native ref)" ]; then
+    decide_native_ref
+    step_set native ref "\"$native_ref\""
+  fi
+  if [ "$native_ref" != main ] && ! gh api "repos/$sandbox_repo/git/refs/heads/$native_ref" >/dev/null 2>&1; then
+    # The branch carries main's workflow at main's head; the commits it
+    # builds are the sandbox_sha and kernel_sha inputs, not the branch.
+    sandbox_main=$(gh api "repos/$sandbox_repo/commits/main" --jq .sha)
+    say "create $sandbox_repo $native_ref at main ($sandbox_main)"
+    gh api -X POST "repos/$sandbox_repo/git/refs" -f "ref=refs/heads/$native_ref" -f "sha=$sandbox_main" >/dev/null
+  fi
+  dispatch_and_watch native "$sandbox_repo" release-native.yml --ref "$native_ref" \
     -f "sandbox_sha=$sandbox_sha" -f "kernel_sha=$kernel_sha" \
     -f "kernel_wasm_release=$kernel_wasm_release" -f "kernel_wasm_repo=$kernel_wasm_repo" \
     -f "image_release=$native_image_release" -f "image_repo=$native_image_repo" \
-    -f "train=$train" -f "publish=true"
+    -f "train=$train" -f "publish=$native_publish"
 fi
 
 if [ "$validate" = 1 ]; then
@@ -633,6 +688,10 @@ if [ "$validate" = 1 ]; then
   if [ "$image_ref" != main ] && gh api "repos/$ports_repo/git/refs/heads/$image_ref" >/dev/null 2>&1; then
     gh api -X DELETE "repos/$ports_repo/git/refs/heads/$image_ref" \
       || die "could not delete $ports_repo's branch $image_ref; delete it by hand (the next rehearsal refuses to start until then)"
+  fi
+  if [ "$native_ref" != main ] && gh api "repos/$sandbox_repo/git/refs/heads/$native_ref" >/dev/null 2>&1; then
+    gh api -X DELETE "repos/$sandbox_repo/git/refs/heads/$native_ref" \
+      || die "could not delete $sandbox_repo's branch $native_ref; delete it by hand (the next rehearsal refuses to start until then)"
   fi
   rm -f "$state" # a finished rehearsal leaves nothing behind
   exit 0
