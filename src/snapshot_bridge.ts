@@ -31,6 +31,9 @@ export type SnapshotKernelBridge = {
     listener: (message: JupyterMessage, channel: JupyterChannel) => void,
   ): () => void;
   onStatus(listener: (text: string) => void): () => void;
+  /** The worker's failures alone (they reach `onStatus` too): what the
+   * panel keeps on screen instead of clearing it at the next state. */
+  onError(listener: (text: string) => void): () => void;
   /** Seal the sandbox into the browser's IndexedDB and tear it down. */
   suspend(): void;
   /** Bring the sealed sandbox back; a running cell continues. */
@@ -61,6 +64,7 @@ export function startSnapshotKernel(
     (message: JupyterMessage, channel: JupyterChannel) => void
   >();
   const statusListeners = new Set<(text: string) => void>();
+  const errorListeners = new Set<(text: string) => void>();
   const snapshotListeners = new Set<(state: SnapshotState) => void>();
   let snapshot: SnapshotState = { state: "booting" };
   let pendingCell: PendingCell | undefined;
@@ -80,6 +84,7 @@ export function startSnapshotKernel(
         return;
       case "error":
         for (const listener of statusListeners) listener(msg.message);
+        for (const listener of errorListeners) listener(msg.message);
         rejectReady(new Error(msg.message));
         return;
       case "notebook-ready":
@@ -110,7 +115,9 @@ export function startSnapshotKernel(
     }
   };
   worker.onerror = (event) => {
-    rejectReady(new Error(event.message || "notebook kernel worker failed"));
+    const message = event.message || "notebook kernel worker failed";
+    for (const listener of errorListeners) listener(message);
+    rejectReady(new Error(message));
   };
   worker.postMessage({
     type: "start",
@@ -144,6 +151,10 @@ export function startSnapshotKernel(
     onStatus(listener) {
       statusListeners.add(listener);
       return () => statusListeners.delete(listener);
+    },
+    onError(listener) {
+      errorListeners.add(listener);
+      return () => errorListeners.delete(listener);
     },
     suspend() {
       worker.postMessage({ type: "suspend" });

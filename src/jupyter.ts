@@ -19,8 +19,12 @@ export type JupyterLaunchSession = {
   /** Run a shell line as a process of the page's own, outside the user's
    * shell (the in-tab boot spawns it; the desktop page asks the launcher
    * for a host session, `nativeLaunchHooks`). Without it -- a launcher
-   * older than the API -- the launch is typed at the prompt. */
-  spawn?(line: string): Promise<void>;
+   * older than the API -- the launch is typed at the prompt. A session
+   * that can see the process end hands back `exited`, which ends the
+   * connection-file wait early: a kernel that died (no python3, a broken
+   * ipykernel) writes no file, and waiting the whole bound for it was
+   * minutes of "starting Jupyter" for nothing. */
+  spawn?(line: string): Promise<void | { exited: Promise<unknown> }>;
   /** A guest file's bytes, or `undefined` when it does not exist yet (the
    * in-tab boot reads the VFS directly; the desktop page reads through the
    * launcher). Without it the connection-file wait is typed at the prompt
@@ -231,8 +235,10 @@ export async function startGuestKernel(
     : () => {};
   let connection: KernelConnection;
   try {
+    let exited: Promise<unknown> | undefined;
     if (session.spawn !== undefined) {
-      await session.spawn(buildKernelOwnProcessLine(ports));
+      exited = (await session.spawn(buildKernelOwnProcessLine(ports)))
+        ?.exited;
     } else {
       // No way to start a process of the page's own (a launcher older
       // than /api/sessions): the launch is a background job of the user's
@@ -246,6 +252,7 @@ export async function startGuestKernel(
         ? await pollConnectionFile(
           session.readFile,
           options.pollMs ?? CONNECTION_FILE_POLL_MS,
+          exited,
         )
         : await readConnectionFile(session);
     } catch (error) {
@@ -322,10 +329,24 @@ const CONNECTION_FILE_POLL_MS = 500;
 async function pollConnectionFile(
   readFile: (path: string) => Promise<Uint8Array | undefined>,
   pollMs: number,
+  /** The kernel process's end, when the session can see it: once it has
+   * exited, one last look, and the wait is over. */
+  exited?: Promise<unknown>,
 ): Promise<KernelConnection> {
   const deadline = performance.now() + CONNECTION_FILE_WAIT_SECONDS * 1000;
   const decoder = new TextDecoder();
-  while (performance.now() < deadline) {
+  let gone = false;
+  /** The host's own failure to run the process, apart from an exit. */
+  let failed: string | undefined;
+  exited?.then(() => gone = true, (error) => {
+    failed = error instanceof Error ? error.message : String(error);
+    gone = true;
+  });
+  for (;;) {
+    // Read before deciding: a kernel that wrote the file and then exited
+    // still gets its file read once.
+    const lastLook = gone;
+    if (!lastLook && performance.now() >= deadline) break;
     const bytes = await readFile(JUPYTER_CONNECTION_FILE);
     if (bytes !== undefined && bytes.byteLength > 0) {
       // ipykernel writes the file in one go, but a look can land between
@@ -336,6 +357,7 @@ async function pollConnectionFile(
         // fall through to the next look
       }
     }
+    if (lastLook) break;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
   const log = await readFile(JUPYTER_LOG_FILE);
@@ -343,7 +365,11 @@ async function pollConnectionFile(
     ? "(no log)"
     : decoder.decode(log).split("\n").slice(-30).join("\n");
   throw new Error(
-    `Jupyter connection file was not written within ${CONNECTION_FILE_WAIT_SECONDS} s; kernel log:\n${tail}`,
+    failed !== undefined
+      ? `the Jupyter kernel process failed to run: ${failed}; kernel log:\n${tail}`
+      : gone
+      ? `the Jupyter kernel exited before writing its connection file; kernel log:\n${tail}`
+      : `Jupyter connection file was not written within ${CONNECTION_FILE_WAIT_SECONDS} s; kernel log:\n${tail}`,
   );
 }
 

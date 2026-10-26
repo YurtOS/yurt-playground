@@ -90,15 +90,28 @@ export type AgentEvent =
   }
   | { type: "error"; message: string };
 
-export const SYSTEM_PROMPT = [
-  "You operate a Linux sandbox (BusyBox, Python 3) for the user.",
+/** The system prompt. `python` says whether the sandbox has a python3: the
+ * slim base image has none, and a model told otherwise reaches for it
+ * first and spends its steps on "not found". */
+export function systemPrompt(python: boolean): string {
+  return [
+    python
+      ? "You operate a Linux sandbox (BusyBox, Python 3) for the user."
+      : "You operate a Linux sandbox (BusyBox shell tools only; no Python, no Node) for the user.",
+    ...PROMPT_RULES,
+  ].join("\n");
+}
+
+const PROMPT_RULES = [
   "Reply with exactly one JSON object and nothing else. It must be one of:",
   '{"action":"exec","cmd":"<shell command>"}',
   '{"action":"read_file","path":"<absolute path>"}',
   '{"action":"answer","text":"<final answer for the user>"}',
   "Use exec or read_file to get facts from the sandbox, one step at a time.",
   "Answer only from what you have seen. Keep the answer short.",
-].join("\n");
+];
+
+export const SYSTEM_PROMPT = systemPrompt(true);
 
 const FIELDS = { exec: "cmd", read_file: "path", answer: "text" } as const;
 
@@ -193,6 +206,7 @@ export async function runAgent(
   onEvent: (event: AgentEvent) => void,
   cancel: AbortSignal,
   limits: Limits = DEFAULT_LIMITS,
+  system: string = SYSTEM_PROMPT,
 ): Promise<void> {
   const timeout = AbortSignal.timeout(limits.timeoutMs);
   const signal = AbortSignal.any([cancel, timeout]);
@@ -213,7 +227,7 @@ export async function runAgent(
       onEvent({ type: "step", step, promptChars: prompt.length });
       let started = performance.now();
       const { text, stats } = await model.generate(
-        SYSTEM_PROMPT,
+        system,
         prompt,
         signal,
       );

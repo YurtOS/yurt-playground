@@ -6,6 +6,8 @@ import {
   type Model,
   parseAction,
   runAgent,
+  SYSTEM_PROMPT,
+  systemPrompt,
   type Tools,
   validateAction,
 } from "../src/agent.ts";
@@ -234,4 +236,44 @@ Deno.test("the prompt never exceeds its budget", () => {
       }
     }
   }
+});
+
+Deno.test("the system prompt promises Python only when the sandbox has it", () => {
+  assertEquals(systemPrompt(true), SYSTEM_PROMPT);
+  assertEquals(SYSTEM_PROMPT.includes("Python 3"), true);
+  const slim = systemPrompt(false);
+  assertEquals(slim.includes("Python 3"), false, slim);
+  assertEquals(slim.includes("no Python"), true, slim);
+  // The rest of the prompt is the same.
+  assertEquals(
+    slim.split("\n").slice(1),
+    SYSTEM_PROMPT.split("\n").slice(1),
+  );
+});
+
+Deno.test("runAgent hands the model the system prompt it was given", async () => {
+  const systems: string[] = [];
+  const model: Model = {
+    generate(system) {
+      systems.push(system);
+      return Promise.resolve({
+        text: '{"action":"answer","text":"done"}',
+        stats: { promptTokens: 1, outputTokens: 1 },
+      });
+    },
+  };
+  const tools: Tools = {
+    exec: () => Promise.reject(new Error("unused")),
+    readFile: () => Promise.reject(new Error("unused")),
+  };
+  await runAgent(
+    "task",
+    model,
+    tools,
+    () => {},
+    new AbortController().signal,
+    DEFAULT_LIMITS,
+    systemPrompt(false),
+  );
+  assertEquals(systems, [systemPrompt(false)]);
 });

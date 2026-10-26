@@ -1,4 +1,8 @@
 import type { Tools } from "./agent.ts";
+import {
+  PYTHON_MISSING_EXIT,
+  PYTHON_PROBE_COMMAND,
+} from "./coordinator_start.ts";
 import { checkPath, type Yurt } from "./agent_api.ts";
 import { DEFAULT_MAX_OUTPUT_BYTES, quoted } from "./executions.ts";
 
@@ -106,4 +110,19 @@ export function waitForSandbox(
   if (signal.aborted) return Promise.reject(cancelled());
   if (yurt.status === "idle") start();
   return abortable(yurt.ready, signal);
+}
+
+/** Whether the sandbox has a python3, for the system prompt. Only the
+ * probe's own "missing" code says no; a probe that fails or exits any
+ * other way says yes, the prompt the agent always had. */
+export async function sandboxHasPython(
+  tools: Tools,
+  signal: AbortSignal,
+): Promise<boolean> {
+  try {
+    const result = await tools.exec(PYTHON_PROBE_COMMAND, signal);
+    return result.code !== PYTHON_MISSING_EXIT;
+  } catch {
+    return true;
+  }
 }

@@ -14,6 +14,8 @@ import {
   mountMemoryRefusedBanner,
 } from "./memory_refused.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
+import { type BridgeState, showBridgeState } from "./bridge_status.ts";
+import { PYTHON_MISSING_TEXT } from "./notebook.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import type {
   JupyterChannel,
@@ -38,6 +40,8 @@ type FromWorker =
   | { type: "out"; bytes: number[] }
   | { type: "error"; message: string }
   | { type: "notebook-ready" }
+  // The image has no python3; no kernel is coming (src/coordinator_start.ts).
+  | { type: "python-missing" }
   | { type: "jupyter-restarted" }
   | {
     type: "jupyter-message";
@@ -71,16 +75,29 @@ export function startPlaygroundKernel(
       rejectReady = reject;
     });
   let ready = arm();
+  // The frontend shows a kernel that never became ready as a cell stuck at
+  // `[*]`; the page's own line says what happened (src/bridge_status.ts).
+  const show = (state: BridgeState) => showBridgeState(document, state);
+  const status = (text: string) => {
+    for (const listener of statusListeners) listener(text);
+    show({ state: "booting", text });
+  };
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
     if (msg.type === "status") {
-      for (const listener of statusListeners) listener(msg.text);
+      status(msg.text);
     } else if (msg.type === "error") {
       for (const listener of statusListeners) listener(msg.message);
+      show({ state: "error", text: msg.message });
       rejectReady(new Error(msg.message));
+    } else if (msg.type === "python-missing") {
+      for (const listener of statusListeners) listener(PYTHON_MISSING_TEXT);
+      show({ state: "python-missing" });
+      rejectReady(new Error(PYTHON_MISSING_TEXT));
     } else if (
       msg.type === "notebook-ready" || msg.type === "jupyter-restarted"
     ) {
+      show({ state: "ready" });
       resolveReady();
     } else if (msg.type === "jupyter-message") {
       for (const listener of messageListeners) {
@@ -92,7 +109,9 @@ export function startPlaygroundKernel(
     }
   };
   worker.onerror = (event) => {
-    rejectReady(new Error(event.message || "coordinator worker failed"));
+    const message = event.message || "coordinator worker failed";
+    show({ state: "error", text: message });
+    rejectReady(new Error(message));
   };
   // The desktop app's launcher answers /desktop.json and the sandbox is
   // native; on the hosted site the kernel boots in the worker, which needs
@@ -104,11 +123,9 @@ export function startPlaygroundKernel(
     // launcher, so neither applies there.
     if (desktop === undefined) {
       if (await anotherSandboxRunning()) {
-        for (const listener of statusListeners) {
-          listener(
-            "another tab already runs a sandbox; this boot shares the CPU with it",
-          );
-        }
+        status(
+          "another tab already runs a sandbox; this boot shares the CPU with it",
+        );
       }
       announceSandbox();
     }

@@ -83,18 +83,12 @@ export class PathError extends Error {}
 /** The largest archive `fs.export` saves: a home, not a command's output. */
 export const EXPORT_MAX_BYTES = 256 * 1024 * 1024;
 
-/** A gzipped tar of `base` under `parent`, streamed to stdout. Python's
- * tarfile rather than BusyBox tar: the image's BusyBox is built without
- * tar's create side (`tar -c` is "unrecognized option"), and CPython is
- * always there. Paths reach Python as command-line arguments, quoted for
- * the shell like every other path this API passes. */
+/** A gzipped tar of `base` under `parent`, streamed to stdout, by BusyBox
+ * `tar`: every image has it, the slim one (no Python) included. `--` ends
+ * the options, so a name that starts with `-` is a name; paths are quoted
+ * for the shell like every other path this API passes. */
 export function buildExportLine(parent: string, base: string): string {
-  const program =
-    "import sys,tarfile;t=tarfile.open(fileobj=sys.stdout.buffer,mode='w|gz');" +
-    "t.add(sys.argv[1],arcname=sys.argv[2]);t.close()";
-  return `cd ${quoted(parent)} && python3 -c ${quoted(program)} ${
-    quoted(base)
-  } ${quoted(base)}`;
+  return `cd ${quoted(parent)} && tar -czf - -- ${quoted(base)}`;
 }
 
 /** The directory to archive as its parent and its name; `/` has no name

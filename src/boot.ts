@@ -62,7 +62,7 @@ export type PlaygroundSession = {
    * login user in the login home, with no terminal: what the Jupyter
    * kernel is started as, so it is no job of the user's shell. Absent on
    * the desktop app's page, which has only the terminal. */
-  spawn?: (line: string) => Promise<void>;
+  spawn?: (line: string) => Promise<void | { exited: Promise<unknown> }>;
   /** A guest file's bytes as the login shell would read them, or
    * `undefined` when there is no such file (the Jupyter connection file,
    * looked for without typing into the user's shell). */
@@ -448,10 +448,12 @@ export async function bootPlayground(
       const process = await spawnShell(["/bin/sh", "-c", line]);
       // Nothing feeds it: stdin is at end-of-file from the start.
       process.closeStdin();
-      void process.runStartAsync().catch(() => {
-        // Its exit is the kernel's business (the connection file, the log);
-        // nothing here waits on it.
-      });
+      // Its exit is the kernel's business (the connection file, the log);
+      // the launch only watches for it, to stop waiting for a file a dead
+      // kernel will not write.
+      const exited = process.runStartAsync();
+      exited.catch(() => {});
+      return { exited };
     },
     async process(line, io) {
       // The host keeps stdio per pid: a forked child's output lands in its
