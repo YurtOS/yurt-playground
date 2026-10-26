@@ -518,6 +518,35 @@ if [ "$pins_only" = 0 ] && [ "$resume" = 0 ]; then
   fi
 fi
 
+# [2]'s smoke installs the CLI pins.json records today (not the train's
+# own, cli_release, which [3] publishes and [4] pins), its amd64 .deb, and
+# the image workflow refuses a yurt_cli_release without that .deb's sha256
+# (yurt_cli_sha256). Read them from pins.json before the state file is
+# written and before [1] spends a run, and stop on a missing or malformed
+# digest rather than dispatch an empty one. They are read on every run, a
+# --resume included, since the state file does not record them.
+pinned_cli_for_image() {
+  local pins=$root/artifacts/pins.json linux=x86_64-unknown-linux-gnu asset
+  [ -f "$pins" ] || die "no $pins to read [2]'s smoke CLI from"
+  read_pin() { jq -r --arg t "$linux" "$1 // empty" "$pins" 2>/dev/null \
+    || die "artifacts/pins.json: cannot read $1 for [2]'s smoke CLI"; }
+  smoke_cli_release=$(read_pin '.yurtCli.release?')
+  smoke_cli_repo=$(read_pin '.yurtCli.releaseRepo?')
+  smoke_cli_repo=${smoke_cli_repo:-$packages_repo}
+  asset=$(read_pin '.yurtCli.assets?[$t]?')
+  smoke_cli_sha256=$(read_pin '.yurtCli.sha256?[$t]?')
+  [ -n "$smoke_cli_release" ] || die "artifacts/pins.json names no yurtCli.release for [2]'s smoke"
+  # The digest must be the .deb's the smoke downloads, not a tarball's.
+  [[ "$asset" == yurt_*_amd64.deb ]] \
+    || die "artifacts/pins.json yurtCli.assets[\"$linux\"] is '$asset', not the amd64 .deb [2]'s smoke installs"
+  [[ "$smoke_cli_sha256" =~ ^[0-9a-f]{64}$ ]] \
+    || die "artifacts/pins.json has no sha256 (64 lowercase hex) for $smoke_cli_release's $asset (yurtCli.sha256[\"$linux\"]); [2] needs it as yurt_cli_sha256"
+}
+if [ "$pins_only" = 0 ] && [ "$build_image" = 1 ] \
+  && { [ "$resume" = 0 ] || [ "$(jq -r '.steps.image.conclusion // empty' "$state")" != success ]; }; then
+  pinned_cli_for_image
+fi
+
 if [ "$pins_only" = 0 ]; then
 mkdir -p "$state_dir"
 state=$state_dir/$train.json
@@ -618,29 +647,6 @@ dispatch_and_watch() {
 # A rehearsal publishes too (prereleases, see --validate): the runs test
 # against the train's own artifacts either way.
 
-# [2]'s smoke installs the CLI pins.json records today, its amd64 .deb, and
-# the image workflow refuses a yurt_cli_release without that .deb's sha256
-# (yurt_cli_sha256). Read all three from pins.json now, before [1] spends a
-# run, and stop on a missing or malformed digest rather than dispatch an
-# empty one. They are read on every run, a --resume included, since the
-# state file does not record them.
-pinned_cli_for_image() {
-  local pins=$root/artifacts/pins.json linux=x86_64-unknown-linux-gnu asset
-  [ -f "$pins" ] || die "no $pins to read [2]'s smoke CLI from"
-  cli_release=$(jq -r '.yurtCli.release // empty' "$pins")
-  cli_repo=$(jq -r ".yurtCli.releaseRepo // \"$packages_repo\"" "$pins")
-  asset=$(jq -r --arg t "$linux" '.yurtCli.assets[$t] // empty' "$pins")
-  cli_sha256=$(jq -r --arg t "$linux" '.yurtCli.sha256[$t] // empty' "$pins")
-  [ -n "$cli_release" ] || die "artifacts/pins.json names no yurtCli.release for [2]'s smoke"
-  # The digest must be the .deb's the smoke downloads, not a tarball's.
-  [[ "$asset" == yurt_*_amd64.deb ]] \
-    || die "artifacts/pins.json yurtCli.assets[\"$linux\"] is '$asset', not the amd64 .deb [2]'s smoke installs"
-  [[ "$cli_sha256" =~ ^[0-9a-f]{64}$ ]] \
-    || die "artifacts/pins.json has no sha256 (64 lowercase hex) for $cli_release's $asset (yurtCli.sha256[\"$linux\"]); [2] needs it as yurt_cli_sha256"
-}
-if [ "$build_image" = 1 ] && [ "$(step_get image conclusion)" != success ]; then
-  pinned_cli_for_image
-fi
 
 # [1] the kernel wasm
 if [ "$(step_get kernel_wasm conclusion)" != success ]; then
@@ -678,8 +684,8 @@ if [ "$build_image" = 1 ] && [ "$(step_get image conclusion)" != success ]; then
   fi
   dispatch_and_watch image "$ports_repo" release-playground-image.yml --ref "$image_ref" \
     -f "ports_sha=$ports_sha" -f "kernel_sha=$kernel_sha" \
-    -f "yurt_cli_release=$cli_release" -f "yurt_cli_repo=$cli_repo" \
-    -f "yurt_cli_sha256=$cli_sha256" \
+    -f "yurt_cli_release=$smoke_cli_release" -f "yurt_cli_repo=$smoke_cli_repo" \
+    -f "yurt_cli_sha256=$smoke_cli_sha256" \
     -f "jupyter_payload_release=$jupyter_payload" \
     -f "train=$train" -f "publish=$image_publish"
 fi

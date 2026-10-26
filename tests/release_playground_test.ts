@@ -646,7 +646,9 @@ async function imageStepFixture(
     /** The kernel wasm run ([1]) fails. */
     failKernelRun?: boolean;
     /** pins.json's yurtCli entry, in place of the pinned CLI below. */
-    yurtCli?: Record<string, unknown>;
+    yurtCli?: unknown;
+    /** Stop where [4] starts and print the CLI it would pin. */
+    stopAtPins?: boolean;
   },
 ) {
   const sandbox = opts.sandbox ?? "main";
@@ -658,9 +660,17 @@ async function imageStepFixture(
     join(repoRoot, "scripts/lib/kernel-release.sh"),
     join(root, "scripts/lib/kernel-release.sh"),
   );
-  await Deno.copyFile(
+  const source = await Deno.readTextFile(
     join(repoRoot, "scripts/release-playground.sh"),
+  );
+  const pinsStep = "# [4] pins.json from the releases' own sidecars";
+  await Deno.writeTextFile(
     join(root, "scripts/release-playground.sh"),
+    opts.stopAtPins
+      ? `${
+        source.split(pinsStep)[0]
+      }\nprintf 'PINS_CLI=%s@%s\\n' "$cli_repo" "$cli_release"\nexit 0\n`
+      : source,
   );
   await Deno.writeTextFile(
     join(root, "artifacts/pins.json"),
@@ -1219,13 +1229,19 @@ Deno.test("a resumed train from before #236 passes the pinned CLI .deb's sha256"
 
 Deno.test("a train stops before any dispatch when pins.json has no valid sha256 for the CLI's amd64 .deb", async () => {
   const linux = "x86_64-unknown-linux-gnu";
-  const cases: [string, Record<string, unknown>, string][] = [
+  const cases: [string, unknown, string][] = [
     [
       "no digest",
       { ...pinnedCli, sha256: { ...pinnedCli.sha256, [linux]: undefined } },
       "has no sha256",
     ],
     ["no yurtCli", {}, "names no yurtCli.release"],
+    ["a yurtCli that is not an object", "x", "names no yurtCli.release"],
+    [
+      "a sha256 that is not a map",
+      { ...pinnedCli, sha256: "f".repeat(64) },
+      "has no sha256",
+    ],
     [
       "no sha256 map",
       { ...pinnedCli, sha256: undefined },
@@ -1270,9 +1286,38 @@ Deno.test("a train stops before any dispatch when pins.json has no valid sha256 
         assertStringIncludes(f.output, error);
         // Fresh: not even [1]; resumed ([1] done): not [2].
         assertEquals(f.dispatches, [], `${what}, fresh=${fresh}`);
+        // A new train that stops leaves no state, so a rerun starts it.
+        if (fresh) assertEquals(f.stateLeft, false, what);
       } finally {
         await f.cleanup();
       }
+    }
+  }
+});
+
+Deno.test("a real train pins its own CLI in [4], not the one [2]'s smoke installs", async () => {
+  // #237 round 1: reading the smoke CLI into cli_release made [4] pin the
+  // CLI pins.json already had instead of the train's yurt-cli-<train>.
+  for (const fresh of [true, false]) {
+    const f = await imageStepFixture({
+      validate: 0,
+      ports: "main",
+      kernel: "main",
+      fresh,
+      stopAtPins: true,
+    });
+    try {
+      assertEquals(f.code, 0, f.output);
+      const image = f.dispatches.find((d) =>
+        d.includes("release-playground-image.yml")
+      );
+      for (const input of cliInputs) assertStringIncludes(image!, input);
+      assertStringIncludes(
+        f.output,
+        `PINS_CLI=YurtOS/yurt-sandbox@yurt-cli-${f.train}`,
+      );
+    } finally {
+      await f.cleanup();
     }
   }
 });
