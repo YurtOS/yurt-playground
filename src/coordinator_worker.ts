@@ -508,7 +508,12 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       startKernel: (session) => startGuestKernel(session, kernelPorts),
       post: (report) => {
         if (report.type === "python-missing") pythonMissing = true;
-        if (report.type === "error") bootError = report.message;
+        if (report.type === "error") {
+          bootError = report.message;
+          // A fresh sandbox's failed boot is said once, below, where
+          // Python's Try again is.
+          if (freshBoot && packageSession === undefined) return;
+        }
         post(report);
       },
     });
@@ -517,8 +522,10 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       subscribeJupyter(jupyter);
     }
   };
-  /** The last boot error `begin` posted. */
+  /** The last boot error `begin` saw. */
   let bootError: string | undefined;
+  /** A fresh sandbox is booting (`startFresh`). */
+  let freshBoot = false;
   /** Drop the in-tab sandbox: its guests go, a hung `pkg` with them, and
    * nothing keeps its kernel (with what was staged in it) reachable -- the
    * terminal's handlers were the stopped session's last references. Apart
@@ -548,7 +555,12 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       );
       post({ type: "status", text: "starting a fresh sandbox" });
       dropSandbox();
-      await begin();
+      freshBoot = true;
+      try {
+        await begin();
+      } finally {
+        freshBoot = false;
+      }
       // A fresh sandbox that did not boot: say so where Python's Try again
       // is, so the page can try once more (the retry finds no sandbox and
       // starts a fresh one).
