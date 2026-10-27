@@ -436,8 +436,8 @@ export class InstallStalled extends Error {
     const seconds = Math.round(ms / 1000);
     super(
       ceiling
-        ? `${name}: the install stopped making progress (the sandbox's ` +
-          `pkg ran for ${seconds} s without finishing)`
+        ? `${name}: the install stopped making progress (the sandbox ` +
+          `did not finish it in ${seconds} s)`
         : inSandbox
         ? `${name}: the install stopped making progress (the sandbox's ` +
           `pkg did nothing for ${seconds} s)`

@@ -36,7 +36,7 @@ export const HEARTBEAT_SECONDS = 2;
  * runs as root (`privileged`), since the login user's /proc does not list
  * root's processes, `pkg` among them. It stops beating when `pkg` is gone
  * but the shell was never told (a lost child exit), and when the sandbox
- * stops running anything (yurtos-kernel#4170 on the desktop host). A `pkg`
+ * stops running anything. A `pkg`
  * that is alive but blocked keeps it beating; the install's run ceiling
  * (src/packages.ts `INSTALL_RUN_CEILING_MS`) is the backstop for that. A
  * shell between two commands has no child for a moment; one missed beat
@@ -56,7 +56,9 @@ export function withHeartbeat(
     "  child=",
     "  if [ -r /proc/self/stat ]; then",
     "    for f in /proc/[0-9]*/stat; do",
-    '      read -r l < "$f" 2>/dev/null || continue',
+    // Braced: a process gone since the glob fails the redirect itself,
+    // which a 2>/dev/null after it would not silence.
+    '      { read -r l < "$f"; } 2>/dev/null || continue',
     '      set -- ${l##*")"}',
     '      [ "$2" = "$0" ] && [ "$1" != Z ] && { child=1; break; }',
     "    done",

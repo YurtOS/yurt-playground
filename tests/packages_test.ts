@@ -507,7 +507,7 @@ Deno.test("a run that beats but never finishes ends at the ceiling", async () =>
   assertEquals(error.inSandbox, true);
   assertEquals(
     error.message,
-    "greet: the install stopped making progress (the sandbox's pkg ran for 0 s without finishing)",
+    "greet: the install stopped making progress (the sandbox did not finish it in 0 s)",
   );
   assertEquals(aborted, [false, true]);
 });

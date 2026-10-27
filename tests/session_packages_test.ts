@@ -86,9 +86,9 @@ Deno.test("a watched run beats beside the script, and the beats are not its outp
   );
 });
 
-/** Run `withHeartbeat(script)` in the host's sh (dash on CI, like the
- * guest's ash a POSIX shell; both have `pgrep -P`), beating every 0.2 s:
- * the beats seen by each time, the exit code, and stderr. */
+/** Run `withHeartbeat(script)` in the host's sh, beating every 0.2 s: on
+ * Linux (CI: dash) through /proc, like the guest's ash; on macOS through
+ * pgrep. The beats seen by each time, the exit code, and stderr. */
 async function hostHeartbeat(
   script: string,
   marks: number[],
