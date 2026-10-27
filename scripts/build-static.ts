@@ -51,6 +51,9 @@ const STATIC_FILES = [
   // answer is no, said in JSON rather than as a 404 on every boot (#86).
   "desktop.json",
   "favicon.svg",
+  // For pages that name no icon -- JupyterLite's Notebook page -- the
+  // browser asks for /favicon.ico; without it, a console 404 (#247).
+  "favicon.ico",
   // The local agent's inference worker (#140); its runtime is /llm/.
   "llm_worker.bundle.js",
   "agent.css",
