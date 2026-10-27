@@ -67,6 +67,7 @@ Deno.test("static build writes every file the pages need", async () => {
       "verify.js",
       "integrity.json",
       "agent.css",
+      "favicon.ico",
       "llm_worker.bundle.js",
       "llm/models.json",
       "llm/wasm/litertlm_wasm_internal.js",

@@ -99,6 +99,20 @@ Deno.test("worker bootstrap is served as a JS module", async () => {
   }
 });
 
+Deno.test("/favicon.ico is served as an icon, not a 404 (#247)", async () => {
+  // JupyterLite's Notebook page names no icon, so the browser asks for the
+  // site root's /favicon.ico.
+  const res = await handlePlaygroundRequest(
+    new Request("http://playground/favicon.ico"),
+  );
+  assertEquals(res.status, 200);
+  assertEquals(res.headers.get("content-type"), "image/x-icon");
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  // ICONDIR: reserved 0, type 1 (icon), at least one image.
+  assertEquals([...bytes.subarray(0, 4)], [0, 0, 1, 0]);
+  assertEquals(bytes[4] > 0, true);
+});
+
 Deno.test("handler 404s also carry isolation headers", async () => {
   const res = await handlePlaygroundRequest(
     new Request("http://playground/nope"),
