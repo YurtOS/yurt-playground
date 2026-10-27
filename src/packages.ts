@@ -580,7 +580,15 @@ export type PinnedRelease = {
  * label for the progress messages. */
 export type InstallRequest =
   | string
-  | { label: string; releases: readonly PinnedRelease[] }
+  | {
+    label: string;
+    releases: readonly PinnedRelease[];
+    /** pkg may add releases outside `releases` (dependencies it verifies). */
+    othersAllowed?: boolean;
+    /** Every release must be fetched and verified now: a plan that names
+     * fewer, or a run that installs nothing, is a refusal. */
+    verifyAll?: boolean;
+  }
   // A set of packages that share one `yurt_N` build, their set's marker:
   // the newest build every one of them has (src/python_install.ts).
   | { label: string; set: readonly string[] };
@@ -793,13 +801,38 @@ export async function installPackage(
   };
   progress(`${name}: resolving (${command})`);
   const planned = await run(new Map());
-  if (planned.code === 0) return `${planned.stdout}${planned.stderr}`.trim();
+  const verifyAll = typeof request !== "string" && "releases" in request &&
+    request.verifyAll === true;
+  if (planned.code === 0) {
+    if (verifyAll) {
+      throw new Error(
+        `${name}: pkg verified nothing: ${
+          specs.join(" ")
+        } is already installed`,
+      );
+    }
+    return `${planned.stdout}${planned.stderr}`.trim();
+  }
   const releases = planReleases(
     planned.stdout,
     catalog,
     pinned,
-    typeof request !== "string" && "set" in request,
+    typeof request !== "string" &&
+      ("set" in request || request.othersAllowed === true),
   );
+  if (verifyAll) {
+    const named = new Set(
+      releases.map((r) => `${r.name}@${r.version}-${r.build}`),
+    );
+    const missing = specs.filter((spec) => !named.has(spec));
+    if (missing.length > 0) {
+      throw new Error(
+        `${name}: pkg's plan does not fetch ${
+          missing.join(", ")
+        }, so it would not verify them`,
+      );
+    }
+  }
   if (
     releases.length === 0 ||
     !planned.stderr.includes("failed to fetch archive")

@@ -170,7 +170,9 @@ if (import.meta.main) {
       const bad = await other.newPage();
       await bad.goto(notebookUrl, { waitUntil: "domcontentloaded" });
       await bad.waitForFunction(
-        () => /did not verify/.test(document.body.innerText),
+        () =>
+          /did not verify: pkg install Suspend\/Resume failed:[\s\S]*signature verification failed for python-seal/
+            .test(document.body.innerText),
         undefined,
         { timeout: 420_000 },
       ).catch(() => fail("a seal with a bad signature was not refused"));

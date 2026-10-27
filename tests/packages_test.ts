@@ -900,6 +900,84 @@ Deno.test("a set's install lets pkg add a dependency outside the set; a pinned l
   );
 });
 
+Deno.test("a pinned list that must verify all: others allowed, no plan may skip a pin", async () => {
+  const archive = new Uint8Array([5, 5]);
+  const base = await fakeRepo(archive);
+  const enc = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value));
+  const depArchive = new Uint8Array([6]);
+  const depUrl = "artifacts/libx/1.0.0/libx-1.0.0-yurt_0.yurtpkg";
+  const libx = enc({
+    name: "libx",
+    versions: [version("1.0.0", "yurt_0", {
+      url: depUrl,
+      size: 1,
+      sha256: await sha256Hex(depArchive),
+    })],
+  });
+  const fetcher = async (url: string) => {
+    const path = url.slice(PACKAGE_REPO_URL.length);
+    if (path === "packages/libx.json") return libx;
+    if (path === depUrl) return depArchive;
+    if (path === `${depUrl}.bundle`) return enc("bundle");
+    const bytes = await base(url);
+    if (path !== "index.json") return bytes;
+    const index = JSON.parse(new TextDecoder().decode(bytes));
+    index.packages.libx = { sha256: "", size: 1, url: "packages/libx.json" };
+    return enc(index);
+  };
+  const pin = {
+    name: "greet",
+    version: "0.1.0",
+    build: "yurt_0",
+    sha256: await sha256Hex(archive),
+    size: archive.byteLength,
+  };
+  const request = {
+    label: "Greet",
+    releases: [pin],
+    othersAllowed: true,
+    verifyAll: true,
+  };
+  const options = (host: PackageHost) => ({
+    host,
+    tablet: false,
+    fetcher,
+    progress: () => {},
+  });
+  // pkg adds a dependency the page does not pin: allowed.
+  const { host, runs } = fakeHost({
+    ...PLAN,
+    stdout: "install libx 1.0.0-yurt_0\ninstall greet 0.1.0-yurt_0\n",
+  }, INSTALLED);
+  await installPackage(request, options(host));
+  assertEquals(
+    runs[1].files.some((f) => f.path.endsWith("libx-1.0.0-yurt_0.yurtpkg")),
+    true,
+  );
+  // A run that installs nothing verified nothing.
+  const { host: done } = fakeHost({
+    code: 0,
+    stdout: "nothing to install\n",
+    stderr: "",
+  });
+  await assertRejects(
+    () => installPackage(request, options(done)),
+    Error,
+    "Greet: pkg verified nothing: greet@0.1.0-yurt_0 is already installed",
+  );
+  // A plan that leaves a pin out would not verify it.
+  const { host: partial } = fakeHost({
+    ...PLAN,
+    stdout: "install libx 1.0.0-yurt_0\n",
+  });
+  await assertRejects(
+    () => installPackage(request, options(partial)),
+    Error,
+    "Greet: pkg's plan does not fetch greet@0.1.0-yurt_0, so it would not verify them",
+  );
+});
+
 Deno.test("a checked catalog refuses metadata the index does not name, and an expired index", async () => {
   const fetcher = await fakeRepo(new Uint8Array([1]));
   // fakeRepo's index names each metadata file's real sha256.

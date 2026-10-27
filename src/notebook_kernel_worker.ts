@@ -820,10 +820,12 @@ async function resolveSealSet(): Promise<SealSet | undefined> {
 async function sealCache() {
   const cache = await browserArchiveCache("yurt-python-seal-v1");
   if (cache !== undefined && sealSet !== undefined) {
-    await cache.keepOnly?.([
-      `sha256:${sealSet.python.sha256}`,
-      `sha256:${sealSet.seal.sha256}`,
-    ]);
+    await cache.keepOnly?.(
+      [sealSet.python.sha256, sealSet.seal.sha256].flatMap((sha) => [
+        `sha256:${sha}`,
+        `sha256:${sha}.bundle`,
+      ]),
+    );
   }
   return cache;
 }
@@ -854,7 +856,12 @@ async function verifySealSet(set: SealSet, isolated: boolean): Promise<void> {
   });
   try {
     await installPackage(
-      { label: "Suspend/Resume", releases: [set.python, set.seal] },
+      {
+        label: "Suspend/Resume",
+        releases: [set.python, set.seal],
+        othersAllowed: true,
+        verifyAll: true,
+      },
       {
         host: workerPackageHost(session),
         tablet: false,
