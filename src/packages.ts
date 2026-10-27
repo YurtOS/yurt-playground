@@ -514,6 +514,9 @@ function planReleases(
   stdout: string,
   catalog: Catalog,
   pinned?: ReadonlyMap<string, PinnedRelease>,
+  /** A set's install: a release pkg adds outside the set (a dependency,
+   * say a newer ca-certificates) is pkg's to choose, and its to verify. */
+  othersAllowed = false,
 ): Release[] {
   return [...stdout.matchAll(/^install (\S+) (\S+)$/gm)].map(([, n, vb]) => {
     const release = catalog.metadata.get(n)?.file.versions.find((v) =>
@@ -527,6 +530,7 @@ function planReleases(
     if (pinned !== undefined) {
       const pin = pinned.get(n);
       if (pin === undefined) {
+        if (othersAllowed) return checkRelease({ ...release, name: n });
         throw new Error(`pkg chose ${n} ${vb}, which this page does not pin`);
       }
       if (
@@ -770,7 +774,12 @@ export async function installPackage(
   progress(`${name}: resolving (${command})`);
   const planned = await run(new Map());
   if (planned.code === 0) return `${planned.stdout}${planned.stderr}`.trim();
-  const releases = planReleases(planned.stdout, catalog, pinned);
+  const releases = planReleases(
+    planned.stdout,
+    catalog,
+    pinned,
+    typeof request !== "string" && "set" in request,
+  );
   if (
     releases.length === 0 ||
     !planned.stderr.includes("failed to fetch archive")

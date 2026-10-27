@@ -856,3 +856,46 @@ Deno.test("a set's install keeps only its own cache entries", async () => {
     [await key(archive), `${await key(archive)}.bundle`].sort(),
   );
 });
+
+Deno.test("a set's install lets pkg add a dependency outside the set; a pinned list does not", async () => {
+  const archive = new Uint8Array([5, 5]);
+  const base = await fakeRepo(archive);
+  const enc = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value));
+  const depArchive = new Uint8Array([6]);
+  const depUrl = "artifacts/libx/1.0.0/libx-1.0.0-yurt_0.yurtpkg";
+  const libx = enc({
+    name: "libx",
+    versions: [version("1.0.0", "yurt_0", {
+      url: depUrl,
+      size: 1,
+      sha256: await sha256Hex(depArchive),
+    })],
+  });
+  const fetcher = async (url: string) => {
+    const path = url.slice(PACKAGE_REPO_URL.length);
+    if (path === "packages/libx.json") return libx;
+    if (path === depUrl) return depArchive;
+    if (path === `${depUrl}.bundle`) return enc("bundle");
+    const bytes = await base(url);
+    if (path !== "index.json") return bytes;
+    const index = JSON.parse(new TextDecoder().decode(bytes));
+    index.packages.libx = { sha256: "", size: 1, url: "packages/libx.json" };
+    return enc(index);
+  };
+  const plan = {
+    ...PLAN,
+    stdout: "install libx 1.0.0-yurt_0\ninstall greet 0.1.0-yurt_0\n",
+  };
+  const { host, runs } = fakeHost(plan, INSTALLED);
+  await installPackage({ label: "Greet", set: ["greet"] }, {
+    host,
+    tablet: false,
+    fetcher,
+    progress: () => {},
+  });
+  assertEquals(
+    runs[1].files.some((f) => f.path.endsWith("libx-1.0.0-yurt_0.yurtpkg")),
+    true,
+  );
+});

@@ -563,20 +563,27 @@ async function packagesInstall(page: Page): Promise<void> {
     const dir = repo ?? PACKAGES_SNAPSHOT;
     // Nothing reaches GitHub: a file the directory lacks, or any other
     // request to the host, is a 404.
-    await page.route("https://raw.githubusercontent.com/**", async (route) => {
-      const url = route.request().url();
-      try {
-        if (!url.startsWith(PACKAGE_REPO_URL)) throw new Error(url);
-        await route.fulfill({
-          body: Buffer.from(
-            await Deno.readFile(join(dir, url.slice(PACKAGE_REPO_URL.length))),
-          ),
-          headers: { "access-control-allow-origin": "*" },
-        });
-      } catch {
-        await route.fulfill({ status: 404 });
-      }
-    });
+    // The coordinator Worker fetches the repository: a context route sees
+    // a dedicated worker's requests, a page route does not.
+    await page.context().route(
+      "https://raw.githubusercontent.com/**",
+      async (route) => {
+        const url = route.request().url();
+        try {
+          if (!url.startsWith(PACKAGE_REPO_URL)) throw new Error(url);
+          await route.fulfill({
+            body: Buffer.from(
+              await Deno.readFile(
+                join(dir, url.slice(PACKAGE_REPO_URL.length)),
+              ),
+            ),
+            headers: { "access-control-allow-origin": "*" },
+          });
+        } catch {
+          await route.fulfill({ status: 404 });
+        }
+      },
+    );
   }
   const command = run.split(" ")[0];
   const before = await exec(page, `command -v ${command}`);

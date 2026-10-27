@@ -104,14 +104,10 @@ type ToWorker =
   | { type: "yurt-wait"; req: number; id: string; raw: boolean }
   | { type: "yurt-kill"; req: number; id: string; signal?: string }
   | { type: "yurt-list"; req: number }
-  // A package install (src/packages.ts): the staged repository copy, then
-  // the script that runs `sudo pkg` on it, as the login user.
-  | {
-    type: "pkg-run";
-    req: number;
-    files: { path: string; bytes: Uint8Array }[];
-    script: string;
-  };
+  // The Packages panel's install of one package (src/packages.ts), run
+  // here like the automatic Python install and queued with it: one
+  // install at a time. Progress comes back as `pkg-progress`.
+  | { type: "pkg-install"; req: number; name: string; tablet: boolean };
 
 type FromWorker =
   // status, error, shell-ready (the shell is the whole session), and
@@ -146,11 +142,12 @@ type FromWorker =
     value?: string | Result | RawResult | ExecutionRecord[] | null;
     error?: string;
   }
+  | { type: "pkg-progress"; req: number; text: string }
   | {
     type: "pkg-reply";
     req: number;
     ok: boolean;
-    value?: { code: number | null; stdout: string; stderr: string };
+    value?: string;
     error?: string;
   };
 
@@ -165,52 +162,50 @@ let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 const PKG_OUTPUT_BYTES = 1024 * 1024;
 
 async function servePackages(msg: ToWorker): Promise<void> {
-  if (msg.type !== "pkg-run") return;
-  const reply = (
-    ok: boolean,
-    value?: { code: number | null; stdout: string; stderr: string },
-    error?: string,
-  ) => post({ type: "pkg-reply", req: msg.req, ok, value, error });
+  if (msg.type !== "pkg-install") return;
+  const { req } = msg;
   const session = packageSession;
   if (session?.process === undefined || session.writeFiles === undefined) {
-    reply(false, undefined, "this sandbox does not install packages");
+    post({
+      type: "pkg-reply",
+      req,
+      ok: false,
+      error: "this sandbox does not install packages",
+    });
     return;
   }
-  const files = msg.files;
-  // In the guest once written: the tab's copies go while `pkg` runs.
-  msg.files = [];
   try {
-    reply(true, await runStaged(session, files, msg.script));
-  } catch (error) {
-    // Staging or the spawn failed, not pkg: said as that.
-    reply(
-      false,
-      undefined,
-      error instanceof Error ? error.message : String(error),
+    const output = await installs(() =>
+      installPackage(msg.name, {
+        host: workerPackageHost(session),
+        tablet: msg.tablet,
+        progress: (text) => post({ type: "pkg-progress", req, text }),
+      })
     );
+    post({ type: "pkg-reply", req, ok: true, value: output });
+  } catch (error) {
+    post({
+      type: "pkg-reply",
+      req,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
 type BootedSession = Awaited<ReturnType<typeof bootPlayground>>;
 
-/** The one `pkg` run at a time: every run stages at the same directory
- * and removes it at the end, and pkg takes one lock, so the Packages
- * panel's runs and the automatic Python install's wait their turn. */
-const pkgRuns = runQueue();
+/** One install at a time, whole: an install is a plan run, the downloads
+ * and an install run, every run stages at the same directory, and pkg
+ * takes one lock. The Packages panel's installs and the automatic Python
+ * install wait their turn here, so neither lands between the other's two
+ * runs. */
+const installs = runQueue();
 
 /** Write the staged repository copy (as root) and run `script` on it as the
- * login user: one `pkg` run of an install (src/packages.ts), after any run
- * already queued. Throws when staging or the spawn fails, not when pkg
- * does. */
-function runStaged(
-  session: BootedSession,
-  files: StagedFile[],
-  script: string,
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return pkgRuns(() => runStagedNow(session, files, script));
-}
-
-async function runStagedNow(
+ * login user: one `pkg` run of an install (src/packages.ts). Throws when
+ * staging or the spawn fails, not when pkg does. */
+async function runStaged(
   session: BootedSession,
   files: StagedFile[],
   script: string,
@@ -515,12 +510,15 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     ? undefined
     : async (session) => {
       post({ type: "status", text: "installing Python" });
-      await installPackage(python, {
-        host: workerPackageHost(session),
-        tablet,
-        progress: (text) => post({ type: "status", text }),
-        cache: await browserArchiveCache(),
-      });
+      const cache = await browserArchiveCache();
+      await installs(() =>
+        installPackage(python, {
+          host: workerPackageHost(session),
+          tablet,
+          progress: (text) => post({ type: "status", text }),
+          cache,
+        })
+      );
     };
   // Never stops the session once its shell is up (src/coordinator_start.ts).
   const started = await startSandbox({

@@ -17,9 +17,7 @@ import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
   catalogRows,
   formatBytes,
-  installPackage,
   loadCatalog,
-  type PackageHost,
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
@@ -46,6 +44,7 @@ type FromWorker =
   | { type: "shell-ready" }
   // The image has no python3: the shell runs, Jupyter was not launched.
   | { type: "python-missing"; error?: string }
+  | { type: "pkg-progress"; req: number; text: string }
   | {
     type: "yurt-reply" | "pkg-reply";
     req: number;
@@ -58,9 +57,13 @@ type FromWorker =
   | { type: "cell-error"; id: string; message: string }
   | MemoryRefusedMessage;
 
-/** The in-tab sandbox's side of a package install, once it boots; the
- * desktop app's sandbox has a network and installs with `pkg` itself. */
-let packageHost: PackageHost | undefined;
+/** A package install in the in-tab sandbox, once it boots: the coordinator
+ * runs it (src/packages.ts), one install at a time with the automatic Python
+ * install. The desktop app's sandbox has a network and installs with `pkg`
+ * itself. */
+let packageInstall:
+  | ((name: string, progress: (text: string) => void) => Promise<string>)
+  | undefined;
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
@@ -108,7 +111,7 @@ const yurtState = (() => {
       set("running");
       byId("export-home").hidden = false;
       byId("upload-files").hidden = false;
-      byId("packages-toggle").hidden = packageHost === undefined;
+      byId("packages-toggle").hidden = packageInstall === undefined;
       resolveReady();
     },
     failed(message: string) {
@@ -331,29 +334,30 @@ function boot(
       list: () => ask({ type: "yurt-list" }),
     };
   yurtState.connect(transport);
+  /** Each install's progress, by request. */
+  const progressOf = new Map<number, (text: string) => void>();
   if (desktop === undefined) {
-    packageHost = {
-      readFile: (path) =>
-        (globalThis as unknown as { yurt: Yurt }).yurt.fs.read(path),
-      stageAndRun: (files, script) =>
-        new Promise((resolve, reject) => {
-          const req = nextReq++;
-          pending.set(req, {
-            resolve: resolve as (v: unknown) => void,
-            reject,
-          });
-          // The archives move to the worker, not copied: tens of MB.
-          try {
-            worker.postMessage(
-              { type: "pkg-run", req, files, script },
-              files.map((file) => file.bytes.buffer as ArrayBuffer),
-            );
-          } catch (error) {
-            pending.delete(req);
+    packageInstall = (name, progress) =>
+      new Promise<string>((resolve, reject) => {
+        const req = nextReq++;
+        progressOf.set(req, progress);
+        pending.set(req, {
+          resolve: (value) => {
+            progressOf.delete(req);
+            resolve(value as string);
+          },
+          reject: (error) => {
+            progressOf.delete(req);
             reject(error);
-          }
-        }),
-    };
+          },
+        });
+        worker.postMessage({
+          type: "pkg-install",
+          req,
+          name,
+          tablet: smallDevice,
+        });
+      });
   }
   yurtState.set("booting");
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
@@ -406,6 +410,7 @@ function boot(
       status.progress("running", { settled: true });
       rememberBooting(undefined);
     }
+    if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
       const waiter = pending.get(msg.req);
       pending.delete(msg.req);
@@ -537,7 +542,7 @@ function wireUpload(status: StatusLine): void {
 /** The "Packages" control: the repository's packages, each with an
  * Install (src/packages.ts). One install at a time; progress and the
  * outcome land in the panel's own status line. */
-function wirePackages(smallDevice: boolean): void {
+function wirePackages(): void {
   const toggle = byId("packages-toggle") as HTMLButtonElement;
   const panel = byId("packages");
   const state = byId("packages-state");
@@ -548,16 +553,15 @@ function wirePackages(smallDevice: boolean): void {
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
   const install = async (name: string) => {
-    if (packageHost === undefined || busy) return;
+    if (packageInstall === undefined || busy) return;
     busy = true;
     panel.dataset.install = "running";
     for (const b of list.querySelectorAll("button")) b.disabled = true;
     try {
-      const output = await installPackage(name, {
-        host: packageHost,
-        tablet: smallDevice,
-        progress: (message) => status.textContent = message,
-      });
+      const output = await packageInstall(
+        name,
+        (message) => status.textContent = message,
+      );
       status.textContent = /^nothing to install$/m.test(output)
         ? `${name} is already installed`
         : `installed ${name}`;
@@ -675,8 +679,9 @@ async function runPage(): Promise<void> {
   // started. The desktop app runs natively and keeps everything.
   const device = deviceClass();
   const shellOnly = desktop === undefined && device === "tablet";
-  // A phone that boots anyway (`?start-anyway`) has less memory still.
-  wirePackages(device !== "desktop");
+  // The panel's installs run in the coordinator, capped like the tab's
+  // other installs (16 MiB on a phone or tablet: boot's `smallDevice`).
+  wirePackages();
   // Only the in-tab kernel has the memory problem; the desktop app's page
   // runs the sandbox natively. A phone, and a tab the browser reloaded
   // mid-boot, get no sandbox unless `?start-anyway`. Read (and clear) the
