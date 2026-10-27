@@ -261,7 +261,12 @@ let startFresh: (() => Promise<void>) | undefined;
  * frontend restart while Python is missing). After a stalled install, in
  * a fresh sandbox: the stalled one may not answer. */
 async function retryPython(): Promise<void> {
-  if (sandboxStalled && startFresh !== undefined) {
+  // Also when there is no sandbox: a fresh one whose boot failed is tried
+  // again, rather than "Python is missing" with nothing to install into.
+  if (
+    (sandboxStalled || packageSession === undefined) &&
+    startFresh !== undefined
+  ) {
     await startFresh();
     return;
   }
@@ -296,14 +301,22 @@ function post(msg: FromWorker): void {
   self.postMessage(msg);
 }
 
-function workerTerm(init: { cols: number; rows: number }): PlaygroundTerm {
+/** The worker's terminal; `dropHandlers` forgets every session's handlers,
+ * so a disposed session's (which hold its kernel) can be let go. */
+function workerTerm(
+  init: { cols: number; rows: number },
+): PlaygroundTerm & { dropHandlers(): void } {
   const dataHandlers: Array<(data: string) => void> = [];
   const resizeHandlers: Array<
     (size: { rows: number; cols: number }) => void
   > = [];
-  const term: PlaygroundTerm = {
+  const term: PlaygroundTerm & { dropHandlers(): void } = {
     cols: init.cols,
     rows: init.rows,
+    dropHandlers() {
+      dataHandlers.length = 0;
+      resizeHandlers.length = 0;
+    },
     write(data) {
       const bytes = typeof data === "string"
         ? [...new TextEncoder().encode(data)]
@@ -424,6 +437,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   }
   if (msg.type !== "start") return;
   kernelPorts = msg.kernelPorts;
+  const term = workerTerm({ cols: msg.cols, rows: msg.rows });
   const env = {
     isolated: msg.isolated,
     // The slim image when the train pins one; the desktop app's native
@@ -439,7 +453,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         post({ type: "status", text: `loading ${path}: ${percent}` });
       }),
     show: (text: string) => post({ type: "status", text }),
-    term: workerTerm({ cols: msg.cols, rows: msg.rows }),
+    term,
     memoryRefused: () => post(memoryRefusedMessage()),
   };
   // The slim image's Python: the coordinator installs the set itself, so
@@ -470,7 +484,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       }
     };
   /** Boot, install, start Jupyter: the start, and what a retry after a
-   * stalled install runs again on a fresh sandbox. */
+   * stalled install runs again on a fresh sandbox (the one deliberate
+   * exception to "never stops the session": the stalled one is dropped
+   * first). */
   const begin = async () => {
     // Never stops the session once its shell is up (src/coordinator_start.ts).
     const started = await startSandbox({
@@ -514,12 +530,15 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           "(this shell and its files go with the old one)]\r\n",
       );
       post({ type: "status", text: "starting a fresh sandbox" });
-      // Its kernel and every guest in it go; a hung `pkg` with them.
+      // Its guests go, a hung `pkg` with them; and nothing keeps its
+      // kernel (with what was staged in it) reachable: the terminal's
+      // handlers were the stopped session's last references.
       try {
         stale?.dispose?.();
       } catch {
         // Already gone.
       }
+      term.dropHandlers();
       await begin();
     };
   }
