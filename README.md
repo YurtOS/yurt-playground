@@ -8,7 +8,8 @@ running on the [Yurt](https://github.com/YurtOS) kernel compiled to WebAssembly.
 Nothing runs on a server: the kernel, the filesystem and Python all execute in
 the tab, and the page keeps working with the network off.
 
-Where it is going: [the roadmap](docs/ROADMAP.md).
+Where it is going: [the roadmap](docs/ROADMAP.md). What changed in each release:
+[the release notes](https://yurtos.github.io/yurt-playground/).
 
 The same playground is also a **desktop app** for macOS and Linux, where the
 sandbox runs natively on your machine instead of in the tab: it boots in
