@@ -110,8 +110,18 @@ if (import.meta.main) {
       { timeout: 60_000 },
     );
     const summary = await page.getByTestId("verify-summary").textContent();
-    if (summary !== "6 of 6 files match.") {
-      fail(`verification did not pass: ${summary}`);
+    // Every file integrity.json lists: six, and seven once the pins name a
+    // slim browser image.
+    const listed = await page.evaluate(async () =>
+      Object.keys(
+        (await (await fetch("./integrity.json", { cache: "no-store" }))
+          .json()).files,
+      ).length
+    );
+    if (listed < 6 || summary !== `${listed} of ${listed} files match.`) {
+      fail(
+        `verification did not pass: ${summary} (integrity.json lists ${listed})`,
+      );
     }
     await page.getByTestId("choose-notebook").click();
     await page.waitForURL(/\/jupyter\/notebooks\/index\.html/);
