@@ -181,8 +181,10 @@ button.addEventListener("click", () => {
 });
 
 // The release notes (GitHub Pages) have one entry per train, anchored by the
-// train name. Point the links at this page's train and say which it is (the
-// desktop app ships pins.json too, so it names the train it was built for).
+// train name. Point the links at the train pins.json names and say so. The
+// page's own code may be newer than that train (main deploys on every
+// push); the train is what its kernel and image are pinned to. The desktop
+// app ships pins.json too, so it names the train it was built for.
 // When pins.json is unavailable or names no train, the links keep pointing
 // at the top of the notes.
 const RELEASE_NOTES = "https://yurtos.github.io/yurt-playground/";
@@ -200,11 +202,12 @@ async function showTrain() {
     const link = document.getElementById(id);
     if (!link) continue;
     link.href = href;
-    link.title = `This page runs train ${train}`;
+    link.title =
+      `Release notes for train ${train}, which this page is pinned to`;
   }
   const label = document.getElementById("release-train");
   if (label) {
-    label.textContent = ` (this page runs ${train})`;
+    label.textContent = ` (this page is pinned to train ${train})`;
     label.hidden = false;
   }
 }

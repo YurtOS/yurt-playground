@@ -156,11 +156,14 @@ Deno.test("release-notes links point at the train named in pins.json", async () 
       elements.get(id)?.href,
       `https://yurtos.github.io/yurt-playground/#${train}`,
     );
-    assertEquals(elements.get(id)?.title, `This page runs train ${train}`);
+    assertEquals(
+      elements.get(id)?.title,
+      `Release notes for train ${train}, which this page is pinned to`,
+    );
   }
   assertEquals(
     elements.get("release-train")?.textContent,
-    ` (this page runs ${train})`,
+    ` (this page is pinned to train ${train})`,
   );
 });
 
