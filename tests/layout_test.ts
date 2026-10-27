@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertMatch } from "@std/assert";
 import {
   allTestFiles,
   CATCH_ALL_SHARD,
@@ -108,6 +108,47 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   assertEquals(workflow.includes("dtolnay/rust-toolchain"), false);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
   assertEquals(workflow.includes("playwright/cli.js install chromium"), true);
+  // WebKit runs in Playwright's image for the pinned version, not from an
+  // apt install of its system libraries (32 min at ~60 kB/s on #246).
+  assertEquals(workflow.includes("--with-deps"), false);
+  assertEquals(
+    workflow.includes(
+      "mcr.microsoft.com/playwright:v${version#npm:playwright@}-noble",
+    ),
+    true,
+  );
+  assertEquals(
+    workflow.includes("exec docker run --rm --init --ipc=host"),
+    true,
+  );
+  // The tag is derived from an exact pin; a range would name no image.
+  const denoJson = JSON.parse(
+    await Deno.readTextFile(new URL("../deno.json", import.meta.url)),
+  );
+  assertMatch(denoJson.imports.playwright, /^npm:playwright@\d+\.\d+\.\d+$/);
+  // The retry is the install it retries: same env, cap and script (blank
+  // lines included), and it runs only when that install failed.
+  const installs = workflow.split(/\n(?= {6}- )/).filter((step) =>
+    step.trimStart().startsWith(
+      "- name: Install the browser for browser acceptance",
+    )
+  );
+  assertEquals(installs.length, 2);
+  const control = /^ {8}(?:id|continue-on-error|if): .*$/gm;
+  assertEquals(installs[0].match(control), [
+    "        id: install",
+    "        continue-on-error: true",
+  ]);
+  assertEquals(installs[1].match(control), [
+    "        if: steps.install.outcome == 'failure'",
+  ]);
+  const body = (step: string) =>
+    step.split("\n").slice(1).filter((line) =>
+      !/^ {8}(?:id|continue-on-error|if): /.test(line) &&
+      !/^\s*#/.test(line)
+    ).join("\n").trimEnd();
+  assertEquals(body(installs[0]), body(installs[1]));
+  assertEquals(body(installs[0]).includes("docker pull -q"), true);
   // The browser artifacts are materialized by the site inputs (deno task
   // pin runs scripts/pin-artifacts.ts).
   assertEquals(workflow.includes("deno task pin"), true);
@@ -116,8 +157,9 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   const scenes = workflow.match(/scene: \[([^\]]+)\]/)?.[1]
     .split(",").map((s) => s.trim()).filter((s) => s !== "") ?? [];
   assertEquals(scenes.includes("playground"), true, `scenes: ${scenes}`);
+  assertEquals(workflow.includes("SCENE: ${{ matrix.scene }}"), true);
   assertEquals(
-    workflow.includes("deno run --allow-all tests/${{ matrix.scene }}_e2e.ts"),
+    workflow.includes('deno run --allow-all "tests/${SCENE}_e2e.ts"'),
     true,
   );
   const testsDir = new URL("../tests", import.meta.url);
