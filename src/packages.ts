@@ -557,17 +557,66 @@ export type PinnedRelease = {
  * label for the progress messages. */
 export type InstallRequest =
   | string
-  | { label: string; releases: readonly PinnedRelease[] };
+  | { label: string; releases: readonly PinnedRelease[] }
+  // A set of packages that share one `yurt_N` build, their set's marker:
+  // the newest build every one of them has (src/python_install.ts).
+  | { label: string; set: readonly string[] };
+
+/** The newest complete set: for each `yurt_N` build every package in
+ * `names` has (unyanked, in a release the page can read), the highest N
+ * wins, and each package's release with that build (the highest version,
+ * should there be several). A set only partly published is never chosen. */
+export function resolveSet(
+  catalog: Catalog,
+  names: readonly string[],
+): PinnedRelease[] {
+  const byName = names.map((name) => {
+    const file = catalog.metadata.get(name)?.file;
+    if (file === undefined) throw new Error(`no package named ${name}`);
+    return file.versions.filter((v) => !v.yanked && /^yurt_\d+$/.test(v.build));
+  });
+  const builds = byName.map((versions) =>
+    new Set(versions.map((v) => buildNumber(v.build)))
+  );
+  const common = [...builds[0]].filter((n) => builds.every((b) => b.has(n)));
+  if (common.length === 0) {
+    throw new Error(
+      `the repository has no complete set of ${
+        names.join(", ")
+      } (one yurt_N build of all of them)`,
+    );
+  }
+  const newest = Math.max(...common);
+  return names.map((name, i) => {
+    const release = byName[i]
+      .filter((v) => buildNumber(v.build) === newest)
+      .reduce((a, b) => compareReleases(a, b) >= 0 ? a : b);
+    return {
+      name,
+      version: release.version,
+      build: release.build,
+      sha256: release.sha256.toLowerCase(),
+      size: release.size,
+    };
+  });
+}
 
 /** Where archives and their signatures are kept between visits (the Cache
- * API in the browser): keyed by repository URL, which names one release.
- * What it returns is checked like a download: the archive against the
- * pinned or indexed sha256, the signature by the guest's `pkg`. */
+ * API in the browser), keyed by the archive's sha256 in the signed index
+ * (`sha256:<hex>` and `sha256:<hex>.bundle`): one archive is one entry
+ * whatever its URL, and a new set's are new entries. What it returns is
+ * checked like a download: the archive against that sha256, the signature
+ * by the guest's `pkg`. */
 export type ArchiveCache = {
-  get(url: string): Promise<Uint8Array | undefined>;
-  put(url: string, bytes: Uint8Array): Promise<void>;
-  delete(url: string): Promise<void>;
+  get(key: string): Promise<Uint8Array | undefined>;
+  put(key: string, bytes: Uint8Array): Promise<void>;
+  delete(key: string): Promise<void>;
+  /** Drop every entry but these: what an installed set no longer uses. */
+  keepOnly?(keys: readonly string[]): Promise<void>;
 };
+
+/** The Cache API wants request URLs; the keys are not fetched. */
+const CACHE_KEY_ORIGIN = "https://yurt-packages-cache.invalid/";
 
 /** The Cache API's {@link ArchiveCache}, or none where there is no Cache
  * API (or it refuses: a private window, storage turned off). */
@@ -581,10 +630,11 @@ export async function browserArchiveCache(
   } catch {
     return undefined;
   }
+  const url = (key: string) => `${CACHE_KEY_ORIGIN}${key}`;
   return {
-    async get(url) {
+    async get(key) {
       try {
-        const hit = await cache.match(url);
+        const hit = await cache.match(url(key));
         return hit === undefined
           ? undefined
           : new Uint8Array(await hit.arrayBuffer());
@@ -592,19 +642,29 @@ export async function browserArchiveCache(
         return undefined;
       }
     },
-    async put(url, bytes) {
+    async put(key, bytes) {
       try {
         await cache.put(
-          url,
+          url(key),
           new Response(bytes.slice() as BufferSource),
         );
       } catch {
         // A full or refused cache only costs the next visit a download.
       }
     },
-    async delete(url) {
+    async delete(key) {
       try {
-        await cache.delete(url);
+        await cache.delete(url(key));
+      } catch {
+        // As above.
+      }
+    },
+    async keepOnly(keys) {
+      const keep = new Set(keys.map(url));
+      try {
+        for (const request of await cache.keys()) {
+          if (!keep.has(request.url)) await cache.delete(request);
+        }
       } catch {
         // As above.
       }
@@ -639,21 +699,15 @@ export async function installPackage(
   const { host, progress, cache } = options;
   const fetcher = options.fetcher ?? fetchWithProgress;
   const base = options.base ?? PACKAGE_REPO_URL;
-  const pinned = typeof request === "string"
-    ? undefined
-    : new Map(request.releases.map((release) => [release.name, release]));
   const names = typeof request === "string"
     ? [request]
+    : "set" in request
+    ? [...request.set]
     : request.releases.map((release) => release.name);
   const name = typeof request === "string" ? request : request.label;
   if (names.length === 0 || !names.every(isPackageName)) {
     throw new Error(`not a package name: ${JSON.stringify(names)}`);
   }
-  // `name@version-build` for a pinned set: pkg installs exactly those.
-  const specs = typeof request === "string"
-    ? [request]
-    : request.releases.map((r) => `${r.name}@${r.version}-${r.build}`);
-  const command = `pkg install ${specs.join(" ")}`;
   progress(`${name}: reading the package index`);
   // Fresh for every install: a few KiB, and a retry after a failed one
   // must not stage the same bytes again.
@@ -663,6 +717,20 @@ export async function installPackage(
       throw new Error(`no package named ${wanted}`);
     }
   }
+  // The exact releases, for a set or a pinned list: pkg installs exactly
+  // those (`name@version-build`), and nothing else may join the plan.
+  const exact = typeof request === "string"
+    ? undefined
+    : "set" in request
+    ? resolveSet(catalog, request.set)
+    : request.releases;
+  const pinned = exact === undefined
+    ? undefined
+    : new Map(exact.map((release) => [release.name, release]));
+  const specs = exact === undefined
+    ? [request as string]
+    : exact.map((r) => `${r.name}@${r.version}-${r.build}`);
+  const command = `pkg install ${specs.join(" ")}`;
   const trusted = new TextDecoder().decode(
     await host.readFile(TRUSTED_REPOS_PATH).catch(() => {
       throw new Error(
@@ -716,15 +784,21 @@ export async function installPackage(
   /** What came from or went into the cache unchecked by pkg: dropped
    * again if the install fails, so the next try downloads it. */
   const fromCache: string[] = [];
+  /** Every cache entry this install uses. */
+  const used: string[] = [];
   for (const release of releases) {
-    const url = `${base}${release.url}.bundle`;
-    let bundle = await cache?.get(url);
+    const key = `sha256:${release.sha256.toLowerCase()}.bundle`;
+    used.push(key);
+    let bundle = await cache?.get(key);
     if (bundle === undefined) {
-      bundle = await fetcher(url, METADATA_MAX_BYTES);
-      await cache?.put(url, bundle);
+      bundle = await fetcher(
+        `${base}${release.url}.bundle`,
+        METADATA_MAX_BYTES,
+      );
+      await cache?.put(key, bundle);
     }
     // A signature is only known good once pkg has verified it.
-    fromCache.push(url);
+    fromCache.push(key);
     archives.set(`${release.url}.bundle`, bundle);
   }
   const staged = [...archives.values()].reduce((s, b) => s + b.byteLength, 0) +
@@ -735,16 +809,18 @@ export async function installPackage(
   let done = 0;
   for (const release of releases) {
     const url = `${base}${release.url}`;
+    const key = `sha256:${release.sha256.toLowerCase()}`;
+    used.push(key);
     const matches = async (bytes: Uint8Array) =>
       bytes.byteLength === release.size &&
       await sha256Hex(bytes) === release.sha256.toLowerCase();
     // A cached archive is used only if it is still exactly this release.
-    let bytes = await cache?.get(url);
+    let bytes = await cache?.get(key);
     if (bytes !== undefined && await matches(bytes)) {
-      fromCache.push(url);
+      fromCache.push(key);
       progress(`${name}: ${release.name} is cached`);
     } else {
-      if (bytes !== undefined) await cache?.delete(url);
+      if (bytes !== undefined) await cache?.delete(key);
       const show = (received: number) =>
         progress(
           `${name}: downloading ${release.name} ${
@@ -763,7 +839,7 @@ export async function installPackage(
           `${release.name}: the download does not match its sha256`,
         );
       }
-      await cache?.put(url, bytes);
+      await cache?.put(key, bytes);
     }
     archives.set(release.url, bytes);
     done += release.size;
@@ -772,8 +848,12 @@ export async function installPackage(
   const result = await run(archives);
   if (result.code !== 0) {
     // Whatever was cached may be what pkg refused: the next try downloads.
-    for (const url of fromCache) await cache?.delete(url);
+    for (const key of fromCache) await cache?.delete(key);
     throw failure(name, result);
+  }
+  // A set replaces the one before it: keep only what this one used.
+  if (typeof request !== "string" && "set" in request) {
+    await cache?.keepOnly?.(used);
   }
   return `${result.stdout}${result.stderr}`.trim();
 }

@@ -6,30 +6,16 @@ export type ArtifactPin = {
   sha256: string;
 };
 
-/** One package build a train pins: the exact release of YurtOS/yurt-packages
- * the page installs, never a newer one (src/packages.ts refuses a planned
- * release whose sha256 is not this). `build` is a `yurt_N`, the only build
- * spelling `pkg install name@version-build` takes. */
-export type PackagePin = {
-  version: string;
-  build: string;
-  sha256: string;
-  size: number;
-};
-
 export type Pins = {
   kernelWasm: ArtifactPin;
   /** The full image: the desktop app, the CLI, and the suspend/resume
    * kernel's standard library. */
   image: ArtifactPin;
   /** The slim image the browser boots: no Python, no Node. Absent, the
-   * browser boots `image`, as before. */
+   * browser boots `image`, as before. Its pages install Python from the
+   * live signed repository (src/python_install.ts): packages are not
+   * pinned here. */
   browserImage?: ArtifactPin;
-  /** The package builds the page installs, by package name. */
-  packages?: Record<string, PackagePin>;
-  /** What the page installs, in one `pkg install`, when a page needs
-   * Python on the slim image: Python, then the Jupyter kernel's packages. */
-  pythonPackages?: string[];
 };
 
 export type ArtifactSource = "artifacts" | "siblings" | "urls";
@@ -88,8 +74,6 @@ export function parsePins(raw: unknown): Pins {
     kernelWasm?: unknown;
     image?: unknown;
     browserImage?: unknown;
-    packages?: unknown;
-    pythonPackages?: unknown;
   };
   const pins: Pins = {
     kernelWasm: parsePin(value.kernelWasm, "kernelWasm"),
@@ -98,65 +82,7 @@ export function parsePins(raw: unknown): Pins {
   if (value.browserImage !== undefined) {
     pins.browserImage = parsePin(value.browserImage, "browserImage");
   }
-  if (value.packages !== undefined) {
-    pins.packages = parsePackagePins(value.packages);
-  }
-  if (value.pythonPackages !== undefined) {
-    const names = value.pythonPackages;
-    if (
-      !Array.isArray(names) || names.length === 0 ||
-      names.some((name) =>
-        typeof name !== "string" || pins.packages?.[name] === undefined
-      )
-    ) {
-      throw new PinResolutionError(
-        "pythonPackages must name packages that `packages` pins",
-        1,
-      );
-    }
-    pins.pythonPackages = names as string[];
-  }
   return pins;
-}
-
-/** `yurt_N`: the build spelling `pkg install name@version-build` reads as a
- * build (any other is taken as part of the version). */
-const PINNED_BUILD = /^yurt_\d+$/;
-const PACKAGE_NAME = /^[a-z0-9][a-z0-9._-]*$/;
-const SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
-
-function parsePackagePins(raw: unknown): Record<string, PackagePin> {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new PinResolutionError("packages must be an object", 1);
-  }
-  const out: Record<string, PackagePin> = {};
-  for (const [name, pin] of Object.entries(raw)) {
-    const label = `packages.${name}`;
-    if (!PACKAGE_NAME.test(name)) {
-      throw new PinResolutionError(`${label}: not a package name`, 1);
-    }
-    const value = pin as Record<string, unknown> | null;
-    if (
-      value === null || typeof value !== "object" ||
-      typeof value.version !== "string" || !SEMVER.test(value.version) ||
-      typeof value.build !== "string" || !PINNED_BUILD.test(value.build) ||
-      typeof value.sha256 !== "string" ||
-      !/^[0-9a-f]{64}$/i.test(value.sha256) ||
-      !Number.isSafeInteger(value.size) || (value.size as number) <= 0
-    ) {
-      throw new PinResolutionError(
-        `${label} must have a semver version, a yurt_N build, a sha256 and a size`,
-        1,
-      );
-    }
-    out[name] = {
-      version: value.version,
-      build: value.build,
-      sha256: value.sha256.toLowerCase(),
-      size: value.size as number,
-    };
-  }
-  return out;
 }
 
 export async function loadPins(path: string): Promise<Pins> {

@@ -773,30 +773,18 @@ if grep -qx 'playground-slim.yurtimg' <<< "$image_assets"; then
     --arg sha "$(sidecar_sha "$image_repo" "$image_release" playground-slim.yurtimg)" \
     '{repo: "YurtOS/yurt-ports", rev: $ports, releaseRepo: $repo, release: $release,
       build: "scripts/build-playground-image.sh", path: "ports/playground-image/build/dist/playground-slim.yurtimg", sha256: $sha}')
-fi
-# The packages the slim image's pages install (src/python_install.ts): the
-# newest unyanked yurt_N build of each in YurtOS/yurt-packages now, pinned
-# exactly, so the page never installs a build this train did not test.
-# Python's must be the CPython of this ports commit, whose sealable twin
-# the notebook kernel runs (pythonSeal).
-python_packages="python numpy pyzmq jupyter-kernel"
-packages_json='{}'
-if [ "$slim_json" != null ]; then
-  cpython_version=$(gh api "repos/YurtOS/yurt-ports/contents/ports/cpython/yurt-pack.toml?ref=$ports_sha" --jq .content |
-    base64 --decode | sed -n 's/^version *= *"\(.*\)"/\1/p' | head -1)
-  [ -n "$cpython_version" ] || die "cannot read the CPython version at yurt-ports $ports_sha"
-  for name in $python_packages node gemini-cli; do
-    meta=$(curl -fsSL --retry 3 "https://raw.githubusercontent.com/YurtOS/yurt-packages/main/packages/$name.json") ||
-      { case " $python_packages " in *" $name "*) die "yurt-packages has no $name package for the slim image" ;; esac; continue; }
-    # python: the newest build of this ports commit's CPython version.
-    want=""; [ "$name" = python ] && want=$cpython_version
-    release=$(jq -c --arg want "$want" '[.versions[] | select((.yanked | not) and (.build | test("^yurt_[0-9]+$"))
-        and ($want == "" or .version == $want))]
-      | sort_by((.version | split("-")[0] | split(".") | map(tonumber? // 0)), (.build | ltrimstr("yurt_") | tonumber))
-      | last // empty | {version, build, sha256, size}' <<< "$meta")
-    [ -n "$release" ] || die "yurt-packages lists no yurt_N build of $name${want:+ $want}: publish this ports commit's $name first"
-    packages_json=$(jq --arg n "$name" --argjson r "$release" '. + {($n): $r}' <<< "$packages_json")
+  # Its pages install the newest complete Python set from the live
+  # repository (src/python_install.ts): one must exist before a train pins
+  # the slim image, or every Python page would fail.
+  common=""
+  for name in python numpy pyzmq jupyter-kernel; do
+    builds=$(curl -fsSL --retry 3 "https://raw.githubusercontent.com/YurtOS/yurt-packages/main/packages/$name.json" |
+      jq -r '.versions[] | select((.yanked | not) and (.build | test("^yurt_[0-9]+$"))) | .build' | sort -u) ||
+      die "yurt-packages has no $name package: publish the Python set before pinning the slim image"
+    if [ "$name" = python ]; then common=$builds; else common=$(comm -12 <(echo "$common") <(echo "$builds")); fi
   done
+  [ -n "$common" ] || die "yurt-packages has no complete Python set (python, numpy, pyzmq, jupyter-kernel with one yurt_N build)"
+  say "slim image: the pages will install the Python set $(sort -t_ -k2 -n <<< "$common" | tail -1)"
 fi
 host_json='{}'
 cli_json='{}'
@@ -825,7 +813,7 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
   --arg image_release "$image_release" --arg image_repo "$image_repo" --arg image_sha256 "$image_sha256" --arg ports_sha "$ports_sha" \
   --arg host_release "$host_release" --arg host_repo "$host_repo" --arg cli_release "$cli_release" --arg cli_repo "$cli_repo" \
   --argjson host "$host_json" --argjson cli "$cli_json" --argjson python_seal "$python_seal_json" \
-  --argjson slim "$slim_json" --argjson packages "$packages_json" --arg python_packages "$python_packages" '{
+  --argjson slim "$slim_json" '{
     train: $train,
     kernelWasm: {repo: "YurtOS/yurtos-kernel", rev: $kernel_sha, releaseRepo: $kernel_repo, release: $kernel_release,
       build: "scripts/build-kernel-wasm.sh", path: "target/kernel-wasm/release/yurt_kernel.wasm", sha256: $kernel_sha256},
@@ -838,11 +826,7 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
       assets: ($cli | with_entries(.value = .value.asset)),
       sha256: ($cli | with_entries(.value = .value.sha256))},
     pythonSeal: $python_seal
-  } + (if $slim == null then {} else {
-    browserImage: $slim,
-    packages: $packages,
-    pythonPackages: ($python_packages | split(" "))
-  } end)' > "$root/artifacts/pins.json"
+  } + (if $slim == null then {} else {browserImage: $slim} end)' > "$root/artifacts/pins.json"
 say "verify the pins: scripts/install-pinned-artifacts.sh"
 "$root/scripts/install-pinned-artifacts.sh"
 if [ "$pins_only" = 1 ]; then

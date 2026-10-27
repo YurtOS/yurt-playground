@@ -43,7 +43,6 @@ import {
   installPackage,
   onlyStaged,
   type PackageHost,
-  type PinnedRelease,
   type StagedFile,
   STAGING_DIR,
 } from "./packages.ts";
@@ -70,10 +69,11 @@ type ToWorker =
     // browser refuses first (iPadOS stopped spawning after ~13 processes
     // while Jupyter started), so it is never launched there.
     noJupyter?: boolean;
-    // The slim image: the pinned Python packages to install when the image
-    // has no python3, before ipykernel (src/python_install.ts). Absent,
-    // such an image is reported as `python-missing`, as before.
-    python?: { label: string; releases: PinnedRelease[] };
+    // The slim image: the Python set to install when the image has no
+    // python3, before ipykernel -- the newest complete one in the live
+    // signed index (src/python_install.ts). Absent, such an image is
+    // reported as `python-missing`, as before.
+    python?: { label: string; set: string[] };
     // A tablet or phone: installs over 16 MiB are refused there.
     tablet?: boolean;
   }
@@ -505,8 +505,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     term: workerTerm({ cols: msg.cols, rows: msg.rows }),
     memoryRefused: () => post(memoryRefusedMessage()),
   };
-  // The slim image's Python: the coordinator installs the pinned packages
-  // itself, so every page that boots a sandbox gets the same install.
+  // The slim image's Python: the coordinator installs the set itself, so
+  // every page that boots a sandbox gets the same install.
   const python = msg.python;
   const tablet = msg.tablet === true;
   // The desktop app's sandbox has a network and its own pkg; only the

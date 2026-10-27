@@ -3,6 +3,7 @@ import {
   type ArchiveCache,
   browserTrustedRepos,
   CACHE_ROOT,
+  type Catalog,
   fetchWithProgress,
   installPackage,
   installScript,
@@ -15,6 +16,7 @@ import {
   type PackageVersion,
   parseIndex,
   parsePackageFile,
+  resolveSet,
   sha256Hex,
   sizeRefusal,
   type StagedFile,
@@ -571,9 +573,16 @@ function memoryCache(seed: Record<string, Uint8Array> = {}) {
       store.delete(url);
       return Promise.resolve();
     },
+    keepOnly: (keys) => {
+      for (const k of [...store.keys()]) if (!keys.includes(k)) store.delete(k);
+      return Promise.resolve();
+    },
   };
   return { cache, store, log };
 }
+
+/** A cache entry's key: the archive's sha256, as the index names it. */
+const key = async (archive: Uint8Array) => `sha256:${await sha256Hex(archive)}`;
 
 const GREET_URL =
   `${PACKAGE_REPO_URL}artifacts/greet/0.1.0/greet-0.1.0-yurt_0.yurtpkg`;
@@ -658,8 +667,10 @@ Deno.test("a cached archive that is still the release is used without a download
     return repo(url);
   };
   const { cache, log } = memoryCache({
-    [GREET_URL]: archive,
-    [`${GREET_URL}.bundle`]: new TextEncoder().encode('"archive bundle"'),
+    [await key(archive)]: archive,
+    [`${await key(archive)}.bundle`]: new TextEncoder().encode(
+      '"archive bundle"',
+    ),
   });
   const { host, runs } = fakeHost(PLAN, INSTALLED);
   await installPackage("greet", {
@@ -680,7 +691,7 @@ Deno.test("a cached archive that is not the release is dropped and downloaded ag
   const archive = new Uint8Array([7, 8, 9]);
   const fetcher = await fakeRepo(archive);
   const { cache, store, log } = memoryCache({
-    [GREET_URL]: new Uint8Array([0, 0, 0]),
+    [await key(archive)]: new Uint8Array([0, 0, 0]),
   });
   const { host } = fakeHost(PLAN, INSTALLED);
   await installPackage("greet", {
@@ -690,16 +701,16 @@ Deno.test("a cached archive that is not the release is dropped and downloaded ag
     cache,
     progress: () => {},
   });
-  assertEquals(log.includes(`delete ${GREET_URL}`), true);
-  assertEquals(store.get(GREET_URL), archive);
+  assertEquals(log.includes(`delete ${await key(archive)}`), true);
+  assertEquals(store.get(await key(archive)), archive);
 });
 
 Deno.test("what pkg refused is not kept for the next try", async () => {
   const archive = new Uint8Array([1]);
   const fetcher = await fakeRepo(archive);
   const { cache, store } = memoryCache({
-    [GREET_URL]: archive,
-    [`${GREET_URL}.bundle`]: new Uint8Array([9]),
+    [await key(archive)]: archive,
+    [`${await key(archive)}.bundle`]: new Uint8Array([9]),
   });
   const { host } = fakeHost(PLAN, {
     code: 1,
@@ -742,7 +753,106 @@ Deno.test("a signature downloaded on a failed try is not kept for the next", asy
     Error,
     "signature",
   );
-  assertEquals(store.has(`${GREET_URL}.bundle`), false);
+  assertEquals(store.has(`${await key(archive)}.bundle`), false);
   // The archive matched its sha256, so it may stay.
-  assertEquals(store.get(GREET_URL), archive);
+  assertEquals(store.get(await key(archive)), archive);
+});
+
+/** A catalog of these packages' releases, as `version-build` strings
+ * (`!` marks a yanked one). */
+function catalogOf(releases: Record<string, string[]>): Catalog {
+  const metadata = new Map<string, { bytes: Uint8Array; file: PackageFile }>();
+  const packages: Record<
+    string,
+    { sha256: string; size: number; url: string }
+  > = {};
+  for (const [name, list] of Object.entries(releases)) {
+    const versions = list.map((r) => {
+      const yanked = r.startsWith("!");
+      const [v, b] = r.replace("!", "").split("@");
+      return {
+        ...version(v, b, {
+          sha256: `${name}${v}${b}`.padEnd(64, "0").slice(0, 64),
+          size: 10,
+        }),
+        yanked,
+      };
+    });
+    metadata.set(name, { bytes: new Uint8Array(), file: { name, versions } });
+    packages[name] = { sha256: "", size: 0, url: `packages/${name}.json` };
+  }
+  return {
+    index: { schema: 1, index_version: 1, expires_at: "", packages },
+    indexBytes: new Uint8Array(),
+    indexBundle: new Uint8Array(),
+    metadata,
+  };
+}
+
+const SET = ["python", "numpy", "pyzmq", "jupyter-kernel"];
+
+Deno.test("the newest complete set wins; a partly published newer one is ignored", () => {
+  const catalog = catalogOf({
+    python: ["3.14.7@yurt_0", "3.14.7@yurt_1", "3.14.8@yurt_2"],
+    numpy: ["2.5.0@yurt_0", "2.5.0@yurt_1", "2.5.1@yurt_2"],
+    pyzmq: ["26.4.0@yurt_0", "26.4.0@yurt_1", "26.4.0@yurt_2"],
+    // Set 2 is not complete: jupyter-kernel's is still to be published.
+    "jupyter-kernel": ["0.0.1@yurt_0", "0.0.1@yurt_1"],
+  });
+  const set = resolveSet(catalog, SET);
+  assertEquals(set.map((r) => `${r.name}@${r.version}-${r.build}`), [
+    "python@3.14.7-yurt_1",
+    "numpy@2.5.0-yurt_1",
+    "pyzmq@26.4.0-yurt_1",
+    "jupyter-kernel@0.0.1-yurt_1",
+  ]);
+});
+
+Deno.test("a yanked member takes its set out; no complete set is an error", () => {
+  const catalog = catalogOf({
+    python: ["3.14.7@yurt_0", "!3.14.7@yurt_1"],
+    numpy: ["2.5.0@yurt_0", "2.5.0@yurt_1"],
+    pyzmq: ["26.4.0@yurt_0", "26.4.0@yurt_1"],
+    "jupyter-kernel": ["0.0.1@yurt_0", "0.0.1@yurt_1"],
+  });
+  assertEquals(resolveSet(catalog, SET)[0].build, "yurt_0");
+  assertThrows(
+    () =>
+      resolveSet(
+        catalogOf({
+          python: ["3.14.7@yurt_1"],
+          numpy: ["2.5.0@yurt_0"],
+          pyzmq: ["26.4.0@yurt_0"],
+          "jupyter-kernel": ["0.0.1@yurt_0"],
+        }),
+        SET,
+      ),
+    Error,
+    "no complete set",
+  );
+});
+
+Deno.test("a set's install keeps only its own cache entries", async () => {
+  const archive = new Uint8Array([3, 1, 4]);
+  const fetcher = await fakeRepo(archive);
+  const { cache, store } = memoryCache({
+    "sha256:old": new Uint8Array([1]),
+    "sha256:old.bundle": new Uint8Array([1]),
+  });
+  const { host, runs } = fakeHost(PLAN, INSTALLED);
+  await installPackage({ label: "Greet", set: ["greet"] }, {
+    host,
+    tablet: false,
+    fetcher,
+    cache,
+    progress: () => {},
+  });
+  assertEquals(
+    runs[0].script,
+    installScript(["greet@0.1.0-yurt_0"], "official"),
+  );
+  assertEquals(
+    [...store.keys()].sort(),
+    [await key(archive), `${await key(archive)}.bundle`].sort(),
+  );
 });
