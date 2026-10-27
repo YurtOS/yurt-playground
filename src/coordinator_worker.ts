@@ -249,7 +249,7 @@ async function runStaged(
 }
 
 /** The worker's own {@link PackageHost}: the coordinator installs the
- * pinned Python packages itself, on the Notebook and Lab pages too. */
+ * Python set and the Packages panel's packages itself, on every page. */
 function workerPackageHost(session: BootedSession): PackageHost {
   return {
     async readFile(path) {

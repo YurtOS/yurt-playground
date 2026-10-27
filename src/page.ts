@@ -437,8 +437,8 @@ function boot(
   );
   status.progress("booting");
   rememberBooting("booting");
-  // On the slim image the coordinator installs the pinned Python packages
-  // before Jupyter; a tablet's session is the shell alone, and the desktop
+  // On the slim image the coordinator installs the newest complete Python
+  // set before Jupyter; a tablet's session is the shell alone, and the desktop
   // app's sandbox needs no page to install anything.
   void pinsPromise.then((pins) =>
     worker.postMessage({

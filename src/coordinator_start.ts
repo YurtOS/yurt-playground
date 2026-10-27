@@ -6,7 +6,7 @@
  * Two rules hold here:
  *
  * - An image without python3 (the slim base image) gets the shell, then
- *   Python installed from the pinned packages when the page asked for it
+ *   the Python set installed from the live index when the page asked for it
  *   (`installPython`), then ipykernel. Without that, or when the install
  *   fails, it gets `python-missing` (with the install's error); no
  *   ipykernel launch is tried, since it can only fail after the

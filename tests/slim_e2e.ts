@@ -51,11 +51,17 @@ if (import.meta.main) {
     const context = await browser.newContext();
     // The coordinator Worker fetches the repository; a context route sees
     // a dedicated worker's requests, a page route does not.
+    // Every repository request the browser makes, the coordinator Worker's
+    // included, whether the route below answers it or the live repository.
     const fetched: string[] = [];
+    context.on("request", (request) => {
+      if (request.url().startsWith(PACKAGE_REPO_URL)) {
+        fetched.push(request.url());
+      }
+    });
     if (repo !== undefined) {
       await context.route("https://raw.githubusercontent.com/**", async (r) => {
         const url = r.request().url();
-        fetched.push(url);
         try {
           if (!url.startsWith(PACKAGE_REPO_URL)) throw new Error(url);
           await r.fulfill({
@@ -160,7 +166,7 @@ if (import.meta.main) {
     const first = installed(await bootToReady("first visit"));
     console.log(`slim e2e: installed ${first}`);
     await numpyCell();
-    if (repo !== undefined && archivesSince(0).length === 0) {
+    if (archivesSince(0).length === 0) {
       throw new Error("no archive was fetched from the repository");
     }
     // A reload loses the sandbox's files (#81) and installs again, from the
@@ -171,7 +177,7 @@ if (import.meta.main) {
       throw new Error(`the reload downloaded again: ${archivesSince(before)}`);
     }
     if (again !== first) throw new Error(`the reload installed ${again}`);
-    if (repo !== undefined && fetched.length === before) {
+    if (fetched.length === before) {
       throw new Error("the reload did not read the repository's index");
     }
     // Part of a newer set is published: still the complete one.

@@ -120,8 +120,8 @@ export function startPlaygroundKernel(
   // The desktop app's launcher answers /desktop.json and the sandbox is
   // native; on the hosted site the kernel boots in the worker, which needs
   // the page to be cross-origin isolated and says so if it is not.
-  // On the slim image the coordinator installs the pinned Python packages
-  // before Jupyter, as on the home page (src/python_install.ts).
+  // On the slim image the coordinator installs the newest complete Python
+  // set before Jupyter, as on the home page (src/python_install.ts).
   const pins = fetchSitePins();
   void desktopInfo().then(async (desktop) => {
     // The Notebook and Lab pages boot a sandbox of their own, like the home

@@ -722,7 +722,8 @@ export async function installPackage(
     }
   }
   // The exact releases, for a set or a pinned list: pkg installs exactly
-  // those (`name@version-build`), and nothing else may join the plan.
+  // those (`name@version-build`). A pinned list's plan may hold nothing
+  // else; a set's may also hold the dependencies pkg adds outside it.
   const exact = typeof request === "string"
     ? undefined
     : "set" in request

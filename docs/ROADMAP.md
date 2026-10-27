@@ -85,17 +85,19 @@ Bigger directions. Each needs design work, and the order is not fixed.
   tablets, where memory is short
   ([#200](https://github.com/YurtOS/yurt-playground/issues/200)). The page side
   is in place: when a release pins a slim image (`browserImage` in
-  `artifacts/pins.json`) and the Python packages (`packages`, `pythonPackages`),
-  the browser boots the slim image (the shell, the command-line tools, `pkg` and
-  `sudo`), and every page that runs Python (the Python pane, the agent, the
-  Notebook and JupyterLab) installs those exact builds with the guest's own
-  `pkg` before ipykernel starts. Archives are kept in the browser's Cache API,
-  so a repeat visit downloads only the index, but while files do not survive a
-  reload ([#81](https://github.com/YurtOS/yurt-playground/issues/81)) it
-  installs again (about a minute on a laptop). It ships once the packages are
-  published in YurtOS/yurt-packages and a release pins them. Node is a package
-  too, for the shell; nothing on the page needs it. Suspend/Resume keeps staging
-  its standard library from the full image for now.
+  `artifacts/pins.json`), the browser boots it (the shell, the command-line
+  tools, `pkg` and `sudo`), and every page that runs Python (the Python pane,
+  the agent, the Notebook and JupyterLab) installs the newest complete Python
+  set (python, numpy, pyzmq and jupyter-kernel sharing one `yurt_N` build) from
+  the signed YurtOS/yurt-packages index with the guest's own `pkg` before
+  ipykernel starts. Packages are not pinned: a newly published set reaches the
+  page with no release of it. Archives are kept in the browser's Cache API, so a
+  repeat visit downloads only the index, but while files do not survive a reload
+  ([#81](https://github.com/YurtOS/yurt-playground/issues/81)) it installs again
+  (about a minute on a laptop). It ships once a set is published and a release
+  pins the slim image. Node is a package too, for the shell; nothing on the page
+  needs it. Suspend/Resume keeps staging its standard library from the full
+  image for now.
 - **Go, `gh` and Perl as packages, and a current clang**, published in
   [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) when there is
   demand for them, rather than in the base image. Planned: Go, `gh` and Perl are
