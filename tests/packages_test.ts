@@ -910,12 +910,19 @@ Deno.test("a set's install lets pkg add a dependency outside the set; a pinned l
     stdout: "install libx 1.0.0-yurt_0\ninstall greet 0.1.0-yurt_0\n",
   };
   const { host, runs } = fakeHost(plan, INSTALLED);
+  const messages: string[] = [];
   await installPackage({ label: "Greet", set: ["greet"] }, {
     host,
     tablet: false,
     fetcher,
-    progress: () => {},
+    progress: (m) => messages.push(m),
   });
+  // The dependency is named, with its size, before anything downloads.
+  const also = messages.indexOf("Greet: also installs libx (1 B)");
+  assertEquals(
+    also > 0 && also < messages.findIndex((m) => m.includes("downloading")),
+    true,
+  );
   assertEquals(
     runs[1].files.some((f) => f.path.endsWith("libx-1.0.0-yurt_0.yurtpkg")),
     true,
