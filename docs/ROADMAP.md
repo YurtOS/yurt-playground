@@ -88,20 +88,21 @@ Bigger directions. Each needs design work, and the order is not fixed.
   `artifacts/pins.json`), the browser boots it (the shell, the command-line
   tools, `pkg` and `sudo`), and every page that runs Python (the Python pane,
   the agent, the Notebook and JupyterLab) installs the newest complete Python
-  set (python, numpy, pyzmq and jupyter-kernel sharing one `yurt_N` build with
-  python-seal) from the signed YurtOS/yurt-packages index with the guest's own
-  `pkg` before ipykernel starts. Packages are not pinned: a newly published set
-  reaches the page with no release of it. Archives are kept in the browser's
-  Cache API with their signatures, so a repeat visit downloads only the index
-  and its metadata, but while files do not survive a reload
+  set (python, numpy, pyzmq and jupyter-kernel sharing one `yurt_N` build) from
+  the signed YurtOS/yurt-packages index with the guest's own `pkg` before
+  ipykernel starts. Packages are not pinned: a newly published set reaches the
+  page with no release of it. Archives are kept in the browser's Cache API with
+  their signatures, so a repeat visit downloads only the index and its metadata,
+  but while files do not survive a reload
   ([#81](https://github.com/YurtOS/yurt-playground/issues/81)) it installs again
   (about a minute on a laptop). It ships once a set is published and a release
   pins the slim image. Node is a package too, for the shell; nothing on the page
-  needs it. On the slim image Suspend/Resume runs the set's own `python-seal`
-  (the fifth member of the set) with that set's standard library, after the
-  guest's `pkg` has verified both archives in a short-lived sandbox (their own
-  cache, so the coordinator's install never drops them), and a suspended
-  notebook resumes only on the set it was suspended with.
+  needs it. On the slim image Suspend/Resume runs the newest set that also has a
+  `python-seal` of the same build (which may be older than the set the pages
+  install, while its seal is still to be published), with that set's standard
+  library, after the guest's `pkg` has verified both archives in a short-lived
+  sandbox (their own cache, so the coordinator's install never drops them), and
+  a suspended notebook resumes only on the set it was suspended with.
 - **Go, `gh` and Perl as packages, and a current clang**, published in
   [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) when there is
   demand for them, rather than in the base image. Planned: Go, `gh` and Perl are

@@ -118,8 +118,9 @@ export async function buildStaticSite(): Promise<void> {
   // The page reads the pins for its hash checks, then the blobs.
   await copyFiles(["pins.json", "yurt_kernel.wasm"], artifactsDir, distDir);
   // Cloudflare Pages refuses files over 25 MiB; the image ships in parts.
-  // The full image stays in the site: the suspend/resume kernel stages its
-  // Python standard library from it.
+  // The full image stays in the site: with no slim pin, the suspend/resume
+  // kernel stages its Python standard library from it (on a slim site it
+  // takes it from the set's python package).
   await writeImageParts(IMAGE_NAME);
   // The slim image the browser boots, when the pins name one.
   const slim = await Deno.stat(join(artifactsDir, SLIM_IMAGE_NAME)).then(

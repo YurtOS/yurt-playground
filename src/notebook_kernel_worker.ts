@@ -879,6 +879,24 @@ function setLabel(id: string | undefined): string {
   return python === undefined ? id : `Python set ${python}`;
 }
 
+/** A set id's `yurt_N` build number (`undefined` for the pinned seal
+ * before sets). */
+function setBuild(id: string | undefined): number | undefined {
+  const n = id === undefined
+    ? undefined
+    : /python@[^:;]*-yurt_(\d+)/.exec(id)?.[1];
+  return n === undefined ? undefined : Number(n);
+}
+
+/** Whether `stored` was sealed with a newer set than this page now reads:
+ * the index the page read is behind (a CDN can serve the previous one for
+ * a few minutes), not the set superseded. */
+function storedIsNewer(stored: StoredSnapshot): boolean {
+  const was = setBuild(stored.pythonSet);
+  const now = setBuild(sealSet?.id);
+  return was !== undefined && now !== undefined && was > now;
+}
+
 /** Why `stored` cannot resume here, or `undefined` when it can: it was
  * sealed with another Python set (or before sets) than this page runs. */
 function setMismatch(stored: StoredSnapshot): string | undefined {
@@ -1210,6 +1228,15 @@ async function start(isolated: boolean): Promise<void> {
   // A suspend resumes only on its own Python set: one sealed with another
   // (an older set, or the pinned seal before sets) is invalid here.
   const mismatch = stored === undefined ? undefined : setMismatch(stored);
+  if (mismatch !== undefined && storedIsNewer(stored!)) {
+    // Kept: a fresh boot would seal over it. A reload once the index
+    // catches up resumes it.
+    throw new Error(
+      `the suspended notebook cannot be resumed yet: ${mismatch}, an older ` +
+        "set than it was suspended with (the package index this page read " +
+        "is behind); reload in a few minutes",
+    );
+  }
   if (mismatch !== undefined) {
     await clearSnapshot(NOTEBOOK_KEY);
     stored = undefined;

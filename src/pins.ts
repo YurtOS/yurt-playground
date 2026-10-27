@@ -8,8 +8,8 @@ export type ArtifactPin = {
 
 export type Pins = {
   kernelWasm: ArtifactPin;
-  /** The full image: the desktop app, the CLI, and the suspend/resume
-   * kernel's standard library. */
+  /** The full image: the desktop app, the CLI, and (on a site with no
+   * slim pin) the suspend/resume kernel's standard library. */
   image: ArtifactPin;
   /** The slim image the browser boots: no Python, no Node. Absent, the
    * browser boots `image`, as before. Its pages install Python from the
