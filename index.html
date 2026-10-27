@@ -132,7 +132,7 @@
       <article class="pane upcoming" id="upcoming">
         <h1>Upcoming</h1>
         <p class="date">
-          Updated 2026-10-26 · not released yet; plans may change
+          Updated 2026-10-27 · not released yet; plans may change
         </p>
         <p>
           Work that is in progress or in review for a later train. None of it is
@@ -193,8 +193,9 @@
             >gh</code>) is built with it.
           </li>
           <li>
-            Neither is in the playground image yet. Go programs run on one
-            thread, and signals reach them only between system calls.
+            Neither is in the playground image; both install as
+            <a href="#packages">packages</a>. Go programs run on one thread,
+            and signals reach them only between system calls.
           </li>
         </ul>
         <h2>Later trains</h2>
@@ -253,6 +254,145 @@
           built together: numpy and pyzmq are compiled into the interpreter.
           Install them together, at the same build.
         </p>
+      </article>
+      <article class="pane" id="playground-2026.10.27-3d32068">
+        <h1>playground-2026.10.27-3d32068</h1>
+        <p class="date">
+          2026-10-27 · replaces playground-2026.10.26-3d32068
+        </p>
+        <p>
+          The browser now boots a slim image: 23.5 MB instead of 144 MB. Python
+          is no longer baked into it. Every page that runs Python installs the
+          newest Python set from the package repository, with the sandbox's own
+          <code>pkg</code>, the first time it needs it. The kernel, the desktop
+          host and the yurt CLI are the previous train's.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Version</th>
+            </tr>
+            <tr>
+              <td>Kernel</td>
+              <td>yurtos-kernel 3d32068 (kernel-v0.0.12, unchanged)</td>
+            </tr>
+            <tr>
+              <td>Images</td>
+              <td>yurt-ports 2d2a5c5: slim (the browser's) 23.5 MB; full
+                (desktop app and CLI) 144.0 MB</td>
+            </tr>
+            <tr>
+              <td>Desktop host and yurt CLI</td>
+              <td>yurt-sandbox 68e0034 (unchanged)</td>
+            </tr>
+            <tr>
+              <td>Guest SDK</td>
+              <td>0.0.31 (unchanged)</td>
+            </tr>
+          </table>
+        </div>
+
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            <strong>A slim browser image.</strong> The tab loads 23.5 MB
+            instead of 144 MB before the shell starts. It holds the shell, the
+            command line tools (git, curl, jq, sqlite3, zsh, make, zstd, xz),
+            <code>sudo</code>, <code>pkg</code> and the CA bundle. Python,
+            Jupyter, Node and Gemini CLI install as
+            <a href="#packages">packages</a> when you need them.
+          </li>
+          <li>
+            <strong>Python installs itself.</strong> The Python pane, the
+            Notebook, JupyterLab and the agent install the newest complete
+            Python set (python, numpy, pyzmq and jupyter-kernel) before the
+            kernel starts. Progress shows in the cell and the status line, and
+            the shell works meanwhile. The archives stay in the browser's
+            cache, so a reload downloads only the package index and its metadata. A reload
+            still installs again, because the sandbox's files do not survive
+            it. If the install fails, the cell says why and offers
+            <em>Try again</em>.
+          </li>
+          <li>
+            <strong>Packages are released on their own.</strong> A newly
+            published Python set reaches the page with no new train. The page
+            reads the signed index and takes the newest complete set; a set
+            that is only partly published is never chosen. See
+            <a href="#packages">Packages</a> for what is published.
+          </li>
+          <li>
+            <strong>Suspend/Resume runs the set's own Python</strong> (its
+            <code>python-seal</code>), after the sandbox's <code>pkg</code> has
+            verified it. A suspended notebook resumes only on the Python set it
+            was suspended with. When a newer set is out, an older suspend is
+            discarded, and the panel names both sets. Suspends made by earlier
+            trains are discarded the same way.
+          </li>
+          <li>
+            <strong>The package repository is read from
+              raw.githubusercontent.com</strong> instead of GitHub's API. The
+            API allows 60 requests an hour per address, and a cold
+            <code>pkg update</code> plus one install takes about 20 of them.
+            Signatures are verified as before.
+          </li>
+          <li>
+            <strong>The desktop app and the CLI know what the image
+              ships.</strong> The full image records Python, numpy, pyzmq, the
+            Jupyter kernel, Node and Gemini CLI in <code>pkg</code>'s
+            database. <code>sudo pkg install pyzmq numpy</code> now says there
+            is nothing to install, and packages that depend on them install.
+          </li>
+        </ul>
+
+        <h2>Measured</h2>
+        <p>
+          On the live site with a cold cache (Apple M-series laptop; Chromium,
+          and Chrome 156):
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Step</th>
+              <th>Time</th>
+            </tr>
+            <tr>
+              <td>Page load to Python ready (install and Jupyter start)</td>
+              <td>69&ndash;88 s</td>
+            </tr>
+            <tr>
+              <td>of which the install itself</td>
+              <td>about 53 s</td>
+            </tr>
+            <tr>
+              <td>Gemini CLI with Node, from the Packages panel</td>
+              <td>11&ndash;19 s</td>
+            </tr>
+            <tr>
+              <td>Suspend/Resume kernel running</td>
+              <td>21 s</td>
+            </tr>
+          </table>
+        </div>
+        <p>
+          26 of 26 cold starts on the live site and locally succeeded with no stall (23 in Chromium, 3 in Chrome 156). Most of the install
+          time is the sandbox writing the files (kernel #4169); a faster path
+          is planned.
+        </p>
+
+        <h2>Known issues</h2>
+        <ul>
+          <li>
+            In a tab driven through a browser debugger (the DevTools protocol,
+            as browser-automation extensions use), the Python install can stop
+            partway and stay on &ldquo;verifying and installing&rdquo; (kernel
+            #4170). Reload the page without the debugger attached.
+          </li>
+          <li>
+            The Notebook page logs a harmless 404 for
+            <code>/favicon.ico</code> (#247).
+          </li>
+        </ul>
       </article>
       <article class="pane" id="playground-2026.10.26-3d32068">
         <h1>playground-2026.10.26-3d32068</h1>
