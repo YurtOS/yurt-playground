@@ -117,20 +117,38 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
     ),
     true,
   );
-  assertEquals(workflow.includes("exec docker run --rm --ipc=host"), true);
+  assertEquals(
+    workflow.includes("exec docker run --rm --init --ipc=host"),
+    true,
+  );
   // The tag is derived from an exact pin; a range would name no image.
   const denoJson = JSON.parse(
     await Deno.readTextFile(new URL("../deno.json", import.meta.url)),
   );
   assertMatch(denoJson.imports.playwright, /^npm:playwright@\d+\.\d+\.\d+$/);
-  // The retry runs the same script as the install it retries.
-  const installs = [
-    ...workflow.matchAll(
-      /- name: Install the browser for browser acceptance.*?\n {8}run: \|\n((?: {10}[^\n]*\n)+)/gs,
-    ),
-  ].map((m) => m[1]);
+  // The retry is the install it retries: same env, cap and script (blank
+  // lines included), and it runs only when that install failed.
+  const installs = workflow.split(/\n(?= {6}- )/).filter((step) =>
+    step.trimStart().startsWith(
+      "- name: Install the browser for browser acceptance",
+    )
+  );
   assertEquals(installs.length, 2);
-  assertEquals(installs[0], installs[1]);
+  const control = /^ {8}(?:id|continue-on-error|if): .*$/gm;
+  assertEquals(installs[0].match(control), [
+    "        id: install",
+    "        continue-on-error: true",
+  ]);
+  assertEquals(installs[1].match(control), [
+    "        if: steps.install.outcome == 'failure'",
+  ]);
+  const body = (step: string) =>
+    step.split("\n").slice(1).filter((line) =>
+      !/^ {8}(?:id|continue-on-error|if): /.test(line) &&
+      !/^\s*#/.test(line)
+    ).join("\n").trimEnd();
+  assertEquals(body(installs[0]), body(installs[1]));
+  assertEquals(body(installs[0]).includes("docker pull -q"), true);
   // The browser artifacts are materialized by the site inputs (deno task
   // pin runs scripts/pin-artifacts.ts).
   assertEquals(workflow.includes("deno task pin"), true);

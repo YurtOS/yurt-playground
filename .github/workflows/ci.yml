@@ -150,9 +150,9 @@ jobs:
     if: ${{ !cancelled() && needs.checks.outputs.present == 'true' }}
     runs-on: ubuntu-latest
     # Above the step cap (11) plus both browser installs at their cap (5 + 5)
-    # and setup and build (1.6 min measured), with ~2 min to spare, for the
-    # same reason. A cap costs nothing unless something hangs; the slowest
-    # scene took 10.0 min in all.
+    # and setup and build (1.6 min typical, 2.1 worst seen), with ~2 min to
+    # spare, for the same reason. A cap costs nothing unless something
+    # hangs; the slowest scene took 10.0 min in all.
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -241,10 +241,11 @@ jobs:
             exec deno run --allow-all "tests/${SCENE}_e2e.ts"
           fi
           # The same deno, workspace and deno cache, as this runner's user so
-          # nothing in the workspace ends up owned by root.
+          # nothing in the workspace ends up owned by root. --init: deno is
+          # not PID 1, so a timeout's signal stops it and WebKit.
           version=$(jq -r .imports.playwright deno.json)
           deno_dir=$(deno info --json | jq -r .denoDir)
-          exec docker run --rm --ipc=host --user "$(id -u):$(id -g)" \
+          exec docker run --rm --init --ipc=host --user "$(id -u):$(id -g)" \
             -e HOME=/tmp -e DENO_DIR="$deno_dir" \
             -e YURT_KERNEL_ROOT -e PLAYGROUND_REQUIRE_ARTIFACTS \
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -v "$deno_dir:$deno_dir" \
