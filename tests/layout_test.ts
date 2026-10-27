@@ -108,6 +108,15 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   assertEquals(workflow.includes("dtolnay/rust-toolchain"), false);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
   assertEquals(workflow.includes("playwright/cli.js install chromium"), true);
+  // WebKit runs in Playwright's image for the pinned version, not from an
+  // apt install of its system libraries (32 min at ~60 kB/s on #246).
+  assertEquals(workflow.includes("--with-deps"), false);
+  assertEquals(
+    workflow.includes(
+      "mcr.microsoft.com/playwright:v${version#npm:playwright@}-noble",
+    ),
+    true,
+  );
   // The browser artifacts are materialized by the site inputs (deno task
   // pin runs scripts/pin-artifacts.ts).
   assertEquals(workflow.includes("deno task pin"), true);
@@ -116,8 +125,9 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   const scenes = workflow.match(/scene: \[([^\]]+)\]/)?.[1]
     .split(",").map((s) => s.trim()).filter((s) => s !== "") ?? [];
   assertEquals(scenes.includes("playground"), true, `scenes: ${scenes}`);
+  assertEquals(workflow.includes("SCENE: ${{ matrix.scene }}"), true);
   assertEquals(
-    workflow.includes("deno run --allow-all tests/${{ matrix.scene }}_e2e.ts"),
+    workflow.includes('deno run --allow-all "tests/${SCENE}_e2e.ts"'),
     true,
   );
   const testsDir = new URL("../tests", import.meta.url);

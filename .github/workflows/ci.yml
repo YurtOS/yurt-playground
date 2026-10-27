@@ -96,8 +96,8 @@ jobs:
     runs-on: ubuntu-latest
     # Above the step cap plus setup, so a slow leg fails at the step -- with
     # its log tail and a named timeout -- rather than as a bare cancelled
-    # job (#123 review round 2).
-    timeout-minutes: 30
+    # job (#123 review round 2). The slowest leg seen took 4.8 min in all.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       # Keep in step with scripts/ci-shards.ts; layout_test.ts asserts it.
@@ -119,7 +119,7 @@ jobs:
         working-directory: playground
         run: deno check "**/*.ts"
       - name: test
-        timeout-minutes: 15
+        timeout-minutes: 7
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
@@ -149,8 +149,9 @@ jobs:
     needs: checks
     if: ${{ !cancelled() && needs.checks.outputs.present == 'true' }}
     runs-on: ubuntu-latest
-    # Above the 20-minute step cap plus setup, for the same reason.
-    timeout-minutes: 35
+    # Above the step cap plus setup and two browser installs, for the same
+    # reason. The slowest scene seen took 9.5 min in all.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -171,21 +172,47 @@ jobs:
       - uses: ./playground/.github/actions/site-inputs
         with:
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-      # Playwright's browsers, keyed on the pinned playwright version: a hit
-      # makes the install a no-op. The `webkit` scene runs JavaScriptCore
-      # (#2996's engine) and needs its system libraries too.
+      # Chromium, keyed on the pinned playwright version: a hit (Deploy saves
+      # it on main) makes the install a no-op.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.scene != 'webkit'
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ matrix.scene == 'webkit' && 'webkit-' || '' }}${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('playground/deno.json') }}
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('playground/deno.json') }}
+      # The `webkit` scene runs JavaScriptCore (#2996's engine) in Playwright's
+      # own image, which has WebKit and its system libraries for the pinned
+      # playwright version. Installing them here meant ~117 MB of Ubuntu
+      # packages through apt, at ~60 kB/s on bad days (32 min on #246), and
+      # a cache could not help: CI runs on pull requests only, and a pull
+      # request's cache is not visible to the next one. A slow install fails
+      # at 5 min and is tried once more.
       - name: Install the browser for browser acceptance
+        id: install
+        continue-on-error: true
+        timeout-minutes: 5
         working-directory: playground
         env:
           BROWSER: ${{ matrix.scene == 'webkit' && 'webkit' || 'chromium' }}
         run: |
           set -euo pipefail
           if [ "$BROWSER" = webkit ]; then
-            deno run --allow-all node_modules/playwright/cli.js install --with-deps webkit
+            version=$(jq -r .imports.playwright deno.json)
+            docker pull -q "mcr.microsoft.com/playwright:v${version#npm:playwright@}-noble"
+          else
+            deno run --allow-all node_modules/playwright/cli.js install chromium
+          fi
+      - name: Install the browser for browser acceptance (retry)
+        if: steps.install.outcome == 'failure'
+        timeout-minutes: 5
+        working-directory: playground
+        env:
+          BROWSER: ${{ matrix.scene == 'webkit' && 'webkit' || 'chromium' }}
+        # The same script as the step above.
+        run: |
+          set -euo pipefail
+          if [ "$BROWSER" = webkit ]; then
+            version=$(jq -r .imports.playwright deno.json)
+            docker pull -q "mcr.microsoft.com/playwright:v${version#npm:playwright@}-noble"
           else
             deno run --allow-all node_modules/playwright/cli.js install chromium
           fi
@@ -197,12 +224,28 @@ jobs:
           YURT_KERNEL_ROOT: ../yurtos-kernel
         run: deno task build-static
       - name: Browser acceptance
-        timeout-minutes: 20
+        timeout-minutes: 11
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
           PLAYGROUND_REQUIRE_ARTIFACTS: "1"
-        run: deno run --allow-all tests/${{ matrix.scene }}_e2e.ts
+          SCENE: ${{ matrix.scene }}
+        run: |
+          set -euo pipefail
+          if [ "$SCENE" != webkit ]; then
+            exec deno run --allow-all "tests/${SCENE}_e2e.ts"
+          fi
+          # The same deno, workspace and deno cache, as this runner's user so
+          # nothing in the workspace ends up owned by root.
+          version=$(jq -r .imports.playwright deno.json)
+          deno_dir=$(deno info --json | jq -r .denoDir)
+          exec docker run --rm --ipc=host --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp -e DENO_DIR="$deno_dir" \
+            -e YURT_KERNEL_ROOT -e PLAYGROUND_REQUIRE_ARTIFACTS \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -v "$deno_dir:$deno_dir" \
+            -v "$(command -v deno):/usr/local/bin/deno:ro" -w "$PWD" \
+            "mcr.microsoft.com/playwright:v${version#npm:playwright@}-noble" \
+            deno run --allow-all tests/webkit_e2e.ts
 
   # One context for the legs above, under the name `main`'s ruleset requires.
   # Renaming the single job they replaced would otherwise have orphaned that
