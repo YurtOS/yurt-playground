@@ -343,6 +343,17 @@
             database. <code>sudo pkg install pyzmq numpy</code> now says there
             is nothing to install, and packages that depend on them install.
           </li>
+          <li>
+            <strong>Phones get the shell without Python.</strong> A phone tab
+            has too little memory to install Python, so on a phone the home
+            page (opened with <code>?start-anyway</code>) starts the Linux
+            shell and the agent without the Python install, and says so. You
+            can still install <code>python</code> from <em>Packages</em>, but
+            the tab may run out of memory. The Notebook and JupyterLab pages
+            do not start a sandbox on a phone. Tablets keep the shell-only
+            page they had. A desktop browser, or the desktop app, runs all of
+            it.
+          </li>
         </ul>
 
         <h2>Measured</h2>
