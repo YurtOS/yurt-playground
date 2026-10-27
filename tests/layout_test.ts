@@ -314,6 +314,21 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
     /<a\s([^>]*data-testid="footer-release-notes"[^>]*)>/,
   )?.[1] ?? "";
   assertEquals(footerNotes.includes(`href="${notes}"`), true);
+  // verify.js finds the two links and the train label by these ids.
+  assertEquals(navNotes.includes('id="release-notes-link"'), true);
+  assertEquals(footerNotes.includes('id="footer-release-notes"'), true);
+  assertEquals(
+    footer.includes('<span id="release-train" hidden></span>'),
+    true,
+  );
+  const verifyJs = await Deno.readTextFile(
+    new URL("../public/verify.js", import.meta.url),
+  );
+  for (
+    const id of ["release-notes-link", "footer-release-notes", "release-train"]
+  ) {
+    assertEquals(verifyJs.includes(`"${id}"`), true, id);
+  }
   // The "is this really in your browser" disclosure and its live check.
   assertEquals(html.includes('data-testid="proof"'), true);
   assertEquals(html.includes('data-testid="proof-toggle"'), true);

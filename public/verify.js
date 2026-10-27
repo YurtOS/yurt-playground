@@ -181,9 +181,10 @@ button.addEventListener("click", () => {
 });
 
 // The release notes (GitHub Pages) have one entry per train, anchored by the
-// train name. Point the links at this page's train and say which it is; when
-// pins.json is unavailable (the desktop app, a local build) they keep
-// pointing at the top of the notes.
+// train name. Point the links at this page's train and say which it is (the
+// desktop app ships pins.json too, so it names the train it was built for).
+// When pins.json is unavailable or names no train, the links keep pointing
+// at the top of the notes.
 const RELEASE_NOTES = "https://yurtos.github.io/yurt-playground/";
 
 async function showTrain() {

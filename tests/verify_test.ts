@@ -163,3 +163,39 @@ Deno.test("release-notes links point at the train named in pins.json", async () 
     ` (this page runs ${train})`,
   );
 });
+
+Deno.test("release-notes links stay on the top when pins.json names no train", async () => {
+  const elements = new Map<string, FakeElement>();
+  const document = {
+    getElementById(id: string): FakeElement {
+      const element = elements.get(id) ?? new FakeElement();
+      elements.set(id, element);
+      return element;
+    },
+    createElement(): FakeElement {
+      return new FakeElement();
+    },
+  };
+  let settled!: () => void;
+  const fetched = new Promise<void>((resolve) => settled = resolve);
+  const fetch = (input: string): Promise<Response> => {
+    if (input === "./pins.json") {
+      settled();
+      return Promise.resolve(Response.json({ kernelWasm: {} }));
+    }
+    return Promise.reject(new Error(`unexpected fetch ${input}`));
+  };
+  const source = await Deno.readTextFile(
+    new URL("../public/verify.js", import.meta.url),
+  );
+  document.getElementById("release-train").hidden = true;
+  runInNewContext(source, { console, crypto, document, fetch, Response });
+  await fetched;
+  // Let showTrain() finish reading the response.
+  for (let i = 0; i < 20; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assertEquals(elements.get("release-train")?.hidden, true);
+  assertEquals(elements.get("release-notes-link")?.href, undefined);
+  assertEquals(elements.get("footer-release-notes")?.href, undefined);
+});
