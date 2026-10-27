@@ -910,9 +910,9 @@ export async function installPackage(
       if (bytes !== undefined) await cache?.delete(key);
       const show = (received: number) =>
         progress(
-          `${name}: downloading ${release.name} ${
-            formatBytes(done + received)
-          } of ${formatBytes(total)}`,
+          `${name}: downloading ${release.name}${
+            extra.includes(release) ? ` (a dependency)` : ""
+          } ${formatBytes(done + received)} of ${formatBytes(total)}`,
         );
       show(0);
       bytes = await fetcher(url, release.size, show);

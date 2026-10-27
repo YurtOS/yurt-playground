@@ -923,6 +923,17 @@ Deno.test("a set's install lets pkg add a dependency outside the set; a pinned l
     also > 0 && also < messages.findIndex((m) => m.includes("downloading")),
     true,
   );
+  // Its download says it is one, so the line that stays says so too.
+  assertEquals(
+    messages.some((m) =>
+      m.startsWith("Greet: downloading libx (a dependency) ")
+    ),
+    true,
+  );
+  assertEquals(
+    messages.some((m) => m.startsWith("Greet: downloading greet (")),
+    false,
+  );
   assertEquals(
     runs[1].files.some((f) => f.path.endsWith("libx-1.0.0-yurt_0.yurtpkg")),
     true,
