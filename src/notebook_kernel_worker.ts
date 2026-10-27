@@ -48,7 +48,6 @@ import {
   installPackage,
   loadCatalog,
   type PinnedRelease,
-  releaseOf,
   resolveSet,
 } from "./packages.ts";
 import { PYTHON_SET, SEAL_PACKAGE, SEAL_WASM_PATH } from "./python_install.ts";
@@ -793,17 +792,18 @@ async function resolveSealSet(): Promise<SealSet | undefined> {
   // Complete with its seal: the newest set this kernel can run, which may
   // be older than the newest the coordinator installs while a seal is
   // still to be published.
-  let python: PinnedRelease;
+  let resolved: (PinnedRelease & { url: string })[];
   try {
-    [python] = resolveSet(catalog, [...PYTHON_SET, SEAL_PACKAGE]);
+    resolved = resolveSet(catalog, [...PYTHON_SET, SEAL_PACKAGE]);
   } catch {
     throw new Error(
       `Suspend/Resume is not available: no Python set in the repository has a ${SEAL_PACKAGE}`,
     );
   }
-  const pythonRelease = releaseOf(catalog, "python", python.build)!;
-  const seal = releaseOf(catalog, SEAL_PACKAGE, python.build)!;
-  const label = `${python.version}-${python.build}`;
+  // The set's own members, by name (each with its own build spelling).
+  const pythonRelease = resolved[PYTHON_SET.indexOf("python")];
+  const seal = resolved[resolved.length - 1];
+  const label = `${pythonRelease.version}-${pythonRelease.build}`;
   const name = (r: PinnedRelease) =>
     `${r.name}@${r.version}-${r.build}:${r.sha256}`;
   return {
@@ -1213,6 +1213,8 @@ async function start(isolated: boolean): Promise<void> {
   if (mismatch !== undefined) {
     await clearSnapshot(NOTEBOOK_KEY);
     stored = undefined;
+    // Said now too: a fresh boot that then fails must not hide why.
+    status(`the suspended notebook was discarded: ${mismatch}`);
   }
   if (stored !== undefined) {
     status("restoring the suspended kernel");

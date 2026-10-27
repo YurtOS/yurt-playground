@@ -612,7 +612,7 @@ Deno.test("a pinned set is one exact `pkg install` and must plan exactly the pin
     messages.at(-1),
     "Greet: verifying and installing (pkg install greet@0.1.0-yurt_0)",
   );
-  // The repository's release is not the one this page was tested with.
+  // The repository's release is not the one this page pins.
   for (const other of [{ sha256: "f".repeat(64) }, { size: 99 }]) {
     const { host: refusing } = fakeHost(PLAN, INSTALLED);
     await assertRejects(
@@ -624,7 +624,7 @@ Deno.test("a pinned set is one exact `pkg install` and must plan exactly the pin
           progress: () => {},
         }),
       Error,
-      "is not the 0.1.0-yurt_0 this page was tested with",
+      "is not the 0.1.0-yurt_0 this install expects",
     );
   }
   // pkg chose a release (a dependency) the index lists but the page does
@@ -832,6 +832,28 @@ Deno.test("a yanked member takes its set out; no complete set is an error", () =
   );
 });
 
+Deno.test("a set member the page cannot fetch takes its set out", () => {
+  const catalog = catalogOf({
+    python: ["3.14.7@yurt_0", "3.14.7@yurt_1"],
+    numpy: ["2.5.0@yurt_0", "2.5.0@yurt_1"],
+    pyzmq: ["26.4.0@yurt_0", "26.4.0@yurt_1"],
+    "jupyter-kernel": ["0.0.1@yurt_0", "0.0.1@yurt_1"],
+  });
+  catalog.metadata.get("numpy")!.file.versions[1].url =
+    "https://elsewhere.example/numpy.yurtpkg";
+  const set = resolveSet(catalog, SET);
+  assertEquals(set.map((r) => r.build), [
+    "yurt_0",
+    "yurt_0",
+    "yurt_0",
+    "yurt_0",
+  ]);
+  assertEquals(
+    set[0].url,
+    catalog.metadata.get("python")!.file.versions[0].url,
+  );
+});
+
 Deno.test("a set's install keeps only its own cache entries", async () => {
   const archive = new Uint8Array([3, 1, 4]);
   const fetcher = await fakeRepo(archive);
@@ -945,15 +967,29 @@ Deno.test("a pinned list that must verify all: others allowed, no plan may skip 
     fetcher,
     progress: () => {},
   });
-  // pkg adds a dependency the page does not pin: allowed.
+  // pkg adds a dependency the page does not pin: allowed, and kept in
+  // the cache with the pins; the set before is dropped.
   const { host, runs } = fakeHost({
     ...PLAN,
     stdout: "install libx 1.0.0-yurt_0\ninstall greet 0.1.0-yurt_0\n",
   }, INSTALLED);
-  await installPackage(request, options(host));
+  const { cache, store } = memoryCache({
+    "sha256:old": new Uint8Array([1]),
+    "sha256:old.bundle": new Uint8Array([1]),
+  });
+  await installPackage(request, { ...options(host), cache });
   assertEquals(
     runs[1].files.some((f) => f.path.endsWith("libx-1.0.0-yurt_0.yurtpkg")),
     true,
+  );
+  assertEquals(
+    [...store.keys()].sort(),
+    [
+      await key(archive),
+      `${await key(archive)}.bundle`,
+      await key(depArchive),
+      `${await key(depArchive)}.bundle`,
+    ].sort(),
   );
   // A run that installs nothing verified nothing.
   const { host: done } = fakeHost({

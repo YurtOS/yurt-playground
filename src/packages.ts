@@ -558,7 +558,7 @@ function planReleases(
         release.size !== pin.size
       ) {
         throw new Error(
-          `${n} ${vb} in the repository is not the ${pin.version}-${pin.build} this page was tested with`,
+          `${n} ${vb} in the repository is not the ${pin.version}-${pin.build} this install expects`,
         );
       }
     }
@@ -600,11 +600,21 @@ export type InstallRequest =
 export function resolveSet(
   catalog: Catalog,
   names: readonly string[],
-): PinnedRelease[] {
+): (PinnedRelease & { url: string })[] {
+  const readable = (name: string, release: PackageVersion) => {
+    try {
+      checkRelease({ ...release, name });
+      return true;
+    } catch {
+      return false;
+    }
+  };
   const byName = names.map((name) => {
     const file = catalog.metadata.get(name)?.file;
     if (file === undefined) throw new Error(`no package named ${name}`);
-    return file.versions.filter((v) => !v.yanked && /^yurt_\d+$/.test(v.build));
+    return file.versions.filter((v) =>
+      !v.yanked && /^yurt_\d+$/.test(v.build) && readable(name, v)
+    );
   });
   const builds = byName.map((versions) =>
     new Set(versions.map((v) => buildNumber(v.build)))
@@ -628,6 +638,7 @@ export function resolveSet(
       build: release.build,
       sha256: release.sha256.toLowerCase(),
       size: release.size,
+      url: release.url,
     };
   });
 }
@@ -917,8 +928,12 @@ export async function installPackage(
     for (const key of fromCache) await cache?.delete(key);
     throw failure(name, result);
   }
-  // A set replaces the one before it: keep only what this one used.
-  if (typeof request !== "string" && "set" in request) {
+  // A set, or a verify-all list (the Suspend/Resume set), replaces the one
+  // before it: keep only what this one used.
+  if (
+    typeof request !== "string" &&
+    ("set" in request || request.verifyAll === true)
+  ) {
     await cache?.keepOnly?.(used);
   }
   return `${result.stdout}${result.stderr}`.trim();
@@ -959,26 +974,4 @@ export async function fetchRelease(
   }
   await options.cache?.put(key, bytes);
   return bytes;
-}
-
-/** A set member's release with its archive's repository URL. */
-export function releaseOf(
-  catalog: Catalog,
-  name: string,
-  build: string,
-): (PinnedRelease & { url: string }) | undefined {
-  const versions =
-    catalog.metadata.get(name)?.file.versions.filter((v) =>
-      !v.yanked && v.build === build
-    ) ?? [];
-  if (versions.length === 0) return undefined;
-  const best = versions.reduce((a, b) => compareReleases(a, b) >= 0 ? a : b);
-  return {
-    name,
-    version: best.version,
-    build: best.build,
-    sha256: best.sha256.toLowerCase(),
-    size: best.size,
-    url: best.url,
-  };
 }
