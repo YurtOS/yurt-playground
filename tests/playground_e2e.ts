@@ -540,13 +540,18 @@ const PACKAGES_SNAPSHOT = join(repoRoot, "tests/fixtures/yurt-packages");
  * result that does not change when the live repository is republished.
  * PLAYGROUND_PKG_REPO=<dir> answers from another directory in the
  * repository's layout instead, and PLAYGROUND_PKG_LIVE=1 from the live
- * repository; both expect PLAYGROUND_PKG_NAME (default `yurt-greet`) to
- * install and PLAYGROUND_PKG_RUN (default its name) to exit 0 after.
+ * repository; both expect PLAYGROUND_PKG_NAME to install and
+ * PLAYGROUND_PKG_RUN (default its name) to exit 0 after. The name defaults
+ * to `yurt-greet`, the snapshot's package, and to `rtk` (run as
+ * `rtk --version`) against the live repository, which no longer publishes
+ * yurt-greet.
  */
 async function packagesInstall(page: Page): Promise<void> {
-  const name = Deno.env.get("PLAYGROUND_PKG_NAME") ?? "yurt-greet";
-  const run = Deno.env.get("PLAYGROUND_PKG_RUN") ?? name;
   const live = Deno.env.get("PLAYGROUND_PKG_LIVE") === "1";
+  const name = Deno.env.get("PLAYGROUND_PKG_NAME") ??
+    (live ? "rtk" : "yurt-greet");
+  const run = Deno.env.get("PLAYGROUND_PKG_RUN") ??
+    (live && name === "rtk" ? "rtk --version" : name);
   const repo = Deno.env.get("PLAYGROUND_PKG_REPO");
   const expectInstall = live || repo !== undefined;
   const image = await exec(
