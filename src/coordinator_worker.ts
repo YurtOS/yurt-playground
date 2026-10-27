@@ -37,7 +37,11 @@ import type {
 } from "./jupyter_transport.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
-import { browserArchiveCache, installPackage } from "./packages.ts";
+import {
+  browserArchiveCache,
+  installPackage,
+  InstallStalled,
+} from "./packages.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import { runQueue } from "./run_queue.ts";
 import { type BootedSession, workerPackageHost } from "./session_packages.ts";
@@ -174,6 +178,7 @@ async function servePackages(msg: ToWorker): Promise<void> {
     );
     post({ type: "pkg-reply", req, ok: true, value: output });
   } catch (error) {
+    if (error instanceof InstallStalled) sandboxStalled = true;
     post({
       type: "pkg-reply",
       req,
@@ -241,10 +246,22 @@ let restarting: Promise<void> = Promise.resolve();
 let installPython:
   | ((session: BootedSession) => Promise<void>)
   | undefined;
+/** An install stopped making progress in this sandbox (src/packages.ts
+ * `InstallStalled`): it may no longer answer -- its `pkg` still holds the
+ * lock, its processes may never run -- so the next try is in a fresh one. */
+let sandboxStalled = false;
+/** Drop the in-tab sandbox and start a fresh one the way the page's start
+ * did: boot, then the Python install, then Jupyter. Set by `start`. */
+let startFresh: (() => Promise<void>) | undefined;
 
 /** Install Python again, then start the kernel (`python-install`, or a
- * frontend restart while Python is missing). */
+ * frontend restart while Python is missing). After a stalled install, in
+ * a fresh sandbox: the stalled one may not answer. */
 async function retryPython(): Promise<void> {
+  if (sandboxStalled && startFresh !== undefined) {
+    await startFresh();
+    return;
+  }
   const session = packageSession;
   if (session === undefined || installPython === undefined) {
     post({ type: "python-missing" });
@@ -433,40 +450,72 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     : async (session) => {
       post({ type: "status", text: "installing Python" });
       const cache = await browserArchiveCache();
-      await installs(() =>
-        installPackage(python, {
-          host: workerPackageHost(session),
-          tablet,
-          progress: (text) => post({ type: "status", text }),
-          cache,
-        })
-      );
-    };
-  // Never stops the session once its shell is up (src/coordinator_start.ts).
-  const started = await startSandbox({
-    boot: () =>
-      kernelPorts === undefined ? bootPlayground(env) : bootNativePlayground(
-        env,
-        msg.apiToken === undefined ? undefined : { token: msg.apiToken },
-      ),
-    booted: (session) => {
-      if (session.process !== undefined && session.signal !== undefined) {
-        executions = new ExecutionRegistry(session.process, session.signal);
+      try {
+        await installs(() =>
+          installPackage(python, {
+            host: workerPackageHost(session),
+            tablet,
+            progress: (text) => post({ type: "status", text }),
+            cache,
+          })
+        );
+      } catch (error) {
+        if (error instanceof InstallStalled) sandboxStalled = true;
+        throw error;
       }
-      packageSession = session;
-    },
-    // A restart relaunches on it, whether or not the first launch worked.
-    launching: (session) => launchSession = session,
-    noJupyter: msg.noJupyter === true,
-    installPython,
-    startKernel: (session) => startGuestKernel(session, kernelPorts),
-    post: (report) => {
-      if (report.type === "python-missing") pythonMissing = true;
-      post(report);
-    },
-  });
-  if (started !== undefined) {
-    jupyter = started;
-    subscribeJupyter(jupyter);
+    };
+  /** Boot, install, start Jupyter: the start, and what a retry after a
+   * stalled install runs again on a fresh sandbox. */
+  const begin = async () => {
+    // Never stops the session once its shell is up (src/coordinator_start.ts).
+    const started = await startSandbox({
+      boot: () =>
+        kernelPorts === undefined ? bootPlayground(env) : bootNativePlayground(
+          env,
+          msg.apiToken === undefined ? undefined : { token: msg.apiToken },
+        ),
+      booted: (session) => {
+        if (session.process !== undefined && session.signal !== undefined) {
+          executions = new ExecutionRegistry(session.process, session.signal);
+        }
+        packageSession = session;
+      },
+      // A restart relaunches on it, whether or not the first launch worked.
+      launching: (session) => launchSession = session,
+      noJupyter: msg.noJupyter === true,
+      installPython,
+      startKernel: (session) => startGuestKernel(session, kernelPorts),
+      post: (report) => {
+        if (report.type === "python-missing") pythonMissing = true;
+        post(report);
+      },
+    });
+    if (started !== undefined) {
+      jupyter = started;
+      subscribeJupyter(jupyter);
+    }
+  };
+  if (kernelPorts === undefined) {
+    startFresh = async () => {
+      const stale = packageSession;
+      packageSession = undefined;
+      launchSession = undefined;
+      executions = undefined;
+      jupyter = undefined;
+      pythonMissing = false;
+      sandboxStalled = false;
+      env.term.write(
+        "\r\n[the install stopped making progress; starting a fresh sandbox]\r\n",
+      );
+      post({ type: "status", text: "starting a fresh sandbox" });
+      // Its kernel and every guest in it go; a hung `pkg` with them.
+      try {
+        stale?.dispose?.();
+      } catch {
+        // Already gone.
+      }
+      await begin();
+    };
   }
+  await begin();
 });

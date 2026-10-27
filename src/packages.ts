@@ -391,8 +391,39 @@ export type PackageHost = {
   stageAndRun(
     files: StagedFile[],
     script: string,
+    watch?: RunWatch,
   ): Promise<{ code: number | null; stdout: string; stderr: string }>;
+  /** The host calls `watch.alive` while the guest is still working on a
+   * run (src/session_packages.ts: a heartbeat the script writes, read
+   * without the guest's help). Without it nothing can tell a long run
+   * from a hung one, so the no-progress check pauses during runs. */
+  observesProgress?: boolean;
 };
+
+/** How an install follows one `pkg` run: `alive` at least every few
+ * seconds while the sandbox is still working on it; `signal` aborts once
+ * the install has given up on the run (it stopped making progress). */
+export type RunWatch = { alive: () => void; signal: AbortSignal };
+
+/** How long an install may go with no progress at all -- no status, no
+ * downloaded bytes, no heartbeat from the guest's `pkg` run -- before it
+ * is called stalled. Not a time limit: a slow, loaded host that keeps
+ * making progress takes as long as it takes (80+ s for Python). The
+ * guest's heartbeat comes every 2 s, so this is many missed in a row: a
+ * sandbox that stopped answering (yurtos-kernel#4170). */
+export const INSTALL_STALL_MS = 60_000;
+
+/** An install that stopped making progress ({@link INSTALL_STALL_MS}). The
+ * sandbox it ran in may no longer answer, so a retry needs a fresh one. */
+export class InstallStalled extends Error {
+  constructor(name: string, stallMs: number) {
+    super(
+      `${name}: the install stopped making progress (nothing happened in ` +
+        `the sandbox for ${Math.round(stallMs / 1000)} s)`,
+    );
+    this.name = "InstallStalled";
+  }
+}
 
 export type Fetcher = (
   url: string,
@@ -729,14 +760,80 @@ export async function browserArchiveCache(
  */
 export async function installPackage(
   request: InstallRequest,
-  options: {
-    host: PackageHost;
-    tablet: boolean;
-    progress: (message: string) => void;
-    fetcher?: Fetcher;
-    base?: string;
-    cache?: ArchiveCache;
-  },
+  options: InstallOptions,
+): Promise<string> {
+  const name = typeof request === "string" ? request : request.label;
+  const stallMs = options.stallMs ?? INSTALL_STALL_MS;
+  let last = Date.now();
+  /** Runs in flight that nothing can watch: the check waits for them. */
+  let unwatched = 0;
+  const touch = () => {
+    last = Date.now();
+  };
+  const giveUp = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stalled = new Promise<never>((_, reject) => {
+    const check = () => {
+      const idle = Date.now() - last;
+      if (unwatched === 0 && idle >= stallMs) {
+        giveUp.abort();
+        reject(new InstallStalled(name, stallMs));
+        return;
+      }
+      timer = setTimeout(check, Math.max(stallMs - idle, 10));
+    };
+    timer = setTimeout(check, stallMs);
+  });
+  const watcher: InstallWatcher = {
+    touch,
+    signal: giveUp.signal,
+    unwatched: async (run) => {
+      unwatched++;
+      try {
+        return await run();
+      } finally {
+        unwatched--;
+        touch();
+      }
+    },
+  };
+  try {
+    return await Promise.race([
+      installWatched(request, {
+        ...options,
+        progress: (message) => {
+          touch();
+          options.progress(message);
+        },
+      }, watcher),
+      stalled,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+type InstallOptions = {
+  host: PackageHost;
+  tablet: boolean;
+  progress: (message: string) => void;
+  fetcher?: Fetcher;
+  base?: string;
+  cache?: ArchiveCache;
+  /** {@link INSTALL_STALL_MS}; shorter in tests. */
+  stallMs?: number;
+};
+
+type InstallWatcher = {
+  touch(): void;
+  signal: AbortSignal;
+  unwatched<T>(run: () => Promise<T>): Promise<T>;
+};
+
+async function installWatched(
+  request: InstallRequest,
+  options: InstallOptions,
+  watcher: InstallWatcher,
 ): Promise<string> {
   const { host, progress, cache } = options;
   const fetcher = options.fetcher ?? fetchWithProgress;
@@ -782,8 +879,9 @@ export async function installPackage(
     }),
   );
   /** Stage the repository copy, with `archives` (by repository path), and
-   * run `pkg` on it. */
-  const run = (archives: Map<string, Uint8Array>) => {
+   * run `pkg` on it; `status` is what the page shows meanwhile, with a
+   * count of seconds while the guest's heartbeat says it is working. */
+  const run = (archives: Map<string, Uint8Array>, status: string) => {
     const dir = STAGING_DIR;
     const mirror = `${dir}/repo`;
     const config = browserTrustedRepos(trusted, `file://${mirror}/`);
@@ -808,10 +906,26 @@ export async function installPackage(
     for (const [path, bytes] of archives) {
       files.push({ path: `${mirror}/${path}`, bytes });
     }
-    return host.stageAndRun(files, installScript(specs, config.id));
+    const script = installScript(specs, config.id);
+    progress(status);
+    if (host.observesProgress !== true) {
+      return watcher.unwatched(() => host.stageAndRun(files, script));
+    }
+    const started = Date.now();
+    let shown = started;
+    return host.stageAndRun(files, script, {
+      alive: () => {
+        watcher.touch();
+        const now = Date.now();
+        if (now - shown >= 5000) {
+          shown = now;
+          progress(`${status} (${Math.round((now - started) / 1000)} s)`);
+        }
+      },
+      signal: watcher.signal,
+    });
   };
-  progress(`${name}: resolving (${command})`);
-  const planned = await run(new Map());
+  const planned = await run(new Map(), `${name}: resolving (${command})`);
   const verifyAll = typeof request !== "string" && "releases" in request &&
     request.verifyAll === true;
   if (planned.code === 0) {
@@ -931,8 +1045,10 @@ export async function installPackage(
     archives.set(release.url, bytes);
     done += release.size;
   }
-  progress(`${name}: verifying and installing (${command})`);
-  const result = await run(archives);
+  const result = await run(
+    archives,
+    `${name}: verifying and installing (${command})`,
+  );
   if (result.code !== 0) {
     // Whatever was cached may be what pkg refused: the next try downloads.
     for (const key of fromCache) await cache?.delete(key);

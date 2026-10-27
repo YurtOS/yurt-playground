@@ -440,7 +440,11 @@ export async function bootPlayground(
     if (stopped || controller.state !== "ready") return;
     void controller.current.pty.write(encoder.encode(data));
   });
-  env.term.onResize(({ rows, cols }) => mk.ptySetWinsize(pty, rows, cols));
+  env.term.onResize(({ rows, cols }) => {
+    // A stopped session's kernel may be freed: a fresh sandbox after a
+    // stalled install shares the page's terminal with it.
+    if (!stopped) mk.ptySetWinsize(pty, rows, cols);
+  });
 
   const stop = () => {
     if (stopped) return;
