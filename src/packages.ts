@@ -820,6 +820,14 @@ export async function installPackage(
     typeof request !== "string" &&
       ("set" in request || request.othersAllowed === true),
   );
+  if (
+    releases.length === 0 ||
+    !planned.stderr.includes("failed to fetch archive")
+  ) {
+    throw failure(name, planned);
+  }
+  // After pkg's own refusals: a planning run that failed before printing
+  // a plan names its cause, not the pins it did not get to.
   if (verifyAll) {
     const named = new Set(
       releases.map((r) => `${r.name}@${r.version}-${r.build}`),
@@ -833,18 +841,14 @@ export async function installPackage(
       );
     }
   }
-  if (
-    releases.length === 0 ||
-    !planned.stderr.includes("failed to fetch archive")
-  ) {
-    throw failure(name, planned);
-  }
   const total = releases.reduce((sum, release) => sum + release.size, 0);
   // The signatures first: they are small, and with the index and metadata
   // they count against the limits too.
   const archives = new Map<string, Uint8Array>();
-  /** What came from or went into the cache unchecked by pkg: dropped
-   * again if the install fails, so the next try downloads it. */
+  /** The signatures this install used, and the archives it read from the
+   * cache: unchecked by pkg until it succeeds, so dropped again if the
+   * install fails and the next try downloads them. (A downloaded archive
+   * stays: the cache is keyed by its sha256, checked on every read.) */
   const fromCache: string[] = [];
   /** Every cache entry this install uses. */
   const used: string[] = [];

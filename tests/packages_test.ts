@@ -966,6 +966,17 @@ Deno.test("a pinned list that must verify all: others allowed, no plan may skip 
     Error,
     "Greet: pkg verified nothing: greet@0.1.0-yurt_0 is already installed",
   );
+  // A planning run pkg refused names pkg's cause, not the pins.
+  const { host: refused } = fakeHost({
+    code: 1,
+    stdout: "",
+    stderr: "Error: index signature verification failed\n",
+  });
+  await assertRejects(
+    () => installPackage(request, options(refused)),
+    Error,
+    "pkg install Greet failed: Error: index signature verification failed",
+  );
   // A plan that leaves a pin out would not verify it.
   const { host: partial } = fakeHost({
     ...PLAN,

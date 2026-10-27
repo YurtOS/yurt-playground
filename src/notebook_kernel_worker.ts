@@ -816,18 +816,10 @@ async function resolveSealSet(): Promise<SealSet | undefined> {
 
 /** This kernel's archives: a cache of its own, so the coordinator's
  * install (which keeps only the archives it installed) never drops the
- * seal; this kernel keeps only its current set's two. */
-async function sealCache() {
-  const cache = await browserArchiveCache("yurt-python-seal-v1");
-  if (cache !== undefined && sealSet !== undefined) {
-    await cache.keepOnly?.(
-      [sealSet.python.sha256, sealSet.seal.sha256].flatMap((sha) => [
-        `sha256:${sha}`,
-        `sha256:${sha}.bundle`,
-      ]),
-    );
-  }
-  return cache;
+ * seal. The set's verifying install prunes it to the entries it used: the
+ * set's two archives, their signatures, and any dependency pkg added. */
+function sealCache() {
+  return browserArchiveCache("yurt-python-seal-v1");
 }
 
 /**
