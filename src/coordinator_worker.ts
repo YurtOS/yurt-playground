@@ -27,7 +27,6 @@ import {
   type ExecOptions,
   type ExecutionRecord,
   ExecutionRegistry,
-  quoted,
   type RawResult,
   type Result,
 } from "./executions.ts";
@@ -38,16 +37,10 @@ import type {
 } from "./jupyter_transport.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
-import {
-  browserArchiveCache,
-  installPackage,
-  onlyStaged,
-  type PackageHost,
-  type StagedFile,
-  STAGING_DIR,
-} from "./packages.ts";
+import { browserArchiveCache, installPackage } from "./packages.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import { runQueue } from "./run_queue.ts";
+import { type BootedSession, workerPackageHost } from "./session_packages.ts";
 import {
   type MemoryRefusedMessage,
   memoryRefusedMessage,
@@ -158,9 +151,6 @@ let executions: ExecutionRegistry | undefined;
  * (its sandbox has a network, and `pkg install` there needs no page). */
 let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 
-/** The guest's `pkg` output is a few lines; a megabyte is plenty. */
-const PKG_OUTPUT_BYTES = 1024 * 1024;
-
 async function servePackages(msg: ToWorker): Promise<void> {
   if (msg.type !== "pkg-install") return;
   const { req } = msg;
@@ -193,80 +183,12 @@ async function servePackages(msg: ToWorker): Promise<void> {
   }
 }
 
-type BootedSession = Awaited<ReturnType<typeof bootPlayground>>;
-
 /** One install at a time, whole: an install is a plan run, the downloads
  * and an install run, every run stages at the same directory, and pkg
  * takes one lock. The Packages panel's installs and the automatic Python
  * install wait their turn here, so neither lands between the other's two
  * runs. */
 const installs = runQueue();
-
-/** Write the staged repository copy (as root) and run `script` on it as the
- * login user: one `pkg` run of an install (src/packages.ts). Throws when
- * staging or the spawn fails, not when pkg does. */
-async function runStaged(
-  session: BootedSession,
-  files: StagedFile[],
-  script: string,
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  if (session.process === undefined || session.writeFiles === undefined) {
-    throw new Error("this sandbox does not install packages");
-  }
-  // Only the staging copy: the files are written as root.
-  if (!onlyStaged(files)) {
-    throw new Error("package files outside the staging directory");
-  }
-  const spawn = session.process;
-  // As the login user, like everything else the page runs: the script
-  // gets root for `pkg` the way the user does, through `sudo`.
-  const run = (line: string) =>
-    spawn(`exec /bin/sh -c ${quoted(line)}`, {
-      maxOutputBytes: PKG_OUTPUT_BYTES,
-    });
-  try {
-    session.writeFiles(files);
-    // In the guest now: let the tab's copies go while `pkg` runs (up to
-    // hundreds of MB).
-    files.length = 0;
-    const process = await run(script);
-    const status = await process.exited;
-    const decoder = new TextDecoder();
-    return {
-      code: typeof status === "number" ? status : status.code,
-      stdout: decoder.decode(process.takeStdout()),
-      stderr: decoder.decode(process.takeStderr()),
-    };
-  } finally {
-    // The script's trap removes the staged copy, unless the shell died by
-    // a signal (the tab out of memory, say) or never ran; it may be
-    // hundreds of MB of the tab's memory, so it goes here too, whatever
-    // happened. Before returning: the next run stages at the same path.
-    // Best effort.
-    await run(`sudo rm -rf ${quoted(STAGING_DIR)}`).then((p) => p.exited)
-      .catch(() => {});
-  }
-}
-
-/** The worker's own {@link PackageHost}: the coordinator installs the
- * Python set and the Packages panel's packages itself, on every page. */
-function workerPackageHost(session: BootedSession): PackageHost {
-  return {
-    async readFile(path) {
-      if (session.process === undefined) {
-        throw new Error("this sandbox does not install packages");
-      }
-      const process = await session.process(`exec cat ${quoted(path)}`, {
-        maxOutputBytes: PKG_OUTPUT_BYTES,
-      });
-      const status = await process.exited;
-      const code = typeof status === "number" ? status : status.code;
-      if (code !== 0) throw new Error(`cannot read ${path}`);
-      return process.takeStdout();
-    },
-    stageAndRun: (files, script) => runStaged(session, files, script),
-  };
-}
 
 async function serveYurt(msg: ToWorker): Promise<void> {
   if (

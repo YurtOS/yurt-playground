@@ -59,6 +59,9 @@ export type PlaygroundEnv = {
 
 export type PlaygroundSession = {
   stop: () => void;
+  /** Stop, and free the kernel with every guest in it: for a session that
+   * is done for good (a short-lived one, say), not one a page shows. */
+  dispose?: () => void;
   controller: SessionController;
   terminal: PtyTransport;
   /** Run a shell line as a process of the page's own (`sh -c`), as the
@@ -473,6 +476,10 @@ export async function bootPlayground(
   env.show("");
   return {
     stop,
+    dispose() {
+      stop();
+      mk.dispose();
+    },
     controller,
     terminal,
     async spawn(line) {

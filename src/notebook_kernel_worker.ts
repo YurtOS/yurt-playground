@@ -35,6 +35,7 @@ import {
   type UserProcess,
 } from "@yurt/kernel-host-interface-js";
 import {
+  bootPlayground,
   fetchPlaygroundBytes,
   loadPlaygroundKernel,
   playgroundPins,
@@ -44,6 +45,7 @@ import {
 import {
   browserArchiveCache,
   fetchRelease,
+  installPackage,
   loadCatalog,
   type PinnedRelease,
   releaseOf,
@@ -74,6 +76,7 @@ import {
 } from "./snapshot_store.ts";
 import { stagedPath } from "./notebook_stage.ts";
 import { readYurtimgFile, stageYurtimg, writeRamfsFile } from "./stage.ts";
+import { workerPackageHost } from "./session_packages.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
 
 installCoordinatorWorkerProxy(() => playgroundGuestPortIsDirect());
@@ -825,6 +828,51 @@ async function sealCache() {
   return cache;
 }
 
+/**
+ * Have the guest's own `pkg` verify the set before this kernel runs it: a
+ * short-lived sandbox on the slim image runs `sudo pkg install python@V-B
+ * python-seal@V-B` -- the index's and both archives' Sigstore signatures,
+ * their sha256s, their files -- and is then disposed of. The archives it
+ * verified are the bytes this kernel then reads, from the same cache by the
+ * same sha256. A refusal is the boot's failure, named.
+ */
+async function verifySealSet(set: SealSet, isolated: boolean): Promise<void> {
+  status(`verifying the Python ${set.label} set (pkg install)`);
+  const session = await bootPlayground({
+    isolated,
+    fetchBytes: (path) => fetchPlaygroundBytes(path),
+    imagePath: SLIM_IMAGE_PATH,
+    show: () => {},
+    // No one watches this sandbox's shell.
+    term: {
+      cols: 80,
+      rows: 24,
+      write: () => {},
+      onData: () => {},
+      onResize: () => {},
+    },
+  });
+  try {
+    await installPackage(
+      { label: "Suspend/Resume", releases: [set.python, set.seal] },
+      {
+        host: workerPackageHost(session),
+        tablet: false,
+        progress: (text) => status(text),
+        cache: await sealCache(),
+      },
+    );
+  } catch (error) {
+    throw new Error(
+      `Suspend/Resume is not available: the Python ${set.label} set did not verify: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  } finally {
+    (session.dispose ?? session.stop)();
+  }
+}
+
 /** How a stored image's set is named to the user. */
 function setLabel(id: string | undefined): string {
   if (id === undefined) return "the full image's pinned interpreter";
@@ -1212,6 +1260,9 @@ async function start(isolated: boolean): Promise<void> {
       );
     }
   }
+  // A fresh boot runs the set's interpreter and stdlib: verified first. (A
+  // resume runs what its snapshot holds, sealed from verified bytes.)
+  if (sealSet !== undefined) await verifySealSet(sealSet, isolated);
   live = await bootFresh(kernelBytes, kernelSha256);
   post({ type: "snapshot", snapshot: { state: "running" } });
   post({ type: "notebook-ready" });

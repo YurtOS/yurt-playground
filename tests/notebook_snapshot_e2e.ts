@@ -17,7 +17,9 @@
  * PLAYGROUND_SLIM_REPO_NEXT=<dir> (the same plus a newer complete set), the
  * scene then suspends, switches to it and reopens: the suspend was made on
  * the older set, so it is discarded, and the new session runs the cell from
- * its start on the newer set.
+ * its start on the newer set. With PLAYGROUND_SLIM_REPO_TAMPERED=<dir> (a set
+ * whose python-seal archive matches its metadata but not its signature), it
+ * first checks that the kernel refuses to start on it.
  */
 import { chromium, type Page } from "playwright";
 import { dirname, join } from "node:path";
@@ -145,6 +147,48 @@ if (import.meta.main) {
       { timeout },
     );
   try {
+    // A seal the guest's pkg does not verify is never run.
+    const tampered = Deno.env.get("PLAYGROUND_SLIM_REPO_TAMPERED");
+    if (slim && tampered !== undefined) {
+      const other = await browser.newContext();
+      await other.route("https://raw.githubusercontent.com/**", async (r) => {
+        const url = r.request().url();
+        try {
+          if (!url.startsWith(PACKAGE_REPO_URL)) throw new Error(url);
+          await r.fulfill({
+            body: Buffer.from(
+              await Deno.readFile(
+                join(tampered, url.slice(PACKAGE_REPO_URL.length)),
+              ),
+            ),
+            headers: { "access-control-allow-origin": "*" },
+          });
+        } catch {
+          await r.fulfill({ status: 404 });
+        }
+      });
+      const bad = await other.newPage();
+      await bad.goto(notebookUrl, { waitUntil: "domcontentloaded" });
+      await bad.waitForFunction(
+        () => /did not verify/.test(document.body.innerText),
+        undefined,
+        { timeout: 420_000 },
+      ).catch(() => fail("a seal with a bad signature was not refused"));
+      const state = await bad.locator(".yurt-snapshot-panel").getAttribute(
+        "data-state",
+      );
+      if (state === "running") {
+        fail("the kernel runs a seal that did not verify");
+      }
+      const said = await bad.locator(".yurt-snapshot-panel").innerText();
+      console.log(
+        `notebook snapshot e2e: tampered seal refused: ${
+          said.replace(/\s+/g, " ").slice(0, 240)
+        }`,
+      );
+      await other.close();
+    }
+
     let page = await openNotebook();
 
     // Run the primes cell.
