@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertMatch } from "@std/assert";
 import {
   allTestFiles,
   CATCH_ALL_SHARD,
@@ -117,6 +117,20 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
     ),
     true,
   );
+  assertEquals(workflow.includes("exec docker run --rm --ipc=host"), true);
+  // The tag is derived from an exact pin; a range would name no image.
+  const denoJson = JSON.parse(
+    await Deno.readTextFile(new URL("../deno.json", import.meta.url)),
+  );
+  assertMatch(denoJson.imports.playwright, /^npm:playwright@\d+\.\d+\.\d+$/);
+  // The retry runs the same script as the install it retries.
+  const installs = [
+    ...workflow.matchAll(
+      /- name: Install the browser for browser acceptance.*?\n {8}run: \|\n((?: {10}[^\n]*\n)+)/gs,
+    ),
+  ].map((m) => m[1]);
+  assertEquals(installs.length, 2);
+  assertEquals(installs[0], installs[1]);
   // The browser artifacts are materialized by the site inputs (deno task
   // pin runs scripts/pin-artifacts.ts).
   assertEquals(workflow.includes("deno task pin"), true);

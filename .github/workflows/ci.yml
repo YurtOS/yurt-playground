@@ -96,7 +96,7 @@ jobs:
     runs-on: ubuntu-latest
     # Above the step cap plus setup, so a slow leg fails at the step -- with
     # its log tail and a named timeout -- rather than as a bare cancelled
-    # job (#123 review round 2). The slowest leg seen took 4.8 min in all.
+    # job (#123 review round 2). The slowest leg seen took 5.0 min in all.
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -150,9 +150,10 @@ jobs:
     if: ${{ !cancelled() && needs.checks.outputs.present == 'true' }}
     runs-on: ubuntu-latest
     # Above the step cap (11) plus both browser installs at their cap (5 + 5)
-    # and ~2 min of setup and build, for the same reason. A cap costs
-    # nothing unless something hangs; the slowest scene took 9.5 min in all.
-    timeout-minutes: 23
+    # and setup and build (1.6 min measured), with ~2 min to spare, for the
+    # same reason. A cap costs nothing unless something hangs; the slowest
+    # scene took 10.0 min in all.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -175,8 +176,8 @@ jobs:
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
       # Chromium, keyed on the pinned playwright version: a hit makes the
       # install a no-op. Release desktop saves it on main, the one scope every
-      # pull request can read; until it runs after a playwright bump, the
-      # legs install from Playwright's CDN, which takes seconds.
+      # pull request can read; after any deno.json change, until it runs
+      # again, the legs install from Playwright's CDN, which takes seconds.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: matrix.scene != 'webkit'
         with:
@@ -186,9 +187,10 @@ jobs:
       # own image, which has WebKit and its system libraries for the pinned
       # playwright version. Installing them here meant ~117 MB of Ubuntu
       # packages through apt, at ~60 kB/s on bad days (32 min on #246), and
-      # a cache saved here could not help: CI runs on pull requests only, and
-      # a pull request's cache is not visible to the next one. A slow install fails
-      # at 5 min and is tried once more.
+      # a cache saved here could not help: CI runs on pull requests (and by
+      # hand), and a pull request's cache is not visible to the next one. The
+      # image is pulled here, not by `docker run` below, so a slow pull fails
+      # at this step's 5 min and is tried once more.
       - name: Install the browser for browser acceptance
         id: install
         continue-on-error: true
