@@ -508,6 +508,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       startKernel: (session) => startGuestKernel(session, kernelPorts),
       post: (report) => {
         if (report.type === "python-missing") pythonMissing = true;
+        if (report.type === "error") bootError = report.message;
         post(report);
       },
     });
@@ -516,30 +517,48 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       subscribeJupyter(jupyter);
     }
   };
+  /** The last boot error `begin` posted. */
+  let bootError: string | undefined;
+  /** Drop the in-tab sandbox: its guests go, a hung `pkg` with them, and
+   * nothing keeps its kernel (with what was staged in it) reachable -- the
+   * terminal's handlers were the stopped session's last references. Apart
+   * from `startFresh` so no local of that long await holds it. */
+  const dropSandbox = () => {
+    const stale = packageSession;
+    packageSession = undefined;
+    launchSession = undefined;
+    executions = undefined;
+    jupyter = undefined;
+    try {
+      stale?.dispose?.();
+    } catch {
+      // Already gone.
+    }
+    term.dropHandlers();
+  };
   if (kernelPorts === undefined) {
     startFresh = async () => {
-      const stale = packageSession;
-      packageSession = undefined;
-      launchSession = undefined;
-      executions = undefined;
-      jupyter = undefined;
+      const why = sandboxStalled ? "the install stopped making progress; " : "";
       pythonMissing = false;
       sandboxStalled = false;
+      bootError = undefined;
       env.term.write(
-        "\r\n[the install stopped making progress; starting a fresh sandbox " +
+        `\r\n[${why}starting a fresh sandbox ` +
           "(this shell and its files go with the old one)]\r\n",
       );
       post({ type: "status", text: "starting a fresh sandbox" });
-      // Its guests go, a hung `pkg` with them; and nothing keeps its
-      // kernel (with what was staged in it) reachable: the terminal's
-      // handlers were the stopped session's last references.
-      try {
-        stale?.dispose?.();
-      } catch {
-        // Already gone.
-      }
-      term.dropHandlers();
+      dropSandbox();
       await begin();
+      // A fresh sandbox that did not boot: say so where Python's Try again
+      // is, so the page can try once more (the retry finds no sandbox and
+      // starts a fresh one).
+      if (packageSession === undefined) {
+        pythonMissing = true;
+        post({
+          type: "python-missing",
+          error: `a fresh sandbox did not start: ${bootError ?? "unknown"}`,
+        });
+      }
     };
   }
   await begin();
