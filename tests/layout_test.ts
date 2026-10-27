@@ -352,6 +352,17 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
   assertEquals(html.includes('id="failed-title"'), true);
   assertEquals(html.includes('href="./?start-anyway"'), true);
   assertEquals(html.includes("around a gigabyte"), false);
+  // The slim boot: a phone that starts anyway gets the shell and a note
+  // instead of Python, and the refusal tells no story of the old full-image
+  // boot ("starting Jupyter"). The intro says Python comes on its own.
+  assertEquals(html.includes('data-testid="phone-note"'), true);
+  const phonePane = html.slice(
+    html.indexOf('data-why="phone"'),
+    html.indexOf("</p>", html.indexOf('data-why="phone"')),
+  );
+  assertEquals(phonePane.includes("starting Jupyter"), false);
+  assertEquals(/Notebook\s+and\s+JupyterLab/.test(phonePane), true);
+  assertEquals(html.includes("when the sandbox's image has Python"), false);
   const unsupported = await Deno.readTextFile(
     new URL("../public/unsupported.html", import.meta.url),
   );

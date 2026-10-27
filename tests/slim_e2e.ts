@@ -19,7 +19,7 @@
  *
  *   deno run -A tests/slim_e2e.ts
  */
-import { chromium } from "playwright";
+import { type Browser, chromium, devices } from "playwright";
 import { Buffer } from "node:buffer";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,82 @@ import { PACKAGE_REPO_URL } from "../src/packages.ts";
 import { watchCspViolations } from "./csp_watch.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** A phone with `?start-anyway` gets the shell, the phone note and a cell
+ * that says "not on phones", and no Python install: no status about it,
+ * and not one request to the repository. */
+async function phoneInstallsNoPython(
+  browser: Browser,
+  url: string,
+): Promise<void> {
+  const phone = await browser.newContext(devices["iPhone 13"]);
+  const fetched: string[] = [];
+  phone.on("request", (request) => {
+    if (request.url().startsWith(PACKAGE_REPO_URL)) {
+      fetched.push(request.url());
+    }
+  });
+  const page = await phone.newPage();
+  await page.addInitScript(() => {
+    const seen: string[] = [];
+    (globalThis as { __statuses?: string[] }).__statuses = seen;
+    document.addEventListener("DOMContentLoaded", () => {
+      const status = document.querySelector("#status");
+      if (status === null) return;
+      new MutationObserver(() => seen.push(status.textContent ?? ""))
+        .observe(status, {
+          childList: true,
+          characterData: true,
+          subtree: true,
+        });
+    });
+  });
+  await page.goto(`${url}/?start&start-anyway`, {
+    waitUntil: "domcontentloaded",
+  });
+  // The boot is over once the page clears its boot memory: at the shell
+  // on a phone. The old phone boot got there only after its Python install
+  // had run or failed. ("running" alone is not enough: the status reads so
+  // at "booted" too, before any install starts.)
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#status")?.textContent === "running" &&
+      sessionStorage.getItem("yurt-playground-booting") === null,
+    undefined,
+    { timeout: 300_000 },
+  );
+  const state = await page.evaluate(async () => {
+    const yurt = (globalThis as unknown as {
+      yurt: { exec(cmd: string): Promise<{ stdout: Uint8Array | string }> };
+    }).yurt;
+    const out = (await yurt.exec("echo phone-shell")).stdout;
+    const shown = (sel: string) => {
+      const el = document.querySelector<HTMLElement>(sel);
+      return el !== null && el.offsetParent !== null;
+    };
+    return {
+      statuses: (globalThis as { __statuses?: string[] }).__statuses ?? [],
+      echo: (typeof out === "string" ? out : new TextDecoder().decode(out))
+        .trim(),
+      phoneNote: shown("[data-testid=phone-note]"),
+      cell: document.querySelector("[data-testid=notebook-status]")
+        ?.textContent,
+    };
+  });
+  const problems = [
+    state.statuses.some((s) => /Python|Jupyter/.test(s)) &&
+    `status mentioned Python or Jupyter: ${JSON.stringify(state.statuses)}`,
+    fetched.length > 0 && `fetched from the repository: ${fetched}`,
+    state.echo !== "phone-shell" && `shell answered ${state.echo}`,
+    !state.phoneNote && "phone note hidden",
+    state.cell !== "not on phones" && `the cell says ${state.cell}`,
+  ].filter(Boolean);
+  if (problems.length > 0) {
+    throw new Error(`phone ?start-anyway: ${problems.join("; ")}`);
+  }
+  console.log("slim e2e: a phone with ?start-anyway ran the shell, no Python");
+  await phone.close();
+}
 
 if (import.meta.main) {
   // A release that pins no slim image boots the full one: nothing to test.
@@ -48,6 +124,7 @@ if (import.meta.main) {
   const server = startPlaygroundServer(0);
   const browser = await chromium.launch();
   try {
+    await phoneInstallsNoPython(browser, server.url);
     const context = await browser.newContext();
     // The coordinator Worker fetches the repository; a context route sees
     // a dedicated worker's requests, a page route does not.
@@ -163,6 +240,8 @@ if (import.meta.main) {
       fetched.slice(n).filter((u) =>
         u.endsWith(".yurtpkg") || u.endsWith(".yurtpkg.bundle")
       );
+    // A desktop browser installs Python on its own (bootToReady requires
+    // the install's status), unlike the phone above.
     const first = installed(await bootToReady("first visit"));
     console.log(`slim e2e: installed ${first}`);
     await numpyCell();

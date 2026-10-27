@@ -227,7 +227,7 @@ const ANDROID_DESKTOP_SITE_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 
 /** What the page knows before and after a boot it could not finish: a phone
- * is not offered Start (an iPhone was reloaded at "starting Jupyter"), and
+ * is not offered Start (a phone tab has too little memory for Python), and
  * says so as a refusal, not a failure, unless `?start-anyway`; a boot
  * that dies in-page explains itself in the terminal's place, with the likely
  * cause on a tablet; and a tab the browser reloaded mid-boot says so on the
@@ -349,7 +349,8 @@ async function bootFailuresAreExplained(
     why: ["phone"],
     reason: null,
   });
-  // `?start-anyway`: the same phone gets the Start button and no refusal.
+  // `?start-anyway`: the same phone gets the Start button and no refusal,
+  // for the shell alone: the note says so, and the cell has no Python.
   await phonePage.goto(`${url}/?start-anyway`, {
     waitUntil: "domcontentloaded",
   });
@@ -357,8 +358,11 @@ async function bootFailuresAreExplained(
   const anyway = await phonePage.evaluate(() => ({
     failed: document.querySelector<HTMLElement>("#failed")!.hidden,
     notebook: document.querySelector("#notebook-status")!.textContent,
+    note: !document.querySelector<HTMLElement>("#phone-note")!.hidden,
   }));
-  if (!anyway.failed || anyway.notebook !== "waiting for the sandbox") {
+  if (
+    !anyway.failed || anyway.notebook !== "not on phones" || !anyway.note
+  ) {
     throw new Error(`phone ?start-anyway: ${JSON.stringify(anyway)}`);
   }
   await phone.close();

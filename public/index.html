@@ -96,6 +96,7 @@
       }
 
       #mobile-note,
+      #phone-note,
       #another-tab-note,
       #memory-refused {
         border-left: 3px solid var(--ember);
@@ -619,9 +620,9 @@
       <header class="mast">
         <h1>Yurt</h1>
         <p class="lead" id="lead">
-          A Linux sandbox that runs inside this browser tab: a shell, and a
-          Python cell when the sandbox's image has Python. Nothing leaves the
-          page.
+          A Linux sandbox that runs inside this browser tab: a shell, and
+          Python, which a desktop browser installs on its own. Nothing leaves
+          the page.
         </p>
         <nav aria-label="interfaces">
           <a
@@ -653,6 +654,14 @@
         Jupyter and the agent need more memory than a tablet browser gives one
         tab. Even the shell may stall, or the tab may reload. A desktop browser,
         or the desktop app, runs all of it.
+      </p>
+
+      <p id="phone-note" data-testid="phone-note" hidden>
+        This is a phone, so this page starts the Linux shell without Python: a
+        phone tab has too little memory to install it automatically. You can
+        still install <code>python</code> from <em>Packages</em>, but the tab
+        may run out of memory. A desktop browser, or the desktop app, runs all
+        of it.
       </p>
 
       <p id="memory-refused" data-testid="memory-refused" role="alert" hidden>
@@ -776,12 +785,12 @@
           <div id="failed" data-testid="boot-failed" hidden>
             <h2 id="failed-title">The sandbox did not start</h2>
             <p data-why="phone" hidden>
-              Phone browsers give one tab too little memory for the sandbox and
-              reload the tab during the boot (iPhone Safari did, at
-              <code>starting Jupyter</code>), so this page does not start it
+              A phone browser gives one tab too little memory for Python, the
+              Notebook and JupyterLab, so this page does not start the sandbox
               here. Open it in a desktop browser; the app and the command line
-              below run the same sandbox natively. To try on this phone anyway,
-              open <a href="./?start-anyway">this page with ?start-anyway</a>.
+              below run the same sandbox natively. To try the shell on this
+              phone anyway, open
+              <a href="./?start-anyway">this page with ?start-anyway</a>.
             </p>
             <p data-why="tablet" hidden>
               This is a tablet, and mobile browsers rarely give a tab the memory

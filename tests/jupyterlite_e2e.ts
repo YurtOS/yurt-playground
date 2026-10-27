@@ -2,7 +2,7 @@
  * Browser acceptance for the Jupyter Notebook interface: the JupyterLite
  * frontend at /jupyter/ drives the real ipykernel inside the sandbox through
  * the Yurt kernel plugin. Also checks the home page's gating: a phone gets
- * the choices plus a note, and a page served without COOP/COEP lands on the
+ * the choices plus a note, its Notebook page boots no sandbox, and a page served without COOP/COEP lands on the
  * unsupported page.
  *
  * Run: deno run --allow-all tests/jupyterlite_e2e.ts (needs the pinned blobs
@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
+import { PHONE_REFUSAL } from "../src/bridge_status.ts";
 import { watchCspViolations } from "./csp_watch.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -70,6 +71,28 @@ if (import.meta.main) {
     await phonePage.getByTestId("choose-notebook").waitFor({ timeout: 10_000 });
     await phonePage.getByTestId("boot-failed").waitFor({ timeout: 10_000 });
     phoneCsp();
+    // Its Notebook link leads to a page that boots no sandbox there (both
+    // kernels need Python) and says why, `?start-anyway` or not.
+    const coordinators: string[] = [];
+    phone.on("request", (request) => {
+      if (/\/(coordinator|notebook_kernel)\.bundle\.js$/.test(request.url())) {
+        coordinators.push(request.url());
+      }
+    });
+    await phonePage.goto(
+      `${server.url}/jupyter/notebooks/index.html?path=welcome.ipynb&start-anyway`,
+      { waitUntil: "load" },
+    );
+    await phonePage.waitForFunction(
+      (want) =>
+        document.querySelector("[data-testid=yurt-bridge-status]")
+          ?.textContent === `Yurt sandbox: ${want}`,
+      PHONE_REFUSAL,
+      { timeout: 60_000 },
+    );
+    if (coordinators.length > 0) {
+      fail(`a phone's Notebook page started a sandbox: ${coordinators}`);
+    }
     await phone.close();
 
     // A page served without COOP/COEP is the one thing that cannot work: the
