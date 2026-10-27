@@ -40,16 +40,35 @@ export const HEARTBEAT_SECONDS = 2;
  * that is alive but blocked keeps it beating; the install's run ceiling
  * (src/packages.ts `INSTALL_RUN_CEILING_MS`) is the backstop for that. A
  * shell between two commands has no child for a moment; one missed beat
- * is nothing next to the no-progress window. Without `pgrep` the loop
- * beats while the shell lives. It ends within one beat of the shell. */
+ * is nothing next to the no-progress window. A zombie child does not
+ * count. It ends within one beat of the shell. */
 export function withHeartbeat(
   script: string,
   seconds = HEARTBEAT_SECONDS,
   privileged = "sudo ",
 ): string {
-  const loop = 'while kill -0 "$0" 2>/dev/null; do ' +
-    '{ ! command -v pgrep >/dev/null || pgrep -P "$0" >/dev/null; } && ' +
-    `printf '${HEARTBEAT}' >&2; sleep ${seconds}; done`;
+  // A child that is not a zombie: one that exited unreaped (a lost child
+  // exit) is no `pkg` at work. From /proc with builtins (the field after
+  // the last ")" is the state, then the parent); where there is no /proc
+  // (a test host), pgrep; with neither, the shell being alive.
+  const loop = [
+    'while kill -0 "$0" 2>/dev/null; do',
+    "  child=",
+    "  if [ -r /proc/self/stat ]; then",
+    "    for f in /proc/[0-9]*/stat; do",
+    '      read -r l < "$f" 2>/dev/null || continue',
+    '      set -- ${l##*")"}',
+    '      [ "$2" = "$0" ] && [ "$1" != Z ] && { child=1; break; }',
+    "    done",
+    "  elif command -v pgrep >/dev/null; then",
+    '    pgrep -P "$0" >/dev/null && child=1',
+    "  else",
+    "    child=1",
+    "  fi",
+    `  [ -n "$child" ] && printf '${HEARTBEAT}' >&2`,
+    `  sleep ${seconds}`,
+    "done",
+  ].join("\n");
   return [
     `/bin/sh -c ${quoted(script)} &`,
     "inner=$!",

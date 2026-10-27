@@ -828,9 +828,11 @@ export async function installPackage(
       const untilCeiling = runStarted === undefined
         ? Infinity
         : ceilingMs - running;
+      // An unwatched run touches when it ends: look again a window later.
+      const untilIdle = unwatched > 0 ? stallMs : stallMs - idle;
       timer = setTimeout(
         check,
-        Math.max(Math.min(stallMs - idle, untilCeiling), 10),
+        Math.max(Math.min(untilIdle, untilCeiling), 10),
       );
     };
     timer = setTimeout(check, stallMs);
@@ -953,8 +955,10 @@ async function installWatched(
     ? [request as string]
     : exact.map((r) => `${r.name}@${r.version}-${r.build}`);
   const command = `pkg install ${specs.join(" ")}`;
+  // A guest process too: a sandbox that stops answering here is the
+  // sandbox's stall, not a download's.
   const trusted = new TextDecoder().decode(
-    await host.readFile(TRUSTED_REPOS_PATH).catch(() => {
+    await watcher.watched(() => host.readFile(TRUSTED_REPOS_PATH)).catch(() => {
       throw new Error(
         `this image has no ${TRUSTED_REPOS_PATH}, so it cannot install packages`,
       );

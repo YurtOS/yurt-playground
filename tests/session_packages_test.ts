@@ -148,6 +148,18 @@ Deno.test("the guest beats while its shell waits on a child, and stops when the 
   }
 });
 
+Deno.test("a child that exited unreaped (a zombie) is no pkg at work: no beat", async () => {
+  // The script's shell becomes `sleep 3` (exec), whose own child `sleep
+  // 0.2` exits and is never reaped: after 0.2 s the only child is a zombie
+  // -- what a lost child exit would leave.
+  const { beats, code } = await hostHeartbeat(
+    "sleep 0.2 & exec sleep 3",
+    [1000, 2500],
+  );
+  assertEquals(beats[1] - beats[0], 0, `beats ${beats}`);
+  assertEquals(code, 0);
+});
+
 Deno.test("an install that has given up stages and runs nothing", async () => {
   const { session, lines } = fakeSession([{ stdout: "ok\n" }], 5);
   const giveUp = new AbortController();
