@@ -149,9 +149,10 @@ jobs:
     needs: checks
     if: ${{ !cancelled() && needs.checks.outputs.present == 'true' }}
     runs-on: ubuntu-latest
-    # Above the step cap plus setup and two browser installs, for the same
-    # reason. The slowest scene seen took 9.5 min in all.
-    timeout-minutes: 15
+    # Above the step cap (11) plus both browser installs at their cap (5 + 5)
+    # and ~2 min of setup and build, for the same reason. A cap costs
+    # nothing unless something hangs; the slowest scene took 9.5 min in all.
+    timeout-minutes: 23
     strategy:
       fail-fast: false
       matrix:
@@ -172,8 +173,10 @@ jobs:
       - uses: ./playground/.github/actions/site-inputs
         with:
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-      # Chromium, keyed on the pinned playwright version: a hit (Deploy saves
-      # it on main) makes the install a no-op.
+      # Chromium, keyed on the pinned playwright version: a hit makes the
+      # install a no-op. Release desktop saves it on main, the one scope every
+      # pull request can read; until it runs after a playwright bump, the
+      # legs install from Playwright's CDN, which takes seconds.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: matrix.scene != 'webkit'
         with:
@@ -183,8 +186,8 @@ jobs:
       # own image, which has WebKit and its system libraries for the pinned
       # playwright version. Installing them here meant ~117 MB of Ubuntu
       # packages through apt, at ~60 kB/s on bad days (32 min on #246), and
-      # a cache could not help: CI runs on pull requests only, and a pull
-      # request's cache is not visible to the next one. A slow install fails
+      # a cache saved here could not help: CI runs on pull requests only, and
+      # a pull request's cache is not visible to the next one. A slow install fails
       # at 5 min and is tried once more.
       - name: Install the browser for browser acceptance
         id: install
