@@ -853,6 +853,16 @@ export async function installPackage(
     }
   }
   const total = releases.reduce((sum, release) => sum + release.size, 0);
+  // What pkg adds to the request (its dependencies), named with its size,
+  // so a dependency's download is not taken for pkg's own overhead.
+  const extra = releases.filter((release) => !names.includes(release.name));
+  if (extra.length > 0) {
+    progress(
+      `${name}: also installs ${
+        extra.map((r) => `${r.name} (${formatBytes(r.size)})`).join(", ")
+      }`,
+    );
+  }
   // The signatures first: they are small, and with the index and metadata
   // they count against the limits too.
   const archives = new Map<string, Uint8Array>();
@@ -900,9 +910,9 @@ export async function installPackage(
       if (bytes !== undefined) await cache?.delete(key);
       const show = (received: number) =>
         progress(
-          `${name}: downloading ${release.name} ${
-            formatBytes(done + received)
-          } of ${formatBytes(total)}`,
+          `${name}: downloading ${release.name}${
+            extra.includes(release) ? ` (a dependency)` : ""
+          } ${formatBytes(done + received)} of ${formatBytes(total)}`,
         );
       show(0);
       bytes = await fetcher(url, release.size, show);
