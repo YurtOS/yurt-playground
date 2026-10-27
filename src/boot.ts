@@ -333,6 +333,27 @@ export async function bootPlayground(
     mk,
     () => env.memoryRefused?.(),
   );
+  try {
+    return await startPlayground(env, mk, stopWatchingRefusals);
+  } catch (error) {
+    // A boot that failed past here leaves nothing running: its kernel goes
+    // (a page may boot again, as a fresh sandbox after a stalled install).
+    stopWatchingRefusals();
+    try {
+      mk.dispose();
+    } catch {
+      // Already gone.
+    }
+    throw error;
+  }
+}
+
+/** The rest of {@link bootPlayground}, on its loaded kernel. */
+async function startPlayground(
+  env: PlaygroundEnv,
+  mk: Awaited<ReturnType<typeof loadPlaygroundKernel>>,
+  stopWatchingRefusals: () => void,
+): Promise<PlaygroundSession> {
   env.show("loading image");
   const image = await env.fetchBytes(env.imagePath ?? FULL_IMAGE_PATH);
   env.show("unpacking image");
@@ -440,7 +461,11 @@ export async function bootPlayground(
     if (stopped || controller.state !== "ready") return;
     void controller.current.pty.write(encoder.encode(data));
   });
-  env.term.onResize(({ rows, cols }) => mk.ptySetWinsize(pty, rows, cols));
+  env.term.onResize(({ rows, cols }) => {
+    // A stopped session's kernel may be freed: a fresh sandbox after a
+    // stalled install shares the page's terminal with it.
+    if (!stopped) mk.ptySetWinsize(pty, rows, cols);
+  });
 
   const stop = () => {
     if (stopped) return;
