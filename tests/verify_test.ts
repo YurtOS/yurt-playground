@@ -4,6 +4,7 @@ import { assertEquals } from "@std/assert";
 class FakeElement {
   dataset: Record<string, string> = {};
   hidden = false;
+  href: string | undefined = undefined;
   disabled = false;
   textContent = "";
   className = "";
@@ -82,9 +83,9 @@ Deno.test("verifier does not pass required files when release pins cannot be fet
     TextEncoder,
     Uint8Array,
   };
+  // The train label starts hidden, as in index.html.
+  document.getElementById("release-train").hidden = true;
   runInNewContext(source, context);
-  // Without pins.json the release-notes links keep pointing at the top.
-  assertEquals(elements.get("release-train")?.hidden ?? true, true);
   elements.get("verify-files")!.click();
   await new Promise<void>((resolve, reject) => {
     const deadline = Date.now() + 1_000;
@@ -105,6 +106,12 @@ Deno.test("verifier does not pass required files when release pins cannot be fet
     elements.get("verify-results")?.children[0].textContent,
     "4 of 6 files match.",
   );
+  // By now both pins.json fetches have failed. Without a train the
+  // release-notes links keep pointing at the top and the label stays hidden.
+  assertEquals(elements.get("release-train")?.hidden, true);
+  assertEquals(elements.get("release-train")?.textContent, "");
+  assertEquals(elements.get("release-notes-link")?.href, undefined);
+  assertEquals(elements.get("footer-release-notes")?.href, undefined);
 });
 
 Deno.test("release-notes links point at the train named in pins.json", async () => {
@@ -134,6 +141,8 @@ Deno.test("release-notes links point at the train named in pins.json", async () 
   const source = await Deno.readTextFile(
     new URL("../public/verify.js", import.meta.url),
   );
+  // The train label starts hidden, as in index.html.
+  document.getElementById("release-train").hidden = true;
   runInNewContext(source, { console, crypto, document, fetch, Response });
   const deadline = Date.now() + 1_000;
   while (elements.get("release-train")?.hidden !== false) {
@@ -141,6 +150,7 @@ Deno.test("release-notes links point at the train named in pins.json", async () 
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   assertEquals(pinsFetches, 1);
+  assertEquals(elements.get("release-train")?.hidden, false);
   for (const id of ["release-notes-link", "footer-release-notes"]) {
     assertEquals(
       elements.get(id)?.href,
