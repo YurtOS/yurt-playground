@@ -19,6 +19,13 @@ export const PYTHON_LABEL = "Python";
  */
 export const PYTHON_SET = ["python", "numpy", "pyzmq", "jupyter-kernel"];
 
+/** The set's sealable CPython, for the Suspend/Resume kernel: the same
+ * `yurt_N` build as the set it belongs to, never installed in a sandbox;
+ * that kernel reads its interpreter out of this archive and its standard
+ * library out of `python`'s. */
+export const SEAL_PACKAGE = "python-seal";
+export const SEAL_WASM_PATH = "/usr/local/lib/yurt/python3-seal.wasm";
+
 /** What the coordinator installs for Python: the set, resolved against the
  * live index at install time. `undefined` when the site boots the full
  * image (which has Python) and so installs nothing. */

@@ -37,8 +37,19 @@ import {
 import {
   fetchPlaygroundBytes,
   loadPlaygroundKernel,
+  playgroundPins,
   restorePlaygroundKernel,
+  SLIM_IMAGE_PATH,
 } from "./boot.ts";
+import {
+  browserArchiveCache,
+  fetchRelease,
+  loadCatalog,
+  type PinnedRelease,
+  releaseOf,
+  resolveSet,
+} from "./packages.ts";
+import { PYTHON_SET, SEAL_PACKAGE, SEAL_WASM_PATH } from "./python_install.ts";
 import { partsFetch, PYTHON_SEAL_NAME } from "./image_parts.ts";
 import type { JupyterHeader, JupyterMessage } from "./jupyter_protocol.ts";
 import type {
@@ -62,7 +73,7 @@ import {
   storeSnapshot,
 } from "./snapshot_store.ts";
 import { stagedPath } from "./notebook_stage.ts";
-import { stageYurtimg, writeRamfsFile } from "./stage.ts";
+import { readYurtimgFile, stageYurtimg, writeRamfsFile } from "./stage.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
 
 installCoordinatorWorkerProxy(() => playgroundGuestPortIsDirect());
@@ -663,6 +674,7 @@ async function sealOnce(): Promise<void> {
       pty: current.pty,
       sealedAt,
       kernelSha256: current.kernelSha256,
+      pythonSet: sealSet?.id,
       attachments: { cells: structuredClone(cells) },
     }, NOTEBOOK_KEY);
     await storeInFlight;
@@ -748,6 +760,65 @@ type Live = {
 let live: Live | undefined;
 let kernelBytes: Uint8Array | undefined;
 let guestBytes: Uint8Array | undefined;
+
+/**
+ * On the slim image, the Python set this kernel runs: the newest complete
+ * one in the live signed index, whose `python-seal` is the guest and whose
+ * `python` holds the standard library. `id` names both releases exactly
+ * (`name@version-build:sha256`); a snapshot records it and resumes only
+ * under the same id. Undefined on the full image, whose pinned seal and
+ * staged standard library are as before.
+ */
+type SealSet = {
+  id: string;
+  label: string;
+  python: PinnedRelease & { url: string };
+  seal: PinnedRelease & { url: string };
+};
+let sealSet: SealSet | undefined;
+
+/** The slim image's Python set for this kernel, or `undefined` on the full
+ * image. Throws, naming the set, when the set has no python-seal: the
+ * panel says so and the kernel does not start. */
+async function resolveSealSet(): Promise<SealSet | undefined> {
+  const pins = await playgroundPins();
+  if (pins.browserImage === undefined) return undefined;
+  status("reading the Python set");
+  const catalog = await loadCatalog();
+  const [python] = resolveSet(catalog, PYTHON_SET);
+  const pythonRelease = releaseOf(catalog, "python", python.build)!;
+  const seal = releaseOf(catalog, SEAL_PACKAGE, python.build);
+  const label = `${python.version}-${python.build}`;
+  if (seal === undefined) {
+    throw new Error(
+      `Suspend/Resume is not available: the Python set ${label} has no ${SEAL_PACKAGE}`,
+    );
+  }
+  const name = (r: PinnedRelease) =>
+    `${r.name}@${r.version}-${r.build}:${r.sha256}`;
+  return {
+    id: `${name(pythonRelease)};${name(seal)}`,
+    label,
+    python: pythonRelease,
+    seal,
+  };
+}
+
+/** How a stored image's set is named to the user. */
+function setLabel(id: string | undefined): string {
+  if (id === undefined) return "the full image's pinned interpreter";
+  const python = /python@([^:;]+)/.exec(id)?.[1];
+  return python === undefined ? id : `Python set ${python}`;
+}
+
+/** Why `stored` cannot resume here, or `undefined` when it can: it was
+ * sealed with another Python set (or before sets) than this page runs. */
+function setMismatch(stored: StoredSnapshot): string | undefined {
+  const now = sealSet?.id;
+  if (stored.pythonSet === now) return undefined;
+  return `it was suspended with ${setLabel(stored.pythonSet)} and this page ` +
+    `now runs ${setLabel(now)}`;
+}
 let cellServer: Uint8Array | undefined;
 let sealing = false;
 let started = false;
@@ -791,8 +862,16 @@ async function spawnCellServer(
 ): Promise<{ process: UserProcess; pty: number; stopPump: () => void }> {
   if (guestBytes === undefined) {
     status("loading Python");
-    // Published in parts like the image (Cloudflare Pages' 25 MiB cap).
-    guestBytes = await fetchDemoFile(GUEST_PATH, partsFetch());
+    guestBytes = sealSet === undefined
+      // Published in parts like the image (Cloudflare Pages' 25 MiB cap).
+      ? await fetchDemoFile(GUEST_PATH, partsFetch())
+      // The set's interpreter, read out of its python-seal archive.
+      : await readYurtimgFile(
+        await fetchRelease(sealSet.seal, {
+          cache: await browserArchiveCache(),
+        }),
+        SEAL_WASM_PATH,
+      );
   }
   status("starting Python");
   const process = await mk.spawnUserProcessWithArgsAsync(guestBytes, [
@@ -836,10 +915,28 @@ async function bootFresh(
   // A suspended kernel is disposed with its guests, so a watch never
   // outlives the kernel it watches.
   watchGuestMemoryRefusals(mk, () => post(memoryRefusedMessage()));
-  status("loading the image");
-  const image = await fetchPlaygroundBytes("./playground.yurtimg");
-  status("staging the Python stdlib");
-  await stageYurtimg(mk, image, new Map(), stagedPath);
+  if (sealSet === undefined) {
+    status("loading the image");
+    const image = await fetchPlaygroundBytes("./playground.yurtimg");
+    status("staging the Python stdlib");
+    await stageYurtimg(mk, image, new Map(), stagedPath);
+  } else {
+    // The slim image's /etc, and the standard library of the set's own
+    // python package: the one this interpreter was built with.
+    status("loading the image");
+    const image = await fetchPlaygroundBytes(SLIM_IMAGE_PATH);
+    await stageYurtimg(
+      mk,
+      image,
+      new Map(),
+      (path) => path.startsWith("/etc/"),
+    );
+    status(`staging the Python ${sealSet.label} stdlib`);
+    const python = await fetchRelease(sealSet.python, {
+      cache: await browserArchiveCache(),
+    });
+    await stageYurtimg(mk, python, new Map(), stagedPath);
+  }
   if (cellServer === undefined) {
     cellServer = await fetchDemoFile(CELL_SERVER_PATH);
   }
@@ -924,6 +1021,7 @@ async function suspend(): Promise<void> {
       pty: current.pty,
       sealedAt,
       kernelSha256: current.kernelSha256,
+      pythonSet: sealSet?.id,
       attachments: { cells: structuredClone(cells) },
     }, NOTEBOOK_KEY);
     forgotten = false;
@@ -956,6 +1054,16 @@ async function resume(): Promise<void> {
   const stored = await loadSnapshot(NOTEBOOK_KEY);
   if (stored === undefined) {
     status("nothing to resume: no stored image");
+    return;
+  }
+  // Only on the set it was suspended with.
+  const mismatch = setMismatch(stored);
+  if (mismatch !== undefined) {
+    post({
+      type: "error",
+      message: `the suspended notebook cannot be resumed: ${mismatch}. ` +
+        "Discard it to continue on this set.",
+    });
     return;
   }
   post({ type: "snapshot", snapshot: { state: "resuming" } });
@@ -1024,12 +1132,20 @@ async function start(isolated: boolean): Promise<void> {
   status("loading kernel");
   kernelBytes = await fetchPlaygroundBytes("./yurt_kernel.wasm");
   const kernelSha256 = await sha256Hex(kernelBytes);
+  sealSet = await resolveSealSet();
   let stored = await loadSnapshot(NOTEBOOK_KEY);
   if (stored !== undefined && stored.kernelSha256 !== kernelSha256) {
     await clearSnapshot(NOTEBOOK_KEY);
     status(
       "stored image was sealed under a different kernel build; booting fresh",
     );
+    stored = undefined;
+  }
+  // A suspend resumes only on its own Python set: one sealed with another
+  // (an older set, or the pinned seal before sets) is invalid here.
+  const mismatch = stored === undefined ? undefined : setMismatch(stored);
+  if (mismatch !== undefined) {
+    await clearSnapshot(NOTEBOOK_KEY);
     stored = undefined;
   }
   if (stored !== undefined) {
@@ -1080,6 +1196,11 @@ async function start(isolated: boolean): Promise<void> {
   live = await bootFresh(kernelBytes, kernelSha256);
   post({ type: "snapshot", snapshot: { state: "running" } });
   post({ type: "notebook-ready" });
+  // Said last, so the panel's line keeps it once the boot's own progress
+  // is done.
+  if (mismatch !== undefined) {
+    status(`the suspended notebook was discarded: ${mismatch}`);
+  }
 }
 
 self.onmessage = async (event: MessageEvent<NotebookKernelToWorker>) => {

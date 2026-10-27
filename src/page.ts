@@ -270,8 +270,8 @@ function boot(
   let pythonMissing = false;
   let installingPython = false;
   const pinsPromise = fetchSitePins();
-  // The cell's Install: enabled when the pins name Python's packages; after
-  // a failed install it says why and tries again.
+  // The cell's Install: enabled when the pins name a slim image; after a
+  // failed install it says why and tries again.
   const showPythonMissing = (error: string | undefined) =>
     void pinsPromise.then((pins) =>
       notebook.pythonMissing(

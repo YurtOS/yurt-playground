@@ -867,3 +867,59 @@ export async function installPackage(
   }
   return `${result.stdout}${result.stderr}`.trim();
 }
+
+/** One release's archive, checked against the signed index's sha256 and
+ * size: from `cache` when it holds it, else downloaded (and cached). For a
+ * page that reads files out of an archive itself (the Suspend/Resume
+ * kernel's interpreter and standard library) rather than installing it. */
+export async function fetchRelease(
+  release: PinnedRelease & { url: string },
+  options: {
+    fetcher?: Fetcher;
+    base?: string;
+    cache?: ArchiveCache;
+    progress?: (received: number) => void;
+  } = {},
+): Promise<Uint8Array> {
+  const fetcher = options.fetcher ?? fetchWithProgress;
+  const base = options.base ?? PACKAGE_REPO_URL;
+  const key = `sha256:${release.sha256.toLowerCase()}`;
+  const matches = async (bytes: Uint8Array) =>
+    bytes.byteLength === release.size &&
+    await sha256Hex(bytes) === release.sha256.toLowerCase();
+  const cached = await options.cache?.get(key);
+  if (cached !== undefined && await matches(cached)) return cached;
+  if (cached !== undefined) await options.cache?.delete(key);
+  const bytes = await fetcher(
+    `${base}${checkRelative(release.url, release.name)}`,
+    release.size,
+    options.progress,
+  );
+  if (!await matches(bytes)) {
+    throw new Error(`${release.name}: the download does not match its sha256`);
+  }
+  await options.cache?.put(key, bytes);
+  return bytes;
+}
+
+/** A set member's release with its archive's repository URL. */
+export function releaseOf(
+  catalog: Catalog,
+  name: string,
+  build: string,
+): (PinnedRelease & { url: string }) | undefined {
+  const versions =
+    catalog.metadata.get(name)?.file.versions.filter((v) =>
+      !v.yanked && v.build === build
+    ) ?? [];
+  if (versions.length === 0) return undefined;
+  const best = versions.reduce((a, b) => compareReleases(a, b) >= 0 ? a : b);
+  return {
+    name,
+    version: best.version,
+    build: best.build,
+    sha256: best.sha256.toLowerCase(),
+    size: best.size,
+    url: best.url,
+  };
+}

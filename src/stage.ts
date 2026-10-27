@@ -309,3 +309,22 @@ function stageRamfsFile(
   }
   host.set(path, bytes);
 }
+
+/** One file of a zstd-compressed tar (a `.yurtimg`, or a `.yurtpkg`
+ * archive): its bytes, or an error naming what is missing. */
+export async function readYurtimgFile(
+  yurtimg: Uint8Array,
+  path: string,
+): Promise<Uint8Array> {
+  const tarBytes = decompressYurtimg(yurtimg);
+  const index = await buildTarImageIndex(tarBytes);
+  if (index.entries[path]?.type !== "file") {
+    throw new Error(`the archive has no file ${path}`);
+  }
+  const provider = new TarImageRootProvider({
+    id: `sha256:${index.imageSha256}`,
+    index,
+    image: tarBytes,
+  });
+  return provider.readFile(path);
+}

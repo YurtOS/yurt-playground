@@ -28,6 +28,12 @@ export type StoredSnapshot = {
    *  kernel pin bump the image is dropped rather than installed over a
    *  different build. */
   kernelSha256: string;
+  /** The Python set the image was sealed with, on the slim image (its
+   * python and python-seal releases: `name@version-build:sha256`, joined).
+   * A snapshot resumes only on that very set: a page that now installs
+   * another one refuses it. Absent: sealed with the full image's pinned
+   * seal. */
+  pythonSet?: string;
   /** Host-side state the image cannot carry, for the owner of the record
    *  to restore alongside it (the notebook kernel's cell in progress). */
   attachments?: Record<string, unknown>;

@@ -5,10 +5,10 @@ export const PYTHON_MISSING_TEXT = "Python isn't installed in this sandbox yet";
 
 /**
  * The Install button's state when nothing says otherwise: disabled, with
- * `reason` next to it. The page enables it when its pins name the Python
- * packages (src/python_install.ts `pythonInstallState`); the coordinator
- * installs them on its own at boot, so the button is the retry after a
- * failed install.
+ * `reason` next to it. The page enables it when its pins name a slim image
+ * (src/python_install.ts `pythonInstallState`); the coordinator installs
+ * the newest complete Python set on its own at boot, so the button is the
+ * retry after a failed install.
  */
 export const PYTHON_INSTALL: { available: boolean; reason: string } = {
   available: false,
