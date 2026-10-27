@@ -212,6 +212,48 @@
           </li>
         </ul>
       </article>
+      <article class="pane" id="packages">
+        <h1>Packages</h1>
+        <p class="date">Updated 2026-10-27 · released independently of trains</p>
+        <p>
+          Packages come from the signed
+          <a href="https://github.com/YurtOS/yurt-packages">YurtOS/yurt-packages</a>
+          repository and are published on their own schedule, not with a train.
+          In a sandbox with a network, <code>sudo pkg update</code> then
+          <code>sudo pkg install NAME</code> installs the newest version, and
+          <code>sudo pkg upgrade</code> moves to newer ones. In the browser the
+          Packages panel does the same. <code>pkg</code> verifies every
+          signature before it installs anything.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr><th>Package</th><th>Version</th><th>Download</th><th>Notes</th></tr>
+            <tr><td>python</td><td>3.14.7</td><td>15.5 MB</td><td>stdlib with ssl, sqlite3, threads</td></tr>
+            <tr><td>numpy</td><td>2.5.0</td><td>4.5 MB</td><td>needs python</td></tr>
+            <tr><td>pyzmq</td><td>26.4.0</td><td>0.09 MB</td><td>needs python</td></tr>
+            <tr><td>jupyter-kernel</td><td>0.0.1</td><td>9.5 MB</td><td>ipykernel for the Notebook and JupyterLab</td></tr>
+            <tr><td>python-seal</td><td>3.14.7</td><td>11.5 MB</td><td>the Python that notebook Suspend/Resume runs</td></tr>
+            <tr><td>node</td><td>22.23.3 (yurt.4)</td><td>13.5 MB</td><td>built with Guest SDK 0.0.31</td></tr>
+            <tr><td>gemini-cli</td><td>0.64.0</td><td>17.0 MB</td><td>needs node</td></tr>
+            <tr><td>perl</td><td>5.44.0</td><td>22.3 MB</td><td>with Encode</td></tr>
+            <tr><td>gettext</td><td>1.0.0</td><td>7.3 MB</td><td><code>msgfmt</code> and friends</td></tr>
+            <tr><td>rtk</td><td>0.50.0</td><td>3.7 MB</td><td></td></tr>
+            <tr><td>pkgconf</td><td>3.0.7</td><td>0.12 MB</td><td></td></tr>
+            <tr><td>make</td><td>4.4.1</td><td>0.2 MB</td><td>also in the base image</td></tr>
+            <tr><td>zstd</td><td>1.5.7</td><td>0.55 MB</td><td>also in the base image</td></tr>
+            <tr><td>ncurses</td><td>6.5.0</td><td>0.28 MB</td><td>library and headers</td></tr>
+            <tr><td>zsh</td><td>5.9.0</td><td>0.80 MB</td><td>also in the base image; needs ncurses</td></tr>
+            <tr><td>go</td><td>1.28.0-devel</td><td>59.4 MB</td><td><code>go build</code> runs inside the sandbox; one thread</td></tr>
+            <tr><td>gh</td><td>2.102.0</td><td>15.8 MB</td><td>needs git and ca-certificates (in the base image)</td></tr>
+            <tr><td>zlib</td><td>1.3.1</td><td>0.07 MB</td><td>library and headers</td></tr>
+          </table>
+        </div>
+        <p>
+          python, numpy, pyzmq, jupyter-kernel and python-seal are one set,
+          built together: numpy and pyzmq are compiled into the interpreter.
+          Install them together, at the same build.
+        </p>
+      </article>
       <article class="pane" id="playground-2026.10.26-3d32068">
         <h1>playground-2026.10.26-3d32068</h1>
         <p class="date">
