@@ -6,6 +6,7 @@
  * Bundled to `public/snapshot-bridge.js` and imported by the `jupyterlite/`
  * extension at runtime for the `yurt-snapshot` kernelspec.
  */
+import { refuseOnPhone } from "./bridge_status.ts";
 import { mountMemoryRefusedBanner } from "./memory_refused.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
@@ -58,6 +59,7 @@ export function startSnapshotKernel(
   workerUrl = "/notebook_kernel.bundle.js",
 ): SnapshotKernelBridge {
   if (bridge !== undefined) return bridge;
+  refuseOnPhone(document);
   const worker = new Worker(workerUrl);
   attachGuestWorkerFactory(worker);
   const messageListeners = new Set<

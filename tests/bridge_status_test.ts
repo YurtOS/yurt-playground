@@ -1,7 +1,9 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   BRIDGE_STATUS_ID,
   describeBridgeState,
+  PHONE_REFUSAL,
+  refuseOnPhone,
   showBridgeState,
 } from "../src/bridge_status.ts";
 import { PYTHON_INSTALL, PYTHON_MISSING_TEXT } from "../src/notebook.ts";
@@ -127,4 +129,21 @@ Deno.test("a failed Python install says why and how to try again", () => {
     text,
     "Yurt sandbox: installing Python failed: pkg install python failed: offline. Restart the kernel to try again.",
   );
+});
+
+Deno.test("the Notebook pages boot nothing on a phone, and say why", () => {
+  // A desktop or tablet goes on to boot: no line, no throw.
+  for (const device of ["desktop", "tablet"] as const) {
+    const { doc, body } = fakeDocument();
+    refuseOnPhone(doc, device);
+    assertEquals(body.length, 0, device);
+  }
+  const { doc, body } = fakeDocument();
+  assertThrows(() => refuseOnPhone(doc, "phone"), Error, PHONE_REFUSAL);
+  const [line] = body;
+  assertEquals(line.dataset.state, "error");
+  assertEquals(line.attributes.get("role"), "alert");
+  assertEquals(line.textContent, `Yurt sandbox: ${PHONE_REFUSAL}`);
+  assert(/desktop browser/.test(line.textContent));
+  assert(/start-anyway/.test(line.textContent));
 });

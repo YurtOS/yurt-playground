@@ -151,7 +151,7 @@ Deno.test("a later error does not turn the python-missing cell into 'Jupyter did
     ),
   );
   assert(
-    /if \(!notebookReady && !shellOnly && !pythonMissing\) \{\s*notebook\.unavailable\("Jupyter did not start"\);/
+    /if \(!notebookReady && !noPython && !pythonMissing\) \{\s*notebook\.unavailable\("Jupyter did not start"\);/
       .test(page),
   );
   // The boot's settled states release an action's error from #status.

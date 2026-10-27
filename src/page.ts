@@ -21,6 +21,7 @@ import {
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
+import { deviceClass } from "./device.ts";
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
 import {
   type DesktopInfo,
@@ -145,47 +146,6 @@ function watchNetwork(net: HTMLElement): void {
 }
 
 /**
- * Phones get no Start: phone browsers give one tab too little memory for
- * the boot (iPhone Safari reloaded the tab at "starting Jupyter", #68), and
- * `?start-anyway` lets one try regardless. Tablets get the note and may
- * try. iPadOS Safari reports a Mac, at any width (a 13" iPad in landscape
- * is wider than many laptops). An iPad reports 5 touch points, a Mac 0
- * (1 under DevTools touch emulation), so more than one identifies it (#195).
- * iPhone Safari's "Request Desktop Website" sends the same Mac UA and touch
- * points, and lays out at 980 px; its screen still says phone. iOS reports
- * the portrait screen in either orientation: at most 440 px on an iPhone,
- * at least 744 on an iPad (#214).
- * Android Chrome's "Desktop site" sends a Linux desktop UA with
- * `userAgentData.mobile` false and lays out at 980 px, but its screen and
- * coarse pointer stay the phone's. Chrome's own phone/tablet line is a
- * smallest screen side of 600 dp (#216). An Android tablet in "Desktop
- * site", which Chrome turns on by default on large tablets, sends the same
- * override with a tablet's screen. Its `navigator.platform` is Chrome's
- * reduced Android value, "Linux armv81", whatever the UA override; Chrome
- * on a Linux PC or a Chromebook reports "Linux x86_64" (#217).
- */
-function deviceClass(): "phone" | "tablet" | "desktop" {
-  const uaData = (navigator as { userAgentData?: { mobile?: boolean } })
-    .userAgentData;
-  const ua = navigator.userAgent;
-  if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) {
-    return Math.min(screen.width, screen.height) < 600 ? "phone" : "tablet";
-  }
-  if (/iPad/.test(ua)) return "tablet";
-  if (uaData?.mobile === true || /iPhone|iPod|Android.*Mobile/i.test(ua)) {
-    return "phone";
-  }
-  const coarse = matchMedia("(pointer: coarse)").matches;
-  if (coarse && Math.min(screen.width, screen.height) < 600) return "phone";
-  if (
-    /Android|Silk/i.test(ua) ||
-    navigator.platform === "Linux armv81" ||
-    (coarse && innerWidth < 900)
-  ) return "tablet";
-  return "desktop";
-}
-
-/**
  * A browser that runs out of memory mid-boot reloads the tab, and the page
  * that could have said so is gone. The status is kept in sessionStorage
  * from Start until the notebook is ready (or the boot fails in-page), so
@@ -241,7 +201,9 @@ function boot(
   interruptCell: { current: (id: string) => void },
   desktop: DesktopInfo | undefined,
   stopWatchingForAnotherSandbox: () => void,
-  shellOnly: boolean,
+  /** The shell alone: no Python install and no Jupyter (a tablet, or a
+   * phone started anyway). */
+  noPython: boolean,
   status: StatusLine,
   smallDevice: boolean,
 ): void {
@@ -297,7 +259,7 @@ function boot(
       status.failure(`failed: ${message}`);
       // The shell is up and stays; a Jupyter that did not start leaves
       // the cell with nothing to wait for.
-      if (!notebookReady && !shellOnly && !pythonMissing) {
+      if (!notebookReady && !noPython && !pythonMissing) {
         notebook.unavailable("Jupyter did not start");
       }
       return;
@@ -397,7 +359,8 @@ function boot(
       status.progress("running", { settled: true });
       rememberBooting(undefined);
     }
-    // A tablet's whole session is the shell; once it runs the boot is over.
+    // A tablet's or phone's whole session is the shell; once it runs the
+    // boot is over.
     if (msg.type === "shell-ready") {
       status.progress("running", { settled: true });
       rememberBooting(undefined);
@@ -438,8 +401,8 @@ function boot(
   status.progress("booting");
   rememberBooting("booting");
   // On the slim image the coordinator installs the newest complete Python
-  // set before Jupyter; a tablet's session is the shell alone, and the desktop
-  // app's sandbox needs no page to install anything.
+  // set before Jupyter; a tablet's session, and a phone's, is the shell
+  // alone, and the desktop app's sandbox needs no page to install anything.
   void pinsPromise.then((pins) =>
     worker.postMessage({
       type: "start",
@@ -448,8 +411,8 @@ function boot(
       isolated: globalThis.crossOriginIsolated === true,
       kernelPorts,
       apiToken: desktop?.apiToken,
-      noJupyter: shellOnly,
-      python: shellOnly || desktop !== undefined || pins === undefined
+      noJupyter: noPython,
+      python: noPython || desktop !== undefined || pins === undefined
         ? undefined
         : pythonInstallRequest(pins),
       tablet: smallDevice,
@@ -692,6 +655,10 @@ async function runPage(): Promise<void> {
     !new URL(location.href).searchParams.has("start-anyway") &&
     (device === "phone" || cutOff !== undefined);
   const phone = device === "phone";
+  // A phone that starts anyway boots the shell (and the agent) without
+  // Python or Jupyter: the automatic Python install ran an iPhone tab out
+  // of memory for new processes. The phone note and the cell say so.
+  const noPython = shellOnly || (desktop === undefined && phone);
   if (shellOnly) {
     for (const id of ["notebook", "agent"]) byId(id).hidden = true;
     for (const testid of ["choose-notebook", "choose-lab"]) {
@@ -735,7 +702,7 @@ async function runPage(): Promise<void> {
       interruptCell,
       desktop,
       stopWatchingForAnotherSandbox,
-      shellOnly,
+      noPython,
       status,
       device !== "desktop",
     );
@@ -750,6 +717,10 @@ async function runPage(): Promise<void> {
         phone ? "not on phones" : `a previous boot was cut off at ${cutOff}`,
       );
       return;
+    }
+    if (phone) {
+      byId("phone-note").hidden = false;
+      notebook.unavailable("not on phones");
     }
   }
   // The boot memory has been read (and cleared) by now; a test that plants

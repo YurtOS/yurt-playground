@@ -14,7 +14,11 @@ import {
   mountMemoryRefusedBanner,
 } from "./memory_refused.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
-import { type BridgeState, showBridgeState } from "./bridge_status.ts";
+import {
+  type BridgeState,
+  refuseOnPhone,
+  showBridgeState,
+} from "./bridge_status.ts";
 import { PYTHON_MISSING_TEXT } from "./notebook.ts";
 import { fetchSitePins, pythonInstallRequest } from "./python_install.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
@@ -60,6 +64,7 @@ export function startPlaygroundKernel(
   coordinatorUrl = "/coordinator.bundle.js",
 ): PlaygroundKernelBridge {
   if (bridge !== undefined) return bridge;
+  refuseOnPhone(document);
   const worker = new Worker(coordinatorUrl);
   attachGuestWorkerFactory(worker);
   const messageListeners = new Set<
