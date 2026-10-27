@@ -618,7 +618,20 @@ Deno.test("a pinned set is one exact `pkg install` and must plan exactly the pin
       "is not the 0.1.0-yurt_0 this page was tested with",
     );
   }
-  // pkg chose a release (a dependency) the page does not pin.
+  // pkg chose a release (a dependency) the index lists but the page does
+  // not pin.
+  const enc = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value));
+  const libx = enc({ name: "libx", versions: [version("1.0.0", "yurt_0")] });
+  const withLibx = async (url: string) => {
+    const path = url.slice(PACKAGE_REPO_URL.length);
+    if (path === "packages/libx.json") return libx;
+    const bytes = await fetcher(url);
+    if (path !== "index.json") return bytes;
+    const index = JSON.parse(new TextDecoder().decode(bytes));
+    index.packages.libx = { sha256: "", size: 1, url: "packages/libx.json" };
+    return enc(index);
+  };
   const { host: extra } = fakeHost({
     ...PLAN,
     stdout: "install greet 0.1.0-yurt_0\ninstall libx 1.0.0-yurt_0\n",
@@ -628,10 +641,11 @@ Deno.test("a pinned set is one exact `pkg install` and must plan exactly the pin
       installPackage({ label: "Greet", releases: [pin] }, {
         host: extra,
         tablet: false,
-        fetcher,
+        fetcher: withLibx,
         progress: () => {},
       }),
     Error,
+    "pkg chose libx 1.0.0-yurt_0, which this page does not pin",
   );
 });
 
@@ -705,4 +719,30 @@ Deno.test("what pkg refused is not kept for the next try", async () => {
     "signature",
   );
   assertEquals(store.size, 0);
+});
+
+Deno.test("a signature downloaded on a failed try is not kept for the next", async () => {
+  const archive = new Uint8Array([2]);
+  const fetcher = await fakeRepo(archive);
+  const { cache, store } = memoryCache();
+  const { host } = fakeHost(PLAN, {
+    code: 1,
+    stdout: "",
+    stderr: "Error: archive signature verification failed for greet\n",
+  });
+  await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        cache,
+        progress: () => {},
+      }),
+    Error,
+    "signature",
+  );
+  assertEquals(store.has(`${GREET_URL}.bundle`), false);
+  // The archive matched its sha256, so it may stay.
+  assertEquals(store.get(GREET_URL), archive);
 });

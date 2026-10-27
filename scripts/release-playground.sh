@@ -766,8 +766,9 @@ fi
 # image run; an older image release has none, and the browser then boots
 # the full image as before.
 slim_json='null'
-if gh release view "$image_release" --repo "$image_repo" --json assets --jq '.assets[].name' |
-  grep -qx 'playground-slim.yurtimg'; then
+image_assets=$(gh release view "$image_release" --repo "$image_repo" --json assets --jq '.assets[].name') ||
+  die "cannot list the assets of $image_repo $image_release"
+if grep -qx 'playground-slim.yurtimg' <<< "$image_assets"; then
   slim_json=$(jq -n --arg ports "$ports_sha" --arg release "$image_release" --arg repo "$image_repo" \
     --arg sha "$(sidecar_sha "$image_repo" "$image_release" playground-slim.yurtimg)" \
     '{repo: "YurtOS/yurt-ports", rev: $ports, releaseRepo: $repo, release: $release,
@@ -781,19 +782,21 @@ fi
 python_packages="python numpy pyzmq jupyter-kernel"
 packages_json='{}'
 if [ "$slim_json" != null ]; then
+  cpython_version=$(gh api "repos/YurtOS/yurt-ports/contents/ports/cpython/yurt-pack.toml?ref=$ports_sha" --jq .content |
+    base64 --decode | sed -n 's/^version *= *"\(.*\)"/\1/p' | head -1)
+  [ -n "$cpython_version" ] || die "cannot read the CPython version at yurt-ports $ports_sha"
   for name in $python_packages node gemini-cli; do
     meta=$(curl -fsSL --retry 3 "https://raw.githubusercontent.com/YurtOS/yurt-packages/main/packages/$name.json") ||
       { case " $python_packages " in *" $name "*) die "yurt-packages has no $name package for the slim image" ;; esac; continue; }
-    release=$(jq -c '[.versions[] | select((.yanked | not) and (.build | test("^yurt_[0-9]+$")))]
+    # python: the newest build of this ports commit's CPython version.
+    want=""; [ "$name" = python ] && want=$cpython_version
+    release=$(jq -c --arg want "$want" '[.versions[] | select((.yanked | not) and (.build | test("^yurt_[0-9]+$"))
+        and ($want == "" or .version == $want))]
       | sort_by((.version | split("-")[0] | split(".") | map(tonumber? // 0)), (.build | ltrimstr("yurt_") | tonumber))
       | last // empty | {version, build, sha256, size}' <<< "$meta")
-    [ -n "$release" ] || die "yurt-packages lists no yurt_N build of $name"
+    [ -n "$release" ] || die "yurt-packages lists no yurt_N build of $name${want:+ $want}: publish this ports commit's $name first"
     packages_json=$(jq --arg n "$name" --argjson r "$release" '. + {($n): $r}' <<< "$packages_json")
   done
-  cpython_version=$(gh api "repos/YurtOS/yurt-ports/contents/ports/cpython/yurt-pack.toml?ref=$ports_sha" --jq .content |
-    base64 --decode | sed -n 's/^version *= *"\(.*\)"/\1/p' | head -1)
-  [ "$(jq -r .python.version <<< "$packages_json")" = "$cpython_version" ] ||
-    die "yurt-packages' python is $(jq -r .python.version <<< "$packages_json"), the image's CPython (and the seal's) $cpython_version: publish this ports commit's python first"
 fi
 host_json='{}'
 cli_json='{}'

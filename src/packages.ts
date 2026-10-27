@@ -713,17 +713,18 @@ export async function installPackage(
   // The signatures first: they are small, and with the index and metadata
   // they count against the limits too.
   const archives = new Map<string, Uint8Array>();
-  /** What came from the cache, dropped again if the install fails. */
+  /** What came from or went into the cache unchecked by pkg: dropped
+   * again if the install fails, so the next try downloads it. */
   const fromCache: string[] = [];
   for (const release of releases) {
     const url = `${base}${release.url}.bundle`;
     let bundle = await cache?.get(url);
-    if (bundle !== undefined) {
-      fromCache.push(url);
-    } else {
+    if (bundle === undefined) {
       bundle = await fetcher(url, METADATA_MAX_BYTES);
       await cache?.put(url, bundle);
     }
+    // A signature is only known good once pkg has verified it.
+    fromCache.push(url);
     archives.set(`${release.url}.bundle`, bundle);
   }
   const staged = [...archives.values()].reduce((s, b) => s + b.byteLength, 0) +

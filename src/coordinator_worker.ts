@@ -48,6 +48,7 @@ import {
   STAGING_DIR,
 } from "./packages.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
+import { runQueue } from "./run_queue.ts";
 import {
   type MemoryRefusedMessage,
   memoryRefusedMessage,
@@ -192,10 +193,24 @@ async function servePackages(msg: ToWorker): Promise<void> {
 
 type BootedSession = Awaited<ReturnType<typeof bootPlayground>>;
 
+/** The one `pkg` run at a time: every run stages at the same directory
+ * and removes it at the end, and pkg takes one lock, so the Packages
+ * panel's runs and the automatic Python install's wait their turn. */
+const pkgRuns = runQueue();
+
 /** Write the staged repository copy (as root) and run `script` on it as the
- * login user: one `pkg` run of an install (src/packages.ts). Throws when
- * staging or the spawn fails, not when pkg does. */
-async function runStaged(
+ * login user: one `pkg` run of an install (src/packages.ts), after any run
+ * already queued. Throws when staging or the spawn fails, not when pkg
+ * does. */
+function runStaged(
+  session: BootedSession,
+  files: StagedFile[],
+  script: string,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return pkgRuns(() => runStagedNow(session, files, script));
+}
+
+async function runStagedNow(
   session: BootedSession,
   files: StagedFile[],
   script: string,

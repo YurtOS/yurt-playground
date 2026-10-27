@@ -71,5 +71,8 @@ fetch image playground-image.yurtimg artifacts/playground.yurtimg
 # the train pins one.
 if [[ "$(jq -r '.browserImage.release // empty' "$pins")" != "" ]]; then
   fetch browserImage playground-slim.yurtimg artifacts/playground-slim.yurtimg
+else
+  # One from earlier pins would be shipped and listed by the static build.
+  rm -f "$root/artifacts/playground-slim.yurtimg"
 fi
 fetch pythonSeal python3-seal.wasm public/demo/python3-seal.wasm

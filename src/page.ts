@@ -274,6 +274,9 @@ function boot(
       notebook.pythonMissing(
         pythonInstallState(pins),
         () => {
+          // A retry: what comes next (a kernel that fails, say) is this
+          // attempt's, not the missing Python's.
+          pythonMissing = false;
           notebook.installing("installing Python");
           worker.postMessage({ type: "python-install" });
         },
