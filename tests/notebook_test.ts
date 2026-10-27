@@ -134,7 +134,12 @@ Deno.test("the page ends the boot on python-missing: no 'tab reloaded' memory, t
   // Left set, the next load reads a cut-off boot ("the browser reloaded
   // this tab ... memory") for a boot that finished.
   assert(/rememberBooting\(undefined\)/.test(handler[1]), handler[1]);
-  assert(/notebook\.pythonMissing\(PYTHON_INSTALL\)/.test(handler[1]));
+  // The cell says Python is missing (with the install's error, if one was
+  // tried) and offers Install as the pins allow.
+  assert(/showPythonMissing\(msg\.error\)/.test(handler[1]));
+  assert(
+    /notebook\.pythonMissing\(\s*pythonInstallState\(pins\)/.test(page),
+  );
   assert(/status\.progress\("running", \{ settled: true \}\)/.test(handler[1]));
 });
 

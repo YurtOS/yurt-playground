@@ -5,6 +5,7 @@
  */
 import {
   bootPlayground,
+  browserImagePath,
   fetchPlaygroundBytes,
   type PlaygroundTerm,
 } from "./boot.ts";
@@ -16,13 +17,16 @@ import {
   startGuestKernel,
 } from "./jupyter.ts";
 import { requestCellInterrupt } from "./cell_interrupt.ts";
-import { type StartReport, startSandbox } from "./coordinator_start.ts";
+import {
+  installThenLaunch,
+  type StartReport,
+  startSandbox,
+} from "./coordinator_start.ts";
 import { bootNativePlayground } from "./native.ts";
 import {
   type ExecOptions,
   type ExecutionRecord,
   ExecutionRegistry,
-  quoted,
   type RawResult,
   type Result,
 } from "./executions.ts";
@@ -33,8 +37,10 @@ import type {
 } from "./jupyter_transport.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
-import { onlyStaged, STAGING_DIR } from "./packages.ts";
+import { browserArchiveCache, installPackage } from "./packages.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
+import { runQueue } from "./run_queue.ts";
+import { type BootedSession, workerPackageHost } from "./session_packages.ts";
 import {
   type MemoryRefusedMessage,
   memoryRefusedMessage,
@@ -56,7 +62,18 @@ type ToWorker =
     // browser refuses first (iPadOS stopped spawning after ~13 processes
     // while Jupyter started), so it is never launched there.
     noJupyter?: boolean;
+    // The slim image: the Python set to install when the image has no
+    // python3, before ipykernel -- the newest complete one in the live
+    // signed index (src/python_install.ts). Absent, such an image is
+    // reported as `python-missing`, as before.
+    python?: { label: string; set: string[] };
+    // A tablet or phone: installs over 16 MiB are refused there.
+    tablet?: boolean;
   }
+  // Install Python again after a failed install (the cell's Install), then
+  // start the kernel. Answered like a boot: status, then notebook-ready or
+  // python-missing.
+  | { type: "python-install" }
   | { type: "in"; text: string }
   | { type: "resize"; rows: number; cols: number }
   | { type: "cell"; id: string; code: string }
@@ -80,14 +97,10 @@ type ToWorker =
   | { type: "yurt-wait"; req: number; id: string; raw: boolean }
   | { type: "yurt-kill"; req: number; id: string; signal?: string }
   | { type: "yurt-list"; req: number }
-  // A package install (src/packages.ts): the staged repository copy, then
-  // the script that runs `sudo pkg` on it, as the login user.
-  | {
-    type: "pkg-run";
-    req: number;
-    files: { path: string; bytes: Uint8Array }[];
-    script: string;
-  };
+  // The Packages panel's install of one package (src/packages.ts), run
+  // here like the automatic Python install and queued with it: one
+  // install at a time. Progress comes back as `pkg-progress`.
+  | { type: "pkg-install"; req: number; name: string; tablet: boolean };
 
 type FromWorker =
   // status, error, shell-ready (the shell is the whole session), and
@@ -122,11 +135,12 @@ type FromWorker =
     value?: string | Result | RawResult | ExecutionRecord[] | null;
     error?: string;
   }
+  | { type: "pkg-progress"; req: number; text: string }
   | {
     type: "pkg-reply";
     req: number;
     ok: boolean;
-    value?: { code: number | null; stdout: string; stderr: string };
+    value?: string;
     error?: string;
   };
 
@@ -137,63 +151,44 @@ let executions: ExecutionRegistry | undefined;
  * (its sandbox has a network, and `pkg install` there needs no page). */
 let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 
-/** The guest's `pkg` output is a few lines; a megabyte is plenty. */
-const PKG_OUTPUT_BYTES = 1024 * 1024;
-
 async function servePackages(msg: ToWorker): Promise<void> {
-  if (msg.type !== "pkg-run") return;
-  const reply = (
-    ok: boolean,
-    value?: { code: number | null; stdout: string; stderr: string },
-    error?: string,
-  ) => post({ type: "pkg-reply", req: msg.req, ok, value, error });
+  if (msg.type !== "pkg-install") return;
+  const { req } = msg;
   const session = packageSession;
   if (session?.process === undefined || session.writeFiles === undefined) {
-    reply(false, undefined, "this sandbox does not install packages");
-    return;
-  }
-  // Only the staging copy: the files are written as root.
-  if (!onlyStaged(msg.files)) {
-    reply(false, undefined, "package files outside the staging directory");
-    return;
-  }
-  const spawn = session.process;
-  // As the login user, like everything else the page runs: the script
-  // gets root for `pkg` the way the user does, through `sudo`.
-  const run = (script: string) =>
-    spawn(`exec /bin/sh -c ${quoted(script)}`, {
-      maxOutputBytes: PKG_OUTPUT_BYTES,
+    post({
+      type: "pkg-reply",
+      req,
+      ok: false,
+      error: "this sandbox does not install packages",
     });
-  let result:
-    | { code: number | null; stdout: string; stderr: string }
-    | undefined;
-  let failed: string | undefined;
-  try {
-    session.writeFiles(msg.files);
-    // In the guest now: let the tab's copies go while `pkg` runs (up to
-    // hundreds of MB).
-    msg.files = [];
-    const process = await run(msg.script);
-    const status = await process.exited;
-    const decoder = new TextDecoder();
-    result = {
-      code: typeof status === "number" ? status : status.code,
-      stdout: decoder.decode(process.takeStdout()),
-      stderr: decoder.decode(process.takeStderr()),
-    };
-  } catch (error) {
-    // Staging or the spawn failed, not pkg: said as that.
-    failed = error instanceof Error ? error.message : String(error);
+    return;
   }
-  // The script's trap removes the staged copy, unless the shell died by a
-  // signal (the tab out of memory, say) or never ran; it may be hundreds of
-  // MB of the tab's memory, so it goes here too, whatever happened. Before
-  // the reply: the next run stages at the same path. Best effort.
-  await run(`sudo rm -rf ${quoted(STAGING_DIR)}`).then((p) => p.exited)
-    .catch(() => {});
-  if (result === undefined) reply(false, undefined, failed);
-  else reply(true, result);
+  try {
+    const output = await installs(() =>
+      installPackage(msg.name, {
+        host: workerPackageHost(session),
+        tablet: msg.tablet,
+        progress: (text) => post({ type: "pkg-progress", req, text }),
+      })
+    );
+    post({ type: "pkg-reply", req, ok: true, value: output });
+  } catch (error) {
+    post({
+      type: "pkg-reply",
+      req,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
+
+/** One install at a time, whole: an install is a plan run, the downloads
+ * and an install run, every run stages at the same directory, and pkg
+ * takes one lock. The Packages panel's installs and the automatic Python
+ * install wait their turn here, so neither lands between the other's two
+ * runs. */
+const installs = runQueue();
 
 async function serveYurt(msg: ToWorker): Promise<void> {
   if (
@@ -242,6 +237,34 @@ let kernelPorts: KernelPorts | undefined;
 let pythonMissing = false;
 /** Restarts are serialised: a second request waits for the first. */
 let restarting: Promise<void> = Promise.resolve();
+/** How the start installs Python on the slim image, kept for a retry. */
+let installPython:
+  | ((session: BootedSession) => Promise<void>)
+  | undefined;
+
+/** Install Python again, then start the kernel (`python-install`, or a
+ * frontend restart while Python is missing). */
+async function retryPython(): Promise<void> {
+  const session = packageSession;
+  if (session === undefined || installPython === undefined) {
+    post({ type: "python-missing" });
+    return;
+  }
+  const started = await installThenLaunch(session, {
+    installPython,
+    launching: (s) => launchSession = s,
+    startKernel: (s) => startGuestKernel(s, kernelPorts),
+    post: (report) => {
+      pythonMissing = report.type === "python-missing";
+      post(report);
+    },
+  });
+  if (started !== undefined) {
+    pythonMissing = false;
+    jupyter = started;
+    subscribeJupyter(jupyter);
+  }
+}
 
 function subscribeJupyter(transport: JupyterTransport): void {
   transport.subscribe((message, channel) => {
@@ -308,8 +331,17 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     }
     return;
   }
+  if (msg.type === "python-install") {
+    restarting = restarting.then(retryPython);
+    await restarting;
+    return;
+  }
   if (msg.type === "jupyter-restart") {
     restarting = restarting.then(async () => {
+      if (pythonMissing && installPython !== undefined) {
+        await retryPython();
+        return;
+      }
       if (launchSession === undefined) {
         post(
           pythonMissing
@@ -374,6 +406,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   kernelPorts = msg.kernelPorts;
   const env = {
     isolated: msg.isolated,
+    // The slim image when the train pins one; the desktop app's native
+    // sandbox reads no image here.
+    imagePath: kernelPorts === undefined
+      ? await browserImagePath().catch(() => undefined)
+      : undefined,
     fetchBytes: (path: string) =>
       fetchPlaygroundBytes(path, (progress) => {
         const percent = progress.total === undefined
@@ -385,6 +422,26 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     term: workerTerm({ cols: msg.cols, rows: msg.rows }),
     memoryRefused: () => post(memoryRefusedMessage()),
   };
+  // The slim image's Python: the coordinator installs the set itself, so
+  // every page that boots a sandbox gets the same install.
+  const python = msg.python;
+  const tablet = msg.tablet === true;
+  // The desktop app's sandbox has a network and its own pkg; only the
+  // in-tab one installs through the page.
+  installPython = python === undefined || kernelPorts !== undefined
+    ? undefined
+    : async (session) => {
+      post({ type: "status", text: "installing Python" });
+      const cache = await browserArchiveCache();
+      await installs(() =>
+        installPackage(python, {
+          host: workerPackageHost(session),
+          tablet,
+          progress: (text) => post({ type: "status", text }),
+          cache,
+        })
+      );
+    };
   // Never stops the session once its shell is up (src/coordinator_start.ts).
   const started = await startSandbox({
     boot: () =>
@@ -401,6 +458,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     // A restart relaunches on it, whether or not the first launch worked.
     launching: (session) => launchSession = session,
     noJupyter: msg.noJupyter === true,
+    installPython,
     startKernel: (session) => startGuestKernel(session, kernelPorts),
     post: (report) => {
       if (report.type === "python-missing") pythonMissing = true;

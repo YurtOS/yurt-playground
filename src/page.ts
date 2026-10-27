@@ -5,20 +5,19 @@ import {
   type MemoryRefusedMessage,
   showMemoryRefused,
 } from "./memory_refused.ts";
-import {
-  mountNotebook,
-  type NotebookView,
-  PYTHON_INSTALL,
-} from "./notebook.ts";
+import { mountNotebook, type NotebookView } from "./notebook.ts";
 import { createStatusLine, type StatusLine } from "./status_line.ts";
+import {
+  fetchSitePins,
+  pythonInstallRequest,
+  pythonInstallState,
+} from "./python_install.ts";
 import { mountAgentPane } from "./agent_pane.ts";
 import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
   catalogRows,
   formatBytes,
-  installPackage,
   loadCatalog,
-  type PackageHost,
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
@@ -44,7 +43,8 @@ type FromWorker =
   | { type: "notebook-ready" }
   | { type: "shell-ready" }
   // The image has no python3: the shell runs, Jupyter was not launched.
-  | { type: "python-missing" }
+  | { type: "python-missing"; error?: string }
+  | { type: "pkg-progress"; req: number; text: string }
   | {
     type: "yurt-reply" | "pkg-reply";
     req: number;
@@ -57,9 +57,13 @@ type FromWorker =
   | { type: "cell-error"; id: string; message: string }
   | MemoryRefusedMessage;
 
-/** The in-tab sandbox's side of a package install, once it boots; the
- * desktop app's sandbox has a network and installs with `pkg` itself. */
-let packageHost: PackageHost | undefined;
+/** A package install in the in-tab sandbox, once it boots: the coordinator
+ * runs it (src/packages.ts), one install at a time with the automatic Python
+ * install. The desktop app's sandbox has a network and installs with `pkg`
+ * itself. */
+let packageInstall:
+  | ((name: string, progress: (text: string) => void) => Promise<string>)
+  | undefined;
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
@@ -107,7 +111,7 @@ const yurtState = (() => {
       set("running");
       byId("export-home").hidden = false;
       byId("upload-files").hidden = false;
-      byId("packages-toggle").hidden = packageHost === undefined;
+      byId("packages-toggle").hidden = packageInstall === undefined;
       resolveReady();
     },
     failed(message: string) {
@@ -239,6 +243,7 @@ function boot(
   stopWatchingForAnotherSandbox: () => void,
   shellOnly: boolean,
   status: StatusLine,
+  smallDevice: boolean,
 ): void {
   const kernelPorts = desktop?.kernelPorts;
   // A refusal belongs to the session that had it.
@@ -263,6 +268,24 @@ function boot(
   // The cell already says why there is no kernel; an error after that
   // (a restart refused) must not say "Jupyter did not start" over it.
   let pythonMissing = false;
+  let installingPython = false;
+  const pinsPromise = fetchSitePins();
+  // The cell's Install: enabled when the pins name a slim image; after a
+  // failed install it says why and tries again.
+  const showPythonMissing = (error: string | undefined) =>
+    void pinsPromise.then((pins) =>
+      notebook.pythonMissing(
+        pythonInstallState(pins),
+        () => {
+          // A retry: what comes next (a kernel that fails, say) is this
+          // attempt's, not the missing Python's.
+          pythonMissing = false;
+          notebook.installing("installing Python");
+          worker.postMessage({ type: "python-install" });
+        },
+        error,
+      )
+    );
   const sandboxGone = () => {
     stopAnnouncing();
     stopAnnouncing = () => {};
@@ -311,35 +334,44 @@ function boot(
       list: () => ask({ type: "yurt-list" }),
     };
   yurtState.connect(transport);
+  /** Each install's progress, by request. */
+  const progressOf = new Map<number, (text: string) => void>();
   if (desktop === undefined) {
-    packageHost = {
-      readFile: (path) =>
-        (globalThis as unknown as { yurt: Yurt }).yurt.fs.read(path),
-      stageAndRun: (files, script) =>
-        new Promise((resolve, reject) => {
-          const req = nextReq++;
-          pending.set(req, {
-            resolve: resolve as (v: unknown) => void,
-            reject,
-          });
-          // The archives move to the worker, not copied: tens of MB.
-          try {
-            worker.postMessage(
-              { type: "pkg-run", req, files, script },
-              files.map((file) => file.bytes.buffer as ArrayBuffer),
-            );
-          } catch (error) {
-            pending.delete(req);
+    packageInstall = (name, progress) =>
+      new Promise<string>((resolve, reject) => {
+        const req = nextReq++;
+        progressOf.set(req, progress);
+        pending.set(req, {
+          resolve: (value) => {
+            progressOf.delete(req);
+            resolve(value as string);
+          },
+          reject: (error) => {
+            progressOf.delete(req);
             reject(error);
-          }
-        }),
-    };
+          },
+        });
+        worker.postMessage({
+          type: "pkg-install",
+          req,
+          name,
+          tablet: smallDevice,
+        });
+      });
   }
   yurtState.set("booting");
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
     // The coordinator's empty status is "booted"; say so.
     if (msg.type === "status") {
+      // Installing Python, then starting Jupyter on it, is the cell's
+      // wait: say so there too.
+      if (!notebookReady && /^(installing Python|Python:)/.test(msg.text)) {
+        installingPython = true;
+      }
+      if (!notebookReady && installingPython && msg.text !== "") {
+        notebook.installing(msg.text);
+      }
       status.progress(msg.text || "running");
       rememberBooting(msg.text || "running");
       if (msg.text === "") yurtState.running();
@@ -374,10 +406,11 @@ function boot(
     // The boot is over here too, so a later reload is no cut-off boot.
     if (msg.type === "python-missing") {
       pythonMissing = true;
-      notebook.pythonMissing(PYTHON_INSTALL);
+      showPythonMissing(msg.error);
       status.progress("running", { settled: true });
       rememberBooting(undefined);
     }
+    if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
       const waiter = pending.get(msg.req);
       pending.delete(msg.req);
@@ -404,15 +437,24 @@ function boot(
   );
   status.progress("booting");
   rememberBooting("booting");
-  worker.postMessage({
-    type: "start",
-    cols: term.cols,
-    rows: term.rows,
-    isolated: globalThis.crossOriginIsolated === true,
-    kernelPorts,
-    apiToken: desktop?.apiToken,
-    noJupyter: shellOnly,
-  });
+  // On the slim image the coordinator installs the newest complete Python
+  // set before Jupyter; a tablet's session is the shell alone, and the desktop
+  // app's sandbox needs no page to install anything.
+  void pinsPromise.then((pins) =>
+    worker.postMessage({
+      type: "start",
+      cols: term.cols,
+      rows: term.rows,
+      isolated: globalThis.crossOriginIsolated === true,
+      kernelPorts,
+      apiToken: desktop?.apiToken,
+      noJupyter: shellOnly,
+      python: shellOnly || desktop !== undefined || pins === undefined
+        ? undefined
+        : pythonInstallRequest(pins),
+      tablet: smallDevice,
+    })
+  );
 }
 
 /** The "Download home" control: `yurt.fs.export()` in a process of its
@@ -500,7 +542,7 @@ function wireUpload(status: StatusLine): void {
 /** The "Packages" control: the repository's packages, each with an
  * Install (src/packages.ts). One install at a time; progress and the
  * outcome land in the panel's own status line. */
-function wirePackages(smallDevice: boolean): void {
+function wirePackages(): void {
   const toggle = byId("packages-toggle") as HTMLButtonElement;
   const panel = byId("packages");
   const state = byId("packages-state");
@@ -511,16 +553,15 @@ function wirePackages(smallDevice: boolean): void {
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
   const install = async (name: string) => {
-    if (packageHost === undefined || busy) return;
+    if (packageInstall === undefined || busy) return;
     busy = true;
     panel.dataset.install = "running";
     for (const b of list.querySelectorAll("button")) b.disabled = true;
     try {
-      const output = await installPackage(name, {
-        host: packageHost,
-        tablet: smallDevice,
-        progress: (message) => status.textContent = message,
-      });
+      const output = await packageInstall(
+        name,
+        (message) => status.textContent = message,
+      );
       status.textContent = /^nothing to install$/m.test(output)
         ? `${name} is already installed`
         : `installed ${name}`;
@@ -638,8 +679,9 @@ async function runPage(): Promise<void> {
   // started. The desktop app runs natively and keeps everything.
   const device = deviceClass();
   const shellOnly = desktop === undefined && device === "tablet";
-  // A phone that boots anyway (`?start-anyway`) has less memory still.
-  wirePackages(device !== "desktop");
+  // The panel's installs run in the coordinator, capped like the tab's
+  // other installs (16 MiB on a phone or tablet: boot's `smallDevice`).
+  wirePackages();
   // Only the in-tab kernel has the memory problem; the desktop app's page
   // runs the sandbox natively. A phone, and a tab the browser reloaded
   // mid-boot, get no sandbox unless `?start-anyway`. Read (and clear) the
@@ -695,6 +737,7 @@ async function runPage(): Promise<void> {
       stopWatchingForAnotherSandbox,
       shellOnly,
       status,
+      device !== "desktop",
     );
   };
   if (desktop === undefined) {

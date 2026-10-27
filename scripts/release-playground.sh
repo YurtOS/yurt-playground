@@ -762,6 +762,31 @@ else
   python_seal_json=$(jq -c '.pythonSeal // empty' "$root/artifacts/pins.json")
   [ -n "$python_seal_json" ] || die "artifacts/pins.json has no pythonSeal entry to carry through; pass --python-seal-release"
 fi
+# The slim image the browser boots, published next to the full one by the
+# image run; an older image release has none, and the browser then boots
+# the full image as before.
+slim_json='null'
+image_assets=$(gh release view "$image_release" --repo "$image_repo" --json assets --jq '.assets[].name') ||
+  die "cannot list the assets of $image_repo $image_release"
+if grep -qx 'playground-slim.yurtimg' <<< "$image_assets"; then
+  slim_json=$(jq -n --arg ports "$ports_sha" --arg release "$image_release" --arg repo "$image_repo" \
+    --arg sha "$(sidecar_sha "$image_repo" "$image_release" playground-slim.yurtimg)" \
+    '{repo: "YurtOS/yurt-ports", rev: $ports, releaseRepo: $repo, release: $release,
+      build: "scripts/build-playground-image.sh", path: "ports/playground-image/build/dist/playground-slim.yurtimg", sha256: $sha}')
+  # Its pages install the newest complete Python set from the live
+  # repository (src/python_install.ts): one must exist before a train pins
+  # the slim image, or every Python page would fail.
+  common=""
+  # python-seal too: the set's Suspend/Resume interpreter.
+  for name in python numpy pyzmq jupyter-kernel python-seal; do
+    builds=$(curl -fsSL --retry 3 "https://raw.githubusercontent.com/YurtOS/yurt-packages/main/packages/$name.json" |
+      jq -r '.versions[] | select((.yanked | not) and (.build | test("^yurt_[0-9]+$"))) | .build' | sort -u) ||
+      die "yurt-packages has no $name package: publish the Python set before pinning the slim image"
+    if [ "$name" = python ]; then common=$builds; else common=$(comm -12 <(echo "$common") <(echo "$builds")); fi
+  done
+  [ -n "$common" ] || die "yurt-packages has no complete Python set (python, numpy, pyzmq, jupyter-kernel, python-seal with one yurt_N build)"
+  say "slim image: the newest Python set complete with its seal is $(sort -t_ -k2 -n <<< "$common" | tail -1)"
+fi
 host_json='{}'
 cli_json='{}'
 # The CLI's package names carry its version; the release's asset list says
@@ -788,7 +813,8 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
   --arg kernel_release "$kernel_wasm_release" --arg kernel_repo "$kernel_wasm_repo" --arg kernel_sha256 "$kernel_sha256" \
   --arg image_release "$image_release" --arg image_repo "$image_repo" --arg image_sha256 "$image_sha256" --arg ports_sha "$ports_sha" \
   --arg host_release "$host_release" --arg host_repo "$host_repo" --arg cli_release "$cli_release" --arg cli_repo "$cli_repo" \
-  --argjson host "$host_json" --argjson cli "$cli_json" --argjson python_seal "$python_seal_json" '{
+  --argjson host "$host_json" --argjson cli "$cli_json" --argjson python_seal "$python_seal_json" \
+  --argjson slim "$slim_json" '{
     train: $train,
     kernelWasm: {repo: "YurtOS/yurtos-kernel", rev: $kernel_sha, releaseRepo: $kernel_repo, release: $kernel_release,
       build: "scripts/build-kernel-wasm.sh", path: "target/kernel-wasm/release/yurt_kernel.wasm", sha256: $kernel_sha256},
@@ -801,7 +827,7 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
       assets: ($cli | with_entries(.value = .value.asset)),
       sha256: ($cli | with_entries(.value = .value.sha256))},
     pythonSeal: $python_seal
-  }' > "$root/artifacts/pins.json"
+  } + (if $slim == null then {} else {browserImage: $slim} end)' > "$root/artifacts/pins.json"
 say "verify the pins: scripts/install-pinned-artifacts.sh"
 "$root/scripts/install-pinned-artifacts.sh"
 if [ "$pins_only" = 1 ]; then

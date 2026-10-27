@@ -52,15 +52,21 @@ Deno.test("the policy keeps every request on the origin but the model's and the 
   );
 });
 
-Deno.test("JupyterLite documents stay on the origin alone", () => {
+Deno.test("JupyterLite documents reach the origin and the packages path only", () => {
   for (
     const policy of [
       documentPolicy("/jupyter/notebooks/index.html", []),
       contentSecurityPolicy({ sameOriginOnly: true }),
     ]
   ) {
-    assertStringIncludes(policy, "connect-src 'self';");
-    assertEquals(policy.includes("http"), false);
+    // On the slim image these pages install Python from the repository
+    // before their kernel starts: that one path, and no model host.
+    assertEquals(
+      policy.split("; ").filter((d) => d.includes("http")),
+      [
+        "connect-src 'self' https://raw.githubusercontent.com/YurtOS/yurt-packages/",
+      ],
+    );
   }
   assertStringIncludes(
     documentPolicy("/index.html", []),
@@ -97,6 +103,9 @@ Deno.test("_headers detaches the strict policy before the JupyterLite one", () =
   assertEquals(lines[4], "  ! Content-Security-Policy");
   assertStringIncludes(lines[5], "'unsafe-eval' 'sha256-j'");
   assertStringIncludes(lines[2], "https://huggingface.co");
-  assertEquals(lines[5].includes("http"), false);
+  assertEquals(
+    lines[5].match(/https:\/\/\S+/g),
+    ["https://raw.githubusercontent.com/YurtOS/yurt-packages/;"],
+  );
   assertEquals(lines.length, 6);
 });

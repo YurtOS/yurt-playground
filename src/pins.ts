@@ -8,7 +8,14 @@ export type ArtifactPin = {
 
 export type Pins = {
   kernelWasm: ArtifactPin;
+  /** The full image: the desktop app, the CLI, and (on a site with no
+   * slim pin) the suspend/resume kernel's standard library. */
   image: ArtifactPin;
+  /** The slim image the browser boots: no Python, no Node. Absent, the
+   * browser boots `image`, as before. Its pages install Python from the
+   * live signed repository (src/python_install.ts): packages are not
+   * pinned here. */
+  browserImage?: ArtifactPin;
 };
 
 export type ArtifactSource = "artifacts" | "siblings" | "urls";
@@ -63,11 +70,19 @@ export function parsePins(raw: unknown): Pins {
   if (raw === null || typeof raw !== "object") {
     throw new PinResolutionError("pins.json must be an object", 1);
   }
-  const value = raw as { kernelWasm?: unknown; image?: unknown };
-  return {
+  const value = raw as {
+    kernelWasm?: unknown;
+    image?: unknown;
+    browserImage?: unknown;
+  };
+  const pins: Pins = {
     kernelWasm: parsePin(value.kernelWasm, "kernelWasm"),
     image: parsePin(value.image, "image"),
   };
+  if (value.browserImage !== undefined) {
+    pins.browserImage = parsePin(value.browserImage, "browserImage");
+  }
+  return pins;
 }
 
 export async function loadPins(path: string): Promise<Pins> {

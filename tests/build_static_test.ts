@@ -1,5 +1,9 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { INTEGRITY_FILES, sha256Hex } from "../src/integrity.ts";
+import {
+  INTEGRITY_FILES,
+  sha256Hex,
+  SLIM_IMAGE_NAME,
+} from "../src/integrity.ts";
 import { inlineScriptHashes } from "../src/csp.ts";
 
 Deno.test("static build emits isolated playground deployment", async () => {
@@ -100,9 +104,16 @@ Deno.test("static build writes every file the pages need", async () => {
   const integrity = JSON.parse(
     await Deno.readTextFile(new URL("dist/integrity.json", repoRoot)),
   );
-  assertEquals(Object.keys(integrity.files), [...INTEGRITY_FILES]);
+  // The slim image is listed when the site ships one.
+  const slim = await Deno.stat(
+    new URL(`artifacts/${SLIM_IMAGE_NAME}`, repoRoot),
+  ).then(() => true, () => false);
+  assertEquals(
+    Object.keys(integrity.files),
+    slim ? [...INTEGRITY_FILES, SLIM_IMAGE_NAME] : [...INTEGRITY_FILES],
+  );
   for (const name of INTEGRITY_FILES) {
-    const dir = name === "playground.yurtimg" ? "artifacts" : "dist";
+    const dir = name.endsWith(".yurtimg") ? "artifacts" : "dist";
     assertEquals(
       integrity.files[name],
       await sha256Hex(await Deno.readFile(new URL(`${dir}/${name}`, repoRoot))),

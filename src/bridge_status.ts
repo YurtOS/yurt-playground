@@ -15,7 +15,7 @@ export type BridgeState =
   | { state: "booting"; text: string }
   | { state: "ready" }
   | { state: "error"; text: string }
-  | { state: "python-missing" };
+  | { state: "python-missing"; error?: string };
 
 /** What the line says in a state; `undefined` hides it. The coordinator's
  * empty status is "booted". */
@@ -30,8 +30,12 @@ export function describeBridgeState(state: BridgeState): string | undefined {
     case "error":
       return `Yurt sandbox: ${state.text}`;
     case "python-missing":
-      return `${PYTHON_MISSING_TEXT}, so this notebook has no kernel. ` +
-        `${PYTHON_INSTALL.reason}; the shell on the home page runs without it.`;
+      // A failed install says why; restarting the kernel tries again.
+      return state.error !== undefined
+        ? `Yurt sandbox: installing Python failed: ${state.error}. ` +
+          "Restart the kernel to try again."
+        : `${PYTHON_MISSING_TEXT}, so this notebook has no kernel. ` +
+          `${PYTHON_INSTALL.reason}; the shell on the home page runs without it.`;
   }
 }
 

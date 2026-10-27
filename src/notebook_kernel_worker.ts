@@ -35,10 +35,23 @@ import {
   type UserProcess,
 } from "@yurt/kernel-host-interface-js";
 import {
+  bootPlayground,
   fetchPlaygroundBytes,
   loadPlaygroundKernel,
+  playgroundPins,
   restorePlaygroundKernel,
+  SLIM_IMAGE_PATH,
 } from "./boot.ts";
+import {
+  browserArchiveCache,
+  type Catalog,
+  fetchRelease,
+  installPackage,
+  loadCatalog,
+  type PinnedRelease,
+  resolveSet,
+} from "./packages.ts";
+import { PYTHON_SET, SEAL_PACKAGE, SEAL_WASM_PATH } from "./python_install.ts";
 import { partsFetch, PYTHON_SEAL_NAME } from "./image_parts.ts";
 import type { JupyterHeader, JupyterMessage } from "./jupyter_protocol.ts";
 import type {
@@ -57,12 +70,14 @@ import {
   clearSnapshot,
   loadSnapshot,
   NOTEBOOK_KEY,
+  sealedUnderNewerIndex,
   sha256Hex,
   type StoredSnapshot,
   storeSnapshot,
 } from "./snapshot_store.ts";
 import { stagedPath } from "./notebook_stage.ts";
-import { stageYurtimg, writeRamfsFile } from "./stage.ts";
+import { readYurtimgFile, stageYurtimg, writeRamfsFile } from "./stage.ts";
+import { workerPackageHost } from "./session_packages.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
 
 installCoordinatorWorkerProxy(() => playgroundGuestPortIsDirect());
@@ -663,6 +678,8 @@ async function sealOnce(): Promise<void> {
       pty: current.pty,
       sealedAt,
       kernelSha256: current.kernelSha256,
+      pythonSet: sealSet?.id,
+      indexVersion: sealCatalog?.index.index_version,
       attachments: { cells: structuredClone(cells) },
     }, NOTEBOOK_KEY);
     await storeInFlight;
@@ -748,6 +765,136 @@ type Live = {
 let live: Live | undefined;
 let kernelBytes: Uint8Array | undefined;
 let guestBytes: Uint8Array | undefined;
+
+/**
+ * On the slim image, the Python set this kernel runs: the newest one in the
+ * live index complete with its `python-seal` (the guest), whose `python`
+ * holds the standard library. The catalog is loaded checked (metadata
+ * against the index, the index not expired); the index's signature is
+ * verified only by the guest's `pkg`, which this kernel does not run. `id` names both releases exactly
+ * (`name@version-build:sha256`); a snapshot records it and resumes only
+ * under the same id. Undefined on the full image, whose pinned seal and
+ * staged standard library are as before.
+ */
+type SealSet = {
+  id: string;
+  label: string;
+  python: PinnedRelease & { url: string };
+  seal: PinnedRelease & { url: string };
+};
+let sealSet: SealSet | undefined;
+/** The checked catalog `sealSet` was resolved from. */
+let sealCatalog: Catalog | undefined;
+/** Why the last `start` failed, for a restart asked for after it. */
+let startFailure: string | undefined;
+
+/** The slim image's Python set for this kernel, or `undefined` on the full
+ * image. Throws, naming the set, when the set has no python-seal: the
+ * panel says so and the kernel does not start. */
+async function resolveSealSet(): Promise<SealSet | undefined> {
+  const pins = await playgroundPins();
+  if (pins.browserImage === undefined) return undefined;
+  status("reading the Python set");
+  const catalog = await loadCatalog(undefined, undefined, true);
+  sealCatalog = catalog;
+  // Complete with its seal: the newest set this kernel can run, which may
+  // be older than the newest the coordinator installs while a seal is
+  // still to be published.
+  let resolved: (PinnedRelease & { url: string })[];
+  try {
+    resolved = resolveSet(catalog, [...PYTHON_SET, SEAL_PACKAGE]);
+  } catch {
+    throw new Error(
+      `Suspend/Resume is not available: no Python set in the repository has a ${SEAL_PACKAGE}`,
+    );
+  }
+  // The set's own members, by name (each with its own build spelling).
+  const pythonRelease = resolved[PYTHON_SET.indexOf("python")];
+  const seal = resolved[resolved.length - 1];
+  const label = `${pythonRelease.version}-${pythonRelease.build}`;
+  const name = (r: PinnedRelease) =>
+    `${r.name}@${r.version}-${r.build}:${r.sha256}`;
+  return {
+    id: `${name(pythonRelease)};${name(seal)}`,
+    label,
+    python: pythonRelease,
+    seal,
+  };
+}
+
+/** This kernel's archives: a cache of its own, so the coordinator's
+ * install (which keeps only the archives it installed) never drops the
+ * seal. The set's verifying install prunes it to the entries it used: the
+ * set's two archives, their signatures, and any dependency pkg added. */
+function sealCache() {
+  return browserArchiveCache("yurt-python-seal-v1");
+}
+
+/**
+ * Have the guest's own `pkg` verify the set before this kernel runs it: a
+ * short-lived sandbox on the slim image runs `sudo pkg install python@V-B
+ * python-seal@V-B` -- the index's and both archives' Sigstore signatures,
+ * their sha256s, their files -- and is then disposed of. The archives it
+ * verified are the bytes this kernel then reads, from the same cache by the
+ * same sha256. A refusal is the boot's failure, named.
+ */
+async function verifySealSet(set: SealSet, isolated: boolean): Promise<void> {
+  status(`verifying the Python ${set.label} set (pkg install)`);
+  const session = await bootPlayground({
+    isolated,
+    fetchBytes: (path) => fetchPlaygroundBytes(path),
+    imagePath: SLIM_IMAGE_PATH,
+    show: () => {},
+    // No one watches this sandbox's shell.
+    term: {
+      cols: 80,
+      rows: 24,
+      write: () => {},
+      onData: () => {},
+      onResize: () => {},
+    },
+  });
+  try {
+    await installPackage(
+      {
+        label: "Suspend/Resume",
+        releases: [set.python, set.seal],
+        othersAllowed: true,
+        verifyAll: true,
+      },
+      {
+        host: workerPackageHost(session),
+        tablet: false,
+        progress: (text) => status(text),
+        cache: await sealCache(),
+      },
+    );
+  } catch (error) {
+    throw new Error(
+      `Suspend/Resume is not available: the Python ${set.label} set did not verify: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  } finally {
+    (session.dispose ?? session.stop)();
+  }
+}
+
+/** How a stored image's set is named to the user. */
+function setLabel(id: string | undefined): string {
+  if (id === undefined) return "the full image's pinned interpreter";
+  const python = /python@([^:;]+)/.exec(id)?.[1];
+  return python === undefined ? id : `Python set ${python}`;
+}
+
+/** Why `stored` cannot resume here, or `undefined` when it can: it was
+ * sealed with another Python set (or before sets) than this page runs. */
+function setMismatch(stored: StoredSnapshot): string | undefined {
+  const now = sealSet?.id;
+  if (stored.pythonSet === now) return undefined;
+  return `it was suspended with ${setLabel(stored.pythonSet)} and this page ` +
+    `now runs ${setLabel(now)}`;
+}
 let cellServer: Uint8Array | undefined;
 let sealing = false;
 let started = false;
@@ -791,8 +938,14 @@ async function spawnCellServer(
 ): Promise<{ process: UserProcess; pty: number; stopPump: () => void }> {
   if (guestBytes === undefined) {
     status("loading Python");
-    // Published in parts like the image (Cloudflare Pages' 25 MiB cap).
-    guestBytes = await fetchDemoFile(GUEST_PATH, partsFetch());
+    guestBytes = sealSet === undefined
+      // Published in parts like the image (Cloudflare Pages' 25 MiB cap).
+      ? await fetchDemoFile(GUEST_PATH, partsFetch())
+      // The set's interpreter, read out of its python-seal archive.
+      : await readYurtimgFile(
+        await fetchRelease(sealSet.seal, { cache: await sealCache() }),
+        SEAL_WASM_PATH,
+      );
   }
   status("starting Python");
   const process = await mk.spawnUserProcessWithArgsAsync(guestBytes, [
@@ -836,10 +989,28 @@ async function bootFresh(
   // A suspended kernel is disposed with its guests, so a watch never
   // outlives the kernel it watches.
   watchGuestMemoryRefusals(mk, () => post(memoryRefusedMessage()));
-  status("loading the image");
-  const image = await fetchPlaygroundBytes("./playground.yurtimg");
-  status("staging the Python stdlib");
-  await stageYurtimg(mk, image, new Map(), stagedPath);
+  if (sealSet === undefined) {
+    status("loading the image");
+    const image = await fetchPlaygroundBytes("./playground.yurtimg");
+    status("staging the Python stdlib");
+    await stageYurtimg(mk, image, new Map(), stagedPath);
+  } else {
+    // The slim image's /etc, and the standard library of the set's own
+    // python package: the one this interpreter was built with.
+    status("loading the image");
+    const image = await fetchPlaygroundBytes(SLIM_IMAGE_PATH);
+    await stageYurtimg(
+      mk,
+      image,
+      new Map(),
+      (path) => path.startsWith("/etc/"),
+    );
+    status(`staging the Python ${sealSet.label} stdlib`);
+    const python = await fetchRelease(sealSet.python, {
+      cache: await sealCache(),
+    });
+    await stageYurtimg(mk, python, new Map(), stagedPath);
+  }
   if (cellServer === undefined) {
     cellServer = await fetchDemoFile(CELL_SERVER_PATH);
   }
@@ -924,6 +1095,8 @@ async function suspend(): Promise<void> {
       pty: current.pty,
       sealedAt,
       kernelSha256: current.kernelSha256,
+      pythonSet: sealSet?.id,
+      indexVersion: sealCatalog?.index.index_version,
       attachments: { cells: structuredClone(cells) },
     }, NOTEBOOK_KEY);
     forgotten = false;
@@ -958,6 +1131,16 @@ async function resume(): Promise<void> {
     status("nothing to resume: no stored image");
     return;
   }
+  // Only on the set it was suspended with.
+  const mismatch = setMismatch(stored);
+  if (mismatch !== undefined) {
+    post({
+      type: "error",
+      message: `the suspended notebook cannot be resumed: ${mismatch}. ` +
+        "Reload the page to continue on this set.",
+    });
+    return;
+  }
   post({ type: "snapshot", snapshot: { state: "resuming" } });
   try {
     live = await restoreStored(kernelBytes, stored);
@@ -981,7 +1164,15 @@ async function resume(): Promise<void> {
 
 async function restart(): Promise<void> {
   const current = live;
-  if (current === undefined) return;
+  if (current === undefined) {
+    // Nothing to restart: the kernel failed to start. Said, so the restart
+    // that asked does not wait for a ready that never comes. (While it is
+    // still starting, its own ready answers.)
+    if (startFailure !== undefined) {
+      post({ type: "error", message: startFailure });
+    }
+    return;
+  }
   failAllCells("Kernel restarted before the request completed");
   current.stopPump();
   try {
@@ -1024,6 +1215,7 @@ async function start(isolated: boolean): Promise<void> {
   status("loading kernel");
   kernelBytes = await fetchPlaygroundBytes("./yurt_kernel.wasm");
   const kernelSha256 = await sha256Hex(kernelBytes);
+  sealSet = await resolveSealSet();
   let stored = await loadSnapshot(NOTEBOOK_KEY);
   if (stored !== undefined && stored.kernelSha256 !== kernelSha256) {
     await clearSnapshot(NOTEBOOK_KEY);
@@ -1031,6 +1223,27 @@ async function start(isolated: boolean): Promise<void> {
       "stored image was sealed under a different kernel build; booting fresh",
     );
     stored = undefined;
+  }
+  // A suspend resumes only on its own Python set: one sealed with another
+  // (an older set, or the pinned seal before sets) is invalid here.
+  const mismatch = stored === undefined ? undefined : setMismatch(stored);
+  if (
+    mismatch !== undefined &&
+    sealedUnderNewerIndex(stored!, sealCatalog?.index.index_version)
+  ) {
+    // Kept: a fresh boot would seal over it. A reload once the index
+    // catches up resumes it.
+    throw new Error(
+      `the suspended notebook cannot be resumed yet: ${mismatch}; the ` +
+        "package index this page read is older than the one it was " +
+        "suspended under; reload in a few minutes",
+    );
+  }
+  if (mismatch !== undefined) {
+    await clearSnapshot(NOTEBOOK_KEY);
+    stored = undefined;
+    // Said now too: a fresh boot that then fails must not hide why.
+    status(`the suspended notebook was discarded: ${mismatch}`);
   }
   if (stored !== undefined) {
     status("restoring the suspended kernel");
@@ -1077,9 +1290,17 @@ async function start(isolated: boolean): Promise<void> {
       );
     }
   }
+  // A fresh boot runs the set's interpreter and stdlib: verified first. (A
+  // resume runs what its snapshot holds, sealed from verified bytes.)
+  if (sealSet !== undefined) await verifySealSet(sealSet, isolated);
   live = await bootFresh(kernelBytes, kernelSha256);
   post({ type: "snapshot", snapshot: { state: "running" } });
   post({ type: "notebook-ready" });
+  // Said last, so the panel's line keeps it once the boot's own progress
+  // is done.
+  if (mismatch !== undefined) {
+    status(`the suspended notebook was discarded: ${mismatch}`);
+  }
 }
 
 self.onmessage = async (event: MessageEvent<NotebookKernelToWorker>) => {
@@ -1088,7 +1309,12 @@ self.onmessage = async (event: MessageEvent<NotebookKernelToWorker>) => {
     switch (msg.type) {
       case "start":
         if (msg.sealEveryMs !== undefined) sealEveryMs = msg.sealEveryMs;
-        await start(msg.isolated);
+        try {
+          await start(msg.isolated);
+        } catch (error) {
+          startFailure = error instanceof Error ? error.message : String(error);
+          throw error;
+        }
         return;
       case "jupyter-send":
         if (!answerLocally(msg.message, msg.channel)) {

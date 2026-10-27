@@ -10,6 +10,16 @@
  * blobs in artifacts/, public/demo/python3-seal.wasm from
  * scripts/install-pinned-artifacts.sh, and the site from jupyterlite/build.sh).
  * Skips without the CPython blob unless PLAYGROUND_REQUIRE_ARTIFACTS is set.
+ *
+ * On a site that pins a slim image the kernel runs the newest complete
+ * Python set's python-seal instead, from the package repository (the live
+ * one, or PLAYGROUND_SLIM_REPO=<dir> in the repository's layout). With
+ * PLAYGROUND_SLIM_REPO_NEXT=<dir> (the same plus a newer complete set), the
+ * scene then suspends, switches to it and reopens: the suspend was made on
+ * the older set, so it is discarded, and the new session runs the cell from
+ * its start on the newer set. With PLAYGROUND_SLIM_REPO_TAMPERED=<dir> (a set
+ * whose python-seal archive matches its metadata but not its signature), it
+ * first checks that the kernel refuses to start on it.
  */
 import { chromium, type Page } from "playwright";
 import { dirname, join } from "node:path";
@@ -17,6 +27,8 @@ import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { PYTHON_SEAL_NAME } from "../src/image_parts.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
+import { PACKAGE_REPO_URL } from "../src/packages.ts";
+import { Buffer } from "node:buffer";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -48,8 +60,12 @@ async function waitForPanelState(
 }
 
 if (import.meta.main) {
+  const pins = JSON.parse(
+    await Deno.readTextFile(join(repoRoot, "artifacts/pins.json")),
+  );
+  const slim = pins.browserImage !== undefined;
   try {
-    await Deno.stat(join(repoRoot, "public", PYTHON_SEAL_NAME));
+    if (!slim) await Deno.stat(join(repoRoot, "public", PYTHON_SEAL_NAME));
   } catch {
     if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS")) {
       fail(
@@ -69,6 +85,27 @@ if (import.meta.main) {
   const browser = await chromium.launch();
   // One context: IndexedDB, where the sealed sandbox lives, is per context.
   const context = await browser.newContext();
+  // The package repository, for a slim site: answered from a directory
+  // when one is given (switched to the next one below).
+  let repo = Deno.env.get("PLAYGROUND_SLIM_REPO");
+  if (slim && repo !== undefined) {
+    await context.route("https://raw.githubusercontent.com/**", async (r) => {
+      const url = r.request().url();
+      try {
+        if (!url.startsWith(PACKAGE_REPO_URL)) throw new Error(url);
+        await r.fulfill({
+          body: Buffer.from(
+            await Deno.readFile(
+              join(repo!, url.slice(PACKAGE_REPO_URL.length)),
+            ),
+          ),
+          headers: { "access-control-allow-origin": "*" },
+        });
+      } catch {
+        await r.fulfill({ status: 404 });
+      }
+    });
+  }
   const notebookUrl =
     `${server.url}/jupyter/notebooks/index.html?path=suspend-resume.ipynb`;
   const openNotebook = async (): Promise<Page> => {
@@ -79,7 +116,11 @@ if (import.meta.main) {
     // The plugin boots (or restores) the sandbox; the panel says when it
     // is running and the kernel has answered (idle -- or already busy
     // again, when a reopened notebook re-ran its cell in the same turn).
-    await waitForPanelState(page, "running", 420_000);
+    await waitForPanelState(page, "running", 420_000).catch(async (error) => {
+      const panel = await page.locator(".yurt-snapshot-panel").textContent()
+        .catch(() => null);
+      throw new Error(`the kernel did not start (panel: ${panel}): ${error}`);
+    });
     await page.waitForFunction(
       () =>
         ["idle", "busy"].includes(
@@ -106,6 +147,50 @@ if (import.meta.main) {
       { timeout },
     );
   try {
+    // A seal the guest's pkg does not verify is never run.
+    const tampered = Deno.env.get("PLAYGROUND_SLIM_REPO_TAMPERED");
+    if (slim && tampered !== undefined) {
+      const other = await browser.newContext();
+      await other.route("https://raw.githubusercontent.com/**", async (r) => {
+        const url = r.request().url();
+        try {
+          if (!url.startsWith(PACKAGE_REPO_URL)) throw new Error(url);
+          await r.fulfill({
+            body: Buffer.from(
+              await Deno.readFile(
+                join(tampered, url.slice(PACKAGE_REPO_URL.length)),
+              ),
+            ),
+            headers: { "access-control-allow-origin": "*" },
+          });
+        } catch {
+          await r.fulfill({ status: 404 });
+        }
+      });
+      const bad = await other.newPage();
+      await bad.goto(notebookUrl, { waitUntil: "domcontentloaded" });
+      await bad.waitForFunction(
+        () =>
+          /did not verify: pkg install Suspend\/Resume failed:[\s\S]*signature verification failed for python-seal/
+            .test(document.body.innerText),
+        undefined,
+        { timeout: 420_000 },
+      ).catch(() => fail("a seal with a bad signature was not refused"));
+      const state = await bad.locator(".yurt-snapshot-panel").getAttribute(
+        "data-state",
+      );
+      if (state === "running") {
+        fail("the kernel runs a seal that did not verify");
+      }
+      const said = await bad.locator(".yurt-snapshot-panel").innerText();
+      console.log(
+        `notebook snapshot e2e: tampered seal refused: ${
+          said.replace(/\s+/g, " ").slice(0, 240)
+        }`,
+      );
+      await other.close();
+    }
+
     let page = await openNotebook();
 
     // Run the primes cell.
@@ -206,6 +291,39 @@ if (import.meta.main) {
     console.log(
       "notebook snapshot e2e: state survived suspend, resume and interrupt",
     );
+
+    // A newer set: a suspend made on the older one does not resume on it.
+    const next = Deno.env.get("PLAYGROUND_SLIM_REPO_NEXT");
+    if (slim && next !== undefined) {
+      await page.locator(".jp-CodeCell").first().click();
+      await page.keyboard.press("Shift+Enter");
+      await primesAtLeast(page, 3, 120_000);
+      await page.locator(".yurt-snapshot-suspend").click();
+      await waitForPanelState(page, "suspended", 60_000);
+      await page.close();
+      repo = next;
+      page = await openNotebook();
+      const text = await page.locator("body").innerText();
+      if (/resumed from/.test(text)) {
+        fail("a suspend made on the older Python set was resumed");
+      }
+      await page.waitForFunction(
+        () =>
+          /was discarded: it was suspended with Python set/.test(
+            document.body.innerText,
+          ),
+        undefined,
+        { timeout: 30_000 },
+      ).catch(() => fail("no word that the older suspend was discarded"));
+      await page.locator(".jp-CodeCell").first().click();
+      await page.keyboard.press("Shift+Enter");
+      await primesAtLeast(page, 3, 120_000);
+      const fresh = await primesPrinted(page);
+      if (fresh[0] !== 1) fail(`the new session did not start over: ${fresh}`);
+      console.log(
+        "notebook snapshot e2e: the older suspend was refused; a fresh session ran on the newer set",
+      );
+    }
   } finally {
     await browser.close();
     await server.shutdown();

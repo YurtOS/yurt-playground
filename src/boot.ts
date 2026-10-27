@@ -48,6 +48,9 @@ export type PlaygroundTerm = {
 export type PlaygroundEnv = {
   isolated: boolean;
   fetchBytes: (path: string) => Promise<Uint8Array>;
+  /** The image to boot ({@link browserImagePath}); the full image when
+   * unset. */
+  imagePath?: string;
   show: (text: string) => void;
   term: PlaygroundTerm;
   /** The browser refused a new process its memory; only a reload helps. */
@@ -56,6 +59,9 @@ export type PlaygroundEnv = {
 
 export type PlaygroundSession = {
   stop: () => void;
+  /** Stop, and free the kernel with every guest in it: for a session that
+   * is done for good (a short-lived one, say), not one a page shows. */
+  dispose?: () => void;
   controller: SessionController;
   terminal: PtyTransport;
   /** Run a shell line as a process of the page's own (`sh -c`), as the
@@ -147,14 +153,42 @@ async function browserPins(): Promise<Pins> {
   }
 }
 
+/** The full image: what the desktop app and the CLI run, and where the
+ * suspend/resume kernel stages its standard library from. */
+export const FULL_IMAGE_PATH = "./playground.yurtimg";
+/** The slim image (`browserImage` in the pins): no Python, no Node. */
+export const SLIM_IMAGE_PATH = "./playground-slim.yurtimg";
+
+/** The image the browser boots: the slim one when the train pins one,
+ * else the full one. */
+export async function browserImagePath(): Promise<string> {
+  return (await browserPins()).browserImage === undefined
+    ? FULL_IMAGE_PATH
+    : SLIM_IMAGE_PATH;
+}
+
+/** The pins the page was built with (`./pins.json`). */
+export function playgroundPins(): Promise<Pins> {
+  return browserPins();
+}
+
 export async function fetchPlaygroundBytes(
   path: string,
   onProgress?: (progress: ArtifactProgress) => void,
 ): Promise<Uint8Array> {
   const pins = await browserPins();
   const isKernel = path.includes("yurt_kernel.wasm");
+  const isSlim = path.includes("playground-slim.yurtimg");
+  if (isSlim && pins.browserImage === undefined) {
+    throw new Error("pins.json names no slim image (browserImage)");
+  }
+  const pin = isKernel
+    ? pins.kernelWasm
+    : isSlim
+    ? pins.browserImage!
+    : pins.image;
   const cacheStorage = typeof caches === "undefined" ? undefined : caches;
-  return await fetchPinnedArtifact(isKernel ? pins.kernelWasm : pins.image, {
+  return await fetchPinnedArtifact(pin, {
     url: path,
     cacheName: "yurt-playground-artifacts-v1",
     cacheStorage,
@@ -300,7 +334,7 @@ export async function bootPlayground(
     () => env.memoryRefused?.(),
   );
   env.show("loading image");
-  const image = await env.fetchBytes("./playground.yurtimg");
+  const image = await env.fetchBytes(env.imagePath ?? FULL_IMAGE_PATH);
   env.show("unpacking image");
   const files = new Map<string, Uint8Array>();
   await stageYurtimg(mk, image, files);
@@ -442,6 +476,10 @@ export async function bootPlayground(
   env.show("");
   return {
     stop,
+    dispose() {
+      stop();
+      mk.dispose();
+    },
     controller,
     terminal,
     async spawn(line) {

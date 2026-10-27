@@ -1,7 +1,9 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  type ArchiveCache,
   browserTrustedRepos,
   CACHE_ROOT,
+  type Catalog,
   fetchWithProgress,
   installPackage,
   installScript,
@@ -14,6 +16,7 @@ import {
   type PackageVersion,
   parseIndex,
   parsePackageFile,
+  resolveSet,
   sha256Hex,
   sizeRefusal,
   type StagedFile,
@@ -549,4 +552,502 @@ Deno.test("the worker writes only inside the staging dir", () => {
       path,
     );
   }
+});
+
+/** An {@link ArchiveCache} in memory, recording what it was asked. */
+function memoryCache(seed: Record<string, Uint8Array> = {}) {
+  const store = new Map(Object.entries(seed));
+  const log: string[] = [];
+  const cache: ArchiveCache = {
+    get: (url) => {
+      log.push(`get ${url}`);
+      return Promise.resolve(store.get(url));
+    },
+    put: (url, bytes) => {
+      log.push(`put ${url}`);
+      store.set(url, bytes);
+      return Promise.resolve();
+    },
+    delete: (url) => {
+      log.push(`delete ${url}`);
+      store.delete(url);
+      return Promise.resolve();
+    },
+    keepOnly: (keys) => {
+      for (const k of [...store.keys()]) if (!keys.includes(k)) store.delete(k);
+      return Promise.resolve();
+    },
+  };
+  return { cache, store, log };
+}
+
+/** A cache entry's key: the archive's sha256, as the index names it. */
+const key = async (archive: Uint8Array) => `sha256:${await sha256Hex(archive)}`;
+
+const GREET_URL =
+  `${PACKAGE_REPO_URL}artifacts/greet/0.1.0/greet-0.1.0-yurt_0.yurtpkg`;
+
+Deno.test("a pinned set is one exact `pkg install` and must plan exactly the pinned releases", async () => {
+  const archive = new Uint8Array([1, 2, 3]);
+  const fetcher = await fakeRepo(archive);
+  const pin = {
+    name: "greet",
+    version: "0.1.0",
+    build: "yurt_0",
+    sha256: await sha256Hex(archive),
+    size: archive.byteLength,
+  };
+  const { host, runs } = fakeHost(PLAN, INSTALLED);
+  const messages: string[] = [];
+  await installPackage({ label: "Greet", releases: [pin] }, {
+    host,
+    tablet: false,
+    fetcher,
+    progress: (m) => messages.push(m),
+  });
+  for (const { script } of runs) {
+    assertEquals(script, installScript(["greet@0.1.0-yurt_0"], "official"));
+  }
+  assertEquals(
+    messages.at(-1),
+    "Greet: verifying and installing (pkg install greet@0.1.0-yurt_0)",
+  );
+  // The repository's release is not the one this page pins.
+  for (const other of [{ sha256: "f".repeat(64) }, { size: 99 }]) {
+    const { host: refusing } = fakeHost(PLAN, INSTALLED);
+    await assertRejects(
+      () =>
+        installPackage({ label: "Greet", releases: [{ ...pin, ...other }] }, {
+          host: refusing,
+          tablet: false,
+          fetcher,
+          progress: () => {},
+        }),
+      Error,
+      "is not the 0.1.0-yurt_0 this install expects",
+    );
+  }
+  // pkg chose a release (a dependency) the index lists but the page does
+  // not pin.
+  const enc = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value));
+  const libx = enc({ name: "libx", versions: [version("1.0.0", "yurt_0")] });
+  const withLibx = async (url: string) => {
+    const path = url.slice(PACKAGE_REPO_URL.length);
+    if (path === "packages/libx.json") return libx;
+    const bytes = await fetcher(url);
+    if (path !== "index.json") return bytes;
+    const index = JSON.parse(new TextDecoder().decode(bytes));
+    index.packages.libx = { sha256: "", size: 1, url: "packages/libx.json" };
+    return enc(index);
+  };
+  const { host: extra } = fakeHost({
+    ...PLAN,
+    stdout: "install greet 0.1.0-yurt_0\ninstall libx 1.0.0-yurt_0\n",
+  });
+  await assertRejects(
+    () =>
+      installPackage({ label: "Greet", releases: [pin] }, {
+        host: extra,
+        tablet: false,
+        fetcher: withLibx,
+        progress: () => {},
+      }),
+    Error,
+    "pkg chose libx 1.0.0-yurt_0, which this page does not pin",
+  );
+});
+
+Deno.test("a cached archive that is still the release is used without a download", async () => {
+  const archive = new Uint8Array([4, 5, 6]);
+  const repo = await fakeRepo(archive);
+  const fetched: string[] = [];
+  const fetcher = (url: string) => {
+    fetched.push(url);
+    return repo(url);
+  };
+  const { cache, log } = memoryCache({
+    [await key(archive)]: archive,
+    [`${await key(archive)}.bundle`]: new TextEncoder().encode(
+      '"archive bundle"',
+    ),
+  });
+  const { host, runs } = fakeHost(PLAN, INSTALLED);
+  await installPackage("greet", {
+    host,
+    tablet: false,
+    fetcher,
+    cache,
+    progress: () => {},
+  });
+  assertEquals(fetched.includes(GREET_URL), false);
+  assertEquals(fetched.includes(`${GREET_URL}.bundle`), false);
+  const staged = runs[1].files.find((f) => f.path.endsWith(".yurtpkg"));
+  assertEquals(staged?.bytes, archive);
+  assertEquals(log.some((l) => l.startsWith("put")), false);
+});
+
+Deno.test("a cached archive that is not the release is dropped and downloaded again", async () => {
+  const archive = new Uint8Array([7, 8, 9]);
+  const fetcher = await fakeRepo(archive);
+  const { cache, store, log } = memoryCache({
+    [await key(archive)]: new Uint8Array([0, 0, 0]),
+  });
+  const { host } = fakeHost(PLAN, INSTALLED);
+  await installPackage("greet", {
+    host,
+    tablet: false,
+    fetcher,
+    cache,
+    progress: () => {},
+  });
+  assertEquals(log.includes(`delete ${await key(archive)}`), true);
+  assertEquals(store.get(await key(archive)), archive);
+});
+
+Deno.test("what pkg refused is not kept for the next try", async () => {
+  const archive = new Uint8Array([1]);
+  const fetcher = await fakeRepo(archive);
+  const { cache, store } = memoryCache({
+    [await key(archive)]: archive,
+    [`${await key(archive)}.bundle`]: new Uint8Array([9]),
+  });
+  const { host } = fakeHost(PLAN, {
+    code: 1,
+    stdout: "",
+    stderr: "Error: archive signature verification failed for greet\n",
+  });
+  await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        cache,
+        progress: () => {},
+      }),
+    Error,
+    "signature",
+  );
+  assertEquals(store.size, 0);
+});
+
+Deno.test("a signature downloaded on a failed try is not kept for the next", async () => {
+  const archive = new Uint8Array([2]);
+  const fetcher = await fakeRepo(archive);
+  const { cache, store } = memoryCache();
+  const { host } = fakeHost(PLAN, {
+    code: 1,
+    stdout: "",
+    stderr: "Error: archive signature verification failed for greet\n",
+  });
+  await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        cache,
+        progress: () => {},
+      }),
+    Error,
+    "signature",
+  );
+  assertEquals(store.has(`${await key(archive)}.bundle`), false);
+  // The archive matched its sha256, so it may stay.
+  assertEquals(store.get(await key(archive)), archive);
+});
+
+/** A catalog of these packages' releases, as `version-build` strings
+ * (`!` marks a yanked one). */
+function catalogOf(releases: Record<string, string[]>): Catalog {
+  const metadata = new Map<string, { bytes: Uint8Array; file: PackageFile }>();
+  const packages: Record<
+    string,
+    { sha256: string; size: number; url: string }
+  > = {};
+  for (const [name, list] of Object.entries(releases)) {
+    const versions = list.map((r) => {
+      const yanked = r.startsWith("!");
+      const [v, b] = r.replace("!", "").split("@");
+      return {
+        ...version(v, b, {
+          sha256: `${name}${v}${b}`.padEnd(64, "0").slice(0, 64),
+          size: 10,
+        }),
+        yanked,
+      };
+    });
+    metadata.set(name, { bytes: new Uint8Array(), file: { name, versions } });
+    packages[name] = { sha256: "", size: 0, url: `packages/${name}.json` };
+  }
+  return {
+    index: { schema: 1, index_version: 1, expires_at: "", packages },
+    indexBytes: new Uint8Array(),
+    indexBundle: new Uint8Array(),
+    metadata,
+  };
+}
+
+const SET = ["python", "numpy", "pyzmq", "jupyter-kernel"];
+
+Deno.test("the newest complete set wins; a partly published newer one is ignored", () => {
+  const catalog = catalogOf({
+    python: ["3.14.7@yurt_0", "3.14.7@yurt_1", "3.14.8@yurt_2"],
+    numpy: ["2.5.0@yurt_0", "2.5.0@yurt_1", "2.5.1@yurt_2"],
+    pyzmq: ["26.4.0@yurt_0", "26.4.0@yurt_1", "26.4.0@yurt_2"],
+    // Set 2 is not complete: jupyter-kernel's is still to be published.
+    "jupyter-kernel": ["0.0.1@yurt_0", "0.0.1@yurt_1"],
+  });
+  const set = resolveSet(catalog, SET);
+  assertEquals(set.map((r) => `${r.name}@${r.version}-${r.build}`), [
+    "python@3.14.7-yurt_1",
+    "numpy@2.5.0-yurt_1",
+    "pyzmq@26.4.0-yurt_1",
+    "jupyter-kernel@0.0.1-yurt_1",
+  ]);
+});
+
+Deno.test("a yanked member takes its set out; no complete set is an error", () => {
+  const catalog = catalogOf({
+    python: ["3.14.7@yurt_0", "!3.14.7@yurt_1"],
+    numpy: ["2.5.0@yurt_0", "2.5.0@yurt_1"],
+    pyzmq: ["26.4.0@yurt_0", "26.4.0@yurt_1"],
+    "jupyter-kernel": ["0.0.1@yurt_0", "0.0.1@yurt_1"],
+  });
+  assertEquals(resolveSet(catalog, SET)[0].build, "yurt_0");
+  assertThrows(
+    () =>
+      resolveSet(
+        catalogOf({
+          python: ["3.14.7@yurt_1"],
+          numpy: ["2.5.0@yurt_0"],
+          pyzmq: ["26.4.0@yurt_0"],
+          "jupyter-kernel": ["0.0.1@yurt_0"],
+        }),
+        SET,
+      ),
+    Error,
+    "no complete set",
+  );
+});
+
+Deno.test("a set member the page cannot fetch takes its set out", () => {
+  const catalog = catalogOf({
+    python: ["3.14.7@yurt_0", "3.14.7@yurt_1"],
+    numpy: ["2.5.0@yurt_0", "2.5.0@yurt_1"],
+    pyzmq: ["26.4.0@yurt_0", "26.4.0@yurt_1"],
+    "jupyter-kernel": ["0.0.1@yurt_0", "0.0.1@yurt_1"],
+  });
+  catalog.metadata.get("numpy")!.file.versions[1].url =
+    "https://elsewhere.example/numpy.yurtpkg";
+  const set = resolveSet(catalog, SET);
+  assertEquals(set.map((r) => r.build), [
+    "yurt_0",
+    "yurt_0",
+    "yurt_0",
+    "yurt_0",
+  ]);
+  assertEquals(
+    set[0].url,
+    catalog.metadata.get("python")!.file.versions[0].url,
+  );
+});
+
+Deno.test("a set's install keeps only its own cache entries", async () => {
+  const archive = new Uint8Array([3, 1, 4]);
+  const fetcher = await fakeRepo(archive);
+  const { cache, store } = memoryCache({
+    "sha256:old": new Uint8Array([1]),
+    "sha256:old.bundle": new Uint8Array([1]),
+  });
+  const { host, runs } = fakeHost(PLAN, INSTALLED);
+  await installPackage({ label: "Greet", set: ["greet"] }, {
+    host,
+    tablet: false,
+    fetcher,
+    cache,
+    progress: () => {},
+  });
+  assertEquals(
+    runs[0].script,
+    installScript(["greet@0.1.0-yurt_0"], "official"),
+  );
+  assertEquals(
+    [...store.keys()].sort(),
+    [await key(archive), `${await key(archive)}.bundle`].sort(),
+  );
+});
+
+Deno.test("a set's install lets pkg add a dependency outside the set; a pinned list does not", async () => {
+  const archive = new Uint8Array([5, 5]);
+  const base = await fakeRepo(archive);
+  const enc = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value));
+  const depArchive = new Uint8Array([6]);
+  const depUrl = "artifacts/libx/1.0.0/libx-1.0.0-yurt_0.yurtpkg";
+  const libx = enc({
+    name: "libx",
+    versions: [version("1.0.0", "yurt_0", {
+      url: depUrl,
+      size: 1,
+      sha256: await sha256Hex(depArchive),
+    })],
+  });
+  const fetcher = async (url: string) => {
+    const path = url.slice(PACKAGE_REPO_URL.length);
+    if (path === "packages/libx.json") return libx;
+    if (path === depUrl) return depArchive;
+    if (path === `${depUrl}.bundle`) return enc("bundle");
+    const bytes = await base(url);
+    if (path !== "index.json") return bytes;
+    const index = JSON.parse(new TextDecoder().decode(bytes));
+    index.packages.libx = { sha256: "", size: 1, url: "packages/libx.json" };
+    return enc(index);
+  };
+  const plan = {
+    ...PLAN,
+    stdout: "install libx 1.0.0-yurt_0\ninstall greet 0.1.0-yurt_0\n",
+  };
+  const { host, runs } = fakeHost(plan, INSTALLED);
+  await installPackage({ label: "Greet", set: ["greet"] }, {
+    host,
+    tablet: false,
+    fetcher,
+    progress: () => {},
+  });
+  assertEquals(
+    runs[1].files.some((f) => f.path.endsWith("libx-1.0.0-yurt_0.yurtpkg")),
+    true,
+  );
+});
+
+Deno.test("a pinned list that must verify all: others allowed, no plan may skip a pin", async () => {
+  const archive = new Uint8Array([5, 5]);
+  const base = await fakeRepo(archive);
+  const enc = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value));
+  const depArchive = new Uint8Array([6]);
+  const depUrl = "artifacts/libx/1.0.0/libx-1.0.0-yurt_0.yurtpkg";
+  const libx = enc({
+    name: "libx",
+    versions: [version("1.0.0", "yurt_0", {
+      url: depUrl,
+      size: 1,
+      sha256: await sha256Hex(depArchive),
+    })],
+  });
+  const fetcher = async (url: string) => {
+    const path = url.slice(PACKAGE_REPO_URL.length);
+    if (path === "packages/libx.json") return libx;
+    if (path === depUrl) return depArchive;
+    if (path === `${depUrl}.bundle`) return enc("bundle");
+    const bytes = await base(url);
+    if (path !== "index.json") return bytes;
+    const index = JSON.parse(new TextDecoder().decode(bytes));
+    index.packages.libx = { sha256: "", size: 1, url: "packages/libx.json" };
+    return enc(index);
+  };
+  const pin = {
+    name: "greet",
+    version: "0.1.0",
+    build: "yurt_0",
+    sha256: await sha256Hex(archive),
+    size: archive.byteLength,
+  };
+  const request = {
+    label: "Greet",
+    releases: [pin],
+    othersAllowed: true,
+    verifyAll: true,
+  };
+  const options = (host: PackageHost) => ({
+    host,
+    tablet: false,
+    fetcher,
+    progress: () => {},
+  });
+  // pkg adds a dependency the page does not pin: allowed, and kept in
+  // the cache with the pins; the set before is dropped.
+  const { host, runs } = fakeHost({
+    ...PLAN,
+    stdout: "install libx 1.0.0-yurt_0\ninstall greet 0.1.0-yurt_0\n",
+  }, INSTALLED);
+  const { cache, store } = memoryCache({
+    "sha256:old": new Uint8Array([1]),
+    "sha256:old.bundle": new Uint8Array([1]),
+  });
+  await installPackage(request, { ...options(host), cache });
+  assertEquals(
+    runs[1].files.some((f) => f.path.endsWith("libx-1.0.0-yurt_0.yurtpkg")),
+    true,
+  );
+  assertEquals(
+    [...store.keys()].sort(),
+    [
+      await key(archive),
+      `${await key(archive)}.bundle`,
+      await key(depArchive),
+      `${await key(depArchive)}.bundle`,
+    ].sort(),
+  );
+  // A run that installs nothing verified nothing.
+  const { host: done } = fakeHost({
+    code: 0,
+    stdout: "nothing to install\n",
+    stderr: "",
+  });
+  await assertRejects(
+    () => installPackage(request, options(done)),
+    Error,
+    "Greet: pkg verified nothing: greet@0.1.0-yurt_0 is already installed",
+  );
+  // A planning run pkg refused names pkg's cause, not the pins.
+  const { host: refused } = fakeHost({
+    code: 1,
+    stdout: "",
+    stderr: "Error: index signature verification failed\n",
+  });
+  await assertRejects(
+    () => installPackage(request, options(refused)),
+    Error,
+    "pkg install Greet failed: Error: index signature verification failed",
+  );
+  // A plan that leaves a pin out would not verify it.
+  const { host: partial } = fakeHost({
+    ...PLAN,
+    stdout: "install libx 1.0.0-yurt_0\n",
+  });
+  await assertRejects(
+    () => installPackage(request, options(partial)),
+    Error,
+    "Greet: pkg's plan does not fetch greet@0.1.0-yurt_0, so it would not verify them",
+  );
+});
+
+Deno.test("a checked catalog refuses metadata the index does not name, and an expired index", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1]));
+  // fakeRepo's index names each metadata file's real sha256.
+  await loadCatalog(fetcher, PACKAGE_REPO_URL, true, new Date("2026-10-27"));
+  const tampered = async (url: string) => {
+    const bytes = await fetcher(url);
+    if (!url.endsWith("packages/greet.json")) return bytes;
+    const file = JSON.parse(new TextDecoder().decode(bytes));
+    file.versions[0].sha256 = "0".repeat(64);
+    return new TextEncoder().encode(JSON.stringify(file));
+  };
+  await assertRejects(
+    () => loadCatalog(tampered, PACKAGE_REPO_URL, true),
+    Error,
+    "does not match the index's sha256",
+  );
+  // Unchecked, as for an install the guest's pkg verifies: accepted.
+  await loadCatalog(tampered);
+  // fakeRepo's index expires 2099-01-01; 30 days' grace past it, no more.
+  await loadCatalog(fetcher, PACKAGE_REPO_URL, true, new Date("2099-01-30"));
+  await assertRejects(
+    () => loadCatalog(fetcher, PACKAGE_REPO_URL, true, new Date("2099-02-01")),
+    Error,
+    "expired",
+  );
 });

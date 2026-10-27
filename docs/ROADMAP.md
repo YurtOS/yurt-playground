@@ -83,16 +83,26 @@ Bigger directions. Each needs design work, and the order is not fixed.
   libraries is over two thirds of today's image and Node with the Gemini CLI
   most of the rest, and both load into every tab, including on phones and
   tablets, where memory is short
-  ([#200](https://github.com/YurtOS/yurt-playground/issues/200)). The base would
-  keep the shell, the command-line tools and `pkg`. The page would install
-  Python when you open the Notebook, JupyterLab or the Python pane, and Node
-  when you open the agent pane, pinned to the exact builds the page expects
-  (Suspend/Resume runs a separately pinned sealable CPython that needs the
-  matching standard library). It needs signed packages first, and while files do
-  not survive a reload
-  ([#81](https://github.com/YurtOS/yurt-playground/issues/81)) a visitor who
-  uses Python downloads it on every visit, so the gain is for visits that only
-  use the shell.
+  ([#200](https://github.com/YurtOS/yurt-playground/issues/200)). The page side
+  is in place: when a release pins a slim image (`browserImage` in
+  `artifacts/pins.json`), the browser boots it (the shell, the command-line
+  tools, `pkg` and `sudo`), and every page that runs Python (the Python pane,
+  the agent, the Notebook and JupyterLab) installs the newest complete Python
+  set (python, numpy, pyzmq and jupyter-kernel sharing one `yurt_N` build) from
+  the signed YurtOS/yurt-packages index with the guest's own `pkg` before
+  ipykernel starts. Packages are not pinned: a newly published set reaches the
+  page with no release of it. Archives are kept in the browser's Cache API with
+  their signatures, so a repeat visit downloads only the index and its metadata,
+  but while files do not survive a reload
+  ([#81](https://github.com/YurtOS/yurt-playground/issues/81)) it installs again
+  (about a minute on a laptop). It ships once a set is published and a release
+  pins the slim image. Node is a package too, for the shell; nothing on the page
+  needs it. On the slim image Suspend/Resume runs the newest set that also has a
+  `python-seal` of the same build (which may be older than the set the pages
+  install, while its seal is still to be published), with that set's standard
+  library, after the guest's `pkg` has verified both archives in a short-lived
+  sandbox (their own cache, so the coordinator's install never drops them), and
+  a suspended notebook resumes only on the set it was suspended with.
 - **Go, `gh` and Perl as packages, and a current clang**, published in
   [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) when there is
   demand for them, rather than in the base image. Planned: Go, `gh` and Perl are
