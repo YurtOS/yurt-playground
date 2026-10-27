@@ -72,10 +72,14 @@ async function publishedPins() {
     if (typeof kernel !== "string" || typeof image !== "string") {
       throw new Error("pins.json is missing required release hashes");
     }
-    return {
+    const pinned = {
       "yurt_kernel.wasm": kernel,
       "playground.yurtimg": image,
     };
+    // The slim image the browser boots, when the train ships one.
+    const slim = pins.browserImage?.sha256;
+    if (typeof slim === "string") pinned["playground-slim.yurtimg"] = slim;
+    return pinned;
   } catch {
     return null;
   }
@@ -152,7 +156,7 @@ async function verify() {
         // The row says so.
       }
       const pinRequired = name === "yurt_kernel.wasm" ||
-        name === "playground.yurtimg";
+        name.endsWith(".yurtimg");
       const pinned = pinRequired ? pins?.[name] ?? null : undefined;
       if (
         actual === manifest.files[name] &&

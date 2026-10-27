@@ -293,7 +293,11 @@ function q(word: string): string {
  * stay in memory next to what they unpacked to. `sudo` must give root: a
  * stand-in that runs the command as the caller would fail every write.
  */
-export function installScript(name: string, repoId: string): string {
+export function installScript(
+  specs: string | readonly string[],
+  repoId: string,
+): string {
+  const words = (typeof specs === "string" ? [specs] : specs).map(q).join(" ");
   const dir = STAGING_DIR;
   const etc = `${dir}/etc`;
   const cached = `${CACHE_ROOT}/${repoId}/current/index.json`;
@@ -313,7 +317,7 @@ export function installScript(name: string, repoId: string): string {
     `if ! sudo cmp -s ${q(cached)} ${q(`${dir}/repo/index.json`)}; then`,
     `  ${pkg} update || exit 1`,
     "fi",
-    `${pkg} install ${q(name)} 2>"$err"`,
+    `${pkg} install ${words} 2>"$err"`,
     "s=$?",
     'cat "$err" >&2',
     // The cached index is this one, but under another signing identity (a
@@ -321,7 +325,7 @@ export function installScript(name: string, repoId: string): string {
     // a changed identity lets through at the same version.
     `if [ $s -ne 0 ] && grep -q 'trusted config for repo .* changed' "$err"; then`,
     `  ${pkg} update || exit 1`,
-    `  ${pkg} install ${q(name)}`,
+    `  ${pkg} install ${words}`,
     "  exit $?",
     "fi",
     "exit $s",
@@ -502,8 +506,15 @@ function failure(
 }
 
 /** The releases a `pkg install` plan names: it prints `install NAME
- * VERSION-BUILD` for each before it fetches any archive. */
-function planReleases(stdout: string, catalog: Catalog): Release[] {
+ * VERSION-BUILD` for each before it fetches any archive. With `pinned`,
+ * every one must be the exact release pinned for its name: a newer build,
+ * a republished one, or a dependency the train did not pin is refused
+ * before anything is downloaded. */
+function planReleases(
+  stdout: string,
+  catalog: Catalog,
+  pinned?: ReadonlyMap<string, PinnedRelease>,
+): Release[] {
   return [...stdout.matchAll(/^install (\S+) (\S+)$/gm)].map(([, n, vb]) => {
     const release = catalog.metadata.get(n)?.file.versions.find((v) =>
       `${v.version}-${v.build}` === vb
@@ -513,8 +524,92 @@ function planReleases(stdout: string, catalog: Catalog): Release[] {
         `pkg chose ${n} ${vb}, which the index does not list or the page cannot read`,
       );
     }
+    if (pinned !== undefined) {
+      const pin = pinned.get(n);
+      if (pin === undefined) {
+        throw new Error(`pkg chose ${n} ${vb}, which this page does not pin`);
+      }
+      if (
+        `${pin.version}-${pin.build}` !== vb ||
+        release.sha256.toLowerCase() !== pin.sha256 ||
+        release.size !== pin.size
+      ) {
+        throw new Error(
+          `${n} ${vb} in the repository is not the ${pin.version}-${pin.build} this page was tested with`,
+        );
+      }
+    }
     return checkRelease({ ...release, name: n });
   });
+}
+
+/** One release a page pins (artifacts/pins.json `packages`). */
+export type PinnedRelease = {
+  name: string;
+  version: string;
+  build: string;
+  sha256: string;
+  size: number;
+};
+
+/** What `installPackage` installs: a package by name, `pkg`'s choice of
+ * release, or a set of exact releases in one `pkg install`, under one
+ * label for the progress messages. */
+export type InstallRequest =
+  | string
+  | { label: string; releases: readonly PinnedRelease[] };
+
+/** Where archives and their signatures are kept between visits (the Cache
+ * API in the browser): keyed by repository URL, which names one release.
+ * What it returns is checked like a download: the archive against the
+ * pinned or indexed sha256, the signature by the guest's `pkg`. */
+export type ArchiveCache = {
+  get(url: string): Promise<Uint8Array | undefined>;
+  put(url: string, bytes: Uint8Array): Promise<void>;
+  delete(url: string): Promise<void>;
+};
+
+/** The Cache API's {@link ArchiveCache}, or none where there is no Cache
+ * API (or it refuses: a private window, storage turned off). */
+export async function browserArchiveCache(
+  name = "yurt-packages-v1",
+): Promise<ArchiveCache | undefined> {
+  if (typeof caches === "undefined") return undefined;
+  let cache: Cache;
+  try {
+    cache = await caches.open(name);
+  } catch {
+    return undefined;
+  }
+  return {
+    async get(url) {
+      try {
+        const hit = await cache.match(url);
+        return hit === undefined
+          ? undefined
+          : new Uint8Array(await hit.arrayBuffer());
+      } catch {
+        return undefined;
+      }
+    },
+    async put(url, bytes) {
+      try {
+        await cache.put(
+          url,
+          new Response(bytes.slice() as BufferSource),
+        );
+      } catch {
+        // A full or refused cache only costs the next visit a download.
+      }
+    },
+    async delete(url) {
+      try {
+        await cache.delete(url);
+      } catch {
+        // As above.
+      }
+    },
+  };
 }
 
 /**
@@ -531,27 +626,42 @@ function planReleases(stdout: string, catalog: Catalog): Release[] {
  * installs them.
  */
 export async function installPackage(
-  name: string,
+  request: InstallRequest,
   options: {
     host: PackageHost;
     tablet: boolean;
     progress: (message: string) => void;
     fetcher?: Fetcher;
     base?: string;
+    cache?: ArchiveCache;
   },
 ): Promise<string> {
-  const { host, progress } = options;
+  const { host, progress, cache } = options;
   const fetcher = options.fetcher ?? fetchWithProgress;
   const base = options.base ?? PACKAGE_REPO_URL;
-  if (!isPackageName(name)) {
-    throw new Error(`not a package name: ${JSON.stringify(name)}`);
+  const pinned = typeof request === "string"
+    ? undefined
+    : new Map(request.releases.map((release) => [release.name, release]));
+  const names = typeof request === "string"
+    ? [request]
+    : request.releases.map((release) => release.name);
+  const name = typeof request === "string" ? request : request.label;
+  if (names.length === 0 || !names.every(isPackageName)) {
+    throw new Error(`not a package name: ${JSON.stringify(names)}`);
   }
+  // `name@version-build` for a pinned set: pkg installs exactly those.
+  const specs = typeof request === "string"
+    ? [request]
+    : request.releases.map((r) => `${r.name}@${r.version}-${r.build}`);
+  const command = `pkg install ${specs.join(" ")}`;
   progress(`${name}: reading the package index`);
   // Fresh for every install: a few KiB, and a retry after a failed one
   // must not stage the same bytes again.
   const catalog = await loadCatalog(fetcher, base);
-  if (catalog.index.packages[name] === undefined) {
-    throw new Error(`no package named ${name}`);
+  for (const wanted of names) {
+    if (catalog.index.packages[wanted] === undefined) {
+      throw new Error(`no package named ${wanted}`);
+    }
   }
   const trusted = new TextDecoder().decode(
     await host.readFile(TRUSTED_REPOS_PATH).catch(() => {
@@ -587,12 +697,12 @@ export async function installPackage(
     for (const [path, bytes] of archives) {
       files.push({ path: `${mirror}/${path}`, bytes });
     }
-    return host.stageAndRun(files, installScript(name, config.id));
+    return host.stageAndRun(files, installScript(specs, config.id));
   };
-  progress(`${name}: resolving (pkg install ${name})`);
+  progress(`${name}: resolving (${command})`);
   const planned = await run(new Map());
   if (planned.code === 0) return `${planned.stdout}${planned.stderr}`.trim();
-  const releases = planReleases(planned.stdout, catalog);
+  const releases = planReleases(planned.stdout, catalog, pinned);
   if (
     releases.length === 0 ||
     !planned.stderr.includes("failed to fetch archive")
@@ -603,11 +713,18 @@ export async function installPackage(
   // The signatures first: they are small, and with the index and metadata
   // they count against the limits too.
   const archives = new Map<string, Uint8Array>();
+  /** What came from the cache, dropped again if the install fails. */
+  const fromCache: string[] = [];
   for (const release of releases) {
-    archives.set(
-      `${release.url}.bundle`,
-      await fetcher(`${base}${release.url}.bundle`, METADATA_MAX_BYTES),
-    );
+    const url = `${base}${release.url}.bundle`;
+    let bundle = await cache?.get(url);
+    if (bundle !== undefined) {
+      fromCache.push(url);
+    } else {
+      bundle = await fetcher(url, METADATA_MAX_BYTES);
+      await cache?.put(url, bundle);
+    }
+    archives.set(`${release.url}.bundle`, bundle);
   }
   const staged = [...archives.values()].reduce((s, b) => s + b.byteLength, 0) +
     catalog.indexBytes.byteLength + catalog.indexBundle.byteLength +
@@ -616,29 +733,46 @@ export async function installPackage(
   if (refusal !== undefined) throw new Error(`${name}: ${refusal}`);
   let done = 0;
   for (const release of releases) {
-    const show = (received: number) =>
-      progress(
-        `${name}: downloading ${release.name} ${
-          formatBytes(done + received)
-        } of ${formatBytes(total)}`,
-      );
-    show(0);
-    const bytes = await fetcher(`${base}${release.url}`, release.size, show);
-    if (bytes.byteLength !== release.size) {
-      throw new Error(
-        `${release.name}: downloaded ${bytes.byteLength} bytes, the index says ${release.size}`,
-      );
-    }
-    if (await sha256Hex(bytes) !== release.sha256) {
-      throw new Error(
-        `${release.name}: the download does not match its sha256`,
-      );
+    const url = `${base}${release.url}`;
+    const matches = async (bytes: Uint8Array) =>
+      bytes.byteLength === release.size &&
+      await sha256Hex(bytes) === release.sha256.toLowerCase();
+    // A cached archive is used only if it is still exactly this release.
+    let bytes = await cache?.get(url);
+    if (bytes !== undefined && await matches(bytes)) {
+      fromCache.push(url);
+      progress(`${name}: ${release.name} is cached`);
+    } else {
+      if (bytes !== undefined) await cache?.delete(url);
+      const show = (received: number) =>
+        progress(
+          `${name}: downloading ${release.name} ${
+            formatBytes(done + received)
+          } of ${formatBytes(total)}`,
+        );
+      show(0);
+      bytes = await fetcher(url, release.size, show);
+      if (bytes.byteLength !== release.size) {
+        throw new Error(
+          `${release.name}: downloaded ${bytes.byteLength} bytes, the index says ${release.size}`,
+        );
+      }
+      if (!await matches(bytes)) {
+        throw new Error(
+          `${release.name}: the download does not match its sha256`,
+        );
+      }
+      await cache?.put(url, bytes);
     }
     archives.set(release.url, bytes);
     done += release.size;
   }
-  progress(`${name}: verifying and installing (pkg install ${name})`);
+  progress(`${name}: verifying and installing (${command})`);
   const result = await run(archives);
-  if (result.code !== 0) throw failure(name, result);
+  if (result.code !== 0) {
+    // Whatever was cached may be what pkg refused: the next try downloads.
+    for (const url of fromCache) await cache?.delete(url);
+    throw failure(name, result);
+  }
   return `${result.stdout}${result.stderr}`.trim();
 }

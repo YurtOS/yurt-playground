@@ -14,7 +14,12 @@ import {
   imagePartsManifest,
   PYTHON_SEAL_NAME,
 } from "../src/image_parts.ts";
-import { IMAGE_NAME, integrityManifest } from "../src/integrity.ts";
+import {
+  IMAGE_NAME,
+  INTEGRITY_FILES,
+  integrityManifest,
+  SLIM_IMAGE_NAME,
+} from "../src/integrity.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -113,7 +118,15 @@ export async function buildStaticSite(): Promise<void> {
   // The page reads the pins for its hash checks, then the blobs.
   await copyFiles(["pins.json", "yurt_kernel.wasm"], artifactsDir, distDir);
   // Cloudflare Pages refuses files over 25 MiB; the image ships in parts.
+  // The full image stays in the site: the suspend/resume kernel stages its
+  // Python standard library from it.
   await writeImageParts(IMAGE_NAME);
+  // The slim image the browser boots, when the pins name one.
+  const slim = await Deno.stat(join(artifactsDir, SLIM_IMAGE_NAME)).then(
+    () => true,
+    () => false,
+  );
+  if (slim) await writeImageParts(SLIM_IMAGE_NAME);
   // The notebook kernel's CPython, built into public/ (51 MB): the same.
   // Absent, the `yurt-snapshot` kernel says so at boot; the rest of the
   // site does not need it.
@@ -133,9 +146,15 @@ export async function buildStaticSite(): Promise<void> {
       await integrityManifest(
         (name) =>
           Deno.readFile(
-            join(name === IMAGE_NAME ? artifactsDir : distDir, name),
+            join(
+              name === IMAGE_NAME || name === SLIM_IMAGE_NAME
+                ? artifactsDir
+                : distDir,
+              name,
+            ),
           ),
         Deno.env.get("GITHUB_SHA") ?? null,
+        slim ? [...INTEGRITY_FILES, SLIM_IMAGE_NAME] : INTEGRITY_FILES,
       ),
       null,
       2,

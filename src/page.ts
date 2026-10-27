@@ -5,12 +5,13 @@ import {
   type MemoryRefusedMessage,
   showMemoryRefused,
 } from "./memory_refused.ts";
-import {
-  mountNotebook,
-  type NotebookView,
-  PYTHON_INSTALL,
-} from "./notebook.ts";
+import { mountNotebook, type NotebookView } from "./notebook.ts";
 import { createStatusLine, type StatusLine } from "./status_line.ts";
+import {
+  fetchSitePins,
+  pythonInstallRequest,
+  pythonInstallState,
+} from "./python_install.ts";
 import { mountAgentPane } from "./agent_pane.ts";
 import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
@@ -44,7 +45,7 @@ type FromWorker =
   | { type: "notebook-ready" }
   | { type: "shell-ready" }
   // The image has no python3: the shell runs, Jupyter was not launched.
-  | { type: "python-missing" }
+  | { type: "python-missing"; error?: string }
   | {
     type: "yurt-reply" | "pkg-reply";
     req: number;
@@ -239,6 +240,7 @@ function boot(
   stopWatchingForAnotherSandbox: () => void,
   shellOnly: boolean,
   status: StatusLine,
+  smallDevice: boolean,
 ): void {
   const kernelPorts = desktop?.kernelPorts;
   // A refusal belongs to the session that had it.
@@ -263,6 +265,21 @@ function boot(
   // The cell already says why there is no kernel; an error after that
   // (a restart refused) must not say "Jupyter did not start" over it.
   let pythonMissing = false;
+  let installingPython = false;
+  const pinsPromise = fetchSitePins();
+  // The cell's Install: enabled when the pins name Python's packages; after
+  // a failed install it says why and tries again.
+  const showPythonMissing = (error: string | undefined) =>
+    void pinsPromise.then((pins) =>
+      notebook.pythonMissing(
+        pythonInstallState(pins),
+        () => {
+          notebook.installing("installing Python");
+          worker.postMessage({ type: "python-install" });
+        },
+        error,
+      )
+    );
   const sandboxGone = () => {
     stopAnnouncing();
     stopAnnouncing = () => {};
@@ -340,6 +357,14 @@ function boot(
     const msg = event.data;
     // The coordinator's empty status is "booted"; say so.
     if (msg.type === "status") {
+      // Installing Python, then starting Jupyter on it, is the cell's
+      // wait: say so there too.
+      if (!notebookReady && /^(installing Python|Python:)/.test(msg.text)) {
+        installingPython = true;
+      }
+      if (!notebookReady && installingPython && msg.text !== "") {
+        notebook.installing(msg.text);
+      }
       status.progress(msg.text || "running");
       rememberBooting(msg.text || "running");
       if (msg.text === "") yurtState.running();
@@ -374,7 +399,7 @@ function boot(
     // The boot is over here too, so a later reload is no cut-off boot.
     if (msg.type === "python-missing") {
       pythonMissing = true;
-      notebook.pythonMissing(PYTHON_INSTALL);
+      showPythonMissing(msg.error);
       status.progress("running", { settled: true });
       rememberBooting(undefined);
     }
@@ -404,15 +429,24 @@ function boot(
   );
   status.progress("booting");
   rememberBooting("booting");
-  worker.postMessage({
-    type: "start",
-    cols: term.cols,
-    rows: term.rows,
-    isolated: globalThis.crossOriginIsolated === true,
-    kernelPorts,
-    apiToken: desktop?.apiToken,
-    noJupyter: shellOnly,
-  });
+  // On the slim image the coordinator installs the pinned Python packages
+  // before Jupyter; a tablet's session is the shell alone, and the desktop
+  // app's sandbox needs no page to install anything.
+  void pinsPromise.then((pins) =>
+    worker.postMessage({
+      type: "start",
+      cols: term.cols,
+      rows: term.rows,
+      isolated: globalThis.crossOriginIsolated === true,
+      kernelPorts,
+      apiToken: desktop?.apiToken,
+      noJupyter: shellOnly,
+      python: shellOnly || desktop !== undefined || pins === undefined
+        ? undefined
+        : pythonInstallRequest(pins),
+      tablet: smallDevice,
+    })
+  );
 }
 
 /** The "Download home" control: `yurt.fs.export()` in a process of its
@@ -695,6 +729,7 @@ async function runPage(): Promise<void> {
       stopWatchingForAnotherSandbox,
       shellOnly,
       status,
+      device !== "desktop",
     );
   };
   if (desktop === undefined) {

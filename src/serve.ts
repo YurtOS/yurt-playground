@@ -11,7 +11,12 @@ import {
   imagePartsManifest,
   PYTHON_SEAL_NAME,
 } from "./image_parts.ts";
-import { IMAGE_NAME, integrityManifest } from "./integrity.ts";
+import {
+  IMAGE_NAME,
+  INTEGRITY_FILES,
+  integrityManifest,
+  SLIM_IMAGE_NAME,
+} from "./integrity.ts";
 import { LOCAL_MODELS } from "./llm_models.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -39,6 +44,7 @@ const ARTIFACT_FILES: Record<string, string> = {
   "/pins.json": join(artifactsDir, "pins.json"),
   "/yurt_kernel.wasm": join(artifactsDir, "yurt_kernel.wasm"),
   "/playground.yurtimg": join(artifactsDir, "playground.yurtimg"),
+  "/playground-slim.yurtimg": join(artifactsDir, "playground-slim.yurtimg"),
   "/xterm.css": XTERM_CSS_PATH,
 };
 
@@ -109,6 +115,7 @@ export async function directoryRule(
  * cap): the image, and the notebook kernel's sealable CPython. */
 const PARTED_FILES: Record<string, string> = {
   [IMAGE_NAME]: join(artifactsDir, IMAGE_NAME),
+  [SLIM_IMAGE_NAME]: join(artifactsDir, SLIM_IMAGE_NAME),
   [PYTHON_SEAL_NAME]: join(publicDir, PYTHON_SEAL_NAME),
 };
 
@@ -166,11 +173,19 @@ async function handleImagePart(pathname: string): Promise<Response | null> {
 /** The dev-server counterpart of the static build's integrity.json,
  * computed from the files being served so it is never stale. */
 async function handleIntegrity(): Promise<Response> {
-  const manifest = await integrityManifest((name) => {
-    const path = resolvePlaygroundPath(`/${name}`);
-    if (path === null) throw new Error(`no such file: ${name}`);
-    return Deno.readFile(path);
-  }, null);
+  const slim = await Deno.stat(join(artifactsDir, SLIM_IMAGE_NAME)).then(
+    () => true,
+    () => false,
+  );
+  const manifest = await integrityManifest(
+    (name) => {
+      const path = resolvePlaygroundPath(`/${name}`);
+      if (path === null) throw new Error(`no such file: ${name}`);
+      return Deno.readFile(path);
+    },
+    null,
+    slim ? [...INTEGRITY_FILES, SLIM_IMAGE_NAME] : INTEGRITY_FILES,
+  );
   return new Response(JSON.stringify(manifest, null, 2), {
     headers: {
       ...ISOLATION_HEADERS,

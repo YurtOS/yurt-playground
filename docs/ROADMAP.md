@@ -83,16 +83,19 @@ Bigger directions. Each needs design work, and the order is not fixed.
   libraries is over two thirds of today's image and Node with the Gemini CLI
   most of the rest, and both load into every tab, including on phones and
   tablets, where memory is short
-  ([#200](https://github.com/YurtOS/yurt-playground/issues/200)). The base would
-  keep the shell, the command-line tools and `pkg`. The page would install
-  Python when you open the Notebook, JupyterLab or the Python pane, and Node
-  when you open the agent pane, pinned to the exact builds the page expects
-  (Suspend/Resume runs a separately pinned sealable CPython that needs the
-  matching standard library). It needs signed packages first, and while files do
-  not survive a reload
-  ([#81](https://github.com/YurtOS/yurt-playground/issues/81)) a visitor who
-  uses Python downloads it on every visit, so the gain is for visits that only
-  use the shell.
+  ([#200](https://github.com/YurtOS/yurt-playground/issues/200)). The page side
+  is in place: when a release pins a slim image (`browserImage` in
+  `artifacts/pins.json`) and the Python packages (`packages`, `pythonPackages`),
+  the browser boots the slim image (the shell, the command-line tools, `pkg` and
+  `sudo`), and every page that runs Python (the Python pane, the agent, the
+  Notebook and JupyterLab) installs those exact builds with the guest's own
+  `pkg` before ipykernel starts. Archives are kept in the browser's Cache API,
+  so a repeat visit downloads only the index, but while files do not survive a
+  reload ([#81](https://github.com/YurtOS/yurt-playground/issues/81)) it
+  installs again (about a minute on a laptop). It ships once the packages are
+  published in YurtOS/yurt-packages and a release pins them. Node is a package
+  too, for the shell; nothing on the page needs it. Suspend/Resume keeps staging
+  its standard library from the full image for now.
 - **Go, `gh` and Perl as packages, and a current clang**, published in
   [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) when there is
   demand for them, rather than in the base image. Planned: Go, `gh` and Perl are

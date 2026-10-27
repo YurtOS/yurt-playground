@@ -89,7 +89,7 @@ Deno.test("lite_bridge shows every state the coordinator posts", () => {
   );
   for (
     const shown of [
-      /msg\.type === "python-missing"\) \{[^}]*show\(\{ state: "python-missing" \}\);[^}]*rejectReady\(/,
+      /msg\.type === "python-missing"\) \{[^]*?show\(\{ state: "python-missing", error: msg\.error \}\);\s*rejectReady\(/,
       /msg\.type === "error"\) \{[^}]*show\(\{ state: "error", text: msg\.message \}\);/,
       /show\(\{ state: "ready" \}\);\s*resolveReady\(\);/,
       /worker\.onerror = [^}]*show\(\{ state: "error"/,
@@ -115,5 +115,16 @@ Deno.test("the suspend/resume panel keeps a failure instead of clearing it at th
     /case "error":[^]*?for \(const listener of errorListeners\) listener\(msg\.message\);/
       .test(bridge),
     "snapshot_bridge.ts reports the worker's errors to onError",
+  );
+});
+
+Deno.test("a failed Python install says why and how to try again", () => {
+  const text = describeBridgeState({
+    state: "python-missing",
+    error: "pkg install python failed: offline",
+  });
+  assertEquals(
+    text,
+    "Yurt sandbox: installing Python failed: pkg install python failed: offline. Restart the kernel to try again.",
   );
 });

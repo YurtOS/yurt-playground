@@ -762,6 +762,39 @@ else
   python_seal_json=$(jq -c '.pythonSeal // empty' "$root/artifacts/pins.json")
   [ -n "$python_seal_json" ] || die "artifacts/pins.json has no pythonSeal entry to carry through; pass --python-seal-release"
 fi
+# The slim image the browser boots, published next to the full one by the
+# image run; an older image release has none, and the browser then boots
+# the full image as before.
+slim_json='null'
+if gh release view "$image_release" --repo "$image_repo" --json assets --jq '.assets[].name' |
+  grep -qx 'playground-slim.yurtimg'; then
+  slim_json=$(jq -n --arg ports "$ports_sha" --arg release "$image_release" --arg repo "$image_repo" \
+    --arg sha "$(sidecar_sha "$image_repo" "$image_release" playground-slim.yurtimg)" \
+    '{repo: "YurtOS/yurt-ports", rev: $ports, releaseRepo: $repo, release: $release,
+      build: "scripts/build-playground-image.sh", path: "ports/playground-image/build/dist/playground-slim.yurtimg", sha256: $sha}')
+fi
+# The packages the slim image's pages install (src/python_install.ts): the
+# newest unyanked yurt_N build of each in YurtOS/yurt-packages now, pinned
+# exactly, so the page never installs a build this train did not test.
+# Python's must be the CPython of this ports commit, whose sealable twin
+# the notebook kernel runs (pythonSeal).
+python_packages="python numpy pyzmq jupyter-kernel"
+packages_json='{}'
+if [ "$slim_json" != null ]; then
+  for name in $python_packages node gemini-cli; do
+    meta=$(curl -fsSL --retry 3 "https://raw.githubusercontent.com/YurtOS/yurt-packages/main/packages/$name.json") ||
+      { case " $python_packages " in *" $name "*) die "yurt-packages has no $name package for the slim image" ;; esac; continue; }
+    release=$(jq -c '[.versions[] | select((.yanked | not) and (.build | test("^yurt_[0-9]+$")))]
+      | sort_by((.version | split("-")[0] | split(".") | map(tonumber? // 0)), (.build | ltrimstr("yurt_") | tonumber))
+      | last // empty | {version, build, sha256, size}' <<< "$meta")
+    [ -n "$release" ] || die "yurt-packages lists no yurt_N build of $name"
+    packages_json=$(jq --arg n "$name" --argjson r "$release" '. + {($n): $r}' <<< "$packages_json")
+  done
+  cpython_version=$(gh api "repos/YurtOS/yurt-ports/contents/ports/cpython/yurt-pack.toml?ref=$ports_sha" --jq .content |
+    base64 --decode | sed -n 's/^version *= *"\(.*\)"/\1/p' | head -1)
+  [ "$(jq -r .python.version <<< "$packages_json")" = "$cpython_version" ] ||
+    die "yurt-packages' python is $(jq -r .python.version <<< "$packages_json"), the image's CPython (and the seal's) $cpython_version: publish this ports commit's python first"
+fi
 host_json='{}'
 cli_json='{}'
 # The CLI's package names carry its version; the release's asset list says
@@ -788,7 +821,8 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
   --arg kernel_release "$kernel_wasm_release" --arg kernel_repo "$kernel_wasm_repo" --arg kernel_sha256 "$kernel_sha256" \
   --arg image_release "$image_release" --arg image_repo "$image_repo" --arg image_sha256 "$image_sha256" --arg ports_sha "$ports_sha" \
   --arg host_release "$host_release" --arg host_repo "$host_repo" --arg cli_release "$cli_release" --arg cli_repo "$cli_repo" \
-  --argjson host "$host_json" --argjson cli "$cli_json" --argjson python_seal "$python_seal_json" '{
+  --argjson host "$host_json" --argjson cli "$cli_json" --argjson python_seal "$python_seal_json" \
+  --argjson slim "$slim_json" --argjson packages "$packages_json" --arg python_packages "$python_packages" '{
     train: $train,
     kernelWasm: {repo: "YurtOS/yurtos-kernel", rev: $kernel_sha, releaseRepo: $kernel_repo, release: $kernel_release,
       build: "scripts/build-kernel-wasm.sh", path: "target/kernel-wasm/release/yurt_kernel.wasm", sha256: $kernel_sha256},
@@ -801,7 +835,11 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
       assets: ($cli | with_entries(.value = .value.asset)),
       sha256: ($cli | with_entries(.value = .value.sha256))},
     pythonSeal: $python_seal
-  }' > "$root/artifacts/pins.json"
+  } + (if $slim == null then {} else {
+    browserImage: $slim,
+    packages: $packages,
+    pythonPackages: ($python_packages | split(" "))
+  } end)' > "$root/artifacts/pins.json"
 say "verify the pins: scripts/install-pinned-artifacts.sh"
 "$root/scripts/install-pinned-artifacts.sh"
 if [ "$pins_only" = 1 ]; then

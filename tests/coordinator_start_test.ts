@@ -1,5 +1,6 @@
 import { assert, assertEquals } from "@std/assert";
 import {
+  installThenLaunch,
   probePython,
   PYTHON_MISSING_EXIT,
   PYTHON_PROBE_COMMAND,
@@ -247,4 +248,84 @@ Deno.test("the coordinator worker starts through startSandbox and never stops a 
     false,
     "no session.stop() in the coordinator: a Jupyter failure killed the shell",
   );
+});
+
+Deno.test("the slim image: Python is installed, then the kernel starts", async () => {
+  const reports: StartReport[] = [];
+  const order: string[] = [];
+  const started = await startSandbox({
+    boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(42)).spawn)),
+    booted: () => {},
+    noJupyter: false,
+    installPython: () => {
+      order.push("install");
+      return Promise.resolve();
+    },
+    startKernel: () => {
+      order.push("kernel");
+      return Promise.resolve(transport);
+    },
+    post: (report) => reports.push(report),
+  });
+  assertEquals(started, transport);
+  assertEquals(order, ["install", "kernel"]);
+  assertEquals(reports.at(-1), { type: "notebook-ready" });
+  assertEquals(reports.some((r) => r.type === "python-missing"), false);
+});
+
+Deno.test("a failed install is python-missing with its error; the shell stays and no kernel is tried", async () => {
+  const reports: StartReport[] = [];
+  const session = fakeSession(fakeSpawner(exit(42)).spawn);
+  let kernels = 0;
+  const started = await startSandbox({
+    boot: () => Promise.resolve(session),
+    booted: () => {},
+    noJupyter: false,
+    installPython: () =>
+      Promise.reject(new Error("pkg install python failed: x")),
+    startKernel: () => {
+      kernels++;
+      return Promise.resolve(transport);
+    },
+    post: (report) => reports.push(report),
+  });
+  assertEquals(started, undefined);
+  assertEquals(kernels, 0);
+  assertEquals(session.stops, 0);
+  assertEquals(reports.at(-1), {
+    type: "python-missing",
+    error: "pkg install python failed: x",
+  });
+});
+
+Deno.test("a retry after a failed install starts the kernel once it works", async () => {
+  const reports: StartReport[] = [];
+  const session = fakeSession(fakeSpawner(exit(42)).spawn);
+  let tries = 0;
+  const deps = {
+    installPython: () =>
+      ++tries === 1 ? Promise.reject(new Error("offline")) : Promise.resolve(),
+    startKernel: () => Promise.resolve(transport),
+    post: (report: StartReport) => reports.push(report),
+  };
+  assertEquals(await installThenLaunch(session, deps), undefined);
+  assertEquals(reports.at(-1), { type: "python-missing", error: "offline" });
+  assertEquals(await installThenLaunch(session, deps), transport);
+  assertEquals(reports.at(-1), { type: "notebook-ready" });
+});
+
+Deno.test("an image with python3 is never installed into", async () => {
+  let installs = 0;
+  await startSandbox({
+    boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(0)).spawn)),
+    booted: () => {},
+    noJupyter: false,
+    installPython: () => {
+      installs++;
+      return Promise.resolve();
+    },
+    startKernel: () => Promise.resolve(transport),
+    post: () => {},
+  });
+  assertEquals(installs, 0);
 });

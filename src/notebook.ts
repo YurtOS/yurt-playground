@@ -4,9 +4,11 @@ import type { JupyterReply, JupyterStream } from "./jupyter.ts";
 export const PYTHON_MISSING_TEXT = "Python isn't installed in this sandbox yet";
 
 /**
- * Whether the cell's Install button installs Python. The one switch for
- * the later install change: until Python ships as a package the browser
- * can install, the button is there but disabled, with `reason` next to it.
+ * The Install button's state when nothing says otherwise: disabled, with
+ * `reason` next to it. The page enables it when its pins name the Python
+ * packages (src/python_install.ts `pythonInstallState`); the coordinator
+ * installs them on its own at boot, so the button is the retry after a
+ * failed install.
  */
 export const PYTHON_INSTALL: { available: boolean; reason: string } = {
   available: false,
@@ -19,11 +21,16 @@ export type NotebookView = {
    * "waiting for the sandbox", and keep the cell disabled. */
   unavailable(state: string): void;
   /** The image has no python3: the cell says so and offers Install
-   * (enabled only once `install.available`; {@link PYTHON_INSTALL}). */
+   * (enabled only once `install.available`; {@link PYTHON_INSTALL}), with
+   * `error` when an install was tried and failed. */
   pythonMissing(
     install?: { available: boolean; reason: string },
     onInstall?: () => void,
+    error?: string,
   ): void;
+  /** Python is being installed (or Jupyter started on it): `text` says how
+   * far, and the cell waits. */
+  installing(text: string): void;
   /** What the running cell has printed so far (yurt-playground#131). */
   stream(id: string, chunk: JupyterStream): void;
   result(id: string, reply: JupyterReply): void;
@@ -186,6 +193,8 @@ export function mountNotebook(
       editor.disabled = false;
       button.disabled = false;
       status.textContent = "ready";
+      missing.hidden = true;
+      hint.textContent = "one cell, on a real ipykernel in the sandbox";
     },
     unavailable(state) {
       editor.disabled = true;
@@ -193,18 +202,31 @@ export function mountNotebook(
       stop.hidden = true;
       status.textContent = state;
     },
-    pythonMissing(installState = PYTHON_INSTALL, onInstall) {
+    pythonMissing(installState = PYTHON_INSTALL, onInstall, error) {
       editor.disabled = true;
       button.disabled = true;
       stop.hidden = true;
-      status.textContent = PYTHON_MISSING_TEXT;
+      status.textContent = error === undefined
+        ? PYTHON_MISSING_TEXT
+        : "installing Python failed";
       hint.textContent = "the shell above runs without it";
       missing.hidden = false;
+      install.hidden = false;
+      install.textContent = error === undefined ? "Install" : "Try again";
       install.disabled = !installState.available || onInstall === undefined;
       install.onclick = install.disabled ? null : () => onInstall?.();
-      installReason.textContent = installState.available
-        ? ""
-        : installState.reason;
+      installReason.textContent = error ??
+        (installState.available ? "" : installState.reason);
+    },
+    installing(text) {
+      editor.disabled = true;
+      button.disabled = true;
+      stop.hidden = true;
+      status.textContent = text;
+      hint.textContent =
+        "Python installs as packages; the shell above runs meanwhile";
+      missing.hidden = true;
+      install.onclick = null;
     },
     stream(id, chunk) {
       if (!pending.has(id)) return;

@@ -4,11 +4,13 @@
  * The guest has no network; this is what keeps the *page* honest about it.
  * Every request the browser makes from a playground page must stay on the
  * site's own origin (`connect-src 'self'`), so notebook markdown, rich HTML
- * output or a broken frontend cannot phone out. One exception, outside
- * JupyterLite: the local agent's weights (#140) download from Hugging Face
- * ({@link MODEL_ORIGINS}); gigabytes do not fit the site's host. And the
- * packages a user installs come from YurtOS/yurt-packages
- * ({@link PACKAGE_SOURCES}, src/packages.ts). Scripts come from the origin
+ * output or a broken frontend cannot phone out. Two exceptions. Outside
+ * JupyterLite only: the local agent's weights (#140) download from Hugging
+ * Face ({@link MODEL_ORIGINS}); gigabytes do not fit the site's host. On
+ * every page: the packages the sandbox installs come from the one
+ * repository path YurtOS/yurt-packages ({@link PACKAGE_SOURCES},
+ * src/packages.ts) -- on the slim image the Notebook and Lab pages install
+ * Python from there before their kernel starts. Scripts come from the origin
  * plus the inline bootstraps JupyterLite emits in its index pages, allowed
  * by hash; the WebAssembly kernel needs `'wasm-unsafe-eval'`. Styles allow
  * inline because JupyterLab sets them everywhere.
@@ -64,7 +66,8 @@ export type CspOptions = {
    * validators with `new Function`; only the JupyterLite pages get this.
    */
   allowEval?: boolean;
-  /** Keep `connect-src` on the origin alone: no model download. */
+  /** No model download: `connect-src` is the origin and the packages
+   * repository's path only. */
   sameOriginOnly?: boolean;
 };
 
@@ -84,7 +87,8 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
     "media-src 'self' blob:",
     [
       "connect-src 'self'",
-      ...(options.sameOriginOnly ? [] : [...MODEL_ORIGINS, ...PACKAGE_SOURCES]),
+      ...(options.sameOriginOnly ? [] : MODEL_ORIGINS),
+      ...PACKAGE_SOURCES,
     ].join(" "),
     "worker-src 'self'",
     "frame-src 'none'",

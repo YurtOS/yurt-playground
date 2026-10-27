@@ -11,6 +11,11 @@
 /** The guest filesystem image: BusyBox, Python, everything the guest runs. */
 export const IMAGE_NAME = "playground.yurtimg";
 
+/** The slim image the browser boots when the pins name one
+ * (`browserImage`): the shell and the command line tools; Python installs
+ * as packages. */
+export const SLIM_IMAGE_NAME = "playground-slim.yurtimg";
+
 /**
  * The files the sandbox runs on, in the order the home page lists them. The
  * image's hash is of the whole file; the static site serves it in parts
@@ -45,9 +50,12 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
 export async function integrityManifest(
   read: (name: string) => Promise<Uint8Array>,
   commit: string | null,
+  /** The files to list: {@link INTEGRITY_FILES}, and the slim image when
+   * the site ships one. */
+  names: readonly string[] = INTEGRITY_FILES,
 ): Promise<IntegrityManifest> {
   const files: Record<string, string> = {};
-  for (const name of INTEGRITY_FILES) {
+  for (const name of names) {
     files[name] = await sha256Hex(await read(name));
   }
   return { commit, files };

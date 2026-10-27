@@ -1,5 +1,6 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  type ArchiveCache,
   browserTrustedRepos,
   CACHE_ROOT,
   fetchWithProgress,
@@ -549,4 +550,159 @@ Deno.test("the worker writes only inside the staging dir", () => {
       path,
     );
   }
+});
+
+/** An {@link ArchiveCache} in memory, recording what it was asked. */
+function memoryCache(seed: Record<string, Uint8Array> = {}) {
+  const store = new Map(Object.entries(seed));
+  const log: string[] = [];
+  const cache: ArchiveCache = {
+    get: (url) => {
+      log.push(`get ${url}`);
+      return Promise.resolve(store.get(url));
+    },
+    put: (url, bytes) => {
+      log.push(`put ${url}`);
+      store.set(url, bytes);
+      return Promise.resolve();
+    },
+    delete: (url) => {
+      log.push(`delete ${url}`);
+      store.delete(url);
+      return Promise.resolve();
+    },
+  };
+  return { cache, store, log };
+}
+
+const GREET_URL =
+  `${PACKAGE_REPO_URL}artifacts/greet/0.1.0/greet-0.1.0-yurt_0.yurtpkg`;
+
+Deno.test("a pinned set is one exact `pkg install` and must plan exactly the pinned releases", async () => {
+  const archive = new Uint8Array([1, 2, 3]);
+  const fetcher = await fakeRepo(archive);
+  const pin = {
+    name: "greet",
+    version: "0.1.0",
+    build: "yurt_0",
+    sha256: await sha256Hex(archive),
+    size: archive.byteLength,
+  };
+  const { host, runs } = fakeHost(PLAN, INSTALLED);
+  const messages: string[] = [];
+  await installPackage({ label: "Greet", releases: [pin] }, {
+    host,
+    tablet: false,
+    fetcher,
+    progress: (m) => messages.push(m),
+  });
+  for (const { script } of runs) {
+    assertEquals(script, installScript(["greet@0.1.0-yurt_0"], "official"));
+  }
+  assertEquals(
+    messages.at(-1),
+    "Greet: verifying and installing (pkg install greet@0.1.0-yurt_0)",
+  );
+  // The repository's release is not the one this page was tested with.
+  for (const other of [{ sha256: "f".repeat(64) }, { size: 99 }]) {
+    const { host: refusing } = fakeHost(PLAN, INSTALLED);
+    await assertRejects(
+      () =>
+        installPackage({ label: "Greet", releases: [{ ...pin, ...other }] }, {
+          host: refusing,
+          tablet: false,
+          fetcher,
+          progress: () => {},
+        }),
+      Error,
+      "is not the 0.1.0-yurt_0 this page was tested with",
+    );
+  }
+  // pkg chose a release (a dependency) the page does not pin.
+  const { host: extra } = fakeHost({
+    ...PLAN,
+    stdout: "install greet 0.1.0-yurt_0\ninstall libx 1.0.0-yurt_0\n",
+  });
+  await assertRejects(
+    () =>
+      installPackage({ label: "Greet", releases: [pin] }, {
+        host: extra,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+      }),
+    Error,
+  );
+});
+
+Deno.test("a cached archive that is still the release is used without a download", async () => {
+  const archive = new Uint8Array([4, 5, 6]);
+  const repo = await fakeRepo(archive);
+  const fetched: string[] = [];
+  const fetcher = (url: string) => {
+    fetched.push(url);
+    return repo(url);
+  };
+  const { cache, log } = memoryCache({
+    [GREET_URL]: archive,
+    [`${GREET_URL}.bundle`]: new TextEncoder().encode('"archive bundle"'),
+  });
+  const { host, runs } = fakeHost(PLAN, INSTALLED);
+  await installPackage("greet", {
+    host,
+    tablet: false,
+    fetcher,
+    cache,
+    progress: () => {},
+  });
+  assertEquals(fetched.includes(GREET_URL), false);
+  assertEquals(fetched.includes(`${GREET_URL}.bundle`), false);
+  const staged = runs[1].files.find((f) => f.path.endsWith(".yurtpkg"));
+  assertEquals(staged?.bytes, archive);
+  assertEquals(log.some((l) => l.startsWith("put")), false);
+});
+
+Deno.test("a cached archive that is not the release is dropped and downloaded again", async () => {
+  const archive = new Uint8Array([7, 8, 9]);
+  const fetcher = await fakeRepo(archive);
+  const { cache, store, log } = memoryCache({
+    [GREET_URL]: new Uint8Array([0, 0, 0]),
+  });
+  const { host } = fakeHost(PLAN, INSTALLED);
+  await installPackage("greet", {
+    host,
+    tablet: false,
+    fetcher,
+    cache,
+    progress: () => {},
+  });
+  assertEquals(log.includes(`delete ${GREET_URL}`), true);
+  assertEquals(store.get(GREET_URL), archive);
+});
+
+Deno.test("what pkg refused is not kept for the next try", async () => {
+  const archive = new Uint8Array([1]);
+  const fetcher = await fakeRepo(archive);
+  const { cache, store } = memoryCache({
+    [GREET_URL]: archive,
+    [`${GREET_URL}.bundle`]: new Uint8Array([9]),
+  });
+  const { host } = fakeHost(PLAN, {
+    code: 1,
+    stdout: "",
+    stderr: "Error: archive signature verification failed for greet\n",
+  });
+  await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        cache,
+        progress: () => {},
+      }),
+    Error,
+    "signature",
+  );
+  assertEquals(store.size, 0);
 });

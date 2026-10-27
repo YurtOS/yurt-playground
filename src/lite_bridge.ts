@@ -16,6 +16,7 @@ import {
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import { type BridgeState, showBridgeState } from "./bridge_status.ts";
 import { PYTHON_MISSING_TEXT } from "./notebook.ts";
+import { fetchSitePins, pythonInstallRequest } from "./python_install.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import type {
   JupyterChannel,
@@ -41,7 +42,7 @@ type FromWorker =
   | { type: "error"; message: string }
   | { type: "notebook-ready" }
   // The image has no python3; no kernel is coming (src/coordinator_start.ts).
-  | { type: "python-missing" }
+  | { type: "python-missing"; error?: string }
   | { type: "jupyter-restarted" }
   | {
     type: "jupyter-message";
@@ -91,9 +92,12 @@ export function startPlaygroundKernel(
       show({ state: "error", text: msg.message });
       rejectReady(new Error(msg.message));
     } else if (msg.type === "python-missing") {
-      for (const listener of statusListeners) listener(PYTHON_MISSING_TEXT);
-      show({ state: "python-missing" });
-      rejectReady(new Error(PYTHON_MISSING_TEXT));
+      const text = msg.error === undefined
+        ? PYTHON_MISSING_TEXT
+        : `installing Python failed: ${msg.error}`;
+      for (const listener of statusListeners) listener(text);
+      show({ state: "python-missing", error: msg.error });
+      rejectReady(new Error(text));
     } else if (
       msg.type === "notebook-ready" || msg.type === "jupyter-restarted"
     ) {
@@ -116,6 +120,9 @@ export function startPlaygroundKernel(
   // The desktop app's launcher answers /desktop.json and the sandbox is
   // native; on the hosted site the kernel boots in the worker, which needs
   // the page to be cross-origin isolated and says so if it is not.
+  // On the slim image the coordinator installs the pinned Python packages
+  // before Jupyter, as on the home page (src/python_install.ts).
+  const pins = fetchSitePins();
   void desktopInfo().then(async (desktop) => {
     // The Notebook and Lab pages boot a sandbox of their own, like the home
     // page: they ask the other tabs first and answer them afterwards
@@ -135,6 +142,11 @@ export function startPlaygroundKernel(
       rows: 24,
       isolated: globalThis.crossOriginIsolated === true,
       kernelPorts: desktop?.kernelPorts,
+      python: desktop !== undefined
+        ? undefined
+        : await pins.then((p) =>
+          p === undefined ? undefined : pythonInstallRequest(p)
+        ),
     });
   });
   bridge = {

@@ -5,9 +5,12 @@
  *
  * Two rules hold here:
  *
- * - An image without python3 (the slim base image) gets the shell and
- *   `python-missing`; no ipykernel launch is tried, since it can only fail
- *   after the connection-file wait.
+ * - An image without python3 (the slim base image) gets the shell, then
+ *   Python installed from the pinned packages when the page asked for it
+ *   (`installPython`), then ipykernel. Without that, or when the install
+ *   fails, it gets `python-missing` (with the install's error); no
+ *   ipykernel launch is tried, since it can only fail after the
+ *   connection-file wait.
  * - Once the shell is up, nothing here stops the session. A Jupyter that
  *   does not start is an `error` the page shows next to a working shell;
  *   stopping the session on it killed the terminal without a word.
@@ -21,7 +24,8 @@ export type StartReport =
   | { type: "error"; message: string }
   | { type: "shell-ready" }
   // The image has no python3: the shell runs, Jupyter is not launched.
-  | { type: "python-missing" }
+  // `error` is why installing it failed, when that was tried.
+  | { type: "python-missing"; error?: string }
   | { type: "notebook-ready" };
 
 /** The probe's own answer for "no python3": a code nothing else in the
@@ -84,6 +88,10 @@ export type StartDeps<S extends StartableSession> = {
   booted(session: S): void;
   /** A tablet: the shell is the whole session. */
   noJupyter: boolean;
+  /** Install Python on an image that has none, before the kernel starts
+   * (progress goes out as `status`). Absent: such an image is reported as
+   * `python-missing`. */
+  installPython?(session: S): Promise<void>;
   /** Just before the kernel is launched on it: what a restart reuses. */
   launching?(session: S): void;
   startKernel(session: S): Promise<JupyterTransport>;
@@ -114,9 +122,48 @@ export async function startSandbox<S extends StartableSession>(
     return undefined;
   }
   if (await probePython(session.process, deps.probeTimeoutMs) === false) {
+    if (deps.installPython === undefined) {
+      deps.post({ type: "python-missing" });
+      return undefined;
+    }
+    return await installThenLaunch(session, deps);
+  }
+  return await launchKernel(session, deps);
+}
+
+/** Install Python, then start the kernel: the slim image's path at boot,
+ * and what a retry (the Install button, a frontend restart) runs after a
+ * failed install. Never throws: a failure is `python-missing` with its
+ * error, and the shell stays. */
+export async function installThenLaunch<S extends StartableSession>(
+  session: S,
+  deps: Pick<
+    StartDeps<S>,
+    "installPython" | "launching" | "startKernel" | "post" | "tickMs"
+  >,
+): Promise<JupyterTransport | undefined> {
+  if (deps.installPython === undefined) {
     deps.post({ type: "python-missing" });
     return undefined;
   }
+  try {
+    await deps.installPython(session);
+  } catch (error) {
+    deps.post({
+      type: "python-missing",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+  return await launchKernel(session, deps);
+}
+
+async function launchKernel<S extends StartableSession>(
+  session: S,
+  deps: Pick<StartDeps<S>, "launching" | "startKernel" | "post" | "tickMs">,
+): Promise<JupyterTransport | undefined> {
+  const errorText = (error: unknown) =>
+    error instanceof Error ? error.message : String(error);
   deps.post({ type: "status", text: "starting Jupyter" });
   // ipykernel's imports are JIT-bound: ~30 s on a laptop, minutes on a
   // small or busy machine (yurt-playground#89). A count that moves is
