@@ -294,6 +294,41 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
     html.includes('href="https://github.com/YurtOS/yurt-playground"'),
     true,
   );
+  // The release notes live on GitHub Pages; the header nav and the footer
+  // both link there.
+  const notes = "https://yurtos.github.io/yurt-playground/";
+  const nav = html.match(/<nav aria-label="interfaces">([\s\S]*?)<\/nav>/)
+    ?.[1] ?? "";
+  const navLinks = [...nav.matchAll(/<a\s([^>]*)>([^<]*)<\/a>/g)];
+  assertEquals(navLinks.map((link) => link[2]), [
+    "Notebook",
+    "JupyterLab",
+    "Release notes",
+    "Source",
+  ]);
+  const navNotes = navLinks[2][1];
+  assertEquals(navNotes.includes(`href="${notes}"`), true);
+  assertEquals(navNotes.includes('data-testid="release-notes-link"'), true);
+  const footer = html.match(/<footer>([\s\S]*?)<\/footer>/)?.[1] ?? "";
+  const footerNotes = footer.match(
+    /<a\s([^>]*data-testid="footer-release-notes"[^>]*)>/,
+  )?.[1] ?? "";
+  assertEquals(footerNotes.includes(`href="${notes}"`), true);
+  // verify.js finds the two links and the train label by these ids.
+  assertEquals(navNotes.includes('id="release-notes-link"'), true);
+  assertEquals(footerNotes.includes('id="footer-release-notes"'), true);
+  assertEquals(
+    footer.includes('<span id="release-train" hidden></span>'),
+    true,
+  );
+  const verifyJs = await Deno.readTextFile(
+    new URL("../public/verify.js", import.meta.url),
+  );
+  for (
+    const id of ["release-notes-link", "footer-release-notes", "release-train"]
+  ) {
+    assertEquals(verifyJs.includes(`"${id}"`), true, id);
+  }
   // The "is this really in your browser" disclosure and its live check.
   assertEquals(html.includes('data-testid="proof"'), true);
   assertEquals(html.includes('data-testid="proof-toggle"'), true);
