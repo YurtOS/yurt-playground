@@ -7,8 +7,15 @@ import {
   s,
 } from "@yurt/kernel-host-interface-js";
 import {
+  drainDirtyPaths,
+  type LayerEntry,
   setPidCredentials,
+  stageLayer,
   stageYurtimg,
+  vfsReaddir,
+  vfsReadFile,
+  vfsReadlink,
+  vfsStat,
   writeRamfsFile,
   writeRamfsTree,
 } from "./stage.ts";
@@ -22,6 +29,7 @@ import {
   fetchPinnedArtifact,
 } from "./artifact_fetch.ts";
 import { partsFetch } from "./image_parts.ts";
+import { captureLayer } from "./python_layer.ts";
 import { watchGuestMemoryRefusals } from "./memory_refused.ts";
 import { parsePins, type Pins } from "./pins.ts";
 import type { Spawner, WaitStatus } from "./executions.ts";
@@ -80,6 +88,14 @@ export type PlaygroundSession = {
    * directories), creating their directories: what a package install
    * stages (src/packages.ts) before `sudo pkg` reads it. */
   writeFiles?: (files: { path: string; bytes: Uint8Array }[]) => void;
+  /** The guest's filesystem as layers (src/python_layer.ts): what changed
+   * since the last drain, those paths read out as a layer, and a layer
+   * written in. All as the kernel, with no guest process. */
+  layer?: {
+    drainChanged(): string[];
+    capture(touched: string[]): LayerEntry[];
+    apply(entries: LayerEntry[]): void;
+  };
   /** Deliver a signal to a process this page started. */
   signal?: (pid: number, signal: number) => Promise<void>;
   dialSandboxPort: (
@@ -595,6 +611,17 @@ async function startPlayground(
     },
     writeFiles(files) {
       for (const { path, bytes } of files) writeRamfsTree(mk, path, bytes);
+    },
+    layer: {
+      drainChanged: () => drainDirtyPaths(mk),
+      capture: (touched) =>
+        captureLayer({
+          stat: (path) => vfsStat(mk, path),
+          readFile: (path, size) => vfsReadFile(mk, path, size),
+          readlink: (path) => vfsReadlink(mk, path),
+          readdir: (path) => vfsReaddir(mk, path),
+        }, touched),
+      apply: (entries) => stageLayer(mk, entries),
     },
     signal(pid, signal) {
       // Every process `spawnShell` starts leads its own group, which its

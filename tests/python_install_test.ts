@@ -33,6 +33,8 @@ Deno.test("a slim image installs the Python set, Python first, from the live ind
   assertEquals(pythonInstallRequest(pins), {
     label: PYTHON_LABEL,
     set: ["python", "numpy", "pyzmq", "jupyter-kernel"],
+    // A stored install is kept per slim image (src/python_layer.ts).
+    image: "d".repeat(64),
   });
   assertEquals(PYTHON_SET[0], "python");
   assertEquals(pythonInstallState(pins), { available: true, reason: "" });

@@ -19,6 +19,7 @@ import {
 import { requestCellInterrupt } from "./cell_interrupt.ts";
 import {
   installThenLaunch,
+  probePython,
   type StartReport,
   startSandbox,
 } from "./coordinator_start.ts";
@@ -41,7 +42,14 @@ import {
   browserArchiveCache,
   installPackage,
   InstallStalled,
+  loadCatalog,
+  resolveSet,
 } from "./packages.ts";
+import {
+  browserLayerStore,
+  installWithLayer,
+  layerKey,
+} from "./python_layer.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import { runQueue } from "./run_queue.ts";
 import { type BootedSession, workerPackageHost } from "./session_packages.ts";
@@ -70,7 +78,7 @@ type ToWorker =
     // python3, before ipykernel -- the newest complete one in the live
     // signed index (src/python_install.ts). Absent, such an image is
     // reported as `python-missing`, as before.
-    python?: { label: string; set: string[] };
+    python?: { label: string; set: string[]; image?: string };
     // A tablet or phone: installs over 16 MiB are refused there.
     tablet?: boolean;
   }
@@ -467,15 +475,33 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     : async (session) => {
       post({ type: "status", text: "installing Python" });
       const cache = await browserArchiveCache();
+      const progress = (text: string) => post({ type: "status", text });
       try {
-        await installs(() =>
-          installPackage(python, {
-            host: workerPackageHost(session),
-            tablet,
-            progress: (text) => post({ type: "status", text }),
-            cache,
-          })
-        );
+        // Instant on a later visit: this browser's earlier install, kept
+        // as a layer (src/python_layer.ts), when it is still the set.
+        await installWithLayer({
+          layer: session.layer,
+          store: await browserLayerStore(),
+          image: python.image,
+          liveKey: async () =>
+            layerKey(
+              python.image!,
+              resolveSet(await loadCatalog(), python.set),
+            ),
+          install: (between) =>
+            installs(async () => {
+              between.before();
+              await installPackage(python, {
+                host: workerPackageHost(session),
+                tablet,
+                progress,
+                cache,
+              });
+              between.after();
+            }),
+          probe: () => probePython(session.process),
+          progress,
+        });
       } catch (error) {
         if (error instanceof InstallStalled && error.inSandbox) {
           sandboxStalled = true;

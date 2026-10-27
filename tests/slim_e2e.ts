@@ -161,7 +161,10 @@ if (import.meta.main) {
     }
     /** Load the page and wait for the cell to settle; the statuses it
      * showed, in order. */
-    const bootToReady = async (label: string): Promise<string[]> => {
+    const bootToReady = async (
+      label: string,
+      from: "pkg" | "layer" = "pkg",
+    ): Promise<string[]> => {
       const statuses: string[] = [];
       const started = Date.now();
       await page.goto(`${server.url}/?start`, {
@@ -199,15 +202,29 @@ if (import.meta.main) {
           }": ${reason} (status: ${status})`,
         );
       }
-      if (!statuses.some((s) => /^Python: verifying and installing/.test(s))) {
+      const ranPkg = statuses.some((s) =>
+        /^Python: verifying and installing/.test(s)
+      );
+      const fromLayer = statuses.includes(
+        "Python: installing from this browser's earlier install",
+      );
+      if (from === "pkg" && (!ranPkg || fromLayer)) {
         throw new Error(
-          `${label}: no Python install was shown: ${JSON.stringify(statuses)}`,
+          `${label}: no pkg install was shown: ${JSON.stringify(statuses)}`,
+        );
+      }
+      // Instant Python: the earlier install's layer, and no guest pkg run.
+      if (from === "layer" && (!fromLayer || ranPkg)) {
+        throw new Error(
+          `${label}: the stored install was not used: ${
+            JSON.stringify(statuses)
+          }`,
         );
       }
       console.log(
         `slim e2e (${label}): Jupyter ready ${
           Math.round((Date.now() - started) / 1000)
-        } s after load, Python installed first`,
+        } s after load, Python installed first (${from})`,
       );
       return statuses;
     };
@@ -242,32 +259,45 @@ if (import.meta.main) {
       );
     // A desktop browser installs Python on its own (bootToReady requires
     // the install's status), unlike the phone above.
-    const first = installed(await bootToReady("first visit"));
+    const firstStatuses = await bootToReady("first visit");
+    const first = installed(firstStatuses);
     console.log(`slim e2e: installed ${first}`);
+    if (
+      !firstStatuses.includes("Python: keeping the install for the next visit")
+    ) {
+      throw new Error("the first install was not kept for the next visit");
+    }
     await numpyCell();
     if (archivesSince(0).length === 0) {
       throw new Error("no archive was fetched from the repository");
     }
-    // A reload loses the sandbox's files (#81) and installs again, from the
-    // archives the Cache API kept: only the index and metadata are fetched.
+    // A reload loses the sandbox's files (#81). The live index still names
+    // the same set, so the install the first visit kept is written in, and
+    // pkg does not run: no archive is fetched, only the index read.
     let before = fetched.length;
-    const again = installed(await bootToReady("reload"));
+    await bootToReady("reload", "layer");
     if (archivesSince(before).length > 0) {
       throw new Error(`the reload downloaded again: ${archivesSince(before)}`);
     }
-    if (again !== first) throw new Error(`the reload installed ${again}`);
     if (fetched.length === before) {
       throw new Error("the reload did not read the repository's index");
     }
+    await numpyCell();
+    // The repository unreachable (offline): the stored install still.
+    await context.route(`${PACKAGE_REPO_URL}**`, (route) => route.abort());
+    await bootToReady("repository unreachable", "layer");
+    await numpyCell();
+    await context.unroute(`${PACKAGE_REPO_URL}**`);
     // Part of a newer set is published: still the complete one.
     const partial = Deno.env.get("PLAYGROUND_SLIM_REPO_PARTIAL");
     if (partial !== undefined) {
       current = partial;
       before = fetched.length;
-      const same = installed(await bootToReady("partial newer set"));
-      if (same !== first || archivesSince(before).length > 0) {
+      // Still the stored install's set: the layer.
+      await bootToReady("partial newer set", "layer");
+      if (archivesSince(before).length > 0) {
         throw new Error(
-          `with a partial newer set the page installed ${same}, downloading ${
+          `with a partial newer set the page downloaded ${
             archivesSince(before)
           }`,
         );
