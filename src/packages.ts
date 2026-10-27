@@ -400,6 +400,10 @@ export type Fetcher = (
   onBytes?: (received: number) => void,
 ) => Promise<Uint8Array>;
 
+/** How long past its `expires_at` an index is still accepted: pkg's grace
+ * (yurt-pkg `Freshness`). */
+const INDEX_GRACE_MS = 30 * 24 * 3600 * 1000;
+
 /** The most an index, a signature or a package's metadata may be: they are
  * a few KiB. */
 const METADATA_MAX_BYTES = 4 * 1024 * 1024;
@@ -449,16 +453,31 @@ export type Catalog = {
 export async function loadCatalog(
   fetcher: Fetcher = fetchWithProgress,
   base: string = PACKAGE_REPO_URL,
+  /** Also check what `pkg update` would, short of the index's signature:
+   * each metadata file against the index's sha256, and that the index has
+   * not expired (pkg's 30 days' grace past `expires_at`). For a page that
+   * reads archives itself rather than through the guest's `pkg`. */
+  checked = false,
+  now: Date = new Date(),
 ): Promise<Catalog> {
   const [indexBytes, indexBundle] = await Promise.all([
     fetcher(`${base}index.json`, METADATA_MAX_BYTES),
     fetcher(`${base}index.json.bundle`, METADATA_MAX_BYTES),
   ]);
   const index = parseIndex(indexBytes);
+  if (checked) {
+    const expires = Date.parse(index.expires_at);
+    if (!Number.isFinite(expires) || now.getTime() > expires + INDEX_GRACE_MS) {
+      throw new Error(`the package index expired at ${index.expires_at}`);
+    }
+  }
   const metadata = new Map<string, { bytes: Uint8Array; file: PackageFile }>();
   await Promise.all(
     Object.entries(index.packages).map(async ([name, entry]) => {
       const bytes = await fetcher(`${base}${entry.url}`, METADATA_MAX_BYTES);
+      if (checked && await sha256Hex(bytes) !== entry.sha256?.toLowerCase()) {
+        throw new Error(`${entry.url} does not match the index's sha256`);
+      }
       metadata.set(name, { bytes, file: parsePackageFile(bytes) });
     }),
   );
@@ -868,10 +887,13 @@ export async function installPackage(
   return `${result.stdout}${result.stderr}`.trim();
 }
 
-/** One release's archive, checked against the signed index's sha256 and
- * size: from `cache` when it holds it, else downloaded (and cached). For a
- * page that reads files out of an archive itself (the Suspend/Resume
- * kernel's interpreter and standard library) rather than installing it. */
+/** One release's archive, checked against the sha256 and size its
+ * metadata names (with a catalog loaded `checked`, metadata that matches the
+ * index; the index's own signature is not verified here, only by the
+ * guest's `pkg`): from `cache` when it holds it, else downloaded (and
+ * cached). For a page that reads files out of an archive itself (the
+ * Suspend/Resume kernel's interpreter and standard library) rather than
+ * installing it. */
 export async function fetchRelease(
   release: PinnedRelease & { url: string },
   options: {

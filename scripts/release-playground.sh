@@ -785,7 +785,7 @@ if grep -qx 'playground-slim.yurtimg' <<< "$image_assets"; then
     if [ "$name" = python ]; then common=$builds; else common=$(comm -12 <(echo "$common") <(echo "$builds")); fi
   done
   [ -n "$common" ] || die "yurt-packages has no complete Python set (python, numpy, pyzmq, jupyter-kernel, python-seal with one yurt_N build)"
-  say "slim image: the pages will install the Python set $(sort -t_ -k2 -n <<< "$common" | tail -1)"
+  say "slim image: the newest Python set complete with its seal is $(sort -t_ -k2 -n <<< "$common" | tail -1)"
 fi
 host_json='{}'
 cli_json='{}'

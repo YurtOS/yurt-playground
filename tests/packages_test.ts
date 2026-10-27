@@ -899,3 +899,30 @@ Deno.test("a set's install lets pkg add a dependency outside the set; a pinned l
     true,
   );
 });
+
+Deno.test("a checked catalog refuses metadata the index does not name, and an expired index", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1]));
+  // fakeRepo's index names each metadata file's real sha256.
+  await loadCatalog(fetcher, PACKAGE_REPO_URL, true, new Date("2026-10-27"));
+  const tampered = async (url: string) => {
+    const bytes = await fetcher(url);
+    if (!url.endsWith("packages/greet.json")) return bytes;
+    const file = JSON.parse(new TextDecoder().decode(bytes));
+    file.versions[0].sha256 = "0".repeat(64);
+    return new TextEncoder().encode(JSON.stringify(file));
+  };
+  await assertRejects(
+    () => loadCatalog(tampered, PACKAGE_REPO_URL, true),
+    Error,
+    "does not match the index's sha256",
+  );
+  // Unchecked, as for an install the guest's pkg verifies: accepted.
+  await loadCatalog(tampered);
+  // fakeRepo's index expires 2099-01-01; 30 days' grace past it, no more.
+  await loadCatalog(fetcher, PACKAGE_REPO_URL, true, new Date("2099-01-30"));
+  await assertRejects(
+    () => loadCatalog(fetcher, PACKAGE_REPO_URL, true, new Date("2099-02-01")),
+    Error,
+    "expired",
+  );
+});

@@ -762,9 +762,11 @@ let kernelBytes: Uint8Array | undefined;
 let guestBytes: Uint8Array | undefined;
 
 /**
- * On the slim image, the Python set this kernel runs: the newest complete
- * one in the live signed index, whose `python-seal` is the guest and whose
- * `python` holds the standard library. `id` names both releases exactly
+ * On the slim image, the Python set this kernel runs: the newest one in the
+ * live index complete with its `python-seal` (the guest), whose `python`
+ * holds the standard library. The catalog is loaded checked (metadata
+ * against the index, the index not expired); the index's signature is
+ * verified only by the guest's `pkg`, which this kernel does not run. `id` names both releases exactly
  * (`name@version-build:sha256`); a snapshot records it and resumes only
  * under the same id. Undefined on the full image, whose pinned seal and
  * staged standard library are as before.
@@ -784,16 +786,21 @@ async function resolveSealSet(): Promise<SealSet | undefined> {
   const pins = await playgroundPins();
   if (pins.browserImage === undefined) return undefined;
   status("reading the Python set");
-  const catalog = await loadCatalog();
-  const [python] = resolveSet(catalog, PYTHON_SET);
-  const pythonRelease = releaseOf(catalog, "python", python.build)!;
-  const seal = releaseOf(catalog, SEAL_PACKAGE, python.build);
-  const label = `${python.version}-${python.build}`;
-  if (seal === undefined) {
+  const catalog = await loadCatalog(undefined, undefined, true);
+  // Complete with its seal: the newest set this kernel can run, which may
+  // be older than the newest the coordinator installs while a seal is
+  // still to be published.
+  let python: PinnedRelease;
+  try {
+    [python] = resolveSet(catalog, [...PYTHON_SET, SEAL_PACKAGE]);
+  } catch {
     throw new Error(
-      `Suspend/Resume is not available: the Python set ${label} has no ${SEAL_PACKAGE}`,
+      `Suspend/Resume is not available: no Python set in the repository has a ${SEAL_PACKAGE}`,
     );
   }
+  const pythonRelease = releaseOf(catalog, "python", python.build)!;
+  const seal = releaseOf(catalog, SEAL_PACKAGE, python.build)!;
+  const label = `${python.version}-${python.build}`;
   const name = (r: PinnedRelease) =>
     `${r.name}@${r.version}-${r.build}:${r.sha256}`;
   return {
@@ -802,6 +809,20 @@ async function resolveSealSet(): Promise<SealSet | undefined> {
     python: pythonRelease,
     seal,
   };
+}
+
+/** This kernel's archives: a cache of its own, so the coordinator's
+ * install (which keeps only the archives it installed) never drops the
+ * seal; this kernel keeps only its current set's two. */
+async function sealCache() {
+  const cache = await browserArchiveCache("yurt-python-seal-v1");
+  if (cache !== undefined && sealSet !== undefined) {
+    await cache.keepOnly?.([
+      `sha256:${sealSet.python.sha256}`,
+      `sha256:${sealSet.seal.sha256}`,
+    ]);
+  }
+  return cache;
 }
 
 /** How a stored image's set is named to the user. */
@@ -867,9 +888,7 @@ async function spawnCellServer(
       ? await fetchDemoFile(GUEST_PATH, partsFetch())
       // The set's interpreter, read out of its python-seal archive.
       : await readYurtimgFile(
-        await fetchRelease(sealSet.seal, {
-          cache: await browserArchiveCache(),
-        }),
+        await fetchRelease(sealSet.seal, { cache: await sealCache() }),
         SEAL_WASM_PATH,
       );
   }
@@ -933,7 +952,7 @@ async function bootFresh(
     );
     status(`staging the Python ${sealSet.label} stdlib`);
     const python = await fetchRelease(sealSet.python, {
-      cache: await browserArchiveCache(),
+      cache: await sealCache(),
     });
     await stageYurtimg(mk, python, new Map(), stagedPath);
   }
