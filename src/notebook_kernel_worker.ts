@@ -44,6 +44,7 @@ import {
 } from "./boot.ts";
 import {
   browserArchiveCache,
+  type Catalog,
   fetchRelease,
   installPackage,
   loadCatalog,
@@ -780,6 +781,10 @@ type SealSet = {
   seal: PinnedRelease & { url: string };
 };
 let sealSet: SealSet | undefined;
+/** The checked catalog `sealSet` was resolved from. */
+let sealCatalog: Catalog | undefined;
+/** Why the last `start` failed, for a restart asked for after it. */
+let startFailure: string | undefined;
 
 /** The slim image's Python set for this kernel, or `undefined` on the full
  * image. Throws, naming the set, when the set has no python-seal: the
@@ -789,6 +794,7 @@ async function resolveSealSet(): Promise<SealSet | undefined> {
   if (pins.browserImage === undefined) return undefined;
   status("reading the Python set");
   const catalog = await loadCatalog(undefined, undefined, true);
+  sealCatalog = catalog;
   // Complete with its seal: the newest set this kernel can run, which may
   // be older than the newest the coordinator installs while a seal is
   // still to be published.
@@ -888,13 +894,20 @@ function setBuild(id: string | undefined): number | undefined {
   return n === undefined ? undefined : Number(n);
 }
 
-/** Whether `stored` was sealed with a newer set than this page now reads:
- * the index the page read is behind (a CDN can serve the previous one for
- * a few minutes), not the set superseded. */
-function storedIsNewer(stored: StoredSnapshot): boolean {
+/** Whether `stored` was sealed with a newer set than this page now reads
+ * *because the index it read is behind* (a CDN can serve the previous one
+ * for a few minutes): its python release is not in that index at all. A
+ * newer set the index lists but the page passed over (yanked, or a release
+ * it cannot fetch) was withdrawn, and its suspend is discarded. */
+function storedIsAhead(stored: StoredSnapshot): boolean {
   const was = setBuild(stored.pythonSet);
   const now = setBuild(sealSet?.id);
-  return was !== undefined && now !== undefined && was > now;
+  if (was === undefined || now === undefined || was <= now) return false;
+  const release = /python@([^:;]+):/.exec(stored.pythonSet!)?.[1];
+  const listed = sealCatalog?.metadata.get("python")?.file.versions.some((v) =>
+    `${v.version}-${v.build}` === release
+  );
+  return listed === false;
 }
 
 /** Why `stored` cannot resume here, or `undefined` when it can: it was
@@ -1146,7 +1159,7 @@ async function resume(): Promise<void> {
     post({
       type: "error",
       message: `the suspended notebook cannot be resumed: ${mismatch}. ` +
-        "Discard it to continue on this set.",
+        "Reload the page to continue on this set.",
     });
     return;
   }
@@ -1173,7 +1186,15 @@ async function resume(): Promise<void> {
 
 async function restart(): Promise<void> {
   const current = live;
-  if (current === undefined) return;
+  if (current === undefined) {
+    // Nothing to restart: the kernel failed to start. Said, so the restart
+    // that asked does not wait for a ready that never comes. (While it is
+    // still starting, its own ready answers.)
+    if (startFailure !== undefined) {
+      post({ type: "error", message: startFailure });
+    }
+    return;
+  }
   failAllCells("Kernel restarted before the request completed");
   current.stopPump();
   try {
@@ -1228,7 +1249,7 @@ async function start(isolated: boolean): Promise<void> {
   // A suspend resumes only on its own Python set: one sealed with another
   // (an older set, or the pinned seal before sets) is invalid here.
   const mismatch = stored === undefined ? undefined : setMismatch(stored);
-  if (mismatch !== undefined && storedIsNewer(stored!)) {
+  if (mismatch !== undefined && storedIsAhead(stored!)) {
     // Kept: a fresh boot would seal over it. A reload once the index
     // catches up resumes it.
     throw new Error(
@@ -1307,7 +1328,12 @@ self.onmessage = async (event: MessageEvent<NotebookKernelToWorker>) => {
     switch (msg.type) {
       case "start":
         if (msg.sealEveryMs !== undefined) sealEveryMs = msg.sealEveryMs;
-        await start(msg.isolated);
+        try {
+          await start(msg.isolated);
+        } catch (error) {
+          startFailure = error instanceof Error ? error.message : String(error);
+          throw error;
+        }
         return;
       case "jupyter-send":
         if (!answerLocally(msg.message, msg.channel)) {
