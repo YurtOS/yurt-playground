@@ -1234,9 +1234,9 @@ async function start(isolated: boolean): Promise<void> {
     // Kept: a fresh boot would seal over it. A reload once the index
     // catches up resumes it.
     throw new Error(
-      `the suspended notebook cannot be resumed yet: ${mismatch}, an older ` +
-        "set than it was suspended with (the package index this page read " +
-        "is behind); reload in a few minutes",
+      `the suspended notebook cannot be resumed yet: ${mismatch}; the ` +
+        "package index this page read is older than the one it was " +
+        "suspended under; reload in a few minutes",
     );
   }
   if (mismatch !== undefined) {
