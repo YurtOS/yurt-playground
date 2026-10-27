@@ -777,13 +777,14 @@ if grep -qx 'playground-slim.yurtimg' <<< "$image_assets"; then
   # repository (src/python_install.ts): one must exist before a train pins
   # the slim image, or every Python page would fail.
   common=""
-  for name in python numpy pyzmq jupyter-kernel; do
+  # python-seal too: the set's Suspend/Resume interpreter.
+  for name in python numpy pyzmq jupyter-kernel python-seal; do
     builds=$(curl -fsSL --retry 3 "https://raw.githubusercontent.com/YurtOS/yurt-packages/main/packages/$name.json" |
       jq -r '.versions[] | select((.yanked | not) and (.build | test("^yurt_[0-9]+$"))) | .build' | sort -u) ||
       die "yurt-packages has no $name package: publish the Python set before pinning the slim image"
     if [ "$name" = python ]; then common=$builds; else common=$(comm -12 <(echo "$common") <(echo "$builds")); fi
   done
-  [ -n "$common" ] || die "yurt-packages has no complete Python set (python, numpy, pyzmq, jupyter-kernel with one yurt_N build)"
+  [ -n "$common" ] || die "yurt-packages has no complete Python set (python, numpy, pyzmq, jupyter-kernel, python-seal with one yurt_N build)"
   say "slim image: the pages will install the Python set $(sort -t_ -k2 -n <<< "$common" | tail -1)"
 fi
 host_json='{}'
