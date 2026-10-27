@@ -158,27 +158,26 @@ let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 async function servePackages(msg: ToWorker): Promise<void> {
   if (msg.type !== "pkg-install") return;
   const { req } = msg;
-  const session = packageSession;
-  if (session?.process === undefined || session.writeFiles === undefined) {
-    post({
-      type: "pkg-reply",
-      req,
-      ok: false,
-      error: "this sandbox does not install packages",
-    });
-    return;
-  }
   try {
-    const output = await installs(() =>
-      installPackage(msg.name, {
+    // The session as it is when this install's turn comes: one queued
+    // behind a stalled install may find a fresh sandbox, or a stalled one.
+    const output = await installs(() => {
+      const session = packageSession;
+      if (session?.process === undefined || session.writeFiles === undefined) {
+        throw new Error("this sandbox does not install packages");
+      }
+      if (sandboxStalled) throw new Error(STALLED_SANDBOX);
+      return installPackage(msg.name, {
         host: workerPackageHost(session),
         tablet: msg.tablet,
         progress: (text) => post({ type: "pkg-progress", req, text }),
-      })
-    );
+      });
+    });
     post({ type: "pkg-reply", req, ok: true, value: output });
   } catch (error) {
-    if (error instanceof InstallStalled) sandboxStalled = true;
+    if (error instanceof InstallStalled && error.inSandbox) {
+      sandboxStalled = true;
+    }
     post({
       type: "pkg-reply",
       req,
@@ -246,10 +245,14 @@ let restarting: Promise<void> = Promise.resolve();
 let installPython:
   | ((session: BootedSession) => Promise<void>)
   | undefined;
-/** An install stopped making progress in this sandbox (src/packages.ts
- * `InstallStalled`): it may no longer answer -- its `pkg` still holds the
- * lock, its processes may never run -- so the next try is in a fresh one. */
+/** An install stopped making progress in this sandbox's `pkg` run
+ * (src/packages.ts `InstallStalled`): it may no longer answer, and its
+ * packages are half applied. The Python install's next try is in a fresh
+ * sandbox; the Packages panel installs nothing more into this one. */
 let sandboxStalled = false;
+const STALLED_SANDBOX =
+  "an earlier install stopped making progress in this sandbox, so it " +
+  "installs nothing more; reload the page for a fresh one";
 /** Drop the in-tab sandbox and start a fresh one the way the page's start
  * did: boot, then the Python install, then Jupyter. Set by `start`. */
 let startFresh: (() => Promise<void>) | undefined;
@@ -460,7 +463,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           })
         );
       } catch (error) {
-        if (error instanceof InstallStalled) sandboxStalled = true;
+        if (error instanceof InstallStalled && error.inSandbox) {
+          sandboxStalled = true;
+        }
         throw error;
       }
     };
@@ -505,7 +510,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       pythonMissing = false;
       sandboxStalled = false;
       env.term.write(
-        "\r\n[the install stopped making progress; starting a fresh sandbox]\r\n",
+        "\r\n[the install stopped making progress; starting a fresh sandbox " +
+          "(this shell and its files go with the old one)]\r\n",
       );
       post({ type: "status", text: "starting a fresh sandbox" });
       // Its kernel and every guest in it go; a hung `pkg` with them.

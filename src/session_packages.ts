@@ -23,27 +23,46 @@ const PKG_OUTPUT_BYTES = 1024 * 1024;
 /** The heartbeat's byte, on the script's stderr: pkg never prints it, and
  * it is removed from what the run returns. */
 export const HEARTBEAT = "\x1e";
+const HEARTBEAT_BYTE = HEARTBEAT.charCodeAt(0);
 
 /** How often the guest beats, and the page looks. */
 export const HEARTBEAT_SECONDS = 2;
 
-/** `script` with a guest heartbeat beside it: a background loop that
- * writes {@link HEARTBEAT} to stderr every couple of seconds while the
- * script's shell lives. `pkg` prints nothing until it is done (about a
- * minute for Python), so its own output cannot tell slow from hung; the
- * beat can, since a sandbox that stopped answering stops beating too
- * (yurtos-kernel#4170). The loop ends with the shell, or when it is
- * killed. */
-export function withHeartbeat(script: string): string {
+/** `script` with a guest heartbeat beside it. `pkg` prints nothing until
+ * it is done (about a minute for Python), so its own output cannot tell
+ * slow from hung. The beat can tell some hangs: a background loop writes
+ * {@link HEARTBEAT} to stderr every couple of seconds while the script's
+ * shell has a child -- the `pkg` it waits for (`sudo` execs it). The loop
+ * runs as root (`privileged`), since the login user's /proc does not list
+ * root's processes, `pkg` among them. It stops beating when `pkg` is gone
+ * but the shell was never told (a lost child exit), and when the sandbox
+ * stops running anything (yurtos-kernel#4170 on the desktop host). A `pkg`
+ * that is alive but blocked keeps it beating; the install's run ceiling
+ * (src/packages.ts `INSTALL_RUN_CEILING_MS`) is the backstop for that. A
+ * shell between two commands has no child for a moment; one missed beat
+ * is nothing next to the no-progress window. Without `pgrep` the loop
+ * beats while the shell lives. It ends within one beat of the shell. */
+export function withHeartbeat(
+  script: string,
+  seconds = HEARTBEAT_SECONDS,
+  privileged = "sudo ",
+): string {
+  const loop = 'while kill -0 "$0" 2>/dev/null; do ' +
+    '{ ! command -v pgrep >/dev/null || pgrep -P "$0" >/dev/null; } && ' +
+    `printf '${HEARTBEAT}' >&2; sleep ${seconds}; done`;
   return [
-    `( while kill -0 $$ 2>/dev/null; do printf '${HEARTBEAT}' >&2; ` +
-    `sleep ${HEARTBEAT_SECONDS}; done ) &`,
-    "beat=$!",
-    `/bin/sh -c ${quoted(script)}`,
-    "s=$?",
-    'kill "$beat" 2>/dev/null',
-    "exit $s",
+    `/bin/sh -c ${quoted(script)} &`,
+    "inner=$!",
+    `${privileged}/bin/sh -c ${quoted(loop)} "$inner" &`,
+    'wait "$inner"',
   ].join("\n");
+}
+
+/** `bytes` without the heartbeat's byte. */
+function withoutBeats(bytes: Uint8Array): Uint8Array {
+  return bytes.includes(HEARTBEAT_BYTE)
+    ? bytes.filter((byte) => byte !== HEARTBEAT_BYTE)
+    : bytes;
 }
 
 /** Write the staged repository copy (as root) and run `script` on it as the
@@ -70,6 +89,11 @@ export async function runStaged(
     spawn(`exec /bin/sh -c ${quoted(line)}`, {
       maxOutputBytes: PKG_OUTPUT_BYTES,
     });
+  // An install that has given up stages and runs nothing more.
+  if (watch?.signal.aborted === true) {
+    throw new Error("the install stopped watching this run");
+  }
+  let abandoned = false;
   try {
     session.writeFiles(files);
     // In the guest now: let the tab's copies go while `pkg` runs (up to
@@ -104,11 +128,12 @@ export async function runStaged(
           process.exited.then(resolve, reject);
           // The install gave up on this run: stop watching it. The run
           // itself is the sandbox's; a retry starts a fresh one.
-          watch.signal.addEventListener(
-            "abort",
-            () => reject(new Error("the install stopped watching this run")),
-            { once: true },
-          );
+          const giveUp = () => {
+            abandoned = true;
+            reject(new Error("the install stopped watching this run"));
+          };
+          if (watch.signal.aborted) giveUp();
+          watch.signal.addEventListener("abort", giveUp, { once: true });
         });
       } finally {
         clearInterval(poll);
@@ -118,16 +143,19 @@ export async function runStaged(
     return {
       code: typeof status === "number" ? status : status.code,
       stdout: decoder.decode(process.takeStdout()),
-      stderr: decoder.decode(process.takeStderr()).replaceAll(HEARTBEAT, ""),
+      stderr: decoder.decode(withoutBeats(process.takeStderr())),
     };
   } finally {
     // The script's trap removes the staged copy, unless the shell died by
     // a signal (the tab out of memory, say) or never ran; it may be
     // hundreds of MB of the tab's memory, so it goes here too, whatever
     // happened. Before returning: the next run stages at the same path.
-    // Best effort.
-    await run(`sudo rm -rf ${quoted(STAGING_DIR)}`).then((p) => p.exited)
-      .catch(() => {});
+    // Best effort. Not for a run given up on: its sandbox may not run
+    // anything, and the copy goes with it (the next try is in a fresh one).
+    if (!abandoned) {
+      await run(`sudo rm -rf ${quoted(STAGING_DIR)}`).then((p) => p.exited)
+        .catch(() => {});
+    }
   }
 }
 

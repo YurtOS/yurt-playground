@@ -413,15 +413,39 @@ export type RunWatch = { alive: () => void; signal: AbortSignal };
  * sandbox that stopped answering (yurtos-kernel#4170). */
 export const INSTALL_STALL_MS = 60_000;
 
-/** An install that stopped making progress ({@link INSTALL_STALL_MS}). The
- * sandbox it ran in may no longer answer, so a retry needs a fresh one. */
+/** The longest one guest `pkg` run may take, heartbeat or not: the
+ * backstop for a `pkg` that is alive but blocked, which keeps the
+ * heartbeat going (src/session_packages.ts `withHeartbeat`) and shows no
+ * other sign. Python's install run takes about a minute, 80-90 s on a
+ * loaded host; this is several times that. */
+export const INSTALL_RUN_CEILING_MS = 300_000;
+
+/** An install that stopped making progress ({@link INSTALL_STALL_MS}).
+ * `inSandbox`: it stopped in the guest's `pkg` run, so the sandbox may no
+ * longer answer and a retry needs a fresh one; otherwise it stopped in a
+ * download, and the sandbox is as it was. */
 export class InstallStalled extends Error {
-  constructor(name: string, stallMs: number) {
+  readonly inSandbox: boolean;
+  constructor(
+    name: string,
+    ms: number,
+    inSandbox: boolean,
+    /** The run went past {@link INSTALL_RUN_CEILING_MS}, beating. */
+    ceiling = false,
+  ) {
+    const seconds = Math.round(ms / 1000);
     super(
-      `${name}: the install stopped making progress (nothing happened in ` +
-        `the sandbox for ${Math.round(stallMs / 1000)} s)`,
+      ceiling
+        ? `${name}: the install stopped making progress (the sandbox's ` +
+          `pkg ran for ${seconds} s without finishing)`
+        : inSandbox
+        ? `${name}: the install stopped making progress (the sandbox's ` +
+          `pkg did nothing for ${seconds} s)`
+        : `${name}: the download stopped making progress (nothing ` +
+          `arrived for ${seconds} s)`,
     );
     this.name = "InstallStalled";
+    this.inSandbox = inSandbox;
   }
 }
 
@@ -429,6 +453,7 @@ export type Fetcher = (
   url: string,
   limit: number,
   onBytes?: (received: number) => void,
+  signal?: AbortSignal,
 ) => Promise<Uint8Array>;
 
 /** How long past its `expires_at` an index is still accepted: pkg's grace
@@ -442,8 +467,13 @@ const METADATA_MAX_BYTES = 4 * 1024 * 1024;
 /** `fetch` with progress, failing unless the response is OK, and as soon as
  * the response passes `limit` bytes, so a response larger than the index
  * says is never held whole (the tablet limit counts on it). */
-export const fetchWithProgress: Fetcher = async (url, limit, onBytes) => {
-  const response = await fetch(url, { cache: "no-cache" });
+export const fetchWithProgress: Fetcher = async (
+  url,
+  limit,
+  onBytes,
+  signal,
+) => {
+  const response = await fetch(url, { cache: "no-cache", signal });
   if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
   const chunks: Uint8Array[] = [];
   let received = 0;
@@ -764,29 +794,66 @@ export async function installPackage(
 ): Promise<string> {
   const name = typeof request === "string" ? request : request.label;
   const stallMs = options.stallMs ?? INSTALL_STALL_MS;
+  const ceilingMs = options.runCeilingMs ?? INSTALL_RUN_CEILING_MS;
+  /** When the watched run in flight started. */
+  let runStarted: number | undefined;
   let last = Date.now();
   /** Runs in flight that nothing can watch: the check waits for them. */
   let unwatched = 0;
+  /** Watched runs in flight: a stall then is the sandbox's. */
+  let watched = 0;
   const touch = () => {
     last = Date.now();
   };
   const giveUp = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /** Give up if the install has stalled; else look again when it next
+   * could have. Set by the promise below, synchronously. */
+  let check = () => {};
   const stalled = new Promise<never>((_, reject) => {
-    const check = () => {
-      const idle = Date.now() - last;
-      if (unwatched === 0 && idle >= stallMs) {
+    check = () => {
+      const now = Date.now();
+      const idle = now - last;
+      const running = runStarted === undefined ? 0 : now - runStarted;
+      if (runStarted !== undefined && running >= ceilingMs) {
         giveUp.abort();
-        reject(new InstallStalled(name, stallMs));
+        reject(new InstallStalled(name, ceilingMs, true, true));
         return;
       }
-      timer = setTimeout(check, Math.max(stallMs - idle, 10));
+      if (unwatched === 0 && idle >= stallMs) {
+        giveUp.abort();
+        reject(new InstallStalled(name, stallMs, watched > 0));
+        return;
+      }
+      const untilCeiling = runStarted === undefined
+        ? Infinity
+        : ceilingMs - running;
+      timer = setTimeout(
+        check,
+        Math.max(Math.min(stallMs - idle, untilCeiling), 10),
+      );
     };
     timer = setTimeout(check, stallMs);
   });
   const watcher: InstallWatcher = {
     touch,
     signal: giveUp.signal,
+    check: () => {
+      if (giveUp.signal.aborted) throw new Error(`${name}: given up`);
+    },
+    watched: async (run) => {
+      watched++;
+      runStarted = Date.now();
+      // The ceiling may come before the next idle check: reschedule.
+      clearTimeout(timer);
+      check();
+      try {
+        return await run();
+      } finally {
+        watched--;
+        runStarted = undefined;
+      }
+    },
     unwatched: async (run) => {
       unwatched++;
       try {
@@ -801,7 +868,10 @@ export async function installPackage(
     return await Promise.race([
       installWatched(request, {
         ...options,
+        // Nothing more is said once the install has given up: the page
+        // shows its failure, and maybe a fresh sandbox's progress.
         progress: (message) => {
+          if (giveUp.signal.aborted) return;
           touch();
           options.progress(message);
         },
@@ -822,11 +892,16 @@ type InstallOptions = {
   cache?: ArchiveCache;
   /** {@link INSTALL_STALL_MS}; shorter in tests. */
   stallMs?: number;
+  /** {@link INSTALL_RUN_CEILING_MS}; shorter in tests. */
+  runCeilingMs?: number;
 };
 
 type InstallWatcher = {
   touch(): void;
   signal: AbortSignal;
+  /** Throws once the install has given up: it does nothing more. */
+  check(): void;
+  watched<T>(run: () => Promise<T>): Promise<T>;
   unwatched<T>(run: () => Promise<T>): Promise<T>;
 };
 
@@ -836,7 +911,14 @@ async function installWatched(
   watcher: InstallWatcher,
 ): Promise<string> {
   const { host, progress, cache } = options;
-  const fetcher = options.fetcher ?? fetchWithProgress;
+  const fetchBytes = options.fetcher ?? fetchWithProgress;
+  // Every download stops with the install, and none starts after it.
+  const fetcher: Fetcher = async (url, limit, onBytes) => {
+    watcher.check();
+    const bytes = await fetchBytes(url, limit, onBytes, watcher.signal);
+    watcher.check();
+    return bytes;
+  };
   const base = options.base ?? PACKAGE_REPO_URL;
   const names = typeof request === "string"
     ? [request]
@@ -907,23 +989,26 @@ async function installWatched(
       files.push({ path: `${mirror}/${path}`, bytes });
     }
     const script = installScript(specs, config.id);
+    watcher.check();
     progress(status);
     if (host.observesProgress !== true) {
       return watcher.unwatched(() => host.stageAndRun(files, script));
     }
     const started = Date.now();
     let shown = started;
-    return host.stageAndRun(files, script, {
-      alive: () => {
-        watcher.touch();
-        const now = Date.now();
-        if (now - shown >= 5000) {
-          shown = now;
-          progress(`${status} (${Math.round((now - started) / 1000)} s)`);
-        }
-      },
-      signal: watcher.signal,
-    });
+    return watcher.watched(() =>
+      host.stageAndRun(files, script, {
+        alive: () => {
+          watcher.touch();
+          const now = Date.now();
+          if (now - shown >= 5000) {
+            shown = now;
+            progress(`${status} (${Math.round((now - started) / 1000)} s)`);
+          }
+        },
+        signal: watcher.signal,
+      })
+    );
   };
   const planned = await run(new Map(), `${name}: resolving (${command})`);
   const verifyAll = typeof request !== "string" && "releases" in request &&

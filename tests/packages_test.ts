@@ -4,6 +4,7 @@ import {
   browserTrustedRepos,
   CACHE_ROOT,
   type Catalog,
+  type Fetcher,
   fetchWithProgress,
   installPackage,
   installScript,
@@ -421,8 +422,10 @@ Deno.test("an install whose sandbox stops answering fails as stalled, not foreve
   );
   assertEquals(
     error.message,
-    "greet: the install stopped making progress (nothing happened in the sandbox for 0 s)",
+    "greet: the install stopped making progress (the sandbox's pkg did nothing for 0 s)",
   );
+  // In the guest's run: the retry needs a fresh sandbox.
+  assertEquals(error.inSandbox, true);
   // It gave up at the stall, and told the host to stop watching the run.
   assertEquals(Date.now() - started < 2000, true);
   assertEquals(aborted, [false, true]);
@@ -430,6 +433,39 @@ Deno.test("an install whose sandbox stops answering fails as stalled, not foreve
     messages.at(-1),
     "greet: verifying and installing (pkg install greet)",
   );
+});
+
+Deno.test("a download that stops is a stall outside the sandbox, and the install does nothing after it", async () => {
+  const archive = new Uint8Array([1, 2, 3]);
+  const repo = await fakeRepo(archive);
+  // The archive's download sends nothing for 300 ms; the window is 100.
+  const fetcher: Fetcher = (url) =>
+    url.endsWith(".yurtpkg")
+      ? new Promise((resolve) => setTimeout(() => resolve(repo(url)), 300))
+      : repo(url);
+  const { host, runs } = fakeHost(PLAN, INSTALLED);
+  const messages: string[] = [];
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: (m) => messages.push(m),
+        stallMs: 100,
+      }),
+    InstallStalled,
+  );
+  assertEquals(error.inSandbox, false);
+  assertEquals(
+    error.message,
+    "greet: the download stopped making progress (nothing arrived for 0 s)",
+  );
+  const said = messages.length;
+  // The download finishes later: nothing is staged, run or said.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assertEquals(runs.length, 1);
+  assertEquals(messages.length, said);
 });
 
 Deno.test("a slow install that keeps beating is not stalled, however long", async () => {
@@ -447,6 +483,33 @@ Deno.test("a slow install that keeps beating is not stalled, however long", asyn
     stallMs: 100,
   });
   assertEquals(output, "install greet 0.1.0-yurt_0");
+});
+
+Deno.test("a run that beats but never finishes ends at the ceiling", async () => {
+  // A pkg alive but blocked keeps the heartbeat going; the ceiling ends it.
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, aborted } = watchedHost([
+    { beats: 0, everyMs: 5, result: PLAN },
+    { beats: 100, everyMs: 10, result: INSTALLED },
+  ]);
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+        runCeilingMs: 300,
+      }),
+    InstallStalled,
+  );
+  assertEquals(error.inSandbox, true);
+  assertEquals(
+    error.message,
+    "greet: the install stopped making progress (the sandbox's pkg ran for 0 s without finishing)",
+  );
+  assertEquals(aborted, [false, true]);
 });
 
 Deno.test("a host that cannot watch its runs is never called stalled during one", async () => {
