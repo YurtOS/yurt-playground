@@ -70,6 +70,7 @@ import {
   clearSnapshot,
   loadSnapshot,
   NOTEBOOK_KEY,
+  sealedUnderNewerIndex,
   sha256Hex,
   type StoredSnapshot,
   storeSnapshot,
@@ -678,6 +679,7 @@ async function sealOnce(): Promise<void> {
       sealedAt,
       kernelSha256: current.kernelSha256,
       pythonSet: sealSet?.id,
+      indexVersion: sealCatalog?.index.index_version,
       attachments: { cells: structuredClone(cells) },
     }, NOTEBOOK_KEY);
     await storeInFlight;
@@ -883,31 +885,6 @@ function setLabel(id: string | undefined): string {
   if (id === undefined) return "the full image's pinned interpreter";
   const python = /python@([^:;]+)/.exec(id)?.[1];
   return python === undefined ? id : `Python set ${python}`;
-}
-
-/** A set id's `yurt_N` build number (`undefined` for the pinned seal
- * before sets). */
-function setBuild(id: string | undefined): number | undefined {
-  const n = id === undefined
-    ? undefined
-    : /python@[^:;]*-yurt_(\d+)/.exec(id)?.[1];
-  return n === undefined ? undefined : Number(n);
-}
-
-/** Whether `stored` was sealed with a newer set than this page now reads
- * *because the index it read is behind* (a CDN can serve the previous one
- * for a few minutes): its python release is not in that index at all. A
- * newer set the index lists but the page passed over (yanked, or a release
- * it cannot fetch) was withdrawn, and its suspend is discarded. */
-function storedIsAhead(stored: StoredSnapshot): boolean {
-  const was = setBuild(stored.pythonSet);
-  const now = setBuild(sealSet?.id);
-  if (was === undefined || now === undefined || was <= now) return false;
-  const release = /python@([^:;]+):/.exec(stored.pythonSet!)?.[1];
-  const listed = sealCatalog?.metadata.get("python")?.file.versions.some((v) =>
-    `${v.version}-${v.build}` === release
-  );
-  return listed === false;
 }
 
 /** Why `stored` cannot resume here, or `undefined` when it can: it was
@@ -1119,6 +1096,7 @@ async function suspend(): Promise<void> {
       sealedAt,
       kernelSha256: current.kernelSha256,
       pythonSet: sealSet?.id,
+      indexVersion: sealCatalog?.index.index_version,
       attachments: { cells: structuredClone(cells) },
     }, NOTEBOOK_KEY);
     forgotten = false;
@@ -1249,7 +1227,10 @@ async function start(isolated: boolean): Promise<void> {
   // A suspend resumes only on its own Python set: one sealed with another
   // (an older set, or the pinned seal before sets) is invalid here.
   const mismatch = stored === undefined ? undefined : setMismatch(stored);
-  if (mismatch !== undefined && storedIsAhead(stored!)) {
+  if (
+    mismatch !== undefined &&
+    sealedUnderNewerIndex(stored!, sealCatalog?.index.index_version)
+  ) {
     // Kept: a fresh boot would seal over it. A reload once the index
     // catches up resumes it.
     throw new Error(

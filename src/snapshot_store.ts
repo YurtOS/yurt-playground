@@ -34,10 +34,27 @@ export type StoredSnapshot = {
    * another one refuses it. Absent: sealed with the full image's pinned
    * seal. */
   pythonSet?: string;
+  /** The package index's `index_version` the set was resolved from (it only
+   * ever increases: `pkg` refuses a lower one). A page that reads a lower
+   * one is behind, not on a newer set. */
+  indexVersion?: number;
   /** Host-side state the image cannot carry, for the owner of the record
    *  to restore alongside it (the notebook kernel's cell in progress). */
   attachments?: Record<string, unknown>;
 };
+
+/** Whether `stored` was sealed under a newer package index than the one
+ * the page read now (`indexVersion`): the page's index is behind (a CDN can
+ * serve the previous one for a few minutes), so a set mismatch says nothing
+ * about the stored set. A set withdrawn since (yanked, deleted, or a
+ * release the page cannot fetch) comes with a higher index_version. */
+export function sealedUnderNewerIndex(
+  stored: Pick<StoredSnapshot, "indexVersion">,
+  indexVersion: number | undefined,
+): boolean {
+  return stored.indexVersion !== undefined && indexVersion !== undefined &&
+    indexVersion < stored.indexVersion;
+}
 
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
