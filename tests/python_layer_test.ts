@@ -12,6 +12,8 @@ import {
   layerKey,
 } from "../src/python_layer.ts";
 import type { LayerEntry } from "../src/stage.ts";
+import type { Catalog } from "../src/packages.ts";
+import { liveLayerKey } from "../src/python_install.ts";
 
 const enc = new TextEncoder();
 const meta = { mode: 0o755, uid: 0, gid: 0, mtime: 1_761_600_000 };
@@ -460,17 +462,49 @@ Deno.test("with no layer support (no store, no image), pkg installs as before", 
   );
 });
 
-Deno.test("a live answer that fails for another reason than being offline uses no layer: pkg, as on main", async () => {
+Deno.test("an index that downloads but does not parse is no answer: the stored layer, as on main", async () => {
   const { deps, log } = fakeDeps({
     stored: { key: "img/set1", entries: ["e1"] },
-    live: new TypeError("a catalog the page cannot read"),
   });
-  assertEquals(await installWithLayer(deps), "pkg");
+  // The real live answer (liveLayerKey and its loader), over an index
+  // that arrives and is not JSON.
+  deps.liveKey = () => liveLayerKey("img", ["python"], 1000);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response("<html>maintenance</html>"),
+    )) as typeof fetch;
+  try {
+    assertEquals(await installWithLayer(deps), "layer");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assertEquals(log.includes("apply e1"), true);
+});
+
+Deno.test("a set that cannot be resolved uses no layer: pkg, as on main, with a warning", async () => {
+  const { deps, log } = fakeDeps({
+    stored: { key: "img/set1", entries: ["e1"] },
+  });
+  // The index arrives, and resolving the set over it crashes.
+  deps.liveKey = () =>
+    liveLayerKey(
+      "img",
+      ["python"],
+      1000,
+      () => Promise.resolve({ metadata: null } as unknown as Catalog),
+    );
+  const warned: unknown[][] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => warned.push(args);
+  try {
+    assertEquals(await installWithLayer(deps), "pkg");
+  } finally {
+    console.warn = warn;
+  }
   assertEquals(log.includes("apply e1"), false, "the stored layer is not used");
   assertEquals(log.includes("pkg install"), true);
-  assertEquals(
-    log.some((line) => line.startsWith("put")),
-    false,
-    "nothing kept: no live key",
-  );
+  assertEquals(log.some((line) => line.startsWith("put")), false);
+  assertEquals(warned.length, 1);
+  assertEquals(warned[0][1] instanceof TypeError, true);
 });

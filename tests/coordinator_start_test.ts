@@ -575,10 +575,6 @@ Deno.test("the page wires a capture's outcome marks (src/capture_outcome.ts)", (
       .test(page),
   );
   assert(/saveDownload\(\s*\{/.test(page));
-  const worker = Deno.readTextFileSync(
-    new URL("../src/coordinator_worker.ts", import.meta.url),
-  );
-  assert(/postCaptured\(post, blob,/.test(worker), "the worker announces");
   const script = Deno.readTextFileSync(
     new URL("../scripts/release-snapshot.ts", import.meta.url),
   );

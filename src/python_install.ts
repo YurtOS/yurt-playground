@@ -83,33 +83,33 @@ export const LIVE_INDEX_TIMEOUT_MS = 20_000;
 /** The set the live index offers for `set` on `image`, as a layer key
  * (src/python_layer.ts); undefined when the index answered but does not
  * offer the set (SetNotOffered). Throws IndexUnreadable when the index
- * cannot be downloaded within `timeoutMs`; anything else (an index that
- * does not parse, a crash) is thrown as it is, never taken for an answer. */
+ * cannot be had -- downloaded within `timeoutMs` and parsed; a throw while
+ * resolving the set (other than SetNotOffered: a crash) is thrown as it
+ * is, never taken for an answer. */
 export async function liveLayerKey(
   image: string,
   set: readonly string[],
   timeoutMs = LIVE_INDEX_TIMEOUT_MS,
   /** The index read; the live repository's, bounded by `signal`. */
   load: (signal: AbortSignal) => Promise<Catalog> = (signal) =>
-    loadCatalog(async (url, limit, onBytes) => {
-      try {
-        return await fetchWithProgress(url, limit, onBytes, signal);
-      } catch (error) {
-        // A download that failed or was cut off by the bound: offline.
-        throw new IndexUnreadable(
-          `${url}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }),
+    loadCatalog((url, limit, onBytes) =>
+      fetchWithProgress(url, limit, onBytes, signal)
+    ),
 ): Promise<string | undefined> {
   const giveUp = new AbortController();
   const timer = setTimeout(() => giveUp.abort(), timeoutMs);
   let catalog: Catalog;
   try {
-    // An index that arrived but does not parse is thrown as it is: that is
-    // no "offline". (The page does not check the index's signature here;
-    // the guest's pkg does, when it installs.)
     catalog = await load(giveUp.signal);
+  } catch (error) {
+    // Any failure to have the index -- a download that failed or ran past
+    // the bound, an index or package file that does not parse -- is no
+    // answer: as offline (a stored layer, or a snapshot, is used). pkg
+    // would read the same index, and fail the same way. (The page does
+    // not check the index's signature; the guest's pkg does.)
+    throw new IndexUnreadable(
+      error instanceof Error ? error.message : String(error),
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -129,8 +129,9 @@ export async function liveLayerKey(
  * mapping the page (`?snapshot=1`) and scripts/release-snapshot.ts share:
  * null when the site installs no Python; NO_COMPLETE_SET when the index
  * answered without the set (no snapshot matches that); undefined when the
- * index cannot be read in time (the snapshot is then used, as a stored
- * layer is offline). A crash is thrown, never taken for one of these. */
+ * index cannot be had, downloaded in time and parsed (the snapshot is then
+ * used, as a stored layer is offline). A crash while resolving the set is
+ * thrown, never taken for one of these. */
 export async function livePythonSet(
   request: { set: readonly string[]; image?: string } | undefined,
   timeoutMs = LIVE_INDEX_TIMEOUT_MS,

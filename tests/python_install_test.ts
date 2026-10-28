@@ -70,15 +70,14 @@ Deno.test("only a set the index does not offer is 'no complete set'; a crash is 
     ),
     undefined,
   );
-  // Downloaded, but not an index the page can parse: an error, not offline.
-  await assertRejects(
-    () =>
-      livePythonSet(
-        request,
-        1000,
-        () => Promise.reject(new SyntaxError("index.json is not JSON")),
-      ),
-    SyntaxError,
+  // Downloaded, but not an index the page can parse: no answer either.
+  assertEquals(
+    await livePythonSet(
+      request,
+      1000,
+      () => Promise.reject(new SyntaxError("index.json is not JSON")),
+    ),
+    undefined,
   );
   // A catalog the code cannot read is a crash, not an answer.
   await assertRejects(
@@ -89,5 +88,16 @@ Deno.test("only a set the index does not offer is 'no complete set'; a crash is 
         () => Promise.resolve({ metadata: null } as unknown as Catalog),
       ),
     TypeError,
+  );
+});
+
+Deno.test("a pythonSeal entry of another shape is left out of the pins, not a failed boot", () => {
+  for (const pythonSeal of [{ sha256: 7 }, "seal", null, { release: "r" }]) {
+    const pins = parsePins({ ...base, pythonSeal });
+    assertEquals(pins.pythonSeal, undefined, JSON.stringify(pythonSeal));
+  }
+  assertEquals(
+    parsePins({ ...base, pythonSeal: { sha256: "AB".repeat(32) } }).pythonSeal,
+    { sha256: "ab".repeat(32) },
   );
 });

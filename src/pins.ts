@@ -133,7 +133,7 @@ export function parsePins(raw: unknown): Pins {
     kernelWasm?: unknown;
     image?: unknown;
     browserImage?: unknown;
-    pythonSeal?: { sha256?: unknown };
+    pythonSeal?: { sha256?: unknown } | null;
     snapshot?: unknown;
   };
   const pins: Pins = {
@@ -143,12 +143,12 @@ export function parsePins(raw: unknown): Pins {
   if (value.browserImage !== undefined) {
     pins.browserImage = parsePin(value.browserImage, "browserImage");
   }
-  if (value.pythonSeal !== undefined) {
-    const sha256 = value.pythonSeal?.sha256;
-    if (typeof sha256 !== "string" || sha256.length === 0) {
-      throw new PinResolutionError("pythonSeal.sha256 must be a string", 1);
-    }
-    pins.pythonSeal = { sha256: sha256.toLowerCase() };
+  // Read only for a snapshot's identity: an entry of another shape is
+  // left out (the identity then names none, and no snapshot matches it)
+  // rather than failing the default boot or a deploy.
+  const sealSha256 = value.pythonSeal?.sha256;
+  if (typeof sealSha256 === "string" && sealSha256 !== "") {
+    pins.pythonSeal = { sha256: sealSha256.toLowerCase() };
   }
   if (value.snapshot !== undefined) pins.snapshot = value.snapshot;
   return pins;

@@ -37,8 +37,9 @@
  *   --check-pin  exit 0 when artifacts/pins.json's (or PATH's) snapshot
  *              entry may stay: well formed, this page's format, built from
  *              these pins and of the Python set the live index offers -- or
- *              the index cannot be read in time, as the page then restores
- *              it too; else exit 3 with a "snapshot pin refused: <reason>"
+ *              the index cannot be had (downloaded in time and parsed), as
+ *              the page then restores it too; else exit 3 with a
+ *              "snapshot pin refused: <reason>"
  *              line on stderr (scripts/lib/snapshot-pin.sh); exit 1 is a
  *              failure to check
  *
@@ -190,7 +191,8 @@ export async function checkoutProblem(
 /** Why the pins' snapshot entry may not stay, or undefined when it may:
  * well formed, of this page's format, built from these pins, and of the
  * Python set the live index offers. `live` is the page's own answer
- * (livePythonSet): undefined -- the index could not be read in time --
+ * (livePythonSet): undefined -- the index could not be had in time and
+ * parsed --
  * keeps the pin, as the page then restores it too; an index without a
  * complete set does not. */
 export async function snapshotPinProblem(
