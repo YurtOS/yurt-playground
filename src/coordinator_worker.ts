@@ -44,6 +44,7 @@ import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 import {
   browserArchiveCache,
   fetchWithProgress,
+  installedByPlan,
   installPackage,
   InstallStalled,
   loadCatalog,
@@ -121,8 +122,10 @@ type ToWorker =
   | { type: "pkg-install"; req: number; name: string; tablet: boolean };
 
 type FromWorker =
-  // status, error, shell-ready (the shell is the whole session), and
-  // python-missing / notebook-ready (src/coordinator_start.ts).
+  // status, error, shell-ready (the shell is the whole session),
+  // python-missing / notebook-ready, and pkg-installed: what the Packages
+  // panel marks Installed, also sent after each of its installs
+  // (src/coordinator_start.ts).
   | StartReport
   // The browser refused a new process its memory (src/memory_refused.ts).
   | MemoryRefusedMessage
@@ -187,6 +190,10 @@ async function servePackages(msg: ToWorker): Promise<void> {
         tablet: msg.tablet,
         progress: (text) => post({ type: "pkg-progress", req, text }),
       });
+    });
+    post({
+      type: "pkg-installed",
+      names: installedByPlan(output, msg.name),
     });
     post({ type: "pkg-reply", req, ok: true, value: output });
   } catch (error) {

@@ -6,11 +6,13 @@ import {
   type Catalog,
   type Fetcher,
   fetchWithProgress,
+  installedByPlan,
   installPackage,
   installScript,
   InstallStalled,
   latestRelease,
   loadCatalog,
+  markInstalled,
   onlyStaged,
   PACKAGE_REPO_URL,
   type PackageFile,
@@ -1275,4 +1277,55 @@ Deno.test("a checked catalog refuses metadata the index does not name, and an ex
     Error,
     "expired",
   );
+});
+
+Deno.test("installedByPlan is what pkg's plan installed, and the package itself", () => {
+  assertEquals(
+    installedByPlan(
+      "install libx 1.0.0-yurt_0\ninstall greet 0.1.0-yurt_0\n",
+      "greet",
+    ),
+    ["libx", "greet"],
+  );
+  // Installed already (from the terminal, say): no plan, but it is there.
+  assertEquals(installedByPlan("nothing to install\n", "greet"), ["greet"]);
+  // Only pkg's own plan lines, anchored: progress that mentions an install
+  // names no package.
+  assertEquals(
+    installedByPlan(
+      "fetching libx\nwill install foo next\n  install bar 1\ninstall libx 1.0.0-yurt_0",
+      "greet",
+    ),
+    ["libx", "greet"],
+  );
+});
+
+Deno.test("markInstalled marks the known packages Installed, disabled, and the rest Install", () => {
+  const button = (name: string) => ({
+    dataset: { package: name } as { package?: string },
+    textContent: "Install" as string | null,
+    disabled: false,
+  });
+  const buttons = [button("git"), button("rtk"), button("numpy")];
+  markInstalled(buttons, new Set(["numpy", "git"]), false);
+  assertEquals(
+    buttons.map((b) => [b.dataset.package, b.textContent, b.disabled]),
+    [["git", "Installed", true], ["rtk", "Install", false], [
+      "numpy",
+      "Installed",
+      true,
+    ]],
+  );
+  // While an install runs, none can be clicked; what is installed stays so.
+  markInstalled(buttons, new Set(["numpy", "git", "rtk"]), true);
+  assertEquals(
+    buttons.map((b) => [b.textContent, b.disabled]),
+    [["Installed", true], ["Installed", true], ["Installed", true]],
+  );
+  markInstalled(buttons, new Set(), true);
+  assertEquals(buttons.map((b) => [b.textContent, b.disabled]), [
+    ["Install", true],
+    ["Install", true],
+    ["Install", true],
+  ]);
 });

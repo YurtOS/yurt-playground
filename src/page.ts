@@ -18,6 +18,7 @@ import {
   catalogRows,
   formatBytes,
   loadCatalog,
+  markInstalled,
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
@@ -47,6 +48,7 @@ type FromWorker =
   // The image has no python3: the shell runs, Jupyter was not launched.
   | { type: "python-missing"; error?: string }
   | { type: "pkg-progress"; req: number; text: string }
+  | { type: "pkg-installed"; names: string[] }
   | {
     type: "yurt-reply" | "pkg-reply";
     req: number;
@@ -66,6 +68,15 @@ type FromWorker =
 let packageInstall:
   | ((name: string, progress: (text: string) => void) => Promise<string>)
   | undefined;
+
+/** What the coordinator knows this sandbox has (`pkg-installed`): the
+ * Python set once it is in, and what each panel install put there. Installs
+ * made from the terminal are not seen; Install on one says it is already
+ * installed, and marks it. */
+const knownInstalled = new Set<string>();
+/** Marks the Packages panel's buttons by `knownInstalled`; set once the
+ * panel is wired. */
+let markPackages = () => {};
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
@@ -384,6 +395,10 @@ function boot(
       endBoot();
     }
     if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
+    if (msg.type === "pkg-installed") {
+      for (const name of msg.names) knownInstalled.add(name);
+      markPackages();
+    }
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
       const waiter = pending.get(msg.req);
       pending.delete(msg.req);
@@ -526,11 +541,14 @@ function wirePackages(): void {
   const status = byId("packages-status");
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
+  const mark = () =>
+    markInstalled(list.querySelectorAll("button"), knownInstalled, busy);
+  markPackages = mark;
   const install = async (name: string) => {
     if (packageInstall === undefined || busy) return;
     busy = true;
     panel.dataset.install = "running";
-    for (const b of list.querySelectorAll("button")) b.disabled = true;
+    mark();
     try {
       const output = await packageInstall(
         name,
@@ -539,14 +557,6 @@ function wirePackages(): void {
       status.textContent = /^nothing to install$/m.test(output)
         ? `${name} is already installed`
         : `installed ${name}`;
-      // Everything pkg installed with it (its dependencies) is installed too.
-      const installed = new Set(
-        [...output.matchAll(/^install (\S+) /gm)].map((match) => match[1]),
-      );
-      installed.add(name);
-      for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
-        if (installed.has(b.dataset.package ?? "")) b.textContent = "Installed";
-      }
       panel.dataset.install = "done";
     } catch (error) {
       status.textContent = error instanceof Error
@@ -555,9 +565,7 @@ function wirePackages(): void {
       panel.dataset.install = "failed";
     } finally {
       busy = false;
-      for (const b of list.querySelectorAll("button")) {
-        b.disabled = b.textContent === "Installed";
-      }
+      mark();
     }
   };
   let loading = false;
@@ -605,6 +613,7 @@ function wirePackages(): void {
       tr.append(name, version, size, action);
       list.append(tr);
     }
+    mark();
   };
   toggle.addEventListener("click", () => {
     panel.hidden = !panel.hidden;
