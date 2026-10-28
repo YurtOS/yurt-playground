@@ -155,13 +155,40 @@ export async function livePythonSet(
 }
 
 /** A loader for {@link liveLayerKey} and {@link livePythonSet} that reads
- * the live index once and shares it (its failure included) between them:
- * one boot asks the same question once. */
+ * the live index once and shares it between them. A failed read is not
+ * kept: the next question reads again. The calls must not overlap -- the
+ * first caller's signal (its time bound) bounds the shared read -- which
+ * holds for one boot, where they come one after another. */
 export function catalogOnce(
   load: (signal: AbortSignal) => Promise<Catalog> = defaultCatalogLoad,
 ): (signal: AbortSignal) => Promise<Catalog> {
   let loaded: Promise<Catalog> | undefined;
-  return (signal) => loaded ??= load(signal);
+  return (signal) =>
+    loaded ??= load(signal).catch((error) => {
+      loaded = undefined;
+      throw error;
+    });
+}
+
+/** One boot's two questions to the live index about `request`'s Python
+ * set -- a snapshot's (`pythonSet`) and the install's stored layer
+ * (`layerKey`) -- answered from one read of it. Made anew for each boot,
+ * so a fresh sandbox asks the index again. */
+export function liveAnswers(
+  request: { set: readonly string[]; image?: string } | undefined,
+  load: (signal: AbortSignal) => Promise<Catalog> = defaultCatalogLoad,
+): {
+  pythonSet: () => Promise<string | null | undefined>;
+  layerKey: () => Promise<string | undefined>;
+} {
+  const once = catalogOnce(load);
+  return {
+    pythonSet: () => livePythonSet(request, undefined, once),
+    layerKey: () =>
+      request?.image === undefined
+        ? Promise.resolve(undefined)
+        : liveLayerKey(request.image, request.set, undefined, once),
+  };
 }
 
 /** What {@link livePythonSet} says for an index without a complete set. */

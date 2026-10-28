@@ -508,3 +508,24 @@ Deno.test("a set that cannot be resolved uses no layer: pkg, as on main, with a 
   assertEquals(warned.length, 1);
   assertEquals(warned[0][1] instanceof TypeError, true);
 });
+
+Deno.test("offline, the page says whether it uses a stored layer or installs with pkg", async () => {
+  const said: string[] = [];
+  const info = console.info;
+  console.info = (message: string) => said.push(message);
+  try {
+    const withLayer = fakeDeps({
+      stored: { key: "img/set1", entries: ["e1"] },
+      live: new IndexUnreadable("offline"),
+    });
+    assertEquals(await installWithLayer(withLayer.deps), "layer");
+    const without = fakeDeps({ live: new IndexUnreadable("offline") });
+    assertEquals(await installWithLayer(without.deps), "pkg");
+  } finally {
+    console.info = info;
+  }
+  assertEquals(said, [
+    "the live index could not be had: using this browser's stored layer",
+    "the live index could not be had and this browser keeps no layer for this image: installing with pkg",
+  ]);
+});

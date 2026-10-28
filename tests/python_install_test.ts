@@ -4,6 +4,7 @@ import { parsePins } from "../src/pins.ts";
 import {
   catalogOnce,
   IndexUnreadable,
+  liveAnswers,
   liveLayerKey,
   livePythonSet,
   NO_COMPLETE_SET,
@@ -141,16 +142,49 @@ Deno.test("an index that cannot be had keeps its cause and is said, not silent",
   assertEquals((said[0][1] as Error).cause, cause);
 });
 
-Deno.test("one boot reads the live index once for the snapshot's check and the install's", async () => {
+Deno.test("one boot's two questions to the live index come from one read of it", async () => {
   let loads = 0;
-  const once = catalogOnce(() => {
+  const catalog = { metadata: new Map() } as unknown as Catalog;
+  const live = liveAnswers({ set: ["python"], image: "img" }, () => {
     loads++;
-    return Promise.resolve(
-      { metadata: new Map() } as unknown as Catalog,
-    );
+    return Promise.resolve(catalog);
   });
-  const request = { set: ["python"], image: "img" };
-  assertEquals(await livePythonSet(request, 1000, once), NO_COMPLETE_SET);
-  assertEquals(await liveLayerKey("img", ["python"], 1000, once), undefined);
+  assertEquals(await live.pythonSet(), NO_COMPLETE_SET);
+  assertEquals(await live.layerKey(), undefined);
   assertEquals(loads, 1);
+  // A page that installs no Python asks nothing.
+  const none = liveAnswers(undefined, () => {
+    loads++;
+    return Promise.resolve(catalog);
+  });
+  assertEquals(await none.pythonSet(), null);
+  assertEquals(await none.layerKey(), undefined);
+  assertEquals(loads, 1);
+});
+
+Deno.test("a failed read of the live index is not kept: the next question reads again", async () => {
+  const results = [
+    Promise.reject(new TypeError("network down")),
+    Promise.resolve({ metadata: new Map() } as unknown as Catalog),
+  ];
+  results[0].catch(() => {});
+  let loads = 0;
+  const once = catalogOnce(() => results[loads++]);
+  const info = console.info;
+  console.info = () => {};
+  try {
+    assertEquals(
+      await livePythonSet({ set: ["python"], image: "img" }, 1000, once),
+      undefined,
+      "the first read failed: no answer",
+    );
+    assertEquals(
+      await livePythonSet({ set: ["python"], image: "img" }, 1000, once),
+      NO_COMPLETE_SET,
+      "the second read answered",
+    );
+  } finally {
+    console.info = info;
+  }
+  assertEquals(loads, 2);
 });

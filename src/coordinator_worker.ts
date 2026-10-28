@@ -54,7 +54,7 @@ import {
   layerKey,
   type LayerStore,
 } from "./python_layer.ts";
-import { catalogOnce, liveLayerKey, livePythonSet } from "./python_install.ts";
+import { liveAnswers } from "./python_install.ts";
 import { postCaptured } from "./capture_outcome.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import {
@@ -546,9 +546,10 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   }
   if (msg.type !== "start") return;
   kernelPorts = msg.kernelPorts;
-  // The live index, read once for this start: a snapshot's check and the
-  // install's stored-layer question ask it the same thing.
-  const liveIndex = catalogOnce();
+  // The live index's answers for this boot: a snapshot's check and the
+  // install's stored-layer question, from one read. Made anew by each
+  // begin() below, so a fresh sandbox asks again.
+  let live = liveAnswers(msg.python);
   const term = workerTerm({ cols: msg.cols, rows: msg.rows });
   const env = {
     isolated: msg.isolated,
@@ -560,7 +561,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     snapshotPath: msg.snapshot === "restore" && kernelPorts === undefined
       ? SANDBOX_SNAPSHOT_PATH
       : undefined,
-    livePythonSet: () => livePythonSet(msg.python, undefined, liveIndex),
+    livePythonSet: () => live.pythonSet(),
     fetchBytes: (path: string) =>
       fetchPlaygroundBytes(path, (progress) => {
         const percent = progress.total === undefined
@@ -608,8 +609,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
             store,
             image: python.image,
             pristine,
-            liveKey: () =>
-              liveLayerKey(python.image!, python.set, undefined, liveIndex),
+            liveKey: () => live.layerKey(),
             install: async (between) => {
               between.before();
               await installPackage(python, {
@@ -648,6 +648,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
    * exception to "never stops the session": the stalled one is dropped
    * first). */
   const begin = async () => {
+    live = liveAnswers(msg.python);
     // Never stops the session once its shell is up (src/coordinator_start.ts).
     const started = await startSandbox({
       boot: () =>
