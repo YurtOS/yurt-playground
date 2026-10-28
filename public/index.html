@@ -1186,18 +1186,22 @@ yurt stop web</pre>
             <h3>Suspend it to a file</h3>
             <p>
               A running sandbox seals into one image: kernel memory, each
-              program's memory and its call stack. Resume it after a reload, or
-              on another machine. An idle session costs nothing, and a program
-              can be checkpointed before a risky step and rolled back.
+              program's memory and its call stack. On this page a notebook's
+              kernel resumes from that image after a reload, in the same
+              browser; the section below is the demo. The same image is what a
+              checkpoint before a risky step, a fork, or a move to another
+              machine would restore from. The kernel's catalog rates capture and
+              restore experimental, single-process, on the native host.
             </p>
           </article>
           <article class="check">
             <h3>Real programs, real compilers</h3>
             <p>
               <code>ipykernel</code>, <code>pip</code>, BusyBox, Node.js and the
-              Go toolchain run unmodified, and clang runs inside the sandbox, so
-              software builds the ordinary way instead of through a curated
-              list. What is supported today is in the kernel's
+              Go toolchain run unmodified, and clang is a package that runs
+              inside the sandbox, so software can build in it the ordinary way
+              instead of through a curated list. What is supported today, and
+              how far, is in the kernel's
               <a
                 href="https://github.com/YurtOS/yurtos-kernel/blob/main/docs/USE_CASES.md"
               >use-case catalog</a>.
