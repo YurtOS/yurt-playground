@@ -178,6 +178,7 @@ async function servePackages(msg: ToWorker): Promise<void> {
         throw new Error("this sandbox does not install packages");
       }
       if (sandboxStalled) throw new Error(stalledSandbox());
+      pkgTouched.add(session);
       return installPackage(msg.name, {
         host: workerPackageHost(session),
         tablet: msg.tablet,
@@ -267,9 +268,10 @@ let stalledWhy = "an earlier install stopped making progress";
 const stalledSandbox = () =>
   `${stalledWhy} in this sandbox, so it installs nothing more; ` +
   "reload the page for a fresh one";
-/** The sandboxes a Python install was tried in (src/python_layer.ts: only
- * a first install is kept as a layer). */
-const pythonAttempted = new WeakSet<object>();
+/** The sandboxes any package install was tried in, Python's or the
+ * Packages panel's (src/python_layer.ts: a layer is used or kept only in a
+ * sandbox with none before). */
+const pkgTouched = new WeakSet<object>();
 /** The layer store, when this sandbox's Python came from its layer: a
  * kernel that then does not start drops the layer, rather than every
  * later visit failing the same way. */
@@ -278,17 +280,28 @@ let layerInstalled: LayerStore | undefined;
  * still the set; past it, the stored layer is used as when offline. */
 const LIVE_INDEX_TIMEOUT_MS = 20_000;
 
-async function liveLayerKey(image: string, set: string[]): Promise<string> {
+async function liveLayerKey(
+  image: string,
+  set: string[],
+): Promise<string | undefined> {
   const giveUp = new AbortController();
   const timer = setTimeout(() => giveUp.abort(), LIVE_INDEX_TIMEOUT_MS);
+  let catalog: Awaited<ReturnType<typeof loadCatalog>>;
   try {
-    const catalog = await loadCatalog(
+    // Throws when the repository cannot be had: the stored layer then.
+    catalog = await loadCatalog(
       (url, limit, onBytes) =>
         fetchWithProgress(url, limit, onBytes, giveUp.signal),
     );
-    return layerKey(image, resolveSet(catalog, set));
   } finally {
     clearTimeout(timer);
+  }
+  // The repository answered: a set it no longer offers (yanked, removed)
+  // is no layer's either.
+  try {
+    return layerKey(image, resolveSet(catalog, set));
+  } catch {
+    return undefined;
   }
 }
 
@@ -521,20 +534,21 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       const progress = (text: string) => post({ type: "status", text });
       layerInstalled = undefined;
       const store = tablet ? undefined : await browserLayerStore();
-      const firstAttempt = !pythonAttempted.has(session);
-      pythonAttempted.add(session);
       try {
         // Instant on a later visit: this browser's earlier install, kept
         // as a layer (src/python_layer.ts), when it is still the set. All
         // in one turn of the install queue: a Packages install must not
         // land while a layer is written or read out. Not on a tablet: a
         // layer is over 100 MiB in this worker while it is made or used.
-        const from = await installs(() =>
-          installWithLayer({
+        const from = await installs(() => {
+          // In the turn: a Packages install queued before this one has run.
+          const pristine = !pkgTouched.has(session);
+          pkgTouched.add(session);
+          return installWithLayer({
             layer: session.layer,
             store,
             image: python.image,
-            firstAttempt,
+            pristine,
             liveKey: () => liveLayerKey(python.image!, python.set),
             install: async (between) => {
               between.before();
@@ -548,8 +562,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
             },
             probe: () => probePython(session.process),
             progress,
-          })
-        );
+          });
+        });
         layerInstalled = from === "layer" ? store : undefined;
       } catch (error) {
         // A sandbox a layer was half written into, like a stalled one,

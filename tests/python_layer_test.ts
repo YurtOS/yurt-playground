@@ -174,12 +174,33 @@ Deno.test("a touched directory brings everything beneath it; gone and excluded p
 
 Deno.test("a layer's key is the slim image and the exact releases, in any order", () => {
   const releases = [
-    { name: "numpy", version: "2.5.0", build: "yurt_0" },
-    { name: "python", version: "3.14.7", build: "yurt_0" },
+    {
+      name: "numpy",
+      version: "2.5.0",
+      build: "yurt_0",
+      sha256: "A".repeat(64),
+    },
+    {
+      name: "python",
+      version: "3.14.7",
+      build: "yurt_0",
+      sha256: "b".repeat(64),
+    },
   ];
   assertEquals(
     layerKey("ABC", releases),
-    "abc/numpy@2.5.0-yurt_0+python@3.14.7-yurt_0",
+    `abc/numpy@2.5.0-yurt_0:${"a".repeat(16)}+python@3.14.7-yurt_0:${
+      "b".repeat(16)
+    }`,
+  );
+  // Republished under the same version and build: another key.
+  assertEquals(
+    layerKey("abc", [releases[0], {
+      ...releases[1],
+      sha256: "c".repeat(64),
+    }]) ===
+      layerKey("abc", releases),
+    false,
   );
   assertEquals(
     layerKey("abc", [...releases].reverse()),
@@ -196,10 +217,10 @@ Deno.test("a layer's key is the slim image and the exact releases, in any order"
 function fakeDeps(
   options: {
     stored?: { key: string; entries: string[] };
-    live?: string | Error;
+    live?: string | Error | null;
     probe?: boolean | null;
     applyThrows?: boolean;
-    firstAttempt?: boolean;
+    pristine?: boolean;
     drainThrows?: boolean;
   },
 ) {
@@ -207,7 +228,7 @@ function fakeDeps(
   let stored = options.stored;
   const deps: LayerInstallDeps<string> = {
     image: "img",
-    firstAttempt: options.firstAttempt ?? true,
+    pristine: options.pristine ?? true,
     layer: {
       drainChanged: () => {
         log.push("drain");
@@ -244,7 +265,9 @@ function fakeDeps(
     liveKey: () =>
       options.live instanceof Error
         ? Promise.reject(options.live)
-        : Promise.resolve(options.live ?? "img/set1"),
+        : Promise.resolve(
+          options.live === null ? undefined : (options.live ?? "img/set1"),
+        ),
     install: async (between) => {
       log.push("before");
       between.before();
@@ -365,14 +388,41 @@ Deno.test("a probe that cannot tell keeps the layer: the kernel's start tells", 
   assertEquals(log.includes("drop"), false);
 });
 
-Deno.test("a retry in the same sandbox is not kept: pkg may have written part of the set before", async () => {
-  const { deps, log } = fakeDeps({ firstAttempt: false });
+Deno.test("a sandbox that installed anything before neither uses a layer nor keeps one", async () => {
+  // A retry after a failed transaction, or a Packages install first: the
+  // layer's records would replace pkg's, and what pkg writes now is not
+  // the whole set.
+  const { deps, log } = fakeDeps({
+    pristine: false,
+    stored: { key: "img/set1", entries: ["e1"] },
+  });
   assertEquals(await installWithLayer(deps), "pkg");
+  assertEquals(log.includes("apply e1"), false);
   assertEquals(log.includes("pkg install"), true);
   assertEquals(
     log.some((line) => line.startsWith("capture") || line.startsWith("put")),
     false,
   );
+});
+
+Deno.test("a repository that answers with no usable set (yanked) uses no stored layer", async () => {
+  const { deps, log } = fakeDeps({
+    stored: { key: "img/set1", entries: ["e1"] },
+    live: null,
+  });
+  assertEquals(await installWithLayer(deps), "pkg");
+  assertEquals(log.includes("apply e1"), false);
+  assertEquals(
+    log.some((line) => line.startsWith("capture") || line.startsWith("put")),
+    false,
+  );
+});
+
+Deno.test("an install that wrote nothing keeps no empty layer", async () => {
+  const { deps, log } = fakeDeps({});
+  deps.layer!.capture = () => [];
+  assertEquals(await installWithLayer(deps), "pkg");
+  assertEquals(log.some((line) => line.startsWith("put")), false);
 });
 
 Deno.test("a drain that fails keeps nothing and fails nothing", async () => {

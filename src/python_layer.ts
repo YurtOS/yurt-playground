@@ -295,10 +295,13 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
  * another key. */
 export function layerKey(
   imageSha256: string,
-  releases: { name: string; version: string; build: string }[],
+  releases: { name: string; version: string; build: string; sha256: string }[],
 ): string {
-  const specs = releases.map((r) => `${r.name}@${r.version}-${r.build}`)
-    .sort();
+  // The archive's sha256 too: a release republished under the same version
+  // and build is another install.
+  const specs = releases.map((r) =>
+    `${r.name}@${r.version}-${r.build}:${r.sha256.toLowerCase().slice(0, 16)}`
+  ).sort();
   return `${imageSha256.toLowerCase()}/${specs.join("+")}`;
 }
 
@@ -411,13 +414,17 @@ export type LayerInstallDeps<E> = {
   };
   /** The slim image's sha256 (the site's pins); absent: no layers. */
   image?: string;
-  /** This sandbox's first Python install: only then is what `pkg` wrote
-   * the whole set (a retry after a failed transaction finds part of it in
-   * place already, and the layer would lack that part). */
-  firstAttempt: boolean;
-  /** The key the live index resolves the set to now; throws when the
-   * repository cannot be reached in time, or names no complete set. */
-  liveKey(): Promise<string>;
+  /** No package install has run in this sandbox yet -- not Python's, not
+   * the Packages panel's. Only then may a layer be used (its records would
+   * replace pkg's, leaving what was installed unmanaged) or kept (what
+   * `pkg` wrote would not be the whole set, while its records, which the
+   * layer copies, would list more). */
+  pristine: boolean;
+  /** The key the live index resolves the set to now. `undefined` when the
+   * repository answered but names no usable set (yanked, removed): then no
+   * layer is used either, and `pkg` says why. Throws when the repository
+   * cannot be reached in time. */
+  liveKey(): Promise<string | undefined>;
   /** The guest's own install; `between` runs right before `pkg` and right
    * after it succeeded. The caller runs all of this in one turn of the
    * install queue, so nothing else installs meanwhile. */
@@ -439,7 +446,10 @@ export async function installWithLayer<E>(
 ): Promise<"layer" | "pkg"> {
   const { layer, store, image } = deps;
   let live: string | undefined;
-  if (layer !== undefined && store !== undefined && image !== undefined) {
+  if (
+    layer !== undefined && store !== undefined && image !== undefined &&
+    deps.pristine
+  ) {
     let key: string | undefined;
     try {
       live = await deps.liveKey();
@@ -466,7 +476,7 @@ export async function installWithLayer<E>(
     }
   }
   const keep = layer !== undefined && store !== undefined &&
-    live !== undefined && deps.firstAttempt;
+    live !== undefined;
   let drained = false;
   let captured: E[] | undefined;
   await deps.install({
@@ -488,7 +498,8 @@ export async function installWithLayer<E>(
       }
     },
   });
-  if (live !== undefined && captured !== undefined) {
+  // Nothing written (pkg found the set installed): nothing to keep.
+  if (live !== undefined && captured !== undefined && captured.length > 0) {
     deps.progress("Python: keeping the install for the next visit");
     try {
       await store!.put(live, captured);
