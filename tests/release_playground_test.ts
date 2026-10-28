@@ -36,6 +36,18 @@ async function command(
   return result;
 }
 
+/** The release script's sourced helpers (scripts/lib/), into a fixture
+ * project at `root`. */
+async function copyScriptLib(root: string): Promise<void> {
+  await Deno.mkdir(join(root, "scripts/lib"), { recursive: true });
+  for await (const entry of Deno.readDir(join(repoRoot, "scripts/lib"))) {
+    await Deno.copyFile(
+      join(repoRoot, "scripts/lib", entry.name),
+      join(root, "scripts/lib", entry.name),
+    );
+  }
+}
+
 async function git(dir: string, ...args: string[]): Promise<string> {
   const result = await command("git", ["-C", dir, ...args]);
   assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
@@ -74,14 +86,7 @@ Deno.test("--pins-only does not require a kernel release tag", async () => {
     const startup = releaseScript.split("# ---- the train label")[0];
     const harnessRoot = join(dir, "project");
     await Deno.mkdir(join(harnessRoot, "scripts/lib"), { recursive: true });
-    await Deno.copyFile(
-      join(repoRoot, "scripts/lib/kernel-release.sh"),
-      join(harnessRoot, "scripts/lib/kernel-release.sh"),
-    );
-    await Deno.copyFile(
-      join(repoRoot, "scripts/lib/snapshot-pin.sh"),
-      join(harnessRoot, "scripts/lib/snapshot-pin.sh"),
-    );
+    await copyScriptLib(harnessRoot);
     const harness = join(harnessRoot, "scripts/release-playground.sh");
     await Deno.writeTextFile(
       harness,
@@ -197,14 +202,7 @@ Deno.test("resume watches a recorded kernel run without resolving its tag", asyn
   try {
     const root = join(dir, "project");
     await Deno.mkdir(join(root, "scripts/lib"), { recursive: true });
-    await Deno.copyFile(
-      join(repoRoot, "scripts/lib/kernel-release.sh"),
-      join(root, "scripts/lib/kernel-release.sh"),
-    );
-    await Deno.copyFile(
-      join(repoRoot, "scripts/lib/snapshot-pin.sh"),
-      join(root, "scripts/lib/snapshot-pin.sh"),
-    );
+    await copyScriptLib(root);
     await writePinnedCli(root);
     const scriptPath = join(root, "scripts/release-playground.sh");
     const source = await Deno.readTextFile(
@@ -281,14 +279,7 @@ async function resumeFixture(
   const dir = await Deno.makeTempDir({ prefix: "release-resume-" });
   const root = join(dir, "project");
   await Deno.mkdir(join(root, "scripts/lib"), { recursive: true });
-  await Deno.copyFile(
-    join(repoRoot, "scripts/lib/kernel-release.sh"),
-    join(root, "scripts/lib/kernel-release.sh"),
-  );
-  await Deno.copyFile(
-    join(repoRoot, "scripts/lib/snapshot-pin.sh"),
-    join(root, "scripts/lib/snapshot-pin.sh"),
-  );
+  await copyScriptLib(root);
   await writePinnedCli(root);
   const scriptPath = join(root, "scripts/release-playground.sh");
   const source = await Deno.readTextFile(
@@ -452,14 +443,7 @@ Deno.test("--resume keeps the repository of an --image-release train's image and
   try {
     const root = join(dir, "project");
     await Deno.mkdir(join(root, "scripts/lib"), { recursive: true });
-    await Deno.copyFile(
-      join(repoRoot, "scripts/lib/kernel-release.sh"),
-      join(root, "scripts/lib/kernel-release.sh"),
-    );
-    await Deno.copyFile(
-      join(repoRoot, "scripts/lib/snapshot-pin.sh"),
-      join(root, "scripts/lib/snapshot-pin.sh"),
-    );
+    await copyScriptLib(root);
     const scriptPath = join(root, "scripts/release-playground.sh");
     const source = await Deno.readTextFile(
       join(repoRoot, "scripts/release-playground.sh"),
@@ -672,14 +656,7 @@ async function imageStepFixture(
   const root = join(dir, "project");
   await Deno.mkdir(join(root, "scripts/lib"), { recursive: true });
   await Deno.mkdir(join(root, "artifacts"), { recursive: true });
-  await Deno.copyFile(
-    join(repoRoot, "scripts/lib/kernel-release.sh"),
-    join(root, "scripts/lib/kernel-release.sh"),
-  );
-  await Deno.copyFile(
-    join(repoRoot, "scripts/lib/snapshot-pin.sh"),
-    join(root, "scripts/lib/snapshot-pin.sh"),
-  );
+  await copyScriptLib(root);
   const source = await Deno.readTextFile(
     join(repoRoot, "scripts/release-playground.sh"),
   );
@@ -1340,4 +1317,97 @@ Deno.test("a real train pins its own CLI in [4], not the one [2]'s smoke install
       await f.cleanup();
     }
   }
+});
+
+/** release-playground.sh's pins write, from the snapshot entry it reads
+ * to the pins it verifies, run on a project whose pins carry a snapshot
+ * entry, with a `deno` that answers --check-pin as `answer` (bash). */
+async function pinsWrite(answer: string) {
+  const dir = await Deno.makeTempDir({ prefix: "release-pins-write-" });
+  try {
+    const root = join(dir, "project");
+    await copyScriptLib(root);
+    await Deno.mkdir(join(root, "artifacts"));
+    await Deno.writeTextFile(
+      join(root, "artifacts/pins.json"),
+      JSON.stringify({
+        train: "playground-old",
+        snapshot: { release: "snapshot-playground-old" },
+      }),
+    );
+    const source = await Deno.readTextFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+    );
+    const start = "# The sealed sandbox snapshot (scripts/release-snapshot.ts)";
+    const end = 'say "verify the pins: scripts/install-pinned-artifacts.sh"';
+    assertEquals(source.includes(start) && source.includes(end), true);
+    const block = start + source.split(start)[1].split(end)[0];
+    const scriptPath = join(dir, "block.sh");
+    await Deno.writeTextFile(
+      scriptPath,
+      `set -euo pipefail
+say() { printf '==> %s\\n' "$*" >&2; }
+die() { echo "release-playground: $*" >&2; exit 1; }
+resume_command() { echo "resume"; }
+root=${JSON.stringify(root)}
+source "$root/scripts/lib/snapshot-pin.sh"
+train=playground-new kernel_sha=k sandbox_sha=s ports_sha=p
+kernel_wasm_release=kw kernel_wasm_repo=r kernel_sha256=ks
+image_release=ir image_repo=r image_sha256=is
+host_release=hr host_repo=r cli_release=cr cli_repo=r
+host_json='{}' cli_json='{}' python_seal_json='{"sha256":"py"}' slim_json=null
+${block}
+printf 'DROPPED=%s\\n' "\${snapshot_dropped:-0}"
+`,
+    );
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    await Deno.writeTextFile(
+      join(bin, "deno"),
+      `#!/usr/bin/env bash\n${answer}\n`,
+    );
+    await Deno.chmod(join(bin, "deno"), 0o755);
+    const result = await command("bash", [scriptPath], {
+      env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` },
+    });
+    return {
+      code: result.code,
+      output: new TextDecoder().decode(result.stdout) +
+        new TextDecoder().decode(result.stderr),
+      pins: JSON.parse(
+        await Deno.readTextFile(join(root, "artifacts/pins.json")),
+      ),
+    };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("a train carries the snapshot pin --check-pin accepts into its new pins", async () => {
+  const run = await pinsWrite("exit 0");
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.pins.train, "playground-new");
+  assertEquals(run.pins.snapshot, { release: "snapshot-playground-old" });
+  assertStringIncludes(run.output, "DROPPED=0");
+});
+
+Deno.test("a train drops the snapshot pin --check-pin refuses, with its reason", async () => {
+  const run = await pinsWrite(
+    "echo 'snapshot pin refused: built from kernelRev k0, not k' >&2; exit 3",
+  );
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.pins.train, "playground-new");
+  assertEquals("snapshot" in run.pins, false);
+  assertStringIncludes(
+    run.output,
+    "the pinned snapshot is not this train's (built from kernelRev k0, not k): dropped",
+  );
+  assertStringIncludes(run.output, "DROPPED=1");
+});
+
+Deno.test("a train stops when --check-pin gives no verdict, and keeps the pin", async () => {
+  const run = await pinsWrite("echo 'error: Uncaught' >&2; exit 1");
+  assertEquals(run.code, 1, run.output);
+  assertStringIncludes(run.output, "the pinned snapshot could not be checked");
+  assertEquals(run.pins.snapshot, { release: "snapshot-playground-old" });
 });

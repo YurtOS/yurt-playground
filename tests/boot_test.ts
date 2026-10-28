@@ -711,7 +711,7 @@ Deno.test("a seal's wait for the guest to stop is bounded, the shell's exit incl
         deadlineMs: 50,
       }),
     Error,
-    "the guest did not stop",
+    "the guest did not stop: every process is gone, but the login shell's exit was not seen",
   );
 });
 

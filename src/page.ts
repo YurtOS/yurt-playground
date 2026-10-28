@@ -15,6 +15,11 @@ import {
 import { mountAgentPane } from "./agent_pane.ts";
 import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
+  markBootEnded,
+  markCaptured,
+  saveDownload,
+} from "./capture_outcome.ts";
+import {
   catalogRows,
   formatBytes,
   loadCatalog,
@@ -390,7 +395,7 @@ function boot(
     // A capture ends in the sealed sandbox, with no Jupyter to wait for.
     if (msg.type === "snapshot-captured") {
       saveSnapshot(msg.blob, msg.ms);
-      document.documentElement.dataset.snapshotCapture = "captured";
+      markCaptured(document.documentElement.dataset);
       endBoot();
     }
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
@@ -452,30 +457,35 @@ function snapshotMode(): "restore" | "capture" | undefined {
 }
 
 /** `?snapshot=capture`'s outcome, on <html> for scripts/release-snapshot.ts
- * to wait on: any end of the boot but the captured file -- an error, a
- * shell-only session, a worker that died -- is a failed capture. `why`
- * names it when the caller knows. */
+ * to wait on (src/capture_outcome.ts). */
 function endCapture(why?: string): void {
-  if (snapshotMode() !== "capture") return;
-  const mark = document.documentElement.dataset;
-  if (mark.snapshotCapture === "captured") return;
-  mark.snapshotCapture = "failed";
-  mark.snapshotCaptureError = why ?? mark.snapshotCaptureError ??
-    "the boot ended without a snapshot";
+  markBootEnded(
+    document.documentElement.dataset,
+    snapshotMode() === "capture",
+    why,
+  );
 }
 
 /** `?snapshot=capture`'s result, saved as a download. */
 function saveSnapshot(blob: Blob, ms: number): void {
   console.log(`[snapshot] sealed and encoded in ${ms} ms: ${blob.size} bytes`);
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = "sandbox.seal.gz";
-  document.body.append(link);
-  link.click();
-  link.remove();
-  // The page lets the ~131 MB go once the download surely has its own
-  // hold on it (revoked at once, Firefox and Safari can cut it short).
-  setTimeout(() => URL.revokeObjectURL(link.href), 30_000);
+  saveDownload(
+    {
+      createObjectURL: (file) => URL.createObjectURL(file),
+      revokeObjectURL: (url) => URL.revokeObjectURL(url),
+      click(href, name) {
+        const link = document.createElement("a");
+        link.href = href;
+        link.download = name;
+        document.body.append(link);
+        link.click();
+        link.remove();
+      },
+      later: (run, ms) => setTimeout(run, ms),
+    },
+    blob,
+    "sandbox.seal.gz",
+  );
 }
 
 /** The "Download home" control: `yurt.fs.export()` in a process of its

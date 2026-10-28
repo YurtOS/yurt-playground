@@ -2,18 +2,31 @@
 # snapshot-pin.sh -- sourced by release-playground.sh.
 #
 # keep_snapshot_pin ROOT: ROOT/artifacts/pins.json keeps its `snapshot`
-# entry only if `scripts/release-snapshot.ts --check-pin` accepts it (well
-# formed, this page's format, built from these pins, of the Python set the
-# live index offers: the checks the page makes). Otherwise the entry is
-# removed, snapshot_dropped=1 and snapshot_why says why.
+# entry unless `scripts/release-snapshot.ts --check-pin` refuses it (exit 3,
+# with a "snapshot pin refused: <reason>" line): well formed, this page's
+# format, built from these pins, of the Python set the live index offers --
+# the checks the page makes. A refused entry is removed, then
+# snapshot_dropped=1 and snapshot_why says why. Any other outcome (deno
+# missing, a crash, exit 1) and a failed removal return 1 with the cause on
+# stderr, the pin untouched: a check that did not run is no verdict.
 keep_snapshot_pin() {
-  local root=$1 pins=$1/artifacts/pins.json out
+  local root=$1 pins=$1/artifacts/pins.json out code=0
   [ "$(jq -c '.snapshot // null' "$pins")" != null ] || return 0
-  if out=$(cd "$root" && deno run -A scripts/release-snapshot.ts --check-pin 2>&1); then
-    return 0
+  out=$(cd "$root" && deno run -A scripts/release-snapshot.ts --check-pin 2>&1) || code=$?
+  case $code in
+    0) return 0 ;;
+    3) ;;
+    *)
+      echo "release-snapshot.ts --check-pin failed (exit $code): $out" >&2
+      return 1
+      ;;
+  esac
+  local why
+  why=$(sed -n 's/^snapshot pin refused: //p' <<< "$out" | tail -1)
+  if ! jq 'del(.snapshot)' "$pins" > "$pins.tmp" || ! mv "$pins.tmp" "$pins"; then
+    echo "could not remove the refused snapshot entry from $pins" >&2
+    return 1
   fi
-  jq 'del(.snapshot)' "$pins" > "$pins.tmp" && mv "$pins.tmp" "$pins"
-  snapshot_why=$(tail -1 <<< "$out")
-  snapshot_why=${snapshot_why#release-snapshot: }
+  snapshot_why=${why:-no reason given}
   snapshot_dropped=1
 }

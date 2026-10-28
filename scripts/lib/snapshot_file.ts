@@ -3,7 +3,7 @@
  * that the static build and scripts/release-snapshot.ts share: is this the
  * file to publish or pin?
  */
-import { sha256Hex } from "../../src/integrity.ts";
+import { createHash } from "node:crypto";
 import {
   type BuiltFrom,
   checkSandboxSnapshot,
@@ -28,8 +28,36 @@ export async function checkSnapshotFile(
   options: { sha256?: string; decode?: boolean } = {},
 ): Promise<SnapshotFileCheck> {
   try {
+    // One read of the file: the hash (streamed, not the ~131 MB at once)
+    // and the header check or decode each take a branch of it.
+    let body: ReadableStream<Uint8Array<ArrayBuffer>> =
+      (await Deno.open(path)).readable;
+    let hashed: Promise<string> | undefined;
     if (options.sha256 !== undefined) {
-      const actual = await sha256Hex(await Deno.readFile(path));
+      const [forHash, forCheck] = body.tee();
+      body = forCheck;
+      hashed = streamSha256(forHash);
+      hashed.catch(() => {});
+    }
+    let builtFrom: BuiltFrom | undefined;
+    let checked: unknown;
+    try {
+      if (options.decode === true) {
+        // Inflated once: the header's verdict comes on the way through.
+        await decodeSandboxSnapshot(
+          body,
+          expected,
+          (header) => builtFrom = header,
+        );
+      } else {
+        builtFrom = await checkSandboxSnapshot(body, expected);
+      }
+    } catch (error) {
+      checked = error;
+    }
+    // The bytes first: a file that is not the pinned one says so.
+    if (hashed !== undefined) {
+      const actual = await hashed;
       if (actual !== options.sha256) {
         return {
           ok: false,
@@ -37,16 +65,7 @@ export async function checkSnapshotFile(
         };
       }
     }
-    const body = (await Deno.open(path)).readable;
-    if (options.decode !== true) {
-      return {
-        ok: true,
-        builtFrom: await checkSandboxSnapshot(body, expected),
-      };
-    }
-    // Inflated once: the header's verdict comes on the way through.
-    let builtFrom: BuiltFrom | undefined;
-    await decodeSandboxSnapshot(body, expected, (header) => builtFrom = header);
+    if (checked !== undefined) throw checked;
     return { ok: true, builtFrom: builtFrom! };
   } catch (error) {
     return {
@@ -57,5 +76,18 @@ export async function checkSnapshotFile(
         ? error.message
         : String(error),
     };
+  }
+}
+
+/** The sha256 of everything `body` yields, hex, read as it streams. */
+async function streamSha256(
+  body: ReadableStream<Uint8Array>,
+): Promise<string> {
+  const hash = createHash("sha256");
+  const reader = body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return hash.digest("hex");
+    hash.update(value);
   }
 }

@@ -545,6 +545,7 @@ export async function prepareSeal(deps: {
   // `last` is read when the bound passes, so the error says what was left.
   const settled = async () => {
     await settle();
+    last = "every process is gone, but the login shell's exit was not seen";
     await deps.afterSettled?.();
   };
   const giveUp = (error: Error): never => {

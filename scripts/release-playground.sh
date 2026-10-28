@@ -152,7 +152,7 @@ resume_command() {
 source "$root/scripts/lib/kernel-release.sh"
 source "$root/scripts/lib/snapshot-pin.sh"
 
-for tool in gh jq git; do
+for tool in gh jq git deno; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
 done
 gh auth status >/dev/null 2>&1 || die "gh is not logged in"
@@ -836,7 +836,7 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
     pythonSeal: $python_seal
   } + (if $slim == null then {} else {browserImage: $slim} end)
     + (if $snapshot == null then {} else {snapshot: $snapshot} end)' > "$root/artifacts/pins.json"
-keep_snapshot_pin "$root"
+keep_snapshot_pin "$root" || die "the pinned snapshot could not be checked; fix that and $(resume_command)"
 if [ "${snapshot_dropped:-0}" = 1 ]; then
   say "the pinned snapshot is not this train's ($snapshot_why): dropped"
 fi

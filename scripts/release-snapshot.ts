@@ -38,7 +38,9 @@
  *              entry may stay: well formed, this page's format, built from
  *              these pins and of the Python set the live index offers -- or
  *              the index cannot be read in time, as the page then restores
- *              it too; else exit 1 with the reason (scripts/lib/snapshot-pin.sh)
+ *              it too; else exit 3 with a "snapshot pin refused: <reason>"
+ *              line on stderr (scripts/lib/snapshot-pin.sh); exit 1 is a
+ *              failure to check
  *
  * It refuses to run from a kernel checkout that is not at the pinned rev
  * or a playground checkout that is not its branch's pushed head, either
@@ -207,6 +209,12 @@ export async function snapshotPinProblem(
   }
 }
 
+/** `--check-pin`'s exit for a refused pin, and the stderr line that
+ * carries the reason: anything else -- exit 1, a crash -- is a failure to
+ * check, which must not drop a pin. */
+export const PIN_REFUSED_EXIT = 3;
+export const PIN_REFUSED_MARKER = "snapshot pin refused: ";
+
 /** The page's answer for the set an install under `pins` would get now. */
 const liveSetOf = (pins: Pins) => () =>
   livePythonSet(pythonInstallRequest(pins));
@@ -269,6 +277,9 @@ async function capture(): Promise<void> {
     const download = page.waitForEvent("download", {
       timeout: CAPTURE_TIMEOUT_MS,
     });
+    // Handled from the start: if the navigation below throws, closing the
+    // browser rejects this too, and that must not hide the real error.
+    download.catch(() => {});
     // The page marks the capture's outcome on <html> (src/page.ts): a
     // boot, install or capture that failed ends the boot with an error.
     // The status line is only shown, never parsed: progress names
@@ -391,7 +402,12 @@ async function main(): Promise<void> {
     }
     if (args.length > 0) die(`unknown arguments: ${args.join(" ")}`);
     const verdict = await checkPin(path);
-    if (!verdict.ok) die(verdict.problem);
+    if (!verdict.ok) {
+      // The verdict "not this train's", apart from any other failure
+      // (exit 1): only this one drops the pin (scripts/lib/snapshot-pin.sh).
+      console.error(`${PIN_REFUSED_MARKER}${verdict.problem}`);
+      Deno.exit(PIN_REFUSED_EXIT);
+    }
     return say("the pinned snapshot is this train's");
   }
   const dryRun = flag("--dry-run");
