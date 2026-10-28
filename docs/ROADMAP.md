@@ -27,11 +27,11 @@ What you can use today.
 - **A slim browser image that installs Python itself.** The tab loads 23.5 MB
   (the shell, the command-line tools, `sudo` and `pkg`) instead of 144 MB, and
   every page that runs Python installs the newest Python set from the signed
-  package repository with the sandbox's own `pkg`
+  package repository with the sandbox's own `pkg`, the first time it needs it
   ([2026.10.27](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068)).
 - **Instant Python on later visits.** After the first install the browser keeps
   the installed files as one layer, so a reload has Python ready in about 11
-  seconds instead of about 85 (measured on the live site), with nothing
+  seconds instead of about 85 (measured on the live site), with no package
   downloaded, as long as the repository still offers the same set
   ([2026.10.27.2](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068.2)).
 - **A stalled install offers Try again.** When the install stops making
@@ -69,10 +69,10 @@ What you can use today.
   ([2026.10.13](https://yurtos.github.io/yurt-playground/#playground-2026.10.13-68259fc)).
 - **"Download home"** saves your home directory from the browser sandbox to your
   device.
-- **Steady kernel fixes** in every train; the latest makes `epoll` work on
-  standard input and output, writes shared file mappings back reliably and
-  rebuilds `python3` as a plain Linux/musl CPython
-  ([2026.10.25](https://yurtos.github.io/yurt-playground/#playground-2026.10.25-f884f16)).
+- **Steady kernel fixes** in every train with a new kernel; the latest adds bind
+  and move mounts, thread-local storage in `dlopen`'d libraries on the desktop
+  host, and live shared mappings of `memfd` and `/dev/shm`
+  ([2026.10.26](https://yurtos.github.io/yurt-playground/#playground-2026.10.26-3d32068)).
 
 ## Next
 
@@ -81,13 +81,14 @@ Planned for the next one or two trains. These are in progress, not finished.
 - **Python in Safari.** Why: the first Python install may not finish there. The
   memory error ("memory allocation of … bytes failed") is fixed in `pkg`, but in
   automated Safari runs the sandbox stops answering partway through the install,
-  and after five minutes the cell offers Try again. The cause is under
-  investigation
-  ([yurtos-kernel#4170](https://github.com/YurtOS/yurtos-kernel/issues/4170));
-  it is not yet known whether the automation itself causes it, as a browser
-  debugger does in Chrome. The shell works in Safari.
+  and after five minutes the cell offers Try again. It is tracked with the hang
+  a browser debugger causes in Chrome
+  ([yurtos-kernel#4170](https://github.com/YurtOS/yurtos-kernel/issues/4170)),
+  and it is not yet known whether the automation itself causes it. The shell
+  works in Safari.
 - **Faster file creation in the guest.** Why: most of the first visit's Python
-  install, about a minute, is the sandbox writing the installed files
+  install, which takes about a minute, is the sandbox writing the installed
+  files
   ([yurtos-kernel#4169](https://github.com/YurtOS/yurtos-kernel/issues/4169)).
 - **Python native extensions loaded from a `.so` at run time**, rather than
   built into Python as NumPy is today. Why: the kernel and libc sides of
@@ -105,9 +106,8 @@ Bigger directions. Each needs design work, and the order is not fixed.
 
 - **A current clang as a package.** Go (1.28.0-devel), `gh` (2.102.0) and Perl
   (5.44.0) are now published in
-  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages)
-  ([Packages](https://yurtos.github.io/yurt-playground/#packages)); the clang
-  build there predates the current package format.
+  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) (see Now); the
+  clang build there dates from May 2026 and predates the current package format.
 - **Files that survive a reload.** Durable storage for the browser sandbox, so a
   reload does not lose your work
   ([#81](https://github.com/YurtOS/yurt-playground/issues/81)). Saving the whole
@@ -129,10 +129,10 @@ Bigger directions. Each needs design work, and the order is not fixed.
   already do, while Go's linker gives each program a memory of its own, so
   `go version` in the tab fails with "Exec format error". A change to Go's
   linker is in progress. The toolchain is also large: the `go` package is a 59.4
-  MB download, all held in the tab's memory once unpacked, so it stays an opt-in
-  install rather than part of the image. On iPad the per-tab process and memory
-  limits are a further question, since `go build` starts several compiler and
-  linker processes.
+  MB download, unpacked and held entirely in the tab's memory, so it stays an
+  opt-in install rather than part of the image. On iPad the per-tab process and
+  memory limits are a further question, since `go build` starts several compiler
+  and linker processes.
 - **More of the playground on tablets.** iPad browsers limit the processes and
   memory one tab can use, which is why tablets get the shell only today and why
   a long shell session can still run out of memory
@@ -152,8 +152,9 @@ Bigger directions. Each needs design work, and the order is not fixed.
 
 ## Known limits today
 
-- **No network in the browser tab**, by design. `pip install` (pure-Python
-  packages and matching wheels) and downloads work only in the desktop app.
+- **No network inside the browser sandbox**, by design. The page fetches
+  packages for it, but `pip install` (pure-Python packages and matching wheels)
+  and other downloads from inside the sandbox work only in the desktop app.
 - **Installed packages in the browser are lost on reload**, like every other
   file there ([#81](https://github.com/YurtOS/yurt-playground/issues/81)),
   except the Python set, which the browser keeps and writes back on a later
