@@ -13,12 +13,14 @@ import {
   executeCell,
   type JupyterStream,
   type KernelPorts,
+  relaunchNote,
   restartGuestKernel,
   startGuestKernel,
 } from "./jupyter.ts";
 import { requestCellInterrupt } from "./cell_interrupt.ts";
 import {
   installThenLaunch,
+  kernelFailureDropsLayer,
   probePython,
   type StartReport,
   startSandbox,
@@ -307,10 +309,7 @@ async function liveLayerKey(
 
 /** A Jupyter that did not start on a layer's Python: drop the layer. */
 function dropLayerIfKernelFailed(report: StartReport): void {
-  if (
-    report.type === "error" && layerInstalled !== undefined &&
-    report.message.startsWith("Jupyter did not start")
-  ) {
+  if (layerInstalled !== undefined && kernelFailureDropsLayer(report)) {
     void layerInstalled.drop();
     layerInstalled = undefined;
   }
@@ -341,7 +340,8 @@ async function retryPython(): Promise<void> {
   const started = await installThenLaunch(session, {
     installPython,
     launching: (s) => launchSession = s,
-    startKernel: (s) => startGuestKernel(s, kernelPorts, { status }),
+    startKernel: (s, relaunching) =>
+      startGuestKernel(s, kernelPorts, { relaunching }),
     post: (report) => {
       pythonMissing = report.type === "python-missing";
       dropLayerIfKernelFailed(report);
@@ -359,11 +359,6 @@ function subscribeJupyter(transport: JupyterTransport): void {
   transport.subscribe((message, channel) => {
     post({ type: "jupyter-message", message, channel });
   });
-}
-
-/** A status line for the page (what a start is doing). */
-function status(text: string): void {
-  post({ type: "status", text });
 }
 
 function post(msg: FromWorker): void {
@@ -460,7 +455,13 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           launchSession,
           previous,
           kernelPorts,
-          { status },
+          {
+            relaunching: (launch) =>
+              post({
+                type: "status",
+                text: `restarting Jupyter (${relaunchNote(launch)})`,
+              }),
+          },
         );
         subscribeJupyter(jupyter);
         post({ type: "jupyter-restarted" });
@@ -606,8 +607,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       launching: (session) => launchSession = session,
       noJupyter: msg.noJupyter === true,
       installPython,
-      startKernel: (session) =>
-        startGuestKernel(session, kernelPorts, { status }),
+      startKernel: (session, relaunching) =>
+        startGuestKernel(session, kernelPorts, { relaunching }),
       post: (report) => {
         if (report.type === "python-missing") pythonMissing = true;
         dropLayerIfKernelFailed(report);

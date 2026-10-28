@@ -1,6 +1,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   installThenLaunch,
+  kernelFailureDropsLayer,
   probePython,
   PYTHON_MISSING_EXIT,
   PYTHON_PROBE_COMMAND,
@@ -328,4 +329,77 @@ Deno.test("an image with python3 is never installed into", async () => {
     post: () => {},
   });
   assertEquals(installs, 0);
+});
+
+Deno.test("a stack-overflow relaunch's note rides on every later 'starting Jupyter' tick", async () => {
+  const posted: StartReport[] = [];
+  await startSandbox({
+    boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(0)).spawn)),
+    booted: () => {},
+    noJupyter: false,
+    startKernel: async (_session, relaunching) => {
+      relaunching(2);
+      // Long enough for the 1 ms ticker to post again.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return transport;
+    },
+    post: (report) => posted.push(report),
+    tickMs: 1,
+  });
+  const statuses = posted.flatMap((r) => r.type === "status" ? [r.text] : []);
+  const note = "launch 2: the last one overflowed the browser's stack";
+  const relaunched = statuses.findIndex((text) => text.includes(note));
+  assertEquals(
+    statuses[relaunched],
+    `starting Jupyter (0 s, ${note})`,
+    "said at once, with the count",
+  );
+  const later = statuses.slice(relaunched + 1);
+  assert(later.length > 0, "the ticker posted after the relaunch");
+  for (const text of later) {
+    assert(
+      /^starting Jupyter \(\d+ s, launch 2: the last one overflowed the browser's stack\)$/
+        .test(text),
+      text,
+    );
+  }
+  assertEquals(posted.at(-1), { type: "notebook-ready" });
+});
+
+Deno.test("a kernel failure drops the Python layer, an error that is not one does not", () => {
+  assert(
+    kernelFailureDropsLayer({
+      type: "error",
+      message: "Jupyter did not start: the Jupyter kernel exited (exit 1)",
+    }),
+  );
+  assertEquals(
+    kernelFailureDropsLayer({ type: "error", message: "Jupyter is not ready" }),
+    false,
+  );
+  assertEquals(kernelFailureDropsLayer({ type: "notebook-ready" }), false);
+});
+
+Deno.test("the coordinator worker hands the relaunch note on at start, retry and restart", () => {
+  const worker = Deno.readTextFileSync(
+    new URL("../src/coordinator_worker.ts", import.meta.url),
+  );
+  // Start and the Install/retry path: launchKernel's ticker carries it.
+  const starts = worker.match(
+    /startKernel: \((\w+), relaunching\) =>\s+startGuestKernel\(\1, kernelPorts, \{ relaunching \}\)/g,
+  );
+  assertEquals(starts?.length, 2, "both startKernel deps forward it");
+  assertEquals(
+    worker.match(/\bstartGuestKernel\(/g)?.length,
+    2,
+    "no startGuestKernel call without it",
+  );
+  // A restart says "restarting", not "starting", with the note.
+  assert(
+    /restartGuestKernel\(\s*launchSession,\s*previous,\s*kernelPorts,\s*\{\s*relaunching: \(launch\) =>\s*post\(\{\s*type: "status",\s*text: `restarting Jupyter \(\$\{relaunchNote\(launch\)\}\)`,?\s*\}\),?\s*\}/
+      .test(worker),
+    "the restart forwards its own relaunch status",
+  );
+  // A stack overflow is the browser's, not the layer's.
+  assert(/kernelFailureDropsLayer\(report\)/.test(worker));
 });

@@ -4,15 +4,18 @@ import {
   JUPYTER_LOG_FILE,
   JUPYTER_PID_FILE,
 } from "../src/jupyter.ts";
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   connectJupyterWithRetries,
   executeCell,
   hushUntil,
   interruptKernel,
   restartGuestKernel,
+  STACK_OVERFLOW_LAUNCHES,
   startGuestKernel,
 } from "../src/jupyter.ts";
+import { kernelFailureDropsLayer } from "../src/coordinator_start.ts";
+import type { WaitStatus } from "../src/executions.ts";
 import type { JupyterMessage } from "../src/jupyter_protocol.ts";
 import type {
   JupyterChannel,
@@ -623,13 +626,17 @@ Deno.test("a kernel that wrote its connection file and then exited still gets it
   );
 });
 
-/** A session whose kernel launches exit with `exits[n]` (the last one
- * repeats) before writing a connection file, or -- for `"ready"` -- write
- * one and keep running; the dial is not made. */
-function launchingSession(exits: (number | "ready")[]) {
+/** How a launch ends in `launchingSession`: an exit before the connection
+ * file (a host number, a wait status, or nothing at all), or `"ready"` --
+ * the file is written and the kernel keeps running. */
+type LaunchEnd = number | WaitStatus | undefined | "ready";
+
+/** A session whose kernel launches end as `ends[n]` (the last one
+ * repeats); the dial is not made. Records when each launch was spawned. */
+function launchingSession(ends: LaunchEnd[]) {
   const handlers = new Set<(bytes: Uint8Array) => void>();
-  let launches = 0;
-  let current: number | "ready" = 0;
+  const spawnedAt: number[] = [];
+  let current: LaunchEnd = 0;
   const connection = new TextEncoder().encode(JSON.stringify({
     shell_port: 1,
     iopub_port: 2,
@@ -641,8 +648,9 @@ function launchingSession(exits: (number | "ready")[]) {
   }));
   return {
     get launches() {
-      return launches;
+      return spawnedAt.length;
     },
+    spawnedAt,
     terminal: {
       write(bytes: Uint8Array) {
         // The stop line (after a failed launch, and before a restart)
@@ -660,8 +668,8 @@ function launchingSession(exits: (number | "ready")[]) {
       },
     },
     spawn: () => {
-      current = exits[Math.min(launches, exits.length - 1)];
-      launches++;
+      current = ends[Math.min(spawnedAt.length, ends.length - 1)];
+      spawnedAt.push(performance.now());
       return Promise.resolve({
         exited: current === "ready"
           ? new Promise<never>(() => {})
@@ -686,66 +694,158 @@ function launchingSession(exits: (number | "ready")[]) {
   };
 }
 
+const SAFARI_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
+  "(KHTML, like Gecko) Version/27.2 Safari/605.1.15";
+const CHROME_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+/** Past the launch, a test that never dials stops at the first try. */
 const NO_DIAL = { attempts: 1, delayMs: 1 };
+/** Safari, with no wait between launches. */
+const ON_JSC = { pollMs: 1, userAgent: SAFARI_UA, relaunchDelayMs: 0 };
 
-Deno.test("a kernel that dies of a stack overflow (exit 139) is launched again", async () => {
+Deno.test("on JavaScriptCore a kernel that dies of a stack overflow (exit 139) is launched again", async () => {
   const session = launchingSession([139, "ready"]);
-  const status: string[] = [];
+  const relaunches: number[] = [];
   // Past the relaunch: the dial is where this one stops.
   await assertRejects(
     () =>
       startGuestKernel(session, undefined, {
-        pollMs: 1,
+        ...ON_JSC,
         connect: NO_DIAL,
-        status: (text) => status.push(text),
+        relaunching: (launch) => relaunches.push(launch),
       }),
     Error,
     "did not become ready",
   );
   assertEquals(session.launches, 2);
-  assertEquals(status, [
-    "starting Jupyter (launch 2: the last one overflowed the browser's stack)",
-  ]);
+  assertEquals(relaunches, [2]);
 });
 
-Deno.test("stack-overflow relaunches stop after five launches, and the exit is said", async () => {
+Deno.test("on JavaScriptCore a SIGSEGV as a wait status (code 139, or signal 11) is the same stack overflow", async () => {
+  const signalled: WaitStatus = { code: null, signal: 11, coreDumped: true };
+  const coded: WaitStatus = { code: 139, signal: null, coreDumped: false };
+  for (const exit of [signalled, coded]) {
+    const session = launchingSession([exit, "ready"]);
+    await assertRejects(
+      () =>
+        startGuestKernel(session, undefined, { ...ON_JSC, connect: NO_DIAL }),
+      Error,
+      "did not become ready",
+    );
+    assertEquals(session.launches, 2, JSON.stringify(exit));
+  }
+});
+
+Deno.test("stack-overflow relaunches stop after STACK_OVERFLOW_LAUNCHES launches, and the Python layer is kept", async () => {
   const session = launchingSession([139]);
-  const status: string[] = [];
-  await assertRejects(
+  const relaunches: number[] = [];
+  const error = await assertRejects(
     () =>
       startGuestKernel(session, undefined, {
-        pollMs: 1,
-        status: (text) => status.push(text),
+        ...ON_JSC,
+        relaunching: (launch) => relaunches.push(launch),
       }),
     Error,
     "exited before writing its connection file (exit 139)",
   );
-  assertEquals(session.launches, 5);
-  assertEquals(status.length, 4);
+  assertEquals(session.launches, STACK_OVERFLOW_LAUNCHES);
+  assertEquals(
+    relaunches,
+    Array.from({ length: STACK_OVERFLOW_LAUNCHES - 1 }, (_, i) => i + 2),
+  );
+  // The browser's stack, not a broken layer: the layer stays.
+  assertEquals(
+    kernelFailureDropsLayer({
+      type: "error",
+      message: `Jupyter did not start: ${error.message}`,
+    }),
+    false,
+  );
 });
 
-Deno.test("a kernel that exits with anything but 139 is not launched again", async () => {
-  for (const exit of [1, 127, 134, 1390]) {
-    const session = launchingSession([exit, "ready"]);
-    await assertRejects(
-      () => startGuestKernel(session, undefined, { pollMs: 1 }),
+Deno.test("off JavaScriptCore exit 139 is a real segfault: no relaunch, and the layer goes", async () => {
+  for (const userAgent of [CHROME_UA, undefined]) {
+    const session = launchingSession([139, "ready"]);
+    const relaunches: number[] = [];
+    const error = await assertRejects(
+      () =>
+        startGuestKernel(session, undefined, {
+          pollMs: 1,
+          userAgent,
+          relaunchDelayMs: 0,
+          relaunching: (launch) => relaunches.push(launch),
+        }),
       Error,
-      `(exit ${exit})`,
+      "(exit 139)",
     );
-    assertEquals(session.launches, 1, `exit ${exit}`);
+    assertEquals(session.launches, 1, String(userAgent));
+    assertEquals(relaunches, []);
+    assertEquals(
+      kernelFailureDropsLayer({
+        type: "error",
+        message: `Jupyter did not start: ${error.message}`,
+      }),
+      true,
+    );
   }
 });
 
-Deno.test("a Jupyter restart relaunches past a stack overflow too", async () => {
-  const session = launchingSession([139, 139, "ready"]);
+Deno.test("on JavaScriptCore a kernel that exits with anything but a SIGSEGV is not launched again", async () => {
+  const aborted: WaitStatus = { code: null, signal: 6, coreDumped: true };
+  for (const exit of [1, 127, 134, 1390, aborted]) {
+    const session = launchingSession([exit, "ready"]);
+    await assertRejects(
+      () => startGuestKernel(session, undefined, ON_JSC),
+      Error,
+      "exited before writing its connection file (",
+    );
+    assertEquals(session.launches, 1, JSON.stringify(exit));
+  }
+});
+
+Deno.test("a relaunch waits relaunchDelayMs before the next launch", async () => {
+  const session = launchingSession([139, "ready"]);
   await assertRejects(
     () =>
-      restartGuestKernel(session, undefined, undefined, {
-        pollMs: 1,
+      startGuestKernel(session, undefined, {
+        ...ON_JSC,
+        relaunchDelayMs: 50,
         connect: NO_DIAL,
       }),
     Error,
     "did not become ready",
   );
+  assertEquals(session.launches, 2);
+  const [first, second] = session.spawnedAt;
+  assert(second - first >= 50, `relaunched after ${second - first} ms`);
+});
+
+Deno.test("an exit the host gives no status for leaves the exit out of the message", async () => {
+  const session = launchingSession([undefined]);
+  const error = await assertRejects(
+    () => startGuestKernel(session, undefined, ON_JSC),
+    Error,
+    "exited before writing its connection file; kernel log",
+  );
+  assert(!error.message.includes("undefined"), error.message);
+  assertEquals(session.launches, 1);
+});
+
+Deno.test("a Jupyter restart relaunches past a stack overflow too, and says so", async () => {
+  const session = launchingSession([139, 139, "ready"]);
+  const relaunches: number[] = [];
+  await assertRejects(
+    () =>
+      restartGuestKernel(session, undefined, undefined, {
+        ...ON_JSC,
+        connect: NO_DIAL,
+        relaunching: (launch) => relaunches.push(launch),
+      }),
+    Error,
+    "did not become ready",
+  );
   assertEquals(session.launches, 3);
+  assertEquals(relaunches, [2, 3]);
 });

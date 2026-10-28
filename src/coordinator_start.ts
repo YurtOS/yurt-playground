@@ -16,6 +16,7 @@
  *   stopping the session on it killed the terminal without a word.
  */
 import type { JupyterTransport } from "./jupyter_transport.ts";
+import { overflowedStack, relaunchNote } from "./jupyter.ts";
 import type { Spawner } from "./executions.ts";
 
 /** What `start` posts to the page about the boot. */
@@ -94,7 +95,11 @@ export type StartDeps<S extends StartableSession> = {
   installPython?(session: S): Promise<void>;
   /** Just before the kernel is launched on it: what a restart reuses. */
   launching?(session: S): void;
-  startKernel(session: S): Promise<JupyterTransport>;
+  /** Calls `relaunching` before each launch after a stack overflow. */
+  startKernel(
+    session: S,
+    relaunching: (launch: number) => void,
+  ): Promise<JupyterTransport>;
   post(report: StartReport): void;
   /** How often "starting Jupyter (N s)" is posted. */
   tickMs?: number;
@@ -170,13 +175,23 @@ async function launchKernel<S extends StartableSession>(
   // the difference between slow and stuck.
   deps.launching?.(session);
   const started = Date.now();
-  const ticking = setInterval(() => {
+  /** Which launch this is, once one overflowed the stack: every tick says
+   * so, or the next one would wipe it within seconds. */
+  let note = "";
+  const tick = () => {
     const seconds = Math.round((Date.now() - started) / 1000);
-    deps.post({ type: "status", text: `starting Jupyter (${seconds} s)` });
-  }, deps.tickMs ?? 5000);
+    deps.post({
+      type: "status",
+      text: `starting Jupyter (${seconds} s${note})`,
+    });
+  };
+  const ticking = setInterval(tick, deps.tickMs ?? 5000);
   let jupyter: JupyterTransport;
   try {
-    jupyter = await deps.startKernel(session);
+    jupyter = await deps.startKernel(session, (launch) => {
+      note = `, ${relaunchNote(launch)}`;
+      tick();
+    });
   } catch (error) {
     // The shell stays: the session is not stopped for a kernel that did
     // not start.
@@ -190,4 +205,13 @@ async function launchKernel<S extends StartableSession>(
   }
   deps.post({ type: "notebook-ready" });
   return jupyter;
+}
+
+/** Whether a start's error says the Python it ran is broken, so a stored
+ * layer that installed it must go. A stack overflow on every launch is the
+ * browser's limit (yurtos-kernel#4204), not the layer's. */
+export function kernelFailureDropsLayer(report: StartReport): boolean {
+  return report.type === "error" &&
+    report.message.startsWith("Jupyter did not start") &&
+    !overflowedStack(report.message);
 }

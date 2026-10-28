@@ -4,6 +4,7 @@ import {
   type JupyterConfig,
   type JupyterTransport,
 } from "./jupyter_transport.ts";
+import { engineCapsSharedMemoryReservations as isJavaScriptCore } from "./boot.ts";
 
 export const JUPYTER_CONNECTION_FILE = "/tmp/yurt-kernel.json";
 /** The launched ipykernel's pid, so a restart can kill exactly that process. */
@@ -222,19 +223,65 @@ type StartOptions = {
    * still binding its ports; a test that never dials says so instead of
    * paying the whole backoff (yurt-playground#123). */
   connect?: { attempts?: number; delayMs?: number };
-  /** Told what the start is doing when it launches the kernel again. */
-  status?: (text: string) => void;
+  /** Told before launch N (2 and up) after a stack overflow. */
+  relaunching?: (launch: number) => void;
+  /** The engine's; the relaunch is JavaScriptCore's alone. */
+  userAgent?: string;
+  relaunchDelayMs?: number;
 };
 
 /** How many times ipykernel is launched when it dies of a stack overflow. */
 export const STACK_OVERFLOW_LAUNCHES = 5;
 
+/** The wait before a relaunch: the measured launch 2 came a few seconds
+ * after launch 1, and nothing here needs it sooner. */
+const RELAUNCH_DELAY_MS = 1000;
+
+const STACK_OVERFLOW = "overflowed the browser's stack";
+
+/** What the status line says about launch N after a stack overflow. */
+export function relaunchNote(launch: number): string {
+  return `launch ${launch}: the last one ${STACK_OVERFLOW}`;
+}
+
+/** Whether a start's error is the stack overflow that every launch hit:
+ * the browser's limit, not anything wrong with the Python it ran. */
+export function overflowedStack(message: string): boolean {
+  return message.includes(STACK_OVERFLOW);
+}
+
 /** The guest kernel died before writing its connection file. `status` is
- * the host's exit number (128+n for a signal). */
+ * what the host's `exited` resolved with: its number (128+n for a
+ * signal), a wait status, or nothing. */
 class KernelExited extends Error {
   constructor(message: string, readonly status: unknown) {
     super(message);
   }
+}
+
+/** The exit as the host reported it, the way probePython reads one. */
+function exitOf(
+  status: unknown,
+): { code?: number | null; signal?: number | null } | undefined {
+  if (typeof status === "number") return { code: status };
+  if (typeof status === "object" && status !== null) {
+    return status as { code?: number | null; signal?: number | null };
+  }
+  return undefined;
+}
+
+/** " (exit N)" or " (signal N)"; nothing for an exit with no status. */
+function exitClause(status: unknown): string {
+  const exit = exitOf(status);
+  if (typeof exit?.code === "number") return ` (exit ${exit.code})`;
+  if (typeof exit?.signal === "number") return ` (signal ${exit.signal})`;
+  return "";
+}
+
+/** SIGSEGV: 139 as the host folds it, or signal 11 in a wait status. */
+function isSegfault(status: unknown): boolean {
+  const exit = exitOf(status);
+  return exit?.code === 139 || exit?.signal === 11;
 }
 
 /**
@@ -245,26 +292,37 @@ class KernelExited extends Error {
  * the guest Worker (yurtos-kernel#4204). A launch a few seconds later in the
  * same page fits (measured: launch 2 started every time) -- most likely
  * because CPython then runs as optimised wasm with smaller frames than the
- * first, baseline tier's. So that one failure is launched again, up to
- * STACK_OVERFLOW_LAUNCHES launches; any other is final.
+ * first, baseline tier's. So on JavaScriptCore that one failure is launched
+ * again, up to STACK_OVERFLOW_LAUNCHES launches. Elsewhere a SIGSEGV is a
+ * real one, and like any other failure it is final at once: re-running
+ * ipykernel's import would only take minutes to fail the same way.
  */
 export async function startGuestKernel(
   session: JupyterLaunchSession,
   ports?: KernelPorts,
   options: StartOptions = {},
 ): Promise<JupyterTransport> {
+  const relaunches = isJavaScriptCore(
+    options.userAgent ?? globalThis.navigator?.userAgent,
+  );
   for (let launch = 1;; launch++) {
     try {
       return await launchGuestKernel(session, ports, options);
     } catch (error) {
       if (
-        !(error instanceof KernelExited) || error.status !== 139 ||
-        launch >= STACK_OVERFLOW_LAUNCHES
+        !relaunches || !(error instanceof KernelExited) ||
+        !isSegfault(error.status)
       ) throw error;
+      if (launch >= STACK_OVERFLOW_LAUNCHES) {
+        throw new Error(
+          `the Jupyter kernel ${STACK_OVERFLOW} on all ${launch} launches ` +
+            `(yurtos-kernel#4204); the last: ${error.message}`,
+        );
+      }
       console.log(`ipykernel launch ${launch} died of SIGSEGV`);
-      options.status?.(
-        `starting Jupyter (launch ${launch + 1}: the last one ` +
-          "overflowed the browser's stack)",
+      options.relaunching?.(launch + 1);
+      await new Promise((resolve) =>
+        setTimeout(resolve, options.relaunchDelayMs ?? RELAUNCH_DELAY_MS)
       );
     }
   }
@@ -387,7 +445,7 @@ async function pollConnectionFile(
   let gone = false;
   /** The host's own failure to run the process, apart from an exit. */
   let failed: string | undefined;
-  /** How it exited (the host's number: 128+n for a signal). */
+  /** How it exited, as the host's `exited` resolved. */
   let status: unknown;
   exited?.then((value) => {
     status = value;
@@ -420,9 +478,9 @@ async function pollConnectionFile(
     : decoder.decode(log).split("\n").slice(-30).join("\n");
   if (failed === undefined && gone) {
     throw new KernelExited(
-      `the Jupyter kernel exited before writing its connection file (exit ${
-        JSON.stringify(status)
-      }); kernel log:\n${tail}`,
+      `the Jupyter kernel exited before writing its connection file${
+        exitClause(status)
+      }; kernel log:\n${tail}`,
       status,
     );
   }
