@@ -4,7 +4,8 @@ import {
   type JupyterConfig,
   type JupyterTransport,
 } from "./jupyter_transport.ts";
-import { engineCapsSharedMemoryReservations as isJavaScriptCore } from "./boot.ts";
+import { isJavaScriptCore } from "./boot.ts";
+import { asWaitStatus, signalName, type WaitStatus } from "./executions.ts";
 
 export const JUPYTER_CONNECTION_FILE = "/tmp/yurt-kernel.json";
 /** The launched ipykernel's pid, so a restart can kill exactly that process. */
@@ -200,6 +201,15 @@ export async function stopGuestKernel(
   await runShell(session, buildKernelStopCommand(), 30_000);
 }
 
+/** Drop an exited kernel's files without the user's shell, so the next
+ * launch reads no stale connection file and no stop kills a reused pid. */
+async function clearKernelFiles(session: JupyterLaunchSession): Promise<void> {
+  const cleared = await session.spawn?.(
+    `rm -f ${JUPYTER_CONNECTION_FILE} ${JUPYTER_PID_FILE}`,
+  );
+  await cleared?.exited;
+}
+
 /** Replace the guest kernel with a fresh process. */
 export async function restartGuestKernel(
   session: JupyterLaunchSession,
@@ -244,12 +254,6 @@ export function relaunchNote(launch: number): string {
   return `launch ${launch}: the last one ${STACK_OVERFLOW}`;
 }
 
-/** Whether a start's error is the stack overflow that every launch hit:
- * the browser's limit, not anything wrong with the Python it ran. */
-export function overflowedStack(message: string): boolean {
-  return message.includes(STACK_OVERFLOW);
-}
-
 /** The guest kernel died before writing its connection file. `status` is
  * what the host's `exited` resolved with: its number (128+n for a
  * signal), a wait status, or nothing. */
@@ -259,22 +263,19 @@ class KernelExited extends Error {
   }
 }
 
-/** The exit as the host reported it, the way probePython reads one. */
-function exitOf(
-  status: unknown,
-): { code?: number | null; signal?: number | null } | undefined {
-  if (typeof status === "number") return { code: status };
-  if (typeof status === "object" && status !== null) {
-    return status as { code?: number | null; signal?: number | null };
-  }
-  return undefined;
+/** The exit as the host reported it (a number or a wait status), or
+ * `undefined` for a host that gave none. */
+function exitOf(status: unknown): WaitStatus | undefined {
+  return status === undefined || status === null
+    ? undefined
+    : asWaitStatus(status as WaitStatus | number);
 }
 
-/** " (exit N)" or " (signal N)"; nothing for an exit with no status. */
+/** " (exit N)" or " (signal SIGNAME)"; nothing for an exit with no status. */
 function exitClause(status: unknown): string {
   const exit = exitOf(status);
-  if (typeof exit?.code === "number") return ` (exit ${exit.code})`;
-  if (typeof exit?.signal === "number") return ` (signal ${exit.signal})`;
+  if (exit?.code != null) return ` (exit ${exit.code})`;
+  if (exit?.signal != null) return ` (signal ${signalName(exit.signal)})`;
   return "";
 }
 
@@ -319,7 +320,6 @@ export async function startGuestKernel(
             `(yurtos-kernel#4204); the last: ${error.message}`,
         );
       }
-      console.log(`ipykernel launch ${launch} died of SIGSEGV`);
       options.relaunching?.(launch + 1);
       await new Promise((resolve) =>
         setTimeout(resolve, options.relaunchDelayMs ?? RELAUNCH_DELAY_MS)
@@ -363,11 +363,19 @@ async function launchGuestKernel(
         )
         : await readConnectionFile(session);
     } catch (error) {
-      // The launch is out (a process of its own, or a job of the shell)
-      // and its connection file never came, or could not be read: it is
-      // not left running for nobody. The stop is typed and hushed, and
-      // its own failure is not the news here.
-      await stopGuestKernel(session).catch(() => {});
+      if (error instanceof KernelExited) {
+        // Nothing is left to kill, and its pid may be another process's
+        // by now: only the files go, by a process of the page's own (the
+        // one that saw the exit), so nothing is typed into the user's
+        // shell -- on Safari this runs on most boots.
+        await clearKernelFiles(session).catch(() => {});
+      } else {
+        // The launch is out (a process of its own, or a job of the shell)
+        // and its connection file never came, or could not be read: it is
+        // not left running for nobody. The stop is typed and hushed, and
+        // its own failure is not the news here.
+        await stopGuestKernel(session).catch(() => {});
+      }
       throw error;
     }
   } finally {

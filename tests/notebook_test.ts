@@ -168,6 +168,15 @@ Deno.test("once the boot is over, a status (a Jupyter restart, its relaunch) lea
   assert(/const fail = \(message: string\) => \{\s*endBoot\(\);/.test(page));
 });
 
+Deno.test("an Install after python-missing is a boot again: its statuses are kept for a reloaded tab", () => {
+  const page = pageSource();
+  // The Install (and the fresh sandbox a stalled one gets) runs from here.
+  assert(
+    /pythonMissing = false;\s*booting = true;\s*notebook\.installing\("installing Python"\);\s*worker\.postMessage\(\{ type: "python-install" \}\);/
+      .test(page),
+  );
+});
+
 Deno.test("a later error does not turn the python-missing cell into 'Jupyter did not start'", () => {
   const page = pageSource();
   assert(

@@ -632,10 +632,13 @@ Deno.test("a kernel that wrote its connection file and then exited still gets it
 type LaunchEnd = number | WaitStatus | undefined | "ready";
 
 /** A session whose kernel launches end as `ends[n]` (the last one
- * repeats); the dial is not made. Records when each launch was spawned. */
+ * repeats); the dial is not made. Records when each launch was spawned,
+ * what was typed into the user's shell, and every spawned line in order. */
 function launchingSession(ends: LaunchEnd[]) {
   const handlers = new Set<(bytes: Uint8Array) => void>();
   const spawnedAt: number[] = [];
+  const typed: string[] = [];
+  const spawned: string[] = [];
   let current: LaunchEnd = 0;
   const connection = new TextEncoder().encode(JSON.stringify({
     shell_port: 1,
@@ -651,8 +654,11 @@ function launchingSession(ends: LaunchEnd[]) {
       return spawnedAt.length;
     },
     spawnedAt,
+    typed,
+    spawned,
     terminal: {
       write(bytes: Uint8Array) {
+        typed.push(new TextDecoder().decode(bytes));
         // The stop line (after a failed launch, and before a restart)
         // ends with an echo marker.
         const marker = new TextDecoder().decode(bytes).match(
@@ -667,7 +673,12 @@ function launchingSession(ends: LaunchEnd[]) {
         return Promise.resolve();
       },
     },
-    spawn: () => {
+    spawn: (line: string) => {
+      spawned.push(line);
+      // Not a launch: a cleanup line ends at once.
+      if (!line.includes("ipykernel_launcher")) {
+        return Promise.resolve({ exited: Promise.resolve(0) });
+      }
       current = ends[Math.min(spawnedAt.length, ends.length - 1)];
       spawnedAt.push(performance.now());
       return Promise.resolve({
@@ -738,7 +749,7 @@ Deno.test("on JavaScriptCore a SIGSEGV as a wait status (code 139, or signal 11)
   }
 });
 
-Deno.test("stack-overflow relaunches stop after STACK_OVERFLOW_LAUNCHES launches, and the Python layer is kept", async () => {
+Deno.test("stack-overflow relaunches stop after STACK_OVERFLOW_LAUNCHES launches, and the Python layer goes", async () => {
   const session = launchingSession([139]);
   const relaunches: number[] = [];
   const error = await assertRejects(
@@ -755,14 +766,33 @@ Deno.test("stack-overflow relaunches stop after STACK_OVERFLOW_LAUNCHES launches
     relaunches,
     Array.from({ length: STACK_OVERFLOW_LAUNCHES - 1 }, (_, i) => i + 2),
   );
-  // The browser's stack, not a broken layer: the layer stays.
+  // Every launch died: a broken native extension in the layer looks the
+  // same as the browser's stack, so the layer goes and the next visit
+  // installs afresh -- the safe direction.
   assertEquals(
     kernelFailureDropsLayer({
       type: "error",
       message: `Jupyter did not start: ${error.message}`,
     }),
-    false,
+    true,
   );
+});
+
+Deno.test("a launch that exited is cleared up without typing into the user's shell", async () => {
+  const session = launchingSession([139, "ready"]);
+  await assertRejects(
+    () => startGuestKernel(session, undefined, { ...ON_JSC, connect: NO_DIAL }),
+    Error,
+    "did not become ready",
+  );
+  // A half-typed command or a REPL at the prompt would get a typed line.
+  assertEquals(session.typed, []);
+  // Nothing is alive to kill (its pid may be another process's by now):
+  // the files go, before the next launch.
+  assertEquals(session.spawned.length, 3);
+  const [first, clear, second] = session.spawned;
+  assert(first.includes("ipykernel_launcher") && second === first);
+  assertEquals(clear, `rm -f ${JUPYTER_CONNECTION_FILE} ${JUPYTER_PID_FILE}`);
 });
 
 Deno.test("off JavaScriptCore exit 139 is a real segfault: no relaunch, and the layer goes", async () => {
@@ -848,4 +878,14 @@ Deno.test("a Jupyter restart relaunches past a stack overflow too, and says so",
   );
   assertEquals(session.launches, 3);
   assertEquals(relaunches, [2, 3]);
+});
+
+Deno.test("a signal death is named in the message", async () => {
+  const aborted: WaitStatus = { code: null, signal: 6, coreDumped: true };
+  const session = launchingSession([aborted]);
+  await assertRejects(
+    () => startGuestKernel(session, undefined, ON_JSC),
+    Error,
+    "exited before writing its connection file (signal SIGABRT); kernel log",
+  );
 });

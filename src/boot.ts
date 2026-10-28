@@ -280,16 +280,24 @@ function readGuestFile(
 export const GUEST_MEMORY_RESERVATION_BYTES = 256 * 1024 * 1024;
 
 /**
- * Whether this engine is JavaScriptCore (Safari, and every iOS browser),
- * the one that runs out of shared-memory reservations. Chromium and Edge
- * also say `AppleWebKit/`, always with a `Chrome/` token; Firefox and Deno
- * say neither. The same test as the kernel's `workerTeardownWaitsOnCompiles`.
+ * Whether this engine is JavaScriptCore (Safari, and every iOS browser).
+ * Chromium and Edge also say `AppleWebKit/`, always with a `Chrome/`
+ * token; Firefox and Deno say neither. The same test as the kernel's
+ * `workerTeardownWaitsOnCompiles`.
  */
-export function engineCapsSharedMemoryReservations(
+export function isJavaScriptCore(
   userAgent: string | undefined = globalThis.navigator?.userAgent,
 ): boolean {
   if (userAgent === undefined) return false;
   return /AppleWebKit\//.test(userAgent) && !/Chrome\//.test(userAgent);
+}
+
+/** Whether this engine runs out of shared-memory reservations: only
+ * JavaScriptCore. */
+export function engineCapsSharedMemoryReservations(
+  userAgent: string | undefined = globalThis.navigator?.userAgent,
+): boolean {
+  return isJavaScriptCore(userAgent);
 }
 
 /**

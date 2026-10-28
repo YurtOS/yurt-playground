@@ -16,8 +16,8 @@
  *   stopping the session on it killed the terminal without a word.
  */
 import type { JupyterTransport } from "./jupyter_transport.ts";
-import { overflowedStack, relaunchNote } from "./jupyter.ts";
-import type { Spawner } from "./executions.ts";
+import { relaunchNote } from "./jupyter.ts";
+import { asWaitStatus, type Spawner } from "./executions.ts";
 
 /** What `start` posts to the page about the boot. */
 export type StartReport =
@@ -66,7 +66,7 @@ export async function probePython(
       }),
     ]);
     if (status === undefined) return undefined;
-    const code = typeof status === "number" ? status : status.code;
+    const code = asWaitStatus(status).code;
     if (code === 0) return true;
     if (code === PYTHON_MISSING_EXIT) return false;
     // A signal death, or any exit the probe itself did not choose, says
@@ -208,10 +208,10 @@ async function launchKernel<S extends StartableSession>(
 }
 
 /** Whether a start's error says the Python it ran is broken, so a stored
- * layer that installed it must go. A stack overflow on every launch is the
- * browser's limit (yurtos-kernel#4204), not the layer's. */
+ * layer that installed it must go. A stack overflow on every launch counts
+ * too: a broken native extension in the layer dies the same way, and a
+ * fresh install on the next visit is the safe direction. */
 export function kernelFailureDropsLayer(report: StartReport): boolean {
   return report.type === "error" &&
-    report.message.startsWith("Jupyter did not start") &&
-    !overflowedStack(report.message);
+    report.message.startsWith("Jupyter did not start");
 }

@@ -403,3 +403,17 @@ Deno.test("the coordinator worker hands the relaunch note on at start, retry and
   // A stack overflow is the browser's, not the layer's.
   assert(/kernelFailureDropsLayer\(report\)/.test(worker));
 });
+
+Deno.test("a Jupyter restart waits for the boot's start, relaunches and all", () => {
+  const worker = Deno.readTextFileSync(
+    new URL("../src/coordinator_worker.ts", import.meta.url),
+  );
+  // Chained like python-install and jupyter-restart: a restart that came
+  // in during the boot's relaunch loop stopped the kernel it was starting.
+  assert(
+    /restarting = restarting\.then\(begin\);\s*await restarting;\s*\}\);\s*$/
+      .test(worker),
+    "the start's begin() runs on the restarting chain",
+  );
+  assertEquals(/^\s*await begin\(\);\s*\n\}\);/m.test(worker), false);
+});

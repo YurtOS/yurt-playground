@@ -677,5 +677,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       }
     };
   }
-  await begin();
+  // On the chain a jupyter-restart waits on: one that came in during the
+  // boot's launch (its stack-overflow relaunches) stopped the kernel the
+  // boot was starting.
+  restarting = restarting.then(begin);
+  await restarting;
 });

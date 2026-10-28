@@ -231,7 +231,8 @@ function boot(
   // (a restart refused) must not say "Jupyter did not start" over it.
   let pythonMissing = false;
   let installingPython = false;
-  // From Start until the boot ends: only then is a status worth keeping for
+  // From Start (or an Install after python-missing, which may start a fresh
+  // sandbox) until that boot ends: only then is a status worth keeping for
   // a reloaded tab. A later one (a Jupyter restart) is not a boot.
   let booting = true;
   const endBoot = () => {
@@ -249,6 +250,7 @@ function boot(
           // A retry: what comes next (a kernel that fails, say) is this
           // attempt's, not the missing Python's.
           pythonMissing = false;
+          booting = true;
           notebook.installing("installing Python");
           worker.postMessage({ type: "python-install" });
         },
