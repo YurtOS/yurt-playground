@@ -103,11 +103,16 @@ export function checkPythonSet(
   builtFrom: BuiltFrom,
   live: string | null | undefined,
 ): void {
-  if (live !== undefined && live !== builtFrom.pythonSet) {
-    throw new SnapshotMismatch(
-      `the snapshot's Python set is ${builtFrom.pythonSet}, the live index offers ${live}`,
-    );
-  }
+  if (live === undefined || live === builtFrom.pythonSet) return;
+  throw new SnapshotMismatch(
+    live === null
+      // No request at all, the index not asked: a phone, a shell-only
+      // session, or a page without its pins.
+      ? `this page installs no Python (a phone, a shell-only session, or no pins), and the snapshot holds ${builtFrom.pythonSet}`
+      : builtFrom.pythonSet === null
+      ? `the snapshot holds no Python set, the live index offers ${live}`
+      : `the snapshot's Python set is ${builtFrom.pythonSet}, the live index offers ${live}`,
+  );
 }
 
 /** The header's format: 2 added `builtFrom`, 3 its `pythonSet`. */

@@ -2,7 +2,9 @@ import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { Catalog } from "../src/packages.ts";
 import { parsePins } from "../src/pins.ts";
 import {
+  catalogOnce,
   IndexUnreadable,
+  liveLayerKey,
   livePythonSet,
   NO_COMPLETE_SET,
   PYTHON_LABEL,
@@ -100,4 +102,55 @@ Deno.test("a pythonSeal entry of another shape is left out of the pins, not a fa
     parsePins({ ...base, pythonSeal: { sha256: "AB".repeat(32) } }).pythonSeal,
     { sha256: "ab".repeat(32) },
   );
+});
+
+Deno.test("an index that cannot be had keeps its cause and is said, not silent", async () => {
+  const cause = new SyntaxError("index.json is not JSON");
+  await assertRejects(
+    async () => {
+      try {
+        await liveLayerKey(
+          "img",
+          ["python"],
+          1000,
+          () => Promise.reject(cause),
+        );
+      } catch (error) {
+        assertEquals((error as Error).cause, cause);
+        throw error;
+      }
+    },
+    IndexUnreadable,
+  );
+  const said: unknown[][] = [];
+  const info = console.info;
+  console.info = (...args: unknown[]) => said.push(args);
+  try {
+    assertEquals(
+      await livePythonSet(
+        { set: ["python"], image: "img" },
+        1000,
+        () => Promise.reject(cause),
+      ),
+      undefined,
+    );
+  } finally {
+    console.info = info;
+  }
+  assertEquals(said.length, 1);
+  assertEquals((said[0][1] as Error).cause, cause);
+});
+
+Deno.test("one boot reads the live index once for the snapshot's check and the install's", async () => {
+  let loads = 0;
+  const once = catalogOnce(() => {
+    loads++;
+    return Promise.resolve(
+      { metadata: new Map() } as unknown as Catalog,
+    );
+  });
+  const request = { set: ["python"], image: "img" };
+  assertEquals(await livePythonSet(request, 1000, once), NO_COMPLETE_SET);
+  assertEquals(await liveLayerKey("img", ["python"], 1000, once), undefined);
+  assertEquals(loads, 1);
 });

@@ -368,7 +368,17 @@ Deno.test("a snapshot of another Python set than the live index offers is not re
     SnapshotMismatch,
     "the live index offers cd/python@3.14.8",
   );
-  assertThrows(() => checkPythonSet(BUILT, null), SnapshotMismatch);
+  // No request at all is the page's, not the index's: said so.
+  assertThrows(
+    () => checkPythonSet(BUILT, null),
+    SnapshotMismatch,
+    "this page installs no Python (a phone, a shell-only session, or no pins)",
+  );
+  assertThrows(
+    () => checkPythonSet({ ...BUILT, pythonSet: null }, "img/python@1"),
+    SnapshotMismatch,
+    "the snapshot holds no Python set, the live index offers img/python@1",
+  );
 });
 
 Deno.test("a snapshot header of another format is refused", async () => {

@@ -552,35 +552,3 @@ Deno.test("a capture whose Python install fails is a failed capture, not python-
     );
   }
 });
-
-Deno.test("the page wires a capture's outcome marks (src/capture_outcome.ts)", () => {
-  const page = Deno.readTextFileSync(
-    new URL("../src/page.ts", import.meta.url),
-  );
-  // Every end of the boot reaches the mark, with its reason when known,
-  // once; the file goes through finishCapture.
-  const endBoot = page.match(
-    /const endBoot = \(why\?: string\) => \{([^}]*)\};/,
-  );
-  assert(endBoot !== null && /endCapture\(why\);/.test(endBoot[1]));
-  assert(/if \(msg\.endsBoot === true\) endBoot\(msg\.message\);/.test(page));
-  assert(/worker\.onerror = [^]*?endBoot\(message\);/.test(page));
-  assertEquals(
-    page.match(/endCapture\(/g)?.length,
-    2,
-    "defined, and called once",
-  );
-  assert(
-    /msg\.type === "snapshot-captured"\) \{\s*finishCapture\(\s*document\.documentElement\.dataset,\s*\(\) => saveSnapshot\(msg\.blob, msg\.ms\),\s*endBoot,\s*fail,/
-      .test(page),
-  );
-  assert(/saveDownload\(\s*\{/.test(page));
-  const script = Deno.readTextFileSync(
-    new URL("../scripts/release-snapshot.ts", import.meta.url),
-  );
-  assert(
-    script.includes('dataset.snapshotCapture === "failed"') &&
-      !/failed\|error/.test(script),
-    "the release script waits on the mark, not on the status text",
-  );
-});

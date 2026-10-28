@@ -1514,3 +1514,57 @@ Deno.test("a train stops when --check-pin gives no verdict, and keeps the pin", 
   );
   assertEquals(run.pins.snapshot, { release: "snapshot-playground-old" });
 });
+
+Deno.test("a train whose pin PR is left open still reminds to recapture a dropped pin", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "release-left-open-" });
+  try {
+    const source = await Deno.readTextFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+    );
+    // The script's own question, up to its answer's case.
+    const start = 'if [ "$pr_state" != MERGED ]; then';
+    assertEquals(source.includes(start), true);
+    const question = start + source.split(start)[1].split("  esac")[0] +
+      "  esac\nfi\n";
+    const state = join(dir, "state.json");
+    await Deno.writeTextFile(
+      state,
+      JSON.stringify({ steps: { snapshot: { dropped: "built from k0" } } }),
+    );
+    const scriptPath = join(dir, "question.sh");
+    await Deno.writeTextFile(
+      scriptPath,
+      `set -euo pipefail
+say() { printf '==> %s\\n' "$*"; }
+source ${JSON.stringify(join(repoRoot, "scripts/lib/snapshot-pin.sh"))}
+state=${JSON.stringify(state)}
+pr_state=OPEN pr_url=https://example.invalid/pull/1
+${stepHelpers(source)}
+${question}
+echo NOT-REACHED
+`,
+    );
+    const result = await new Deno.Command("bash", {
+      args: [scriptPath],
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+      clearEnv: true,
+      env: fixtureEnv(),
+    }).spawn();
+    const writer = result.stdin.getWriter();
+    await writer.write(new TextEncoder().encode("n\n"));
+    await writer.close();
+    const out = await result.output();
+    const output = new TextDecoder().decode(out.stdout);
+    assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
+    assertStringIncludes(output, "left open: https://example.invalid/pull/1");
+    assertStringIncludes(
+      output,
+      "the snapshot pin was dropped (built from k0): run scripts/release-snapshot.ts",
+    );
+    assertEquals(output.includes("NOT-REACHED"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

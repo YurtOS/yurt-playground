@@ -80,6 +80,12 @@ export async function fetchSitePins(): Promise<Pins | undefined> {
  * used as when offline). */
 export const LIVE_INDEX_TIMEOUT_MS = 20_000;
 
+/** The live repository's catalog, its downloads bounded by `signal`. */
+const defaultCatalogLoad = (signal: AbortSignal) =>
+  loadCatalog((url, limit, onBytes) =>
+    fetchWithProgress(url, limit, onBytes, signal)
+  );
+
 /** The set the live index offers for `set` on `image`, as a layer key
  * (src/python_layer.ts); undefined when the index answered but does not
  * offer the set (SetNotOffered). Throws IndexUnreadable when the index
@@ -91,10 +97,7 @@ export async function liveLayerKey(
   set: readonly string[],
   timeoutMs = LIVE_INDEX_TIMEOUT_MS,
   /** The index read; the live repository's, bounded by `signal`. */
-  load: (signal: AbortSignal) => Promise<Catalog> = (signal) =>
-    loadCatalog((url, limit, onBytes) =>
-      fetchWithProgress(url, limit, onBytes, signal)
-    ),
+  load: (signal: AbortSignal) => Promise<Catalog> = defaultCatalogLoad,
 ): Promise<string | undefined> {
   const giveUp = new AbortController();
   const timer = setTimeout(() => giveUp.abort(), timeoutMs);
@@ -109,6 +112,7 @@ export async function liveLayerKey(
     // not check the index's signature; the guest's pkg does.)
     throw new IndexUnreadable(
       error instanceof Error ? error.message : String(error),
+      { cause: error },
     );
   } finally {
     clearTimeout(timer);
@@ -142,9 +146,22 @@ export async function livePythonSet(
     return await liveLayerKey(request.image, request.set, timeoutMs, load) ??
       NO_COMPLETE_SET;
   } catch (error) {
-    if (error instanceof IndexUnreadable) return undefined;
+    if (error instanceof IndexUnreadable) {
+      console.info("the live package index could not be had:", error);
+      return undefined;
+    }
     throw error;
   }
+}
+
+/** A loader for {@link liveLayerKey} and {@link livePythonSet} that reads
+ * the live index once and shares it (its failure included) between them:
+ * one boot asks the same question once. */
+export function catalogOnce(
+  load: (signal: AbortSignal) => Promise<Catalog> = defaultCatalogLoad,
+): (signal: AbortSignal) => Promise<Catalog> {
+  let loaded: Promise<Catalog> | undefined;
+  return (signal) => loaded ??= load(signal);
 }
 
 /** What {@link livePythonSet} says for an index without a complete set. */

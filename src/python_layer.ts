@@ -466,6 +466,7 @@ export async function installWithLayer<E>(
       // Anything else went wrong in resolving the answer: no layer, and the
       // install below uses pkg -- said, not swallowed.
       if (error instanceof IndexUnreadable) {
+        console.info("using this browser's stored layer:", error);
         key = await store.storedKey(image);
       } else {
         console.warn("the live Python set could not be resolved:", error);

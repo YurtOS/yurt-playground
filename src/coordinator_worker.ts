@@ -54,7 +54,7 @@ import {
   layerKey,
   type LayerStore,
 } from "./python_layer.ts";
-import { liveLayerKey, livePythonSet } from "./python_install.ts";
+import { catalogOnce, liveLayerKey, livePythonSet } from "./python_install.ts";
 import { postCaptured } from "./capture_outcome.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import {
@@ -546,6 +546,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   }
   if (msg.type !== "start") return;
   kernelPorts = msg.kernelPorts;
+  // The live index, read once for this start: a snapshot's check and the
+  // install's stored-layer question ask it the same thing.
+  const liveIndex = catalogOnce();
   const term = workerTerm({ cols: msg.cols, rows: msg.rows });
   const env = {
     isolated: msg.isolated,
@@ -557,7 +560,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     snapshotPath: msg.snapshot === "restore" && kernelPorts === undefined
       ? SANDBOX_SNAPSHOT_PATH
       : undefined,
-    livePythonSet: () => livePythonSet(msg.python),
+    livePythonSet: () => livePythonSet(msg.python, undefined, liveIndex),
     fetchBytes: (path: string) =>
       fetchPlaygroundBytes(path, (progress) => {
         const percent = progress.total === undefined
@@ -605,7 +608,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
             store,
             image: python.image,
             pristine,
-            liveKey: () => liveLayerKey(python.image!, python.set),
+            liveKey: () =>
+              liveLayerKey(python.image!, python.set, undefined, liveIndex),
             install: async (between) => {
               between.before();
               await installPackage(python, {

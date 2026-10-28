@@ -895,7 +895,11 @@ if [ "$pr_state" != MERGED ]; then
   read -r -p "merge $pr_url and deploy? [y/N] " answer
   case $answer in
     y|Y|yes) ;;
-    *) say "left open: $pr_url"; exit 0 ;;
+    *)
+      say "left open: $pr_url"
+      remind_dropped_snapshot "$(step_get snapshot dropped)"
+      exit 0
+      ;;
   esac
   # The merge needs the PR's required checks; watch them first (a failure
   # here is the page's CI against the new pins, fix and --resume).
