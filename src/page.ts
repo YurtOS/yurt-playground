@@ -17,6 +17,7 @@ import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
   catalogRows,
   formatBytes,
+  installedNames,
   loadCatalog,
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
@@ -616,6 +617,20 @@ function wirePackages(): void {
       action.append(button);
       tr.append(name, version, size, action);
       list.append(tr);
+    }
+    // What the image (or a restored snapshot) already has is installed
+    // too, not only what this panel installed.
+    const listed = await (globalThis as unknown as { yurt: Yurt }).yurt.exec(
+      "pkg list",
+    );
+    if ("code" in listed && listed.code === 0) {
+      const installed = installedNames(listed.stdout);
+      for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
+        if (installed.has(b.dataset.package ?? "")) {
+          b.textContent = "Installed";
+          b.disabled = true;
+        }
+      }
     }
   };
   toggle.addEventListener("click", () => {
