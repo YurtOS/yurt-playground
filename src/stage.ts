@@ -328,3 +328,242 @@ export async function readYurtimgFile(
   });
   return provider.readFile(path);
 }
+
+/* The kernel's host-control VFS export (`kernel_only`, the ids the native
+ * disk sync uses; not in the shared `METHOD` table): what changed since the
+ * last drain, and each entry's metadata, bytes or target. */
+const KERNEL_DRAIN_DIRTY_PATHS = 26;
+const KERNEL_VFS_STAT = 27;
+const KERNEL_VFS_READDIR = 28;
+const KERNEL_VFS_READ = 29;
+const KERNEL_VFS_READLINK = 30;
+const KERNEL_VFS_UNLINK_TREE = 32;
+
+/** One entry of a filesystem layer: what a tar entry holds. `mtime` in
+ * seconds. */
+export type LayerEntry =
+  | {
+    type: "dir";
+    path: string;
+    mode: number;
+    uid: number;
+    gid: number;
+    mtime: number;
+  }
+  | {
+    type: "file";
+    path: string;
+    mode: number;
+    uid: number;
+    gid: number;
+    mtime: number;
+    bytes: Uint8Array;
+  }
+  | {
+    type: "symlink";
+    path: string;
+    mode: number;
+    uid: number;
+    gid: number;
+    mtime: number;
+    target: string;
+  };
+
+function responseCap(mk: KernelHostInterface): number {
+  const scratch = typeof mk.scratchLen === "number"
+    ? mk.scratchLen
+    : DEFAULT_KERNEL_SCRATCH_LEN;
+  return scratch - 64;
+}
+
+const textDecoder = new TextDecoder();
+
+/** Every path the guest's filesystem marked as touched since the last
+ * drain (creates, writes, renames, removals; one set), and the log empty
+ * again. A path may no longer exist. */
+export function drainDirtyPaths(mk: KernelHostInterface): string[] {
+  const paths: string[] = [];
+  for (;;) {
+    const { rc, response } = mk.syscall(
+      KERNEL_DRAIN_DIRTY_PATHS,
+      new Uint8Array(),
+      responseCap(mk),
+    );
+    const written = Number(rc);
+    if (written < 0) throw new Error(`drain dirty paths: rc=${rc}`);
+    if (written === 0) return paths;
+    const view = new DataView(
+      response.buffer,
+      response.byteOffset,
+      response.byteLength,
+    );
+    let at = 0;
+    while (at + 4 <= written) {
+      const length = view.getUint32(at, true);
+      paths.push(
+        textDecoder.decode(response.subarray(at + 4, at + 4 + length)),
+      );
+      at += 4 + length;
+    }
+  }
+}
+
+/** An entry's type and metadata, not following a final symlink;
+ * `undefined` when there is none. `mtime` in seconds. */
+export function vfsStat(
+  mk: KernelHostInterface,
+  path: string,
+):
+  | {
+    type: "dir" | "file" | "symlink" | "other";
+    mode: number;
+    uid: number;
+    gid: number;
+    size: number;
+    mtime: number;
+  }
+  | undefined {
+  const { rc, response } = mk.syscall(KERNEL_VFS_STAT, s(path), 32);
+  const code = Number(rc);
+  // Gone (or a parent that is no directory now): no entry. Anything else
+  // is an error, not an absence a layer may silently skip.
+  if (code === -2 || code === -20) return undefined;
+  if (code !== 32) throw new Error(`stat ${path}: rc=${rc}`);
+  const view = new DataView(
+    response.buffer,
+    response.byteOffset,
+    response.byteLength,
+  );
+  const filetype = view.getUint32(0, true);
+  return {
+    type: filetype === 3
+      ? "dir"
+      : filetype === 4
+      ? "file"
+      : filetype === 7
+      ? "symlink"
+      : "other",
+    mode: view.getUint32(4, true) & MODE_PERM_MASK,
+    uid: view.getUint32(8, true),
+    gid: view.getUint32(12, true),
+    size: Number(view.getBigUint64(16, true)),
+    mtime: Number(view.getBigUint64(24, true) / NANOS_PER_SECOND),
+  };
+}
+
+/** A regular file's bytes (`size` of them, as its stat says). */
+export function vfsReadFile(
+  mk: KernelHostInterface,
+  path: string,
+  size: number,
+): Uint8Array {
+  const out = new Uint8Array(size);
+  const pathBytes = s(path);
+  const request = new Uint8Array(8 + pathBytes.byteLength);
+  request.set(pathBytes, 8);
+  const view = new DataView(request.buffer);
+  // The request and the response share the kernel's scratch buffer.
+  const cap = responseCap(mk) - request.byteLength;
+  let at = 0;
+  while (at < size) {
+    view.setBigUint64(0, BigInt(at), true);
+    const { rc, response } = mk.syscall(
+      KERNEL_VFS_READ,
+      request,
+      Math.min(cap, size - at),
+    );
+    const count = Number(rc);
+    if (count < 0) throw new Error(`read ${path}: rc=${rc}`);
+    if (count === 0) break;
+    out.set(response.subarray(0, count), at);
+    at += count;
+  }
+  if (at !== size) {
+    throw new Error(`read ${path}: ${at} of ${size} bytes`);
+  }
+  return out;
+}
+
+/** A symlink's target. */
+export function vfsReadlink(mk: KernelHostInterface, path: string): string {
+  const { rc, response } = mk.syscall(KERNEL_VFS_READLINK, s(path), 4096);
+  const length = Number(rc);
+  if (length < 0) throw new Error(`readlink ${path}: rc=${rc}`);
+  return textDecoder.decode(response.subarray(0, length));
+}
+
+/** A directory's entry names (no `.` or `..`). */
+export function vfsReaddir(mk: KernelHostInterface, path: string): string[] {
+  const request = s(path);
+  const most = responseCap(mk) - request.byteLength;
+  let cap = Math.min(16 * 1024, most);
+  for (;;) {
+    const { rc, response } = mk.syscall(KERNEL_VFS_READDIR, request, cap);
+    const needed = Number(rc);
+    if (needed < 0) throw new Error(`readdir ${path}: rc=${rc}`);
+    if (needed > cap) {
+      if (needed > most) {
+        throw new Error(`readdir ${path}: ${needed} bytes of names`);
+      }
+      cap = needed;
+      continue;
+    }
+    const view = new DataView(
+      response.buffer,
+      response.byteOffset,
+      response.byteLength,
+    );
+    const names: string[] = [];
+    let at = 0;
+    while (at + 5 <= needed) {
+      const length = view.getUint32(at + 1, true);
+      names.push(
+        textDecoder.decode(response.subarray(at + 5, at + 5 + length)),
+      );
+      at += 5 + length;
+    }
+    return names;
+  }
+}
+
+/** Write a layer's entries into the guest's filesystem as the kernel, the
+ * way {@link stageYurtimg} stages an image: directories, then files and
+ * symlinks (replacing whatever is at their paths), then each entry's mode,
+ * owner and mtime -- directories last, so a 0700 one does not refuse the
+ * entries beneath it. No guest process is involved. */
+export function stageLayer(
+  mk: KernelHostInterface,
+  entries: LayerEntry[],
+): void {
+  setPidCredentials(mk, KERNEL_PID, 0, 0);
+  const dirs = new Set<string>();
+  for (const entry of entries) {
+    for (const parent of parentDirectories(entry.path)) dirs.add(parent);
+    if (entry.type === "dir") dirs.add(entry.path);
+  }
+  const ordered = [...dirs].sort((a, b) =>
+    a.split("/").length - b.split("/").length || a.localeCompare(b)
+  );
+  for (const dir of ordered) {
+    if (vfsStat(mk, dir)?.type === "symlink") continue;
+    registerRamfsDirectory(mk, dir);
+  }
+  for (const entry of entries) {
+    if (entry.type === "dir") continue;
+    const existing = vfsStat(mk, entry.path);
+    if (existing !== undefined) {
+      const { rc } = mk.syscall(KERNEL_VFS_UNLINK_TREE, s(entry.path), 0);
+      if (Number(rc) !== 0) {
+        throw new Error(`replace ${entry.path}: rc=${rc}`);
+      }
+    }
+    if (entry.type === "file") writeRamfsFile(mk, entry.path, entry.bytes);
+    else registerRamfsSymlink(mk, entry.target, entry.path);
+  }
+  for (const entry of entries) {
+    if (entry.type !== "dir") setEntryMetadata(mk, entry.path, entry);
+  }
+  for (const entry of entries) {
+    if (entry.type === "dir") setEntryMetadata(mk, entry.path, entry);
+  }
+}

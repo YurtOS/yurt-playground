@@ -19,6 +19,7 @@ import {
 import { requestCellInterrupt } from "./cell_interrupt.ts";
 import {
   installThenLaunch,
+  probePython,
   type StartReport,
   startSandbox,
 } from "./coordinator_start.ts";
@@ -37,7 +38,21 @@ import type {
 } from "./jupyter_transport.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
-import { browserArchiveCache, installPackage } from "./packages.ts";
+import {
+  browserArchiveCache,
+  fetchWithProgress,
+  installPackage,
+  InstallStalled,
+  loadCatalog,
+  resolveSet,
+} from "./packages.ts";
+import {
+  browserLayerStore,
+  installWithLayer,
+  LayerFailed,
+  layerKey,
+  type LayerStore,
+} from "./python_layer.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import { runQueue } from "./run_queue.ts";
 import { type BootedSession, workerPackageHost } from "./session_packages.ts";
@@ -66,7 +81,7 @@ type ToWorker =
     // python3, before ipykernel -- the newest complete one in the live
     // signed index (src/python_install.ts). Absent, such an image is
     // reported as `python-missing`, as before.
-    python?: { label: string; set: string[] };
+    python?: { label: string; set: string[]; image?: string };
     // A tablet or phone: installs over 16 MiB are refused there.
     tablet?: boolean;
   }
@@ -154,26 +169,28 @@ let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 async function servePackages(msg: ToWorker): Promise<void> {
   if (msg.type !== "pkg-install") return;
   const { req } = msg;
-  const session = packageSession;
-  if (session?.process === undefined || session.writeFiles === undefined) {
-    post({
-      type: "pkg-reply",
-      req,
-      ok: false,
-      error: "this sandbox does not install packages",
-    });
-    return;
-  }
   try {
-    const output = await installs(() =>
-      installPackage(msg.name, {
+    // The session as it is when this install's turn comes: one queued
+    // behind a stalled install may find a fresh sandbox, or a stalled one.
+    const output = await installs(() => {
+      const session = packageSession;
+      if (session?.process === undefined || session.writeFiles === undefined) {
+        throw new Error("this sandbox does not install packages");
+      }
+      if (sandboxStalled) throw new Error(stalledSandbox());
+      pkgTouched.add(session);
+      return installPackage(msg.name, {
         host: workerPackageHost(session),
         tablet: msg.tablet,
         progress: (text) => post({ type: "pkg-progress", req, text }),
-      })
-    );
+      });
+    });
     post({ type: "pkg-reply", req, ok: true, value: output });
   } catch (error) {
+    if (error instanceof InstallStalled && error.inSandbox) {
+      sandboxStalled = true;
+      stalledWhy = "an earlier install stopped making progress";
+    }
     post({
       type: "pkg-reply",
       req,
@@ -241,10 +258,81 @@ let restarting: Promise<void> = Promise.resolve();
 let installPython:
   | ((session: BootedSession) => Promise<void>)
   | undefined;
+/** An install stopped making progress in this sandbox's `pkg` run
+ * (src/packages.ts `InstallStalled`): it may no longer answer, and its
+ * packages are half applied. The Python install's next try is in a fresh
+ * sandbox; the Packages panel installs nothing more into this one. */
+let sandboxStalled = false;
+/** Why the sandbox takes no more installs (set with `sandboxStalled`). */
+let stalledWhy = "an earlier install stopped making progress";
+const stalledSandbox = () =>
+  `${stalledWhy} in this sandbox, so it installs nothing more; ` +
+  "reload the page for a fresh one";
+/** The sandboxes any package install was tried in, Python's or the
+ * Packages panel's (src/python_layer.ts: a layer is used or kept only in a
+ * sandbox with none before). */
+const pkgTouched = new WeakSet<object>();
+/** The layer store, when this sandbox's Python came from its layer: a
+ * kernel that then does not start drops the layer, rather than every
+ * later visit failing the same way. */
+let layerInstalled: LayerStore | undefined;
+/** How long the live index may take to answer whether the stored layer is
+ * still the set; past it, the stored layer is used as when offline. */
+const LIVE_INDEX_TIMEOUT_MS = 20_000;
+
+async function liveLayerKey(
+  image: string,
+  set: string[],
+): Promise<string | undefined> {
+  const giveUp = new AbortController();
+  const timer = setTimeout(() => giveUp.abort(), LIVE_INDEX_TIMEOUT_MS);
+  let catalog: Awaited<ReturnType<typeof loadCatalog>>;
+  try {
+    // Throws when the repository cannot be had: the stored layer then.
+    catalog = await loadCatalog(
+      (url, limit, onBytes) =>
+        fetchWithProgress(url, limit, onBytes, giveUp.signal),
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+  // The repository answered: a set it no longer offers (yanked, removed)
+  // is no layer's either.
+  try {
+    return layerKey(image, resolveSet(catalog, set));
+  } catch {
+    return undefined;
+  }
+}
+
+/** A Jupyter that did not start on a layer's Python: drop the layer. */
+function dropLayerIfKernelFailed(report: StartReport): void {
+  if (
+    report.type === "error" && layerInstalled !== undefined &&
+    report.message.startsWith("Jupyter did not start")
+  ) {
+    void layerInstalled.drop();
+    layerInstalled = undefined;
+  }
+}
+
+/** Drop the in-tab sandbox and start a fresh one the way the page's start
+ * did: boot, then the Python install, then Jupyter. Set by `start`. */
+let startFresh: (() => Promise<void>) | undefined;
 
 /** Install Python again, then start the kernel (`python-install`, or a
- * frontend restart while Python is missing). */
+ * frontend restart while Python is missing). After a stalled install, in
+ * a fresh sandbox: the stalled one may not answer. */
 async function retryPython(): Promise<void> {
+  // Also when there is no sandbox: a fresh one whose boot failed is tried
+  // again, rather than "Python is missing" with nothing to install into.
+  if (
+    (sandboxStalled || packageSession === undefined) &&
+    startFresh !== undefined
+  ) {
+    await startFresh();
+    return;
+  }
   const session = packageSession;
   if (session === undefined || installPython === undefined) {
     post({ type: "python-missing" });
@@ -256,6 +344,7 @@ async function retryPython(): Promise<void> {
     startKernel: (s) => startGuestKernel(s, kernelPorts),
     post: (report) => {
       pythonMissing = report.type === "python-missing";
+      dropLayerIfKernelFailed(report);
       post(report);
     },
   });
@@ -276,14 +365,22 @@ function post(msg: FromWorker): void {
   self.postMessage(msg);
 }
 
-function workerTerm(init: { cols: number; rows: number }): PlaygroundTerm {
+/** The worker's terminal; `dropHandlers` forgets every session's handlers,
+ * so a disposed session's (which hold its kernel) can be let go. */
+function workerTerm(
+  init: { cols: number; rows: number },
+): PlaygroundTerm & { dropHandlers(): void } {
   const dataHandlers: Array<(data: string) => void> = [];
   const resizeHandlers: Array<
     (size: { rows: number; cols: number }) => void
   > = [];
-  const term: PlaygroundTerm = {
+  const term: PlaygroundTerm & { dropHandlers(): void } = {
     cols: init.cols,
     rows: init.rows,
+    dropHandlers() {
+      dataHandlers.length = 0;
+      resizeHandlers.length = 0;
+    },
     write(data) {
       const bytes = typeof data === "string"
         ? [...new TextEncoder().encode(data)]
@@ -404,6 +501,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   }
   if (msg.type !== "start") return;
   kernelPorts = msg.kernelPorts;
+  const term = workerTerm({ cols: msg.cols, rows: msg.rows });
   const env = {
     isolated: msg.isolated,
     // The slim image when the train pins one; the desktop app's native
@@ -419,7 +517,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         post({ type: "status", text: `loading ${path}: ${percent}` });
       }),
     show: (text: string) => post({ type: "status", text }),
-    term: workerTerm({ cols: msg.cols, rows: msg.rows }),
+    term,
     memoryRefused: () => post(memoryRefusedMessage()),
   };
   // The slim image's Python: the coordinator installs the set itself, so
@@ -433,40 +531,143 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     : async (session) => {
       post({ type: "status", text: "installing Python" });
       const cache = await browserArchiveCache();
-      await installs(() =>
-        installPackage(python, {
-          host: workerPackageHost(session),
-          tablet,
-          progress: (text) => post({ type: "status", text }),
-          cache,
-        })
-      );
-    };
-  // Never stops the session once its shell is up (src/coordinator_start.ts).
-  const started = await startSandbox({
-    boot: () =>
-      kernelPorts === undefined ? bootPlayground(env) : bootNativePlayground(
-        env,
-        msg.apiToken === undefined ? undefined : { token: msg.apiToken },
-      ),
-    booted: (session) => {
-      if (session.process !== undefined && session.signal !== undefined) {
-        executions = new ExecutionRegistry(session.process, session.signal);
+      const progress = (text: string) => post({ type: "status", text });
+      layerInstalled = undefined;
+      const store = tablet ? undefined : await browserLayerStore();
+      try {
+        // Instant on a later visit: this browser's earlier install, kept
+        // as a layer (src/python_layer.ts), when it is still the set. All
+        // in one turn of the install queue: a Packages install must not
+        // land while a layer is written or read out. Not on a tablet: a
+        // layer is over 100 MiB in this worker while it is made or used.
+        const from = await installs(() => {
+          // In the turn: a Packages install queued before this one has run.
+          const pristine = !pkgTouched.has(session);
+          pkgTouched.add(session);
+          return installWithLayer({
+            layer: session.layer,
+            store,
+            image: python.image,
+            pristine,
+            liveKey: () => liveLayerKey(python.image!, python.set),
+            install: async (between) => {
+              between.before();
+              await installPackage(python, {
+                host: workerPackageHost(session),
+                tablet,
+                progress,
+                cache,
+              });
+              between.after();
+            },
+            probe: () => probePython(session.process),
+            progress,
+          });
+        });
+        layerInstalled = from === "layer" ? store : undefined;
+      } catch (error) {
+        // A sandbox a layer was half written into, like a stalled one,
+        // takes no pkg install: the retry is in a fresh one.
+        if (error instanceof InstallStalled && error.inSandbox) {
+          sandboxStalled = true;
+          stalledWhy = "an earlier install stopped making progress";
+        } else if (error instanceof LayerFailed) {
+          sandboxStalled = true;
+          stalledWhy = "a stored Python install did not work";
+        }
+        throw error;
       }
-      packageSession = session;
-    },
-    // A restart relaunches on it, whether or not the first launch worked.
-    launching: (session) => launchSession = session,
-    noJupyter: msg.noJupyter === true,
-    installPython,
-    startKernel: (session) => startGuestKernel(session, kernelPorts),
-    post: (report) => {
-      if (report.type === "python-missing") pythonMissing = true;
-      post(report);
-    },
-  });
-  if (started !== undefined) {
-    jupyter = started;
-    subscribeJupyter(jupyter);
+    };
+  /** Boot, install, start Jupyter: the start, and what a retry after a
+   * stalled install runs again on a fresh sandbox (the one deliberate
+   * exception to "never stops the session": the stalled one is dropped
+   * first). */
+  const begin = async () => {
+    // Never stops the session once its shell is up (src/coordinator_start.ts).
+    const started = await startSandbox({
+      boot: () =>
+        kernelPorts === undefined ? bootPlayground(env) : bootNativePlayground(
+          env,
+          msg.apiToken === undefined ? undefined : { token: msg.apiToken },
+        ),
+      booted: (session) => {
+        if (session.process !== undefined && session.signal !== undefined) {
+          executions = new ExecutionRegistry(session.process, session.signal);
+        }
+        packageSession = session;
+      },
+      // A restart relaunches on it, whether or not the first launch worked.
+      launching: (session) => launchSession = session,
+      noJupyter: msg.noJupyter === true,
+      installPython,
+      startKernel: (session) => startGuestKernel(session, kernelPorts),
+      post: (report) => {
+        if (report.type === "python-missing") pythonMissing = true;
+        dropLayerIfKernelFailed(report);
+        if (report.type === "error") {
+          bootError = report.message;
+          // A fresh sandbox's failed boot is said once, below, where
+          // Python's Try again is.
+          if (freshBoot && packageSession === undefined) return;
+        }
+        post(report);
+      },
+    });
+    if (started !== undefined) {
+      jupyter = started;
+      subscribeJupyter(jupyter);
+    }
+  };
+  /** The last boot error `begin` saw. */
+  let bootError: string | undefined;
+  /** A fresh sandbox is booting (`startFresh`). */
+  let freshBoot = false;
+  /** Drop the in-tab sandbox: its guests go, a hung `pkg` with them, and
+   * nothing keeps its kernel (with what was staged in it) reachable -- the
+   * terminal's handlers were the stopped session's last references. Apart
+   * from `startFresh` so no local of that long await holds it. */
+  const dropSandbox = () => {
+    const stale = packageSession;
+    packageSession = undefined;
+    launchSession = undefined;
+    executions = undefined;
+    jupyter = undefined;
+    try {
+      stale?.dispose?.();
+    } catch {
+      // Already gone.
+    }
+    term.dropHandlers();
+  };
+  if (kernelPorts === undefined) {
+    startFresh = async () => {
+      const why = sandboxStalled ? `${stalledWhy}; ` : "";
+      pythonMissing = false;
+      sandboxStalled = false;
+      bootError = undefined;
+      env.term.write(
+        `\r\n[${why}starting a fresh sandbox ` +
+          "(this shell and its files go with the old one)]\r\n",
+      );
+      post({ type: "status", text: "starting a fresh sandbox" });
+      dropSandbox();
+      freshBoot = true;
+      try {
+        await begin();
+      } finally {
+        freshBoot = false;
+      }
+      // A fresh sandbox that did not boot: say so where Python's Try again
+      // is, so the page can try once more (the retry finds no sandbox and
+      // starts a fresh one).
+      if (packageSession === undefined) {
+        pythonMissing = true;
+        post({
+          type: "python-missing",
+          error: `a fresh sandbox did not start: ${bootError ?? "unknown"}`,
+        });
+      }
+    };
   }
+  await begin();
 });
