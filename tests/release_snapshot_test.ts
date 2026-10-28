@@ -191,13 +191,13 @@ Deno.test("a snapshot is released only from the pinned kernel rev and a pushed p
       true,
       "no upstream",
     );
-    await git(remote, "init", "-q", "--bare");
+    await git(remote, "init", "-q", "--bare", "-b", "main");
     await git(dir, "remote", "add", "origin", remote);
     await git(dir, "push", "-q", "-u", "origin", "main");
     assertEquals(await checkoutProblem(dir, "upstream"), undefined);
     // Someone pushed since the last fetch: the remote's head counts.
     const other = await Deno.makeTempDir();
-    await git(other, "clone", "-q", remote, ".");
+    await git(other, "clone", "-q", "-b", "main", remote, ".");
     await Deno.writeTextFile(`${other}/b`, "b");
     await git(other, "add", "b");
     await git(other, "commit", "-q", "-m", "b");
