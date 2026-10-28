@@ -18,6 +18,8 @@
  * sandbox, and are gone after a reload (#81).
  */
 
+import type { SpawnedProcess } from "./executions.ts";
+
 /** Where the page fetches the repository from: GitHub's raw file host,
  * which answers with `Access-Control-Allow-Origin: *`. */
 export const PACKAGE_REPO_URL =
@@ -573,38 +575,43 @@ export function installedNames(pkgList: string): Set<string> {
   );
 }
 
-/** How long a listing may take before the panel gives up on it. */
+/** How long a listing may take: `pkg list` reads one small database, so
+ * a minute means the sandbox stopped answering, as a stalled install. */
 export const LIST_INSTALLED_TIMEOUT_MS = 60_000;
+
+/** A listing that did not finish in time; it was killed. */
+export class ListingStalled extends Error {}
 
 /** What this sandbox already has, by `pkg list`, under sudo like every
  * other pkg call here (pkg opens its database read-write). The caller runs
  * it in the install queue, so no install is writing that database
- * meanwhile. A failed or slow listing throws: the panel says so. */
+ * meanwhile, and one past its time is killed before the queue moves on. */
 export async function listInstalled(
-  host: Pick<PackageHost, "stageAndRun">,
+  guest: {
+    spawn(line: string): Promise<SpawnedProcess>;
+    kill(pid: number): Promise<void>;
+  },
   timeoutMs = LIST_INSTALLED_TIMEOUT_MS,
 ): Promise<Set<string>> {
+  const process = await guest.spawn("sudo pkg list");
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`pkg list took over ${timeoutMs / 1000} s`)),
-      timeoutMs,
-    );
+  const late = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => resolve("late"), timeoutMs);
   });
-  try {
-    const listed = await Promise.race([
-      host.stageAndRun([], "sudo pkg list"),
-      timeout,
-    ]);
-    if (listed.code !== 0) {
-      throw new Error(
-        `pkg list failed (exit ${listed.code}): ${listed.stderr.trim()}`,
-      );
-    }
-    return installedNames(listed.stdout);
-  } finally {
-    clearTimeout(timer);
+  const status = await Promise.race([process.exited, late]);
+  clearTimeout(timer);
+  if (status === "late") {
+    await guest.kill(process.pid);
+    throw new ListingStalled(`pkg list took over ${timeoutMs / 1000} s`);
   }
+  const code = typeof status === "number" ? status : status.code;
+  const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+  if (code !== 0) {
+    throw new Error(
+      `pkg list failed (exit ${code}): ${text(process.takeStderr()).trim()}`,
+    );
+  }
+  return installedNames(text(process.takeStdout()));
 }
 
 /** `pkg`'s cause for a failure: it names the cause first and sums up last

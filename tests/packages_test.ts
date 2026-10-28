@@ -11,6 +11,7 @@ import {
   installScript,
   InstallStalled,
   latestRelease,
+  ListingStalled,
   listInstalled,
   loadCatalog,
   onlyStaged,
@@ -1296,25 +1297,42 @@ Deno.test("installedNames reads the names pkg list prints", () => {
 
 Deno.test("listInstalled is what sudo pkg list printed, and throws when it fails", async () => {
   const ran: string[] = [];
-  const host = (code: number, stdout: string, stderr = "") => ({
-    stageAndRun: (files: StagedFile[], script: string) => {
-      ran.push(`${files.length} ${script}`);
-      return Promise.resolve({ code, stdout, stderr });
+  const killed: number[] = [];
+  const guest = (exited: Promise<number>, stdout = "", stderr = "") => ({
+    spawn: (line: string) => {
+      ran.push(line);
+      return Promise.resolve({
+        pid: 7,
+        exited,
+        takeStdout: () => new TextEncoder().encode(stdout),
+        takeStderr: () => new TextEncoder().encode(stderr),
+      });
+    },
+    kill: (pid: number) => {
+      killed.push(pid);
+      return Promise.resolve();
     },
   });
   assertEquals(
-    [...await listInstalled(host(0, "git 2.55.0-yurt_0 official\n"))],
+    [
+      ...await listInstalled(
+        guest(Promise.resolve(0), "git 2.55.0-yurt_0 official\n"),
+      ),
+    ],
     ["git"],
   );
-  assertEquals(ran, ["0 sudo pkg list"]);
+  assertEquals(ran, ["sudo pkg list"]);
   await assertRejects(
-    () => listInstalled(host(1, "", "database is locked")),
+    () => listInstalled(guest(Promise.resolve(1), "", "database is locked")),
     Error,
     "pkg list failed (exit 1): database is locked",
   );
+  assertEquals(killed, []);
+  // One past its time is killed before the queue moves on.
   await assertRejects(
-    () => listInstalled({ stageAndRun: () => new Promise(() => {}) }, 10),
-    Error,
+    () => listInstalled(guest(new Promise(() => {})), 10),
+    ListingStalled,
     "pkg list took over 0.01 s",
   );
+  assertEquals(killed, [7]);
 });

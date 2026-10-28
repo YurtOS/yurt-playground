@@ -544,17 +544,28 @@ function wirePackages(): void {
   /** Ask the sandbox's pkg what it has: the image, a restored snapshot, the
    * terminal or the agent may have installed (or removed) packages. The
    * buttons stay usable meanwhile: the coordinator queues an install
-   * behind the listing. A failed listing keeps the marks and says so. */
-  const refresh = async (): Promise<boolean> => {
-    if (packageList === undefined) return false;
+   * behind the listing. A failed listing keeps the marks and says so,
+   * after `outcome` (an install's) when there is one. */
+  let listing = false;
+  const refresh = async (outcome?: string): Promise<boolean> => {
+    // One listing at a time: a reopen while one is queued waits for it.
+    if (packageList === undefined || listing) return false;
+    listing = true;
+    if (outcome === undefined) {
+      status.textContent = "checking which packages are installed…";
+    }
     try {
       mark(new Set(await packageList()));
+      status.textContent = outcome ?? "";
       return true;
     } catch (error) {
-      status.textContent = `could not check which packages are installed: ${
+      const why = `could not check which packages are installed: ${
         error instanceof Error ? error.message : String(error)
       }`;
+      status.textContent = outcome === undefined ? why : `${outcome}; ${why}`;
       return false;
+    } finally {
+      listing = false;
     }
   };
   const install = async (name: string) => {
@@ -567,15 +578,19 @@ function wirePackages(): void {
         name,
         (message) => status.textContent = message,
       );
-      status.textContent = /^nothing to install$/m.test(output)
+      const outcome = /^nothing to install$/m.test(output)
         ? `${name} is already installed`
         : `installed ${name}`;
-      if (!(await refresh())) {
-        // No listing: what pkg said it installed (the package and its
-        // dependencies) is installed.
+      status.textContent = outcome;
+      if (!(await refresh(outcome))) {
+        // No listing: what pkg's plan says it installed (the package and
+        // its dependencies) is installed.
+        const installed = new Set(
+          [...output.matchAll(/^install (\S+) /gm)].map((match) => match[1]),
+        );
+        installed.add(name);
         for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
-          const p = b.dataset.package ?? "";
-          if (p === name || output.includes(`install ${p} `)) {
+          if (installed.has(b.dataset.package ?? "")) {
             b.textContent = "Installed";
           }
         }
