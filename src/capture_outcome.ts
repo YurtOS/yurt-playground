@@ -18,10 +18,13 @@ export function markCaptured(mark: CaptureMark): void {
   mark.snapshotCapture = "captured";
 }
 
+/** The reason a failed capture gets when no caller names one. */
+export const NO_SNAPSHOT = "the boot ended without a snapshot";
+
 /** The boot ended. In a capture, any end but the captured file -- an
  * error, a shell-only session, a worker that died -- is a failed capture;
- * `why` names it when the caller knows, and a later call with a reason
- * replaces the generic one. */
+ * `why` names it when the caller knows. A named reason stays: a later one
+ * replaces only the generic {@link NO_SNAPSHOT}. */
 export function markBootEnded(
   mark: CaptureMark,
   capturing: boolean,
@@ -29,8 +32,31 @@ export function markBootEnded(
 ): void {
   if (!capturing || mark.snapshotCapture === "captured") return;
   mark.snapshotCapture = "failed";
-  mark.snapshotCaptureError = why ?? mark.snapshotCaptureError ??
-    "the boot ended without a snapshot";
+  const named = mark.snapshotCaptureError !== undefined &&
+    mark.snapshotCaptureError !== NO_SNAPSHOT;
+  if (!named) mark.snapshotCaptureError = why ?? NO_SNAPSHOT;
+}
+
+/** The captured file arrived: save it, mark the capture, end the boot --
+ * or, when saving throws, end the boot with that as the failure, so the
+ * release script hears of it at once. */
+export function finishCapture(
+  mark: CaptureMark,
+  save: () => void,
+  endBoot: (why?: string) => void,
+): void {
+  try {
+    save();
+  } catch (error) {
+    endBoot(
+      `saving the snapshot failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return;
+  }
+  markCaptured(mark);
+  endBoot();
 }
 
 /** How long the page keeps the file's object URL after the download

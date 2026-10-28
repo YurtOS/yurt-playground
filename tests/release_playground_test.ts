@@ -1364,7 +1364,13 @@ printf 'DROPPED=%s\\n' "\${snapshot_dropped:-0}"
     await Deno.mkdir(bin);
     await Deno.writeTextFile(
       join(bin, "deno"),
-      `#!/usr/bin/env bash\n${answer}\n`,
+      // Called as the script calls it, from the project root; any other
+      // call is no verdict (exit 9), which stops the train.
+      `#!/usr/bin/env bash
+[ "$*" = "run -A scripts/release-snapshot.ts --check-pin" ] || exit 9
+[ "$(pwd -P)" = "$(cd ${JSON.stringify(root)} && pwd -P)" ] || exit 9
+${answer}
+`,
     );
     await Deno.chmod(join(bin, "deno"), 0o755);
     const result = await command("bash", [scriptPath], {
@@ -1408,6 +1414,9 @@ Deno.test("a train drops the snapshot pin --check-pin refuses, with its reason",
 Deno.test("a train stops when --check-pin gives no verdict, and keeps the pin", async () => {
   const run = await pinsWrite("echo 'error: Uncaught' >&2; exit 1");
   assertEquals(run.code, 1, run.output);
-  assertStringIncludes(run.output, "the pinned snapshot could not be checked");
+  assertStringIncludes(
+    run.output,
+    "release-snapshot.ts --check-pin failed (exit 1)",
+  );
   assertEquals(run.pins.snapshot, { release: "snapshot-playground-old" });
 });

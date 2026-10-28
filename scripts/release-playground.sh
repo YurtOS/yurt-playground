@@ -836,7 +836,7 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
     pythonSeal: $python_seal
   } + (if $slim == null then {} else {browserImage: $slim} end)
     + (if $snapshot == null then {} else {snapshot: $snapshot} end)' > "$root/artifacts/pins.json"
-keep_snapshot_pin "$root" || die "the pinned snapshot could not be checked; fix that and $(resume_command)"
+keep_snapshot_pin "$root" || die "$snapshot_error; fix that and $(resume_command)"
 if [ "${snapshot_dropped:-0}" = 1 ]; then
   say "the pinned snapshot is not this train's ($snapshot_why): dropped"
 fi

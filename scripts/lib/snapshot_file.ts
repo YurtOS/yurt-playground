@@ -17,16 +17,23 @@ export type SnapshotFileCheck =
 
 /**
  * Whether the file at `path` is a snapshot built from `expected` (every
- * field it has): its header, and -- with `sha256` -- its bytes, and -- with
+ * field it has): its header, and -- with `sha256` -- its bytes, or -- with
  * `decode` -- that it inflates to the whole memory its header names. Any
- * failure, a missing file or one that does not inflate included, is a
- * `problem`, never a throw.
+ * failure of the file, a missing one or one that does not inflate
+ * included, is a `problem`, never a throw.
  */
 export async function checkSnapshotFile(
   path: string,
   expected: SnapshotIdentity | BuiltFrom,
-  options: { sha256?: string; decode?: boolean } = {},
+  // One or the other: the hash and a full decode on one read would queue
+  // most of the file between them, and inflate a file of the wrong bytes.
+  options:
+    | { sha256?: string; decode?: never }
+    | { decode?: boolean; sha256?: never } = {},
 ): Promise<SnapshotFileCheck> {
+  if (options.sha256 !== undefined && options.decode === true) {
+    throw new Error("checkSnapshotFile: a sha256 check or a decode, not both");
+  }
   try {
     // One read of the file: the hash (streamed, not the ~131 MB at once)
     // and the header check or decode each take a branch of it.

@@ -15,8 +15,8 @@ import {
 import { mountAgentPane } from "./agent_pane.ts";
 import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
+  finishCapture,
   markBootEnded,
-  markCaptured,
   saveDownload,
 } from "./capture_outcome.ts";
 import {
@@ -242,10 +242,10 @@ function boot(
   // sandbox) until that boot ends: only then is a status worth keeping for
   // a reloaded tab. A later one (a Jupyter restart) is not a boot.
   let booting = true;
-  const endBoot = () => {
+  const endBoot = (why?: string) => {
     booting = false;
     rememberBooting(undefined);
-    endCapture();
+    endCapture(why);
   };
   const pinsPromise = fetchSitePins();
   // The cell's Install: enabled when the pins name a slim image; after a
@@ -355,9 +355,8 @@ function boot(
       if (msg.text === "") yurtState.running();
     }
     if (msg.type === "error") {
-      if (msg.endsBoot === true) endBoot();
+      if (msg.endsBoot === true) endBoot(msg.message);
       fail(msg.message);
-      if (msg.endsBoot === true) endCapture(msg.message);
       // Only a boot failure is the sandbox's failure: an error once the
       // shell is up ("Jupyter is not ready", a restart that failed) leaves
       // exec working, and the status says so.
@@ -394,9 +393,11 @@ function boot(
     if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
     // A capture ends in the sealed sandbox, with no Jupyter to wait for.
     if (msg.type === "snapshot-captured") {
-      saveSnapshot(msg.blob, msg.ms);
-      markCaptured(document.documentElement.dataset);
-      endBoot();
+      finishCapture(
+        document.documentElement.dataset,
+        () => saveSnapshot(msg.blob, msg.ms),
+        endBoot,
+      );
     }
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
       const waiter = pending.get(msg.req);
@@ -410,9 +411,8 @@ function boot(
     if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
   };
   worker.onerror = (event) => {
-    endBoot();
     const message = event.message || "coordinator worker failed";
-    endCapture(message);
+    endBoot(message);
     fail(message);
     yurtState.failed(message);
     sandboxGone();

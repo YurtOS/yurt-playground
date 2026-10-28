@@ -2,8 +2,10 @@ import { assertEquals } from "@std/assert";
 import {
   type CaptureMark,
   DOWNLOAD_URL_KEEP_MS,
+  finishCapture,
   markBootEnded,
   markCaptured,
+  NO_SNAPSHOT,
   saveDownload,
 } from "../src/capture_outcome.ts";
 
@@ -52,4 +54,37 @@ Deno.test("a captured file is downloaded, and its URL let go only after the down
   assertEquals(DOWNLOAD_URL_KEEP_MS >= 30_000, true);
   timers[0].run();
   assertEquals(calls.at(-1), "revoke blob:x");
+});
+
+Deno.test("a named reason for a failed capture stays; only the generic one is replaced", () => {
+  const mark: CaptureMark = {};
+  markBootEnded(mark, true);
+  assertEquals(mark.snapshotCaptureError, NO_SNAPSHOT);
+  markBootEnded(mark, true, "compileall exited 1");
+  markBootEnded(mark, true, "coordinator worker failed");
+  markBootEnded(mark, true);
+  assertEquals(mark, {
+    snapshotCapture: "failed",
+    snapshotCaptureError: "compileall exited 1",
+  });
+});
+
+Deno.test("a captured file that cannot be saved ends the boot as a failed capture", () => {
+  const ended: (string | undefined)[] = [];
+  const endBoot = (why?: string) => {
+    ended.push(why);
+    markBootEnded(mark, true, why);
+  };
+  const mark: CaptureMark = {};
+  finishCapture(mark, () => {
+    throw new Error("quota exceeded");
+  }, endBoot);
+  assertEquals(ended, ["saving the snapshot failed: quota exceeded"]);
+  assertEquals(mark.snapshotCapture, "failed");
+  const saved: CaptureMark = {};
+  const order: string[] = [];
+  finishCapture(saved, () => order.push("save"), (why) => {
+    order.push(`end ${saved.snapshotCapture} ${why}`);
+  });
+  assertEquals(order, ["save", "end captured undefined"]);
 });

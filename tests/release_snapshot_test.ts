@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   captureSetProblem,
   checkoutProblem,
@@ -131,6 +131,16 @@ Deno.test("a train keeps the snapshot pin only when --check-pin's checks pass", 
     true,
   );
   assertEquals((await check("old shape", set))?.includes("malformed"), true);
+  // A crash is no verdict: it is thrown, never a refusal.
+  await assertRejects(
+    () =>
+      snapshotPinProblem(
+        { ...pins, snapshot: entry },
+        () => Promise.reject(new TypeError("crash")),
+      ),
+    TypeError,
+    "crash",
+  );
 });
 
 Deno.test("a snapshot is released only from the pinned kernel rev and a pushed playground head, both clean", async () => {
@@ -519,7 +529,7 @@ Deno.test("release-snapshot.ts --check-pin answers through its exit code and say
  * snapshot entry, with a `deno` that runs `answer` (bash), or none. */
 async function keepPin(
   answer: string | undefined,
-  { readOnly = false } = {},
+  { readOnly = false, failingMv = false } = {},
 ) {
   const root = await Deno.makeTempDir();
   try {
@@ -534,13 +544,22 @@ async function keepPin(
         `${root}/bin/deno`,
         `#!/usr/bin/env bash
 [ "$*" = "run -A scripts/release-snapshot.ts --check-pin" ] || exit 9
+[ "$(pwd -P)" = "$(cd ${JSON.stringify(root)} && pwd -P)" ] || exit 9
 ${answer}
 `,
       );
       await Deno.chmod(`${root}/bin/deno`, 0o755);
     }
     // The tools the function uses, and no deno but the fake one.
-    for (const tool of ["jq", "sed", "tail", "mv", "bash", "cat"]) {
+    for (const tool of ["jq", "sed", "tail", "mv", "rm", "bash", "cat"]) {
+      if (tool === "mv" && failingMv) {
+        await Deno.writeTextFile(
+          `${root}/bin/mv`,
+          "#!/bin/sh\necho 'mv: disk full' >&2\nexit 1\n",
+        );
+        await Deno.chmod(`${root}/bin/mv`, 0o755);
+        continue;
+      }
       const which = await new Deno.Command("which", {
         args: [tool],
         stdout: "piped",
@@ -554,7 +573,7 @@ ${answer}
     const out = await new Deno.Command(`${root}/bin/bash`, {
       args: [
         "-c",
-        `source "$1"; keep_snapshot_pin "$2"; echo "$?|\${snapshot_dropped:-0}|\${snapshot_why:-}"`,
+        `source "$1"; keep_snapshot_pin "$2"; echo "$?|\${snapshot_dropped:-0}|\${snapshot_why:-}"; echo "\${snapshot_error:-}" >&2`,
         "bash",
         new URL("../scripts/lib/snapshot-pin.sh", import.meta.url).pathname,
         root,
@@ -570,6 +589,7 @@ ${answer}
       pins: JSON.parse(
         await Deno.readTextFile(`${root}/artifacts/pins.json`),
       ),
+      leftovers: [...Deno.readDirSync(`${root}/artifacts`)].map((e) => e.name),
     };
   } finally {
     await Deno.remove(root, { recursive: true });
@@ -599,13 +619,28 @@ Deno.test("a train drops the snapshot entry only on --check-pin's refusal, sayin
     assertEquals(run.pins.snapshot, entry, why);
     assertEquals(run.stderr.includes("--check-pin failed"), true, why);
   }
-  // A refusal whose removal fails is not reported as dropped.
-  const stuck = await keepPin(
-    "echo 'snapshot pin refused: x' >&2; exit 3",
-    { readOnly: true },
+  // A refusal whose removal fails is not reported as dropped: it says
+  // why, and leaves no temporary file.
+  for (const options of [{ readOnly: true }, { failingMv: true }]) {
+    const stuck = await keepPin(
+      "echo 'snapshot pin refused: x' >&2; exit 3",
+      options,
+    );
+    assertEquals(stuck.said, "1|0|", JSON.stringify(options));
+    assertEquals(stuck.pins.snapshot, entry);
+    assertEquals(
+      stuck.stderr.includes("was refused (x) but could not be removed"),
+      true,
+      stuck.stderr,
+    );
+    assertEquals(stuck.leftovers, ["pins.json"]);
+  }
+  assertEquals(
+    (await keepPin("echo 'snapshot pin refused: x' >&2; exit 3", {
+      failingMv: true,
+    })).stderr.includes("mv: disk full"),
+    true,
   );
-  assertEquals(stuck.said, "1|0|");
-  assertEquals(stuck.pins.snapshot, entry);
 });
 
 Deno.test("a capture does not start on an index it cannot read or without a complete set", () => {
@@ -671,14 +706,23 @@ Deno.test("a full check of a snapshot file reads it once", async () => {
     });
     try {
       const sha256 = await sha256Hex(file);
-      for (const decode of [false, true]) {
-        opens = 0;
-        assertEquals(
-          await checkSnapshotFile(`${dir}/s.gz`, built, { sha256, decode }),
-          { ok: true, builtFrom: built },
-        );
-        assertEquals(opens, 1, `decode ${decode}`);
-      }
+      opens = 0;
+      assertEquals(
+        await checkSnapshotFile(`${dir}/s.gz`, built, { sha256 }),
+        { ok: true, builtFrom: built },
+      );
+      assertEquals(opens, 1);
+      // Both at once would queue the file between the two: refused.
+      await assertRejects(
+        () =>
+          checkSnapshotFile(
+            `${dir}/s.gz`,
+            built,
+            { sha256, decode: true } as unknown as { sha256: string },
+          ),
+        Error,
+        "not both",
+      );
       const wrong = await checkSnapshotFile(`${dir}/s.gz`, built, {
         sha256: "0".repeat(64),
       });

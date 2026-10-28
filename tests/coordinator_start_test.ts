@@ -384,16 +384,6 @@ Deno.test("a failed capture is said as one, not as a Jupyter that did not start"
   });
 });
 
-Deno.test("a captured snapshot ends the page's boot, like a notebook that is ready", () => {
-  const page = Deno.readTextFileSync(
-    new URL("../src/page.ts", import.meta.url),
-  );
-  assert(
-    /msg\.type === "snapshot-captured"\) \{[^}]*endBoot\(\);/.test(page),
-    "the page's snapshot-captured handler calls endBoot()",
-  );
-});
-
 Deno.test("a stack-overflow relaunch's note rides on every later 'starting Jupyter' tick", async () => {
   const posted: StartReport[] = [];
   await startSandbox({
@@ -567,17 +557,23 @@ Deno.test("the page wires a capture's outcome marks (src/capture_outcome.ts)", (
   const page = Deno.readTextFileSync(
     new URL("../src/page.ts", import.meta.url),
   );
-  // Every end of the boot reaches the mark; the file is marked first.
-  const endBoot = page.match(/const endBoot = \(\) => \{([^}]*)\};/);
-  assert(endBoot !== null && /endCapture\(\);/.test(endBoot[1]));
+  // Every end of the boot reaches the mark, with its reason when known,
+  // once; the file goes through finishCapture.
+  const endBoot = page.match(
+    /const endBoot = \(why\?: string\) => \{([^}]*)\};/,
+  );
+  assert(endBoot !== null && /endCapture\(why\);/.test(endBoot[1]));
+  assert(/if \(msg\.endsBoot === true\) endBoot\(msg\.message\);/.test(page));
+  assert(/worker\.onerror = [^]*?endBoot\(message\);/.test(page));
+  assertEquals(
+    page.match(/endCapture\(/g)?.length,
+    2,
+    "defined, and called once",
+  );
   assert(
-    /msg\.type === "snapshot-captured"\) \{[^}]*markCaptured\(document\.documentElement\.dataset\);\s*endBoot\(\);/
+    /msg\.type === "snapshot-captured"\) \{\s*finishCapture\(\s*document\.documentElement\.dataset,\s*\(\) => saveSnapshot\(msg\.blob, msg\.ms\),\s*endBoot,/
       .test(page),
   );
-  assert(
-    /if \(msg\.endsBoot === true\) endCapture\(msg\.message\);/.test(page),
-  );
-  assert(/worker\.onerror = [^]*?endCapture\(message\);/.test(page));
   assert(/saveDownload\(\s*\{/.test(page));
   const script = Deno.readTextFileSync(
     new URL("../scripts/release-snapshot.ts", import.meta.url),

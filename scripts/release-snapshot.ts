@@ -76,6 +76,7 @@ import {
   pinnedSnapshot,
   SANDBOX_SNAPSHOT_NAME,
   snapshotIdentity,
+  SnapshotMismatch,
 } from "../src/sandbox_snapshot.ts";
 
 const REPO = "YurtOS/yurt-playground";
@@ -205,7 +206,10 @@ export async function snapshotPinProblem(
     checkPythonSet(pin.builtFrom, set);
     return undefined;
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    // Only the verdict "not this train's" is an answer; a crash is not,
+    // and must not drop a pin (scripts/lib/snapshot-pin.sh).
+    if (error instanceof SnapshotMismatch) return error.message;
+    throw error;
   }
 }
 
