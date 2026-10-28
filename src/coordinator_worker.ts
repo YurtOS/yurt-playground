@@ -351,15 +351,17 @@ async function captureSnapshot(
     image,
     { ...snapshotIdentity(await playgroundPins()), pythonSet },
   );
-  post({
-    type: "snapshot-captured",
-    blob,
-    ms: Math.round(performance.now() - started),
-  });
+  // The status first: the page's own failure to save the file, if any,
+  // comes after it and is the last word.
   post({
     type: "status",
     text: `snapshot captured (${blob.size} bytes); ` +
       "the sealed sandbox runs no Jupyter",
+  });
+  post({
+    type: "snapshot-captured",
+    blob,
+    ms: Math.round(performance.now() - started),
   });
 }
 

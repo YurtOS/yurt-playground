@@ -1319,6 +1319,15 @@ Deno.test("a real train pins its own CLI in [4], not the one [2]'s smoke install
   }
 });
 
+/** The script's own step_get and step_set lines, for a fixture state. */
+function stepHelpers(source: string): string {
+  const lines = source.split("\n").filter((line) =>
+    /^step_(get|set)\(\) \{/.test(line)
+  );
+  assertEquals(lines.length, 2, "release-playground.sh has step_get/step_set");
+  return lines.join("\n");
+}
+
 /** release-playground.sh's pins write, from the snapshot entry it reads
  * to the pins it verifies, run on a project whose pins carry a snapshot
  * entry, with a `deno` that answers --check-pin as `answer` (bash). */
@@ -1350,6 +1359,10 @@ say() { printf '==> %s\\n' "$*" >&2; }
 die() { echo "release-playground: $*" >&2; exit 1; }
 resume_command() { echo "resume"; }
 root=${JSON.stringify(root)}
+pins_only=0
+state=${JSON.stringify(join(dir, "state.json"))}
+echo '{"steps":{}}' > "$state"
+${stepHelpers(source)}
 source "$root/scripts/lib/snapshot-pin.sh"
 train=playground-new kernel_sha=k sandbox_sha=s ports_sha=p
 kernel_wasm_release=kw kernel_wasm_repo=r kernel_sha256=ks
@@ -1383,6 +1396,7 @@ ${answer}
       pins: JSON.parse(
         await Deno.readTextFile(join(root, "artifacts/pins.json")),
       ),
+      state: JSON.parse(await Deno.readTextFile(join(dir, "state.json"))),
     };
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -1409,6 +1423,43 @@ Deno.test("a train drops the snapshot pin --check-pin refuses, with its reason",
     "the pinned snapshot is not this train's (built from kernelRev k0, not k): dropped",
   );
   assertStringIncludes(run.output, "DROPPED=1");
+  // Kept with the train, for a --resume's closing reminder.
+  assertEquals(run.state.steps.snapshot, {
+    dropped: "built from kernelRev k0, not k",
+  });
+});
+
+Deno.test("a train ends with the reminder to recapture when its state says the pin was dropped", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "release-reminder-" });
+  try {
+    const source = await Deno.readTextFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+    );
+    const start = "snapshot_dropped_why=$(step_get snapshot dropped)";
+    assertEquals(source.includes(start), true);
+    const block = start + source.split(start)[1].split("\nfi\n")[0] +
+      "\nfi\n";
+    const run = async (steps: unknown) => {
+      const state = join(dir, "state.json");
+      await Deno.writeTextFile(state, JSON.stringify({ steps }));
+      const result = await command("bash", [
+        "-c",
+        `set -euo pipefail
+say() { printf '==> %s\\n' "$*"; }
+state=${JSON.stringify(state)}
+${stepHelpers(source)}
+${block}`,
+      ]);
+      return new TextDecoder().decode(result.stdout);
+    };
+    assertStringIncludes(
+      await run({ snapshot: { dropped: "built from kernelRev k0, not k" } }),
+      "the snapshot pin was dropped (built from kernelRev k0, not k): run scripts/release-snapshot.ts",
+    );
+    assertEquals(await run({}), "");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("a train stops when --check-pin gives no verdict, and keeps the pin", async () => {

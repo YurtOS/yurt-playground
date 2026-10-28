@@ -76,15 +76,33 @@ Deno.test("a captured file that cannot be saved ends the boot as a failed captur
     markBootEnded(mark, true, why);
   };
   const mark: CaptureMark = {};
-  finishCapture(mark, () => {
-    throw new Error("quota exceeded");
-  }, endBoot);
+  const failed: string[] = [];
+  finishCapture(
+    mark,
+    () => {
+      throw new Error("quota exceeded");
+    },
+    endBoot,
+    (message) => failed.push(message),
+  );
   assertEquals(ended, ["saving the snapshot failed: quota exceeded"]);
+  assertEquals(failed, ["saving the snapshot failed: quota exceeded"]);
   assertEquals(mark.snapshotCapture, "failed");
   const saved: CaptureMark = {};
   const order: string[] = [];
   finishCapture(saved, () => order.push("save"), (why) => {
     order.push(`end ${saved.snapshotCapture} ${why}`);
-  });
+  }, (message) => order.push(`fail ${message}`));
   assertEquals(order, ["save", "end captured undefined"]);
+});
+
+Deno.test("an empty reason names nothing: a real one replaces it", () => {
+  const mark: CaptureMark = {};
+  markBootEnded(mark, true, "");
+  assertEquals(mark.snapshotCaptureError, NO_SNAPSHOT);
+  markBootEnded(mark, true, "compileall exited 1");
+  assertEquals(mark.snapshotCaptureError, "compileall exited 1");
+  const blank: CaptureMark = { snapshotCaptureError: "" };
+  markBootEnded(blank, true, "coordinator worker failed");
+  assertEquals(blank.snapshotCaptureError, "coordinator worker failed");
 });

@@ -839,6 +839,8 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
 keep_snapshot_pin "$root" || die "$snapshot_error; fix that and $(resume_command)"
 if [ "${snapshot_dropped:-0}" = 1 ]; then
   say "the pinned snapshot is not this train's ($snapshot_why): dropped"
+  # Kept with the train, so a --resume still ends with the reminder below.
+  [ "$pins_only" = 1 ] || step_set snapshot dropped "$(jq -n --arg why "$snapshot_why" '$why')"
 fi
 say "verify the pins: scripts/install-pinned-artifacts.sh"
 "$root/scripts/install-pinned-artifacts.sh"
@@ -911,6 +913,7 @@ if [ "$(step_get desktop conclusion)" != success ]; then
     -f "playground_sha=$merge_sha" -f "train=$train" -f "publish=true"
 fi
 say "released: kernel-wasm-$train, $image_release, $seal_release_of_train, desktop-host-$train, yurt-cli-$train, desktop-$train"
-if [ "${snapshot_dropped:-0}" = 1 ]; then
-  say "the snapshot pin was dropped ($snapshot_why): run scripts/release-snapshot.ts (deno run -A), then commit artifacts/pins.json"
+snapshot_dropped_why=$(step_get snapshot dropped)
+if [ -n "$snapshot_dropped_why" ]; then
+  say "the snapshot pin was dropped ($snapshot_dropped_why): run scripts/release-snapshot.ts (deno run -A), then commit artifacts/pins.json"
 fi

@@ -551,7 +551,9 @@ ${answer}
       await Deno.chmod(`${root}/bin/deno`, 0o755);
     }
     // The tools the function uses, and no deno but the fake one.
-    for (const tool of ["jq", "sed", "tail", "mv", "rm", "bash", "cat"]) {
+    for (
+      const tool of ["jq", "sed", "grep", "tail", "mv", "rm", "bash", "cat"]
+    ) {
       if (tool === "mv" && failingMv) {
         await Deno.writeTextFile(
           `${root}/bin/mv`,
@@ -611,7 +613,10 @@ Deno.test("a train drops the snapshot entry only on --check-pin's refusal, sayin
   for (
     const [why, answer] of [
       ["deno missing", undefined],
-      ["a crash", "echo 'error: Uncaught TypeError' >&2; exit 1"],
+      [
+        "a crash",
+        "printf '\\033[31merror\\033[0m: Uncaught TypeError: boom\\n    at frame1\\n    at frame2\\n' >&2; exit 1",
+      ],
     ] as const
   ) {
     const run = await keepPin(answer);
@@ -619,6 +624,19 @@ Deno.test("a train drops the snapshot entry only on --check-pin's refusal, sayin
     assertEquals(run.pins.snapshot, entry, why);
     assertEquals(run.stderr.includes("--check-pin failed"), true, why);
   }
+  // The error's own line names it, not its last stack frame; the whole
+  // output is still on stderr.
+  const crash = await keepPin(
+    "printf '\\033[31merror\\033[0m: Uncaught TypeError: boom\\n    at frame1\\n    at frame2\\n' >&2; exit 1",
+  );
+  assertEquals(
+    crash.stderr.includes(
+      "--check-pin failed (exit 1): error: Uncaught TypeError: boom",
+    ),
+    true,
+    crash.stderr,
+  );
+  assertEquals(crash.stderr.includes("at frame2"), true);
   // A refusal whose removal fails is not reported as dropped: it says
   // why, and leaves no temporary file.
   for (const options of [{ readOnly: true }, { failingMv: true }]) {

@@ -571,10 +571,18 @@ Deno.test("the page wires a capture's outcome marks (src/capture_outcome.ts)", (
     "defined, and called once",
   );
   assert(
-    /msg\.type === "snapshot-captured"\) \{\s*finishCapture\(\s*document\.documentElement\.dataset,\s*\(\) => saveSnapshot\(msg\.blob, msg\.ms\),\s*endBoot,/
+    /msg\.type === "snapshot-captured"\) \{\s*finishCapture\(\s*document\.documentElement\.dataset,\s*\(\) => saveSnapshot\(msg\.blob, msg\.ms\),\s*endBoot,\s*fail,/
       .test(page),
   );
   assert(/saveDownload\(\s*\{/.test(page));
+  // The worker's own "snapshot captured" status comes before the file, so
+  // a failure to save it is the last word in the status line.
+  const worker = Deno.readTextFileSync(
+    new URL("../src/coordinator_worker.ts", import.meta.url),
+  );
+  const status = worker.indexOf("text: `snapshot captured (");
+  const captured = worker.indexOf('type: "snapshot-captured",');
+  assert(status > 0 && captured > status, "status, then the file");
   const script = Deno.readTextFileSync(
     new URL("../scripts/release-snapshot.ts", import.meta.url),
   );

@@ -1,6 +1,9 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import type { Catalog } from "../src/packages.ts";
 import { parsePins } from "../src/pins.ts";
 import {
+  livePythonSet,
+  NO_COMPLETE_SET,
   PYTHON_LABEL,
   PYTHON_SET,
   pythonInstallRequest,
@@ -43,5 +46,33 @@ Deno.test("a slim image installs the Python set, Python first, from the live ind
 Deno.test("a slim image pin is an artifact pin like the others", () => {
   assertThrows(() =>
     parsePins({ ...base, browserImage: { ...artifact, sha256: "" } })
+  );
+});
+
+Deno.test("only a set the index does not offer is 'no complete set'; a crash is thrown", async () => {
+  const catalog = (versions: unknown[]) =>
+    ({
+      metadata: new Map([["python", { file: { versions } }]]),
+    }) as unknown as Catalog;
+  const request = { set: ["python"], image: "img" };
+  // Answered, without the set.
+  assertEquals(
+    await livePythonSet(request, 1000, () => Promise.resolve(catalog([]))),
+    NO_COMPLETE_SET,
+  );
+  // Not answered: no verdict.
+  assertEquals(
+    await livePythonSet(request, 1000, () => Promise.reject(new Error("down"))),
+    undefined,
+  );
+  // A catalog the code cannot read is a crash, not an answer.
+  await assertRejects(
+    () =>
+      livePythonSet(
+        request,
+        1000,
+        () => Promise.resolve({ metadata: null } as unknown as Catalog),
+      ),
+    TypeError,
   );
 });

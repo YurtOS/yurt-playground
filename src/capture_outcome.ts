@@ -32,27 +32,30 @@ export function markBootEnded(
 ): void {
   if (!capturing || mark.snapshotCapture === "captured") return;
   mark.snapshotCapture = "failed";
-  const named = mark.snapshotCaptureError !== undefined &&
+  // An empty reason names nothing.
+  const named = (mark.snapshotCaptureError ?? "") !== "" &&
     mark.snapshotCaptureError !== NO_SNAPSHOT;
-  if (!named) mark.snapshotCaptureError = why ?? NO_SNAPSHOT;
+  if (!named) mark.snapshotCaptureError = why || NO_SNAPSHOT;
 }
 
 /** The captured file arrived: save it, mark the capture, end the boot --
- * or, when saving throws, end the boot with that as the failure, so the
- * release script hears of it at once. */
+ * or, when saving throws, end the boot with that as the failure and say
+ * so (`fail`, the page's status line), so the release script and the
+ * reader hear of it at once. */
 export function finishCapture(
   mark: CaptureMark,
   save: () => void,
   endBoot: (why?: string) => void,
+  fail: (message: string) => void,
 ): void {
   try {
     save();
   } catch (error) {
-    endBoot(
-      `saving the snapshot failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
+    const message = `saving the snapshot failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    endBoot(message);
+    fail(message);
     return;
   }
   markCaptured(mark);

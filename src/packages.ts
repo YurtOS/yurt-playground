@@ -658,6 +658,10 @@ export type InstallRequest =
  * `names` has (unyanked, in a release the page can read), the highest N
  * wins, and each package's release with that build (the highest version,
  * should there be several). A set only partly published is never chosen. */
+/** The repository does not offer the set: a member it has no package for,
+ * or no `yurt_N` build that all of them have. */
+export class SetNotOffered extends Error {}
+
 export function resolveSet(
   catalog: Catalog,
   names: readonly string[],
@@ -672,7 +676,7 @@ export function resolveSet(
   };
   const byName = names.map((name) => {
     const file = catalog.metadata.get(name)?.file;
-    if (file === undefined) throw new Error(`no package named ${name}`);
+    if (file === undefined) throw new SetNotOffered(`no package named ${name}`);
     return file.versions.filter((v) =>
       !v.yanked && /^yurt_\d+$/.test(v.build) && readable(name, v)
     );
@@ -682,7 +686,7 @@ export function resolveSet(
   );
   const common = [...builds[0]].filter((n) => builds.every((b) => b.has(n)));
   if (common.length === 0) {
-    throw new Error(
+    throw new SetNotOffered(
       `the repository has no complete set of ${
         names.join(", ")
       } (one yurt_N build of all of them)`,

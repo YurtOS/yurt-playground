@@ -397,6 +397,7 @@ function boot(
         document.documentElement.dataset,
         () => saveSnapshot(msg.blob, msg.ms),
         endBoot,
+        fail,
       );
     }
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {

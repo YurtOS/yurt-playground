@@ -5,7 +5,13 @@
  * it starts ipykernel. Which builds is the live signed repository's answer,
  * not the page's: the newest complete set (see {@link PYTHON_SET}).
  */
-import { fetchWithProgress, loadCatalog, resolveSet } from "./packages.ts";
+import {
+  type Catalog,
+  fetchWithProgress,
+  loadCatalog,
+  resolveSet,
+  SetNotOffered,
+} from "./packages.ts";
 import { parsePins, type Pins } from "./pins.ts";
 import { layerKey } from "./python_layer.ts";
 
@@ -72,50 +78,66 @@ export async function fetchSitePins(): Promise<Pins | undefined> {
  * used as when offline). */
 export const LIVE_INDEX_TIMEOUT_MS = 20_000;
 
+/** The live index could not be read (in time): no answer, as offline. */
+export class IndexUnreadable extends Error {}
+
 /** The set the live index offers for `set` on `image`, as a layer key
- * (src/python_layer.ts); undefined when the index answered but offers no
- * complete set. Throws when the index cannot be read within `timeoutMs`. */
+ * (src/python_layer.ts); undefined when the index answered but does not
+ * offer the set (SetNotOffered). Throws IndexUnreadable when the index
+ * cannot be read within `timeoutMs`; anything else (a crash) is thrown as
+ * it is, never taken for an answer. */
 export async function liveLayerKey(
   image: string,
   set: readonly string[],
   timeoutMs = LIVE_INDEX_TIMEOUT_MS,
+  /** The index read; the live repository's, bounded by `signal`. */
+  load: (signal: AbortSignal) => Promise<Catalog> = (signal) =>
+    loadCatalog((url, limit, onBytes) =>
+      fetchWithProgress(url, limit, onBytes, signal)
+    ),
 ): Promise<string | undefined> {
   const giveUp = new AbortController();
   const timer = setTimeout(() => giveUp.abort(), timeoutMs);
-  let catalog: Awaited<ReturnType<typeof loadCatalog>>;
+  let catalog: Catalog;
   try {
-    catalog = await loadCatalog(
-      (url, limit, onBytes) =>
-        fetchWithProgress(url, limit, onBytes, giveUp.signal),
+    catalog = await load(giveUp.signal);
+  } catch (error) {
+    throw new IndexUnreadable(
+      error instanceof Error ? error.message : String(error),
     );
   } finally {
     clearTimeout(timer);
   }
-  // The repository answered: a set it no longer offers (yanked, removed)
-  // is no layer's either.
+  let releases: ReturnType<typeof resolveSet>;
   try {
-    return layerKey(image, resolveSet(catalog, set));
-  } catch {
-    return undefined;
+    releases = resolveSet(catalog, set);
+  } catch (error) {
+    // The repository answered: a set it does not offer (yanked, removed,
+    // incomplete) is no layer's either.
+    if (error instanceof SetNotOffered) return undefined;
+    throw error;
   }
+  return layerKey(image, releases);
 }
 
 /** A snapshot's `pythonSet` as the live index would make it now -- the one
  * mapping the page (`?snapshot=1`) and scripts/release-snapshot.ts share:
  * null when the site installs no Python; NO_COMPLETE_SET when the index
- * answered without a complete set (no snapshot matches that); undefined
- * when the index cannot be read in time (the snapshot is then used, as a
- * stored layer is offline). */
+ * answered without the set (no snapshot matches that); undefined when the
+ * index cannot be read in time (the snapshot is then used, as a stored
+ * layer is offline). A crash is thrown, never taken for one of these. */
 export async function livePythonSet(
   request: { set: readonly string[]; image?: string } | undefined,
   timeoutMs = LIVE_INDEX_TIMEOUT_MS,
+  load?: (signal: AbortSignal) => Promise<Catalog>,
 ): Promise<string | null | undefined> {
   if (request?.image === undefined) return null;
   try {
-    return await liveLayerKey(request.image, request.set, timeoutMs) ??
+    return await liveLayerKey(request.image, request.set, timeoutMs, load) ??
       NO_COMPLETE_SET;
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (error instanceof IndexUnreadable) return undefined;
+    throw error;
   }
 }
 

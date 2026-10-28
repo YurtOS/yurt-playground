@@ -8,8 +8,8 @@
 # the checks the page makes. A refused entry is removed, then
 # snapshot_dropped=1 and snapshot_why says why. Any other outcome (deno
 # missing, a crash, exit 1) and a failed removal return 1 with
-# snapshot_error saying which, the pin untouched: a check that did not run
-# is no verdict.
+# snapshot_error saying which (the check's whole output goes to stderr),
+# the pin untouched: a check that did not run is no verdict.
 keep_snapshot_pin() {
   local root=$1 pins=$1/artifacts/pins.json out code=0 why err
   [ "$(jq -c '.snapshot // null' "$pins")" != null ] || return 0
@@ -18,7 +18,12 @@ keep_snapshot_pin() {
     0) return 0 ;;
     3) ;;
     *)
-      snapshot_error="release-snapshot.ts --check-pin failed (exit $code): $(tail -5 <<< "$out")"
+      # All of it on stderr; the line naming the error in the message (an
+      # uncaught exception ends in stack frames, not in its name).
+      printf '%s\n' "$out" >&2
+      local named
+      named=$(sed 's/\x1b\[[0-9;]*m//g' <<< "$out" | grep -m1 'error:' || tail -1 <<< "$out")
+      snapshot_error="release-snapshot.ts --check-pin failed (exit $code): $named"
       return 1
       ;;
   esac
