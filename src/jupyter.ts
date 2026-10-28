@@ -207,8 +207,18 @@ async function clearKernelFiles(session: JupyterLaunchSession): Promise<void> {
   const cleared = await session.spawn?.(
     `rm -f ${JUPYTER_CONNECTION_FILE} ${JUPYTER_PID_FILE}`,
   );
-  await cleared?.exited;
+  // Bounded like the typed stop it replaces here (runShell's 30 s): a
+  // sandbox that cannot reap an rm does not hold the relaunch forever.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    cleared?.exited,
+    new Promise((resolve) => timer = setTimeout(resolve, CLEAR_FILES_MS)),
+  ]);
+  clearTimeout(timer);
 }
+
+/** How long a relaunch waits for the old kernel's files to be removed. */
+const CLEAR_FILES_MS = 30_000;
 
 /** Replace the guest kernel with a fresh process. */
 export async function restartGuestKernel(

@@ -224,7 +224,10 @@ export function kernelFailureDropsLayer(report: StartReport): boolean {
  * start runs is refused at once, as before the relaunch: queued, it waited
  * out minutes of ipykernel import and then restarted the fresh kernel. */
 export function kernelLifecycle() {
-  let starting = false;
+  // A count, not a flag: the boot's start and a fresh sandbox's start
+  // (retryPython → startFresh) may overlap, and the first to end must not
+  // let a restart in beside the other.
+  let starting = 0;
   let queue: Promise<void> = Promise.resolve();
   /** Runs `run` after everything queued before it; a rejection is the
    * caller's, and does not stop what is queued next. */
@@ -235,16 +238,16 @@ export function kernelLifecycle() {
   };
   return {
     async start(run: () => Promise<void>): Promise<void> {
-      starting = true;
+      starting++;
       try {
         await run();
       } finally {
-        starting = false;
+        starting--;
       }
     },
     enqueue,
     restart(run: () => Promise<void>, refuse: () => void): Promise<void> {
-      if (starting) {
+      if (starting > 0) {
         refuse();
         return Promise.resolve();
       }

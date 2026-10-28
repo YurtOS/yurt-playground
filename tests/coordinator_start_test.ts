@@ -447,3 +447,26 @@ Deno.test("a restart or install that throws does not stop the next one", async (
   });
   assert(ran, "the queue survived the rejection");
 });
+
+Deno.test("a restart is refused until every overlapping start has ended", async () => {
+  const lifecycle = kernelLifecycle();
+  let endBoot!: () => void;
+  let endFresh!: () => void;
+  const boot = lifecycle.start(() => new Promise((r) => endBoot = r));
+  const fresh = lifecycle.start(() => new Promise((r) => endFresh = r));
+  let refused = 0;
+  let ran = 0;
+  const restart = () =>
+    lifecycle.restart(() => {
+      ran++;
+      return Promise.resolve();
+    }, () => refused++);
+  endBoot();
+  await boot;
+  await restart();
+  assertEquals([refused, ran], [1, 0]);
+  endFresh();
+  await fresh;
+  await restart();
+  assertEquals([refused, ran], [1, 1]);
+});
