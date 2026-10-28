@@ -31,10 +31,13 @@ export const SEAL_WASM_PATH = "/usr/local/lib/yurt/python3-seal.wasm";
  * image (which has Python) and so installs nothing. */
 export function pythonInstallRequest(
   pins: Pick<Pins, "browserImage">,
-): { label: string; set: string[] } | undefined {
-  return pins.browserImage === undefined
-    ? undefined
-    : { label: PYTHON_LABEL, set: [...PYTHON_SET] };
+): { label: string; set: string[]; image: string } | undefined {
+  return pins.browserImage === undefined ? undefined : {
+    label: PYTHON_LABEL,
+    set: [...PYTHON_SET],
+    // What a stored install is keyed by (src/python_layer.ts).
+    image: pins.browserImage.sha256,
+  };
 }
 
 /** The Install button's state on an image without python3. */
