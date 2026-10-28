@@ -132,7 +132,7 @@
       <article class="pane upcoming" id="upcoming">
         <h1>Upcoming</h1>
         <p class="date">
-          Updated 2026-10-27 · not released yet; plans may change
+          Updated 2026-10-28 · not released yet; plans may change
         </p>
         <p>
           Work that is in progress or in review for a later train. None of it is
@@ -215,7 +215,7 @@
       </article>
       <article class="pane" id="packages">
         <h1>Packages</h1>
-        <p class="date">Updated 2026-10-27 · released independently of trains</p>
+        <p class="date">Updated 2026-10-28 · released independently of trains</p>
         <p>
           Packages come from the signed
           <a href="https://github.com/YurtOS/yurt-packages">YurtOS/yurt-packages</a>
@@ -234,6 +234,7 @@
             <tr><td>pyzmq</td><td>26.4.0</td><td>0.09 MB</td><td>needs python</td></tr>
             <tr><td>jupyter-kernel</td><td>0.0.1</td><td>9.5 MB</td><td>ipykernel for the Notebook and JupyterLab</td></tr>
             <tr><td>python-seal</td><td>3.14.7</td><td>11.5 MB</td><td>the Python that notebook Suspend/Resume runs</td></tr>
+            <tr><td>python-dev</td><td>3.14.7</td><td>39.5 MB</td><td>CPython headers and static <code>libpython3.14.a</code>, for building extensions; needs python</td></tr>
             <tr><td>node</td><td>22.23.3 (yurt.4)</td><td>13.5 MB</td><td>built with Guest SDK 0.0.31</td></tr>
             <tr><td>gemini-cli</td><td>0.64.0</td><td>17.0 MB</td><td>needs node</td></tr>
             <tr><td>perl</td><td>5.44.0</td><td>22.3 MB</td><td>with Encode</td></tr>
@@ -250,10 +251,147 @@
           </table>
         </div>
         <p>
-          python, numpy, pyzmq, jupyter-kernel and python-seal are one set,
+          python, numpy, pyzmq, jupyter-kernel, python-seal and python-dev are one set,
           built together: numpy and pyzmq are compiled into the interpreter.
           Install them together, at the same build.
         </p>
+      </article>
+      <article class="pane" id="playground-2026.10.27-3d32068.2">
+        <h1>playground-2026.10.27-3d32068.2</h1>
+        <p class="date">
+          2026-10-28 · replaces playground-2026.10.27-3d32068
+        </p>
+        <p>
+          A reload now has Python ready in about 11 seconds instead of about 85,
+          an install that stalls says so and offers a fresh start, and the
+          desktop app's image is a third smaller. The kernel is unchanged.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Version</th>
+            </tr>
+            <tr>
+              <td>Kernel</td>
+              <td>yurtos-kernel 3d32068 (kernel-v0.0.12, unchanged)</td>
+            </tr>
+            <tr>
+              <td>Images</td>
+              <td>yurt-ports f4ff9bc: slim (the browser's) 23.5 MB; full
+                (desktop app and CLI) 91.9 MB, was 144.0 MB</td>
+            </tr>
+            <tr>
+              <td>Desktop host and yurt CLI</td>
+              <td>yurt-sandbox edeb8b0</td>
+            </tr>
+            <tr>
+              <td>Guest SDK</td>
+              <td>0.0.31 (unchanged)</td>
+            </tr>
+          </table>
+        </div>
+
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            <strong>Python is instant on later visits.</strong> After the
+            first install, the page keeps the installed files in this
+            browser (one compressed layer, about 31 MB). On a reload, or
+            offline, it writes them back in about a second instead of running
+            the install again, as long as the package repository still offers
+            the same Python set. Nothing is downloaded. A newer set is
+            installed normally and kept in turn.
+          </li>
+          <li>
+            <strong>A stalled install says so.</strong> When the Python
+            install stops making progress for a minute, or one run of
+            <code>pkg</code> takes more than five minutes, the cell says so and
+            offers <em>Try again</em>. Try again starts a fresh sandbox and
+            installs again, without reloading the page. Before, the page could
+            stay on &ldquo;verifying and installing&rdquo; for good.
+          </li>
+          <li>
+            <strong><code>pkg</code> needs far less memory to install.</strong>
+            It now streams each file to disk while it checks the archive,
+            instead of holding every package in memory. Installing the Python
+            set peaks at 79 MB instead of 259 MB (measured natively).
+            Nothing reaches the system before every signature and checksum has
+            passed, as before. This fixes
+            &ldquo;memory allocation of &hellip; bytes failed&rdquo; in Safari.
+          </li>
+          <li>
+            <strong>A smaller desktop image.</strong> The full image is now the
+            slim image plus the published Python set, Node, Gemini CLI and
+            Datasette: 91.9 MB instead of 144.0 MB. The CPython headers and
+            static library moved to the new <code>python-dev</code>
+            <a href="#packages">package</a>; <code>sudo pkg install
+            python-dev</code> brings them back for building extensions.
+            <code>/usr/local/bin/cpython3.wasm</code> stays, as a link to
+            <code>python3</code>.
+          </li>
+          <li>
+            <strong>Trains no longer rebuild good packages.</strong> An image
+            release takes the Python set, Node and Gemini CLI from their
+            signed, published packages, and builds only the tools. The image
+            build dropped from about 98 minutes cold to about 49, and to 10 to
+            16 minutes warm.
+          </li>
+          <li>
+            <strong>The yurt CLI's built-in image pins are current.</strong>
+            Signed in to GitHub, the previous CLI pulled the image of a train
+            from mid-October instead of its own.
+          </li>
+          <li>
+            The Notebook page no longer logs a 404 for
+            <code>/favicon.ico</code>.
+          </li>
+        </ul>
+
+        <h2>Measured</h2>
+        <p>On the live site (Apple M-series laptop, Chromium):</p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Step</th>
+              <th>Time</th>
+            </tr>
+            <tr>
+              <td>First visit: page load to Python ready</td>
+              <td>85 s</td>
+            </tr>
+            <tr>
+              <td>Reload: page load to Python ready (0 archives downloaded)</td>
+              <td>11 s</td>
+            </tr>
+            <tr>
+              <td>Gemini CLI with Node, from the Packages panel</td>
+              <td>13 s</td>
+            </tr>
+          </table>
+        </div>
+        <p>
+          4 of 4 cold starts on the live site succeeded with no stall and no
+          console errors.
+        </p>
+
+        <h2>Known issues</h2>
+        <ul>
+          <li>
+            <strong>Safari:</strong> the first Python install may not finish.
+            The memory error is fixed, but in our automated Safari 27 runs the
+            sandbox stops answering partway through the install, and after five
+            minutes the cell offers <em>Try again</em>. It is not yet known
+            whether the automation itself causes this, as a browser debugger
+            does in Chrome (kernel #4170). The shell works in Safari. Chrome
+            and the desktop app run all of it.
+          </li>
+          <li>
+            In a tab driven through a browser debugger, the Python install can
+            stop partway (kernel #4170); it now ends with <em>Try again</em>
+            instead of waiting for good.
+          </li>
+        </ul>
       </article>
       <article class="pane" id="playground-2026.10.27-3d32068">
         <h1>playground-2026.10.27-3d32068</h1>
