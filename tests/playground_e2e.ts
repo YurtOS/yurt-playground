@@ -699,9 +699,11 @@ if (import.meta.main) {
       },
       undefined,
       // Since the slim image (2026.10.27) the page installs Python first:
-      // ~83 s from page load to ready on an M-series laptop, and 120-290 s
-      // on a CI runner (job logs, 10-27/28), against which 300 s failed the
-      // scene at random. The acceptance step's 11 min cap is the bound.
+      // ~83 s from page load to ready on an M-series laptop, and 116-284 s
+      // for this scene on a CI runner (a first install there has reached
+      // 310 s; job logs, 10-27/28), against which 300 s failed the scene at
+      // random. The rest of the scene takes under a minute, inside the
+      // acceptance step's 11 min cap.
       { timeout: 480_000 },
     ).catch(() => undefined);
     if (await page.getByTestId("notebook-status").textContent() !== "ready") {
