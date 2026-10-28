@@ -48,7 +48,8 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle, kernelRoot } from "./serve.ts";
-import { checkSnapshotFile, livePythonSet } from "./lib/snapshot_file.ts";
+import { checkSnapshotFile } from "./lib/snapshot_file.ts";
+import { livePythonSet, pythonInstallRequest } from "../src/python_install.ts";
 import { handlePlaygroundRequest, ISOLATION_HEADERS } from "../src/serve.ts";
 import { imagePartRange, imagePartsManifest } from "../src/image_parts.ts";
 import { sha256Hex } from "../src/integrity.ts";
@@ -97,6 +98,19 @@ async function gh(
   return { ok: out.success, stdout: new TextDecoder().decode(out.stdout) };
 }
 
+/** This process's environment without its GIT_* variables (a git hook's
+ * GIT_DIR, GIT_INDEX_FILE): git then reads the checkout it is pointed at,
+ * with everything else -- an SSH agent, GIT_SSH_COMMAND aside, a proxy --
+ * as the caller has it. */
+export function withoutGitVariables(): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(Deno.env.toObject()).filter(([name]) =>
+      !name.startsWith("GIT_") || name === "GIT_SSH_COMMAND" ||
+      name === "GIT_SSH"
+    ),
+  );
+}
+
 /** Why the checkout at `dir` is not at `rev` with a clean tree (paths in
  * `ignored` aside), or undefined when it is. `rev` "upstream" is its
  * branch's pushed head: no commit the PR that carries the pin lacks. */
@@ -110,12 +124,10 @@ export async function checkoutProblem(
       args: ["-C", dir, ...args],
       stdout: "piped",
       stderr: "piped",
-      // Not a hook's GIT_DIR or GIT_INDEX_FILE: this checkout's own.
+      // A hook's GIT_DIR or GIT_INDEX_FILE would point elsewhere: every
+      // other variable (an SSH agent, a proxy) is kept.
       clearEnv: true,
-      env: {
-        PATH: Deno.env.get("PATH") ?? "",
-        HOME: Deno.env.get("HOME") ?? "",
-      },
+      env: withoutGitVariables(),
     }).output();
     if (!out.success) {
       throw new Error(new TextDecoder().decode(out.stderr).trim());
@@ -153,20 +165,19 @@ export async function checkoutProblem(
 
 /** Why the pins' snapshot entry may not stay, or undefined when it may:
  * well formed, of this page's format, built from these pins, and of the
- * Python set the live index offers -- or, when the index cannot be read,
- * kept, as the page then restores it too. */
+ * Python set the live index offers. `live` is the page's own answer
+ * (livePythonSet): undefined -- the index could not be read in time --
+ * keeps the pin, as the page then restores it too; an index without a
+ * complete set does not. */
 export async function snapshotPinProblem(
   pins: Pins,
-  live: () => Promise<string | null>,
+  live: () => Promise<string | null | undefined>,
 ): Promise<string | undefined> {
   try {
     const pin = pinnedSnapshot(pins);
-    let set: string | null;
-    try {
-      set = await live();
-    } catch {
+    const set = await live();
+    if (set === undefined) {
       say("the live package index could not be read; the pin is kept");
-      return undefined;
     }
     checkPythonSet(pin.builtFrom, set);
     return undefined;
@@ -175,14 +186,19 @@ export async function snapshotPinProblem(
   }
 }
 
-/** `--check-pin`: exit 0 when the pins' snapshot entry may stay, else 1
- * with the reason on stderr; release-playground.sh asks before carrying
- * the entry into a train. */
-async function checkPin(): Promise<void> {
-  const pins = await loadPins(pinsPath);
-  const problem = await snapshotPinProblem(pins, () => livePythonSet(pins));
-  if (problem !== undefined) die(problem);
-  say("the pinned snapshot is this train's");
+/** The page's answer for the set an install under `pins` would get now. */
+const liveSetOf = (pins: Pins) => () =>
+  livePythonSet(pythonInstallRequest(pins));
+
+/** `--check-pin`: whether the snapshot entry of the pins at `path` may
+ * stay; release-playground.sh asks before carrying it into a train. */
+export async function checkPin(
+  path = pinsPath,
+  live: (pins: Pins) => () => Promise<string | null | undefined> = liveSetOf,
+): Promise<{ ok: true } | { ok: false; problem: string }> {
+  const pins = await loadPins(path);
+  const problem = await snapshotPinProblem(pins, live(pins));
+  return problem === undefined ? { ok: true } : { ok: false, problem };
 }
 
 /** Step 1: the page captures the snapshot; the file it downloads. */
@@ -217,19 +233,28 @@ async function capture(): Promise<void> {
     const download = page.waitForEvent("download", {
       timeout: CAPTURE_TIMEOUT_MS,
     });
-    // A failed boot, install or capture is said in the status line; the
-    // download then never comes.
-    const failed = new Promise<never>((_, reject) => {
-      let last = "";
-      watch = setInterval(async () => {
-        const status = (await page.locator("#status").textContent()
-          .catch(() => "")) ?? "";
-        if (status !== last) say(`status: ${(last = status).slice(0, 160)}`);
-        if (/failed|error|did not/i.test(status)) {
-          reject(new Error(`the capture failed: ${status}`));
-        }
-      }, 1000);
+    // The page marks the capture's outcome on <html> (src/page.ts): a
+    // boot, install or capture that failed ends the boot with an error.
+    // The status line is only shown, never parsed: progress names
+    // packages ("libgpg-error") that would read as failures.
+    const failed = page.waitForFunction(
+      () => document.documentElement.dataset.snapshotCapture === "failed",
+      undefined,
+      { timeout: CAPTURE_TIMEOUT_MS, polling: 500 },
+    ).then(async () => {
+      throw new Error(
+        `the capture failed: ${await page.evaluate(() =>
+          document.documentElement.dataset.snapshotCaptureError
+        )}`,
+      );
     });
+    failed.catch(() => {});
+    let last = "";
+    watch = setInterval(async () => {
+      const status = (await page.locator("#status").textContent()
+        .catch(() => "")) ?? "";
+      if (status !== last) say(`status: ${(last = status).slice(0, 160)}`);
+    }, 1000);
     await page.goto(url);
     const file = await Promise.race([download, failed]);
     await Deno.mkdir(dirname(snapshotPath), { recursive: true });
@@ -323,7 +348,9 @@ async function main(): Promise<void> {
   };
   if (flag("--check-pin")) {
     if (args.length > 0) die(`unknown arguments: ${args.join(" ")}`);
-    return await checkPin();
+    const verdict = await checkPin();
+    if (!verdict.ok) die(verdict.problem);
+    return say("the pinned snapshot is this train's");
   }
   const dryRun = flag("--dry-run");
   const resume = flag("--resume");
@@ -365,9 +392,10 @@ async function main(): Promise<void> {
   // A capture of this train and of the set the live index offers now,
   // that decodes in full: reused with --resume; anything else (another
   // train or set, a damaged file) is captured again.
-  const live = await livePythonSet(pins).catch((error) =>
-    die(`cannot read the live package index: ${error}`)
-  );
+  const live = await liveSetOf(pins)();
+  if (live === undefined) {
+    die("cannot read the live package index (20 s): which Python set is this?");
+  }
   const thisTrains = () =>
     checkSnapshotFile(
       snapshotPath,

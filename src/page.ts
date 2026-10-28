@@ -351,6 +351,11 @@ function boot(
     if (msg.type === "error") {
       if (msg.endsBoot === true) endBoot();
       fail(msg.message);
+      // A capture's outcome, for scripts/release-snapshot.ts to wait on.
+      if (msg.endsBoot === true && snapshotMode() === "capture") {
+        document.documentElement.dataset.snapshotCapture = "failed";
+        document.documentElement.dataset.snapshotCaptureError = msg.message;
+      }
       // Only a boot failure is the sandbox's failure: an error once the
       // shell is up ("Jupyter is not ready", a restart that failed) leaves
       // exec working, and the status says so.
@@ -389,6 +394,7 @@ function boot(
     if (msg.type === "snapshot-captured") {
       saveSnapshot(msg.blob, msg.ms);
       endBoot();
+      document.documentElement.dataset.snapshotCapture = "captured";
     }
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
       const waiter = pending.get(msg.req);
@@ -456,6 +462,8 @@ function saveSnapshot(blob: Blob, ms: number): void {
   document.body.append(link);
   link.click();
   link.remove();
+  // The download holds the blob from here; the page lets its ~131 MB go.
+  setTimeout(() => URL.revokeObjectURL(link.href), 0);
 }
 
 /** The "Download home" control: `yurt.fs.export()` in a process of its

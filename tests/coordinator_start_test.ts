@@ -562,3 +562,28 @@ Deno.test("a capture whose Python install fails is a failed capture, not python-
     );
   }
 });
+
+Deno.test("the page marks a capture's outcome for the release script, and lets the blob go", () => {
+  const page = Deno.readTextFileSync(
+    new URL("../src/page.ts", import.meta.url),
+  );
+  assert(
+    /msg\.type === "snapshot-captured"\) \{[^}]*dataset\.snapshotCapture = "captured"/
+      .test(page),
+    "snapshot-captured marks captured",
+  );
+  assert(
+    /msg\.endsBoot === true && snapshotMode\(\) === "capture"\) \{\s*document\.documentElement\.dataset\.snapshotCapture = "failed"/
+      .test(page),
+    "an error that ends a capture's boot marks failed",
+  );
+  assert(/URL\.revokeObjectURL\(link\.href\)/.test(page), "the URL is revoked");
+  const script = Deno.readTextFileSync(
+    new URL("../scripts/release-snapshot.ts", import.meta.url),
+  );
+  assert(
+    script.includes('dataset.snapshotCapture === "failed"') &&
+      !/failed\|error/.test(script),
+    "the release script waits on the mark, not on the status text",
+  );
+});

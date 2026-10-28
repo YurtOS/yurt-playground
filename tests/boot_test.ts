@@ -1,6 +1,10 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { KernelHostInterface, METHOD } from "@yurt/kernel-host-interface-js";
-import { bootPlayground, fetchPlaygroundBytes } from "../src/boot.ts";
+import {
+  bootPlayground,
+  fetchPlaygroundBytes,
+  prepareSeal,
+} from "../src/boot.ts";
 import {
   assertNoTouchFailure,
   bootAshSession,
@@ -601,4 +605,82 @@ Deno.test({
       session.stop();
     }
   },
+});
+
+/** A kernel host for prepareSeal: `pids` are alive until killed. */
+function sealHost(pids: number[]) {
+  const alive = new Set(pids);
+  const killed: number[] = [];
+  let looks = 0;
+  return {
+    alive,
+    killed,
+    get looks() {
+      return looks;
+    },
+    listProcesses() {
+      looks++;
+      return [
+        { pid: 0, state: "running" },
+        ...[...alive].map((pid) => ({
+          pid,
+          state: "running",
+        })),
+      ];
+    },
+    killProcess(pid: number) {
+      killed.push(pid);
+      alive.delete(pid);
+    },
+  };
+}
+
+Deno.test("a seal waits for a spawn in flight and kills the process it starts", async () => {
+  // Nothing alive at the first look, but a spawn in flight: its process
+  // appears only after that look.
+  const host = sealHost([]);
+  let spawning = 1;
+  const listed = host.listProcesses.bind(host);
+  host.listProcesses = () => {
+    const live = listed();
+    if (host.looks === 1) {
+      setTimeout(() => {
+        host.alive.add(9);
+        spawning = 0;
+      }, 0);
+    }
+    return live;
+  };
+  await prepareSeal({
+    host,
+    spawning: () => spawning,
+    cleanUp: () => Promise.resolve(0),
+    pollMs: 5,
+  });
+  assertEquals(host.killed, [9]);
+  assertEquals(host.alive.size, 0, "nothing alive when the seal goes on");
+});
+
+Deno.test("a seal fails when removing the exec files fails or does not finish", async () => {
+  await assertRejects(
+    () =>
+      prepareSeal({
+        host: sealHost([]),
+        spawning: () => 0,
+        cleanUp: () => Promise.resolve(1),
+      }),
+    Error,
+    "removing the exec files exited 1",
+  );
+  await assertRejects(
+    () =>
+      prepareSeal({
+        host: sealHost([]),
+        spawning: () => 0,
+        cleanUp: () => new Promise(() => {}),
+        deadlineMs: 50,
+      }),
+    Error,
+    "removing the exec files did not finish",
+  );
 });

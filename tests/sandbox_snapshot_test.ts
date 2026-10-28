@@ -1,6 +1,6 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
-import { snapshotOrBoot } from "../src/boot.ts";
+import { restoreSnapshot, snapshotOrBoot } from "../src/boot.ts";
 import { sha256Hex } from "../src/integrity.ts";
 import { parsePins } from "../src/pins.ts";
 import {
@@ -494,4 +494,47 @@ Deno.test("a pin of another snapshot format is not used", () => {
     SnapshotMismatch,
     "format 2, not 3",
   );
+});
+
+Deno.test("?snapshot=1 asks the live index before it fetches any snapshot byte", async () => {
+  const pinsText = await Deno.readTextFile(
+    new URL("../artifacts/pins.json", import.meta.url),
+  );
+  const fetched: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL) => {
+    const url = String(input instanceof Request ? input.url : input);
+    fetched.push(url);
+    return Promise.resolve(
+      url.endsWith("pins.json")
+        ? new Response(pinsText)
+        : new Response(null, { status: 404 }),
+    );
+  }) as typeof fetch;
+  let asked = false;
+  try {
+    await assertRejects(
+      () =>
+        restoreSnapshot(
+          {
+            isolated: true,
+            fetchBytes: () => Promise.reject(new Error("not in this test")),
+            show: () => {},
+            term: {} as never,
+            livePythonSet: () => {
+              asked = true;
+              return Promise.resolve("a set the snapshot does not hold");
+            },
+          },
+          new Uint8Array(),
+          "http://pg/snapshot/sandbox.seal.gz",
+        ),
+      SnapshotMismatch,
+      "the live index offers a set the snapshot does not hold",
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assertEquals(asked, true);
+  assertEquals(fetched.filter((url) => url.includes("snapshot/")), []);
 });

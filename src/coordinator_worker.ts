@@ -44,11 +44,8 @@ import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 import {
   browserArchiveCache,
-  fetchWithProgress,
   installPackage,
   InstallStalled,
-  loadCatalog,
-  resolveSet,
 } from "./packages.ts";
 import {
   browserLayerStore,
@@ -57,6 +54,7 @@ import {
   layerKey,
   type LayerStore,
 } from "./python_layer.ts";
+import { liveLayerKey, livePythonSet } from "./python_install.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import {
   encodeSandboxSnapshot,
@@ -292,35 +290,6 @@ const pkgTouched = new WeakSet<object>();
  * kernel that then does not start drops the layer, rather than every
  * later visit failing the same way. */
 let layerInstalled: LayerStore | undefined;
-/** How long the live index may take to answer whether the stored layer is
- * still the set; past it, the stored layer is used as when offline. */
-const LIVE_INDEX_TIMEOUT_MS = 20_000;
-
-async function liveLayerKey(
-  image: string,
-  set: string[],
-): Promise<string | undefined> {
-  const giveUp = new AbortController();
-  const timer = setTimeout(() => giveUp.abort(), LIVE_INDEX_TIMEOUT_MS);
-  let catalog: Awaited<ReturnType<typeof loadCatalog>>;
-  try {
-    // Throws when the repository cannot be had: the stored layer then.
-    catalog = await loadCatalog(
-      (url, limit, onBytes) =>
-        fetchWithProgress(url, limit, onBytes, giveUp.signal),
-    );
-  } finally {
-    clearTimeout(timer);
-  }
-  // The repository answered: a set it no longer offers (yanked, removed)
-  // is no layer's either.
-  try {
-    return layerKey(image, resolveSet(catalog, set));
-  } catch {
-    return undefined;
-  }
-}
-
 /** A Jupyter that did not start on a layer's Python: drop the layer. */
 function dropLayerIfKernelFailed(report: StartReport): void {
   if (layerInstalled !== undefined && kernelFailureDropsLayer(report)) {
@@ -333,21 +302,6 @@ function dropLayerIfKernelFailed(report: StartReport): void {
 const PYTHON_LIB = "/usr/local/lib/python3.14";
 
 type PythonRequest = { label: string; set: string[]; image?: string };
-
-/** The Python set an install would get now, as a layer key
- * (liveLayerKey): null when the site installs no Python, undefined when
- * the live index cannot be asked. */
-async function livePythonSet(
-  python: PythonRequest | undefined,
-): Promise<string | null | undefined> {
-  if (python?.image === undefined) return null;
-  try {
-    return await liveLayerKey(python.image, python.set) ??
-      "(no complete set)";
-  } catch {
-    return undefined;
-  }
-}
 
 /** `?snapshot=capture`: precompile the installed Python, seal the
  * sandbox (no process left in it) and hand the snapshot file to the page,

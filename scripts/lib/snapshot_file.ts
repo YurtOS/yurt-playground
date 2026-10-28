@@ -4,10 +4,6 @@
  * file to publish or pin?
  */
 import { sha256Hex } from "../../src/integrity.ts";
-import { loadCatalog, resolveSet } from "../../src/packages.ts";
-import type { Pins } from "../../src/pins.ts";
-import { pythonInstallRequest } from "../../src/python_install.ts";
-import { layerKey } from "../../src/python_layer.ts";
 import {
   type BuiltFrom,
   checkSandboxSnapshot,
@@ -59,18 +55,4 @@ export async function checkSnapshotFile(
         : String(error),
     };
   }
-}
-
-/**
- * The Python set an install under `pins` would get from the live index
- * now, as a layer key -- the form a snapshot's `builtFrom.pythonSet` and
- * the page's liveLayerKey use; null when the pins install no Python (the
- * full image has it). Throws when the index cannot be read.
- */
-export async function livePythonSet(
-  pins: Pick<Pins, "browserImage">,
-): Promise<string | null> {
-  const request = pythonInstallRequest(pins);
-  if (request === undefined) return null;
-  return layerKey(request.image, resolveSet(await loadCatalog(), request.set));
 }

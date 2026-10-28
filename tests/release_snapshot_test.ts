@@ -1,9 +1,12 @@
 import { assertEquals } from "@std/assert";
 import {
   checkoutProblem,
+  checkPin,
   releaseProblems,
   snapshotPinProblem,
+  withoutGitVariables,
 } from "../scripts/release-snapshot.ts";
+import { livePythonSet, NO_COMPLETE_SET } from "../src/python_install.ts";
 import { checkSnapshotFile } from "../scripts/lib/snapshot_file.ts";
 import { encodeSandboxSnapshot } from "../src/sandbox_snapshot.ts";
 
@@ -98,13 +101,16 @@ Deno.test("a train keeps the snapshot pin only when --check-pin's checks pass", 
     parts: ["b".repeat(64)],
     builtFrom: { ...snapshotIdentity(pins), pythonSet: set },
   };
-  const live = (answer: string | null | Error) => () =>
-    answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
-  const check = (snapshot: unknown, answer: string | null | Error) =>
-    snapshotPinProblem({ ...pins, snapshot }, live(answer));
+  const check = (snapshot: unknown, answer: string | null | undefined) =>
+    snapshotPinProblem({ ...pins, snapshot }, () => Promise.resolve(answer));
   assertEquals(await check(entry, set), undefined);
-  // The index cannot be read: kept, as the page restores it then too.
-  assertEquals(await check(entry, new Error("offline")), undefined);
+  // The index cannot be read in time: kept, as the page restores it then.
+  assertEquals(await check(entry, undefined), undefined);
+  // Read, but no complete set: the page refuses, so does the train.
+  assertEquals(
+    (await check(entry, NO_COMPLETE_SET))?.includes(NO_COMPLETE_SET),
+    true,
+  );
   assertEquals(
     (await check(entry, "img/python@3.14.8-yurt_0:fedcba9876543210"))
       ?.includes("the live index offers"),
@@ -142,12 +148,10 @@ Deno.test("a snapshot is released only from the pinned kernel rev and a pushed p
       args: ["-C", cwd, "-c", "user.name=t", "-c", "user.email=t@t", ...args],
       stdout: "piped",
       stderr: "null",
-      // Not a hook's GIT_DIR or GIT_INDEX_FILE.
+      // A hook's GIT_DIR or GIT_INDEX_FILE would point elsewhere: every
+      // other variable (an SSH agent, a proxy) is kept.
       clearEnv: true,
-      env: {
-        PATH: Deno.env.get("PATH") ?? "",
-        HOME: Deno.env.get("HOME") ?? "",
-      },
+      env: withoutGitVariables(),
     }).output();
     return new TextDecoder().decode(out.stdout).trim();
   };
@@ -368,5 +372,100 @@ Deno.test("a deploy never fails on the optional snapshot: any problem is a warni
     assertEquals(run.code, 0, `${why}: ${run.stderr}`);
     assertEquals(run.installed, false, why);
     assertEquals(run.stderr.includes("WARNING"), true, why);
+  }
+});
+
+Deno.test("--check-pin reads the pins file and answers for its snapshot entry", async () => {
+  const { snapshotIdentity, FORMAT } = await import(
+    "../src/sandbox_snapshot.ts"
+  );
+  const { parsePins } = await import("../src/pins.ts");
+  const raw = JSON.parse(
+    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
+  );
+  const set = "img/python@3.14.7-yurt_0:0123456789abcdef";
+  const entry = {
+    releaseRepo: "YurtOS/yurt-playground",
+    release: "snapshot-t",
+    format: FORMAT,
+    sha256: "a".repeat(64),
+    size: 1,
+    parts: ["b".repeat(64)],
+    builtFrom: {
+      ...snapshotIdentity(parsePins({ ...raw, snapshot: undefined })),
+      pythonSet: set,
+    },
+  };
+  const dir = await Deno.makeTempDir();
+  const path = `${dir}/pins.json`;
+  const asked: unknown[] = [];
+  const live = (answer: string | undefined) => (pins: unknown) => () => {
+    asked.push(pins);
+    return Promise.resolve(answer);
+  };
+  try {
+    await Deno.writeTextFile(path, JSON.stringify({ ...raw, snapshot: entry }));
+    assertEquals(await checkPin(path, live(set)), { ok: true });
+    assertEquals(asked.length, 1, "the live set was asked for these pins");
+    assertEquals(await checkPin(path, live(undefined)), { ok: true });
+    const refused = await checkPin(path, live("another set"));
+    assertEquals(
+      !refused.ok && refused.problem.includes("the live index offers"),
+      true,
+    );
+    // No entry at all: nothing to keep.
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({ ...raw, snapshot: undefined }),
+    );
+    const none = await checkPin(path, live(set));
+    assertEquals(!none.ok && none.problem.includes("pins no"), true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("git runs with the caller's environment but a hook's GIT_* variables", () => {
+  const set = {
+    GIT_INDEX_FILE: "/elsewhere/index",
+    GIT_SSH_COMMAND: "ssh -i key",
+    SSH_AUTH_SOCK: "/agent.sock",
+  };
+  const before = Object.fromEntries(
+    Object.keys(set).map((name) => [name, Deno.env.get(name)]),
+  );
+  for (const [name, value] of Object.entries(set)) Deno.env.set(name, value);
+  try {
+    const env = withoutGitVariables();
+    assertEquals(env.GIT_INDEX_FILE, undefined);
+    assertEquals(env.GIT_SSH_COMMAND, "ssh -i key");
+    assertEquals(env.SSH_AUTH_SOCK, "/agent.sock");
+  } finally {
+    for (const [name, value] of Object.entries(before)) {
+      if (value === undefined) Deno.env.delete(name);
+      else Deno.env.set(name, value);
+    }
+  }
+});
+
+Deno.test("an index that does not answer in time is 'cannot tell', not a hang", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch =
+    ((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise((_, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(init.signal!.reason),
+        );
+      })) as typeof fetch;
+  try {
+    const started = performance.now();
+    assertEquals(
+      await livePythonSet({ set: ["python"], image: "img" }, 30),
+      undefined,
+    );
+    assertEquals(performance.now() - started < 5_000, true);
+  } finally {
+    globalThis.fetch = realFetch;
   }
 });

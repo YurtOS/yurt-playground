@@ -427,7 +427,7 @@ export async function snapshotOrBoot<K>(
 
 /** A kernel over a sealed sandbox with no process in it: its filesystem is
  * all in the kernel's memory, so nothing is staged. */
-async function restoreSnapshot(
+export async function restoreSnapshot(
   env: PlaygroundEnv,
   kernel: Uint8Array,
   path: string,
@@ -478,6 +478,71 @@ async function restoreSnapshot(
       `restored in ${Math.round(performance.now() - fetched)} ms`,
   );
   return restored.host;
+}
+
+/**
+ * What a seal does before sealing, once the page starts nothing more of
+ * its own: wait until no spawn is in flight, then kill every live guest
+ * process -- the shell and its background jobs, a running exec, a
+ * Packages install -- until a look finds none alive and none starting;
+ * then run `cleanUp` (one process, removing every exec's /tmp files) and
+ * require its exit 0; then look again. All within `deadlineMs`, or it
+ * throws and nothing is sealed.
+ */
+export async function prepareSeal(deps: {
+  host: {
+    listProcesses(): { pid: number; state: string }[];
+    killProcess(pid: number, signal: number): unknown;
+  };
+  spawning: () => number;
+  cleanUp: () => Promise<number | null>;
+  /** Awaited once nothing runs, before the clean-up. */
+  afterSettled?: () => Promise<unknown>;
+  deadlineMs?: number;
+  pollMs?: number;
+}): Promise<void> {
+  const deadline = Date.now() + (deps.deadlineMs ?? 30_000);
+  const pollMs = deps.pollMs ?? 250;
+  const settle = async () => {
+    for (;;) {
+      const live = deps.host.listProcesses().filter((p) =>
+        p.pid !== KERNEL_PID && p.state !== "exited"
+      );
+      const spawning = deps.spawning();
+      if (live.length === 0 && spawning === 0) return;
+      // A spawn in flight is a process this look may not have seen yet.
+      if (spawning === 0) {
+        for (const p of live) deps.host.killProcess(p.pid, SIGKILL);
+      }
+      if (Date.now() > deadline) {
+        throw new Error(
+          `cannot seal: processes still alive: ${
+            live.map((p) => `${p.pid}:${p.state}`).join(",")
+          }${spawning === 0 ? "" : ` (and ${spawning} starting)`}`,
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  };
+  await settle();
+  await deps.afterSettled?.();
+  let timer: number | undefined;
+  const code = await Promise.race([
+    deps.cleanUp(),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new Error("cannot seal: removing the exec files did not finish"),
+          ),
+        Math.max(0, deadline - Date.now()),
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
+  if (code !== 0) {
+    throw new Error(`cannot seal: removing the exec files exited ${code}`);
+  }
+  await settle();
 }
 
 /** The rest of {@link bootPlayground}, on its loaded (or restored) kernel. */
@@ -768,45 +833,26 @@ async function startPlayground(
     },
     async seal() {
       // From here the page starts nothing (an exec, a process and a sweep
-      // are refused); what is starting finishes starting, and then every
-      // guest process goes, whoever started it -- the shell and its
-      // background jobs, a running exec, a Packages install -- until a
-      // look finds none alive and none starting.
+      // are refused): see prepareSeal.
       sealing = true;
       for (const timer of sweepTimers) clearTimeout(timer);
       sweepTimers.clear();
-      const deadline = Date.now() + 30_000;
-      const settle = async () => {
-        for (;;) {
-          const live = mk.listProcesses().filter((p) =>
-            p.pid !== KERNEL_PID && p.state !== "exited"
-          );
-          if (live.length === 0 && spawning === 0) return;
-          if (spawning === 0) {
-            for (const p of live) mk.killProcess(p.pid, SIGKILL);
-          }
-          if (Date.now() > deadline) {
-            throw new Error(
-              `cannot seal: processes still alive: ${
-                live.map((p) => `${p.pid}:${p.state}`).join(",")
-              }${spawning === 0 ? "" : ` (and ${spawning} starting)`}`,
-            );
-          }
-          await new Promise((resolve) => setTimeout(resolve, 250));
-        }
-      };
-      await settle();
-      await userExited;
-      // Every exec's files, the ones whose sweep never ran included: the
-      // seal's own clean-up, its one process, waited for.
-      const clean = await spawnShell([
-        "/bin/sh",
-        "-c",
-        "exec rm -f /tmp/.yurt-exec-*",
-      ]);
-      clean.closeStdin();
-      await clean.runStartAsync();
-      await settle();
+      await prepareSeal({
+        host: mk,
+        spawning: () => spawning,
+        // Every exec's files, the ones whose sweep never ran included.
+        cleanUp: async () => {
+          const clean = await spawnShell([
+            "/bin/sh",
+            "-c",
+            "exec rm -f /tmp/.yurt-exec-*",
+          ]);
+          clean.closeStdin();
+          const rc = await clean.runStartAsync();
+          return clean.waitStatus()?.code ?? Number(rc);
+        },
+        afterSettled: () => userExited,
+      });
       return await mk.sealSandbox();
     },
     writeFiles(files) {
