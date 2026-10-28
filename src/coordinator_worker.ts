@@ -124,7 +124,7 @@ type ToWorker =
   | { type: "pkg-read-installed" };
 
 type FromWorker =
-  // status, error, shell-ready (the shell is the whole session),
+  // status, error, shell-ready (the shell is the whole session), and
   // python-missing / notebook-ready (src/coordinator_start.ts).
   | StartReport
   // The browser refused a new process its memory (src/memory_refused.ts).
