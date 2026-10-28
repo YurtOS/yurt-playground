@@ -86,10 +86,12 @@ Planned for the next one or two trains. These are in progress, not finished.
   ([yurtos-kernel#4170](https://github.com/YurtOS/yurtos-kernel/issues/4170)),
   and it is not yet known whether the automation itself causes it. The shell
   works in Safari.
-- **Faster file creation in the guest** (planned). Why: most of the first
-  visit's Python install, which takes about a minute, is the sandbox writing the
-  installed files
-  ([yurtos-kernel#4169](https://github.com/YurtOS/yurtos-kernel/issues/4169)).
+- **Faster file creation in the guest.** Why: most of the first visit's Python
+  install, which takes about a minute, is the sandbox writing the installed
+  files
+  ([yurtos-kernel#4169](https://github.com/YurtOS/yurtos-kernel/issues/4169)); a
+  first step is in review
+  ([yurtos-kernel#4195](https://github.com/YurtOS/yurtos-kernel/pull/4195)).
 - **Python native extensions loaded from a `.so` at run time**, rather than
   built into Python as NumPy is today. Why: the kernel and libc sides of
   `dlopen` have shipped; a shared `libc.so` is the remaining piece for ordinary
@@ -184,12 +186,13 @@ Bigger directions. Each needs design work, and the order is not fixed.
 
 ## How it ships
 
-The playground ships as **trains**, often several a week. A train releases
-whichever of the kernel, the images, the desktop app and the `yurt` CLI changed,
-and is named `playground-YYYY.MM.DD-<kernel commit>`, with a `.N` suffix for a
-later train on the same day and kernel. Packages are released on their own,
-outside trains ([Packages](https://yurtos.github.io/yurt-playground/#packages)).
-A train goes live on the site when it is released.
+The playground ships as **trains**, often several a week. A train releases the
+kernel, the images, the desktop app and the `yurt` CLI together under one name,
+`playground-YYYY.MM.DD-<kernel commit>`, with a `.N` suffix when that name is
+already taken; any of them may be unchanged from the previous train. Packages
+are released on their own, outside trains
+([Packages](https://yurtos.github.io/yurt-playground/#packages)). A train goes
+live on the site when it is released.
 
 Each train's notes, including what is not in it and its known issues, are at
 <https://yurtos.github.io/yurt-playground/>. Bugs and requests are welcome as
