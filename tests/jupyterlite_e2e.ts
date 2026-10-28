@@ -159,9 +159,11 @@ if (import.meta.main) {
         document.querySelector(".jp-Notebook-ExecutionIndicator")
             ?.getAttribute("data-status") === "idle",
       undefined,
-      // Measured 2026-09-14: ~50 s on an M-series laptop; a 2-vCPU CI
-      // runner needs several times that.
-      { timeout: 420_000 },
+      // Since the slim image (2026.10.27) the page installs Python first:
+      // 124-322 s on a CI runner (job logs, 10-27/28), three quarters of
+      // the 420 s this was. The rest of the scene takes about a minute,
+      // inside the acceptance step's 11 min cap.
+      { timeout: 480_000 },
     );
     console.log(
       `jupyterlite e2e: kernel idle after ${
