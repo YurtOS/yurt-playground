@@ -11,6 +11,7 @@ import {
   installScript,
   InstallStalled,
   latestRelease,
+  LIST_INSTALLED_TIMEOUT_MS,
   listInstalled,
   loadCatalog,
   onlyStaged,
@@ -1308,14 +1309,14 @@ Deno.test("listInstalled is what pkg list printed, and nothing when it failed", 
   });
   assertEquals(
     [
-      ...await listInstalled((cmd) => {
-        ran.push(cmd);
+      ...await listInstalled((cmd, opts) => {
+        ran.push(`${cmd} ${opts.timeoutMs}`);
         return Promise.resolve(result(0, "git 2.55.0-yurt_0 official\n"));
       }),
     ],
     ["git"],
   );
-  assertEquals(ran, ["pkg list"]);
+  assertEquals(ran, [`sudo pkg list ${LIST_INSTALLED_TIMEOUT_MS}`]);
   // A failed listing marks nothing: every button stays an Install, and
   // pkg says "nothing to install" for what was there.
   assertEquals(

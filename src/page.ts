@@ -526,17 +526,13 @@ function wirePackages(): void {
         name,
         (message) => status.textContent = message,
       );
-      status.textContent = /^nothing to install$/m.test(output)
+      const outcome = /^nothing to install$/m.test(output)
         ? `${name} is already installed`
         : `installed ${name}`;
-      // Everything pkg installed with it (its dependencies) is installed too.
-      const installed = new Set(
-        [...output.matchAll(/^install (\S+) /gm)].map((match) => match[1]),
-      );
-      installed.add(name);
-      for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
-        if (installed.has(b.dataset.package ?? "")) b.textContent = "Installed";
-      }
+      // Its dependencies are installed too: pkg's own list says which.
+      mark(new Set([name]));
+      await refresh();
+      status.textContent = outcome;
       panel.dataset.install = "done";
     } catch (error) {
       status.textContent = error instanceof Error
@@ -545,19 +541,46 @@ function wirePackages(): void {
       panel.dataset.install = "failed";
     } finally {
       busy = false;
-      for (const b of list.querySelectorAll("button")) {
-        b.disabled = b.textContent === "Installed";
-      }
+      mark(new Set());
+    }
+  };
+  const yurt = () => (globalThis as unknown as { yurt: Yurt }).yurt;
+  /** Mark `installed` (and keep what is marked); every other button is
+   * enabled unless an install or a listing is running. */
+  const mark = (installed: Set<string>) => {
+    for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
+      if (installed.has(b.dataset.package ?? "")) b.textContent = "Installed";
+      b.disabled = busy || b.textContent === "Installed";
+    }
+  };
+  /** Ask the sandbox's pkg what it has: the image, a restored snapshot, the
+   * terminal or the agent may have installed packages this panel did not. */
+  const refresh = async (installed?: Promise<Set<string>>) => {
+    const before = status.textContent;
+    status.textContent = "checking which packages are installed…";
+    const wasBusy = busy;
+    busy = true;
+    mark(new Set());
+    try {
+      mark(
+        await (installed ??
+          listInstalled((cmd, opts) => yurt().exec(cmd, opts))),
+      );
+    } finally {
+      busy = wasBusy;
+      status.textContent = before;
+      mark(new Set());
     }
   };
   let loading = false;
   const show = async () => {
-    if (catalog !== undefined || loading) return;
+    if (loading || busy) return;
+    if (catalog !== undefined) return await refresh();
     loading = true;
+    let installed: Promise<Set<string>> | undefined;
     try {
       // Images before the modular base image have no `pkg` to install with.
-      const yurt = (globalThis as unknown as { yurt: Yurt }).yurt;
-      const image = await yurt.exec(
+      const image = await yurt().exec(
         `command -v pkg >/dev/null && command -v sudo >/dev/null && test -r ${TRUSTED_REPOS_PATH}`,
       );
       if (!("code" in image) || image.code !== 0) {
@@ -565,6 +588,8 @@ function wirePackages(): void {
           "This sandbox's image has no pkg (or no sudo for it), so it cannot install packages.";
         return;
       }
+      // The listing needs only the sandbox: it runs while the catalog loads.
+      installed = listInstalled((cmd, opts) => yurt().exec(cmd, opts));
       catalog = await loadCatalog();
     } catch (error) {
       state.textContent = `could not load the package list: ${
@@ -598,15 +623,7 @@ function wirePackages(): void {
       tr.append(name, version, size, action);
       list.append(tr);
     }
-    // What the image (or a restored snapshot) already has is installed
-    // too, not only what this panel installed.
-    const installed = await listInstalled((cmd) =>
-      (globalThis as unknown as { yurt: Yurt }).yurt.exec(cmd)
-    );
-    for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
-      if (installed.has(b.dataset.package ?? "")) b.textContent = "Installed";
-      b.disabled = b.textContent === "Installed";
-    }
+    await refresh(installed);
   };
   toggle.addEventListener("click", () => {
     panel.hidden = !panel.hidden;

@@ -574,14 +574,21 @@ export function installedNames(pkgList: string): Set<string> {
   );
 }
 
+/** How long the panel waits for `pkg list` before it marks nothing. */
+export const LIST_INSTALLED_TIMEOUT_MS = 15_000;
+
 /** What this sandbox already has, by `pkg list`. Only a hint for the
  * panel's buttons: when the listing fails, nothing is marked, and an
  * install of something present says "nothing to install". */
 export async function listInstalled(
-  exec: (cmd: string) => Promise<Result>,
+  exec: (cmd: string, opts: { timeoutMs: number }) => Promise<Result>,
 ): Promise<Set<string>> {
   try {
-    const listed = await exec("pkg list");
+    // Under sudo like every other pkg call here: pkg opens its database
+    // read-write and may migrate it.
+    const listed = await exec("sudo pkg list", {
+      timeoutMs: LIST_INSTALLED_TIMEOUT_MS,
+    });
     if ("code" in listed && listed.code === 0) {
       return installedNames(listed.stdout);
     }
