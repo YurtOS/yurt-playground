@@ -11,7 +11,6 @@ import {
   installScript,
   InstallStalled,
   latestRelease,
-  LIST_INSTALLED_TIMEOUT_MS,
   listInstalled,
   loadCatalog,
   onlyStaged,
@@ -1295,38 +1294,27 @@ Deno.test("installedNames reads the names pkg list prints", () => {
   ]);
 });
 
-Deno.test("listInstalled is what pkg list printed, and nothing when it failed", async () => {
+Deno.test("listInstalled is what sudo pkg list printed, and throws when it fails", async () => {
   const ran: string[] = [];
-  const result = (code: number, stdout: string) => ({
-    code,
-    signal: null,
-    coreDumped: false,
-    timedOut: false,
-    stdout,
-    stderr: "",
-    stdoutTruncated: false,
-    stderrTruncated: false,
+  const host = (code: number, stdout: string, stderr = "") => ({
+    stageAndRun: (files: StagedFile[], script: string) => {
+      ran.push(`${files.length} ${script}`);
+      return Promise.resolve({ code, stdout, stderr });
+    },
   });
   assertEquals(
-    [
-      ...await listInstalled((cmd, opts) => {
-        ran.push(`${cmd} ${opts.timeoutMs}`);
-        return Promise.resolve(result(0, "git 2.55.0-yurt_0 official\n"));
-      }),
-    ],
+    [...await listInstalled(host(0, "git 2.55.0-yurt_0 official\n"))],
     ["git"],
   );
-  assertEquals(ran, [`sudo pkg list ${LIST_INSTALLED_TIMEOUT_MS}`]);
-  // A failed listing marks nothing: every button stays an Install, and
-  // pkg says "nothing to install" for what was there.
-  assertEquals(
-    (await listInstalled(() =>
-      Promise.resolve(result(1, "git 2.55.0-yurt_0 official\n"))
-    )).size,
-    0,
+  assertEquals(ran, ["0 sudo pkg list"]);
+  await assertRejects(
+    () => listInstalled(host(1, "", "database is locked")),
+    Error,
+    "pkg list failed (exit 1): database is locked",
   );
-  assertEquals(
-    (await listInstalled(() => Promise.reject(new Error("no sandbox")))).size,
-    0,
+  await assertRejects(
+    () => listInstalled({ stageAndRun: () => new Promise(() => {}) }, 10),
+    Error,
+    "pkg list took over 0.01 s",
   );
 });

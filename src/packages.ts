@@ -17,7 +17,6 @@
  * Installed files live in the tab's memory, like every other file in the
  * sandbox, and are gone after a reload (#81).
  */
-import type { Result } from "./executions.ts";
 
 /** Where the page fetches the repository from: GitHub's raw file host,
  * which answers with `Access-Control-Allow-Origin: *`. */
@@ -574,29 +573,38 @@ export function installedNames(pkgList: string): Set<string> {
   );
 }
 
-/** How long the panel waits for `pkg list` before it marks nothing. */
-export const LIST_INSTALLED_TIMEOUT_MS = 15_000;
+/** How long a listing may take before the panel gives up on it. */
+export const LIST_INSTALLED_TIMEOUT_MS = 60_000;
 
-/** What this sandbox already has, by `pkg list`. Only a hint for the
- * panel's buttons: when the listing fails, nothing is marked, and an
- * install of something present says "nothing to install". */
+/** What this sandbox already has, by `pkg list`, under sudo like every
+ * other pkg call here (pkg opens its database read-write). The caller runs
+ * it in the install queue, so no install is writing that database
+ * meanwhile. A failed or slow listing throws: the panel says so. */
 export async function listInstalled(
-  exec: (cmd: string, opts: { timeoutMs: number }) => Promise<Result>,
+  host: Pick<PackageHost, "stageAndRun">,
+  timeoutMs = LIST_INSTALLED_TIMEOUT_MS,
 ): Promise<Set<string>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`pkg list took over ${timeoutMs / 1000} s`)),
+      timeoutMs,
+    );
+  });
   try {
-    // Under sudo like every other pkg call here: pkg opens its database
-    // read-write and may migrate it.
-    const listed = await exec("sudo pkg list", {
-      timeoutMs: LIST_INSTALLED_TIMEOUT_MS,
-    });
-    if ("code" in listed && listed.code === 0) {
-      return installedNames(listed.stdout);
+    const listed = await Promise.race([
+      host.stageAndRun([], "sudo pkg list"),
+      timeout,
+    ]);
+    if (listed.code !== 0) {
+      throw new Error(
+        `pkg list failed (exit ${listed.code}): ${listed.stderr.trim()}`,
+      );
     }
-    console.warn("pkg list failed:", listed);
-  } catch (error) {
-    console.warn("pkg list failed:", error);
+    return installedNames(listed.stdout);
+  } finally {
+    clearTimeout(timer);
   }
-  return new Set();
 }
 
 /** `pkg`'s cause for a failure: it names the cause first and sums up last

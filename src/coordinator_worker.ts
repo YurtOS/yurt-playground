@@ -43,6 +43,7 @@ import {
   fetchWithProgress,
   installPackage,
   InstallStalled,
+  listInstalled,
   loadCatalog,
   resolveSet,
 } from "./packages.ts";
@@ -115,7 +116,11 @@ type ToWorker =
   // The Packages panel's install of one package (src/packages.ts), run
   // here like the automatic Python install and queued with it: one
   // install at a time. Progress comes back as `pkg-progress`.
-  | { type: "pkg-install"; req: number; name: string; tablet: boolean };
+  | { type: "pkg-install"; req: number; name: string; tablet: boolean }
+  // The panel's question "what is installed" (`pkg list`), in the same
+  // queue: pkg opens its database read-write, so it must not run beside
+  // an install.
+  | { type: "pkg-list"; req: number };
 
 type FromWorker =
   // status, error, shell-ready (the shell is the whole session), and
@@ -155,7 +160,7 @@ type FromWorker =
     type: "pkg-reply";
     req: number;
     ok: boolean;
-    value?: string;
+    value?: string | string[];
     error?: string;
   };
 
@@ -165,6 +170,29 @@ let executions: ExecutionRegistry | undefined;
 /** The in-tab session, for package installs; the desktop app's has none
  * (its sandbox has a network, and `pkg install` there needs no page). */
 let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
+
+async function serveInstalledList(msg: ToWorker): Promise<void> {
+  if (msg.type !== "pkg-list") return;
+  const { req } = msg;
+  try {
+    const names = await installs(() => {
+      const session = packageSession;
+      if (session?.process === undefined || session.writeFiles === undefined) {
+        throw new Error("this sandbox does not install packages");
+      }
+      if (sandboxStalled) throw new Error(stalledSandbox());
+      return listInstalled(workerPackageHost(session));
+    });
+    post({ type: "pkg-reply", req, ok: true, value: [...names] });
+  } catch (error) {
+    post({
+      type: "pkg-reply",
+      req,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 async function servePackages(msg: ToWorker): Promise<void> {
   if (msg.type !== "pkg-install") return;
@@ -413,6 +441,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
   await serveYurt(msg);
   await servePackages(msg);
+  await serveInstalledList(msg);
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });

@@ -17,7 +17,6 @@ import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
   catalogRows,
   formatBytes,
-  listInstalled,
   loadCatalog,
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
@@ -66,6 +65,9 @@ type FromWorker =
 let packageInstall:
   | ((name: string, progress: (text: string) => void) => Promise<string>)
   | undefined;
+/** What that sandbox already has (`pkg list`), asked of the coordinator so
+ * it runs in the same queue as the installs. */
+let packageList: (() => Promise<string[]>) | undefined;
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
@@ -321,6 +323,15 @@ function boot(
           tablet: smallDevice,
         });
       });
+    packageList = () =>
+      new Promise<string[]>((resolve, reject) => {
+        const req = nextReq++;
+        pending.set(req, {
+          resolve: (value) => resolve(value as string[]),
+          reject,
+        });
+        worker.postMessage({ type: "pkg-list", req });
+      });
   }
   yurtState.set("booting");
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
@@ -516,23 +527,59 @@ function wirePackages(): void {
   const status = byId("packages-status");
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
+  /** What `pkg list` said, for the buttons: Installed or Install. */
+  const mark = (installed: Set<string>) => {
+    for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
+      b.textContent = installed.has(b.dataset.package ?? "")
+        ? "Installed"
+        : "Install";
+    }
+    enable();
+  };
+  const enable = () => {
+    for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
+      b.disabled = busy || b.textContent === "Installed";
+    }
+  };
+  /** Ask the sandbox's pkg what it has: the image, a restored snapshot, the
+   * terminal or the agent may have installed (or removed) packages. The
+   * buttons stay usable meanwhile: the coordinator queues an install
+   * behind the listing. A failed listing keeps the marks and says so. */
+  const refresh = async (): Promise<boolean> => {
+    if (packageList === undefined) return false;
+    try {
+      mark(new Set(await packageList()));
+      return true;
+    } catch (error) {
+      status.textContent = `could not check which packages are installed: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      return false;
+    }
+  };
   const install = async (name: string) => {
     if (packageInstall === undefined || busy) return;
     busy = true;
     panel.dataset.install = "running";
-    for (const b of list.querySelectorAll("button")) b.disabled = true;
+    enable();
     try {
       const output = await packageInstall(
         name,
         (message) => status.textContent = message,
       );
-      const outcome = /^nothing to install$/m.test(output)
+      status.textContent = /^nothing to install$/m.test(output)
         ? `${name} is already installed`
         : `installed ${name}`;
-      // Its dependencies are installed too: pkg's own list says which.
-      mark(new Set([name]));
-      await refresh();
-      status.textContent = outcome;
+      if (!(await refresh())) {
+        // No listing: what pkg said it installed (the package and its
+        // dependencies) is installed.
+        for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
+          const p = b.dataset.package ?? "";
+          if (p === name || output.includes(`install ${p} `)) {
+            b.textContent = "Installed";
+          }
+        }
+      }
       panel.dataset.install = "done";
     } catch (error) {
       status.textContent = error instanceof Error
@@ -541,46 +588,21 @@ function wirePackages(): void {
       panel.dataset.install = "failed";
     } finally {
       busy = false;
-      mark(new Set());
-    }
-  };
-  const yurt = () => (globalThis as unknown as { yurt: Yurt }).yurt;
-  /** Mark `installed` (and keep what is marked); every other button is
-   * enabled unless an install or a listing is running. */
-  const mark = (installed: Set<string>) => {
-    for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
-      if (installed.has(b.dataset.package ?? "")) b.textContent = "Installed";
-      b.disabled = busy || b.textContent === "Installed";
-    }
-  };
-  /** Ask the sandbox's pkg what it has: the image, a restored snapshot, the
-   * terminal or the agent may have installed packages this panel did not. */
-  const refresh = async (installed?: Promise<Set<string>>) => {
-    const before = status.textContent;
-    status.textContent = "checking which packages are installed…";
-    const wasBusy = busy;
-    busy = true;
-    mark(new Set());
-    try {
-      mark(
-        await (installed ??
-          listInstalled((cmd, opts) => yurt().exec(cmd, opts))),
-      );
-    } finally {
-      busy = wasBusy;
-      status.textContent = before;
-      mark(new Set());
+      enable();
     }
   };
   let loading = false;
   const show = async () => {
-    if (loading || busy) return;
-    if (catalog !== undefined) return await refresh();
+    if (catalog !== undefined) {
+      if (!busy) await refresh();
+      return;
+    }
+    if (loading) return;
     loading = true;
-    let installed: Promise<Set<string>> | undefined;
     try {
       // Images before the modular base image have no `pkg` to install with.
-      const image = await yurt().exec(
+      const yurt = (globalThis as unknown as { yurt: Yurt }).yurt;
+      const image = await yurt.exec(
         `command -v pkg >/dev/null && command -v sudo >/dev/null && test -r ${TRUSTED_REPOS_PATH}`,
       );
       if (!("code" in image) || image.code !== 0) {
@@ -588,8 +610,6 @@ function wirePackages(): void {
           "This sandbox's image has no pkg (or no sudo for it), so it cannot install packages.";
         return;
       }
-      // The listing needs only the sandbox: it runs while the catalog loads.
-      installed = listInstalled((cmd, opts) => yurt().exec(cmd, opts));
       catalog = await loadCatalog();
     } catch (error) {
       state.textContent = `could not load the package list: ${
@@ -614,16 +634,13 @@ function wirePackages(): void {
       button.type = "button";
       button.className = "bar-action";
       button.textContent = "Install";
-      // Until `pkg list` says what is already here: an install must not
-      // start while the marking below is still on its way.
-      button.disabled = true;
       button.dataset.package = row.name;
       button.addEventListener("click", () => install(row.name));
       action.append(button);
       tr.append(name, version, size, action);
       list.append(tr);
     }
-    await refresh(installed);
+    await refresh();
   };
   toggle.addEventListener("click", () => {
     panel.hidden = !panel.hidden;
