@@ -133,7 +133,7 @@ Deno.test("the page ends the boot on python-missing: no 'tab reloaded' memory, t
   assert(handler !== null, "page.ts handles python-missing");
   // Left set, the next load reads a cut-off boot ("the browser reloaded
   // this tab ... memory") for a boot that finished.
-  assert(/rememberBooting\(undefined\)/.test(handler[1]), handler[1]);
+  assert(/endBoot\(\)/.test(handler[1]), handler[1]);
   // The cell says Python is missing (with the install's error, if one was
   // tried) and offers Install as the pins allow.
   assert(/showPythonMissing\(msg\.error\)/.test(handler[1]));
@@ -141,6 +141,51 @@ Deno.test("the page ends the boot on python-missing: no 'tab reloaded' memory, t
     /notebook\.pythonMissing\(\s*pythonInstallState\(pins\)/.test(page),
   );
   assert(/status\.progress\("running", \{ settled: true \}\)/.test(handler[1]));
+});
+
+Deno.test("once the boot is over, a status (a Jupyter restart, its relaunch) leaves no boot memory", () => {
+  const page = pageSource();
+  // Remembered only while booting; a restart's "restarting Jupyter" was
+  // left behind and read as a cut-off boot on the next load.
+  assert(
+    /if \(booting\) rememberBooting\(msg\.text \|\| "running"\);/.test(page),
+  );
+  const endBoot = page.match(/const endBoot = \(\) => \{([^}]*)\};/);
+  assert(endBoot !== null, "page.ts has endBoot");
+  assert(/booting = false;/.test(endBoot[1]));
+  assert(/rememberBooting\(undefined\);/.test(endBoot[1]));
+  // Every end of the boot goes through it.
+  assertEquals(page.match(/rememberBooting\(undefined\)/g)?.length, 1);
+  for (const ended of ["notebook-ready", "shell-ready", "python-missing"]) {
+    assert(
+      new RegExp(
+        `msg\\.type === "${ended}"\\) \\{(?:(?!\\n {4}\\})[^])*endBoot\\(\\);`,
+      )
+        .test(page),
+      ended,
+    );
+  }
+  // Only a boot outcome ends it: an early cell's "Jupyter is not ready"
+  // mid-boot left a reloaded tab nothing to explain.
+  assert(
+    /if \(msg\.type === "error"\) \{\s*if \(msg\.endsBoot === true\) endBoot\(\);\s*fail\(msg\.message\);/
+      .test(page),
+  );
+  assertEquals(
+    /const fail = [^]*?\n {2}\};/.exec(page)?.[0].includes("endBoot"),
+    false,
+  );
+  // The worker itself dying is the end of everything.
+  assert(/worker\.onerror = \(event\) => \{[^}]*endBoot\(\);/.test(page));
+});
+
+Deno.test("an Install after python-missing is a boot again: its statuses are kept for a reloaded tab", () => {
+  const page = pageSource();
+  // The Install (and the fresh sandbox a stalled one gets) runs from here.
+  assert(
+    /pythonMissing = false;\s*booting = true;\s*notebook\.installing\("installing Python"\);\s*worker\.postMessage\(\{ type: "python-install" \}\);/
+      .test(page),
+  );
 });
 
 Deno.test("a later error does not turn the python-missing cell into 'Jupyter did not start'", () => {

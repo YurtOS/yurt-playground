@@ -206,6 +206,14 @@ const SIGNAL_NAMES = [
  * apply: nothing in the image links glibc. */
 const SIGRTMIN = 35;
 
+/** A host's exit as a wait status: a bare number is an exit code (what
+ * some hosts report, a signal death folded to 128+n among them). */
+export function asWaitStatus(status: WaitStatus | number): WaitStatus {
+  return typeof status === "number"
+    ? { code: status, signal: null, coreDumped: false }
+    : status;
+}
+
 /** "SIGTERM" for 15; a real-time signal as "SIGRTMIN+n", counted from the
  * guest libc's SIGRTMIN; the libc's reserved 32-34 as "SIG32".."SIG34". */
 export function signalName(signal: number): string {
