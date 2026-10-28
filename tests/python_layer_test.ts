@@ -6,6 +6,7 @@ import {
   type GuestFs,
   inLayer,
   installWithLayer,
+  LayerFailed,
   type LayerInstallDeps,
   layerKey,
 } from "../src/python_layer.ts";
@@ -196,17 +197,21 @@ function fakeDeps(
   options: {
     stored?: { key: string; entries: string[] };
     live?: string | Error;
-    probe?: boolean;
+    probe?: boolean | null;
     applyThrows?: boolean;
+    firstAttempt?: boolean;
+    drainThrows?: boolean;
   },
 ) {
   const log: string[] = [];
   let stored = options.stored;
   const deps: LayerInstallDeps<string> = {
     image: "img",
+    firstAttempt: options.firstAttempt ?? true,
     layer: {
       drainChanged: () => {
         log.push("drain");
+        if (options.drainThrows) throw new Error("drain failed");
         return ["/usr/local/bin/python3"];
       },
       capture: (touched) => {
@@ -248,7 +253,10 @@ function fakeDeps(
       between.after();
       log.push("after");
     },
-    probe: () => Promise.resolve(options.probe ?? true),
+    probe: () =>
+      Promise.resolve(
+        options.probe === null ? undefined : (options.probe ?? true),
+      ),
     progress: (text) => log.push(`say ${text}`),
   };
   return { deps, log };
@@ -312,26 +320,69 @@ Deno.test("offline with no layer for this image: pkg, and nothing kept under a g
   assertEquals(log.includes("apply e1"), false);
 });
 
-Deno.test("a layer that leaves no python3 is dropped, and pkg installs", async () => {
+/** `installWithLayer` failing as a LayerFailed, and the log by then. */
+async function layerFails(deps: LayerInstallDeps<string>): Promise<string> {
+  try {
+    await installWithLayer(deps);
+  } catch (error) {
+    if (error instanceof LayerFailed) return error.message;
+    throw error;
+  }
+  throw new Error("no LayerFailed");
+}
+
+Deno.test("a layer that leaves no python3 is dropped and fails: no pkg in that sandbox", async () => {
+  // pkg would refuse the layer's files as unmanaged, or call the set
+  // installed from the layer's records: the retry is a fresh sandbox.
   const { deps, log } = fakeDeps({
     stored: { key: "img/set1", entries: ["e1"] },
     probe: false,
   });
-  assertEquals(await installWithLayer(deps), "pkg");
-  const i = log.indexOf("drop");
-  assertEquals(i > log.indexOf("apply e1"), true);
-  assertEquals(log.indexOf("pkg install") > i, true);
-  assertEquals(log.at(-1), "put img/set1 captured");
+  const message = await layerFails(deps);
+  assertEquals(message.includes("no python3 after it"), true, message);
+  assertEquals(log.includes("drop"), true);
+  assertEquals(log.includes("pkg install"), false);
+  assertEquals(log.some((line) => line.startsWith("put")), false);
 });
 
-Deno.test("a layer that fails to apply is dropped, and pkg installs", async () => {
+Deno.test("a layer that fails to apply is dropped and fails: no pkg in that sandbox", async () => {
   const { deps, log } = fakeDeps({
     stored: { key: "img/set1", entries: ["e1"] },
     applyThrows: true,
   });
-  assertEquals(await installWithLayer(deps), "pkg");
+  const message = await layerFails(deps);
+  assertEquals(message.includes("apply failed"), true, message);
   assertEquals(log.includes("drop"), true);
+  assertEquals(log.includes("pkg install"), false);
+});
+
+Deno.test("a probe that cannot tell keeps the layer: the kernel's start tells", async () => {
+  const { deps, log } = fakeDeps({
+    stored: { key: "img/set1", entries: ["e1"] },
+    probe: null,
+  });
+  assertEquals(await installWithLayer(deps), "layer");
+  assertEquals(log.includes("drop"), false);
+});
+
+Deno.test("a retry in the same sandbox is not kept: pkg may have written part of the set before", async () => {
+  const { deps, log } = fakeDeps({ firstAttempt: false });
+  assertEquals(await installWithLayer(deps), "pkg");
   assertEquals(log.includes("pkg install"), true);
+  assertEquals(
+    log.some((line) => line.startsWith("capture") || line.startsWith("put")),
+    false,
+  );
+});
+
+Deno.test("a drain that fails keeps nothing and fails nothing", async () => {
+  const { deps, log } = fakeDeps({ drainThrows: true });
+  assertEquals(await installWithLayer(deps), "pkg");
+  assertEquals(log.includes("pkg install"), true);
+  assertEquals(
+    log.some((line) => line.startsWith("capture") || line.startsWith("put")),
+    false,
+  );
 });
 
 Deno.test("a pkg install that fails keeps nothing and fails as before", async () => {

@@ -155,6 +155,26 @@ if (import.meta.main) {
       });
     }
     const page = await context.newPage();
+    // Every status the page shows, as it shows it: some last only a second
+    // (the layer's write, its gzip), shorter than the poll below.
+    await page.addInitScript(() => {
+      const seen: string[] = [];
+      (globalThis as { __statuses?: string[] }).__statuses = seen;
+      document.addEventListener("DOMContentLoaded", () => {
+        const status = document.querySelector("#status");
+        if (status === null) return;
+        new MutationObserver(() => seen.push(status.textContent ?? ""))
+          .observe(status, {
+            childList: true,
+            characterData: true,
+            subtree: true,
+          });
+      });
+    });
+    const shownStatuses = () =>
+      page.evaluate(() =>
+        (globalThis as { __statuses?: string[] }).__statuses ?? []
+      );
     const csp = watchCspViolations(page);
     if (Deno.env.get("SLIM_E2E_CONSOLE") === "1") {
       page.on("console", (m) => console.log(`[console] ${m.text()}`));
@@ -202,10 +222,11 @@ if (import.meta.main) {
           }": ${reason} (status: ${status})`,
         );
       }
-      const ranPkg = statuses.some((s) =>
+      const all = [...statuses, ...await shownStatuses()];
+      const ranPkg = all.some((s) =>
         /^Python: verifying and installing/.test(s)
       );
-      const fromLayer = statuses.includes(
+      const fromLayer = all.includes(
         "Python: installing from this browser's earlier install",
       );
       if (from === "pkg" && (!ranPkg || fromLayer)) {
@@ -226,7 +247,7 @@ if (import.meta.main) {
           Math.round((Date.now() - started) / 1000)
         } s after load, Python installed first (${from})`,
       );
-      return statuses;
+      return all;
     };
     /** The `pkg install …` line a visit showed. */
     const installed = (statuses: string[]) =>

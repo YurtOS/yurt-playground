@@ -40,6 +40,7 @@ import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 import {
   browserArchiveCache,
+  fetchWithProgress,
   installPackage,
   InstallStalled,
   loadCatalog,
@@ -48,7 +49,9 @@ import {
 import {
   browserLayerStore,
   installWithLayer,
+  LayerFailed,
   layerKey,
+  type LayerStore,
 } from "./python_layer.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import { runQueue } from "./run_queue.ts";
@@ -261,6 +264,42 @@ let sandboxStalled = false;
 const STALLED_SANDBOX =
   "an earlier install stopped making progress in this sandbox, so it " +
   "installs nothing more; reload the page for a fresh one";
+/** The sandboxes a Python install was tried in (src/python_layer.ts: only
+ * a first install is kept as a layer). */
+const pythonAttempted = new WeakSet<object>();
+/** The layer store, when this sandbox's Python came from its layer: a
+ * kernel that then does not start drops the layer, rather than every
+ * later visit failing the same way. */
+let layerInstalled: LayerStore | undefined;
+/** How long the live index may take to answer whether the stored layer is
+ * still the set; past it, the stored layer is used as when offline. */
+const LIVE_INDEX_TIMEOUT_MS = 20_000;
+
+async function liveLayerKey(image: string, set: string[]): Promise<string> {
+  const giveUp = new AbortController();
+  const timer = setTimeout(() => giveUp.abort(), LIVE_INDEX_TIMEOUT_MS);
+  try {
+    const catalog = await loadCatalog(
+      (url, limit, onBytes) =>
+        fetchWithProgress(url, limit, onBytes, giveUp.signal),
+    );
+    return layerKey(image, resolveSet(catalog, set));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** A Jupyter that did not start on a layer's Python: drop the layer. */
+function dropLayerIfKernelFailed(report: StartReport): void {
+  if (
+    report.type === "error" && layerInstalled !== undefined &&
+    report.message.startsWith("Jupyter did not start")
+  ) {
+    void layerInstalled.drop();
+    layerInstalled = undefined;
+  }
+}
+
 /** Drop the in-tab sandbox and start a fresh one the way the page's start
  * did: boot, then the Python install, then Jupyter. Set by `start`. */
 let startFresh: (() => Promise<void>) | undefined;
@@ -289,6 +328,7 @@ async function retryPython(): Promise<void> {
     startKernel: (s) => startGuestKernel(s, kernelPorts),
     post: (report) => {
       pythonMissing = report.type === "python-missing";
+      dropLayerIfKernelFailed(report);
       post(report);
     },
   });
@@ -476,20 +516,23 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       post({ type: "status", text: "installing Python" });
       const cache = await browserArchiveCache();
       const progress = (text: string) => post({ type: "status", text });
+      const store = tablet ? undefined : await browserLayerStore();
+      const firstAttempt = !pythonAttempted.has(session);
+      pythonAttempted.add(session);
       try {
         // Instant on a later visit: this browser's earlier install, kept
-        // as a layer (src/python_layer.ts), when it is still the set.
-        await installWithLayer({
-          layer: session.layer,
-          store: await browserLayerStore(),
-          image: python.image,
-          liveKey: async () =>
-            layerKey(
-              python.image!,
-              resolveSet(await loadCatalog(), python.set),
-            ),
-          install: (between) =>
-            installs(async () => {
+        // as a layer (src/python_layer.ts), when it is still the set. All
+        // in one turn of the install queue: a Packages install must not
+        // land while a layer is written or read out. Not on a tablet: a
+        // layer is over 100 MiB in this worker while it is made or used.
+        const from = await installs(() =>
+          installWithLayer({
+            layer: session.layer,
+            store,
+            image: python.image,
+            firstAttempt,
+            liveKey: () => liveLayerKey(python.image!, python.set),
+            install: async (between) => {
               between.before();
               await installPackage(python, {
                 host: workerPackageHost(session),
@@ -498,12 +541,19 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
                 cache,
               });
               between.after();
-            }),
-          probe: () => probePython(session.process),
-          progress,
-        });
+            },
+            probe: () => probePython(session.process),
+            progress,
+          })
+        );
+        layerInstalled = from === "layer" ? store : undefined;
       } catch (error) {
-        if (error instanceof InstallStalled && error.inSandbox) {
+        // A sandbox a layer was half written into, like a stalled one,
+        // takes no pkg install: the retry is in a fresh one.
+        if (
+          (error instanceof InstallStalled && error.inSandbox) ||
+          error instanceof LayerFailed
+        ) {
           sandboxStalled = true;
         }
         throw error;
@@ -534,6 +584,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       startKernel: (session) => startGuestKernel(session, kernelPorts),
       post: (report) => {
         if (report.type === "python-missing") pythonMissing = true;
+        dropLayerIfKernelFailed(report);
         if (report.type === "error") {
           bootError = report.message;
           // A fresh sandbox's failed boot is said once, below, where

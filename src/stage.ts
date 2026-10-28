@@ -424,7 +424,11 @@ export function vfsStat(
   }
   | undefined {
   const { rc, response } = mk.syscall(KERNEL_VFS_STAT, s(path), 32);
-  if (Number(rc) !== 32) return undefined;
+  const code = Number(rc);
+  // Gone (or a parent that is no directory now): no entry. Anything else
+  // is an error, not an absence a layer may silently skip.
+  if (code === -2 || code === -20) return undefined;
+  if (code !== 32) throw new Error(`stat ${path}: rc=${rc}`);
   const view = new DataView(
     response.buffer,
     response.byteOffset,
@@ -458,7 +462,8 @@ export function vfsReadFile(
   const request = new Uint8Array(8 + pathBytes.byteLength);
   request.set(pathBytes, 8);
   const view = new DataView(request.buffer);
-  const cap = responseCap(mk);
+  // The request and the response share the kernel's scratch buffer.
+  const cap = responseCap(mk) - request.byteLength;
   let at = 0;
   while (at < size) {
     view.setBigUint64(0, BigInt(at), true);
@@ -489,13 +494,15 @@ export function vfsReadlink(mk: KernelHostInterface, path: string): string {
 
 /** A directory's entry names (no `.` or `..`). */
 export function vfsReaddir(mk: KernelHostInterface, path: string): string[] {
-  let cap = 16 * 1024;
+  const request = s(path);
+  const most = responseCap(mk) - request.byteLength;
+  let cap = Math.min(16 * 1024, most);
   for (;;) {
-    const { rc, response } = mk.syscall(KERNEL_VFS_READDIR, s(path), cap);
+    const { rc, response } = mk.syscall(KERNEL_VFS_READDIR, request, cap);
     const needed = Number(rc);
     if (needed < 0) throw new Error(`readdir ${path}: rc=${rc}`);
     if (needed > cap) {
-      if (needed > responseCap(mk)) {
+      if (needed > most) {
         throw new Error(`readdir ${path}: ${needed} bytes of names`);
       }
       cap = needed;

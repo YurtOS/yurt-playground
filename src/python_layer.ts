@@ -246,7 +246,7 @@ export function decodeTar(tar: Uint8Array): LayerEntry[] {
       mtime: number(block, 136, 12),
     };
     if (type === "0" || type === "") {
-      entries.push({ type: "file", ...common, bytes: data.slice() });
+      entries.push({ type: "file", ...common, bytes: data });
     } else if (type === "5") {
       entries.push({ type: "dir", ...common });
     } else if (type === "2") {
@@ -381,6 +381,20 @@ export async function browserLayerStore(): Promise<LayerStore | undefined> {
   };
 }
 
+/** A stored layer that did not work in this sandbox: it is dropped, and
+ * the sandbox -- with part or all of it written, and `pkg`'s records saying
+ * the set is installed -- cannot take a `pkg` install, so the retry is in a
+ * fresh sandbox (src/coordinator_worker.ts, as after a stall). */
+export class LayerFailed extends Error {
+  constructor(cause: string) {
+    super(
+      `Python: this browser's earlier install did not work here (${cause}); ` +
+        "Try again installs it afresh",
+    );
+    this.name = "LayerFailed";
+  }
+}
+
 /** What {@link installWithLayer} needs from the coordinator. */
 export type LayerInstallDeps<E> = {
   /** The sandbox's layer operations (src/boot.ts); absent: no layers. */
@@ -397,23 +411,29 @@ export type LayerInstallDeps<E> = {
   };
   /** The slim image's sha256 (the site's pins); absent: no layers. */
   image?: string;
-  /** The key the live index resolves the set to now; throws offline. */
+  /** This sandbox's first Python install: only then is what `pkg` wrote
+   * the whole set (a retry after a failed transaction finds part of it in
+   * place already, and the layer would lack that part). */
+  firstAttempt: boolean;
+  /** The key the live index resolves the set to now; throws when the
+   * repository cannot be reached in time, or names no complete set. */
   liveKey(): Promise<string>;
-  /** The guest's own install, run so that `between` happens inside the
-   * same turn of the install queue: right before `pkg`, and right after it
-   * succeeded. */
+  /** The guest's own install; `between` runs right before `pkg` and right
+   * after it succeeded. The caller runs all of this in one turn of the
+   * install queue, so nothing else installs meanwhile. */
   install(between: { before(): void; after(): void }): Promise<void>;
-  /** Whether the sandbox has a python3 now (src/coordinator_start.ts). */
+  /** Whether the sandbox has a python3 now (src/coordinator_start.ts):
+   * `undefined` when the probe could not tell. */
   probe(): Promise<boolean | undefined>;
   progress(text: string): void;
 };
 
 /** Install the Python set: from this browser's stored layer when it is
- * the set the live index resolves to (or, offline, the one stored for this
- * image), else with the guest's `pkg` -- keeping what that install wrote
- * as the layer for the next visit. A layer that does not apply, or leaves
- * no python3, is dropped and `pkg` installs as before. Failing to keep a
- * layer is not an install failure. */
+ * the set the live index resolves to (or, when the index cannot be had,
+ * the one stored for this image), else with the guest's `pkg` -- keeping
+ * what that install wrote as the layer for the next visit. A layer that
+ * does not apply, or leaves no python3, is dropped and fails as
+ * {@link LayerFailed}. Failing to keep a layer fails nothing. */
 export async function installWithLayer<E>(
   deps: LayerInstallDeps<E>,
 ): Promise<"layer" | "pkg"> {
@@ -425,41 +445,53 @@ export async function installWithLayer<E>(
       live = await deps.liveKey();
       key = live;
     } catch {
-      // Offline: the layer this browser kept for this image, if any.
+      // No live answer: the layer this browser kept for this image, if any.
       key = await store.storedKey(image);
     }
     const entries = key === undefined ? undefined : await store.get(key);
     if (entries !== undefined) {
       deps.progress("Python: installing from this browser's earlier install");
+      let cause: string;
       try {
         layer.apply(entries);
-        if (await deps.probe() === true) return "layer";
-      } catch {
-        // Fall through to pkg, which installs over whatever was written.
+        // A probe that could not tell (it timed out) is no reason to throw
+        // a good layer away; the kernel's start tells.
+        if (await deps.probe() !== false) return "layer";
+        cause = "no python3 after it";
+      } catch (error) {
+        cause = error instanceof Error ? error.message : String(error);
       }
       await store.drop();
+      throw new LayerFailed(cause);
     }
   }
+  const keep = layer !== undefined && store !== undefined &&
+    live !== undefined && deps.firstAttempt;
+  let drained = false;
   let captured: E[] | undefined;
   await deps.install({
-    before: () => layer?.drainChanged(),
-    // Read out before the install queue's next turn (a Packages install)
-    // can change anything.
-    after: () => {
-      if (layer === undefined || store === undefined || live === undefined) {
-        return;
-      }
+    before: () => {
+      if (!keep) return;
       try {
-        captured = layer.capture(layer.drainChanged());
+        layer!.drainChanged();
+        drained = true;
+      } catch {
+        // Not kept; the install goes ahead.
+      }
+    },
+    after: () => {
+      if (!drained) return;
+      try {
+        captured = layer!.capture(layer!.drainChanged());
       } catch {
         // Not kept; the next visit installs with pkg.
       }
     },
   });
-  if (store !== undefined && live !== undefined && captured !== undefined) {
+  if (live !== undefined && captured !== undefined) {
     deps.progress("Python: keeping the install for the next visit");
     try {
-      await store.put(live, captured);
+      await store!.put(live, captured);
     } catch {
       // Storage full or blocked: the next visit installs with pkg.
     }
