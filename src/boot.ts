@@ -36,6 +36,7 @@ import { parsePins, type Pins } from "./pins.ts";
 import {
   decodeSandboxSnapshot,
   fetchVerifiedSnapshot,
+  pinnedSnapshot,
   snapshotIdentity,
   SnapshotMismatch,
 } from "./sandbox_snapshot.ts";
@@ -363,9 +364,10 @@ export async function bootPlayground(
     try {
       mk = await restoreSnapshot(env, kernel, env.snapshotPath);
     } catch (error) {
-      // A snapshot of another build is stale, not broken: the image boots
-      // as without `?snapshot=1`, and Python installs as usual. Anything
-      // else (a damaged download, a failed restore) is the boot's failure.
+      // No snapshot pinned, or one of another build: stale, not broken.
+      // The image boots as without `?snapshot=1`, and Python installs as
+      // usual. Anything else (a part that is not the pinned one, a failed
+      // restore) is the boot's failure.
       if (!(error instanceof SnapshotMismatch)) throw error;
       console.warn(`[snapshot] ${error.message}; booting the image instead`);
     }
@@ -405,11 +407,13 @@ async function restoreSnapshot(
 ): Promise<KernelHostInterface> {
   const started = performance.now();
   env.show("loading snapshot");
-  // Refused before the kernel's memory is allocated when it is not this
-  // site's build (SnapshotMismatch).
+  // A pin of another build is refused before anything is downloaded, a
+  // file whose own header says so before the kernel's memory is allocated
+  // (SnapshotMismatch both).
+  const pins = await browserPins();
   const image = await decodeSandboxSnapshot(
-    await fetchVerifiedSnapshot(path),
-    snapshotIdentity(await browserPins()),
+    await fetchVerifiedSnapshot(path, pinnedSnapshot(pins)),
+    snapshotIdentity(pins),
   );
   const fetched = performance.now();
   env.show("restoring snapshot");

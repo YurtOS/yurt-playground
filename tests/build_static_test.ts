@@ -195,9 +195,10 @@ Deno.test("static build writes every file the pages need", async () => {
   }
 });
 
-Deno.test("the static build publishes a sandbox snapshot only when it was built from the pinned artifacts", async () => {
+Deno.test("the static build publishes a sandbox snapshot only when it is the pinned one, built from the pins", async () => {
   const { snapshotMatchesPins } = await import("../scripts/build-static.ts");
   const { encodeSandboxSnapshot } = await import("../src/sandbox_snapshot.ts");
+  const hex = (c: string) => c.repeat(64);
   const pin = (sha256: string) => ({
     repo: "r",
     rev: "v",
@@ -205,11 +206,10 @@ Deno.test("the static build publishes a sandbox snapshot only when it was built 
     path: "p",
     sha256,
   });
-  const pins = {
-    kernelWasm: pin("k"),
-    image: pin("full"),
-    browserImage: pin("slim"),
-    pythonSeal: { sha256: "py" },
+  const built = {
+    kernelSha256: hex("a"),
+    imageSha256: hex("b"),
+    pythonSealSha256: hex("c"),
   };
   const seal = {
     version: 1 as const,
@@ -221,34 +221,54 @@ Deno.test("the static build publishes a sandbox snapshot only when it was built 
     realtimeOffsetNs: 0n,
     executor: { contexts: [], freeScratch: [] },
   };
+  const encode = async (builtFrom: typeof built) =>
+    new Uint8Array(
+      await (await encodeSandboxSnapshot(seal, builtFrom)).arrayBuffer(),
+    );
+  const file = await encode(built);
+  const pins = {
+    kernelWasm: pin(built.kernelSha256),
+    image: pin("full"),
+    browserImage: pin(built.imageSha256),
+    pythonSeal: { sha256: built.pythonSealSha256 },
+    snapshot: {
+      releaseRepo: "YurtOS/yurt-playground",
+      release: "snapshot-t",
+      sha256: await sha256Hex(file),
+      size: file.byteLength,
+      parts: [await sha256Hex(file)],
+      builtFrom: built,
+    },
+  };
   const dir = await Deno.makeTempDir();
+  const warned: unknown[][] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => warned.push(args);
   try {
     const path = `${dir}/sandbox.seal.gz`;
-    const write = async (imageSha256: string) =>
-      await Deno.writeFile(
-        path,
-        new Uint8Array(
-          await (await encodeSandboxSnapshot(seal, {
-            kernelSha256: "k",
-            imageSha256,
-            pythonSealSha256: "py",
-          })).arrayBuffer(),
-        ),
-      );
-    await write("slim");
+    await Deno.writeFile(path, file);
     assertEquals(await snapshotMatchesPins(path, pins), true);
-    // Captured under the last train's image: left out, with a warning.
-    await write("old-slim");
-    const warned: unknown[][] = [];
-    const warn = console.warn;
-    console.warn = (...args: unknown[]) => warned.push(args);
-    try {
-      assertEquals(await snapshotMatchesPins(path, pins), false);
-    } finally {
-      console.warn = warn;
-    }
-    assertStringIncludes(String(warned[0]), "imageSha256 old-slim, not slim");
+    assertEquals(warned.length, 0);
+    // Not the pinned file (a local capture, an older download).
+    const other = await encode({ ...built, imageSha256: hex("d") });
+    await Deno.writeFile(path, other);
+    assertEquals(await snapshotMatchesPins(path, pins), false);
+    assertStringIncludes(String(warned.at(-1)), "not the pinned");
+    // The pin itself is of another train's image.
+    await Deno.writeFile(path, file);
+    assertEquals(
+      await snapshotMatchesPins(path, {
+        ...pins,
+        browserImage: pin(hex("e")),
+      }),
+      false,
+    );
+    assertStringIncludes(String(warned.at(-1)), `imageSha256 ${hex("b")}`);
+    // No snapshot pinned at all.
+    const { snapshot: _snapshot, ...unpinned } = pins;
+    assertEquals(await snapshotMatchesPins(path, unpinned), false);
   } finally {
+    console.warn = warn;
     await Deno.remove(dir, { recursive: true });
   }
 });

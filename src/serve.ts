@@ -11,15 +11,11 @@ import {
   imagePartsManifest,
   PYTHON_SEAL_NAME,
 } from "./image_parts.ts";
-import {
-  SANDBOX_SNAPSHOT_NAME,
-  SANDBOX_SNAPSHOT_SHA256_NAME,
-} from "./sandbox_snapshot.ts";
+import { SANDBOX_SNAPSHOT_NAME } from "./sandbox_snapshot.ts";
 import {
   IMAGE_NAME,
   INTEGRITY_FILES,
   integrityManifest,
-  sha256Hex,
   SLIM_IMAGE_NAME,
 } from "./integrity.ts";
 import { LOCAL_MODELS } from "./llm_models.ts";
@@ -262,20 +258,6 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   if (pathname === "/integrity.json") {
     try {
       return await handleIntegrity();
-    } catch {
-      return notFound();
-    }
-  }
-  if (pathname === `/${SANDBOX_SNAPSHOT_SHA256_NAME}`) {
-    // The static build's sidecar, from the file being served.
-    try {
-      const bytes = await Deno.readFile(join(publicDir, SANDBOX_SNAPSHOT_NAME));
-      return new Response(`${await sha256Hex(bytes)}\n`, {
-        headers: {
-          ...ISOLATION_HEADERS,
-          "Content-Type": "text/plain; charset=utf-8",
-        },
-      });
     } catch {
       return notFound();
     }

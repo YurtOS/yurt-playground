@@ -197,6 +197,20 @@ it dispatches yurt-sandbox's release workflows from exact commits, generates
 merging the pin PR that deploys the page. `--validate` builds everything and
 publishes nothing; `--pins-only` regenerates the pins from releases cut by hand.
 
+`?snapshot=1` (an experiment) restores a sealed sandbox with the Python set
+already installed instead of booting the slim image and installing it. The
+snapshot is the kernel's memory after an install in the browser, so it is
+captured locally rather than by the train:
+`deno run -A
+scripts/release-snapshot.ts`, from a checkout whose
+`artifacts/pins.json` names the train (with the pinned blobs installed and
+Playwright's Chromium), serves the page, runs `?snapshot=capture` in headless
+Chromium, checks that the file was built from the pinned kernel, image and
+Python set, publishes it as the prerelease `snapshot-<train>` and writes the
+`snapshot` pin; `--dry-run` stops before the release and the pin. A train that
+changes the kernel, the image or the Python set drops the pin, and
+`release-playground.sh` says to run it again.
+
 ## License
 
 Apache-2.0.

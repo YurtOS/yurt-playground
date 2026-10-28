@@ -13,35 +13,23 @@
  * Bigints in the header are written as `{"$bigint": "<decimal>"}`. The
  * header says what the sandbox was built from ({@link SnapshotIdentity});
  * a restore under anything else is refused before the memory is read.
- * Beside the file, `<file>.sha256` holds the file's hash for the page to
- * check what it downloaded against.
+ *
+ * The file is published as a yurt-playground release by
+ * scripts/release-snapshot.ts, pinned in artifacts/pins.json (`snapshot`:
+ * its parts' sha256s and what it was built from), fetched into the site by
+ * scripts/install-pinned-artifacts.sh, and checked part by part as the page
+ * downloads it.
  */
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
-import { partsFetch } from "./image_parts.ts";
+import type { ImagePartsManifest } from "./image_parts.ts";
 import { sha256Hex } from "./integrity.ts";
-import type { Pins } from "./pins.ts";
+import type { Pins, SnapshotIdentity, SnapshotPin } from "./pins.ts";
+
+export type { SnapshotIdentity, SnapshotPin };
 
 /** Where the page fetches the snapshot (in parts, src/image_parts.ts). */
 export const SANDBOX_SNAPSHOT_NAME = "snapshot/sandbox.seal.gz";
 export const SANDBOX_SNAPSHOT_PATH = `./${SANDBOX_SNAPSHOT_NAME}`;
-/** The snapshot file's sha256, lowercase hex, written by the static build
- * (and the dev server) next to the file. */
-export const SANDBOX_SNAPSHOT_SHA256_NAME = `${SANDBOX_SNAPSHOT_NAME}.sha256`;
-
-/** What a snapshot was built from: a restore needs the same of all three.
- * The kernel must match its own memory layout; the image and the Python
- * set are what the sandbox's files came from, so a site that moved to
- * another train must not hand out the last one's files. */
-export type SnapshotIdentity = {
-  /** The kernel build the image was sealed under. */
-  kernelSha256: string;
-  /** The image the sandbox booted (the slim one, when the pins name it). */
-  imageSha256: string;
-  /** The train's Python set, by its sealable CPython's hash (`pythonSeal`
-   * in the pins); null on a site that pins none. */
-  pythonSealSha256: string | null;
-};
-
 /** The identity a snapshot made under `pins` records, and a restore under
  * them requires. */
 export function snapshotIdentity(
@@ -55,8 +43,22 @@ export function snapshotIdentity(
 }
 
 /** A snapshot built from something else than this site's pins (or one in
- * an older format that does not say). Nothing of its memory was read. */
+ * an older format that does not say, or none pinned at all). Nothing of
+ * its memory was read. */
 export class SnapshotMismatch extends Error {}
+
+/** The site's pinned snapshot, when it was built from the site's own
+ * pins: what `?snapshot=1` may download. */
+export function pinnedSnapshot(pins: Pins): SnapshotPin {
+  if (pins.snapshot === undefined) {
+    throw new SnapshotMismatch("the site pins no sandbox snapshot");
+  }
+  const why = mismatch(pins.snapshot.builtFrom, snapshotIdentity(pins));
+  if (why !== undefined) {
+    throw new SnapshotMismatch(`pinned ${why.replace(/^sandbox /, "")}`);
+  }
+  return pins.snapshot;
+}
 
 /** The header's format: 2 added `builtFrom`. */
 const FORMAT = 2;
@@ -213,38 +215,52 @@ export async function decodeSandboxSnapshot(
   return { ...seal, kernelMemory: memory, processes: [] };
 }
 
-/** The snapshot file at `path` (published in parts), checked against the
- * sha256 published beside it, as a stream for
- * {@link decodeSandboxSnapshot}. The hash is the site's own, like the page
- * that checks it: what it catches is a download that is not the file the
- * build published -- cut short, damaged, or parts of two builds. */
+/** The snapshot file at `path`, in the parts the site publishes, each
+ * checked against the pin's sha256 for it as it arrives: a stream for
+ * {@link decodeSandboxSnapshot} that errors on the first part that is not
+ * the pinned one. Part by part, not the whole file: holding all of it to
+ * hash it at once was more than a Safari tab survives. */
 export async function fetchVerifiedSnapshot(
   path: string,
+  pin: SnapshotPin,
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<ReadableStream<Uint8Array<ArrayBuffer>>> {
-  const sidecar = await fetchImpl(`${path}.sha256`);
-  if (!sidecar.ok) {
-    throw new Error(`fetch ${path}.sha256 failed: ${sidecar.status}`);
+  const base = typeof location === "undefined" ? undefined : location.href;
+  const manifestUrl = new URL(`${path}.parts.json`, base);
+  const response = await fetchImpl(manifestUrl);
+  if (!response.ok) {
+    throw new Error(`fetch ${path}.parts.json failed: ${response.status}`);
   }
-  const expected = (await sidecar.text()).trim().toLowerCase();
-  const response = await partsFetch(fetchImpl)(path);
-  if (!response.ok) throw new Error(`fetch ${path} failed: ${response.status}`);
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  const actual = await sha256Hex(bytes);
-  if (actual !== expected) {
+  const manifest = await response.json() as ImagePartsManifest;
+  if (
+    manifest.size !== pin.size || manifest.parts.length !== pin.parts.length
+  ) {
     throw new Error(
-      `sandbox snapshot sha256 mismatch: got ${actual}, published ${expected}`,
+      `${path} is published as ${manifest.size} bytes in ${manifest.parts.length} parts, ` +
+        `not the pinned ${pin.size} in ${pin.parts.length}`,
     );
   }
-  // In slices, not one chunk: decoding inflates as it goes.
-  let offset = 0;
+  let index = 0;
   return new ReadableStream({
-    pull(controller) {
-      if (offset >= bytes.byteLength) {
+    async pull(controller) {
+      if (index === manifest.parts.length) {
         controller.close();
         return;
       }
-      controller.enqueue(bytes.subarray(offset, offset += 1 << 20));
+      const part = manifest.parts[index];
+      const got = await fetchImpl(new URL(part, manifestUrl));
+      if (!got.ok) throw new Error(`fetch ${part} failed: ${got.status}`);
+      const bytes = new Uint8Array(await got.arrayBuffer());
+      const actual = await sha256Hex(bytes);
+      if (actual !== pin.parts[index]) {
+        throw new Error(
+          `sandbox snapshot part ${part} sha256 mismatch: got ${actual}, pinned ${
+            pin.parts[index]
+          }`,
+        );
+      }
+      index++;
+      controller.enqueue(bytes);
     },
   });
 }

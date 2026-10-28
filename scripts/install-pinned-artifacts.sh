@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # install-pinned-artifacts.sh — fetch the pinned kernel wasm and playground
 # image from their yurt-packages releases into artifacts/, and the notebook
-# kernel's sealable CPython from its yurt-playground release into public/demo/.
+# kernel's sealable CPython from its yurt-playground release into public/demo/,
+# and the sealed sandbox snapshot, when pinned, into public/snapshot/.
 #
 # Neither blob can be rebuilt by a consumer: the kernel wasm is deterministic
 # on a host but not across hosts, and the image needs a guest toolchain and
@@ -76,3 +77,31 @@ else
   rm -f "$root/artifacts/playground-slim.yurtimg"
 fi
 fetch pythonSeal python3-seal.wasm public/demo/python3-seal.wasm
+# The sealed sandbox `?snapshot=1` restores (scripts/release-snapshot.ts),
+# when the train pins one: a yurt-playground release of its parts, joined
+# here and checked against the whole file's sha256 the pin records.
+if [[ "$(jq -r '.snapshot.release // empty' "$pins")" != "" ]]; then
+  repo=$(jq -r .snapshot.releaseRepo "$pins")
+  tag=$(jq -r .snapshot.release "$pins")
+  count=$(jq -r '.snapshot.parts | length' "$pins")
+  expected=$(jq -r .snapshot.sha256 "$pins")
+  echo "fetching sandbox.seal.gz ($count parts) from $repo $tag" >&2
+  gh release download "$tag" --repo "$repo" --pattern 'sandbox.seal.gz.[0-9]*' \
+    --dir "$cache/snapshot" --clobber
+  : > "$cache/sandbox.seal.gz"
+  for ((i = 0; i < count; i++)); do
+    cat "$cache/snapshot/sandbox.seal.gz.$i" >> "$cache/sandbox.seal.gz"
+  done
+  actual=$(shasum -a 256 "$cache/sandbox.seal.gz" | cut -d' ' -f1)
+  if [[ "$actual" != "$expected" ]]; then
+    echo "sandbox.seal.gz sha256 mismatch: got $actual, pin $expected" >&2
+    exit 1
+  fi
+  mkdir -p "$root/public/snapshot"
+  mv "$cache/sandbox.seal.gz" "$root/public/snapshot/sandbox.seal.gz"
+  echo "installed $tag/sandbox.seal.gz as public/snapshot/sandbox.seal.gz" >&2
+else
+  # One from earlier pins would be checked and left out by the static
+  # build; it is not this train's.
+  rm -f "$root/public/snapshot/sandbox.seal.gz"
+fi

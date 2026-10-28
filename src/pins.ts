@@ -19,6 +19,37 @@ export type Pins = {
   /** The train's sealable CPython (the notebook kernel's interpreter),
    * built with the Python set it belongs to: what names that set here. */
   pythonSeal?: { sha256: string };
+  /** The sealed sandbox `?snapshot=1` restores (src/sandbox_snapshot.ts),
+   * captured locally by scripts/release-snapshot.ts and published as a
+   * yurt-playground release; absent, `?snapshot=1` boots as without it. */
+  snapshot?: SnapshotPin;
+};
+
+/** What a sandbox snapshot was built from: a restore needs the same of all
+ * three. The kernel must match its own memory layout; the image and the
+ * Python set are what the sandbox's files came from. */
+export type SnapshotIdentity = {
+  /** The kernel build the image was sealed under. */
+  kernelSha256: string;
+  /** The image the sandbox booted (the slim one, when the pins name it). */
+  imageSha256: string;
+  /** The train's Python set, by its sealable CPython's hash (`pythonSeal`);
+   * null on a site that pins none. */
+  pythonSealSha256: string | null;
+};
+
+export type SnapshotPin = {
+  releaseRepo: string;
+  release: string;
+  /** The whole gzipped file. */
+  sha256: string;
+  size: number;
+  /** Each part's sha256, in order: the file in IMAGE_PART_BYTES slices
+   * (src/image_parts.ts), as the release and the site publish it. The
+   * page checks each part as it arrives -- a whole-file hash would hold
+   * all 125 MB at once, which a Safari tab does not survive. */
+  parts: string[];
+  builtFrom: SnapshotIdentity;
 };
 
 export type ArtifactSource = "artifacts" | "siblings" | "urls";
@@ -78,6 +109,7 @@ export function parsePins(raw: unknown): Pins {
     image?: unknown;
     browserImage?: unknown;
     pythonSeal?: { sha256?: unknown };
+    snapshot?: unknown;
   };
   const pins: Pins = {
     kernelWasm: parsePin(value.kernelWasm, "kernelWasm"),
@@ -93,7 +125,51 @@ export function parsePins(raw: unknown): Pins {
     }
     pins.pythonSeal = { sha256: sha256.toLowerCase() };
   }
+  if (value.snapshot !== undefined) {
+    pins.snapshot = parseSnapshotPin(value.snapshot);
+  }
   return pins;
+}
+
+function parseSnapshotPin(raw: unknown): SnapshotPin {
+  const fail = (what: string): never => {
+    throw new PinResolutionError(`snapshot.${what}`, 1);
+  };
+  const isHex = (value: unknown): value is string =>
+    typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+  const value = (raw ?? {}) as Record<string, unknown>;
+  for (const key of ["releaseRepo", "release"] as const) {
+    if (typeof value[key] !== "string" || value[key] === "") {
+      fail(`${key} must be a string`);
+    }
+  }
+  if (!isHex(value.sha256)) fail("sha256 must be a lowercase sha256");
+  if (!Number.isInteger(value.size) || (value.size as number) <= 0) {
+    fail("size must be a positive integer");
+  }
+  if (
+    !Array.isArray(value.parts) || value.parts.length === 0 ||
+    !value.parts.every(isHex)
+  ) fail("parts must list each part's sha256");
+  const built = (value.builtFrom ?? {}) as Record<string, unknown>;
+  if (!isHex(built.kernelSha256) || !isHex(built.imageSha256)) {
+    fail("builtFrom must name the kernel and image sha256");
+  }
+  if (built.pythonSealSha256 !== null && !isHex(built.pythonSealSha256)) {
+    fail("builtFrom.pythonSealSha256 must be a sha256 or null");
+  }
+  return {
+    releaseRepo: value.releaseRepo as string,
+    release: value.release as string,
+    sha256: value.sha256 as string,
+    size: value.size as number,
+    parts: value.parts as string[],
+    builtFrom: {
+      kernelSha256: built.kernelSha256 as string,
+      imageSha256: built.imageSha256 as string,
+      pythonSealSha256: built.pythonSealSha256 as string | null,
+    },
+  };
 }
 
 export async function loadPins(path: string): Promise<Pins> {

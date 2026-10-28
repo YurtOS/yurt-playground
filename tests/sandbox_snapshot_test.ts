@@ -1,15 +1,17 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
-import { imagePartsManifest } from "../src/image_parts.ts";
 import { sha256Hex } from "../src/integrity.ts";
+import { parsePins } from "../src/pins.ts";
 import {
   checkSandboxSnapshot,
   decodeSandboxSnapshot,
   encodeSandboxSnapshot,
   fetchVerifiedSnapshot,
+  pinnedSnapshot,
   type SnapshotIdentity,
   snapshotIdentity,
   SnapshotMismatch,
+  type SnapshotPin,
 } from "../src/sandbox_snapshot.ts";
 
 function image(memoryBytes: number): SandboxSealImage {
@@ -169,42 +171,60 @@ Deno.test("a snapshot's identity is the pinned kernel, the image the browser boo
   );
 });
 
-/** A site serving `file` in parts at `path`, with `sha256` beside it
- * (none when undefined). */
-function site(
-  path: string,
-  file: Uint8Array<ArrayBuffer>,
-  sha256: string | undefined,
-): typeof fetch {
-  const base = path.slice(path.lastIndexOf("/") + 1);
-  const manifest = imagePartsManifest(path, file.byteLength);
+/** A site serving `file` in parts at `name` (3-byte parts, so a small
+ * file has several). */
+function site(name: string, file: Uint8Array<ArrayBuffer>): typeof fetch {
+  const base = name.slice(name.lastIndexOf("/") + 1);
+  const manifest = {
+    size: file.byteLength,
+    parts: Array.from(
+      { length: Math.ceil(file.byteLength / 3) },
+      (_, i) => `${base}.${i}`,
+    ),
+  };
+  const dir = name.slice(0, name.lastIndexOf("/") + 1);
   return (input) => {
-    const url = new URL(String(input), "http://pg/");
-    const name = url.pathname.slice(1);
-    if (name === `${path}.sha256` && sha256 !== undefined) {
-      return Promise.resolve(new Response(`${sha256}\n`));
-    }
-    if (name === `${path}.parts.json`) {
+    const path = new URL(String(input), "http://pg/").pathname.slice(1);
+    if (path === `${name}.parts.json`) {
       return Promise.resolve(new Response(JSON.stringify(manifest)));
     }
-    if (name === `${path.slice(0, -base.length)}${base}.0`) {
-      return Promise.resolve(new Response(file));
+    const index = manifest.parts.findIndex((part) => `${dir}${part}` === path);
+    if (index >= 0) {
+      return Promise.resolve(
+        new Response(file.slice(index * 3, index * 3 + 3)),
+      );
     }
     return Promise.resolve(new Response(null, { status: 404 }));
   };
 }
 
-Deno.test("the downloaded snapshot is checked against the sha256 published beside it", async () => {
-  const sealed = image(1 << 16);
+/** The pin for `file` split in 3-byte parts. */
+async function pinFor(file: Uint8Array): Promise<SnapshotPin> {
+  const parts: string[] = [];
+  for (let i = 0; i < file.byteLength; i += 3) {
+    parts.push(await sha256Hex(file.slice(i, i + 3)));
+  }
+  return {
+    releaseRepo: "YurtOS/yurt-playground",
+    release: "snapshot-test",
+    sha256: await sha256Hex(file),
+    size: file.byteLength,
+    parts,
+    builtFrom: BUILT,
+  };
+}
+
+Deno.test("the downloaded snapshot is checked part by part against the pin", async () => {
+  const sealed = image(1 << 10);
   const file = new Uint8Array(
     await (await encodeSandboxSnapshot(sealed, BUILT)).arrayBuffer(),
   );
-  const path = "http://pg/snapshot/sandbox.seal.gz";
   const name = "snapshot/sandbox.seal.gz";
-  const good = await sha256Hex(file);
+  const path = `http://pg/${name}`;
+  const pin = await pinFor(file);
   assertEquals(
     await decodeSandboxSnapshot(
-      await fetchVerifiedSnapshot(path, site(name, file, good)),
+      await fetchVerifiedSnapshot(path, pin, site(name, file)),
       BUILT,
     ),
     sealed,
@@ -212,13 +232,84 @@ Deno.test("the downloaded snapshot is checked against the sha256 published besid
   const damaged = file.slice();
   damaged[damaged.byteLength - 20] ^= 0xff;
   await assertRejects(
-    () => fetchVerifiedSnapshot(path, site(name, damaged, good)),
+    async () =>
+      await decodeSandboxSnapshot(
+        await fetchVerifiedSnapshot(path, pin, site(name, damaged)),
+        BUILT,
+      ),
     Error,
     "sha256 mismatch",
   );
   await assertRejects(
-    () => fetchVerifiedSnapshot(path, site(name, file, undefined)),
+    () => fetchVerifiedSnapshot(path, pin, site(name, file.slice(0, -3))),
     Error,
-    "sandbox.seal.gz.sha256 failed: 404",
+    "not the pinned",
   );
+});
+
+Deno.test("only a snapshot pinned for the site's own kernel, image and Python set is used", () => {
+  const pin = (sha256: string) => ({
+    repo: "r",
+    rev: "v",
+    build: "b",
+    path: "p",
+    sha256,
+  });
+  const pins = {
+    kernelWasm: pin(BUILT.kernelSha256),
+    image: pin("full"),
+    browserImage: pin(BUILT.imageSha256),
+    pythonSeal: { sha256: BUILT.pythonSealSha256! },
+  };
+  const snapshot: SnapshotPin = {
+    releaseRepo: "r",
+    release: "t",
+    sha256: "00".repeat(32),
+    size: 1,
+    parts: ["00".repeat(32)],
+    builtFrom: BUILT,
+  };
+  assertEquals(pinnedSnapshot({ ...pins, snapshot }), snapshot);
+  assertThrows(() => pinnedSnapshot(pins), SnapshotMismatch, "pins no");
+  assertThrows(
+    () =>
+      pinnedSnapshot({
+        ...pins,
+        snapshot: {
+          ...snapshot,
+          builtFrom: { ...BUILT, imageSha256: "11".repeat(32) },
+        },
+      }),
+    SnapshotMismatch,
+    `pinned snapshot was built from imageSha256 ${"11".repeat(32)}`,
+  );
+});
+
+Deno.test("pins.json's snapshot entry is read, and a malformed one refused", async () => {
+  const raw = JSON.parse(
+    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
+  );
+  const snapshot = {
+    releaseRepo: "YurtOS/yurt-playground",
+    release: "snapshot-x",
+    sha256: "aa".repeat(32),
+    size: 10,
+    parts: ["bb".repeat(32)],
+    builtFrom: { ...BUILT, pythonSealSha256: null },
+  };
+  assertEquals(parsePins({ ...raw, snapshot }).snapshot, snapshot);
+  for (
+    const bad of [
+      { ...snapshot, parts: [] },
+      { ...snapshot, sha256: "AA".repeat(32) },
+      { ...snapshot, size: 0 },
+      { ...snapshot, builtFrom: { kernelSha256: BUILT.kernelSha256 } },
+    ]
+  ) {
+    assertThrows(
+      () => parsePins({ ...raw, snapshot: bad }),
+      Error,
+      "snapshot.",
+    );
+  }
 });

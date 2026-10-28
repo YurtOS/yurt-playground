@@ -63,5 +63,25 @@
     "build": "scripts/build-playground-image.sh",
     "path": "ports/playground-image/build/dist/playground-slim.yurtimg",
     "sha256": "0e3b4b52de31cb2c9845fcef1d893684947f324fa58cde91cc6d13457bebcd70"
+  },
+  "snapshot": {
+    "releaseRepo": "YurtOS/yurt-playground",
+    "release": "snapshot-playground-2026.10.27-3d32068.2",
+    "sha256": "082fd133971066023c262c516f7c3143ce774bc658a71a778af692bb10ebf769",
+    "size": 132257149,
+    "parts": [
+      "68766310d41a113bca74baf010657ef1f99f920152c48d291120b31b1c665b80",
+      "db5f2779936244a09801679e53475fbdbeaf4b08e4df13ea2572a4c6876130f4",
+      "9ff99080e1d52bd0c36617729dae41388e63ab5dcfca5ec84ba830df422eac25",
+      "2180a0b9ee244c2f0d98d7f96a847cfa1ce90f1e697d70a179a2cccf2841ad22",
+      "fa58c1ad41927f4695099343f9813637bebc6a34fc9d15b693a6d662fa5ee494",
+      "67e3c3b22f6db871add4053a472ce56f08b9513ce5fa55c77f561379c60d3922",
+      "3580b96dfec3d6c7a38d1c329468fe782fefc9c6ac5064da510c4d62e1970e45"
+    ],
+    "builtFrom": {
+      "kernelSha256": "defa8da648d122fcfd30e6e96360d1b2da1cdf7440d50d82536a825e02fa338c",
+      "imageSha256": "0e3b4b52de31cb2c9845fcef1d893684947f324fa58cde91cc6d13457bebcd70",
+      "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e"
+    }
   }
 }

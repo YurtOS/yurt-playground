@@ -24,8 +24,8 @@ import {
 import { loadPins, type Pins } from "../src/pins.ts";
 import {
   checkSandboxSnapshot,
+  pinnedSnapshot,
   SANDBOX_SNAPSHOT_NAME,
-  SANDBOX_SNAPSHOT_SHA256_NAME,
   snapshotIdentity,
   SnapshotMismatch,
 } from "../src/sandbox_snapshot.ts";
@@ -111,25 +111,37 @@ async function writeImageParts(
   );
 }
 
-/** Whether the sandbox snapshot at `path` was built from `pins`. One that
- * was not is left out of the site with a warning rather than failing the
- * build: it is an optional, local experiment no other page needs, and the
- * page would refuse it anyway -- after downloading it. */
+/** Whether the sandbox snapshot at `path` is the one `pins` pin, built
+ * from the pins' own kernel, image and Python set. One that is not is left
+ * out of the site with a loud warning rather than failing the build: it is
+ * optional, `?snapshot=1` is the only page that reads it, and that page
+ * would refuse it anyway -- after downloading it. */
 export async function snapshotMatchesPins(
   path: string,
   pins: Pins,
 ): Promise<boolean> {
-  const file = await Deno.open(path);
+  const leftOut = (why: string) => {
+    console.warn(
+      `!!! ${SANDBOX_SNAPSHOT_NAME} is NOT published: ${why}. ` +
+        "scripts/install-pinned-artifacts.sh fetches the pinned one; " +
+        "scripts/release-snapshot.ts captures a new one.",
+    );
+    return false;
+  };
   try {
+    pinnedSnapshot(pins);
+    const actual = await sha256Hex(await Deno.readFile(path));
+    if (actual !== pins.snapshot!.sha256) {
+      return leftOut(
+        `its sha256 is ${actual}, not the pinned ${pins.snapshot!.sha256}`,
+      );
+    }
+    const file = await Deno.open(path);
     await checkSandboxSnapshot(file.readable, snapshotIdentity(pins));
     return true;
   } catch (error) {
     if (!(error instanceof SnapshotMismatch)) throw error;
-    console.warn(
-      `!!! ${SANDBOX_SNAPSHOT_NAME} is NOT published: ${error.message}. ` +
-        "Capture a new one with ?snapshot=capture.",
-    );
-    return false;
+    return leftOut(error.message);
   }
 }
 
@@ -173,24 +185,21 @@ export async function buildStaticSite(): Promise<void> {
       `${PYTHON_SEAL_NAME} missing; the yurt-snapshot kernel will not boot (scripts/install-pinned-artifacts.sh)`,
     );
   }
-  // The sealed sandbox `?snapshot=1` restores (src/sandbox_snapshot.ts),
-  // made by `?snapshot=capture`; optional, nothing else needs it.
+  // The sealed sandbox `?snapshot=1` restores (src/sandbox_snapshot.ts):
+  // the pinned one, which scripts/install-pinned-artifacts.sh fetched.
+  // Optional; nothing else needs it.
   const snapshotPath = join(publicDir, SANDBOX_SNAPSHOT_NAME);
   const snapshot = await Deno.stat(snapshotPath).then(() => true, () => false);
-  if (
-    snapshot &&
-    await snapshotMatchesPins(
-      snapshotPath,
-      await loadPins(join(artifactsDir, "pins.json")),
-    )
-  ) {
+  const pins = await loadPins(join(artifactsDir, "pins.json"));
+  if (!snapshot && pins.snapshot !== undefined) {
+    console.warn(
+      `!!! ${SANDBOX_SNAPSHOT_NAME} is pinned but missing; ` +
+        "run scripts/install-pinned-artifacts.sh",
+    );
+  }
+  if (snapshot && await snapshotMatchesPins(snapshotPath, pins)) {
     await Deno.mkdir(join(distDir, "snapshot"), { recursive: true });
     await writeImageParts(SANDBOX_SNAPSHOT_NAME, publicDir);
-    // What the page checks the download against.
-    await Deno.writeTextFile(
-      join(distDir, SANDBOX_SNAPSHOT_SHA256_NAME),
-      `${await sha256Hex(await Deno.readFile(snapshotPath))}\n`,
-    );
   }
   // The "check the bytes" card hashes what it downloaded against this. dist/
   // holds the image only as parts; hash the file they were sliced from.
