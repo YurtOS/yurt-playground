@@ -11,6 +11,11 @@ the tab, and the page keeps working with the network off.
 Where it is going: [the roadmap](docs/ROADMAP.md). What changed in each release:
 [the release notes](https://yurtos.github.io/yurt-playground/).
 
+The playground is a demo of one idea: a Linux sandbox that runs the same image
+in a browser tab, on a laptop and on a server, and that can be suspended to a
+file and resumed anywhere. Where that is the right tool, and where it is not:
+[Where Yurt works best](https://github.com/YurtOS/yurtos-kernel/blob/main/docs/WHY_YURT.md).
+
 The same playground is also a **desktop app** for macOS and Linux, where the
 sandbox runs natively on your machine instead of in the tab: it boots in
 seconds, and the guest has real network access. Download links are on the home
