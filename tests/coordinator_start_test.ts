@@ -529,3 +529,36 @@ Deno.test("a restart is refused until every overlapping start has ended", async 
   await restart();
   assertEquals([refused, ran], [1, 1]);
 });
+
+Deno.test("a capture whose Python install fails is a failed capture, not python-missing", async () => {
+  for (
+    const installPython of [
+      () => Promise.reject(new Error("pkg install python failed: x")),
+      undefined,
+    ]
+  ) {
+    const reports: StartReport[] = [];
+    let captured = 0;
+    await startSandbox({
+      boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(42)).spawn)),
+      booted: () => {},
+      noJupyter: false,
+      installPython,
+      startKernel: () => Promise.resolve(transport),
+      capture: () => {
+        captured++;
+        return Promise.resolve();
+      },
+      post: (report) => reports.push(report),
+    });
+    assertEquals(captured, 0);
+    assertEquals(reports.some((r) => r.type === "python-missing"), false);
+    const last = reports.at(-1);
+    assertEquals(last?.type === "error" && last.endsBoot, true);
+    assert(
+      last?.type === "error" &&
+        last.message.startsWith("snapshot capture failed: "),
+      JSON.stringify(last),
+    );
+  }
+});

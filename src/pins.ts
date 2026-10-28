@@ -21,8 +21,11 @@ export type Pins = {
   pythonSeal?: { sha256: string };
   /** The sealed sandbox `?snapshot=1` restores (src/sandbox_snapshot.ts),
    * captured locally by scripts/release-snapshot.ts and published as a
-   * yurt-playground release; absent, `?snapshot=1` boots as without it. */
-  snapshot?: SnapshotPin;
+   * yurt-playground release; absent, `?snapshot=1` boots as without it.
+   * Kept as written: only `?snapshot=1`, the static build and the release
+   * script read it, through parseSnapshotPin, so an entry of another shape
+   * never breaks a default boot or a deploy. */
+  snapshot?: unknown;
 };
 
 /** What a sandbox snapshot was built from: a restore needs the same of
@@ -48,6 +51,15 @@ export type SnapshotIdentity = {
   pythonSealSha256: string | null;
 };
 
+/** What a snapshot records it was built from: its identity, and the
+ * Python set the capture installed from the live repository (its layer
+ * key, src/python_layer.ts), which a restore compares with the live index
+ * as a stored layer is. */
+export type BuiltFrom = SnapshotIdentity & {
+  /** null on a site that installs no Python (the full image has it). */
+  pythonSet: string | null;
+};
+
 export type SnapshotPin = {
   releaseRepo: string;
   release: string;
@@ -59,7 +71,7 @@ export type SnapshotPin = {
    * page checks each part as it arrives -- a whole-file hash would hold
    * all 125 MB at once, which a Safari tab does not survive. */
   parts: string[];
-  builtFrom: SnapshotIdentity;
+  builtFrom: BuiltFrom;
 };
 
 export type ArtifactSource = "artifacts" | "siblings" | "urls";
@@ -135,13 +147,12 @@ export function parsePins(raw: unknown): Pins {
     }
     pins.pythonSeal = { sha256: sha256.toLowerCase() };
   }
-  if (value.snapshot !== undefined) {
-    pins.snapshot = parseSnapshotPin(value.snapshot);
-  }
+  if (value.snapshot !== undefined) pins.snapshot = value.snapshot;
   return pins;
 }
 
-function parseSnapshotPin(raw: unknown): SnapshotPin {
+/** A pins.json `snapshot` entry, checked; throws on any other shape. */
+export function parseSnapshotPin(raw: unknown): SnapshotPin {
   const fail = (what: string): never => {
     throw new PinResolutionError(`snapshot.${what}`, 1);
   };
@@ -176,6 +187,10 @@ function parseSnapshotPin(raw: unknown): SnapshotPin {
       fail(`builtFrom.${key} must be an integer`);
     }
   }
+  if (
+    built.pythonSet !== null &&
+    (typeof built.pythonSet !== "string" || built.pythonSet === "")
+  ) fail("builtFrom.pythonSet must be a string or null");
   return {
     releaseRepo: value.releaseRepo as string,
     release: value.release as string,
@@ -189,6 +204,7 @@ function parseSnapshotPin(raw: unknown): SnapshotPin {
       bootSetup: built.bootSetup as number,
       imageSha256: built.imageSha256 as string,
       pythonSealSha256: built.pythonSealSha256 as string | null,
+      pythonSet: built.pythonSet as string | null,
     },
   };
 }

@@ -133,10 +133,6 @@ export async function startSandbox<S extends StartableSession>(
     return undefined;
   }
   if (await probePython(session.process, deps.probeTimeoutMs) === false) {
-    if (deps.installPython === undefined) {
-      deps.post({ type: "python-missing" });
-      return undefined;
-    }
     return await installThenLaunch(session, deps);
   }
   return await launchKernel(session, deps);
@@ -158,17 +154,28 @@ export async function installThenLaunch<S extends StartableSession>(
     | "tickMs"
   >,
 ): Promise<JupyterTransport | undefined> {
+  // A capture without its Python is a failed capture, said as one: it
+  // ends the boot, where python-missing would leave a shell to use.
+  const missing = (error?: string) =>
+    deps.post(
+      deps.capture === undefined
+        ? { type: "python-missing", ...(error === undefined ? {} : { error }) }
+        : {
+          type: "error",
+          message: `snapshot capture failed: ${
+            error ?? "this site installs no Python"
+          }`,
+          endsBoot: true,
+        },
+    );
   if (deps.installPython === undefined) {
-    deps.post({ type: "python-missing" });
+    missing();
     return undefined;
   }
   try {
     await deps.installPython(session);
   } catch (error) {
-    deps.post({
-      type: "python-missing",
-      error: error instanceof Error ? error.message : String(error),
-    });
+    missing(error instanceof Error ? error.message : String(error));
     return undefined;
   }
   return await launchKernel(session, deps);

@@ -213,6 +213,7 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
     bootSetup: 1,
     imageSha256: hex("b"),
     pythonSealSha256: hex("c"),
+    pythonSet: "b/python@3.14.7-yurt_0:0123456789abcdef",
   };
   const seal = {
     version: 1 as const,

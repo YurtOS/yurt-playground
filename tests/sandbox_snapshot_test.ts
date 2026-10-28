@@ -5,13 +5,14 @@ import { sha256Hex } from "../src/integrity.ts";
 import { parsePins } from "../src/pins.ts";
 import {
   BOOT_SETUP,
+  type BuiltFrom,
+  checkPythonSet,
   checkSandboxSnapshot,
   decodeSandboxSnapshot,
   encodeSandboxSnapshot,
   fetchVerifiedSnapshot,
   pinnedSnapshot,
   SEAL_VERSION,
-  type SnapshotIdentity,
   snapshotIdentity,
   SnapshotMismatch,
   type SnapshotPin,
@@ -43,13 +44,14 @@ function image(memoryBytes: number): SandboxSealImage {
   };
 }
 
-const BUILT: SnapshotIdentity = {
+const BUILT: BuiltFrom = {
   kernelSha256: "ab".repeat(32),
   kernelRev: "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
   sealVersion: 1,
   bootSetup: 1,
   imageSha256: "cd".repeat(32),
   pythonSealSha256: "ef".repeat(32),
+  pythonSet: "cd/python@3.14.7-yurt_0:0123456789abcdef",
 };
 
 /** A gzipped snapshot file made of `header` as written, with `memory`
@@ -76,7 +78,8 @@ Deno.test("a sandbox snapshot round-trips its seal image under the build it was 
 
 Deno.test("a sandbox snapshot built from anything else is refused, by name", async () => {
   const file = await encodeSandboxSnapshot(image(4096), BUILT);
-  const others: Partial<SnapshotIdentity> = {
+  const others: Partial<BuiltFrom> = {
+    pythonSet: "cd/python@3.14.8-yurt_0:fedcba9876543210",
     kernelSha256: "00".repeat(32),
     kernelRev: "0000000",
     sealVersion: 2,
@@ -90,7 +93,7 @@ Deno.test("a sandbox snapshot built from anything else is refused, by name", asy
     const error = await assertRejects(
       () => decodeSandboxSnapshot(file.stream(), expected),
       SnapshotMismatch,
-      `${key} ${BUILT[key as keyof SnapshotIdentity]}, not ${other}`,
+      `${key} ${BUILT[key as keyof BuiltFrom]}, not ${other}`,
     );
     assertEquals(error.message.split(";").length, 1, "only what differs");
     await assertRejects(
@@ -118,7 +121,7 @@ Deno.test("a sandbox snapshot that does not say what it was built from is refuse
 Deno.test("a mismatched sandbox snapshot is refused before its memory is allocated", async () => {
   // 4 PiB: allocating it first would throw a RangeError, not the mismatch.
   const file = await rawSnapshot({
-    format: 2,
+    format: 3,
     builtFrom: { ...BUILT, kernelSha256: "00".repeat(32) },
     memoryBytes: 2 ** 52,
   });
@@ -319,50 +322,66 @@ Deno.test("only a snapshot pinned for the site's own kernel, image and Python se
   );
 });
 
-Deno.test("pins.json's snapshot entry is read, and a malformed one refused", async () => {
+Deno.test("a malformed snapshot entry never breaks the pins, and is refused where it is used", async () => {
   const raw = JSON.parse(
     await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
   );
+  const pins = parsePins({ ...raw, snapshot: undefined });
   const snapshot = {
     releaseRepo: "YurtOS/yurt-playground",
     release: "snapshot-x",
     sha256: "aa".repeat(32),
     size: 10,
     parts: ["bb".repeat(32)],
-    builtFrom: { ...BUILT, pythonSealSha256: null },
+    builtFrom: { ...snapshotIdentity(pins), pythonSet: null },
   };
-  assertEquals(parsePins({ ...raw, snapshot }).snapshot, snapshot);
+  assertEquals(pinnedSnapshot({ ...pins, snapshot }), snapshot);
   for (
     const bad of [
       { ...snapshot, parts: [] },
       { ...snapshot, sha256: "AA".repeat(32) },
       { ...snapshot, size: 0 },
       { ...snapshot, builtFrom: { kernelSha256: BUILT.kernelSha256 } },
+      "an older shape",
     ]
   ) {
+    // The default boot and the deploy read the pins: they still parse.
+    const parsed = parsePins({ ...raw, snapshot: bad });
     assertThrows(
-      () => parsePins({ ...raw, snapshot: bad }),
-      Error,
-      "snapshot.",
+      () => pinnedSnapshot(parsed),
+      SnapshotMismatch,
+      "the pinned snapshot entry is malformed",
     );
   }
 });
 
+Deno.test("a snapshot of another Python set than the live index offers is not restored", () => {
+  checkPythonSet(BUILT, BUILT.pythonSet);
+  // The index could not be asked: the snapshot, as a stored layer offline.
+  checkPythonSet(BUILT, undefined);
+  assertThrows(
+    () => checkPythonSet(BUILT, "cd/python@3.14.8-yurt_1:fedcba9876543210"),
+    SnapshotMismatch,
+    "the live index offers cd/python@3.14.8",
+  );
+  assertThrows(() => checkPythonSet(BUILT, null), SnapshotMismatch);
+});
+
 Deno.test("a snapshot header of another format is refused", async () => {
   const file = await rawSnapshot({
-    format: 3,
+    format: 4,
     builtFrom: BUILT,
     memoryBytes: 16,
   }, new Uint8Array(16));
   await assertRejects(
     () => decodeSandboxSnapshot(file.stream(), BUILT),
     SnapshotMismatch,
-    "format 3, not 2",
+    "format 4, not 3",
   );
   await assertRejects(
     () => checkSandboxSnapshot(file.stream(), BUILT),
     SnapshotMismatch,
-    "format 3",
+    "format 4",
   );
 });
 

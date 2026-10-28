@@ -157,3 +157,34 @@ Deno.test("partsFetch reads a part body that is not async-iterable (Safari)", as
   const response = await partsFetch(fetchImpl)("http://pg/img");
   assertEquals(new TextDecoder().decode(await response.bytes()), "abcdef");
 });
+
+Deno.test("a cancelled partsFetch body stops the part in flight and fetches no more", async () => {
+  const requested: string[] = [];
+  let inFlight: AbortSignal | undefined;
+  const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    requested.push(url);
+    if (url.endsWith(".parts.json")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ size: 9, parts: ["img.0", "img.1"] })),
+      );
+    }
+    // A part that streams one chunk and then waits, as a slow download.
+    inFlight = init?.signal ?? undefined;
+    return Promise.resolve(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("abc"));
+          },
+        }),
+      ),
+    );
+  }) as typeof fetch;
+  const body = (await partsFetch(fetchImpl)("http://pg/img")).body!;
+  const reader = body.getReader();
+  await reader.read();
+  await reader.cancel("decode failed");
+  assertEquals(inFlight?.aborted, true);
+  assertEquals(requested, ["http://pg/img.parts.json", "http://pg/img.0"]);
+});

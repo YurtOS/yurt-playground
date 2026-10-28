@@ -23,9 +23,15 @@
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
 import { partsFetch } from "./image_parts.ts";
 import { sha256Hex } from "./integrity.ts";
-import type { Pins, SnapshotIdentity, SnapshotPin } from "./pins.ts";
+import {
+  type BuiltFrom,
+  parseSnapshotPin,
+  type Pins,
+  type SnapshotIdentity,
+  type SnapshotPin,
+} from "./pins.ts";
 
-export type { SnapshotIdentity, SnapshotPin };
+export type { BuiltFrom, SnapshotIdentity, SnapshotPin };
 
 /** Where the page fetches the snapshot (in parts, src/image_parts.ts). */
 export const SANDBOX_SNAPSHOT_NAME = "snapshot/sandbox.seal.gz";
@@ -60,25 +66,51 @@ export function snapshotIdentity(
  * its memory was read. */
 export class SnapshotMismatch extends Error {}
 
-/** The site's pinned snapshot, when it was built from the site's own
- * pins: what `?snapshot=1` may download. */
+/** The site's pinned snapshot, when the entry is well formed and was
+ * built from the site's own pins: what `?snapshot=1` may download. */
 export function pinnedSnapshot(pins: Pins): SnapshotPin {
   if (pins.snapshot === undefined) {
     throw new SnapshotMismatch("the site pins no sandbox snapshot");
   }
-  const why = mismatch(pins.snapshot.builtFrom, snapshotIdentity(pins));
+  let pin: SnapshotPin;
+  try {
+    pin = parseSnapshotPin(pins.snapshot);
+  } catch (error) {
+    throw new SnapshotMismatch(
+      `the pinned snapshot entry is malformed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const why = mismatch(pin.builtFrom, snapshotIdentity(pins));
   if (why !== undefined) {
     throw new SnapshotMismatch(`pinned ${why.replace(/^sandbox /, "")}`);
   }
-  return pins.snapshot;
+  return pin;
 }
 
-/** The header's format: 2 added `builtFrom`. */
-const FORMAT = 2;
+/** Refuses a snapshot whose Python set is not the one the live index
+ * offers now (`live`, a layer key as liveLayerKey makes it): installing
+ * would give another set, so restoring this one would not be the same.
+ * `live` undefined -- the index could not be asked -- takes the snapshot,
+ * as a stored layer is used offline. */
+export function checkPythonSet(
+  builtFrom: BuiltFrom,
+  live: string | null | undefined,
+): void {
+  if (live !== undefined && live !== builtFrom.pythonSet) {
+    throw new SnapshotMismatch(
+      `the snapshot's Python set is ${builtFrom.pythonSet}, the live index offers ${live}`,
+    );
+  }
+}
+
+/** The header's format: 2 added `builtFrom`, 3 its `pythonSet`. */
+const FORMAT = 3;
 
 type Header = Omit<SandboxSealImage, "kernelMemory" | "processes"> & {
   format: number;
-  builtFrom: SnapshotIdentity;
+  builtFrom: BuiltFrom;
   memoryBytes: number;
 };
 
@@ -99,7 +131,7 @@ function reviver(_key: string, value: unknown): unknown {
 /** The snapshot file for `image`, a seal with no process in it. */
 export async function encodeSandboxSnapshot(
   image: SandboxSealImage,
-  builtFrom: SnapshotIdentity,
+  builtFrom: BuiltFrom,
 ): Promise<Blob> {
   if (image.processes.length !== 0) {
     throw new Error(
@@ -149,18 +181,19 @@ async function readHeader(
   }
 }
 
-/** Why a snapshot's `builtFrom` is not `expected`, or undefined when it
- * is the same build. */
+/** Why a snapshot's `builtFrom` is not `expected` (every field `expected`
+ * has), or undefined when it is the same build. */
 function mismatch(
-  builtFrom: SnapshotIdentity | undefined,
-  expected: SnapshotIdentity,
+  builtFrom: Partial<BuiltFrom> | undefined,
+  expected: SnapshotIdentity | BuiltFrom,
 ): string | undefined {
   if (builtFrom === undefined) {
     return "sandbox snapshot does not say what it was built from (an older format)";
   }
-  const differs = (Object.keys(expected) as (keyof SnapshotIdentity)[])
-    .filter((key) => builtFrom[key] !== expected[key])
-    .map((key) => `${key} ${builtFrom[key]}, not ${expected[key]}`);
+  const want = expected as Partial<BuiltFrom>;
+  const differs = (Object.keys(want) as (keyof BuiltFrom)[])
+    .filter((key) => builtFrom[key] !== want[key])
+    .map((key) => `${key} ${builtFrom[key]}, not ${want[key]}`);
   return differs.length === 0
     ? undefined
     : `sandbox snapshot was built from ${differs.join("; ")}`;
@@ -170,7 +203,7 @@ function mismatch(
  * another format, or another build. */
 function headerMismatch(
   header: Partial<Header>,
-  expected: SnapshotIdentity,
+  expected: SnapshotIdentity | BuiltFrom,
 ): string | undefined {
   if (header.builtFrom !== undefined && header.format !== FORMAT) {
     return `sandbox snapshot header is format ${header.format}, not ${FORMAT}`;
@@ -180,11 +213,11 @@ function headerMismatch(
 
 /** A snapshot file's (gzipped) header: what it was built from, read
  * without its memory. Throws {@link SnapshotMismatch} when that is not
- * `expected`. */
+ * `expected` (every field it has). */
 export async function checkSandboxSnapshot(
   body: ReadableStream<Uint8Array<ArrayBuffer>>,
-  expected: SnapshotIdentity,
-): Promise<void> {
+  expected: SnapshotIdentity | BuiltFrom,
+): Promise<BuiltFrom> {
   const reader = body.pipeThrough(new DecompressionStream("gzip"))
     .getReader();
   try {
@@ -193,6 +226,7 @@ export async function checkSandboxSnapshot(
     if (why !== undefined) {
       throw new SnapshotMismatch(why);
     }
+    return header.builtFrom!;
   } finally {
     await reader.cancel().catch(() => {});
   }
@@ -203,41 +237,44 @@ export async function checkSandboxSnapshot(
  * read, before its memory (over 500 MiB) is allocated. */
 export async function decodeSandboxSnapshot(
   body: ReadableStream<Uint8Array<ArrayBuffer>>,
-  expected: SnapshotIdentity,
+  expected: SnapshotIdentity | BuiltFrom,
 ): Promise<SandboxSealImage> {
   // A reader, not `for await`: WebKit's ReadableStream is not async-iterable.
   const reader = body.pipeThrough(new DecompressionStream("gzip"))
     .getReader();
-  const { header, rest } = await readHeader(reader);
-  const why = headerMismatch(header, expected);
-  if (why !== undefined) {
-    await reader.cancel().catch(() => {});
-    throw new SnapshotMismatch(why);
-  }
-  const {
-    format: _format,
-    builtFrom: _builtFrom,
-    memoryBytes,
-    ...seal
-  } = header as Header;
-  const memory = new Uint8Array(memoryBytes);
-  let filled = 0;
-  for (let chunk = rest;;) {
-    if (filled + chunk.byteLength > memory.byteLength) {
-      throw new Error("sandbox snapshot is longer than its header says");
+  try {
+    const { header, rest } = await readHeader(reader);
+    const why = headerMismatch(header, expected);
+    if (why !== undefined) throw new SnapshotMismatch(why);
+    const {
+      format: _format,
+      builtFrom: _builtFrom,
+      memoryBytes,
+      ...seal
+    } = header as Header;
+    const memory = new Uint8Array(memoryBytes);
+    let filled = 0;
+    for (let chunk = rest;;) {
+      if (filled + chunk.byteLength > memory.byteLength) {
+        throw new Error("sandbox snapshot is longer than its header says");
+      }
+      memory.set(chunk, filled);
+      filled += chunk.byteLength;
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunk = value;
     }
-    memory.set(chunk, filled);
-    filled += chunk.byteLength;
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunk = value;
+    if (filled !== memoryBytes) {
+      throw new Error(
+        `sandbox snapshot is truncated (${filled} of ${memoryBytes} bytes)`,
+      );
+    }
+    return { ...seal, kernelMemory: memory, processes: [] };
+  } catch (error) {
+    // Whatever is still downloading stops: the source is cancelled.
+    await reader.cancel(error).catch(() => {});
+    throw error;
   }
-  if (filled !== memoryBytes) {
-    throw new Error(
-      `sandbox snapshot is truncated (${filled} of ${memoryBytes} bytes)`,
-    );
-  }
-  return { ...seal, kernelMemory: memory, processes: [] };
 }
 
 /** The snapshot file at `path`, in the parts the site publishes, each

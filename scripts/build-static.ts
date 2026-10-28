@@ -18,15 +18,13 @@ import {
   IMAGE_NAME,
   INTEGRITY_FILES,
   integrityManifest,
-  sha256Hex,
   SLIM_IMAGE_NAME,
 } from "../src/integrity.ts";
 import { loadPins, type Pins } from "../src/pins.ts";
+import { checkSnapshotFile } from "./lib/snapshot_file.ts";
 import {
-  checkSandboxSnapshot,
   pinnedSnapshot,
   SANDBOX_SNAPSHOT_NAME,
-  snapshotIdentity,
   SnapshotMismatch,
 } from "../src/sandbox_snapshot.ts";
 
@@ -128,21 +126,17 @@ export async function snapshotMatchesPins(
     );
     return false;
   };
+  let pin;
   try {
-    pinnedSnapshot(pins);
-    const actual = await sha256Hex(await Deno.readFile(path));
-    if (actual !== pins.snapshot!.sha256) {
-      return leftOut(
-        `its sha256 is ${actual}, not the pinned ${pins.snapshot!.sha256}`,
-      );
-    }
-    const file = await Deno.open(path);
-    await checkSandboxSnapshot(file.readable, snapshotIdentity(pins));
-    return true;
+    pin = pinnedSnapshot(pins);
   } catch (error) {
     if (!(error instanceof SnapshotMismatch)) throw error;
     return leftOut(error.message);
   }
+  const check = await checkSnapshotFile(path, pin.builtFrom, {
+    sha256: pin.sha256,
+  });
+  return check.ok || leftOut(check.problem);
 }
 
 export async function buildStaticSite(): Promise<void> {

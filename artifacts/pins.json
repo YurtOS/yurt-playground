@@ -66,17 +66,17 @@
   },
   "snapshot": {
     "releaseRepo": "YurtOS/yurt-playground",
-    "release": "snapshot-playground-2026.10.27-3d32068.2-2",
-    "sha256": "b5ca6318eb46243b5ee180dcbf2581410bb656d1cdd33e6598b4c7a6528e91ce",
-    "size": 130867771,
+    "release": "snapshot-playground-2026.10.27-3d32068.2-3",
+    "sha256": "d44d716b7aa8f12a4207ac8e50245f3f85527bbf129000c2597a834b642d45f5",
+    "size": 131549805,
     "parts": [
-      "cabf0b22d77de9b264a8376c680d9eeb1abbe35c388e90e3cb43adf0f63091a2",
-      "01735ca75b3ce1dcaf80d6affcc42c79d67b90415561b96dc579459eb4aafcc3",
-      "57c72576c2ae93111c2422d790b35edb58f30f537c0ab73b9d9fd09be3061821",
-      "e28c4c1003f2f1a6ccba83d40caaedb5e2fe0cd71e6e7b81fc1191ba31cc2733",
-      "f8d744412372ac7d76aae17639e6d090d98d9758d18556156ddef550a6699863",
-      "902c7393df8241a2d0c512467e18c7bf986ee634771a6d2c115e5cc0e7d06191",
-      "5a1f5164f60b07cd557983667660b0961f140ebd9e0b5a598acabfd9a6d0e695"
+      "c10e30d15a7bd65f87561c9bf1255094aea24cc80990023f39040bd91f984e2e",
+      "53723f88cde6254d65ef2b4317dd4145a2e6e1c836e625e91a7d9bd4e6f93608",
+      "f1b16192b6972c578ee644e0d96c5887a49156a65ac9dba338a608feaad8112b",
+      "8a8dceaa0460d6923a01828d4057c457deea67992eb2ee068be48e57ec1b9c5a",
+      "7950ec9b4be346e39f80cc022949b76573d0a61ba0b1c40d8c8bf63a330f3fa0",
+      "181f6b09500ebcf46b150b3a9c839e7cd672d30419a61b1823ef607f3f3fa35c",
+      "201f97d8fc139924f0cb33f63a12e0a270db2e23e7c638bf569756c6839f1e1b"
     ],
     "builtFrom": {
       "kernelSha256": "defa8da648d122fcfd30e6e96360d1b2da1cdf7440d50d82536a825e02fa338c",
@@ -84,7 +84,8 @@
       "sealVersion": 1,
       "bootSetup": 1,
       "imageSha256": "0e3b4b52de31cb2c9845fcef1d893684947f324fa58cde91cc6d13457bebcd70",
-      "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e"
+      "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
+      "pythonSet": "0e3b4b52de31cb2c9845fcef1d893684947f324fa58cde91cc6d13457bebcd70/jupyter-kernel@0.0.1-yurt_0:c8e575a68c03a8e4+numpy@2.5.0-yurt_0:c3cc1743278a9763+python@3.14.7-yurt_0:ab01e884f08e0619+pyzmq@26.4.0-yurt_0:429b9bb415b7f5a2"
     }
   }
 }

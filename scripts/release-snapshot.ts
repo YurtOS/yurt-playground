@@ -39,17 +39,15 @@
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureBundle } from "./serve.ts";
+import { ensureBundle, kernelRoot } from "./serve.ts";
+import { checkSnapshotFile } from "./lib/snapshot_file.ts";
 import { handlePlaygroundRequest, ISOLATION_HEADERS } from "../src/serve.ts";
 import { imagePartRange, imagePartsManifest } from "../src/image_parts.ts";
 import { sha256Hex } from "../src/integrity.ts";
-import { parsePins, type Pins, type SnapshotPin } from "../src/pins.ts";
+import { parsePins, type SnapshotPin } from "../src/pins.ts";
 import {
-  checkSandboxSnapshot,
-  decodeSandboxSnapshot,
   SANDBOX_SNAPSHOT_NAME,
   snapshotIdentity,
-  SnapshotMismatch,
 } from "../src/sandbox_snapshot.ts";
 
 const REPO = "YurtOS/yurt-playground";
@@ -83,22 +81,53 @@ async function gh(
   return { ok: out.success, stdout: new TextDecoder().decode(out.stdout) };
 }
 
-/** Whether the file at `path` is a capture of this train. */
-async function isThisTrains(
-  path: string,
-  pins: Pins,
-) {
-  try {
-    const file = await Deno.open(path);
-    await checkSandboxSnapshot(file.readable, snapshotIdentity(pins));
-    return true;
-  } catch (error) {
-    if (error instanceof SnapshotMismatch) {
-      say(error.message);
-      return false;
+/** Why the kernel checkout the page is bundled from is not the pinned
+ * rev with a clean tree, or undefined when it is: the snapshot records
+ * that rev as the one its JS host came from. */
+export async function kernelCheckoutProblem(
+  kernelRoot: string,
+  rev: string,
+): Promise<string | undefined> {
+  const git = async (...args: string[]) => {
+    const out = await new Deno.Command("git", {
+      args: ["-C", kernelRoot, ...args],
+      stdout: "piped",
+      stderr: "piped",
+      // Not a hook's GIT_DIR or GIT_INDEX_FILE: this checkout's own.
+      clearEnv: true,
+      env: {
+        PATH: Deno.env.get("PATH") ?? "",
+        HOME: Deno.env.get("HOME") ?? "",
+      },
+    }).output();
+    if (!out.success) {
+      throw new Error(new TextDecoder().decode(out.stderr).trim());
     }
-    if (error instanceof Deno.errors.NotFound) return false;
-    throw error;
+    return new TextDecoder().decode(out.stdout).trim();
+  };
+  try {
+    const head = await git("rev-parse", "HEAD");
+    if (head !== rev) {
+      return `the kernel checkout ${kernelRoot} is at ${head}, not the pinned ${rev}`;
+    }
+    // Not its deno.lock: bundling the page from the checkout writes the
+    // page's npm entries there, which changes no kernel source.
+    const dirty = await git(
+      "status",
+      "--porcelain",
+      "--untracked-files=no",
+      "--",
+      ".",
+      ":!deno.lock",
+    );
+    if (dirty !== "") {
+      return `the kernel checkout ${kernelRoot} has uncommitted changes:\n${dirty}`;
+    }
+    return undefined;
+  } catch (error) {
+    return `cannot read the kernel checkout ${kernelRoot}: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
   }
 }
 
@@ -261,23 +290,31 @@ async function main(): Promise<void> {
     );
   }
 
-  if (resume && await isThisTrains(snapshotPath, pins)) {
+  const kernelProblem = await kernelCheckoutProblem(
+    kernelRoot(),
+    pins.kernelWasm.rev,
+  );
+  if (kernelProblem !== undefined) die(kernelProblem);
+
+  // A capture of this train that decodes in full: reused with --resume,
+  // anything else (another train, a damaged file) is captured again.
+  const thisTrains = () =>
+    checkSnapshotFile(snapshotPath, snapshotIdentity(pins), { decode: true });
+  let check = resume ? await thisTrains() : undefined;
+  if (check?.ok) {
     say(`--resume: reusing ${snapshotPath}`);
   } else {
+    if (check !== undefined) say(`--resume: capturing again: ${check.problem}`);
     await capture();
+    // Step 2.
+    check = await thisTrains();
   }
-  // Step 2.
-  if (!await isThisTrains(snapshotPath, pins)) {
-    die("the captured snapshot was not built from artifacts/pins.json");
+  if (!check.ok) {
+    return die(`the capture is not this train's: ${check.problem}`);
   }
-  const file = await Deno.readFile(snapshotPath);
-  // The whole file, not only its header: a capture that does not inflate
-  // to the memory its header names is not released.
-  await decodeSandboxSnapshot(
-    new Blob([file]).stream(),
-    snapshotIdentity(pins),
-  );
+  const builtFrom = check.builtFrom;
   say("the capture decodes in full");
+  const file = await Deno.readFile(snapshotPath);
   const dir = await Deno.makeTempDir({ prefix: "yurt-snapshot-" });
   try {
     const { sha256, parts, files } = await split(file, dir);
@@ -287,7 +324,7 @@ async function main(): Promise<void> {
       sha256,
       size: file.byteLength,
       parts: parts.map((part) => part.sha256),
-      builtFrom: snapshotIdentity(pins),
+      builtFrom,
     };
     say(`${ASSET}: ${pin.size} bytes, ${parts.length} parts, sha256 ${sha256}`);
 

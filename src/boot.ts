@@ -34,10 +34,10 @@ import { captureLayer } from "./python_layer.ts";
 import { watchGuestMemoryRefusals } from "./memory_refused.ts";
 import { parsePins, type Pins } from "./pins.ts";
 import {
+  checkPythonSet,
   decodeSandboxSnapshot,
   fetchVerifiedSnapshot,
   pinnedSnapshot,
-  snapshotIdentity,
 } from "./sandbox_snapshot.ts";
 import type { Spawner, WaitStatus } from "./executions.ts";
 import {
@@ -69,6 +69,11 @@ export type PlaygroundEnv = {
   /** A sealed sandbox to restore instead of booting `imagePath`
    * (src/sandbox_snapshot.ts). */
   snapshotPath?: string;
+  /** The Python set the live index offers now, as a layer key
+   * (src/python_layer.ts): null when the site installs none, undefined
+   * when the index cannot be asked. A snapshot of another set is not
+   * restored. */
+  livePythonSet?: () => Promise<string | null | undefined>;
   show: (text: string) => void;
   term: PlaygroundTerm;
   /** The browser refused a new process its memory; only a reload helps. */
@@ -363,38 +368,37 @@ export async function bootPlayground(
 
   env.show("loading kernel");
   const kernel = await env.fetchBytes("./yurt_kernel.wasm");
-  const compile = () => (
-    env.show("compiling kernel"), loadPlaygroundKernel(kernel)
-  );
-  const snapshotPath = env.snapshotPath;
-  const { kernel: mk, restored } = snapshotPath === undefined
-    ? { kernel: await compile(), restored: false }
-    : await snapshotOrBoot(
-      () => restoreSnapshot(env, kernel, snapshotPath),
-      compile,
-    );
-  const stopWatchingRefusals = watchGuestMemoryRefusals(
-    mk,
-    () => env.memoryRefused?.(),
-  );
-  try {
-    return await startPlayground(
-      env,
+  /** The rest of the boot on a loaded or restored kernel; a boot that
+   * fails there leaves nothing running: its kernel goes (a page may boot
+   * again, as a fresh sandbox after a stalled install). */
+  const start = async (mk: KernelHostInterface, restored: boolean) => {
+    const stopWatchingRefusals = watchGuestMemoryRefusals(
       mk,
-      stopWatchingRefusals,
-      restored,
+      () => env.memoryRefused?.(),
     );
-  } catch (error) {
-    // A boot that failed past here leaves nothing running: its kernel goes
-    // (a page may boot again, as a fresh sandbox after a stalled install).
-    stopWatchingRefusals();
     try {
-      mk.dispose();
-    } catch {
-      // Already gone.
+      return await startPlayground(env, mk, stopWatchingRefusals, restored);
+    } catch (error) {
+      stopWatchingRefusals();
+      try {
+        mk.dispose();
+      } catch {
+        // Already gone.
+      }
+      throw error;
     }
-    throw error;
-  }
+  };
+  const bootImage = async () => {
+    env.show("compiling kernel");
+    return await start(await loadPlaygroundKernel(kernel), false);
+  };
+  const snapshotPath = env.snapshotPath;
+  if (snapshotPath === undefined) return await bootImage();
+  // A restored kernel that then fails to start its shell falls back too.
+  return (await snapshotOrBoot(
+    async () => start(await restoreSnapshot(env, kernel, snapshotPath), true),
+    bootImage,
+  )).kernel;
 }
 
 /**
@@ -434,10 +438,16 @@ async function restoreSnapshot(
   // file whose own header says so before the kernel's memory is allocated
   // (SnapshotMismatch both).
   const pins = await browserPins();
-  const image = await decodeSandboxSnapshot(
+  const pin = pinnedSnapshot(pins);
+  // The Python set the capture installed must be the one an install
+  // would get now, as for a stored layer (src/python_layer.ts).
+  checkPythonSet(pin.builtFrom, await env.livePythonSet?.());
+  // Only this frame holds the decoded memory (~545 MiB), and only until
+  // the restore copied it: a fallback boot must not run beside it.
+  let image: SandboxSealImage | undefined = await decodeSandboxSnapshot(
     await fetchVerifiedSnapshot(
       path,
-      pinnedSnapshot(pins),
+      pin,
       undefined,
       (loaded, total) =>
         env.show(
@@ -446,21 +456,27 @@ async function restoreSnapshot(
           } MiB`,
         ),
     ),
-    snapshotIdentity(pins),
+    pin.builtFrom,
   );
   const fetched = performance.now();
+  const memoryBytes = image.kernelMemory.byteLength;
   env.show("restoring snapshot");
-  const { host, processes } = await restorePlaygroundKernel(kernel, image);
-  if (processes.length !== 0) {
-    host.dispose();
+  let restored: Awaited<ReturnType<typeof restorePlaygroundKernel>>;
+  try {
+    restored = await restorePlaygroundKernel(kernel, image);
+  } finally {
+    image = undefined;
+  }
+  if (restored.processes.length !== 0) {
+    restored.host.dispose();
     throw new Error("a sandbox snapshot must hold no process");
   }
   console.log(
-    `[snapshot] ${image.kernelMemory.byteLength} bytes of kernel memory: ` +
+    `[snapshot] ${memoryBytes} bytes of kernel memory: ` +
       `fetched+inflated in ${Math.round(fetched - started)} ms, ` +
       `restored in ${Math.round(performance.now() - fetched)} ms`,
   );
-  return host;
+  return restored.host;
 }
 
 /**
@@ -677,7 +693,7 @@ async function startPlayground(
       env.show("shell exited");
     }
   }).catch((error) => {
-    if (!stopped) {
+    if (!stopped && !sealing) {
       const message = error instanceof Error ? error.message : String(error);
       env.show(message);
     }

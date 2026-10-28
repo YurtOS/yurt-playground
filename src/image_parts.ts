@@ -74,6 +74,13 @@ export function partsFetch(
     if (!manifestResponse.ok) return manifestResponse;
     const manifest = await manifestResponse.json() as ImagePartsManifest;
     checks.manifest?.(manifest);
+    // A reader that gives up (a cancelled body) stops the part in flight.
+    const giveUp = new AbortController();
+    const callerSignal = (init as { signal?: AbortSignal | null } | undefined)
+      ?.signal;
+    const signal = callerSignal == null
+      ? giveUp.signal
+      : AbortSignal.any([callerSignal, giveUp.signal]);
     let index = 0;
     // A reader, not `for await`: WebKit ships ReadableStream without
     // Symbol.asyncIterator, so iterating a body there throws.
@@ -95,7 +102,10 @@ export function partsFetch(
           }
           const part = manifest.parts[index];
           const at = index++;
-          const response = await fetchImpl(new URL(part, manifestUrl), init);
+          const response = await fetchImpl(
+            new URL(part, manifestUrl),
+            { ...init, signal } as RequestInit,
+          );
           if (!response.ok || response.body === null) {
             throw new Error(`fetch ${part} failed: ${response.status}`);
           }
@@ -108,6 +118,10 @@ export function partsFetch(
           controller.enqueue(bytes);
           return;
         }
+      },
+      async cancel(reason) {
+        giveUp.abort(reason);
+        await reader?.cancel(reason).catch(() => {});
       },
     });
     return new Response(stream, {

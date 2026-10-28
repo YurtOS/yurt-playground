@@ -90,7 +90,7 @@ type ToWorker =
     // python3, before ipykernel -- the newest complete one in the live
     // signed index (src/python_install.ts). Absent, such an image is
     // reported as `python-missing`, as before.
-    python?: { label: string; set: string[]; image?: string };
+    python?: PythonRequest;
     // A tablet or phone: installs over 16 MiB are refused there.
     tablet?: boolean;
     // `?snapshot=1`: restore the sealed sandbox (src/sandbox_snapshot.ts)
@@ -332,14 +332,39 @@ function dropLayerIfKernelFailed(report: StartReport): void {
 /** Where the Python set puts its standard library and site-packages. */
 const PYTHON_LIB = "/usr/local/lib/python3.14";
 
+type PythonRequest = { label: string; set: string[]; image?: string };
+
+/** The Python set an install would get now, as a layer key
+ * (liveLayerKey): null when the site installs no Python, undefined when
+ * the live index cannot be asked. */
+async function livePythonSet(
+  python: PythonRequest | undefined,
+): Promise<string | null | undefined> {
+  if (python?.image === undefined) return null;
+  try {
+    return await liveLayerKey(python.image, python.set) ??
+      "(no complete set)";
+  } catch {
+    return undefined;
+  }
+}
+
 /** `?snapshot=capture`: precompile the installed Python, seal the
  * sandbox (no process left in it) and hand the snapshot file to the page,
  * in the kernel's place: a sealed sandbox runs nothing more. */
 async function captureSnapshot(
   session: Awaited<ReturnType<typeof bootPlayground>>,
+  python: PythonRequest | undefined,
 ): Promise<void> {
   if (session.seal === undefined || session.process === undefined) {
     throw new Error("this session cannot seal");
+  }
+  // Which Python set this is, as a restore compares it with the live index.
+  const pythonSet = await livePythonSet(python);
+  if (pythonSet === undefined) {
+    throw new Error(
+      "the live package index could not say which Python set this is",
+    );
   }
   // Bytecode for every module the packages ship as source only: the login
   // user cannot write __pycache__ there, so each start compiled them again
@@ -375,7 +400,7 @@ async function captureSnapshot(
   const image = await session.seal();
   const blob = await encodeSandboxSnapshot(
     image,
-    snapshotIdentity(await playgroundPins()),
+    { ...snapshotIdentity(await playgroundPins()), pythonSet },
   );
   post({
     type: "snapshot-captured",
@@ -591,6 +616,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     snapshotPath: msg.snapshot === "restore" && kernelPorts === undefined
       ? SANDBOX_SNAPSHOT_PATH
       : undefined,
+    livePythonSet: () => livePythonSet(msg.python),
     fetchBytes: (path: string) =>
       fetchPlaygroundBytes(path, (progress) => {
         const percent = progress.total === undefined
@@ -684,7 +710,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       installPython,
       startKernel: (session, relaunching) =>
         startGuestKernel(session, kernelPorts, { relaunching }),
-      capture: msg.snapshot === "capture" ? captureSnapshot : undefined,
+      capture: msg.snapshot === "capture"
+        ? (session) => captureSnapshot(session, python)
+        : undefined,
       post: (report) => {
         if (report.type === "python-missing") pythonMissing = true;
         dropLayerIfKernelFailed(report);
