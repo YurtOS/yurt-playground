@@ -622,7 +622,8 @@
         <p class="lead" id="lead">
           A Linux sandbox that runs inside this browser tab: a shell, and
           Python, which a desktop browser installs on its own. Nothing leaves
-          the page.
+          the page. The same sandbox runs natively on your machine, and can be
+          suspended to a file and resumed where it stopped.
         </p>
         <nav aria-label="interfaces">
           <a
@@ -1140,6 +1141,66 @@ yurt stop web</pre>
               a page, and <code>src/notebook_kernel_worker.ts</code> for the
               notebook kernel around a sealable CPython (<code
               >scripts/build-python-seal.sh</code> builds it).
+            </p>
+          </article>
+        </div>
+      </details>
+
+      <details class="strip" id="fit" data-testid="fit">
+        <summary data-testid="fit-toggle">
+          <h2 id="fit-title">Where this fits</h2>
+          <span class="hint"
+          >The same sandbox in a tab, on a machine, or in a file</span>
+        </summary>
+        <p>
+          This page is a demo of one idea: a Linux sandbox that runs the same
+          image in a browser tab, on a laptop and on a server, and that can be
+          suspended to a file and resumed anywhere. Where that is the right
+          tool, and where it is not, is written up in
+          <a
+            href="https://github.com/YurtOS/yurtos-kernel/blob/main/docs/WHY_YURT.md"
+            data-testid="why-yurt-link"
+          >Where Yurt works best</a>.
+        </p>
+        <div class="checks">
+          <article class="check">
+            <h3>On your device, not a server</h3>
+            <p>
+              A product that runs code for its users usually rents a server
+              sandbox per session and sends the user's data to it. Here the
+              sandbox is the tab: nothing to operate, nothing per seat, nothing
+              leaves the device, and it keeps working offline.
+            </p>
+          </article>
+          <article class="check">
+            <h3>The same sandbox everywhere</h3>
+            <p>
+              The kernel and every program are WebAssembly, so the image this
+              page boots is the one the desktop app runs natively and the one a
+              server runs through the Yurt runtime. One build, one package
+              repository, one driver API (<code>window.yurt</code> here, HTTP in
+              the app).
+            </p>
+          </article>
+          <article class="check">
+            <h3>Suspend it to a file</h3>
+            <p>
+              A running sandbox seals into one image: kernel memory, each
+              program's memory and its call stack. Resume it after a reload, or
+              on another machine. An idle session costs nothing, and a program
+              can be checkpointed before a risky step and rolled back.
+            </p>
+          </article>
+          <article class="check">
+            <h3>Real programs, real compilers</h3>
+            <p>
+              <code>ipykernel</code>, <code>pip</code>, BusyBox, Node.js and the
+              Go toolchain run unmodified, and clang runs inside the sandbox, so
+              software builds the ordinary way instead of through a curated
+              list. What is supported today is in the kernel's
+              <a
+                href="https://github.com/YurtOS/yurtos-kernel/blob/main/docs/USE_CASES.md"
+              >use-case catalog</a>.
             </p>
           </article>
         </div>
