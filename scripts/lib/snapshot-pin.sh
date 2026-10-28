@@ -5,7 +5,8 @@
 # entry unless `scripts/release-snapshot.ts --check-pin` refuses it (exit 3,
 # with a "snapshot pin refused: <reason>" line): well formed, this page's
 # format, built from these pins, of the Python set the live index offers --
-# the checks the page makes. A refused entry is removed, then
+# the checks the page makes. A kept entry sets snapshot_kept=1. A refused
+# entry is removed, then
 # snapshot_dropped=1 and snapshot_why says why. Any other outcome (deno
 # missing, a crash, exit 1) and a failed removal return 1 with
 # snapshot_error saying which (the check's whole output goes to stderr),
@@ -15,14 +16,22 @@ keep_snapshot_pin() {
   [ "$(jq -c '.snapshot // null' "$pins")" != null ] || return 0
   out=$(cd "$root" && deno run -A scripts/release-snapshot.ts --check-pin 2>&1) || code=$?
   case $code in
-    0) return 0 ;;
+    0)
+      snapshot_kept=1
+      return 0
+      ;;
     3) ;;
     *)
       # All of it on stderr; the line naming the error in the message (an
       # uncaught exception ends in stack frames, not in its name).
       printf '%s\n' "$out" >&2
+      # One awk over all of it: no pipe to break early, colours stripped,
+      # the first "error:" line or else the last line.
       local named
-      named=$(sed 's/\x1b\[[0-9;]*m//g' <<< "$out" | grep -m1 'error:' || tail -1 <<< "$out")
+      named=$(awk '{ gsub(/\033\[[0-9;]*m/, "") }
+        !found && /error:/ { first = $0; found = 1 }
+        { last = $0 }
+        END { print found ? first : last }' <<< "$out")
       snapshot_error="release-snapshot.ts --check-pin failed (exit $code): $named"
       return 1
       ;;
@@ -35,4 +44,11 @@ keep_snapshot_pin() {
   fi
   snapshot_why=${why:-no reason given}
   snapshot_dropped=1
+}
+
+# remind_dropped_snapshot WHY: the closing reminder for a train that
+# dropped its snapshot pin (WHY empty: none).
+remind_dropped_snapshot() {
+  [ -n "$1" ] || return 0
+  say "the snapshot pin was dropped ($1): run scripts/release-snapshot.ts (deno run -A), then commit artifacts/pins.json"
 }

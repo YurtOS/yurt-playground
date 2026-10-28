@@ -2,6 +2,7 @@ import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { Catalog } from "../src/packages.ts";
 import { parsePins } from "../src/pins.ts";
 import {
+  IndexUnreadable,
   livePythonSet,
   NO_COMPLETE_SET,
   PYTHON_LABEL,
@@ -60,10 +61,24 @@ Deno.test("only a set the index does not offer is 'no complete set'; a crash is 
     await livePythonSet(request, 1000, () => Promise.resolve(catalog([]))),
     NO_COMPLETE_SET,
   );
-  // Not answered: no verdict.
+  // Not downloaded: no verdict.
   assertEquals(
-    await livePythonSet(request, 1000, () => Promise.reject(new Error("down"))),
+    await livePythonSet(
+      request,
+      1000,
+      () => Promise.reject(new IndexUnreadable("down")),
+    ),
     undefined,
+  );
+  // Downloaded, but not an index the page can parse: an error, not offline.
+  await assertRejects(
+    () =>
+      livePythonSet(
+        request,
+        1000,
+        () => Promise.reject(new SyntaxError("index.json is not JSON")),
+      ),
+    SyntaxError,
   );
   // A catalog the code cannot read is a crash, not an answer.
   await assertRejects(

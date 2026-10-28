@@ -552,7 +552,7 @@ ${answer}
     }
     // The tools the function uses, and no deno but the fake one.
     for (
-      const tool of ["jq", "sed", "grep", "tail", "mv", "rm", "bash", "cat"]
+      const tool of ["jq", "sed", "awk", "tail", "mv", "rm", "bash", "cat"]
     ) {
       if (tool === "mv" && failingMv) {
         await Deno.writeTextFile(

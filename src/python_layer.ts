@@ -422,8 +422,9 @@ export type LayerInstallDeps<E> = {
   pristine: boolean;
   /** The key the live index resolves the set to now. `undefined` when the
    * repository answered but names no usable set (yanked, removed): then no
-   * layer is used either, and `pkg` says why. Throws when the repository
-   * cannot be reached in time. */
+   * layer is used either, and `pkg` says why. Throws IndexUnreadable when
+   * the repository cannot be reached in time (the stored layer is then
+   * used); any other throw uses no layer. */
   liveKey(): Promise<string | undefined>;
   /** The guest's own install; `between` runs right before `pkg` and right
    * after it succeeded. The caller runs all of this in one turn of the
@@ -434,6 +435,11 @@ export type LayerInstallDeps<E> = {
   probe(): Promise<boolean | undefined>;
   progress(text: string): void;
 };
+
+/** The live index could not be read (in time): no answer, as offline --
+ * a stored layer, or a snapshot, is then used. Only a failed download is
+ * this; an index that arrived but cannot be read is an error of its own. */
+export class IndexUnreadable extends Error {}
 
 /** Install the Python set: from this browser's stored layer when it is
  * the set the live index resolves to (or, when the index cannot be had,
@@ -454,9 +460,13 @@ export async function installWithLayer<E>(
     try {
       live = await deps.liveKey();
       key = live;
-    } catch {
-      // No live answer: the layer this browser kept for this image, if any.
-      key = await store.storedKey(image);
+    } catch (error) {
+      // No live answer (offline, or not in time): the layer this browser
+      // kept for this image, if any. Anything else went wrong in reading
+      // the answer: no layer, and the install below uses pkg.
+      key = error instanceof IndexUnreadable
+        ? await store.storedKey(image)
+        : undefined;
     }
     const entries = key === undefined ? undefined : await store.get(key);
     if (entries !== undefined) {

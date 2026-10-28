@@ -13,7 +13,9 @@ import {
   SetNotOffered,
 } from "./packages.ts";
 import { parsePins, type Pins } from "./pins.ts";
-import { layerKey } from "./python_layer.ts";
+import { IndexUnreadable, layerKey } from "./python_layer.ts";
+
+export { IndexUnreadable };
 
 /** The progress messages' label: "Python: downloading python 1.2 MiB of
  * 22.6 MiB". */
@@ -78,33 +80,36 @@ export async function fetchSitePins(): Promise<Pins | undefined> {
  * used as when offline). */
 export const LIVE_INDEX_TIMEOUT_MS = 20_000;
 
-/** The live index could not be read (in time): no answer, as offline. */
-export class IndexUnreadable extends Error {}
-
 /** The set the live index offers for `set` on `image`, as a layer key
  * (src/python_layer.ts); undefined when the index answered but does not
  * offer the set (SetNotOffered). Throws IndexUnreadable when the index
- * cannot be read within `timeoutMs`; anything else (a crash) is thrown as
- * it is, never taken for an answer. */
+ * cannot be downloaded within `timeoutMs`; anything else (an index that
+ * does not parse, a crash) is thrown as it is, never taken for an answer. */
 export async function liveLayerKey(
   image: string,
   set: readonly string[],
   timeoutMs = LIVE_INDEX_TIMEOUT_MS,
   /** The index read; the live repository's, bounded by `signal`. */
   load: (signal: AbortSignal) => Promise<Catalog> = (signal) =>
-    loadCatalog((url, limit, onBytes) =>
-      fetchWithProgress(url, limit, onBytes, signal)
-    ),
+    loadCatalog(async (url, limit, onBytes) => {
+      try {
+        return await fetchWithProgress(url, limit, onBytes, signal);
+      } catch (error) {
+        // A download that failed or was cut off by the bound: offline.
+        throw new IndexUnreadable(
+          `${url}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }),
 ): Promise<string | undefined> {
   const giveUp = new AbortController();
   const timer = setTimeout(() => giveUp.abort(), timeoutMs);
   let catalog: Catalog;
   try {
+    // An index that arrived but does not parse is thrown as it is: that is
+    // no "offline". (The page does not check the index's signature here;
+    // the guest's pkg does, when it installs.)
     catalog = await load(giveUp.signal);
-  } catch (error) {
-    throw new IndexUnreadable(
-      error instanceof Error ? error.message : String(error),
-    );
   } finally {
     clearTimeout(timer);
   }

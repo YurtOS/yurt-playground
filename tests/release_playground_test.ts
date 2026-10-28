@@ -1331,7 +1331,10 @@ function stepHelpers(source: string): string {
 /** release-playground.sh's pins write, from the snapshot entry it reads
  * to the pins it verifies, run on a project whose pins carry a snapshot
  * entry, with a `deno` that answers --check-pin as `answer` (bash). */
-async function pinsWrite(answer: string) {
+async function pinsWrite(
+  answer: string,
+  initialState: unknown = { steps: {} },
+) {
   const dir = await Deno.makeTempDir({ prefix: "release-pins-write-" });
   try {
     const root = join(dir, "project");
@@ -1361,7 +1364,7 @@ resume_command() { echo "resume"; }
 root=${JSON.stringify(root)}
 pins_only=0
 state=${JSON.stringify(join(dir, "state.json"))}
-echo '{"steps":{}}' > "$state"
+echo ${JSON.stringify(JSON.stringify(initialState))} > "$state"
 ${stepHelpers(source)}
 source "$root/scripts/lib/snapshot-pin.sh"
 train=playground-new kernel_sha=k sandbox_sha=s ports_sha=p
@@ -1404,11 +1407,16 @@ ${answer}
 }
 
 Deno.test("a train carries the snapshot pin --check-pin accepts into its new pins", async () => {
-  const run = await pinsWrite("exit 0");
+  // A resumed train whose earlier run dropped the pin, and whose pins now
+  // keep one: nothing is left to recapture.
+  const run = await pinsWrite("exit 0", {
+    steps: { snapshot: { dropped: "an earlier refusal" } },
+  });
   assertEquals(run.code, 0, run.output);
   assertEquals(run.pins.train, "playground-new");
   assertEquals(run.pins.snapshot, { release: "snapshot-playground-old" });
   assertStringIncludes(run.output, "DROPPED=0");
+  assertEquals(run.state.steps.snapshot, { dropped: null });
 });
 
 Deno.test("a train drops the snapshot pin --check-pin refuses, with its reason", async () => {
@@ -1429,37 +1437,32 @@ Deno.test("a train drops the snapshot pin --check-pin refuses, with its reason",
   });
 });
 
-Deno.test("a train ends with the reminder to recapture when its state says the pin was dropped", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "release-reminder-" });
-  try {
-    const source = await Deno.readTextFile(
-      join(repoRoot, "scripts/release-playground.sh"),
-    );
-    const start = "snapshot_dropped_why=$(step_get snapshot dropped)";
-    assertEquals(source.includes(start), true);
-    const block = start + source.split(start)[1].split("\nfi\n")[0] +
-      "\nfi\n";
-    const run = async (steps: unknown) => {
-      const state = join(dir, "state.json");
-      await Deno.writeTextFile(state, JSON.stringify({ steps }));
-      const result = await command("bash", [
-        "-c",
-        `set -euo pipefail
-say() { printf '==> %s\\n' "$*"; }
-state=${JSON.stringify(state)}
-${stepHelpers(source)}
-${block}`,
-      ]);
-      return new TextDecoder().decode(result.stdout);
-    };
-    assertStringIncludes(
-      await run({ snapshot: { dropped: "built from kernelRev k0, not k" } }),
-      "the snapshot pin was dropped (built from kernelRev k0, not k): run scripts/release-snapshot.ts",
-    );
-    assertEquals(await run({}), "");
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
+Deno.test("a train ends with the reminder to recapture only when its pin was dropped", async () => {
+  const remind = async (why: string) => {
+    const result = await command("bash", [
+      "-c",
+      `say() { printf '==> %s\\n' "$*"; }
+source "$1"
+remind_dropped_snapshot "$2"`,
+      "bash",
+      join(repoRoot, "scripts/lib/snapshot-pin.sh"),
+      why,
+    ]);
+    return new TextDecoder().decode(result.stdout);
+  };
+  assertStringIncludes(
+    await remind("built from kernelRev k0, not k"),
+    "the snapshot pin was dropped (built from kernelRev k0, not k): run scripts/release-snapshot.ts",
+  );
+  assertEquals(await remind(""), "");
+  // The train calls it with the record its state keeps.
+  const source = await Deno.readTextFile(
+    join(repoRoot, "scripts/release-playground.sh"),
+  );
+  assertStringIncludes(
+    source,
+    'remind_dropped_snapshot "$(step_get snapshot dropped)"',
+  );
 });
 
 Deno.test("a train stops when --check-pin gives no verdict, and keeps the pin", async () => {

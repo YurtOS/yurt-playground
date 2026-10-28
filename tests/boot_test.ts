@@ -286,11 +286,19 @@ Deno.test({
     const registry = new ExecutionRegistry(session.process, session.signal);
     const exec = async (cmd: string, stdin?: string) =>
       await registry.wait(await registry.spawn(cmd, { stdin }));
-    // BusyBox ps: PID USER VSZ STAT COMMAND.
-    const zombies = (ps: string) =>
-      ps.split("\n").filter((line) =>
-        line.trim().split(/\s+/)[3]?.startsWith("Z")
-      );
+    // BusyBox ps: PID USER VSZ STAT COMMAND. A process is seen as Z for a
+    // moment between its exit and its reaping -- a poll's own sweep among
+    // them -- so only a zombie still listed on the next poll is one.
+    let lastZombies = new Set<string>();
+    const zombies = (ps: string) => {
+      const now = ps.split("\n")
+        .map((line) => line.trim().split(/\s+/))
+        .filter((fields) => fields[3]?.startsWith("Z"))
+        .map((fields) => fields[0]);
+      const stuck = now.filter((pid) => lastZombies.has(pid));
+      lastZombies = new Set(now);
+      return stuck;
+    };
     try {
       for (
         const [cmd, stdin] of [
@@ -336,6 +344,8 @@ Deno.test({
         }
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
+      // Two looks after the sweeps: a zombie in both is one.
+      await new Promise((resolve) => setTimeout(resolve, 500));
       const ps = (await exec("ps")).stdout;
       assertEquals(zombies(ps), [], ps);
     } finally {

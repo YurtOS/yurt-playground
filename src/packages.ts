@@ -654,14 +654,14 @@ export type InstallRequest =
   // the newest build every one of them has (src/python_install.ts).
   | { label: string; set: readonly string[] };
 
-/** The newest complete set: for each `yurt_N` build every package in
- * `names` has (unyanked, in a release the page can read), the highest N
- * wins, and each package's release with that build (the highest version,
- * should there be several). A set only partly published is never chosen. */
 /** The repository does not offer the set: a member it has no package for,
  * or no `yurt_N` build that all of them have. */
 export class SetNotOffered extends Error {}
 
+/** The newest complete set: for each `yurt_N` build every package in
+ * `names` has (unyanked, in a release the page can read), the highest N
+ * wins, and each package's release with that build (the highest version,
+ * should there be several). A set only partly published is never chosen. */
 export function resolveSet(
   catalog: Catalog,
   names: readonly string[],

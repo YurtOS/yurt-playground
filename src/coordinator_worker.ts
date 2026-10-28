@@ -55,6 +55,7 @@ import {
   type LayerStore,
 } from "./python_layer.ts";
 import { liveLayerKey, livePythonSet } from "./python_install.ts";
+import { postCaptured } from "./capture_outcome.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import {
   encodeSandboxSnapshot,
@@ -351,18 +352,7 @@ async function captureSnapshot(
     image,
     { ...snapshotIdentity(await playgroundPins()), pythonSet },
   );
-  // The status first: the page's own failure to save the file, if any,
-  // comes after it and is the last word.
-  post({
-    type: "status",
-    text: `snapshot captured (${blob.size} bytes); ` +
-      "the sealed sandbox runs no Jupyter",
-  });
-  post({
-    type: "snapshot-captured",
-    blob,
-    ms: Math.round(performance.now() - started),
-  });
+  postCaptured(post, blob, Math.round(performance.now() - started));
 }
 
 /** Drop the in-tab sandbox and start a fresh one the way the page's start

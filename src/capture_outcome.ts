@@ -1,8 +1,8 @@
 /**
- * `?snapshot=capture`'s two page-side duties, apart from the DOM so they
- * can be tested: mark the capture's outcome where
- * scripts/release-snapshot.ts waits for it, and hand the captured file to
- * the browser as a download.
+ * `?snapshot=capture`'s hand-over, apart from the DOM and the worker so it
+ * can be tested: the worker announces the captured file; the page marks
+ * the capture's outcome where scripts/release-snapshot.ts waits for it,
+ * and hands the file to the browser as a download.
  */
 
 /** Where the outcome is marked: `<html>`'s dataset in the page
@@ -85,4 +85,25 @@ export function saveDownload(
   const href = host.createObjectURL(blob);
   host.click(href, name);
   host.later(() => host.revokeObjectURL(href), DOWNLOAD_URL_KEEP_MS);
+}
+
+/** What the worker posts for a captured file. */
+export type CapturedMessage =
+  | { type: "status"; text: string }
+  | { type: "snapshot-captured"; blob: Blob; ms: number };
+
+/** The worker's announcement of a captured file: its status line first,
+ * then the file -- so the page's own failure to save it, if any, comes
+ * after the status and is the last word. */
+export function postCaptured(
+  post: (message: CapturedMessage) => void,
+  blob: Blob,
+  ms: number,
+): void {
+  post({
+    type: "status",
+    text: `snapshot captured (${blob.size} bytes); ` +
+      "the sealed sandbox runs no Jupyter",
+  });
+  post({ type: "snapshot-captured", blob, ms });
 }

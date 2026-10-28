@@ -4,6 +4,7 @@ import {
   decodeTar,
   encodeTar,
   type GuestFs,
+  IndexUnreadable,
   inLayer,
   installWithLayer,
   LayerFailed,
@@ -324,7 +325,7 @@ Deno.test("a newer live set installs with pkg and replaces the stored layer", as
 Deno.test("offline, the layer stored for this image is used", async () => {
   const { deps, log } = fakeDeps({
     stored: { key: "img/set1", entries: ["e1"] },
-    live: new Error("offline"),
+    live: new IndexUnreadable("offline"),
   });
   assertEquals(await installWithLayer(deps), "layer");
   assertEquals(log.includes("apply e1"), true);
@@ -333,7 +334,7 @@ Deno.test("offline, the layer stored for this image is used", async () => {
 Deno.test("offline with no layer for this image: pkg, and nothing kept under a guessed key", async () => {
   const { deps, log } = fakeDeps({
     stored: { key: "other-image/set1", entries: ["e1"] },
-    live: new Error("offline"),
+    live: new IndexUnreadable("offline"),
   });
   assertEquals(await installWithLayer(deps), "pkg");
   assertEquals(
@@ -456,5 +457,20 @@ Deno.test("with no layer support (no store, no image), pkg installs as before", 
   assertEquals(
     log.some((line) => line.startsWith("capture") || line.startsWith("put")),
     false,
+  );
+});
+
+Deno.test("a live answer that fails for another reason than being offline uses no layer: pkg, as on main", async () => {
+  const { deps, log } = fakeDeps({
+    stored: { key: "img/set1", entries: ["e1"] },
+    live: new TypeError("a catalog the page cannot read"),
+  });
+  assertEquals(await installWithLayer(deps), "pkg");
+  assertEquals(log.includes("apply e1"), false, "the stored layer is not used");
+  assertEquals(log.includes("pkg install"), true);
+  assertEquals(
+    log.some((line) => line.startsWith("put")),
+    false,
+    "nothing kept: no live key",
   );
 });

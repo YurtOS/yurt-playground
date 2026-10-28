@@ -6,6 +6,7 @@ import {
   markBootEnded,
   markCaptured,
   NO_SNAPSHOT,
+  postCaptured,
   saveDownload,
 } from "../src/capture_outcome.ts";
 
@@ -105,4 +106,18 @@ Deno.test("an empty reason names nothing: a real one replaces it", () => {
   const blank: CaptureMark = { snapshotCaptureError: "" };
   markBootEnded(blank, true, "coordinator worker failed");
   assertEquals(blank.snapshotCaptureError, "coordinator worker failed");
+});
+
+Deno.test("the worker posts its 'captured' status before the file, so a save failure has the last word", () => {
+  const posted: string[] = [];
+  postCaptured(
+    (message) =>
+      posted.push(message.type === "status" ? message.text : message.type),
+    new Blob(["12345"]),
+    7,
+  );
+  assertEquals(posted, [
+    "snapshot captured (5 bytes); the sealed sandbox runs no Jupyter",
+    "snapshot-captured",
+  ]);
 });

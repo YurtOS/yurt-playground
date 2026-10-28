@@ -841,11 +841,14 @@ if [ "${snapshot_dropped:-0}" = 1 ]; then
   say "the pinned snapshot is not this train's ($snapshot_why): dropped"
   # Kept with the train, so a --resume still ends with the reminder below.
   [ "$pins_only" = 1 ] || step_set snapshot dropped "$(jq -n --arg why "$snapshot_why" '$why')"
+elif [ "${snapshot_kept:-0}" = 1 ] && [ "$pins_only" = 0 ]; then
+  # A resumed train whose pins keep the entry has nothing to recapture.
+  step_set snapshot dropped null
 fi
 say "verify the pins: scripts/install-pinned-artifacts.sh"
 "$root/scripts/install-pinned-artifacts.sh"
 if [ "$pins_only" = 1 ]; then
-  [ "${snapshot_dropped:-0}" = 1 ] && say "the snapshot pin was dropped ($snapshot_why): run scripts/release-snapshot.ts (deno run -A)"
+  remind_dropped_snapshot "${snapshot_why:-}"
   say "pins regenerated and verified; nothing dispatched, nothing opened"
   exit 0
 fi
@@ -913,7 +916,4 @@ if [ "$(step_get desktop conclusion)" != success ]; then
     -f "playground_sha=$merge_sha" -f "train=$train" -f "publish=true"
 fi
 say "released: kernel-wasm-$train, $image_release, $seal_release_of_train, desktop-host-$train, yurt-cli-$train, desktop-$train"
-snapshot_dropped_why=$(step_get snapshot dropped)
-if [ -n "$snapshot_dropped_why" ]; then
-  say "the snapshot pin was dropped ($snapshot_dropped_why): run scripts/release-snapshot.ts (deno run -A), then commit artifacts/pins.json"
-fi
+remind_dropped_snapshot "$(step_get snapshot dropped)"
