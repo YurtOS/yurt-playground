@@ -21,7 +21,7 @@
  * downloads it.
  */
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
-import type { ImagePartsManifest } from "./image_parts.ts";
+import { partsFetch } from "./image_parts.ts";
 import { sha256Hex } from "./integrity.ts";
 import type { Pins, SnapshotIdentity, SnapshotPin } from "./pins.ts";
 
@@ -30,6 +30,16 @@ export type { SnapshotIdentity, SnapshotPin };
 /** Where the page fetches the snapshot (in parts, src/image_parts.ts). */
 export const SANDBOX_SNAPSHOT_NAME = "snapshot/sandbox.seal.gz";
 export const SANDBOX_SNAPSHOT_PATH = `./${SANDBOX_SNAPSHOT_NAME}`;
+/** The seal image version this page's host writes and restores; typed by
+ * the host's own, so a host with another version fails the type check
+ * until this follows it. */
+export const SEAL_VERSION: SandboxSealImage["version"] = 1;
+
+/** The page's boot setup, as a snapshot records it: bump it when
+ * src/boot.ts changes what a boot stages beside the image or how it sets
+ * up the login user, so a snapshot made the old way is not restored. */
+export const BOOT_SETUP = 1;
+
 /** The identity a snapshot made under `pins` records, and a restore under
  * them requires. */
 export function snapshotIdentity(
@@ -37,6 +47,9 @@ export function snapshotIdentity(
 ): SnapshotIdentity {
   return {
     kernelSha256: pins.kernelWasm.sha256,
+    kernelRev: pins.kernelWasm.rev,
+    sealVersion: SEAL_VERSION,
+    bootSetup: BOOT_SETUP,
     imageSha256: (pins.browserImage ?? pins.image).sha256,
     pythonSealSha256: pins.pythonSeal?.sha256 ?? null,
   };
@@ -153,6 +166,18 @@ function mismatch(
     : `sandbox snapshot was built from ${differs.join("; ")}`;
 }
 
+/** Why a file's header is not one this page restores under `expected`:
+ * another format, or another build. */
+function headerMismatch(
+  header: Partial<Header>,
+  expected: SnapshotIdentity,
+): string | undefined {
+  if (header.builtFrom !== undefined && header.format !== FORMAT) {
+    return `sandbox snapshot header is format ${header.format}, not ${FORMAT}`;
+  }
+  return mismatch(header.builtFrom, expected);
+}
+
 /** A snapshot file's (gzipped) header: what it was built from, read
  * without its memory. Throws {@link SnapshotMismatch} when that is not
  * `expected`. */
@@ -164,7 +189,7 @@ export async function checkSandboxSnapshot(
     .getReader();
   try {
     const { header } = await readHeader(reader);
-    const why = mismatch(header.builtFrom, expected);
+    const why = headerMismatch(header, expected);
     if (why !== undefined) {
       throw new SnapshotMismatch(why);
     }
@@ -184,7 +209,7 @@ export async function decodeSandboxSnapshot(
   const reader = body.pipeThrough(new DecompressionStream("gzip"))
     .getReader();
   const { header, rest } = await readHeader(reader);
-  const why = mismatch(header.builtFrom, expected);
+  const why = headerMismatch(header, expected);
   if (why !== undefined) {
     await reader.cancel().catch(() => {});
     throw new SnapshotMismatch(why);
@@ -224,43 +249,37 @@ export async function fetchVerifiedSnapshot(
   path: string,
   pin: SnapshotPin,
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  /** Bytes checked so far, of the whole file's. */
+  onProgress?: (loaded: number, total: number) => void,
 ): Promise<ReadableStream<Uint8Array<ArrayBuffer>>> {
-  const base = typeof location === "undefined" ? undefined : location.href;
-  const manifestUrl = new URL(`${path}.parts.json`, base);
-  const response = await fetchImpl(manifestUrl);
-  if (!response.ok) {
-    throw new Error(`fetch ${path}.parts.json failed: ${response.status}`);
-  }
-  const manifest = await response.json() as ImagePartsManifest;
-  if (
-    manifest.size !== pin.size || manifest.parts.length !== pin.parts.length
-  ) {
-    throw new Error(
-      `${path} is published as ${manifest.size} bytes in ${manifest.parts.length} parts, ` +
-        `not the pinned ${pin.size} in ${pin.parts.length}`,
-    );
-  }
-  let index = 0;
-  return new ReadableStream({
-    async pull(controller) {
-      if (index === manifest.parts.length) {
-        controller.close();
-        return;
+  let loaded = 0;
+  const response = await partsFetch(fetchImpl, {
+    manifest(manifest) {
+      if (
+        manifest.size !== pin.size ||
+        manifest.parts.length !== pin.parts.length
+      ) {
+        throw new Error(
+          `${path} is published as ${manifest.size} bytes in ${manifest.parts.length} parts, ` +
+            `not the pinned ${pin.size} in ${pin.parts.length}`,
+        );
       }
-      const part = manifest.parts[index];
-      const got = await fetchImpl(new URL(part, manifestUrl));
-      if (!got.ok) throw new Error(`fetch ${part} failed: ${got.status}`);
-      const bytes = new Uint8Array(await got.arrayBuffer());
+    },
+    async part(index, name, bytes) {
       const actual = await sha256Hex(bytes);
       if (actual !== pin.parts[index]) {
         throw new Error(
-          `sandbox snapshot part ${part} sha256 mismatch: got ${actual}, pinned ${
+          `sandbox snapshot part ${name} sha256 mismatch: got ${actual}, pinned ${
             pin.parts[index]
           }`,
         );
       }
-      index++;
-      controller.enqueue(bytes);
+      loaded += bytes.byteLength;
+      onProgress?.(loaded, pin.size);
     },
-  });
+  })(path);
+  if (!response.ok || response.body === null) {
+    throw new Error(`fetch ${path}.parts.json failed: ${response.status}`);
+  }
+  return response.body as ReadableStream<Uint8Array<ArrayBuffer>>;
 }

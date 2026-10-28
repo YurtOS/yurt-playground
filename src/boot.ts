@@ -38,7 +38,6 @@ import {
   fetchVerifiedSnapshot,
   pinnedSnapshot,
   snapshotIdentity,
-  SnapshotMismatch,
 } from "./sandbox_snapshot.ts";
 import type { Spawner, WaitStatus } from "./executions.ts";
 import {
@@ -150,6 +149,9 @@ export function outputFanout(term: PlaygroundTerm) {
   };
 }
 
+// The login setup and what a boot stages beside the image are part of a
+// sandbox snapshot: a change to them is a new BOOT_SETUP
+// (src/sandbox_snapshot.ts).
 const LOGIN_USER = "user";
 const LOGIN_UID = 1000;
 const LOGIN_GID = 1000;
@@ -157,6 +159,7 @@ const LOGIN_HOME = "/home/user";
 /** No such process: a `SYS_KILLPG` to a group with no live member. */
 const ESRCH = 3;
 const SIGKILL = 9;
+const MIB = 1024 * 1024;
 
 const DEFAULT_ENV: Record<string, string> = {
   HOME: LOGIN_HOME,
@@ -360,21 +363,16 @@ export async function bootPlayground(
 
   env.show("loading kernel");
   const kernel = await env.fetchBytes("./yurt_kernel.wasm");
-  let mk: KernelHostInterface | undefined;
-  if (env.snapshotPath !== undefined) {
-    try {
-      mk = await restoreSnapshot(env, kernel, env.snapshotPath);
-    } catch (error) {
-      // No snapshot pinned, or one of another build: stale, not broken.
-      // The image boots as without `?snapshot=1`, and Python installs as
-      // usual. Anything else (a part that is not the pinned one, a failed
-      // restore) is the boot's failure.
-      if (!(error instanceof SnapshotMismatch)) throw error;
-      console.warn(`[snapshot] ${error.message}; booting the image instead`);
-    }
-  }
-  const restored = mk !== undefined;
-  mk ??= (env.show("compiling kernel"), await loadPlaygroundKernel(kernel));
+  const compile = () => (
+    env.show("compiling kernel"), loadPlaygroundKernel(kernel)
+  );
+  const snapshotPath = env.snapshotPath;
+  const { kernel: mk, restored } = snapshotPath === undefined
+    ? { kernel: await compile(), restored: false }
+    : await snapshotOrBoot(
+      () => restoreSnapshot(env, kernel, snapshotPath),
+      compile,
+    );
   const stopWatchingRefusals = watchGuestMemoryRefusals(
     mk,
     () => env.memoryRefused?.(),
@@ -399,6 +397,30 @@ export async function bootPlayground(
   }
 }
 
+/**
+ * `?snapshot=1`'s kernel: the restored snapshot, or the image's boot when
+ * the snapshot cannot be had -- none pinned, one of another build, a
+ * download that fails or is not the pinned bytes, a file that does not
+ * inflate, a restore that is refused. The snapshot only saves time; the
+ * image boot is always there, so any of these is a console note, not the
+ * boot's failure.
+ */
+export async function snapshotOrBoot<K>(
+  restore: () => Promise<K>,
+  boot: () => Promise<K>,
+): Promise<{ kernel: K; restored: boolean }> {
+  try {
+    return { kernel: await restore(), restored: true };
+  } catch (error) {
+    console.warn(
+      `[snapshot] ${
+        error instanceof Error ? error.message : String(error)
+      }; booting the image instead`,
+    );
+    return { kernel: await boot(), restored: false };
+  }
+}
+
 /** A kernel over a sealed sandbox with no process in it: its filesystem is
  * all in the kernel's memory, so nothing is staged. */
 async function restoreSnapshot(
@@ -413,13 +435,24 @@ async function restoreSnapshot(
   // (SnapshotMismatch both).
   const pins = await browserPins();
   const image = await decodeSandboxSnapshot(
-    await fetchVerifiedSnapshot(path, pinnedSnapshot(pins)),
+    await fetchVerifiedSnapshot(
+      path,
+      pinnedSnapshot(pins),
+      undefined,
+      (loaded, total) =>
+        env.show(
+          `loading snapshot ${(loaded / MIB).toFixed(1)} of ${
+            (total / MIB).toFixed(1)
+          } MiB`,
+        ),
+    ),
     snapshotIdentity(pins),
   );
   const fetched = performance.now();
   env.show("restoring snapshot");
   const { host, processes } = await restorePlaygroundKernel(kernel, image);
   if (processes.length !== 0) {
+    host.dispose();
     throw new Error("a sandbox snapshot must hold no process");
   }
   console.log(
@@ -511,6 +544,8 @@ async function startPlayground(
   let sealing = false;
   /** The seal is being taken: nothing starts at all, a sweep included. */
   let sealed = false;
+  /** The sweeps' own processes, which a seal lets finish. */
+  const sweepPids = new Set<number>();
 
   /** `/bin/sh` with `argv`, as the login user in the login home, leading
    * its own process group unless `ownGroup` is false. */
@@ -634,7 +669,8 @@ async function startPlayground(
     // `exit` at the prompt: the shell is done, the sandbox is still there
     // (the notebook's kernel keeps answering). Say so where the prompt
     // was, and in the status, instead of failing the next keystroke.
-    if (!stopped) {
+    // A seal kills it on purpose; the capture says what happens next.
+    if (!stopped && !sealing) {
       env.term.write(
         "\r\n[the shell exited; reload the page for a new one]\r\n",
       );
@@ -688,6 +724,7 @@ async function startPlayground(
       const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
       const single = async (command: string) => {
         const p = await spawnShell(["/bin/sh", "-c", command]);
+        sweepPids.add(p.pid);
         p.closeStdin();
         await p.runStartAsync();
       };
@@ -750,10 +787,11 @@ async function startPlayground(
     },
     async seal() {
       sealing = true;
-      mk.killProcess(user.pid, SIGKILL);
-      await userExited;
       // An exec's sweep runs now rather than 5 s after its exit, and the
-      // seal waits for it and for every process the page started.
+      // seal waits for it. Every other guest process goes, whoever started
+      // it -- the shell and its background jobs, a running exec, a
+      // Packages install -- and keeps going until none is left: a dying
+      // process's sweep, or a child it forked, shows up in a later look.
       sweeps.hurry();
       const deadline = Date.now() + 30_000;
       for (;;) {
@@ -761,6 +799,9 @@ async function startPlayground(
           p.pid !== KERNEL_PID && p.state !== "exited"
         );
         if (live.length === 0 && sweeps.idle) break;
+        for (const p of live) {
+          if (!sweepPids.has(p.pid)) mk.killProcess(p.pid, SIGKILL);
+        }
         if (Date.now() > deadline) {
           throw new Error(
             `cannot seal: processes still alive: ${
@@ -770,6 +811,7 @@ async function startPlayground(
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
+      await userExited;
       sealed = true;
       return await mk.sealSandbox();
     },

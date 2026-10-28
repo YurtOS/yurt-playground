@@ -25,6 +25,29 @@ done
 cache=$(mktemp -d "${TMPDIR:-/tmp}/yurt-pinned-artifacts.XXXXXX")
 trap 'rm -rf "$cache"' EXIT HUP INT TERM
 
+# Retried: the API answers a transient 5xx often enough to matter now that
+# CI fetches these per job rather than once (yurt-playground#123). The
+# checksum the caller checks is what decides the bytes are right, so a
+# retry can only cost time. A 404 is not transient -- a wrong pin should
+# say so at once.
+download() {
+  local tag=$1 repo=$2 pattern=$3 dir=$4 attempt=1
+  until gh release download "$tag" --repo "$repo" --pattern "$pattern" \
+    --dir "$dir" --clobber 2>"$cache/download.err"; do
+    cat "$cache/download.err" >&2
+    if grep -qiE "HTTP 4[0-9][0-9]|not found|release not found" "$cache/download.err"; then
+      exit 1
+    fi
+    if [[ $attempt -ge 3 ]]; then
+      echo "$pattern: giving up after $attempt attempts" >&2
+      exit 1
+    fi
+    echo "$pattern: attempt $attempt failed, retrying in $((attempt * 5))s" >&2
+    sleep $((attempt * 5))
+    attempt=$((attempt + 1))
+  done
+}
+
 fetch() {
   local key=$1 asset=$2 dest=$3
   local tag expected actual repo
@@ -38,25 +61,7 @@ fetch() {
     exit 1
   }
   echo "fetching $asset from $repo $tag" >&2
-  # Retried: the API answers a transient 5xx often enough to matter now that
-  # CI fetches these per job rather than once (yurt-playground#123). The
-  # checksum below is what decides the bytes are right, so a retry can only
-  # cost time. A 404 is not transient -- a wrong pin should say so at once.
-  attempt=1
-  until gh release download "$tag" --repo "$repo" --pattern "$asset" \
-    --dir "$cache" --clobber 2>"$cache/download.err"; do
-    cat "$cache/download.err" >&2
-    if grep -qiE "HTTP 4[0-9][0-9]|not found|release not found" "$cache/download.err"; then
-      exit 1
-    fi
-    if [[ $attempt -ge 3 ]]; then
-      echo "$asset: giving up after $attempt attempts" >&2
-      exit 1
-    fi
-    echo "$asset: attempt $attempt failed, retrying in $((attempt * 5))s" >&2
-    sleep $((attempt * 5))
-    attempt=$((attempt + 1))
-  done
+  download "$tag" "$repo" "$asset" "$cache"
   actual=$(shasum -a 256 "$cache/$asset" | cut -d' ' -f1)
   if [[ "$actual" != "$expected" ]]; then
     echo "$asset sha256 mismatch: got $actual, pin $expected" >&2
@@ -78,16 +83,21 @@ else
 fi
 fetch pythonSeal python3-seal.wasm public/demo/python3-seal.wasm
 # The sealed sandbox `?snapshot=1` restores (scripts/release-snapshot.ts),
-# when the train pins one: a yurt-playground release of its parts, joined
-# here and checked against the whole file's sha256 the pin records.
-if [[ "$(jq -r '.snapshot.release // empty' "$pins")" != "" ]]; then
+# when the train pins one and the caller asks for it (YURT_INSTALL_SNAPSHOT=1:
+# the deploy, which publishes it): 132 MB that no test reads. A yurt-playground
+# release of its parts, joined here and checked against the whole file's
+# sha256 the pin records.
+if [[ "$(jq -r '.snapshot.release // empty' "$pins")" == "" ]]; then
+  # One from earlier pins would be checked and left out by the static
+  # build; it is not this train's.
+  rm -f "$root/public/snapshot/sandbox.seal.gz"
+elif [[ "${YURT_INSTALL_SNAPSHOT:-}" == 1 ]]; then
   repo=$(jq -r .snapshot.releaseRepo "$pins")
   tag=$(jq -r .snapshot.release "$pins")
   count=$(jq -r '.snapshot.parts | length' "$pins")
   expected=$(jq -r .snapshot.sha256 "$pins")
   echo "fetching sandbox.seal.gz ($count parts) from $repo $tag" >&2
-  gh release download "$tag" --repo "$repo" --pattern 'sandbox.seal.gz.[0-9]*' \
-    --dir "$cache/snapshot" --clobber
+  download "$tag" "$repo" 'sandbox.seal.gz.[0-9]*' "$cache/snapshot"
   : > "$cache/sandbox.seal.gz"
   for ((i = 0; i < count; i++)); do
     cat "$cache/snapshot/sandbox.seal.gz.$i" >> "$cache/sandbox.seal.gz"
@@ -101,7 +111,5 @@ if [[ "$(jq -r '.snapshot.release // empty' "$pins")" != "" ]]; then
   mv "$cache/sandbox.seal.gz" "$root/public/snapshot/sandbox.seal.gz"
   echo "installed $tag/sandbox.seal.gz as public/snapshot/sandbox.seal.gz" >&2
 else
-  # One from earlier pins would be checked and left out by the static
-  # build; it is not this train's.
-  rm -f "$root/public/snapshot/sandbox.seal.gz"
+  echo "sandbox.seal.gz not fetched (YURT_INSTALL_SNAPSHOT=1 fetches it)" >&2
 fi

@@ -47,13 +47,24 @@ export function imagePartIndex(path: string, name: string): number | undefined {
   return match === null ? undefined : Number(match[1]);
 }
 
+/** Checks a caller makes as the parts arrive; a throw refuses the file. */
+export type PartChecks = {
+  /** The manifest, before any part is fetched. */
+  manifest?(manifest: ImagePartsManifest): void;
+  /** Each whole part, in order, before it is handed on (so a part with a
+   * check is held whole, one at a time). */
+  part?(index: number, name: string, bytes: Uint8Array): Promise<void>;
+};
+
 /**
  * A `fetch` that answers a request for `name` by fetching `name.parts.json`
  * and streaming the parts in order, so callers that read a single body
- * (hash check, progress, cache) need not know the file was split.
+ * (hash check, progress, cache) need not know the file was split. A part
+ * is fetched when the reader asks for more, so at most one is in flight.
  */
 export function partsFetch(
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  checks: PartChecks = {},
 ): typeof globalThis.fetch {
   return async (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
@@ -62,26 +73,40 @@ export function partsFetch(
     const manifestResponse = await fetchImpl(manifestUrl, init);
     if (!manifestResponse.ok) return manifestResponse;
     const manifest = await manifestResponse.json() as ImagePartsManifest;
+    checks.manifest?.(manifest);
+    let index = 0;
+    // A reader, not `for await`: WebKit ships ReadableStream without
+    // Symbol.asyncIterator, so iterating a body there throws.
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     const stream = new ReadableStream<Uint8Array>({
-      async start(controller) {
-        try {
-          for (const part of manifest.parts) {
-            const response = await fetchImpl(new URL(part, manifestUrl), init);
-            if (!response.ok || response.body === null) {
-              throw new Error(`fetch ${part} failed: ${response.status}`);
-            }
-            // A reader, not `for await`: WebKit ships ReadableStream without
-            // Symbol.asyncIterator, so iterating the body there throws.
-            const reader = response.body.getReader();
-            for (;;) {
-              const { done, value } = await reader.read();
-              if (done) break;
+      async pull(controller) {
+        for (;;) {
+          if (reader !== undefined) {
+            const { done, value } = await reader.read();
+            if (!done) {
               controller.enqueue(value);
+              return;
             }
+            reader = undefined;
           }
-          controller.close();
-        } catch (error) {
-          controller.error(error);
+          if (index === manifest.parts.length) {
+            controller.close();
+            return;
+          }
+          const part = manifest.parts[index];
+          const at = index++;
+          const response = await fetchImpl(new URL(part, manifestUrl), init);
+          if (!response.ok || response.body === null) {
+            throw new Error(`fetch ${part} failed: ${response.status}`);
+          }
+          if (checks.part === undefined) {
+            reader = response.body.getReader();
+            continue;
+          }
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          await checks.part(at, part, bytes);
+          controller.enqueue(bytes);
+          return;
         }
       },
     });

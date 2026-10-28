@@ -385,7 +385,11 @@ function boot(
       endBoot();
     }
     if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
-    if (msg.type === "snapshot-captured") saveSnapshot(msg.blob, msg.ms);
+    // A capture ends in the sealed sandbox, with no Jupyter to wait for.
+    if (msg.type === "snapshot-captured") {
+      saveSnapshot(msg.blob, msg.ms);
+      endBoot();
+    }
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
       const waiter = pending.get(msg.req);
       pending.delete(msg.req);

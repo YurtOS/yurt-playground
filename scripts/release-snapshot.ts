@@ -21,12 +21,15 @@
  *      there with the same file (a no-op);
  *   5. write the `snapshot` entry into artifacts/pins.json.
  *
- * Usage: deno run -A scripts/release-snapshot.ts [--dry-run] [--resume]
+ * Usage: deno run -A scripts/release-snapshot.ts [--dry-run] [--resume] [--tag TAG]
  *
  *   --dry-run  everything but the release and the pins write
  *   --resume   reuse public/snapshot/sandbox.seal.gz when it is a capture
  *              of this train (a capture is never the same bytes twice, so a
  *              release cut by an earlier run matches only its own file)
+ *   --tag      the release tag (default snapshot-<train>): a second snapshot
+ *              of one train, e.g. after a BOOT_SETUP bump, takes a new tag
+ *              (snapshot-<train>-2); a published release is never replaced
  *
  * Needs: the pinned blobs (scripts/install-pinned-artifacts.sh), the sibling
  * yurtos-kernel at the pinned rev (the page bundle), Playwright's Chromium
@@ -36,14 +39,14 @@
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
 import { ensureBundle } from "./serve.ts";
-import { handlePlaygroundRequest } from "../src/serve.ts";
+import { handlePlaygroundRequest, ISOLATION_HEADERS } from "../src/serve.ts";
 import { imagePartRange, imagePartsManifest } from "../src/image_parts.ts";
 import { sha256Hex } from "../src/integrity.ts";
-import { loadPins, type SnapshotPin } from "../src/pins.ts";
+import { parsePins, type Pins, type SnapshotPin } from "../src/pins.ts";
 import {
   checkSandboxSnapshot,
+  decodeSandboxSnapshot,
   SANDBOX_SNAPSHOT_NAME,
   snapshotIdentity,
   SnapshotMismatch,
@@ -83,7 +86,7 @@ async function gh(
 /** Whether the file at `path` is a capture of this train. */
 async function isThisTrains(
   path: string,
-  pins: Awaited<ReturnType<typeof loadPins>>,
+  pins: Pins,
 ) {
   try {
     const file = await Deno.open(path);
@@ -101,11 +104,20 @@ async function isThisTrains(
 
 /** Step 1: the page captures the snapshot; the file it downloads. */
 async function capture(): Promise<void> {
+  // Here, not at the top: the tests import this module's checks.
+  const { chromium } = await import("playwright");
   say("bundling the page");
   await ensureBundle();
+  // The page reads the pins without their snapshot entry: the one being
+  // replaced may be of an older shape, and a capture does not need it.
+  const pins = JSON.parse(await Deno.readTextFile(pinsPath));
+  delete pins.snapshot;
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
-    handlePlaygroundRequest,
+    (request) =>
+      new URL(request.url).pathname === "/pins.json"
+        ? Response.json(pins, { headers: ISOLATION_HEADERS })
+        : handlePlaygroundRequest(request),
   );
   const url = `http://127.0.0.1:${server.addr.port}/?start&snapshot=capture`;
   const browser = await chromium.launch();
@@ -114,7 +126,9 @@ async function capture(): Promise<void> {
     const page = await browser.newPage({ acceptDownloads: true });
     page.on("console", (message) => {
       const text = message.text();
-      if (/snapshot|compileall/.test(text)) say(`page: ${text.slice(0, 300)}`);
+      if (message.type() === "error" || /snapshot|compileall/.test(text)) {
+        say(`page: ${text.slice(0, 300)}`);
+      }
     });
     say(`capturing at ${url}`);
     const download = page.waitForEvent("download", {
@@ -145,15 +159,44 @@ async function capture(): Promise<void> {
   }
 }
 
+type PartInfo = { name: string; sha256: string; size: number };
+
+/** What keeps an existing release from being the one for these parts:
+ * every part must be there with this sha256 (GitHub's own digest of the
+ * upload) and size. Empty when it holds them. */
+export function releaseProblems(
+  assets: { name: string; size: number; digest: string | null }[],
+  parts: PartInfo[],
+): string[] {
+  const byName = new Map(assets.map((asset) => [asset.name, asset]));
+  return parts.flatMap((part) => {
+    const asset = byName.get(part.name);
+    if (asset === undefined) return [`${part.name} is missing`];
+    const sha256 = asset.digest?.replace(/^sha256:/, "") ?? "(none)";
+    return [
+      ...(sha256 === part.sha256
+        ? []
+        : [`${part.name} has sha256 ${sha256}, not ${part.sha256}`]),
+      ...(asset.size === part.size
+        ? []
+        : [`${part.name} is ${asset.size} bytes, not ${part.size}`]),
+    ];
+  });
+}
+
 /** Step 3: the parts as the site and the release publish them. */
 async function split(file: Uint8Array, dir: string) {
   const manifest = imagePartsManifest(ASSET, file.byteLength);
-  const parts: string[] = [];
+  const parts: PartInfo[] = [];
   for (const [index, name] of manifest.parts.entries()) {
     const [start, end] = imagePartRange(index, file.byteLength)!;
     const bytes = file.subarray(start, end);
     await Deno.writeFile(join(dir, name), bytes);
-    parts.push(await sha256Hex(bytes));
+    parts.push({
+      name,
+      sha256: await sha256Hex(bytes),
+      size: bytes.byteLength,
+    });
   }
   const sha256 = await sha256Hex(file);
   await Deno.writeTextFile(
@@ -189,16 +232,27 @@ function releaseNotes(train: string, pin: SnapshotPin): string {
 }
 
 async function main(): Promise<void> {
-  const dryRun = Deno.args.includes("--dry-run");
-  const resume = Deno.args.includes("--resume");
-  const unknown = Deno.args.filter((a) =>
-    a !== "--dry-run" && a !== "--resume"
-  );
-  if (unknown.length > 0) die(`unknown arguments: ${unknown.join(" ")}`);
+  const args = [...Deno.args];
+  const flag = (name: string) => {
+    const at = args.indexOf(name);
+    if (at >= 0) args.splice(at, 1);
+    return at >= 0;
+  };
+  const dryRun = flag("--dry-run");
+  const resume = flag("--resume");
+  let tagArg: string | undefined;
+  const tagAt = args.indexOf("--tag");
+  if (tagAt >= 0) {
+    tagArg = args[tagAt + 1] ?? die("--tag needs a tag");
+    args.splice(tagAt, 2);
+  }
+  if (args.length > 0) die(`unknown arguments: ${args.join(" ")}`);
   const raw = JSON.parse(await Deno.readTextFile(pinsPath));
-  const pins = await loadPins(pinsPath);
+  // The snapshot entry is what this script replaces: an older one (of
+  // another train, or an older shape) is not read.
+  const pins = parsePins({ ...raw, snapshot: undefined });
   const train: string = raw.train ?? die("artifacts/pins.json names no train");
-  const tag = `snapshot-${train}`;
+  const tag = tagArg ?? `snapshot-${train}`;
   for (const blob of ["yurt_kernel.wasm", "playground-slim.yurtimg"]) {
     await Deno.stat(join(root, "artifacts", blob)).catch(() =>
       die(
@@ -217,6 +271,13 @@ async function main(): Promise<void> {
     die("the captured snapshot was not built from artifacts/pins.json");
   }
   const file = await Deno.readFile(snapshotPath);
+  // The whole file, not only its header: a capture that does not inflate
+  // to the memory its header names is not released.
+  await decodeSandboxSnapshot(
+    new Blob([file]).stream(),
+    snapshotIdentity(pins),
+  );
+  say("the capture decodes in full");
   const dir = await Deno.makeTempDir({ prefix: "yurt-snapshot-" });
   try {
     const { sha256, parts, files } = await split(file, dir);
@@ -225,7 +286,7 @@ async function main(): Promise<void> {
       release: tag,
       sha256,
       size: file.byteLength,
-      parts,
+      parts: parts.map((part) => part.sha256),
       builtFrom: snapshotIdentity(pins),
     };
     say(`${ASSET}: ${pin.size} bytes, ${parts.length} parts, sha256 ${sha256}`);
@@ -247,13 +308,22 @@ async function main(): Promise<void> {
         "--output",
         "-",
       ])).stdout.split(/\s+/)[0];
-      if (published !== sha256) {
+      const problems = [
+        ...(published === sha256
+          ? []
+          : [`${ASSET}.sha256 says ${published}, not ${sha256}`]),
+        ...releaseProblems(JSON.parse(existing.stdout).assets, parts),
+      ];
+      if (problems.length > 0) {
         die(
-          `${REPO} ${tag} already holds another snapshot (sha256 ${published}). ` +
-            "Rerun with --resume and the file it was made from, or delete the release.",
+          `${REPO} ${tag} already exists and does not hold this snapshot: ` +
+            `${problems.join("; ")}. Rerun with --resume and the file it was ` +
+            "made from, or give a new --tag.",
         );
       }
-      say(`${tag} already holds this snapshot; nothing to upload`);
+      say(
+        `${tag} already holds every part of this snapshot; nothing to upload`,
+      );
     } else if (dryRun) {
       say(`--dry-run: would create the prerelease ${REPO} ${tag}`);
     } else {

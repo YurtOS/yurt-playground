@@ -1,13 +1,16 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
+import { snapshotOrBoot } from "../src/boot.ts";
 import { sha256Hex } from "../src/integrity.ts";
 import { parsePins } from "../src/pins.ts";
 import {
+  BOOT_SETUP,
   checkSandboxSnapshot,
   decodeSandboxSnapshot,
   encodeSandboxSnapshot,
   fetchVerifiedSnapshot,
   pinnedSnapshot,
+  SEAL_VERSION,
   type SnapshotIdentity,
   snapshotIdentity,
   SnapshotMismatch,
@@ -42,6 +45,9 @@ function image(memoryBytes: number): SandboxSealImage {
 
 const BUILT: SnapshotIdentity = {
   kernelSha256: "ab".repeat(32),
+  kernelRev: "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
+  sealVersion: 1,
+  bootSetup: 1,
   imageSha256: "cd".repeat(32),
   pythonSealSha256: "ef".repeat(32),
 };
@@ -68,20 +74,23 @@ Deno.test("a sandbox snapshot round-trips its seal image under the build it was 
   assertEquals(await decodeSandboxSnapshot(file.stream(), BUILT), sealed);
 });
 
-Deno.test("a sandbox snapshot from another kernel, image or Python set is refused, by name", async () => {
+Deno.test("a sandbox snapshot built from anything else is refused, by name", async () => {
   const file = await encodeSandboxSnapshot(image(4096), BUILT);
-  for (
-    const key of [
-      "kernelSha256",
-      "imageSha256",
-      "pythonSealSha256",
-    ] as const
-  ) {
-    const expected = { ...BUILT, [key]: "00".repeat(32) };
+  const others: Partial<SnapshotIdentity> = {
+    kernelSha256: "00".repeat(32),
+    kernelRev: "0000000",
+    sealVersion: 2,
+    bootSetup: 2,
+    imageSha256: "00".repeat(32),
+    pythonSealSha256: "00".repeat(32),
+  };
+  assertEquals(Object.keys(others).sort(), Object.keys(BUILT).sort());
+  for (const [key, other] of Object.entries(others)) {
+    const expected = { ...BUILT, [key]: other };
     const error = await assertRejects(
       () => decodeSandboxSnapshot(file.stream(), expected),
       SnapshotMismatch,
-      `${key} ${BUILT[key]}, not ${"00".repeat(32)}`,
+      `${key} ${BUILT[key as keyof SnapshotIdentity]}, not ${other}`,
     );
     assertEquals(error.message.split(";").length, 1, "only what differs");
     await assertRejects(
@@ -163,11 +172,25 @@ Deno.test("a snapshot's identity is the pinned kernel, the image the browser boo
       browserImage: pin("slim"),
       pythonSeal: { sha256: "py" },
     }),
-    { kernelSha256: "k", imageSha256: "slim", pythonSealSha256: "py" },
+    {
+      kernelSha256: "k",
+      kernelRev: "v",
+      sealVersion: SEAL_VERSION,
+      bootSetup: BOOT_SETUP,
+      imageSha256: "slim",
+      pythonSealSha256: "py",
+    },
   );
   assertEquals(
     snapshotIdentity({ kernelWasm: pin("k"), image: pin("full") }),
-    { kernelSha256: "k", imageSha256: "full", pythonSealSha256: null },
+    {
+      kernelSha256: "k",
+      kernelRev: "v",
+      sealVersion: SEAL_VERSION,
+      bootSetup: BOOT_SETUP,
+      imageSha256: "full",
+      pythonSealSha256: null,
+    },
   );
 });
 
@@ -222,13 +245,24 @@ Deno.test("the downloaded snapshot is checked part by part against the pin", asy
   const name = "snapshot/sandbox.seal.gz";
   const path = `http://pg/${name}`;
   const pin = await pinFor(file);
+  const progress: number[] = [];
   assertEquals(
     await decodeSandboxSnapshot(
-      await fetchVerifiedSnapshot(path, pin, site(name, file)),
+      await fetchVerifiedSnapshot(
+        path,
+        pin,
+        site(name, file),
+        (loaded, total) => {
+          assertEquals(total, file.byteLength);
+          progress.push(loaded);
+        },
+      ),
       BUILT,
     ),
     sealed,
   );
+  assertEquals(progress.length, pin.parts.length, "one report per part");
+  assertEquals(progress.at(-1), file.byteLength);
   const damaged = file.slice();
   damaged[damaged.byteLength - 20] ^= 0xff;
   await assertRejects(
@@ -256,7 +290,7 @@ Deno.test("only a snapshot pinned for the site's own kernel, image and Python se
     sha256,
   });
   const pins = {
-    kernelWasm: pin(BUILT.kernelSha256),
+    kernelWasm: { ...pin(BUILT.kernelSha256), rev: BUILT.kernelRev },
     image: pin("full"),
     browserImage: pin(BUILT.imageSha256),
     pythonSeal: { sha256: BUILT.pythonSealSha256! },
@@ -311,5 +345,101 @@ Deno.test("pins.json's snapshot entry is read, and a malformed one refused", asy
       Error,
       "snapshot.",
     );
+  }
+});
+
+Deno.test("a snapshot header of another format is refused", async () => {
+  const file = await rawSnapshot({
+    format: 3,
+    builtFrom: BUILT,
+    memoryBytes: 16,
+  }, new Uint8Array(16));
+  await assertRejects(
+    () => decodeSandboxSnapshot(file.stream(), BUILT),
+    SnapshotMismatch,
+    "format 3, not 2",
+  );
+  await assertRejects(
+    () => checkSandboxSnapshot(file.stream(), BUILT),
+    SnapshotMismatch,
+    "format 3",
+  );
+});
+
+Deno.test("?snapshot=1 boots the image when the snapshot cannot be had, whatever the reason", async () => {
+  const name = "snapshot/sandbox.seal.gz";
+  const path = `http://pg/${name}`;
+  const good = new Uint8Array(
+    await (await encodeSandboxSnapshot(image(1 << 10), BUILT)).arrayBuffer(),
+  );
+  const raw = new Uint8Array(
+    await new Response(
+      new Blob([good]).stream().pipeThrough(new DecompressionStream("gzip")),
+    ).arrayBuffer(),
+  );
+  const truncated = new Uint8Array(
+    await new Response(
+      new Blob([raw.subarray(0, raw.byteLength - 10)]).stream().pipeThrough(
+        new CompressionStream("gzip"),
+      ),
+    ).arrayBuffer(),
+  );
+  const notGzip = new TextEncoder().encode("<html>not a snapshot</html>");
+  const damaged = good.slice();
+  damaged[damaged.byteLength - 20] ^= 0xff;
+  const pin = await pinFor(good);
+  const other = new Uint8Array(
+    await (await encodeSandboxSnapshot(image(16), {
+      ...BUILT,
+      kernelSha256: "00".repeat(32),
+    })).arrayBuffer(),
+  );
+  /** The restore `?snapshot=1` makes: the pinned file, served by `serve`. */
+  const restoreFrom = (served: typeof fetch, pinned: SnapshotPin) => () =>
+    fetchVerifiedSnapshot(path, pinned, served).then((body) =>
+      decodeSandboxSnapshot(body, BUILT)
+    );
+  const notFound: typeof fetch = () =>
+    Promise.resolve(new Response(null, { status: 404 }));
+  const cases: [string, () => Promise<unknown>][] = [
+    ["no parts.json", restoreFrom(notFound, pin)],
+    [
+      "a part 404s",
+      restoreFrom((input) => {
+        return String(input).endsWith(".parts.json")
+          ? site(name, good)(input)
+          : notFound(input);
+      }, pin),
+    ],
+    ["a different size", restoreFrom(site(name, good.slice(0, -3)), pin)],
+    [
+      "a part that is not the pinned one",
+      restoreFrom(site(name, damaged), pin),
+    ],
+    ["truncated", restoreFrom(site(name, truncated), await pinFor(truncated))],
+    ["not gzip", restoreFrom(site(name, notGzip), await pinFor(notGzip))],
+    ["another build", restoreFrom(site(name, other), await pinFor(other))],
+  ];
+  const warn = console.warn;
+  const warned: string[] = [];
+  console.warn = (...args: unknown[]) => warned.push(args.join(" "));
+  try {
+    for (const [why, restore] of cases) {
+      assertEquals(
+        await snapshotOrBoot(restore, () => Promise.resolve("booted")),
+        { kernel: "booted", restored: false },
+        why,
+      );
+    }
+    assertEquals(warned.length, cases.length, "each fallback is noted");
+    assertEquals(
+      (await snapshotOrBoot(
+        restoreFrom(site(name, good), pin),
+        () => Promise.reject(new Error("not booted")),
+      )).restored,
+      true,
+    );
+  } finally {
+    console.warn = warn;
   }
 });

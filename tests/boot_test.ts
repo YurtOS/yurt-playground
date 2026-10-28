@@ -538,3 +538,42 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name:
+    "a seal stops every guest process the page started and leaves the status alone",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootAshSession();
+    if (!session) return;
+    try {
+      // A background job: its own process group, which killing the shell
+      // does not reach.
+      const before = session.term.output().length;
+      session.term.type("sleep 1000 & printf '__B''G__\\n'\n");
+      await waitFor(
+        () => session.term.output().slice(before).includes("__BG__"),
+        "the background job",
+        60_000,
+      );
+      // An exec that finished, whose sweep is still seconds away, and one
+      // still running.
+      const finished = await session.process("exec true", {
+        maxOutputBytes: 64,
+      });
+      await finished.exited;
+      await session.process("exec sleep 1000", { maxOutputBytes: 64 });
+      const image = await session.seal();
+      assertEquals(image.processes.length, 0);
+      assertEquals(session.shown() === "shell exited", false);
+      await assertRejects(
+        () => session.process("exec true", { maxOutputBytes: 64 }),
+        Error,
+        "being sealed",
+      );
+    } finally {
+      session.stop();
+    }
+  },
+});

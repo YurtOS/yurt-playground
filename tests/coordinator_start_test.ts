@@ -380,7 +380,18 @@ Deno.test("a failed capture is said as one, not as a Jupyter that did not start"
   assertEquals(reports.at(-1), {
     type: "error",
     message: "snapshot capture failed: compileall exited 2",
+    endsBoot: true,
   });
+});
+
+Deno.test("a captured snapshot ends the page's boot, like a notebook that is ready", () => {
+  const page = Deno.readTextFileSync(
+    new URL("../src/page.ts", import.meta.url),
+  );
+  assert(
+    /msg\.type === "snapshot-captured"\) \{[^}]*endBoot\(\);/.test(page),
+    "the page's snapshot-captured handler calls endBoot()",
+  );
 });
 
 Deno.test("a stack-overflow relaunch's note rides on every later 'starting Jupyter' tick", async () => {

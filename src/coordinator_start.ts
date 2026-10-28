@@ -190,6 +190,7 @@ async function launchKernel<S extends StartableSession>(
       deps.post({
         type: "error",
         message: `snapshot capture failed: ${errorText(error)}`,
+        endsBoot: true,
       });
     }
     return undefined;

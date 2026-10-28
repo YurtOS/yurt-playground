@@ -25,12 +25,22 @@ export type Pins = {
   snapshot?: SnapshotPin;
 };
 
-/** What a sandbox snapshot was built from: a restore needs the same of all
- * three. The kernel must match its own memory layout; the image and the
- * Python set are what the sandbox's files came from. */
+/** What a sandbox snapshot was built from: a restore needs the same of
+ * all of it. The kernel (its wasm, and the rev its JS host is bundled
+ * from) and the seal format must match the memory layout; the image, the
+ * Python set and the page's boot setup are what the sandbox's files and
+ * login came from. */
 export type SnapshotIdentity = {
   /** The kernel build the image was sealed under. */
   kernelSha256: string;
+  /** The yurtos-kernel rev (`kernelWasm.rev`): the page bundles its JS
+   * host from that rev, which can change while the wasm does not. */
+  kernelRev: string;
+  /** The host's seal image version (`SandboxSealImage.version`). */
+  sealVersion: number;
+  /** The page's own boot setup (`BOOT_SETUP` in src/sandbox_snapshot.ts):
+   * what it stages beside the image and how it sets up the login. */
+  bootSetup: number;
   /** The image the sandbox booted (the slim one, when the pins name it). */
   imageSha256: string;
   /** The train's Python set, by its sealable CPython's hash (`pythonSeal`);
@@ -158,6 +168,14 @@ function parseSnapshotPin(raw: unknown): SnapshotPin {
   if (built.pythonSealSha256 !== null && !isHex(built.pythonSealSha256)) {
     fail("builtFrom.pythonSealSha256 must be a sha256 or null");
   }
+  if (typeof built.kernelRev !== "string" || built.kernelRev === "") {
+    fail("builtFrom.kernelRev must be a string");
+  }
+  for (const key of ["sealVersion", "bootSetup"] as const) {
+    if (!Number.isInteger(built[key])) {
+      fail(`builtFrom.${key} must be an integer`);
+    }
+  }
   return {
     releaseRepo: value.releaseRepo as string,
     release: value.release as string,
@@ -166,6 +184,9 @@ function parseSnapshotPin(raw: unknown): SnapshotPin {
     parts: value.parts as string[],
     builtFrom: {
       kernelSha256: built.kernelSha256 as string,
+      kernelRev: built.kernelRev as string,
+      sealVersion: built.sealVersion as number,
+      bootSetup: built.bootSetup as number,
       imageSha256: built.imageSha256 as string,
       pythonSealSha256: built.pythonSealSha256 as string | null,
     },

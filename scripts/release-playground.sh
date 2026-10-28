@@ -808,20 +808,27 @@ for target in aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linu
 done
 # The sealed sandbox snapshot (scripts/release-snapshot.ts) is captured by
 # hand, not by the train: carried through while it was built from this
-# train's kernel, browser image and Python set, dropped otherwise -- a
+# train's kernel (wasm and rev), browser image and Python set and this
+# page's boot setup and seal version, dropped otherwise -- a
 # restore under anything else is refused, so a stale pin only costs a
 # download.
 snapshot_json='null'
 old_snapshot=$(jq -c '.snapshot // empty' "$root/artifacts/pins.json")
 if [ -n "$old_snapshot" ]; then
   browser_image_sha=$(jq -r --arg full "$image_sha256" '.sha256 // $full' <<< "$slim_json")
-  if jq -e --arg k "$kernel_sha256" --arg i "$browser_image_sha" \
+  # The page's own parts of the identity, as this checkout's source says.
+  boot_setup=$(sed -n 's/^export const BOOT_SETUP = \([0-9]*\);$/\1/p' "$root/src/sandbox_snapshot.ts")
+  seal_version=$(sed -n 's/^export const SEAL_VERSION: .* = \([0-9]*\);$/\1/p' "$root/src/sandbox_snapshot.ts")
+  [ -n "$boot_setup" ] && [ -n "$seal_version" ] || die "cannot read BOOT_SETUP and SEAL_VERSION from src/sandbox_snapshot.ts"
+  if jq -e --arg k "$kernel_sha256" --arg r "$kernel_sha" --arg i "$browser_image_sha" \
     --arg p "$(jq -r '.sha256 // empty' <<< "$python_seal_json")" \
-    '.builtFrom.kernelSha256 == $k and .builtFrom.imageSha256 == $i and .builtFrom.pythonSealSha256 == $p' \
+    --argjson b "$boot_setup" --argjson v "$seal_version" \
+    '.builtFrom | .kernelSha256 == $k and .kernelRev == $r and .imageSha256 == $i
+      and .pythonSealSha256 == $p and .bootSetup == $b and .sealVersion == $v' \
     <<< "$old_snapshot" >/dev/null; then
     snapshot_json=$old_snapshot
   else
-    say "the pinned snapshot is of another kernel, image or Python set: dropped (run scripts/release-snapshot.ts)"
+    say "the pinned snapshot was built from another kernel, image, Python set or boot setup: dropped (run scripts/release-snapshot.ts)"
     snapshot_dropped=1
   fi
 fi

@@ -193,8 +193,8 @@ export async function buildStaticSite(): Promise<void> {
   const pins = await loadPins(join(artifactsDir, "pins.json"));
   if (!snapshot && pins.snapshot !== undefined) {
     console.warn(
-      `!!! ${SANDBOX_SNAPSHOT_NAME} is pinned but missing; ` +
-        "run scripts/install-pinned-artifacts.sh",
+      `${SANDBOX_SNAPSHOT_NAME} is pinned but not here, so not published ` +
+        "(YURT_INSTALL_SNAPSHOT=1 scripts/install-pinned-artifacts.sh fetches it)",
     );
   }
   if (snapshot && await snapshotMatchesPins(snapshotPath, pins)) {
