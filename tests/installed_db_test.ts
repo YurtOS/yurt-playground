@@ -63,6 +63,21 @@ Deno.test("installedPackages reads only page 1 and the packages table's pages", 
   assert(read * 4 < REAL.byteLength, `${read} of ${REAL.byteLength} bytes`);
 });
 
+Deno.test("installedPackages reads no overflow page past the columns it needs", async () => {
+  // rtk's files list grown past 40 overflow pages.
+  const bytes = sqlite(
+    (db) =>
+      db.exec(
+        "UPDATE packages SET files_json = printf('%.200000c', 'x') WHERE name = 'rtk'",
+      ),
+    REAL,
+  );
+  const reads: number[] = [];
+  assertEquals(await installedPackages(at(bytes, reads)), REAL_NAMES);
+  const read = reads.reduce((sum, length) => sum + length, 0);
+  assert(read <= 8 * 4096, `${read} bytes read`);
+});
+
 Deno.test("installedPackages walks interior pages and overflow chains, and skips a half-done install", async () => {
   let expected: string[] = [];
   const bytes = sqlite((db) => {
@@ -106,6 +121,19 @@ Deno.test("installedPackages finds the columns by the table's own definition", a
         ('installed', 'git'), ('prepared', 'jq'), ('installed', 'ca-certificates');`);
   });
   assertEquals(await installedPackages(at(bytes)), ["ca-certificates", "git"]);
+  // Comments, and a state column added after its rows: they hold its
+  // DEFAULT.
+  const commented = sqlite((db) => {
+    db.exec(`CREATE TABLE packages (
+        -- the package, as pkg names it, (with a comma)
+        name TEXT PRIMARY KEY, /* the state, follows, later */
+        version TEXT
+      );
+      INSERT INTO packages (name) VALUES ('git'), ('jq');
+      ALTER TABLE packages ADD COLUMN install_state TEXT DEFAULT 'installed';
+      INSERT INTO packages (name, install_state) VALUES ('zsh', 'prepared');`);
+  });
+  assertEquals(await installedPackages(at(commented)), ["git", "jq"]);
   const unnamed = sqlite((db) =>
     db.exec("CREATE TABLE packages (name TEXT PRIMARY KEY, state TEXT)")
   );
@@ -118,7 +146,7 @@ Deno.test("installedPackages finds the columns by the table's own definition", a
 
 Deno.test("installedPackages refuses what is not pkg's database", async () => {
   await assertRejects(
-    () => installedPackages(at(new TextEncoder().encode("not a database"))),
+    () => installedPackages(at(new Uint8Array(4096).fill(0x61))),
     Error,
     "not a SQLite database",
   );
@@ -130,8 +158,18 @@ Deno.test("installedPackages refuses what is not pkg's database", async () => {
   );
 });
 
-Deno.test("readInstalled: no database is nothing installed", async () => {
+Deno.test("readInstalled: no database, or one too short for a header, is nothing installed", async () => {
   assertEquals(await readInstalled(files({})), []);
+  // SQLite reads an empty file (or a cut header) as an empty database.
+  for (const length of [0, 16, 99]) {
+    assertEquals(
+      await readInstalled(
+        files({ [INSTALLED_DB_PATH]: REAL.slice(0, length) }),
+      ),
+      [],
+      `${length} bytes`,
+    );
+  }
   assertEquals(
     await readInstalled(files({ [INSTALLED_DB_PATH]: REAL })),
     REAL_NAMES,
@@ -139,57 +177,110 @@ Deno.test("readInstalled: no database is nothing installed", async () => {
 });
 
 Deno.test("readInstalled reports a database it cannot read, never nothing installed", async () => {
-  // Unreadable (EACCES, EIO): the error, not an empty list.
-  const denied: ReadAt = (path) =>
+  // The kernel's VFS read failing (a directory where the file should be).
+  const failing: ReadAt = (path) =>
     path === INSTALLED_DB_PATH
-      ? Promise.reject(new Error(`read ${path}: rc=-13`))
+      ? Promise.reject(new Error(`read ${path}: rc=-21`))
       : Promise.resolve(undefined);
-  await assertRejects(() => readInstalled(denied), Error, "rc=-13");
-  // Gone halfway through the read.
-  let reads = 0;
-  const vanishing: ReadAt = (path, offset, length) =>
-    path === INSTALLED_DB_PATH && reads++ < 2
-      ? at(REAL)(offset, length)
-      : Promise.resolve(undefined);
-  await assertRejects(() => readInstalled(vanishing), Error, "went away");
+  await assertRejects(() => readInstalled(failing), Error, "rc=-21");
 });
 
-Deno.test("readInstalled waits out a pkg run, and reports a journal it leaves behind", async () => {
+Deno.test("readInstalled reads again while a pkg run writes, and says when one keeps writing", async () => {
   const journal = new Uint8Array(512);
-  // A pkg run that finishes: the next try reads it.
-  const have: Record<string, Uint8Array> = {
-    [INSTALLED_DB_PATH]: REAL,
-    [INSTALLED_DB_JOURNAL]: journal,
+  const waits: number[] = [];
+  const wait = (ms: number) => {
+    waits.push(ms);
+    return Promise.resolve();
   };
+  // Busy for two reads, then done: the third read answers.
+  let probes = 0;
+  const have: Record<string, Uint8Array> = { [INSTALLED_DB_PATH]: REAL };
   const finishing: ReadAt = (path, offset, length) => {
-    const answer = files(have)(path, offset, length);
-    if (path === INSTALLED_DB_JOURNAL) delete have[INSTALLED_DB_JOURNAL];
-    return answer;
+    if (path === INSTALLED_DB_JOURNAL) {
+      return Promise.resolve(probes++ < 2 ? journal : undefined);
+    }
+    return files(have)(path, offset, length);
   };
-  assertEquals(await readInstalled(finishing, 0), REAL_NAMES);
-  // One that died mid-transaction: its journal stays.
+  assertEquals(await readInstalled(finishing, () => true, wait), REAL_NAMES);
+  assertEquals(waits, [250, 500]);
+  assertEquals(probes, 3, "one journal probe per read");
+  // A run that keeps writing: about a minute of waits, then it says so --
+  // not that a transaction died, which nothing here can tell.
+  waits.length = 0;
   await assertRejects(
     () =>
       readInstalled(
-        files({
-          [INSTALLED_DB_PATH]: REAL,
-          [INSTALLED_DB_JOURNAL]: journal,
-        }),
-        0,
+        files({ [INSTALLED_DB_PATH]: REAL, [INSTALLED_DB_JOURNAL]: journal }),
+        () => true,
+        wait,
       ),
     Error,
-    "pkg's database has an unfinished transaction; the next pkg run repairs it",
+    "pkg is still writing its database",
   );
-  // A run that begins while it is read, and is still running: what was
-  // read may be torn, and is not answered.
-  let journalReads = 0;
-  const beginning: ReadAt = (path, offset, length) =>
-    path === INSTALLED_DB_JOURNAL
-      ? Promise.resolve(journalReads++ === 0 ? undefined : journal)
-      : at(REAL)(offset, length);
-  await assertRejects(
-    () => readInstalled(beginning, 0),
-    Error,
-    "unfinished transaction",
+  const waited = waits.reduce((sum, ms) => sum + ms, 0);
+  assert(waited >= 60_000 && waited < 65_000, `${waited} ms`);
+  assert(waits.every((ms) => ms <= 4000));
+  // A run that committed while it was read (the change counter moved,
+  // and its journal is gone): what was read may be torn; read again.
+  waits.length = 0;
+  const after = sqlite(
+    (db) => db.exec("UPDATE packages SET version = 'x' WHERE name = 'zlib'"),
+    REAL,
+  );
+  let counterReads = 0;
+  const committing: ReadAt = (path, offset, length) => {
+    if (path === INSTALLED_DB_JOURNAL) return Promise.resolve(undefined);
+    // The first read sees the old file; from its counter check on, the new.
+    if (offset === 24 && length === 4) counterReads++;
+    return at(counterReads === 0 ? REAL : after)(offset, length);
+  };
+  assertEquals(await readInstalled(committing, () => true, wait), REAL_NAMES);
+  assertEquals(waits, [250]);
+});
+
+Deno.test("readInstalled reads the header once per read", async () => {
+  const reads: [number, number][] = [];
+  await readInstalled((path, offset, length) => {
+    if (path === INSTALLED_DB_PATH) reads.push([offset, length]);
+    return files({ [INSTALLED_DB_PATH]: REAL })(path, offset, length);
+  });
+  assertEquals(reads.filter(([offset]) => offset === 0), [[0, 100]]);
+});
+
+Deno.test("readInstalled stops, answering nothing, once its sandbox is dropped", async () => {
+  const journal = new Uint8Array(512);
+  // Dropped while it waits out a pkg run: no more reads of the old one.
+  let live = true;
+  let reads = 0;
+  const busy: ReadAt = (path, offset, length) => {
+    reads++;
+    return files({
+      [INSTALLED_DB_PATH]: REAL,
+      [INSTALLED_DB_JOURNAL]: journal,
+    })(
+      path,
+      offset,
+      length,
+    );
+  };
+  const waiting = readInstalled(busy, () => live, () => {
+    live = false;
+    return Promise.resolve();
+  });
+  assertEquals(await waiting, undefined);
+  const afterDrop = reads;
+  await Promise.resolve();
+  assertEquals(reads, afterDrop);
+  // Dropped mid-read: what it read is not answered, nor is an error.
+  let left = 3;
+  assertEquals(
+    await readInstalled(
+      (path, offset, length) => {
+        if (--left === 0) live = false;
+        return files({ [INSTALLED_DB_PATH]: REAL })(path, offset, length);
+      },
+      () => left > 0,
+    ),
+    undefined,
   );
 });

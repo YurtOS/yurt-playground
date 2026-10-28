@@ -452,7 +452,8 @@ export function vfsStat(
 }
 
 /** Up to `length` bytes of a file from `offset`, fewer at its end;
- * `undefined` when there is no such file (or a parent is no directory).
+ * `undefined` when there is no such file (ENOENT, the kernel's only answer
+ * for a missing path).
  * Any other failure throws. A `length` of 0 reads, and so tells, nothing. */
 export function vfsReadAt(
   mk: KernelHostInterface,
@@ -476,7 +477,7 @@ export function vfsReadAt(
       Math.min(cap, length - at),
     );
     const count = Number(rc);
-    if (count === -2 || count === -20) return undefined;
+    if (count === -2) return undefined;
     if (count < 0) throw new Error(`read ${path}: rc=${rc}`);
     if (count === 0) break;
     out.set(response.subarray(0, count), at);

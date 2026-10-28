@@ -443,15 +443,14 @@ Deno.test("vfsReadAt reads from an offset in scratch-sized pieces, fewer at the 
   // Past the end: what there is.
   assertEquals(vfsReadAt(mk(-2n), "/f", 280, 100), file.slice(280));
   assertEquals(vfsReadAt(mk(-2n), "/f", 400, 10), new Uint8Array());
-  // No such file (or a parent that is no directory): none.
+  // No such file: none.
   assertEquals(vfsReadAt(mk(-2n), "/gone", 0, 10), undefined);
-  assertEquals(vfsReadAt(mk(-20n), "/gone", 0, 10), undefined);
-  // Anything else is an error, not an absence.
+  // Anything else (a directory there: EISDIR) is an error, not an absence.
   let threw = "";
   try {
-    vfsReadAt(mk(-13n), "/denied", 0, 10);
+    vfsReadAt(mk(-21n), "/dir", 0, 10);
   } catch (error) {
     threw = String(error);
   }
-  assert(threw.includes("rc=-13"), threw);
+  assert(threw.includes("rc=-21"), threw);
 });

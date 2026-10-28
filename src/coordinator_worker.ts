@@ -218,15 +218,22 @@ async function servePackages(msg: ToWorker): Promise<void> {
 async function postInstalled(): Promise<void> {
   // The in-tab sandbox only: the desktop app's page has no Packages panel
   // to mark, and no VFS of its own to read.
-  const readAt = packageSession?.readAt;
+  const session = packageSession;
+  const readAt = session?.readAt;
   if (readAt === undefined) return;
+  // A read still going when the sandbox is dropped stops, and posts
+  // nothing over the fresh sandbox's list.
+  const live = () => packageSession === session;
   try {
-    post({ type: "pkg-installed", names: await readInstalled(readAt) });
+    const names = await readInstalled(readAt, live);
+    if (names !== undefined) post({ type: "pkg-installed", names });
   } catch (error) {
-    post({
-      type: "pkg-installed",
-      error: error instanceof Error ? error.message : String(error),
-    });
+    if (live()) {
+      post({
+        type: "pkg-installed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
 
