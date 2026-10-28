@@ -79,8 +79,12 @@ export type PlaygroundSession = {
   spawn?: (line: string) => Promise<void | { exited: Promise<unknown> }>;
   /** A guest file's bytes as the login shell would read them, or
    * `undefined` when there is no such file (the Jupyter connection file,
-   * looked for without typing into the user's shell). */
-  readFile?: (path: string) => Promise<Uint8Array | undefined>;
+   * looked for without typing into the user's shell). At most `maxBytes`
+   * (4 MiB unless asked). */
+  readFile?: (
+    path: string,
+    maxBytes?: number,
+  ) => Promise<Uint8Array | undefined>;
   /** The same, handing the process back: what a driver's `exec` runs
    * (src/executions.ts). */
   process?: Spawner;
@@ -648,9 +652,9 @@ async function startPlayground(
     // The Jupyter connection file, looked for by the page itself: nothing is
     // typed into the user's shell for it (yurtos-kernel#2824). Read as the
     // login shell, whose credentials apply; a missing file is `undefined`.
-    readFile(path) {
+    readFile(path, maxBytes = 4 * 1024 * 1024) {
       // Enough for the kernel log the failure message tails.
-      const bytes = readGuestFile(mk, user.pid, path, 4 * 1024 * 1024);
+      const bytes = readGuestFile(mk, user.pid, path, maxBytes);
       return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
     },
     dialSandboxPort: (port) => mk.dialSandboxPort(port),

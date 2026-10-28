@@ -6,8 +6,6 @@ import {
   type Catalog,
   type Fetcher,
   fetchWithProgress,
-  installedByPlan,
-  installedTracker,
   installPackage,
   installScript,
   InstallStalled,
@@ -1280,27 +1278,6 @@ Deno.test("a checked catalog refuses metadata the index does not name, and an ex
   );
 });
 
-Deno.test("installedByPlan is what pkg's plan installed, and the package itself", () => {
-  assertEquals(
-    installedByPlan(
-      "install libx 1.0.0-yurt_0\ninstall greet 0.1.0-yurt_0\n",
-      "greet",
-    ),
-    ["libx", "greet"],
-  );
-  // Installed already (from the terminal, say): no plan, but it is there.
-  assertEquals(installedByPlan("nothing to install\n", "greet"), ["greet"]);
-  // Only pkg's own plan lines, anchored: progress that mentions an install
-  // names no package.
-  assertEquals(
-    installedByPlan(
-      "fetching libx\nwill install foo next\n  install bar 1\ninstall libx 1.0.0-yurt_0",
-      "greet",
-    ),
-    ["libx", "greet"],
-  );
-});
-
 Deno.test("markInstalled marks the known packages Installed, disabled, and the rest Install", () => {
   const button = (name: string) => ({
     dataset: { package: name } as { package?: string },
@@ -1329,25 +1306,4 @@ Deno.test("markInstalled marks the known packages Installed, disabled, and the r
     ["Install", true],
     ["Install", true],
   ]);
-});
-
-Deno.test("the installed list is posted whole, and a fresh sandbox starts it empty", () => {
-  const posted: string[][] = [];
-  const installed = installedTracker((names) => posted.push(names));
-  installed.add(["python", "numpy", "pyzmq", "jupyter-kernel"]);
-  installed.add(installedByPlan("install rtk 0.1.0-yurt_0\n", "rtk"));
-  // Every post is the whole list: the page replaces its marks with it.
-  assertEquals(posted.at(-1), [
-    "python",
-    "numpy",
-    "pyzmq",
-    "jupyter-kernel",
-    "rtk",
-  ]);
-  // The sandbox is dropped for a fresh one: nothing is known installed...
-  installed.reset();
-  assertEquals(posted.at(-1), []);
-  // ...and its Python install does not bring back the old sandbox's rtk.
-  installed.add(["python", "numpy", "pyzmq", "jupyter-kernel"]);
-  assertEquals(posted.at(-1), ["python", "numpy", "pyzmq", "jupyter-kernel"]);
 });

@@ -18,7 +18,6 @@
 import type { JupyterTransport } from "./jupyter_transport.ts";
 import { relaunchNote } from "./jupyter.ts";
 import { asWaitStatus, type Spawner } from "./executions.ts";
-import { PYTHON_SET } from "./python_install.ts";
 
 /** What `start` posts to the page about the boot. */
 export type StartReport =
@@ -30,17 +29,7 @@ export type StartReport =
   // The image has no python3: the shell runs, Jupyter is not launched.
   // `error` is why installing it failed, when that was tried.
   | { type: "python-missing"; error?: string }
-  // Packages this sandbox is known to have (the Python set, once it is
-  // there): the Packages panel marks them Installed.
-  | { type: "pkg-installed"; names: string[] }
   | { type: "notebook-ready" };
-
-/** What the panel is told once Python is in: the set's packages, from the
- * layer, from pkg, or already in the image. */
-const PYTHON_INSTALLED: StartReport = {
-  type: "pkg-installed",
-  names: [...PYTHON_SET],
-};
 
 /** The probe's own answer for "no python3": a code nothing else in the
  * probe exits with. Any other nonzero exit -- a redirect that failed (a
@@ -139,19 +128,13 @@ export async function startSandbox<S extends StartableSession>(
     deps.post({ type: "shell-ready" });
     return undefined;
   }
-  const pythonPresent = await probePython(
-    session.process,
-    deps.probeTimeoutMs,
-  );
-  if (pythonPresent === false) {
+  if (await probePython(session.process, deps.probeTimeoutMs) === false) {
     if (deps.installPython === undefined) {
       deps.post({ type: "python-missing" });
       return undefined;
     }
     return await installThenLaunch(session, deps);
   }
-  // The full image, or a restored snapshot: Python is already there.
-  if (pythonPresent) deps.post(PYTHON_INSTALLED);
   return await launchKernel(session, deps);
 }
 
@@ -179,7 +162,6 @@ export async function installThenLaunch<S extends StartableSession>(
     });
     return undefined;
   }
-  deps.post(PYTHON_INSTALLED);
   return await launchKernel(session, deps);
 }
 

@@ -41,11 +41,10 @@ import type {
 } from "./jupyter_transport.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
+import { readInstalled } from "./installed_db.ts";
 import {
   browserArchiveCache,
   fetchWithProgress,
-  installedByPlan,
-  installedTracker,
   installPackage,
   InstallStalled,
   loadCatalog,
@@ -120,12 +119,13 @@ type ToWorker =
   // The Packages panel's install of one package (src/packages.ts), run
   // here like the automatic Python install and queued with it: one
   // install at a time. Progress comes back as `pkg-progress`.
-  | { type: "pkg-install"; req: number; name: string; tablet: boolean };
+  | { type: "pkg-install"; req: number; name: string; tablet: boolean }
+  // The Packages panel opened: what pkg has installed, as `pkg-installed`.
+  | { type: "pkg-read-installed" };
 
 type FromWorker =
   // status, error, shell-ready (the shell is the whole session),
-  // python-missing / notebook-ready, and pkg-installed: every package the
-  // sandbox is known to have, for the Packages panel (src/coordinator_start.ts).
+  // python-missing / notebook-ready (src/coordinator_start.ts).
   | StartReport
   // The browser refused a new process its memory (src/memory_refused.ts).
   | MemoryRefusedMessage
@@ -157,6 +157,10 @@ type FromWorker =
     error?: string;
   }
   | { type: "pkg-progress"; req: number; text: string }
+  // What pkg has installed (src/installed_db.ts), or why it could not be
+  // read: the Packages panel marks those Installed.
+  | { type: "pkg-installed"; names: string[] }
+  | { type: "pkg-installed"; error: string }
   | {
     type: "pkg-reply";
     req: number;
@@ -191,10 +195,6 @@ async function servePackages(msg: ToWorker): Promise<void> {
         progress: (text) => post({ type: "pkg-progress", req, text }),
       });
     });
-    post({
-      type: "pkg-installed",
-      names: installedByPlan(output, msg.name),
-    });
     post({ type: "pkg-reply", req, ok: true, value: output });
   } catch (error) {
     if (error instanceof InstallStalled && error.inSandbox) {
@@ -205,6 +205,25 @@ async function servePackages(msg: ToWorker): Promise<void> {
       type: "pkg-reply",
       req,
       ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    await postInstalled();
+  }
+}
+
+/** Tell the page what pkg has installed in the in-tab sandbox, read from
+ * its database (src/installed_db.ts): at boot, after each install, and
+ * when the Packages panel opens. Nothing while a pkg run is writing it. */
+async function postInstalled(): Promise<void> {
+  const readFile = packageSession?.readFile;
+  if (readFile === undefined) return;
+  try {
+    const names = await readInstalled(readFile);
+    if (names !== undefined) post({ type: "pkg-installed", names });
+  } catch (error) {
+    post({
+      type: "pkg-installed",
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -370,16 +389,8 @@ function subscribeJupyter(transport: JupyterTransport): void {
   });
 }
 
-/** What the in-tab sandbox is known to have, posted whole to the page. */
-const installed = installedTracker((names) =>
-  self.postMessage({ type: "pkg-installed", names } satisfies FromWorker)
-);
-
 function post(msg: FromWorker): void {
-  // A `pkg-installed` (the Python set, a panel install's plan) adds to this
-  // sandbox's list; the page is sent the whole list.
-  if (msg.type === "pkg-installed") installed.add(msg.names);
-  else self.postMessage(msg);
+  self.postMessage(msg);
 }
 
 /** The worker's terminal; `dropHandlers` forgets every session's handlers,
@@ -430,6 +441,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
   await serveYurt(msg);
   await servePackages(msg);
+  if (msg.type === "pkg-read-installed") await postInstalled();
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });
@@ -587,6 +599,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           });
         });
         layerInstalled = from === "layer" ? store : undefined;
+        await postInstalled();
       } catch (error) {
         // A sandbox a layer was half written into, like a stalled one,
         // takes no pkg install: the retry is in a fresh one.
@@ -617,6 +630,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           executions = new ExecutionRegistry(session.process, session.signal);
         }
         packageSession = session;
+        void postInstalled();
       },
       // A restart relaunches on it, whether or not the first launch worked.
       launching: (session) => launchSession = session,
@@ -650,7 +664,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
    * terminal's handlers were the stopped session's last references. Apart
    * from `startFresh` so no local of that long await holds it. */
   const dropSandbox = () => {
-    installed.reset();
+    // Nothing is known of the fresh one until it boots.
+    post({ type: "pkg-installed", names: [] });
     const stale = packageSession;
     packageSession = undefined;
     launchSession = undefined;

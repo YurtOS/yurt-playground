@@ -49,6 +49,7 @@ type FromWorker =
   | { type: "python-missing"; error?: string }
   | { type: "pkg-progress"; req: number; text: string }
   | { type: "pkg-installed"; names: string[] }
+  | { type: "pkg-installed"; error: string }
   | {
     type: "yurt-reply" | "pkg-reply";
     req: number;
@@ -69,15 +70,15 @@ let packageInstall:
   | ((name: string, progress: (text: string) => void) => Promise<string>)
   | undefined;
 
-/** What the coordinator knows this sandbox has (`pkg-installed`, the whole
- * list each time): the Python set once it is in, and what each panel
- * install put there; empty again in a fresh sandbox. Installs
- * made from the terminal are not seen; Install on one says it is already
- * installed, and marks it. */
+/** What pkg has installed in this sandbox, as the coordinator last read it
+ * from pkg's database (`pkg-installed`): at boot, after each install, and
+ * whenever the Packages panel opens. */
 const knownInstalled = new Set<string>();
-/** Marks the Packages panel's buttons by `knownInstalled`; set once the
- * panel is wired. */
-let markPackages = () => {};
+/** Marks the Packages panel's buttons by `knownInstalled`, and says why
+ * the database could not be read; set once the panel is wired. */
+let markPackages: (error?: string) => void = () => {};
+/** Asks the coordinator to read pkg's database again; set at boot. */
+let askInstalled = () => {};
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
@@ -319,6 +320,7 @@ function boot(
   yurtState.connect(transport);
   /** Each install's progress, by request. */
   const progressOf = new Map<number, (text: string) => void>();
+  askInstalled = () => worker.postMessage({ type: "pkg-read-installed" });
   if (desktop === undefined) {
     packageInstall = (name, progress) =>
       new Promise<string>((resolve, reject) => {
@@ -397,9 +399,11 @@ function boot(
     }
     if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
     if (msg.type === "pkg-installed") {
-      knownInstalled.clear();
-      for (const name of msg.names) knownInstalled.add(name);
-      markPackages();
+      if ("names" in msg) {
+        knownInstalled.clear();
+        for (const name of msg.names) knownInstalled.add(name);
+      }
+      markPackages("error" in msg ? msg.error : undefined);
     }
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
       const waiter = pending.get(msg.req);
@@ -545,7 +549,13 @@ function wirePackages(): void {
   let busy = false;
   const mark = () =>
     markInstalled(list.querySelectorAll("button"), knownInstalled, busy);
-  markPackages = mark;
+  markPackages = (error) => {
+    mark();
+    if (error !== undefined) {
+      status.textContent =
+        `could not read which packages are installed: ${error}`;
+    }
+  };
   const install = async (name: string) => {
     if (packageInstall === undefined || busy) return;
     busy = true;
@@ -572,6 +582,8 @@ function wirePackages(): void {
   };
   let loading = false;
   const show = async () => {
+    // Every open: the terminal or an agent may have installed since.
+    askInstalled();
     if (catalog !== undefined || loading) return;
     loading = true;
     try {

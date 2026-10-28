@@ -12,13 +12,6 @@ import {
 } from "../src/coordinator_start.ts";
 import type { SpawnedProcess, Spawner, WaitStatus } from "../src/executions.ts";
 import type { JupyterTransport } from "../src/jupyter_transport.ts";
-import { PYTHON_SET } from "../src/python_install.ts";
-
-/** What the Packages panel is told once Python is in the sandbox. */
-const PYTHON_INSTALLED: StartReport = {
-  type: "pkg-installed",
-  names: ["python", "numpy", "pyzmq", "jupyter-kernel"],
-};
 
 /** A spawner whose every process exits with `status` (or never, for
  * `"hang"`), recording the lines it ran. */
@@ -107,8 +100,6 @@ Deno.test("a probe exit that is not the missing code launches Jupyter on the ima
     });
     assertEquals(launched, 1, `exit ${code}`);
     assertEquals(posted.at(-1), { type: "notebook-ready" });
-    // Not known to have Python: the panel is told nothing.
-    assertEquals(posted.some((r) => r.type === "pkg-installed"), false);
   }
 });
 
@@ -167,10 +158,7 @@ Deno.test("a Jupyter that does not start is an error next to a shell that stays"
   });
   assertEquals(result, undefined);
   assertEquals(session.stops, 0, "the shell is not stopped");
-  assertEquals(posted.slice(0, 2), [
-    PYTHON_INSTALLED,
-    { type: "status", text: "starting Jupyter" },
-  ]);
+  assertEquals(posted.at(0), { type: "status", text: "starting Jupyter" });
   assertEquals(posted.at(-1), {
     type: "error",
     message: "Jupyter did not start: the Jupyter kernel exited before writing",
@@ -196,9 +184,7 @@ Deno.test("an image with python3 launches Jupyter as before", async () => {
   });
   assertEquals(result, transport);
   assertEquals(order, ["booted", "launching", "startKernel"]);
-  // The full image, or a restored snapshot: the Python set is there.
   assertEquals(posted, [
-    PYTHON_INSTALLED,
     { type: "status", text: "starting Jupyter" },
     { type: "notebook-ready" },
   ]);
@@ -288,12 +274,6 @@ Deno.test("the slim image: Python is installed, then the kernel starts", async (
   });
   assertEquals(started, transport);
   assertEquals(order, ["install", "kernel"]);
-  assertEquals(PYTHON_INSTALLED, { type: "pkg-installed", names: PYTHON_SET });
-  // Once installed, before the kernel's wait: the panel marks the set.
-  assertEquals(reports.slice(0, 2), [
-    PYTHON_INSTALLED,
-    { type: "status", text: "starting Jupyter" },
-  ]);
   assertEquals(reports.at(-1), { type: "notebook-ready" });
   assertEquals(reports.some((r) => r.type === "python-missing"), false);
 });
@@ -317,10 +297,10 @@ Deno.test("a failed install is python-missing with its error; the shell stays an
   assertEquals(started, undefined);
   assertEquals(kernels, 0);
   assertEquals(session.stops, 0);
-  assertEquals(reports, [{
+  assertEquals(reports.at(-1), {
     type: "python-missing",
     error: "pkg install python failed: x",
-  }]);
+  });
 });
 
 Deno.test("a retry after a failed install starts the kernel once it works", async () => {
