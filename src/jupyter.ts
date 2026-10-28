@@ -207,14 +207,24 @@ async function clearKernelFiles(session: JupyterLaunchSession): Promise<void> {
   const cleared = await session.spawn?.(
     `rm -f ${JUPYTER_CONNECTION_FILE} ${JUPYTER_PID_FILE}`,
   );
-  // Bounded like the typed stop it replaces here (runShell's 30 s): a
-  // sandbox that cannot reap an rm does not hold the relaunch forever.
+  // An rm still running when the next launch starts could delete that
+  // launch's files, so one that does not finish in time ends the start.
   let timer: ReturnType<typeof setTimeout> | undefined;
-  await Promise.race([
-    cleared?.exited,
-    new Promise((resolve) => timer = setTimeout(resolve, CLEAR_FILES_MS)),
-  ]);
-  clearTimeout(timer);
+  try {
+    const done = await Promise.race([
+      cleared?.exited.then(() => true),
+      new Promise<false>((resolve) =>
+        timer = setTimeout(() => resolve(false), CLEAR_FILES_MS)
+      ),
+    ]);
+    if (done === false) {
+      throw new Error(
+        `the old kernel's files were not removed in ${CLEAR_FILES_MS / 1000} s`,
+      );
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** How long a relaunch waits for the old kernel's files to be removed. */
@@ -326,8 +336,9 @@ export async function startGuestKernel(
       ) throw error;
       if (launch >= STACK_OVERFLOW_LAUNCHES) {
         throw new Error(
-          `the Jupyter kernel ${STACK_OVERFLOW} on all ${launch} launches ` +
-            `(yurtos-kernel#4204); the last: ${error.message}`,
+          `the Jupyter kernel died of SIGSEGV on all ${launch} launches ` +
+            `(on Safari most likely the browser's stack, yurtos-kernel#4204); ` +
+            `the last: ${error.message}`,
         );
       }
       options.relaunching?.(launch + 1);
@@ -378,7 +389,9 @@ async function launchGuestKernel(
         // by now: only the files go, by a process of the page's own (the
         // one that saw the exit), so nothing is typed into the user's
         // shell -- on Safari this runs on most boots.
-        await clearKernelFiles(session).catch(() => {});
+        // A cleanup that fails ends the start with its own error: no
+        // relaunch may race an rm that is still running.
+        await clearKernelFiles(session);
       } else {
         // The launch is out (a process of its own, or a job of the shell)
         // and its connection file never came, or could not be read: it is
