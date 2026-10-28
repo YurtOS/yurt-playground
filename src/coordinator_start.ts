@@ -95,6 +95,10 @@ export type StartDeps<S extends StartableSession> = {
   /** Just before the kernel is launched on it: what a restart reuses. */
   launching?(session: S): void;
   startKernel(session: S): Promise<JupyterTransport>;
+  /** `?snapshot=capture`: what runs on the sandbox in the kernel's place,
+   * once Python is there. It says its own success; its failure is posted
+   * as a failed capture, not as a Jupyter that did not start. */
+  capture?(session: S): Promise<void>;
   post(report: StartReport): void;
   /** How often "starting Jupyter (N s)" is posted. */
   tickMs?: number;
@@ -139,7 +143,12 @@ export async function installThenLaunch<S extends StartableSession>(
   session: S,
   deps: Pick<
     StartDeps<S>,
-    "installPython" | "launching" | "startKernel" | "post" | "tickMs"
+    | "installPython"
+    | "launching"
+    | "startKernel"
+    | "capture"
+    | "post"
+    | "tickMs"
   >,
 ): Promise<JupyterTransport | undefined> {
   if (deps.installPython === undefined) {
@@ -160,10 +169,24 @@ export async function installThenLaunch<S extends StartableSession>(
 
 async function launchKernel<S extends StartableSession>(
   session: S,
-  deps: Pick<StartDeps<S>, "launching" | "startKernel" | "post" | "tickMs">,
+  deps: Pick<
+    StartDeps<S>,
+    "launching" | "startKernel" | "capture" | "post" | "tickMs"
+  >,
 ): Promise<JupyterTransport | undefined> {
   const errorText = (error: unknown) =>
     error instanceof Error ? error.message : String(error);
+  if (deps.capture !== undefined) {
+    try {
+      await deps.capture(session);
+    } catch (error) {
+      deps.post({
+        type: "error",
+        message: `snapshot capture failed: ${errorText(error)}`,
+      });
+    }
+    return undefined;
+  }
   deps.post({ type: "status", text: "starting Jupyter" });
   // ipykernel's imports are JIT-bound: ~30 s on a laptop, minutes on a
   // small or busy machine (yurt-playground#89). A count that moves is

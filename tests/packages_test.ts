@@ -6,7 +6,6 @@ import {
   type Catalog,
   type Fetcher,
   fetchWithProgress,
-  installedNames,
   installPackage,
   installScript,
   InstallStalled,
@@ -1276,15 +1275,4 @@ Deno.test("a checked catalog refuses metadata the index does not name, and an ex
     Error,
     "expired",
   );
-});
-
-Deno.test("installedNames reads the names pkg list prints", () => {
-  assertEquals(
-    [...installedNames(
-      "ca-certificates 2026.9.25-yurt_0 official\ngit 2.55.0-yurt_0 official\n" +
-        "python-dev 3.14.7-yurt_0 official\n\n",
-    )],
-    ["ca-certificates", "git", "python-dev"],
-  );
-  assertEquals(installedNames("").size, 0);
 });

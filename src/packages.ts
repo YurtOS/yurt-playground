@@ -562,17 +562,6 @@ export function catalogRows(catalog: Catalog): {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** The names `pkg list` prints, one package per line as
- * `NAME VERSION REPOSITORY`: what the image or an earlier install already
- * put in this sandbox. */
-export function installedNames(pkgList: string): Set<string> {
-  return new Set(
-    pkgList.split("\n")
-      .map((line) => line.trim().split(/\s+/)[0])
-      .filter((name) => name !== undefined && isPackageName(name)),
-  );
-}
-
 /** `pkg`'s cause for a failure: it names the cause first and sums up last
  * ("one or more repository updates failed"), so the first line that fails
  * is the one. */

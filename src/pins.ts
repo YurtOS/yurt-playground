@@ -16,6 +16,9 @@ export type Pins = {
    * live signed repository (src/python_install.ts): packages are not
    * pinned here. */
   browserImage?: ArtifactPin;
+  /** The train's sealable CPython (the notebook kernel's interpreter),
+   * built with the Python set it belongs to: what names that set here. */
+  pythonSeal?: { sha256: string };
 };
 
 export type ArtifactSource = "artifacts" | "siblings" | "urls";
@@ -74,6 +77,7 @@ export function parsePins(raw: unknown): Pins {
     kernelWasm?: unknown;
     image?: unknown;
     browserImage?: unknown;
+    pythonSeal?: { sha256?: unknown };
   };
   const pins: Pins = {
     kernelWasm: parsePin(value.kernelWasm, "kernelWasm"),
@@ -81,6 +85,13 @@ export function parsePins(raw: unknown): Pins {
   };
   if (value.browserImage !== undefined) {
     pins.browserImage = parsePin(value.browserImage, "browserImage");
+  }
+  if (value.pythonSeal !== undefined) {
+    const sha256 = value.pythonSeal?.sha256;
+    if (typeof sha256 !== "string" || sha256.length === 0) {
+      throw new PinResolutionError("pythonSeal.sha256 must be a string", 1);
+    }
+    pins.pythonSeal = { sha256: sha256.toLowerCase() };
   }
   return pins;
 }

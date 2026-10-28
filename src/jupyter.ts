@@ -338,12 +338,7 @@ async function pollConnectionFile(
   let gone = false;
   /** The host's own failure to run the process, apart from an exit. */
   let failed: string | undefined;
-  /** How it exited (the host's number: 128+n for a signal). */
-  let status: unknown;
-  exited?.then((value) => {
-    status = value;
-    gone = true;
-  }, (error) => {
+  exited?.then(() => gone = true, (error) => {
     failed = error instanceof Error ? error.message : String(error);
     gone = true;
   });
@@ -373,9 +368,7 @@ async function pollConnectionFile(
     failed !== undefined
       ? `the Jupyter kernel process failed to run: ${failed}; kernel log:\n${tail}`
       : gone
-      ? `the Jupyter kernel exited before writing its connection file (exit ${
-        JSON.stringify(status)
-      }); kernel log:\n${tail}`
+      ? `the Jupyter kernel exited before writing its connection file; kernel log:\n${tail}`
       : `Jupyter connection file was not written within ${CONNECTION_FILE_WAIT_SECONDS} s; kernel log:\n${tail}`,
   );
 }

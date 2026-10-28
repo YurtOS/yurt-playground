@@ -33,7 +33,12 @@ import { partsFetch } from "./image_parts.ts";
 import { captureLayer } from "./python_layer.ts";
 import { watchGuestMemoryRefusals } from "./memory_refused.ts";
 import { parsePins, type Pins } from "./pins.ts";
-import { decodeSandboxSnapshot } from "./sandbox_snapshot.ts";
+import {
+  decodeSandboxSnapshot,
+  fetchVerifiedSnapshot,
+  snapshotIdentity,
+  SnapshotMismatch,
+} from "./sandbox_snapshot.ts";
 import type { Spawner, WaitStatus } from "./executions.ts";
 import {
   decodeWaitRecord,
@@ -353,9 +358,20 @@ export async function bootPlayground(
 
   env.show("loading kernel");
   const kernel = await env.fetchBytes("./yurt_kernel.wasm");
-  const mk = env.snapshotPath === undefined
-    ? (env.show("compiling kernel"), await loadPlaygroundKernel(kernel))
-    : await restoreSnapshot(env, kernel, env.snapshotPath);
+  let mk: KernelHostInterface | undefined;
+  if (env.snapshotPath !== undefined) {
+    try {
+      mk = await restoreSnapshot(env, kernel, env.snapshotPath);
+    } catch (error) {
+      // A snapshot of another build is stale, not broken: the image boots
+      // as without `?snapshot=1`, and Python installs as usual. Anything
+      // else (a damaged download, a failed restore) is the boot's failure.
+      if (!(error instanceof SnapshotMismatch)) throw error;
+      console.warn(`[snapshot] ${error.message}; booting the image instead`);
+    }
+  }
+  const restored = mk !== undefined;
+  mk ??= (env.show("compiling kernel"), await loadPlaygroundKernel(kernel));
   const stopWatchingRefusals = watchGuestMemoryRefusals(
     mk,
     () => env.memoryRefused?.(),
@@ -365,7 +381,7 @@ export async function bootPlayground(
       env,
       mk,
       stopWatchingRefusals,
-      env.snapshotPath !== undefined,
+      restored,
     );
   } catch (error) {
     // A boot that failed past here leaves nothing running: its kernel goes
@@ -389,18 +405,13 @@ async function restoreSnapshot(
 ): Promise<KernelHostInterface> {
   const started = performance.now();
   env.show("loading snapshot");
-  const response = await partsFetch()(path);
-  if (!response.ok || response.body === null) {
-    throw new Error(`fetch ${path} failed: ${response.status}`);
-  }
-  const { image, kernelSha256 } = await decodeSandboxSnapshot(response.body);
+  // Refused before the kernel's memory is allocated when it is not this
+  // site's build (SnapshotMismatch).
+  const image = await decodeSandboxSnapshot(
+    await fetchVerifiedSnapshot(path),
+    snapshotIdentity(await browserPins()),
+  );
   const fetched = performance.now();
-  const pinned = (await browserPins()).kernelWasm.sha256;
-  if (kernelSha256 !== pinned) {
-    throw new Error(
-      `snapshot was sealed under kernel ${kernelSha256}, not the pinned ${pinned}`,
-    );
-  }
   env.show("restoring snapshot");
   const { host, processes } = await restorePlaygroundKernel(kernel, image);
   if (processes.length !== 0) {
@@ -412,6 +423,57 @@ async function restoreSnapshot(
       `restored in ${Math.round(performance.now() - fetched)} ms`,
   );
   return host;
+}
+
+/**
+ * Work put off until after something settles, and then a delay: an exec's
+ * sweep of its /tmp files, 5 s after the exit. A seal must not race it --
+ * a sweep that spawns after the seal began would be a process the seal
+ * either catches mid-run or misses. `hurry` starts what is waiting at
+ * once, and anything that becomes due later without the delay; `idle` is
+ * true once every piece of work has run to its end.
+ */
+export class DeferredWork {
+  private waiting = new Map<number, () => void>();
+  /** Deferred and not yet run to its end. */
+  private busy = 0;
+  private hurried = false;
+
+  defer(
+    after: Promise<unknown>,
+    run: () => Promise<void>,
+    delayMs: number,
+  ): void {
+    this.busy++;
+    const start = () => {
+      run().catch(() => {}).finally(() => this.busy--);
+    };
+    const due = () => {
+      if (this.hurried) {
+        start();
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.waiting.delete(timer);
+        start();
+      }, delayMs);
+      this.waiting.set(timer, start);
+    };
+    after.then(due, due);
+  }
+
+  hurry(): void {
+    this.hurried = true;
+    for (const [timer, start] of this.waiting) {
+      clearTimeout(timer);
+      start();
+    }
+    this.waiting.clear();
+  }
+
+  get idle(): boolean {
+    return this.busy === 0;
+  }
 }
 
 /** The rest of {@link bootPlayground}, on its loaded (or restored) kernel. */
@@ -438,9 +500,17 @@ async function startPlayground(
   }
   const shell = sh;
 
+  /** Each exec's sweep of its files (below), which a seal runs first. */
+  const sweeps = new DeferredWork();
+  /** A seal has begun: the page starts no process of its own any more. */
+  let sealing = false;
+  /** The seal is being taken: nothing starts at all, a sweep included. */
+  let sealed = false;
+
   /** `/bin/sh` with `argv`, as the login user in the login home, leading
    * its own process group unless `ownGroup` is false. */
   const spawnShell = async (argv: string[], { ownGroup = true } = {}) => {
+    if (sealed) throw new Error("the sandbox is sealed");
     const process = await mk.spawnUserProcessWithArgsAsync(
       shell,
       argv.map((arg) => s(arg)),
@@ -582,6 +652,7 @@ async function startPlayground(
     controller,
     terminal,
     async spawn(line) {
+      if (sealing) throw new Error("the sandbox is being sealed");
       const process = await spawnShell(["/bin/sh", "-c", line]);
       // Nothing feeds it: stdin is at end-of-file from the start.
       process.closeStdin();
@@ -602,6 +673,7 @@ async function startPlayground(
       // `head` -- a single command, whose own stdout the host does
       // capture. `line` ends in the exec of the command, so the redirects
       // bind to the command and every child inherits them.
+      if (sealing) throw new Error("the sandbox is being sealed");
       const tag = crypto.randomUUID();
       const path = (name: string) => `/tmp/.yurt-exec-${tag}.${name}`;
       const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
@@ -634,7 +706,7 @@ async function startPlayground(
       // so the registry sees the cut and says so; the files go afterwards.
       let done = false;
       const sweep = () =>
-        void single(
+        single(
           `exec rm -f ${q(path("out"))} ${q(path("err"))} ${q(path("in"))}`,
         );
       const exited = process.runStartAsync().then((rc) => {
@@ -645,8 +717,8 @@ async function startPlayground(
         throw error;
       });
       // The registry reads the files right after the exit; the sweep comes
-      // well after, whichever way the exit went.
-      exited.finally(() => setTimeout(sweep, 5000)).catch(() => {});
+      // well after, whichever way the exit went (at once during a seal).
+      sweeps.defer(exited, sweep, 5000);
       const cap = io.maxOutputBytes + 1;
       const taken = { out: false, err: false };
       const take = (stream: "out" | "err") => {
@@ -668,24 +740,28 @@ async function startPlayground(
       };
     },
     async seal() {
+      sealing = true;
       mk.killProcess(user.pid, SIGKILL);
       await userExited;
-      // Helpers the page started (an exec's delayed sweep) may still run.
+      // An exec's sweep runs now rather than 5 s after its exit, and the
+      // seal waits for it and for every process the page started.
+      sweeps.hurry();
       const deadline = Date.now() + 30_000;
       for (;;) {
         const live = mk.listProcesses().filter((p) =>
           p.pid !== KERNEL_PID && p.state !== "exited"
         );
-        if (live.length === 0) break;
+        if (live.length === 0 && sweeps.idle) break;
         if (Date.now() > deadline) {
           throw new Error(
             `cannot seal: processes still alive: ${
               live.map((p) => `${p.pid}:${p.state}`).join(",")
-            }`,
+            }${sweeps.idle ? "" : " (and an exec's file sweep)"}`,
           );
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
+      sealed = true;
       return await mk.sealSandbox();
     },
     writeFiles(files) {

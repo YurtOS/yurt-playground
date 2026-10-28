@@ -58,6 +58,7 @@ import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import {
   encodeSandboxSnapshot,
   SANDBOX_SNAPSHOT_PATH,
+  snapshotIdentity,
 } from "./sandbox_snapshot.ts";
 import { runQueue } from "./run_queue.ts";
 import { type BootedSession, workerPackageHost } from "./session_packages.ts";
@@ -327,55 +328,24 @@ function dropLayerIfKernelFailed(report: StartReport): void {
   }
 }
 
-/** How many times ipykernel is launched when it dies of a stack overflow. */
-const STACK_OVERFLOW_LAUNCHES = 5;
-
-/**
- * On Safari 27 the first ipykernel launch in a page dies with SIGSEGV
- * (exit 139): JavaScriptCore throws "Maximum call stack size exceeded" in
- * the guest Worker. A launch a few seconds later in the same page fits
- * (measured: launch 2 started every time) -- most likely because CPython
- * then runs as optimised wasm with smaller frames than the first, baseline
- * tier's. So that one failure is launched again; any other is final.
- */
-async function startKernelPastStackOverflows(
-  session: Awaited<ReturnType<typeof bootPlayground>>,
-): Promise<JupyterTransport> {
-  for (let launch = 1;; launch++) {
-    try {
-      return await startGuestKernel(session, kernelPorts);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (
-        launch >= STACK_OVERFLOW_LAUNCHES ||
-        !message.includes("(exit 139)")
-      ) throw error;
-      console.log(`ipykernel launch ${launch} died of SIGSEGV`);
-      post({
-        type: "status",
-        text: `starting Jupyter (launch ${launch + 1}: the last one ` +
-          "overflowed the browser's stack)",
-      });
-    }
-  }
-}
-
 /** Where the Python set puts its standard library and site-packages. */
 const PYTHON_LIB = "/usr/local/lib/python3.14";
 
-/** `?snapshot=capture`: seal the installed sandbox (no process left in
- * it) and hand the snapshot file to the page. Never starts a kernel. */
+/** `?snapshot=capture`: precompile the installed Python, seal the
+ * sandbox (no process left in it) and hand the snapshot file to the page,
+ * in the kernel's place: a sealed sandbox runs nothing more. */
 async function captureSnapshot(
   session: Awaited<ReturnType<typeof bootPlayground>>,
-): Promise<never> {
+): Promise<void> {
   if (session.seal === undefined || session.process === undefined) {
     throw new Error("this session cannot seal");
   }
   // Bytecode for every module the packages ship as source only: the login
   // user cannot write __pycache__ there, so each start compiled them again
   // (slow on Safari, where compiling one of wcwidth's modules also
-  // overflowed the Worker's stack and killed ipykernel with SIGSEGV).
-  // Exit 1 only says some file did not compile (a vendored test file).
+  // overflowed the Worker's stack and killed ipykernel with SIGSEGV). A
+  // module that does not compile is a snapshot without its bytecode:
+  // refused, with compileall's own words.
   post({ type: "status", text: "precompiling Python modules" });
   const compiled = performance.now();
   const compile = await session.process(
@@ -383,23 +353,39 @@ async function captureSnapshot(
     { maxOutputBytes: 64 * 1024 },
   );
   const compileStatus = await compile.exited;
+  const code = typeof compileStatus === "number"
+    ? compileStatus
+    : compileStatus.code;
+  if (code !== 0) {
+    const decoder = new TextDecoder();
+    const said = decoder.decode(compile.takeStdout()) +
+      decoder.decode(compile.takeStderr());
+    throw new Error(
+      `python3 -m compileall ${PYTHON_LIB} exited ${
+        JSON.stringify(compileStatus)
+      }: ${said.slice(-2000)}`,
+    );
+  }
   console.log(
-    `[snapshot] compileall ${JSON.stringify(compileStatus)} in ${
-      Math.round(performance.now() - compiled)
-    } ms`,
-    new TextDecoder().decode(compile.takeStderr()).slice(-2000),
+    `[snapshot] compileall in ${Math.round(performance.now() - compiled)} ms`,
   );
   post({ type: "status", text: "sealing the sandbox" });
   const started = performance.now();
   const image = await session.seal();
-  const pins = await playgroundPins();
-  const blob = await encodeSandboxSnapshot(image, pins.kernelWasm.sha256);
+  const blob = await encodeSandboxSnapshot(
+    image,
+    snapshotIdentity(await playgroundPins()),
+  );
   post({
     type: "snapshot-captured",
     blob,
     ms: Math.round(performance.now() - started),
   });
-  throw new Error(`snapshot captured (${blob.size} bytes); no kernel started`);
+  post({
+    type: "status",
+    text: `snapshot captured (${blob.size} bytes); ` +
+      "the sealed sandbox runs no Jupyter",
+  });
 }
 
 /** Drop the in-tab sandbox and start a fresh one the way the page's start
@@ -427,7 +413,7 @@ async function retryPython(): Promise<void> {
   const started = await installThenLaunch(session, {
     installPython,
     launching: (s) => launchSession = s,
-    startKernel: (s) => startKernelPastStackOverflows(s),
+    startKernel: (s) => startGuestKernel(s, kernelPorts),
     post: (report) => {
       pythonMissing = report.type === "python-missing";
       dropLayerIfKernelFailed(report);
@@ -689,10 +675,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       launching: (session) => launchSession = session,
       noJupyter: msg.noJupyter === true,
       installPython,
-      startKernel: (session) =>
-        msg.snapshot === "capture"
-          ? captureSnapshot(session)
-          : startKernelPastStackOverflows(session),
+      startKernel: (session) => startGuestKernel(session, kernelPorts),
+      capture: msg.snapshot === "capture" ? captureSnapshot : undefined,
       post: (report) => {
         if (report.type === "python-missing") pythonMissing = true;
         dropLayerIfKernelFailed(report);

@@ -194,3 +194,61 @@ Deno.test("static build writes every file the pages need", async () => {
     );
   }
 });
+
+Deno.test("the static build publishes a sandbox snapshot only when it was built from the pinned artifacts", async () => {
+  const { snapshotMatchesPins } = await import("../scripts/build-static.ts");
+  const { encodeSandboxSnapshot } = await import("../src/sandbox_snapshot.ts");
+  const pin = (sha256: string) => ({
+    repo: "r",
+    rev: "v",
+    build: "b",
+    path: "p",
+    sha256,
+  });
+  const pins = {
+    kernelWasm: pin("k"),
+    image: pin("full"),
+    browserImage: pin("slim"),
+    pythonSeal: { sha256: "py" },
+  };
+  const seal = {
+    version: 1 as const,
+    kernelToken: 1n,
+    kernelMemory: new Uint8Array(64),
+    processes: [],
+    hostWaits: [],
+    monotonicNs: 0n,
+    realtimeOffsetNs: 0n,
+    executor: { contexts: [], freeScratch: [] },
+  };
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = `${dir}/sandbox.seal.gz`;
+    const write = async (imageSha256: string) =>
+      await Deno.writeFile(
+        path,
+        new Uint8Array(
+          await (await encodeSandboxSnapshot(seal, {
+            kernelSha256: "k",
+            imageSha256,
+            pythonSealSha256: "py",
+          })).arrayBuffer(),
+        ),
+      );
+    await write("slim");
+    assertEquals(await snapshotMatchesPins(path, pins), true);
+    // Captured under the last train's image: left out, with a warning.
+    await write("old-slim");
+    const warned: unknown[][] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => warned.push(args);
+    try {
+      assertEquals(await snapshotMatchesPins(path, pins), false);
+    } finally {
+      console.warn = warn;
+    }
+    assertStringIncludes(String(warned[0]), "imageSha256 old-slim, not slim");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

@@ -18,9 +18,17 @@ import {
   IMAGE_NAME,
   INTEGRITY_FILES,
   integrityManifest,
+  sha256Hex,
   SLIM_IMAGE_NAME,
 } from "../src/integrity.ts";
-import { SANDBOX_SNAPSHOT_NAME } from "../src/sandbox_snapshot.ts";
+import { loadPins, type Pins } from "../src/pins.ts";
+import {
+  checkSandboxSnapshot,
+  SANDBOX_SNAPSHOT_NAME,
+  SANDBOX_SNAPSHOT_SHA256_NAME,
+  snapshotIdentity,
+  SnapshotMismatch,
+} from "../src/sandbox_snapshot.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -103,6 +111,28 @@ async function writeImageParts(
   );
 }
 
+/** Whether the sandbox snapshot at `path` was built from `pins`. One that
+ * was not is left out of the site with a warning rather than failing the
+ * build: it is an optional, local experiment no other page needs, and the
+ * page would refuse it anyway -- after downloading it. */
+export async function snapshotMatchesPins(
+  path: string,
+  pins: Pins,
+): Promise<boolean> {
+  const file = await Deno.open(path);
+  try {
+    await checkSandboxSnapshot(file.readable, snapshotIdentity(pins));
+    return true;
+  } catch (error) {
+    if (!(error instanceof SnapshotMismatch)) throw error;
+    console.warn(
+      `!!! ${SANDBOX_SNAPSHOT_NAME} is NOT published: ${error.message}. ` +
+        "Capture a new one with ?snapshot=capture.",
+    );
+    return false;
+  }
+}
+
 export async function buildStaticSite(): Promise<void> {
   await ensureBundle(kernelRoot());
   await Deno.remove(distDir, { recursive: true }).catch(() => {});
@@ -145,11 +175,22 @@ export async function buildStaticSite(): Promise<void> {
   }
   // The sealed sandbox `?snapshot=1` restores (src/sandbox_snapshot.ts),
   // made by `?snapshot=capture`; optional, nothing else needs it.
-  const snapshot = await Deno.stat(join(publicDir, SANDBOX_SNAPSHOT_NAME))
-    .then(() => true, () => false);
-  if (snapshot) {
+  const snapshotPath = join(publicDir, SANDBOX_SNAPSHOT_NAME);
+  const snapshot = await Deno.stat(snapshotPath).then(() => true, () => false);
+  if (
+    snapshot &&
+    await snapshotMatchesPins(
+      snapshotPath,
+      await loadPins(join(artifactsDir, "pins.json")),
+    )
+  ) {
     await Deno.mkdir(join(distDir, "snapshot"), { recursive: true });
     await writeImageParts(SANDBOX_SNAPSHOT_NAME, publicDir);
+    // What the page checks the download against.
+    await Deno.writeTextFile(
+      join(distDir, SANDBOX_SNAPSHOT_SHA256_NAME),
+      `${await sha256Hex(await Deno.readFile(snapshotPath))}\n`,
+    );
   }
   // The "check the bytes" card hashes what it downloaded against this. dist/
   // holds the image only as parts; hash the file they were sliced from.

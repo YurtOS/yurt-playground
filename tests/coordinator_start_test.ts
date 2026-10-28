@@ -329,3 +329,51 @@ Deno.test("an image with python3 is never installed into", async () => {
   });
   assertEquals(installs, 0);
 });
+
+Deno.test("a capture seals the installed sandbox instead of launching Jupyter, and its success is no error", async () => {
+  const reports: StartReport[] = [];
+  const order: string[] = [];
+  const started = await startSandbox({
+    boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(42)).spawn)),
+    booted: () => {},
+    noJupyter: false,
+    installPython: () => {
+      order.push("install");
+      return Promise.resolve();
+    },
+    launching: () => order.push("launching"),
+    startKernel: () => {
+      order.push("kernel");
+      return Promise.resolve(transport);
+    },
+    capture: () => {
+      order.push("capture");
+      return Promise.resolve();
+    },
+    post: (report) => reports.push(report),
+  });
+  assertEquals(started, undefined);
+  assertEquals(order, ["install", "capture"]);
+  assertEquals(reports.some((r) => r.type === "error"), false);
+  assertEquals(
+    reports.some((r) => r.type === "notebook-ready"),
+    false,
+  );
+});
+
+Deno.test("a failed capture is said as one, not as a Jupyter that did not start", async () => {
+  const reports: StartReport[] = [];
+  await startSandbox({
+    boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(42)).spawn)),
+    booted: () => {},
+    noJupyter: false,
+    installPython: () => Promise.resolve(),
+    startKernel: () => Promise.resolve(transport),
+    capture: () => Promise.reject(new Error("compileall exited 2")),
+    post: (report) => reports.push(report),
+  });
+  assertEquals(reports.at(-1), {
+    type: "error",
+    message: "snapshot capture failed: compileall exited 2",
+  });
+});
