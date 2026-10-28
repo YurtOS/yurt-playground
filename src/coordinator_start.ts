@@ -22,7 +22,9 @@ import { asWaitStatus, type Spawner } from "./executions.ts";
 /** What `start` posts to the page about the boot. */
 export type StartReport =
   | { type: "status"; text: string }
-  | { type: "error"; message: string }
+  // `endsBoot`: the start's own outcome (a boot that failed, a Jupyter
+  // that did not start), apart from a later error such as a cell's.
+  | { type: "error"; message: string; endsBoot?: true }
   | { type: "shell-ready" }
   // The image has no python3: the shell runs, Jupyter is not launched.
   // `error` is why installing it failed, when that was tried.
@@ -117,7 +119,7 @@ export async function startSandbox<S extends StartableSession>(
   try {
     session = await deps.boot();
   } catch (error) {
-    deps.post({ type: "error", message: errorText(error) });
+    deps.post({ type: "error", message: errorText(error), endsBoot: true });
     return undefined;
   }
   deps.booted(session);
@@ -198,6 +200,7 @@ async function launchKernel<S extends StartableSession>(
     deps.post({
       type: "error",
       message: `Jupyter did not start: ${errorText(error)}`,
+      endsBoot: true,
     });
     return undefined;
   } finally {
@@ -214,4 +217,38 @@ async function launchKernel<S extends StartableSession>(
 export function kernelFailureDropsLayer(report: StartReport): boolean {
   return report.type === "error" &&
     report.message.startsWith("Jupyter did not start");
+}
+
+/** The worker's kernel lifecycle: the boot's start, and the restarts and
+ * Python installs that run one at a time. A restart that comes in while a
+ * start runs is refused at once, as before the relaunch: queued, it waited
+ * out minutes of ipykernel import and then restarted the fresh kernel. */
+export function kernelLifecycle() {
+  let starting = false;
+  let queue: Promise<void> = Promise.resolve();
+  /** Runs `run` after everything queued before it; a rejection is the
+   * caller's, and does not stop what is queued next. */
+  const enqueue = (run: () => Promise<void>): Promise<void> => {
+    const next = queue.then(run);
+    queue = next.catch(() => {});
+    return next;
+  };
+  return {
+    async start(run: () => Promise<void>): Promise<void> {
+      starting = true;
+      try {
+        await run();
+      } finally {
+        starting = false;
+      }
+    },
+    enqueue,
+    restart(run: () => Promise<void>, refuse: () => void): Promise<void> {
+      if (starting) {
+        refuse();
+        return Promise.resolve();
+      }
+      return enqueue(run);
+    },
+  };
 }

@@ -1,7 +1,8 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   installThenLaunch,
   kernelFailureDropsLayer,
+  kernelLifecycle,
   probePython,
   PYTHON_MISSING_EXIT,
   PYTHON_PROBE_COMMAND,
@@ -161,6 +162,7 @@ Deno.test("a Jupyter that does not start is an error next to a shell that stays"
   assertEquals(posted.at(-1), {
     type: "error",
     message: "Jupyter did not start: the Jupyter kernel exited before writing",
+    endsBoot: true,
   });
 });
 
@@ -236,7 +238,9 @@ Deno.test("a boot that fails is posted as the error", async () => {
     post: (report) => posted.push(report),
   });
   assertEquals(booted, 0);
-  assertEquals(posted, [{ type: "error", message: "not crossOriginIsolated" }]);
+  assertEquals(posted, [
+    { type: "error", message: "not crossOriginIsolated", endsBoot: true },
+  ]);
 });
 
 Deno.test("the coordinator worker starts through startSandbox and never stops a session", () => {
@@ -404,16 +408,42 @@ Deno.test("the coordinator worker hands the relaunch note on at start, retry and
   assert(/kernelFailureDropsLayer\(report\)/.test(worker));
 });
 
-Deno.test("a Jupyter restart waits for the boot's start, relaunches and all", () => {
-  const worker = Deno.readTextFileSync(
-    new URL("../src/coordinator_worker.ts", import.meta.url),
+Deno.test("a Jupyter restart during the boot's start is refused at once; one after a failed start runs", async () => {
+  const lifecycle = kernelLifecycle();
+  let fail!: (error: Error) => void;
+  const start = lifecycle.start(() =>
+    new Promise<void>((_resolve, reject) => fail = reject)
   );
-  // Chained like python-install and jupyter-restart: a restart that came
-  // in during the boot's relaunch loop stopped the kernel it was starting.
-  assert(
-    /restarting = restarting\.then\(begin\);\s*await restarting;\s*\}\);\s*$/
-      .test(worker),
-    "the start's begin() runs on the restarting chain",
+  const events: string[] = [];
+  const restart = () =>
+    lifecycle.restart(
+      () => {
+        events.push("restarted");
+        return Promise.resolve();
+      },
+      () => events.push("refused"),
+    );
+  // Not queued behind the start (minutes of ipykernel import and its
+  // relaunches, then a restart of the fresh kernel): refused now.
+  await restart();
+  assertEquals(events, ["refused"]);
+  fail(new Error("the boot threw"));
+  await assertRejects(() => start, Error, "the boot threw");
+  await restart();
+  assertEquals(events, ["refused", "restarted"]);
+});
+
+Deno.test("a restart or install that throws does not stop the next one", async () => {
+  const lifecycle = kernelLifecycle();
+  await assertRejects(
+    () => lifecycle.enqueue(() => Promise.reject(new Error("install threw"))),
+    Error,
+    "install threw",
   );
-  assertEquals(/^\s*await begin\(\);\s*\n\}\);/m.test(worker), false);
+  let ran = false;
+  await lifecycle.enqueue(() => {
+    ran = true;
+    return Promise.resolve();
+  });
+  assert(ran, "the queue survived the rejection");
 });

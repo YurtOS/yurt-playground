@@ -21,6 +21,7 @@ import { requestCellInterrupt } from "./cell_interrupt.ts";
 import {
   installThenLaunch,
   kernelFailureDropsLayer,
+  kernelLifecycle,
   probePython,
   type StartReport,
   startSandbox,
@@ -254,8 +255,9 @@ let kernelPorts: KernelPorts | undefined;
 /** The image has no python3 (src/coordinator_start.ts): a restart the
  * frontend asks for gets the same answer, not "Jupyter is not ready". */
 let pythonMissing = false;
-/** Restarts are serialised: a second request waits for the first. */
-let restarting: Promise<void> = Promise.resolve();
+/** Restarts and installs run one at a time; a restart during the boot's
+ * start is refused. */
+const lifecycle = kernelLifecycle();
 /** How the start installs Python on the slim image, kept for a retry. */
 let installPython:
   | ((session: BootedSession) => Promise<void>)
@@ -429,12 +431,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     return;
   }
   if (msg.type === "python-install") {
-    restarting = restarting.then(retryPython);
-    await restarting;
+    await lifecycle.enqueue(retryPython);
     return;
   }
   if (msg.type === "jupyter-restart") {
-    restarting = restarting.then(async () => {
+    await lifecycle.restart(async () => {
       if (pythonMissing && installPython !== undefined) {
         await retryPython();
         return;
@@ -471,8 +472,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           message: error instanceof Error ? error.message : String(error),
         });
       }
-    });
-    await restarting;
+    }, () => post({ type: "error", message: "Jupyter is not ready" }));
     return;
   }
   if (msg.type === "cell-interrupt") {
@@ -661,7 +661,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       dropSandbox();
       freshBoot = true;
       try {
-        await begin();
+        await lifecycle.start(begin);
       } finally {
         freshBoot = false;
       }
@@ -677,9 +677,5 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       }
     };
   }
-  // On the chain a jupyter-restart waits on: one that came in during the
-  // boot's launch (its stack-overflow relaunches) stopped the kernel the
-  // boot was starting.
-  restarting = restarting.then(begin);
-  await restarting;
+  await lifecycle.start(begin);
 });

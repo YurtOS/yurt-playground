@@ -292,14 +292,6 @@ export function isJavaScriptCore(
   return /AppleWebKit\//.test(userAgent) && !/Chrome\//.test(userAgent);
 }
 
-/** Whether this engine runs out of shared-memory reservations: only
- * JavaScriptCore. */
-export function engineCapsSharedMemoryReservations(
-  userAgent: string | undefined = globalThis.navigator?.userAgent,
-): boolean {
-  return isJavaScriptCore(userAgent);
-}
-
 /**
  * The host state every in-browser kernel is built with. Only on
  * JavaScriptCore does it set a per-process reservation: V8 and SpiderMonkey
@@ -314,7 +306,8 @@ export function playgroundHostState(
   & ReturnType<typeof defaultHostState>
   & { guestMemoryReservationBytes?: number } {
   // Kernels older than yurtos-kernel#3115 do not read the field.
-  if (!engineCapsSharedMemoryReservations(userAgent)) {
+  // Only JavaScriptCore runs out of shared-memory reservations.
+  if (!isJavaScriptCore(userAgent)) {
     return defaultHostState();
   }
   return {
@@ -538,7 +531,11 @@ async function startPlayground(
       // Its exit is the kernel's business (the connection file, the log);
       // the launch only watches for it, to stop waiting for a file a dead
       // kernel will not write.
-      const exited = process.runStartAsync();
+      // The wait status when the host has one, as `process` gives: a
+      // signal death is then a signal, not a folded 128+n.
+      const exited = process.runStartAsync().then((rc) =>
+        process.waitStatus() ?? rc
+      );
       exited.catch(() => {});
       return { exited };
     },

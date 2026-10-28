@@ -40,7 +40,8 @@ import type { ExecOptions } from "./executions.ts";
 type FromWorker =
   | { type: "status"; text: string }
   | { type: "out"; bytes: number[] }
-  | { type: "error"; message: string }
+  // `endsBoot`: the start's own outcome, not a later error (a cell's).
+  | { type: "error"; message: string; endsBoot?: true }
   | { type: "notebook-ready" }
   | { type: "shell-ready" }
   // The image has no python3: the shell runs, Jupyter was not launched.
@@ -263,7 +264,6 @@ function boot(
     stopWatchingForAnotherSandbox();
   };
   const fail = (message: string) => {
-    endBoot();
     if (!terminalEmpty) {
       status.failure(`failed: ${message}`);
       // The shell is up and stays; a Jupyter that did not start leaves
@@ -348,6 +348,7 @@ function boot(
       if (msg.text === "") yurtState.running();
     }
     if (msg.type === "error") {
+      if (msg.endsBoot === true) endBoot();
       fail(msg.message);
       // Only a boot failure is the sandbox's failure: an error once the
       // shell is up ("Jupyter is not ready", a restart that failed) leaves
@@ -395,6 +396,7 @@ function boot(
     if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
   };
   worker.onerror = (event) => {
+    endBoot();
     const message = event.message || "coordinator worker failed";
     fail(message);
     yurtState.failed(message);

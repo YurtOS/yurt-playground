@@ -165,7 +165,18 @@ Deno.test("once the boot is over, a status (a Jupyter restart, its relaunch) lea
       ended,
     );
   }
-  assert(/const fail = \(message: string\) => \{\s*endBoot\(\);/.test(page));
+  // Only a boot outcome ends it: an early cell's "Jupyter is not ready"
+  // mid-boot left a reloaded tab nothing to explain.
+  assert(
+    /if \(msg\.type === "error"\) \{\s*if \(msg\.endsBoot === true\) endBoot\(\);\s*fail\(msg\.message\);/
+      .test(page),
+  );
+  assertEquals(
+    /const fail = [^]*?\n {2}\};/.exec(page)?.[0].includes("endBoot"),
+    false,
+  );
+  // The worker itself dying is the end of everything.
+  assert(/worker\.onerror = \(event\) => \{[^}]*endBoot\(\);/.test(page));
 });
 
 Deno.test("an Install after python-missing is a boot again: its statuses are kept for a reloaded tab", () => {
