@@ -12,8 +12,8 @@ actually shipped is in the
 progress right now is in their
 [Upcoming](https://yurtos.github.io/yurt-playground/#upcoming) section.
 
-_Last updated 2026-10-25, after train
-[playground-2026.10.25-f884f16](https://yurtos.github.io/yurt-playground/#playground-2026.10.25-f884f16)._
+_Last updated 2026-10-28, after train
+[playground-2026.10.27-3d32068.2](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068.2)._
 
 ## Now
 
@@ -24,12 +24,42 @@ What you can use today.
   ([first train](https://yurtos.github.io/yurt-playground/#playground-2026.09.21-7eb03a7)).
 - **Python and Jupyter.** CPython 3.14, pip and NumPy, and Jupyter Notebook and
   JupyterLab on a real `ipykernel` running inside the sandbox.
+- **A slim browser image that installs Python itself.** The tab loads 23.5 MB
+  (the shell, the command-line tools, `sudo` and `pkg`) instead of 144 MB, and
+  every page that runs Python installs the newest Python set from the signed
+  package repository with the sandbox's own `pkg`, the first time it needs it
+  ([2026.10.27](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068)).
+- **Instant Python on later visits.** After the first install the browser keeps
+  the installed files as one layer, so a reload has Python ready in about 11
+  seconds instead of about 85 (measured on the live site), with no package
+  downloaded, as long as the repository still offers the same set
+  ([2026.10.27.2](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068.2)).
+- **A stalled install offers Try again.** When the install stops making
+  progress, the cell says so, and Try again starts a fresh sandbox without
+  reloading the page
+  ([2026.10.27.2](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068.2)).
+- **Packages, released on their own schedule.** Python, Node, Gemini CLI, Go,
+  `gh`, Perl and more are published in
+  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) independently
+  of trains ([Packages](https://yurtos.github.io/yurt-playground/#packages)). In
+  the browser tab the _Packages_ panel installs them, and the sandbox's own
+  `pkg` checks every signature first; a new Python set reaches the page with no
+  train
+  ([2026.10.26](https://yurtos.github.io/yurt-playground/#playground-2026.10.26-3d32068),
+  [2026.10.27](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068)).
+- **Upload files** from your device into the browser sandbox
+  ([2026.10.26](https://yurtos.github.io/yurt-playground/#playground-2026.10.26-3d32068)).
 - **Desktop app** for macOS (Apple Silicon) and Debian/Ubuntu. The sandbox runs
-  natively, boots in seconds and has real network access.
+  natively, boots in seconds and has real network access. Its image is now 91.9
+  MB instead of 144.0 MB: the slim image plus the published Python set, Node,
+  Gemini CLI and Datasette. The CPython headers and static library moved to the
+  new `python-dev` package
+  ([2026.10.27.2](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068.2)).
 - **A local agent pane** that runs a model on your GPU through WebGPU, and a
   Stop button for a running cell
   ([2026.09.27](https://yurtos.github.io/yurt-playground/#playground-2026.09.27-a3198c7)).
-- **Node.js 22 and Gemini CLI** in the image; Gemini CLI needs your own API key
+- **Node.js 22 and Gemini CLI**, as packages in the browser and in the desktop
+  app's image; Gemini CLI needs your own API key
   ([2026.10.15](https://yurtos.github.io/yurt-playground/#playground-2026.10.15-230cfe2.2)).
 - **Notebook Suspend/Resume.** The _suspend/resume_ notebook kernel saves the
   whole sandbox in the browser, and Resume carries on with the running cell
@@ -39,75 +69,47 @@ What you can use today.
   ([2026.10.13](https://yurtos.github.io/yurt-playground/#playground-2026.10.13-68259fc)).
 - **"Download home"** saves your home directory from the browser sandbox to your
   device.
-- **Steady kernel fixes** in every train; the latest makes `epoll` work on
-  standard input and output, writes shared file mappings back reliably and
-  rebuilds `python3` as a plain Linux/musl CPython
-  ([2026.10.25](https://yurtos.github.io/yurt-playground/#playground-2026.10.25-f884f16)).
+- **Kernel fixes in most trains**; the latest kernel (2026.10.26) adds bind and
+  move mounts, thread-local storage in `dlopen`'d libraries on the desktop host,
+  and live shared mappings of `memfd` and `/dev/shm`
+  ([2026.10.26](https://yurtos.github.io/yurt-playground/#playground-2026.10.26-3d32068)).
 
 ## Next
 
 Planned for the next one or two trains. These are in progress, not finished.
 
-- **Upload files into the browser sandbox.** Why: today you can download your
-  home directory but not bring your own files or data in. Merged in
-  [#230](https://github.com/YurtOS/yurt-playground/pull/230); it ships with the
-  next train.
-- **A modular image: a small base, the rest as packages.** Why: one image with
-  everything is slow to load and still never has the tool you need. The base
-  image keeps BusyBox and the small tools (`git`, `curl`, `jq`, `sqlite3`,
-  `zsh`, `make`, `zstd`, `xz`, CA certificates) and adds the `pkg` client with a
-  trusted-repository configuration for
-  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), and a
-  passwordless `sudo` for the default user, which `pkg` needs. In progress.
-- **Install packages in the browser tab.** Why: the tab has no network, so
-  `sudo pkg install` cannot download there. A _Packages_ control fetches a
-  package for the sandbox, and the sandbox's own `pkg` verifies its signature
-  and installs it, as on the desktop. Merged in
-  [#231](https://github.com/YurtOS/yurt-playground/pull/231); it needs the base
-  image above, and packages republished in the current format with real
-  signatures (the builds published today are refused). Real signing for
-  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) is in
-  progress.
+- **Python in Safari.** Why: the first Python install may not finish there. The
+  memory error ("memory allocation of … bytes failed") is fixed in `pkg`, but in
+  automated Safari runs the sandbox stops answering partway through the install,
+  and after five minutes the cell offers Try again. It is tracked with the hang
+  a browser debugger causes in Chrome
+  ([yurtos-kernel#4170](https://github.com/YurtOS/yurtos-kernel/issues/4170)),
+  and it is not yet known whether the automation itself causes it. The shell
+  works in Safari.
+- **Faster file creation in the guest.** Why: most of the first visit's Python
+  install, which takes about a minute, is the sandbox writing the installed
+  files
+  ([yurtos-kernel#4169](https://github.com/YurtOS/yurtos-kernel/issues/4169)); a
+  first step is in review
+  ([yurtos-kernel#4195](https://github.com/YurtOS/yurtos-kernel/pull/4195)).
 - **Python native extensions loaded from a `.so` at run time**, rather than
-  built into Python as NumPy is today. Why: the kernel side of `dlopen` has
-  shipped; a shared C library is the remaining piece for ordinary CPython
-  extension modules to load.
-- **Thread-local storage in runtime-loaded libraries.** Why: libraries loaded
-  with `dlopen` that keep per-thread state should behave as they do on Linux.
+  built into Python as NumPy is today. Why: the kernel and libc sides of
+  `dlopen` have shipped; a shared `libc.so` is the remaining piece for ordinary
+  CPython extension modules to load.
+- **Thread-local storage in runtime-loaded libraries in the browser.** Why:
+  libraries loaded with `dlopen` that keep per-thread state should behave as
+  they do on Linux. The desktop half shipped
+  ([2026.10.26](https://yurtos.github.io/yurt-playground/#playground-2026.10.26-3d32068));
+  the browser half is in progress.
 
 ## Later
 
 Bigger directions. Each needs design work, and the order is not fixed.
 
-- **A slim base image, with Python and Node as packages.** Why: CPython with its
-  libraries is over two thirds of today's image and Node with the Gemini CLI
-  most of the rest, and both load into every tab, including on phones and
-  tablets, where memory is short
-  ([#200](https://github.com/YurtOS/yurt-playground/issues/200)). The page side
-  is in place: when a release pins a slim image (`browserImage` in
-  `artifacts/pins.json`), the browser boots it (the shell, the command-line
-  tools, `pkg` and `sudo`), and every page that runs Python (the Python pane,
-  the agent, the Notebook and JupyterLab) installs the newest complete Python
-  set (python, numpy, pyzmq and jupyter-kernel sharing one `yurt_N` build) from
-  the signed YurtOS/yurt-packages index with the guest's own `pkg` before
-  ipykernel starts. Packages are not pinned: a newly published set reaches the
-  page with no release of it. Archives are kept in the browser's Cache API with
-  their signatures, so a repeat visit downloads only the index and its metadata,
-  but while files do not survive a reload
-  ([#81](https://github.com/YurtOS/yurt-playground/issues/81)) it installs again
-  (about a minute on a laptop). It ships once a set is published and a release
-  pins the slim image. Node is a package too, for the shell; nothing on the page
-  needs it. On the slim image Suspend/Resume runs the newest set that also has a
-  `python-seal` of the same build (which may be older than the set the pages
-  install, while its seal is still to be published), with that set's standard
-  library, after the guest's `pkg` has verified both archives in a short-lived
-  sandbox (their own cache, so the coordinator's install never drops them), and
-  a suspended notebook resumes only on the set it was suspended with.
-- **Go, `gh` and Perl as packages, and a current clang**, published in
-  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) when there is
-  demand for them, rather than in the base image. Planned: Go, `gh` and Perl are
-  not published there today, and the clang build there predates the current
-  package format.
+- **A current clang as a package.** Go (1.28.0-devel), `gh` (2.102.0) and Perl
+  (5.44.0) are now published in
+  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) (see Now); the
+  clang build there dates from May 2026 and predates the current package format.
 - **Files that survive a reload.** Durable storage for the browser sandbox, so a
   reload does not lose your work
   ([#81](https://github.com/YurtOS/yurt-playground/issues/81)). Saving the whole
@@ -122,18 +124,17 @@ Bigger directions. Each needs design work, and the order is not fixed.
 - **Go in the browser and on iPad.** Go runs on Yurt as an ordinary Linux
   program, using a port that builds on upstream Go's
   [wasm32 work](https://github.com/golang/go/issues/63131), which is not merged
-  upstream yet. Built separately, the Go toolchain (`go`, `gofmt`) already
-  builds and tests programs in a desktop sandbox; it is not in the playground
-  image yet. Go programs cannot run in the browser sandbox yet: the browser
-  sandbox runs only programs that share the one memory it provides, as C, Rust
-  and Python programs already do, while Go's linker gives each program a memory
-  of its own, so `go version` in the tab fails with "Exec format error". A
-  change to Go's linker is in progress. The toolchain is also large: the full Go
-  package is about 57 MB, and a trimmed toolchain is about 40 MB to download and
-  about 150 MB once unpacked, all held in the tab's memory, so it would be an
-  opt-in download rather than part of the default image. On iPad the per-tab
-  process and memory limits are a further question, since `go build` starts
-  several compiler and linker processes.
+  upstream yet. The Go toolchain (`go`, `gofmt`) is now a package, `go`, and
+  builds and tests programs in a desktop sandbox; it is not in the image. Go
+  programs cannot run in the browser sandbox yet: the browser sandbox runs only
+  programs that share the one memory it provides, as C, Rust and Python programs
+  already do, while Go's linker gives each program a memory of its own, so
+  `go version` in the tab fails with "Exec format error". A change to Go's
+  linker is in progress. The toolchain is also large: the `go` package is a 59.4
+  MB download, unpacked and held entirely in the tab's memory, so it stays an
+  opt-in install rather than part of the image. On iPad the per-tab process and
+  memory limits are a further question, since `go build` starts several compiler
+  and linker processes.
 - **More of the playground on tablets.** iPad browsers limit the processes and
   memory one tab can use, which is why tablets get the shell only today and why
   a long shell session can still run out of memory
@@ -153,12 +154,14 @@ Bigger directions. Each needs design work, and the order is not fixed.
 
 ## Known limits today
 
-- **No network in the browser tab**, by design. `pip install` (pure-Python
-  packages and matching wheels) and downloads work only in the desktop app.
+- **No network inside the browser sandbox**, by design. The page fetches
+  packages for it, but `pip install` (pure-Python packages and matching wheels)
+  and other downloads from inside the sandbox work only in the desktop app.
 - **Installed packages in the browser are lost on reload**, like every other
-  file there ([#81](https://github.com/YurtOS/yurt-playground/issues/81)), and a
-  tablet or phone refuses installs whose downloads add up to more than 16 MiB,
-  since one tab there has much less memory
+  file there ([#81](https://github.com/YurtOS/yurt-playground/issues/81)),
+  except the Python set, which the browser keeps and writes back on a later
+  visit. A tablet or phone refuses installs whose downloads add up to more than
+  16 MiB, since one tab there has much less memory
   ([#200](https://github.com/YurtOS/yurt-playground/issues/200)).
 - **Files in the browser are kept in memory only.** A page reload starts a fresh
   sandbox and loses everything you wrote, except sandboxes saved by the
@@ -167,22 +170,29 @@ Bigger directions. Each needs design work, and the order is not fixed.
 - **On the desktop**, the root filesystem is also held in memory, and changes to
   it are written to disk at sync points (an explicit `sync`, or when the sandbox
   stops). Host folders you mount are on disk directly.
-- **Tablets run the shell only**, with no Jupyter or agent pane. Phones are told
-  the sandbox needs a desktop-class browser.
-- **Go is not in the playground**, and Go programs cannot run in the browser
-  sandbox yet. In a desktop sandbox they run on one thread, and signals reach
-  them only between system calls.
-- **Gemini CLI is slow to start the first time in the browser**; it starts
-  faster in the desktop app.
-- **The first boot in the browser takes 30 to 60 seconds** while the tab
-  compiles the kernel and programs.
+- **Tablets run the shell only**, with no Jupyter or agent pane. **Phones**
+  start no sandbox by default, and the page says why; opened with
+  `?start-anyway`, a phone gets the shell and the agent without Python. The
+  Notebook and JupyterLab pages do not start a sandbox on a phone
+  ([2026.10.27](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068)).
+- **Go is a package, not part of the image**, and Go programs cannot run in the
+  browser sandbox yet. In a desktop sandbox they run on one thread, and signals
+  reach them only between system calls.
+- **Gemini CLI is slow to start the first time in the browser**, after it is
+  installed from the _Packages_ panel; it starts faster in the desktop app.
+- **The first visit in the browser is slow**: the tab compiles the kernel and
+  programs, and installs Python, about 85 seconds to Python ready on a laptop. A
+  later visit has Python ready in about 11 seconds.
 
 ## How it ships
 
-The playground ships as **trains**, roughly weekly. A train releases the kernel,
-the image, the desktop app and the `yurt` CLI together, and is named
-`playground-YYYY.MM.DD-<kernel commit>`. A train goes live on the site when it
-is released.
+The playground ships as **trains**, often several a week. A train releases the
+kernel, the images, the desktop app and the `yurt` CLI together under one name,
+`playground-YYYY.MM.DD-<kernel commit>`, with a `.N` suffix when that name is
+already taken; any of them may be unchanged from the previous train. Packages
+are released on their own, outside trains
+([Packages](https://yurtos.github.io/yurt-playground/#packages)). A train goes
+live on the site when it is released.
 
 Each train's notes, including what is not in it and its known issues, are at
 <https://yurtos.github.io/yurt-playground/>. Bugs and requests are welcome as
