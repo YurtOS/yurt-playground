@@ -18,8 +18,6 @@
  * sandbox, and are gone after a reload (#81).
  */
 
-import type { SpawnedProcess } from "./executions.ts";
-
 /** Where the page fetches the repository from: GitHub's raw file host,
  * which answers with `Access-Control-Allow-Origin: *`. */
 export const PACKAGE_REPO_URL =
@@ -562,49 +560,6 @@ export function catalogRows(catalog: Catalog): {
       size: release!.size,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
-}
-
-/** The names `pkg list` prints, one package per line as
- * `NAME VERSION REPOSITORY`: what the image or an earlier install already
- * put in this sandbox. */
-export function installedNames(pkgList: string): Set<string> {
-  return new Set(
-    pkgList.split("\n")
-      .map((line) => line.trim().split(/\s+/)[0])
-      .filter((name) => isPackageName(name)),
-  );
-}
-
-/** The most `pkg list` output the panel reads: far more than the
- * repository's packages need, and a cut listing is refused, not parsed. */
-export const LIST_INSTALLED_MAX_BYTES = 1024 * 1024;
-
-/** What this sandbox already has, by `pkg list`, under sudo like every
- * other pkg call here (pkg opens its database read-write). The caller runs
- * it in the install queue, so no install is writing that database
- * meanwhile. No deadline of its own, as with the queue's other guest
- * reads: a listing that never ends is a sandbox that stopped answering,
- * which the next install's stall checks report. */
-export async function listInstalled(
-  spawn: (line: string, maxOutputBytes: number) => Promise<SpawnedProcess>,
-): Promise<Set<string>> {
-  const process = await spawn("sudo pkg list", LIST_INSTALLED_MAX_BYTES);
-  const status = await process.exited;
-  const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
-  const code = typeof status === "number" ? status : status.code;
-  if (code !== 0) {
-    const how = typeof status !== "number" && status.signal !== null
-      ? `signal ${status.signal}`
-      : `exit ${code}`;
-    throw new Error(
-      `pkg list failed (${how}): ${text(process.takeStderr()).trim()}`,
-    );
-  }
-  const stdout = process.takeStdout();
-  if (stdout.byteLength > LIST_INSTALLED_MAX_BYTES) {
-    throw new Error("pkg list printed more than the panel reads");
-  }
-  return installedNames(text(stdout));
 }
 
 /** `pkg`'s cause for a failure: it names the cause first and sums up last

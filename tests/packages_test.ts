@@ -1,4 +1,3 @@
-import type { WaitStatus } from "../src/executions.ts";
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   type ArchiveCache,
@@ -7,13 +6,10 @@ import {
   type Catalog,
   type Fetcher,
   fetchWithProgress,
-  installedNames,
   installPackage,
   installScript,
   InstallStalled,
   latestRelease,
-  LIST_INSTALLED_MAX_BYTES,
-  listInstalled,
   loadCatalog,
   onlyStaged,
   PACKAGE_REPO_URL,
@@ -1278,73 +1274,5 @@ Deno.test("a checked catalog refuses metadata the index does not name, and an ex
     () => loadCatalog(fetcher, PACKAGE_REPO_URL, true, new Date("2099-02-01")),
     Error,
     "expired",
-  );
-});
-
-Deno.test("installedNames reads the names pkg list prints", () => {
-  assertEquals(
-    [...installedNames(
-      "ca-certificates 2026.9.25-yurt_0 official\ngit 2.55.0-yurt_0 official\n" +
-        "python-dev 3.14.7-yurt_0 official\n\n",
-    )],
-    ["ca-certificates", "git", "python-dev"],
-  );
-  assertEquals(installedNames("").size, 0);
-  // Anything that is not a package name (a warning line) is not one.
-  assertEquals([...installedNames("warning: Repo stale\ngit 2 official")], [
-    "git",
-  ]);
-});
-
-Deno.test("listInstalled is what sudo pkg list printed, and throws when it fails", async () => {
-  const ran: string[] = [];
-  const spawn = (
-    exited: Promise<number | WaitStatus>,
-    stdout: string | Uint8Array = "",
-    stderr = "",
-  ) =>
-  (line: string, maxOutputBytes: number) => {
-    ran.push(`${line} ${maxOutputBytes}`);
-    return Promise.resolve({
-      pid: 7,
-      exited,
-      takeStdout: () =>
-        typeof stdout === "string" ? new TextEncoder().encode(stdout) : stdout,
-      takeStderr: () => new TextEncoder().encode(stderr),
-    });
-  };
-  assertEquals(
-    [
-      ...await listInstalled(
-        spawn(Promise.resolve(0), "git 2.55.0-yurt_0 official\n"),
-      ),
-    ],
-    ["git"],
-  );
-  assertEquals(ran, [`sudo pkg list ${LIST_INSTALLED_MAX_BYTES}`]);
-  await assertRejects(
-    () => listInstalled(spawn(Promise.resolve(1), "", "database is locked")),
-    Error,
-    "pkg list failed (exit 1): database is locked",
-  );
-  await assertRejects(
-    () =>
-      listInstalled(
-        spawn(Promise.resolve({ code: null, signal: 9, coreDumped: false })),
-      ),
-    Error,
-    "pkg list failed (signal 9)",
-  );
-  // A cut listing would end in a cut name: refused, not parsed.
-  await assertRejects(
-    () =>
-      listInstalled(
-        spawn(
-          Promise.resolve(0),
-          new Uint8Array(LIST_INSTALLED_MAX_BYTES + 1).fill(0x61),
-        ),
-      ),
-    Error,
-    "more than the panel reads",
   );
 });

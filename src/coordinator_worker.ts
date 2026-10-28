@@ -46,7 +46,6 @@ import {
   fetchWithProgress,
   installPackage,
   InstallStalled,
-  listInstalled,
   loadCatalog,
   resolveSet,
 } from "./packages.ts";
@@ -119,11 +118,7 @@ type ToWorker =
   // The Packages panel's install of one package (src/packages.ts), run
   // here like the automatic Python install and queued with it: one
   // install at a time. Progress comes back as `pkg-progress`.
-  | { type: "pkg-install"; req: number; name: string; tablet: boolean }
-  // The panel's question "what is installed" (`pkg list`), in the same
-  // queue: pkg opens its database read-write, so it must not run beside
-  // an install.
-  | { type: "pkg-list"; req: number };
+  | { type: "pkg-install"; req: number; name: string; tablet: boolean };
 
 type FromWorker =
   // status, error, shell-ready (the shell is the whole session), and
@@ -163,7 +158,7 @@ type FromWorker =
     type: "pkg-reply";
     req: number;
     ok: boolean;
-    value?: string | string[];
+    value?: string;
     error?: string;
   };
 
@@ -174,70 +169,37 @@ let executions: ExecutionRegistry | undefined;
  * (its sandbox has a network, and `pkg install` there needs no page). */
 let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 
-/** `work` in the install queue, on the in-tab session as it is when its
- * turn comes (one queued behind a stalled install may find a fresh
- * sandbox, or a stalled one). An install counts as pkg activity for the
- * Python layer's `pristine` check; a listing changes no package. */
-function inPackageQueue<T>(
-  work: (session: BootedSession) => Promise<T>,
-  { install }: { install: boolean },
-) {
-  return installs(() => {
-    const session = packageSession;
-    if (
-      session?.process === undefined ||
-      (install && session.writeFiles === undefined)
-    ) {
-      throw new Error("this sandbox does not install packages");
-    }
-    if (sandboxStalled) throw new Error(stalledSandbox());
-    if (install) pkgTouched.add(session);
-    return work(session);
-  });
-}
-
-function packageReplyError(req: number, error: unknown): void {
-  post({
-    type: "pkg-reply",
-    req,
-    ok: false,
-    error: error instanceof Error ? error.message : String(error),
-  });
-}
-
-async function serveInstalledList(msg: ToWorker): Promise<void> {
-  if (msg.type !== "pkg-list") return;
-  try {
-    const names = await inPackageQueue(
-      (session) =>
-        listInstalled((line, maxOutputBytes) =>
-          session.process!(line, { maxOutputBytes })
-        ),
-      { install: false },
-    );
-    post({ type: "pkg-reply", req: msg.req, ok: true, value: [...names] });
-  } catch (error) {
-    packageReplyError(msg.req, error);
-  }
-}
-
 async function servePackages(msg: ToWorker): Promise<void> {
   if (msg.type !== "pkg-install") return;
   const { req } = msg;
   try {
-    const output = await inPackageQueue((session) =>
-      installPackage(msg.name, {
+    // The session as it is when this install's turn comes: one queued
+    // behind a stalled install may find a fresh sandbox, or a stalled one.
+    const output = await installs(() => {
+      const session = packageSession;
+      if (session?.process === undefined || session.writeFiles === undefined) {
+        throw new Error("this sandbox does not install packages");
+      }
+      if (sandboxStalled) throw new Error(stalledSandbox());
+      pkgTouched.add(session);
+      return installPackage(msg.name, {
         host: workerPackageHost(session),
         tablet: msg.tablet,
         progress: (text) => post({ type: "pkg-progress", req, text }),
-      }), { install: true });
+      });
+    });
     post({ type: "pkg-reply", req, ok: true, value: output });
   } catch (error) {
     if (error instanceof InstallStalled && error.inSandbox) {
       sandboxStalled = true;
       stalledWhy = "an earlier install stopped making progress";
     }
-    packageReplyError(req, error);
+    post({
+      type: "pkg-reply",
+      req,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -453,7 +415,6 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
   await serveYurt(msg);
   await servePackages(msg);
-  await serveInstalledList(msg);
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });

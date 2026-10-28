@@ -66,9 +66,6 @@ type FromWorker =
 let packageInstall:
   | ((name: string, progress: (text: string) => void) => Promise<string>)
   | undefined;
-/** What that sandbox already has (`pkg list`), asked of the coordinator so
- * it runs in the same queue as the installs. */
-let packageList: (() => Promise<string[]>) | undefined;
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
@@ -332,7 +329,6 @@ function boot(
           tablet: smallDevice,
         });
       });
-    packageList = () => ask<string[]>({ type: "pkg-list" });
   }
   yurtState.set("booting");
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
@@ -530,76 +526,26 @@ function wirePackages(): void {
   const status = byId("packages-status");
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
-  /** What `pkg list` said, for the buttons: Installed or Install. */
-  const mark = (installed: Set<string>) => {
-    for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
-      b.textContent = installed.has(b.dataset.package ?? "")
-        ? "Installed"
-        : "Install";
-    }
-    enable();
-  };
-  const enable = () => {
-    for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
-      b.disabled = busy || b.textContent === "Installed";
-    }
-  };
-  /** Ask the sandbox's pkg what it has: the image, a restored snapshot, the
-   * terminal or the agent may have installed (or removed) packages. The
-   * buttons stay usable meanwhile: the coordinator queues an install
-   * behind the listing. A failed listing keeps the marks and says so,
-   * after `outcome` (an install's) when there is one. */
-  let listing = false;
-  const refresh = async (outcome?: string): Promise<boolean> => {
-    // One listing at a time: a reopen while one is queued waits for it.
-    if (packageList === undefined || listing) return false;
-    listing = true;
-    // What the line said before (an earlier install's outcome or cause)
-    // comes back once the listing is done.
-    const before = outcome ?? status.textContent ?? "";
-    if (outcome === undefined) {
-      status.textContent = "checking which packages are installed…";
-    }
-    try {
-      mark(new Set(await packageList()));
-      status.textContent = before;
-      return true;
-    } catch (error) {
-      const why = `could not check which packages are installed: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
-      status.textContent = before === "" ? why : `${before}; ${why}`;
-      return false;
-    } finally {
-      listing = false;
-    }
-  };
   const install = async (name: string) => {
     if (packageInstall === undefined || busy) return;
     busy = true;
     panel.dataset.install = "running";
-    enable();
+    for (const b of list.querySelectorAll("button")) b.disabled = true;
     try {
       const output = await packageInstall(
         name,
         (message) => status.textContent = message,
       );
-      const outcome = /^nothing to install$/m.test(output)
+      status.textContent = /^nothing to install$/m.test(output)
         ? `${name} is already installed`
         : `installed ${name}`;
-      status.textContent = outcome;
-      if (!(await refresh(outcome))) {
-        // No listing: what pkg's plan says it installed (the package and
-        // its dependencies) is installed.
-        const installed = new Set(
-          [...output.matchAll(/^install (\S+) /gm)].map((match) => match[1]),
-        );
-        installed.add(name);
-        for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
-          if (installed.has(b.dataset.package ?? "")) {
-            b.textContent = "Installed";
-          }
-        }
+      // Everything pkg installed with it (its dependencies) is installed too.
+      const installed = new Set(
+        [...output.matchAll(/^install (\S+) /gm)].map((match) => match[1]),
+      );
+      installed.add(name);
+      for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
+        if (installed.has(b.dataset.package ?? "")) b.textContent = "Installed";
       }
       panel.dataset.install = "done";
     } catch (error) {
@@ -609,16 +555,14 @@ function wirePackages(): void {
       panel.dataset.install = "failed";
     } finally {
       busy = false;
-      enable();
+      for (const b of list.querySelectorAll("button")) {
+        b.disabled = b.textContent === "Installed";
+      }
     }
   };
   let loading = false;
   const show = async () => {
-    if (catalog !== undefined) {
-      if (!busy) await refresh();
-      return;
-    }
-    if (loading) return;
+    if (catalog !== undefined || loading) return;
     loading = true;
     try {
       // Images before the modular base image have no `pkg` to install with.
@@ -661,7 +605,6 @@ function wirePackages(): void {
       tr.append(name, version, size, action);
       list.append(tr);
     }
-    await refresh();
   };
   toggle.addEventListener("click", () => {
     panel.hidden = !panel.hidden;
