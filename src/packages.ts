@@ -896,6 +896,9 @@ type InstallOptions = {
   stallMs?: number;
   /** {@link INSTALL_RUN_CEILING_MS}; shorter in tests. */
   runCeilingMs?: number;
+  /** Told the exact releases a set or pinned list resolved to, from the
+   * install's own index read: what this install puts in the sandbox. */
+  resolved?: (releases: readonly PinnedRelease[]) => void;
 };
 
 type InstallWatcher = {
@@ -948,6 +951,7 @@ async function installWatched(
     : "set" in request
     ? resolveSet(catalog, request.set)
     : request.releases;
+  if (exact !== undefined) options.resolved?.(exact);
   const pinned = exact === undefined
     ? undefined
     : new Map(exact.map((release) => [release.name, release]));

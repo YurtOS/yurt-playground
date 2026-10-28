@@ -52,7 +52,12 @@ import { checkSnapshotFile, livePythonSet } from "./lib/snapshot_file.ts";
 import { handlePlaygroundRequest, ISOLATION_HEADERS } from "../src/serve.ts";
 import { imagePartRange, imagePartsManifest } from "../src/image_parts.ts";
 import { sha256Hex } from "../src/integrity.ts";
-import { loadPins, parsePins, type SnapshotPin } from "../src/pins.ts";
+import {
+  loadPins,
+  parsePins,
+  type Pins,
+  type SnapshotPin,
+} from "../src/pins.ts";
 import {
   checkPythonSet,
   FORMAT,
@@ -119,6 +124,8 @@ export async function checkoutProblem(
   };
   try {
     const head = await git("rev-parse", "HEAD");
+    // The pushed head as the remote has it now, not as last fetched.
+    if (rev === "upstream") await git("fetch", "-q");
     const want = rev === "upstream" ? await git("rev-parse", "@{u}") : rev;
     if (head !== want) {
       return `the checkout ${dir} is at ${head}, not ${
@@ -144,17 +151,37 @@ export async function checkoutProblem(
   }
 }
 
-/** `--check-pin`: whether the pins' snapshot entry may stay -- well formed,
- * of this page's format, built from these pins, and of the Python set the
- * live index offers now. release-playground.sh asks before carrying it. */
-async function checkPin(): Promise<void> {
-  const pins = await loadPins(pinsPath);
+/** Why the pins' snapshot entry may not stay, or undefined when it may:
+ * well formed, of this page's format, built from these pins, and of the
+ * Python set the live index offers -- or, when the index cannot be read,
+ * kept, as the page then restores it too. */
+export async function snapshotPinProblem(
+  pins: Pins,
+  live: () => Promise<string | null>,
+): Promise<string | undefined> {
   try {
     const pin = pinnedSnapshot(pins);
-    checkPythonSet(pin.builtFrom, await livePythonSet(pins));
+    let set: string | null;
+    try {
+      set = await live();
+    } catch {
+      say("the live package index could not be read; the pin is kept");
+      return undefined;
+    }
+    checkPythonSet(pin.builtFrom, set);
+    return undefined;
   } catch (error) {
-    die(error instanceof Error ? error.message : String(error));
+    return error instanceof Error ? error.message : String(error);
   }
+}
+
+/** `--check-pin`: exit 0 when the pins' snapshot entry may stay, else 1
+ * with the reason on stderr; release-playground.sh asks before carrying
+ * the entry into a train. */
+async function checkPin(): Promise<void> {
+  const pins = await loadPins(pinsPath);
+  const problem = await snapshotPinProblem(pins, () => livePythonSet(pins));
+  if (problem !== undefined) die(problem);
   say("the pinned snapshot is this train's");
 }
 

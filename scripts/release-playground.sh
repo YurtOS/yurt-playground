@@ -836,17 +836,18 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
   } + (if $slim == null then {} else {browserImage: $slim} end)
     + (if $snapshot == null then {} else {snapshot: $snapshot} end)' > "$root/artifacts/pins.json"
 if [ "$snapshot_json" != null ]; then
-  if ! (cd "$root" && deno run -A scripts/release-snapshot.ts --check-pin); then
+  if ! snapshot_why=$(cd "$root" && deno run -A scripts/release-snapshot.ts --check-pin 2>&1); then
     jq 'del(.snapshot)' "$root/artifacts/pins.json" > "$root/artifacts/pins.json.tmp" &&
       mv "$root/artifacts/pins.json.tmp" "$root/artifacts/pins.json"
-    say "the pinned snapshot is not this train's: dropped"
+    snapshot_why=$(tail -1 <<< "$snapshot_why")
+    say "the pinned snapshot is not this train's (${snapshot_why#release-snapshot: }): dropped"
     snapshot_dropped=1
   fi
 fi
 say "verify the pins: scripts/install-pinned-artifacts.sh"
 "$root/scripts/install-pinned-artifacts.sh"
 if [ "$pins_only" = 1 ]; then
-  [ "${snapshot_dropped:-0}" = 1 ] && say "kernel or image changed: run scripts/release-snapshot.ts (deno run -A)"
+  [ "${snapshot_dropped:-0}" = 1 ] && say "the snapshot pin was dropped (${snapshot_why#release-snapshot: }): run scripts/release-snapshot.ts (deno run -A)"
   say "pins regenerated and verified; nothing dispatched, nothing opened"
   exit 0
 fi
@@ -915,5 +916,5 @@ if [ "$(step_get desktop conclusion)" != success ]; then
 fi
 say "released: kernel-wasm-$train, $image_release, $seal_release_of_train, desktop-host-$train, yurt-cli-$train, desktop-$train"
 if [ "${snapshot_dropped:-0}" = 1 ]; then
-  say "kernel or image changed: run scripts/release-snapshot.ts (deno run -A), then commit artifacts/pins.json"
+  say "the snapshot pin was dropped (${snapshot_why#release-snapshot: }): run scripts/release-snapshot.ts (deno run -A), then commit artifacts/pins.json"
 fi

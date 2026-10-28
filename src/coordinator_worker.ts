@@ -629,37 +629,21 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const tablet = msg.tablet === true;
   // The desktop app's sandbox has a network and its own pkg; only the
   // in-tab one installs through the page.
-  /** What a capture's install installed: the set resolved once and
-   * installed exactly, so the snapshot's label is the set it holds. */
+  /** What a capture's install installed, as a layer key: the set its
+   * own index read resolved to, so the snapshot's label is the set it
+   * holds. */
   let capturedSet: string | undefined;
-  const captureInstall = async (
-    session: BootedSession,
-    request: PythonRequest & { image: string },
-  ) => {
-    post({ type: "status", text: "installing Python" });
-    const progress = (text: string) => post({ type: "status", text });
-    const cache = await browserArchiveCache();
-    progress("Python: resolving the set");
-    const releases = resolveSet(await loadCatalog(), request.set);
-    await installs(() => {
-      pkgTouched.add(session);
-      return installPackage(
-        { label: request.label, releases, othersAllowed: true },
-        { host: workerPackageHost(session), tablet, progress, cache },
-      );
-    });
-    capturedSet = layerKey(request.image, releases);
-  };
+  const capturing = msg.snapshot === "capture";
   installPython = python === undefined || kernelPorts !== undefined
     ? undefined
-    : msg.snapshot === "capture" && python.image !== undefined
-    ? (session) => captureInstall(session, { ...python, image: python.image! })
     : async (session) => {
       post({ type: "status", text: "installing Python" });
       const cache = await browserArchiveCache();
       const progress = (text: string) => post({ type: "status", text });
       layerInstalled = undefined;
-      const store = tablet ? undefined : await browserLayerStore();
+      // A capture installs with pkg, never from a stored layer: the
+      // snapshot is what the live index gives now.
+      const store = tablet || capturing ? undefined : await browserLayerStore();
       try {
         // Instant on a later visit: this browser's earlier install, kept
         // as a layer (src/python_layer.ts), when it is still the set. All
@@ -683,6 +667,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
                 tablet,
                 progress,
                 cache,
+                resolved: capturing && python.image !== undefined
+                  ? (releases) => {
+                    capturedSet = layerKey(python.image!, [...releases]);
+                  }
+                  : undefined,
               });
               between.after();
             },

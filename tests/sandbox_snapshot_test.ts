@@ -9,7 +9,6 @@ import {
   checkPythonSet,
   checkSandboxSnapshot,
   decodeSandboxSnapshot,
-  decodeWhileChecking,
   encodeSandboxSnapshot,
   fetchVerifiedSnapshot,
   pinnedSnapshot,
@@ -494,57 +493,5 @@ Deno.test("a pin of another snapshot format is not used", () => {
     () => pinnedSnapshot({ ...pins, snapshot }),
     SnapshotMismatch,
     "format 2, not 3",
-  );
-});
-
-Deno.test("the live index is asked while the snapshot downloads, and a different answer stops the download", async () => {
-  const file = new Uint8Array(
-    await (await encodeSandboxSnapshot(image(1 << 10), BUILT)).arrayBuffer(),
-  );
-  // A download that sends half the file and then waits.
-  const slow = (signal: AbortSignal) => {
-    let stopped: AbortSignal | undefined;
-    return {
-      stopped: () => stopped?.aborted,
-      body: Promise.resolve(
-        new ReadableStream<Uint8Array<ArrayBuffer>>({
-          start(controller) {
-            stopped = signal;
-            controller.enqueue(file.slice(0, file.byteLength >> 1));
-            signal.addEventListener(
-              "abort",
-              () => controller.error(signal.reason),
-            );
-          },
-        }),
-      ),
-    };
-  };
-  let download: ReturnType<typeof slow> | undefined;
-  let asked = false;
-  await assertRejects(
-    () =>
-      decodeWhileChecking(
-        (signal) => (download = slow(signal)).body,
-        BUILT,
-        (async () => {
-          asked = true;
-          await new Promise((resolve) => setTimeout(resolve, 10));
-          checkPythonSet(BUILT, "another set");
-        })(),
-      ),
-    SnapshotMismatch,
-    "the live index offers another set",
-  );
-  assertEquals(asked, true);
-  assertEquals(download?.stopped(), true, "the download was stopped");
-  // The same answer: the decode's result.
-  assertEquals(
-    await decodeWhileChecking(
-      () => Promise.resolve(new Blob([file]).stream()),
-      BUILT,
-      Promise.resolve(checkPythonSet(BUILT, BUILT.pythonSet)),
-    ),
-    image(1 << 10),
   );
 });

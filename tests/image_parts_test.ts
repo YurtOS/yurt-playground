@@ -236,3 +236,46 @@ Deno.test("partsFetch asks for the next part while the current one is read", asy
   }
   assertEquals(rest.join(""), "def");
 });
+
+Deno.test("a part that fails stops the part asked for ahead of it", async () => {
+  const signals = new Map<string, AbortSignal>();
+  const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith(".parts.json")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ size: 9, parts: ["img.0", "img.1", "img.2"] }),
+        ),
+      );
+    }
+    signals.set(url.slice(-5), init!.signal!);
+    return Promise.resolve(
+      url.endsWith("img.1")
+        ? new Response(null, { status: 404 })
+        : new Response(new TextEncoder().encode("abc")),
+    );
+  }) as typeof fetch;
+  const response = await partsFetch(fetchImpl)("http://pg/img");
+  await assertRejects(() => response.bytes(), Error, "img.1 failed: 404");
+  assertEquals(signals.get("img.2")?.aborted, true, "img.2 was asked for");
+});
+
+Deno.test("checked parts are fetched one at a time", async () => {
+  const requested: string[] = [];
+  const fetchImpl = ((input: RequestInfo | URL) => {
+    const url = String(input);
+    requested.push(url.slice(-5));
+    return Promise.resolve(
+      url.endsWith(".parts.json")
+        ? new Response(JSON.stringify({ size: 6, parts: ["img.0", "img.1"] }))
+        : new Response(new TextEncoder().encode("abc")),
+    );
+  }) as typeof fetch;
+  const reader = (await partsFetch(fetchImpl, {
+    part: () => Promise.resolve(),
+  })("http://pg/img")).body!.getReader();
+  await reader.read();
+  assertEquals(requested.includes("img.1"), false);
+  await reader.read();
+  assertEquals(requested.includes("img.1"), true);
+});

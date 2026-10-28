@@ -293,8 +293,6 @@ export async function fetchVerifiedSnapshot(
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
   /** Bytes checked so far, of the whole file's. */
   onProgress?: (loaded: number, total: number) => void,
-  /** Stops the download. */
-  signal?: AbortSignal,
 ): Promise<ReadableStream<Uint8Array<ArrayBuffer>>> {
   let loaded = 0;
   const response = await partsFetch(fetchImpl, {
@@ -321,34 +319,9 @@ export async function fetchVerifiedSnapshot(
       loaded += bytes.byteLength;
       onProgress?.(loaded, pin.size);
     },
-  })(path, { signal });
+  })(path);
   if (!response.ok || response.body === null) {
     throw new Error(`fetch ${path}.parts.json failed: ${response.status}`);
   }
   return response.body as ReadableStream<Uint8Array<ArrayBuffer>>;
-}
-
-/** Decode the snapshot `download` gives while `check` runs (the live
- * index's answer takes as long as it takes): a check that fails stops the
- * download and is the error. */
-export async function decodeWhileChecking(
-  download: (signal: AbortSignal) => Promise<
-    ReadableStream<Uint8Array<ArrayBuffer>>
-  >,
-  expected: SnapshotIdentity | BuiltFrom,
-  check: Promise<void>,
-): Promise<SandboxSealImage> {
-  const stop = new AbortController();
-  const checked = check.catch((error) => {
-    stop.abort(error);
-    throw error;
-  });
-  const decoded = download(stop.signal).then((body) =>
-    decodeSandboxSnapshot(body, expected)
-  );
-  // Whichever fails second is not news.
-  checked.catch(() => {});
-  decoded.catch(() => {});
-  const [image] = await Promise.all([decoded, checked]);
-  return image;
 }

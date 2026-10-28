@@ -35,7 +35,7 @@ import { watchGuestMemoryRefusals } from "./memory_refused.ts";
 import { parsePins, type Pins } from "./pins.ts";
 import {
   checkPythonSet,
-  decodeWhileChecking,
+  decodeSandboxSnapshot,
   fetchVerifiedSnapshot,
   pinnedSnapshot,
 } from "./sandbox_snapshot.ts";
@@ -439,27 +439,25 @@ async function restoreSnapshot(
   // (SnapshotMismatch both).
   const pins = await browserPins();
   const pin = pinnedSnapshot(pins);
+  // The Python set the capture installed must be the one an install
+  // would get now, as for a stored layer (src/python_layer.ts): asked
+  // before anything is downloaded (liveLayerKey's own bound, 20 s).
+  checkPythonSet(pin.builtFrom, await env.livePythonSet?.());
   // Only this frame holds the decoded memory (~545 MiB), and only until
-  // the restore copied it: a fallback boot must not run beside it. The
-  // Python set the capture installed must be the one an install would get
-  // now, as for a stored layer (src/python_layer.ts); the live index is
-  // asked while the snapshot downloads, and a different answer stops it.
-  let image: SandboxSealImage | undefined = await decodeWhileChecking(
-    (signal) =>
-      fetchVerifiedSnapshot(
-        path,
-        pin,
-        undefined,
-        (loaded, total) =>
-          env.show(
-            `loading snapshot ${(loaded / MIB).toFixed(1)} of ${
-              (total / MIB).toFixed(1)
-            } MiB`,
-          ),
-        signal,
-      ),
+  // the restore copied it: a fallback boot must not run beside it.
+  let image: SandboxSealImage | undefined = await decodeSandboxSnapshot(
+    await fetchVerifiedSnapshot(
+      path,
+      pin,
+      undefined,
+      (loaded, total) =>
+        env.show(
+          `loading snapshot ${(loaded / MIB).toFixed(1)} of ${
+            (total / MIB).toFixed(1)
+          } MiB`,
+        ),
+    ),
     pin.builtFrom,
-    (async () => checkPythonSet(pin.builtFrom, await env.livePythonSet?.()))(),
   );
   const fetched = performance.now();
   const memoryBytes = image.kernelMemory.byteLength;
@@ -480,67 +478,6 @@ async function restoreSnapshot(
       `restored in ${Math.round(performance.now() - fetched)} ms`,
   );
   return restored.host;
-}
-
-/**
- * Work put off until after something settles, and then a delay: an exec's
- * sweep of its /tmp files, 5 s after the exit. A seal must not race it --
- * a sweep that spawns after the seal began would be a process the seal
- * either catches mid-run or misses. `hurry` starts what is waiting at
- * once, and anything that becomes due later without the delay; `idle` is
- * true once every piece of work has run to its end.
- */
-export class DeferredWork {
-  private waiting = new Map<number, () => void>();
-  /** Deferred and not yet run to its end. */
-  private busy = 0;
-  private hurried = false;
-
-  defer(
-    after: Promise<unknown>,
-    run: () => Promise<void>,
-    delayMs: number,
-  ): void {
-    this.busy++;
-    const start = () => {
-      run().catch(() => {}).finally(() => this.busy--);
-    };
-    const due = () => {
-      if (this.hurried) {
-        start();
-        return;
-      }
-      const timer = setTimeout(() => {
-        this.waiting.delete(timer);
-        start();
-      }, delayMs);
-      this.waiting.set(timer, start);
-    };
-    after.then(due, due);
-  }
-
-  hurry(): void {
-    this.hurried = true;
-    for (const [timer, start] of this.waiting) {
-      clearTimeout(timer);
-      start();
-    }
-    this.waiting.clear();
-  }
-
-  get idle(): boolean {
-    return this.busy === 0;
-  }
-}
-
-/** The live processes a seal kills: none while a sweep is being spawned
- * (its pid is not known yet), and never a sweep's own. */
-export function processesToKill(
-  live: { pid: number }[],
-  sweeps: { pids: ReadonlySet<number>; starting: number },
-): number[] {
-  if (sweeps.starting > 0) return [];
-  return live.map((p) => p.pid).filter((pid) => !sweeps.pids.has(pid));
 }
 
 /** The rest of {@link bootPlayground}, on its loaded (or restored) kernel. */
@@ -567,29 +504,31 @@ async function startPlayground(
   }
   const shell = sh;
 
-  /** Each exec's sweep of its files (below), which a seal runs first. */
-  const sweeps = new DeferredWork();
-  /** A seal has begun: the page starts no process of its own any more. */
+  /** Each exec's sweep of its files, waiting out its delay (below). */
+  const sweepTimers = new Set<number>();
+  /** A seal has begun: the page starts nothing more of its own -- an exec,
+   * a process, a sweep -- but the seal's own clean-up. */
   let sealing = false;
-  /** The seal is being taken: nothing starts at all, a sweep included. */
-  let sealed = false;
-  /** The sweeps' own processes, which a seal lets finish: a pid joins as
-   * soon as the kernel has it and leaves when the sweep has ended. */
-  const sweepProcs = { pids: new Set<number>(), starting: 0 };
+  /** Spawns that have begun and not yet returned: a seal waits for them,
+   * so no process it has not seen can start under it. */
+  let spawning = 0;
 
   /** `/bin/sh` with `argv`, as the login user in the login home, leading
    * its own process group unless `ownGroup` is false. */
-  const spawnShell = async (
-    argv: string[],
-    { ownGroup = true, spawned = (_pid: number) => {} } = {},
-  ) => {
-    if (sealed) throw new Error("the sandbox is sealed");
+  const spawnShell = async (argv: string[], { ownGroup = true } = {}) => {
+    spawning++;
+    try {
+      return await spawnShellNow(argv, ownGroup);
+    } finally {
+      spawning--;
+    }
+  };
+  const spawnShellNow = async (argv: string[], ownGroup: boolean) => {
     const process = await mk.spawnUserProcessWithArgsAsync(
       shell,
       argv.map((arg) => s(arg)),
       { ...DEFAULT_ENV },
     );
-    spawned(process.pid);
     setPidCredentials(mk, process.pid, LOGIN_UID, LOGIN_GID);
     // Its own process group, which everything it starts inherits, so
     // `signal` below reaches a pipeline or a background job with it.
@@ -756,29 +695,13 @@ async function startPlayground(
       const tag = crypto.randomUUID();
       const path = (name: string) => `/tmp/.yurt-exec-${tag}.${name}`;
       const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-      // A sweep is known to the seal from before its spawn (`starting`)
-      // and by its pid from the moment the kernel has one, so the seal
-      // never kills it; its pid leaves the set when it has ended.
+      // A sweep after a seal began is the seal's to do (it removes every
+      // exec's files itself, once nothing runs).
       const single = async (command: string) => {
-        let pid: number | undefined;
-        sweepProcs.starting++;
-        let p: Awaited<ReturnType<typeof spawnShell>>;
-        try {
-          p = await spawnShell(["/bin/sh", "-c", command], {
-            spawned: (id) => {
-              pid = id;
-              sweepProcs.pids.add(id);
-            },
-          });
-        } finally {
-          sweepProcs.starting--;
-        }
-        try {
-          p.closeStdin();
-          await p.runStartAsync();
-        } finally {
-          if (pid !== undefined) sweepProcs.pids.delete(pid);
-        }
+        if (sealing) return;
+        const p = await spawnShell(["/bin/sh", "-c", command]);
+        p.closeStdin();
+        await p.runStartAsync();
       };
       let stdinRedirect = "< /dev/null";
       if (io.stdin !== undefined) {
@@ -815,8 +738,14 @@ async function startPlayground(
         throw error;
       });
       // The registry reads the files right after the exit; the sweep comes
-      // well after, whichever way the exit went (at once during a seal).
-      sweeps.defer(exited, sweep, 5000);
+      // well after, whichever way the exit went.
+      exited.finally(() => {
+        const timer = setTimeout(() => {
+          sweepTimers.delete(timer);
+          void sweep().catch(() => {});
+        }, 5000);
+        sweepTimers.add(timer);
+      }).catch(() => {});
       const cap = io.maxOutputBytes + 1;
       const taken = { out: false, err: false };
       const take = (stream: "out" | "err") => {
@@ -838,33 +767,46 @@ async function startPlayground(
       };
     },
     async seal() {
+      // From here the page starts nothing (an exec, a process and a sweep
+      // are refused); what is starting finishes starting, and then every
+      // guest process goes, whoever started it -- the shell and its
+      // background jobs, a running exec, a Packages install -- until a
+      // look finds none alive and none starting.
       sealing = true;
-      // An exec's sweep runs now rather than 5 s after its exit, and the
-      // seal waits for it. Every other guest process goes, whoever started
-      // it -- the shell and its background jobs, a running exec, a
-      // Packages install -- and keeps going until none is left: a dying
-      // process's sweep, or a child it forked, shows up in a later look.
-      sweeps.hurry();
+      for (const timer of sweepTimers) clearTimeout(timer);
+      sweepTimers.clear();
       const deadline = Date.now() + 30_000;
-      for (;;) {
-        const live = mk.listProcesses().filter((p) =>
-          p.pid !== KERNEL_PID && p.state !== "exited"
-        );
-        if (live.length === 0 && sweeps.idle) break;
-        for (const pid of processesToKill(live, sweepProcs)) {
-          mk.killProcess(pid, SIGKILL);
-        }
-        if (Date.now() > deadline) {
-          throw new Error(
-            `cannot seal: processes still alive: ${
-              live.map((p) => `${p.pid}:${p.state}`).join(",")
-            }${sweeps.idle ? "" : " (and an exec's file sweep)"}`,
+      const settle = async () => {
+        for (;;) {
+          const live = mk.listProcesses().filter((p) =>
+            p.pid !== KERNEL_PID && p.state !== "exited"
           );
+          if (live.length === 0 && spawning === 0) return;
+          if (spawning === 0) {
+            for (const p of live) mk.killProcess(p.pid, SIGKILL);
+          }
+          if (Date.now() > deadline) {
+            throw new Error(
+              `cannot seal: processes still alive: ${
+                live.map((p) => `${p.pid}:${p.state}`).join(",")
+              }${spawning === 0 ? "" : ` (and ${spawning} starting)`}`,
+            );
+          }
+          await new Promise((resolve) => setTimeout(resolve, 250));
         }
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
+      };
+      await settle();
       await userExited;
-      sealed = true;
+      // Every exec's files, the ones whose sweep never ran included: the
+      // seal's own clean-up, its one process, waited for.
+      const clean = await spawnShell([
+        "/bin/sh",
+        "-c",
+        "exec rm -f /tmp/.yurt-exec-*",
+      ]);
+      clean.closeStdin();
+      await clean.runStartAsync();
+      await settle();
       return await mk.sealSandbox();
     },
     writeFiles(files) {

@@ -577,3 +577,28 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name: "an exec that is starting when a seal begins is waited for and stopped",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootAshSession();
+    if (!session) return;
+    try {
+      // Not awaited: the execs are mid-spawn when the seal starts.
+      const starting = Array.from(
+        { length: 8 },
+        () => session.process("exec sleep 1000", { maxOutputBytes: 64 }),
+      );
+      const image = await session.seal();
+      assertEquals(image.processes.length, 0);
+      // Each started (and was stopped by the seal), or was refused.
+      await Promise.all(
+        starting.map((p) => p.then((s) => s.exited).catch(() => {})),
+      );
+    } finally {
+      session.stop();
+    }
+  },
+});

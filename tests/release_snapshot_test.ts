@@ -2,6 +2,7 @@ import { assertEquals } from "@std/assert";
 import {
   checkoutProblem,
   releaseProblems,
+  snapshotPinProblem,
 } from "../scripts/release-snapshot.ts";
 import { checkSnapshotFile } from "../scripts/lib/snapshot_file.ts";
 import { encodeSandboxSnapshot } from "../src/sandbox_snapshot.ts";
@@ -78,17 +79,58 @@ Deno.test("only the deploy fetches the snapshot, with the other blobs' retry", a
   }
 });
 
-Deno.test("a train keeps the snapshot pin only when release-snapshot.ts --check-pin says it is the train's", async () => {
+Deno.test("a train keeps the snapshot pin only when --check-pin's checks pass", async () => {
+  const { snapshotIdentity, FORMAT } = await import(
+    "../src/sandbox_snapshot.ts"
+  );
+  const { parsePins } = await import("../src/pins.ts");
+  const raw = JSON.parse(
+    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
+  );
+  const pins = parsePins({ ...raw, snapshot: undefined });
+  const set = "img/python@3.14.7-yurt_0:0123456789abcdef";
+  const entry = {
+    releaseRepo: "YurtOS/yurt-playground",
+    release: "snapshot-t",
+    format: FORMAT,
+    sha256: "a".repeat(64),
+    size: 1,
+    parts: ["b".repeat(64)],
+    builtFrom: { ...snapshotIdentity(pins), pythonSet: set },
+  };
+  const live = (answer: string | null | Error) => () =>
+    answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer);
+  const check = (snapshot: unknown, answer: string | null | Error) =>
+    snapshotPinProblem({ ...pins, snapshot }, live(answer));
+  assertEquals(await check(entry, set), undefined);
+  // The index cannot be read: kept, as the page restores it then too.
+  assertEquals(await check(entry, new Error("offline")), undefined);
+  assertEquals(
+    (await check(entry, "img/python@3.14.8-yurt_0:fedcba9876543210"))
+      ?.includes("the live index offers"),
+    true,
+  );
+  assertEquals(
+    (await check({ ...entry, format: FORMAT - 1 }, set))?.includes("format"),
+    true,
+  );
+  assertEquals(
+    (await check({
+      ...entry,
+      builtFrom: { ...entry.builtFrom, kernelRev: "0" },
+    }, set))?.includes("kernelRev"),
+    true,
+  );
+  assertEquals((await check("old shape", set))?.includes("malformed"), true);
+  // release-playground.sh drops the entry on a refusal, saying why.
   const script = await Deno.readTextFile(
     new URL("../scripts/release-playground.sh", import.meta.url),
   );
   assertEquals(
-    /if ! \(cd "\$root" && deno run -A scripts\/release-snapshot\.ts --check-pin\); then\s+jq 'del\(\.snapshot\)'/
+    /if ! snapshot_why=\$\(cd "\$root" && deno run -A scripts\/release-snapshot\.ts --check-pin 2>&1\); then\s+jq 'del\(\.snapshot\)'/
       .test(script),
     true,
-    "the carried entry is checked by --check-pin and dropped when refused",
   );
-  // No second, hand-written comparison of the identity fields.
   assertEquals(script.includes(".builtFrom"), false);
 });
 
@@ -153,10 +195,25 @@ Deno.test("a snapshot is released only from the pinned kernel rev and a pushed p
     await git(dir, "remote", "add", "origin", remote);
     await git(dir, "push", "-q", "-u", "origin", "main");
     assertEquals(await checkoutProblem(dir, "upstream"), undefined);
+    // Someone pushed since the last fetch: the remote's head counts.
+    const other = await Deno.makeTempDir();
+    await git(other, "clone", "-q", remote, ".");
+    await Deno.writeTextFile(`${other}/b`, "b");
+    await git(other, "add", "b");
+    await git(other, "commit", "-q", "-m", "b");
+    await git(other, "push", "-q");
+    await Deno.remove(other, { recursive: true });
+    assertEquals(
+      (await checkoutProblem(dir, "upstream"))?.includes("not its pushed head"),
+      true,
+      "a stale upstream is fetched first",
+    );
+    await git(dir, "pull", "-q", "--ff-only");
+    const pulled = await git(dir, "rev-parse", "HEAD");
     await commit("3");
     assertEquals(
       (await checkoutProblem(dir, "upstream"))?.includes(
-        `not its pushed head ${head}`,
+        `not its pushed head ${pulled}`,
       ),
       true,
     );

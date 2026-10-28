@@ -60,8 +60,8 @@ export type PartChecks = {
  * A `fetch` that answers a request for `name` by fetching `name.parts.json`
  * and streaming the parts in order, so callers that read a single body
  * (hash check, progress, cache) need not know the file was split. Parts
- * are read as the reader asks for more, with the next one already asked
- * for: at most two are in flight.
+ * are read as the reader asks for more; unchecked, with the next one
+ * already asked for.
  */
 export function partsFetch(
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
@@ -98,36 +98,14 @@ export function partsFetch(
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     const stream = new ReadableStream<Uint8Array>({
       async pull(controller) {
-        for (;;) {
-          if (reader !== undefined) {
-            const { done, value } = await reader.read();
-            if (!done) {
-              controller.enqueue(value);
-              return;
-            }
-            reader = undefined;
-          }
-          if (index === manifest.parts.length) {
-            controller.close();
-            return;
-          }
-          const part = manifest.parts[index];
-          const at = index++;
-          const response = await (next ?? request(at));
-          // The next part is asked for while this one is read, so the
-          // parts follow one another without a round trip between them.
-          next = at + 1 < manifest.parts.length ? request(at + 1) : undefined;
-          if (!response.ok || response.body === null) {
-            throw new Error(`fetch ${part} failed: ${response.status}`);
-          }
-          if (checks.part === undefined) {
-            reader = response.body.getReader();
-            continue;
-          }
-          const bytes = new Uint8Array(await response.arrayBuffer());
-          await checks.part(at, part, bytes);
-          controller.enqueue(bytes);
-          return;
+        try {
+          await pullOne(controller);
+        } catch (error) {
+          // A part that failed (a 404, a check) ends the file: whatever
+          // is still downloading stops with it.
+          giveUp.abort(error);
+          await reader?.cancel(error).catch(() => {});
+          throw error;
         }
       },
       async cancel(reason) {
@@ -135,6 +113,45 @@ export function partsFetch(
         await reader?.cancel(reason).catch(() => {});
       },
     });
+    async function pullOne(
+      controller: ReadableStreamDefaultController<Uint8Array>,
+    ): Promise<void> {
+      for (;;) {
+        if (reader !== undefined) {
+          const { done, value } = await reader.read();
+          if (!done) {
+            controller.enqueue(value);
+            return;
+          }
+          reader = undefined;
+        }
+        if (index === manifest.parts.length) {
+          controller.close();
+          return;
+        }
+        const part = manifest.parts[index];
+        const at = index++;
+        const response = await (next ?? request(at));
+        // Unchecked (the image, the kernel's parts), the next part is
+        // asked for while this one is read, so the parts follow one
+        // another without a round trip between them. Checked parts
+        // come one at a time: each is held whole for its check.
+        next = checks.part === undefined && at + 1 < manifest.parts.length
+          ? request(at + 1)
+          : undefined;
+        if (!response.ok || response.body === null) {
+          throw new Error(`fetch ${part} failed: ${response.status}`);
+        }
+        if (checks.part === undefined) {
+          reader = response.body.getReader();
+          continue;
+        }
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        await checks.part(at, part, bytes);
+        controller.enqueue(bytes);
+        return;
+      }
+    }
     return new Response(stream, {
       status: 200,
       headers: { "content-length": String(manifest.size) },
