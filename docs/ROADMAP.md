@@ -69,9 +69,9 @@ What you can use today.
   ([2026.10.13](https://yurtos.github.io/yurt-playground/#playground-2026.10.13-68259fc)).
 - **"Download home"** saves your home directory from the browser sandbox to your
   device.
-- **Steady kernel fixes** in every train with a new kernel; the latest adds bind
-  and move mounts, thread-local storage in `dlopen`'d libraries on the desktop
-  host, and live shared mappings of `memfd` and `/dev/shm`
+- **Kernel fixes in most trains**; the latest kernel (2026.10.26) adds bind and
+  move mounts, thread-local storage in `dlopen`'d libraries on the desktop host,
+  and live shared mappings of `memfd` and `/dev/shm`
   ([2026.10.26](https://yurtos.github.io/yurt-playground/#playground-2026.10.26-3d32068)).
 
 ## Next
@@ -86,9 +86,9 @@ Planned for the next one or two trains. These are in progress, not finished.
   ([yurtos-kernel#4170](https://github.com/YurtOS/yurtos-kernel/issues/4170)),
   and it is not yet known whether the automation itself causes it. The shell
   works in Safari.
-- **Faster file creation in the guest.** Why: most of the first visit's Python
-  install, which takes about a minute, is the sandbox writing the installed
-  files
+- **Faster file creation in the guest** (planned). Why: most of the first
+  visit's Python install, which takes about a minute, is the sandbox writing the
+  installed files
   ([yurtos-kernel#4169](https://github.com/YurtOS/yurtos-kernel/issues/4169)).
 - **Python native extensions loaded from a `.so` at run time**, rather than
   built into Python as NumPy is today. Why: the kernel and libc sides of
@@ -176,18 +176,20 @@ Bigger directions. Each needs design work, and the order is not fixed.
 - **Go is a package, not part of the image**, and Go programs cannot run in the
   browser sandbox yet. In a desktop sandbox they run on one thread, and signals
   reach them only between system calls.
-- **Gemini CLI is slow to start the first time in the browser**; it starts
-  faster in the desktop app.
+- **Gemini CLI is slow to start the first time in the browser**, after it is
+  installed from the _Packages_ panel; it starts faster in the desktop app.
 - **The first visit in the browser is slow**: the tab compiles the kernel and
   programs, and installs Python, about 85 seconds to Python ready on a laptop. A
   later visit has Python ready in about 11 seconds.
 
 ## How it ships
 
-The playground ships as **trains**, roughly weekly. A train releases the kernel,
-the image, the desktop app and the `yurt` CLI together, and is named
-`playground-YYYY.MM.DD-<kernel commit>`. A train goes live on the site when it
-is released.
+The playground ships as **trains**, often several a week. A train releases
+whichever of the kernel, the images, the desktop app and the `yurt` CLI changed,
+and is named `playground-YYYY.MM.DD-<kernel commit>`, with a `.N` suffix for a
+later train on the same day and kernel. Packages are released on their own,
+outside trains ([Packages](https://yurtos.github.io/yurt-playground/#packages)).
+A train goes live on the site when it is released.
 
 Each train's notes, including what is not in it and its known issues, are at
 <https://yurtos.github.io/yurt-playground/>. Bugs and requests are welcome as
