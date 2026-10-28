@@ -177,7 +177,7 @@ async function servePackages(msg: ToWorker): Promise<void> {
       if (session?.process === undefined || session.writeFiles === undefined) {
         throw new Error("this sandbox does not install packages");
       }
-      if (sandboxStalled) throw new Error(STALLED_SANDBOX);
+      if (sandboxStalled) throw new Error(stalledSandbox());
       return installPackage(msg.name, {
         host: workerPackageHost(session),
         tablet: msg.tablet,
@@ -188,6 +188,7 @@ async function servePackages(msg: ToWorker): Promise<void> {
   } catch (error) {
     if (error instanceof InstallStalled && error.inSandbox) {
       sandboxStalled = true;
+      stalledWhy = "an earlier install stopped making progress";
     }
     post({
       type: "pkg-reply",
@@ -261,9 +262,11 @@ let installPython:
  * packages are half applied. The Python install's next try is in a fresh
  * sandbox; the Packages panel installs nothing more into this one. */
 let sandboxStalled = false;
-const STALLED_SANDBOX =
-  "an earlier install stopped making progress in this sandbox, so it " +
-  "installs nothing more; reload the page for a fresh one";
+/** Why the sandbox takes no more installs (set with `sandboxStalled`). */
+let stalledWhy = "an earlier install stopped making progress";
+const stalledSandbox = () =>
+  `${stalledWhy} in this sandbox, so it installs nothing more; ` +
+  "reload the page for a fresh one";
 /** The sandboxes a Python install was tried in (src/python_layer.ts: only
  * a first install is kept as a layer). */
 const pythonAttempted = new WeakSet<object>();
@@ -516,6 +519,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       post({ type: "status", text: "installing Python" });
       const cache = await browserArchiveCache();
       const progress = (text: string) => post({ type: "status", text });
+      layerInstalled = undefined;
       const store = tablet ? undefined : await browserLayerStore();
       const firstAttempt = !pythonAttempted.has(session);
       pythonAttempted.add(session);
@@ -550,11 +554,12 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       } catch (error) {
         // A sandbox a layer was half written into, like a stalled one,
         // takes no pkg install: the retry is in a fresh one.
-        if (
-          (error instanceof InstallStalled && error.inSandbox) ||
-          error instanceof LayerFailed
-        ) {
+        if (error instanceof InstallStalled && error.inSandbox) {
           sandboxStalled = true;
+          stalledWhy = "an earlier install stopped making progress";
+        } else if (error instanceof LayerFailed) {
+          sandboxStalled = true;
+          stalledWhy = "a stored Python install did not work";
         }
         throw error;
       }
@@ -622,7 +627,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   };
   if (kernelPorts === undefined) {
     startFresh = async () => {
-      const why = sandboxStalled ? "the install stopped making progress; " : "";
+      const why = sandboxStalled ? `${stalledWhy}; ` : "";
       pythonMissing = false;
       sandboxStalled = false;
       bootError = undefined;

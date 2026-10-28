@@ -388,8 +388,8 @@ export async function browserLayerStore(): Promise<LayerStore | undefined> {
 export class LayerFailed extends Error {
   constructor(cause: string) {
     super(
-      `Python: this browser's earlier install did not work here (${cause}); ` +
-        "Try again installs it afresh",
+      `this browser's earlier install did not work here (${cause}); ` +
+        "the next try installs it afresh in a fresh sandbox",
     );
     this.name = "LayerFailed";
   }
