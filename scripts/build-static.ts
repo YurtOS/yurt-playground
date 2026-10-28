@@ -20,6 +20,7 @@ import {
   integrityManifest,
   SLIM_IMAGE_NAME,
 } from "../src/integrity.ts";
+import { SANDBOX_SNAPSHOT_NAME } from "../src/sandbox_snapshot.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -141,6 +142,14 @@ export async function buildStaticSite(): Promise<void> {
     console.warn(
       `${PYTHON_SEAL_NAME} missing; the yurt-snapshot kernel will not boot (scripts/install-pinned-artifacts.sh)`,
     );
+  }
+  // The sealed sandbox `?snapshot=1` restores (src/sandbox_snapshot.ts),
+  // made by `?snapshot=capture`; optional, nothing else needs it.
+  const snapshot = await Deno.stat(join(publicDir, SANDBOX_SNAPSHOT_NAME))
+    .then(() => true, () => false);
+  if (snapshot) {
+    await Deno.mkdir(join(distDir, "snapshot"), { recursive: true });
+    await writeImageParts(SANDBOX_SNAPSHOT_NAME, publicDir);
   }
   // The "check the bytes" card hashes what it downloaded against this. dist/
   // holds the image only as parts; hash the file they were sliced from.

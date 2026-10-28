@@ -7,6 +7,7 @@ import {
   bootPlayground,
   browserImagePath,
   fetchPlaygroundBytes,
+  playgroundPins,
   type PlaygroundTerm,
 } from "./boot.ts";
 import {
@@ -54,6 +55,10 @@ import {
   type LayerStore,
 } from "./python_layer.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
+import {
+  encodeSandboxSnapshot,
+  SANDBOX_SNAPSHOT_PATH,
+} from "./sandbox_snapshot.ts";
 import { runQueue } from "./run_queue.ts";
 import { type BootedSession, workerPackageHost } from "./session_packages.ts";
 import {
@@ -84,6 +89,11 @@ type ToWorker =
     python?: { label: string; set: string[]; image?: string };
     // A tablet or phone: installs over 16 MiB are refused there.
     tablet?: boolean;
+    // `?snapshot=1`: restore the sealed sandbox (src/sandbox_snapshot.ts)
+    // instead of booting the image; `?snapshot=capture`: boot and install
+    // as usual, then seal instead of starting Jupyter and hand the file
+    // to the page (`snapshot-captured`).
+    snapshot?: "restore" | "capture";
   }
   // Install Python again after a failed install (the cell's Install), then
   // start the kernel. Answered like a boot: status, then notebook-ready or
@@ -151,6 +161,7 @@ type FromWorker =
     error?: string;
   }
   | { type: "pkg-progress"; req: number; text: string }
+  | { type: "snapshot-captured"; blob: Blob; ms: number }
   | {
     type: "pkg-reply";
     req: number;
@@ -314,6 +325,25 @@ function dropLayerIfKernelFailed(report: StartReport): void {
     void layerInstalled.drop();
     layerInstalled = undefined;
   }
+}
+
+/** `?snapshot=capture`: seal the installed sandbox (no process left in
+ * it) and hand the snapshot file to the page. Never starts a kernel. */
+async function captureSnapshot(
+  session: Awaited<ReturnType<typeof bootPlayground>>,
+): Promise<never> {
+  if (session.seal === undefined) throw new Error("this session cannot seal");
+  post({ type: "status", text: "sealing the sandbox" });
+  const started = performance.now();
+  const image = await session.seal();
+  const pins = await playgroundPins();
+  const blob = await encodeSandboxSnapshot(image, pins.kernelWasm.sha256);
+  post({
+    type: "snapshot-captured",
+    blob,
+    ms: Math.round(performance.now() - started),
+  });
+  throw new Error(`snapshot captured (${blob.size} bytes); no kernel started`);
 }
 
 /** Drop the in-tab sandbox and start a fresh one the way the page's start
@@ -509,6 +539,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     imagePath: kernelPorts === undefined
       ? await browserImagePath().catch(() => undefined)
       : undefined,
+    snapshotPath: msg.snapshot === "restore" && kernelPorts === undefined
+      ? SANDBOX_SNAPSHOT_PATH
+      : undefined,
     fetchBytes: (path: string) =>
       fetchPlaygroundBytes(path, (progress) => {
         const percent = progress.total === undefined
@@ -600,7 +633,10 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       launching: (session) => launchSession = session,
       noJupyter: msg.noJupyter === true,
       installPython,
-      startKernel: (session) => startGuestKernel(session, kernelPorts),
+      startKernel: (session) =>
+        msg.snapshot === "capture"
+          ? captureSnapshot(session)
+          : startGuestKernel(session, kernelPorts),
       post: (report) => {
         if (report.type === "python-missing") pythonMissing = true;
         dropLayerIfKernelFailed(report);

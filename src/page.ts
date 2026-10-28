@@ -46,6 +46,7 @@ type FromWorker =
   // The image has no python3: the shell runs, Jupyter was not launched.
   | { type: "python-missing"; error?: string }
   | { type: "pkg-progress"; req: number; text: string }
+  | { type: "snapshot-captured"; blob: Blob; ms: number }
   | {
     type: "yurt-reply" | "pkg-reply";
     req: number;
@@ -374,6 +375,7 @@ function boot(
       rememberBooting(undefined);
     }
     if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
+    if (msg.type === "snapshot-captured") saveSnapshot(msg.blob, msg.ms);
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
       const waiter = pending.get(msg.req);
       pending.delete(msg.req);
@@ -416,8 +418,29 @@ function boot(
         ? undefined
         : pythonInstallRequest(pins),
       tablet: smallDevice,
+      snapshot: snapshotMode(),
     })
   );
+}
+
+/** `?snapshot=1` restores the sealed sandbox (src/sandbox_snapshot.ts);
+ * `?snapshot=capture` makes one. Off by default. */
+function snapshotMode(): "restore" | "capture" | undefined {
+  const value = new URL(location.href).searchParams.get("snapshot");
+  if (value === "1") return "restore";
+  if (value === "capture") return "capture";
+  return undefined;
+}
+
+/** `?snapshot=capture`'s result, saved as a download. */
+function saveSnapshot(blob: Blob, ms: number): void {
+  console.log(`[snapshot] sealed and encoded in ${ms} ms: ${blob.size} bytes`);
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "sandbox.seal.gz";
+  document.body.append(link);
+  link.click();
+  link.remove();
 }
 
 /** The "Download home" control: `yurt.fs.export()` in a process of its
