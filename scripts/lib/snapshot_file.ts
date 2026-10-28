@@ -37,14 +37,17 @@ export async function checkSnapshotFile(
         };
       }
     }
-    const builtFrom = await checkSandboxSnapshot(
-      (await Deno.open(path)).readable,
-      expected,
-    );
-    if (options.decode === true) {
-      await decodeSandboxSnapshot((await Deno.open(path)).readable, expected);
+    const body = (await Deno.open(path)).readable;
+    if (options.decode !== true) {
+      return {
+        ok: true,
+        builtFrom: await checkSandboxSnapshot(body, expected),
+      };
     }
-    return { ok: true, builtFrom };
+    // Inflated once: the header's verdict comes on the way through.
+    let builtFrom: BuiltFrom | undefined;
+    await decodeSandboxSnapshot(body, expected, (header) => builtFrom = header);
+    return { ok: true, builtFrom: builtFrom! };
   } catch (error) {
     return {
       ok: false,

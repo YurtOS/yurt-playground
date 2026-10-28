@@ -240,6 +240,7 @@ function boot(
   const endBoot = () => {
     booting = false;
     rememberBooting(undefined);
+    endCapture();
   };
   const pinsPromise = fetchSitePins();
   // The cell's Install: enabled when the pins name a slim image; after a
@@ -351,11 +352,7 @@ function boot(
     if (msg.type === "error") {
       if (msg.endsBoot === true) endBoot();
       fail(msg.message);
-      // A capture's outcome, for scripts/release-snapshot.ts to wait on.
-      if (msg.endsBoot === true && snapshotMode() === "capture") {
-        document.documentElement.dataset.snapshotCapture = "failed";
-        document.documentElement.dataset.snapshotCaptureError = msg.message;
-      }
+      if (msg.endsBoot === true) endCapture(msg.message);
       // Only a boot failure is the sandbox's failure: an error once the
       // shell is up ("Jupyter is not ready", a restart that failed) leaves
       // exec working, and the status says so.
@@ -393,8 +390,8 @@ function boot(
     // A capture ends in the sealed sandbox, with no Jupyter to wait for.
     if (msg.type === "snapshot-captured") {
       saveSnapshot(msg.blob, msg.ms);
-      endBoot();
       document.documentElement.dataset.snapshotCapture = "captured";
+      endBoot();
     }
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
       const waiter = pending.get(msg.req);
@@ -410,6 +407,7 @@ function boot(
   worker.onerror = (event) => {
     endBoot();
     const message = event.message || "coordinator worker failed";
+    endCapture(message);
     fail(message);
     yurtState.failed(message);
     sandboxGone();
@@ -453,6 +451,19 @@ function snapshotMode(): "restore" | "capture" | undefined {
   return undefined;
 }
 
+/** `?snapshot=capture`'s outcome, on <html> for scripts/release-snapshot.ts
+ * to wait on: any end of the boot but the captured file -- an error, a
+ * shell-only session, a worker that died -- is a failed capture. `why`
+ * names it when the caller knows. */
+function endCapture(why?: string): void {
+  if (snapshotMode() !== "capture") return;
+  const mark = document.documentElement.dataset;
+  if (mark.snapshotCapture === "captured") return;
+  mark.snapshotCapture = "failed";
+  mark.snapshotCaptureError = why ?? mark.snapshotCaptureError ??
+    "the boot ended without a snapshot";
+}
+
 /** `?snapshot=capture`'s result, saved as a download. */
 function saveSnapshot(blob: Blob, ms: number): void {
   console.log(`[snapshot] sealed and encoded in ${ms} ms: ${blob.size} bytes`);
@@ -462,8 +473,9 @@ function saveSnapshot(blob: Blob, ms: number): void {
   document.body.append(link);
   link.click();
   link.remove();
-  // The download holds the blob from here; the page lets its ~131 MB go.
-  setTimeout(() => URL.revokeObjectURL(link.href), 0);
+  // The page lets the ~131 MB go once the download surely has its own
+  // hold on it (revoked at once, Firefox and Safari can cut it short).
+  setTimeout(() => URL.revokeObjectURL(link.href), 30_000);
 }
 
 /** The "Download home" control: `yurt.fs.export()` in a process of its

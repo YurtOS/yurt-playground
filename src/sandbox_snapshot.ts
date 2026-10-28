@@ -243,6 +243,9 @@ export async function checkSandboxSnapshot(
 export async function decodeSandboxSnapshot(
   body: ReadableStream<Uint8Array<ArrayBuffer>>,
   expected: SnapshotIdentity | BuiltFrom,
+  /** Told what the header says the snapshot was built from, once it is
+   * accepted. */
+  onHeader?: (builtFrom: BuiltFrom) => void,
 ): Promise<SandboxSealImage> {
   // A reader, not `for await`: WebKit's ReadableStream is not async-iterable.
   const reader = body.pipeThrough(new DecompressionStream("gzip"))
@@ -251,6 +254,7 @@ export async function decodeSandboxSnapshot(
     const { header, rest } = await readHeader(reader);
     const why = headerMismatch(header, expected);
     if (why !== undefined) throw new SnapshotMismatch(why);
+    onHeader?.(header.builtFrom!);
     const {
       format: _format,
       builtFrom: _builtFrom,

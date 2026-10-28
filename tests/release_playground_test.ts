@@ -78,6 +78,10 @@ Deno.test("--pins-only does not require a kernel release tag", async () => {
       join(repoRoot, "scripts/lib/kernel-release.sh"),
       join(harnessRoot, "scripts/lib/kernel-release.sh"),
     );
+    await Deno.copyFile(
+      join(repoRoot, "scripts/lib/snapshot-pin.sh"),
+      join(harnessRoot, "scripts/lib/snapshot-pin.sh"),
+    );
     const harness = join(harnessRoot, "scripts/release-playground.sh");
     await Deno.writeTextFile(
       harness,
@@ -197,6 +201,10 @@ Deno.test("resume watches a recorded kernel run without resolving its tag", asyn
       join(repoRoot, "scripts/lib/kernel-release.sh"),
       join(root, "scripts/lib/kernel-release.sh"),
     );
+    await Deno.copyFile(
+      join(repoRoot, "scripts/lib/snapshot-pin.sh"),
+      join(root, "scripts/lib/snapshot-pin.sh"),
+    );
     await writePinnedCli(root);
     const scriptPath = join(root, "scripts/release-playground.sh");
     const source = await Deno.readTextFile(
@@ -276,6 +284,10 @@ async function resumeFixture(
   await Deno.copyFile(
     join(repoRoot, "scripts/lib/kernel-release.sh"),
     join(root, "scripts/lib/kernel-release.sh"),
+  );
+  await Deno.copyFile(
+    join(repoRoot, "scripts/lib/snapshot-pin.sh"),
+    join(root, "scripts/lib/snapshot-pin.sh"),
   );
   await writePinnedCli(root);
   const scriptPath = join(root, "scripts/release-playground.sh");
@@ -443,6 +455,10 @@ Deno.test("--resume keeps the repository of an --image-release train's image and
     await Deno.copyFile(
       join(repoRoot, "scripts/lib/kernel-release.sh"),
       join(root, "scripts/lib/kernel-release.sh"),
+    );
+    await Deno.copyFile(
+      join(repoRoot, "scripts/lib/snapshot-pin.sh"),
+      join(root, "scripts/lib/snapshot-pin.sh"),
     );
     const scriptPath = join(root, "scripts/release-playground.sh");
     const source = await Deno.readTextFile(
@@ -659,6 +675,10 @@ async function imageStepFixture(
   await Deno.copyFile(
     join(repoRoot, "scripts/lib/kernel-release.sh"),
     join(root, "scripts/lib/kernel-release.sh"),
+  );
+  await Deno.copyFile(
+    join(repoRoot, "scripts/lib/snapshot-pin.sh"),
+    join(root, "scripts/lib/snapshot-pin.sh"),
   );
   const source = await Deno.readTextFile(
     join(repoRoot, "scripts/release-playground.sh"),

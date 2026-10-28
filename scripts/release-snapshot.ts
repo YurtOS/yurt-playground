@@ -14,7 +14,9 @@
  *      the page boots the pinned slim image, installs the Python set from
  *      the live repository, precompiles it, seals the sandbox and downloads
  *      the file (public/snapshot/sandbox.seal.gz);
- *   2. check the file's header names the pins' kernel, image and Python set;
+ *   2. check that the file decodes in full and was built from the pins and
+ *      from the Python set the live index offers (a capture starts only
+ *      when the index answers with a complete set);
  *   3. split it into the site's parts and hash them;
  *   4. create the prerelease `snapshot-<train>` on YurtOS/yurt-playground
  *      (never "latest") with the parts and a .sha256, or find it already
@@ -22,18 +24,21 @@
  *   5. write the `snapshot` entry into artifacts/pins.json.
  *
  * Usage: deno run -A scripts/release-snapshot.ts [--dry-run] [--resume] [--tag TAG]
- *        deno run -A scripts/release-snapshot.ts --check-pin
+ *        deno run -A scripts/release-snapshot.ts --check-pin [--pins PATH]
  *
  *   --dry-run  everything but the release and the pins write
  *   --resume   reuse public/snapshot/sandbox.seal.gz when it is a capture
- *              of this train (a capture is never the same bytes twice, so a
- *              release cut by an earlier run matches only its own file)
+ *              of this train and of the live Python set (a capture is never
+ *              the same bytes twice, so a release cut by an earlier run
+ *              matches only its own file)
  *   --tag      the release tag (default snapshot-<train>): a second snapshot
  *              of one train, e.g. after a BOOT_SETUP bump, takes a new tag
  *              (snapshot-<train>-2); a published release is never replaced
- *   --check-pin  exit 0 when artifacts/pins.json's snapshot entry may stay:
- *              well formed, this page's format, built from these pins and
- *              of the Python set the live index offers (release-playground.sh)
+ *   --check-pin  exit 0 when artifacts/pins.json's (or PATH's) snapshot
+ *              entry may stay: well formed, this page's format, built from
+ *              these pins and of the Python set the live index offers -- or
+ *              the index cannot be read in time, as the page then restores
+ *              it too; else exit 1 with the reason (scripts/lib/snapshot-pin.sh)
  *
  * It refuses to run from a kernel checkout that is not at the pinned rev
  * or a playground checkout that is not its branch's pushed head, either
@@ -49,7 +54,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle, kernelRoot } from "./serve.ts";
 import { checkSnapshotFile } from "./lib/snapshot_file.ts";
-import { livePythonSet, pythonInstallRequest } from "../src/python_install.ts";
+import {
+  livePythonSet,
+  NO_COMPLETE_SET,
+  pythonInstallRequest,
+} from "../src/python_install.ts";
 import { handlePlaygroundRequest, ISOLATION_HEADERS } from "../src/serve.ts";
 import { imagePartRange, imagePartsManifest } from "../src/image_parts.ts";
 import { sha256Hex } from "../src/integrity.ts";
@@ -98,15 +107,27 @@ async function gh(
   return { ok: out.success, stdout: new TextDecoder().decode(out.stdout) };
 }
 
-/** This process's environment without its GIT_* variables (a git hook's
- * GIT_DIR, GIT_INDEX_FILE): git then reads the checkout it is pointed at,
- * with everything else -- an SSH agent, GIT_SSH_COMMAND aside, a proxy --
- * as the caller has it. */
+/** The variables git itself says point it at a repository
+ * (`git rev-parse --local-env-vars`: GIT_DIR, GIT_INDEX_FILE, ...). */
+let localGitVariables: Set<string> | undefined;
+
+/** This process's environment without the variables that point git at a
+ * repository (a git hook sets GIT_DIR and GIT_INDEX_FILE): git then reads
+ * the checkout it is run in, with everything else -- credentials, an SSH
+ * agent, a proxy, GIT_ASKPASS, GIT_SSL_CAINFO -- as the caller has it. */
 export function withoutGitVariables(): Record<string, string> {
+  localGitVariables ??= new Set(
+    new TextDecoder().decode(
+      new Deno.Command("git", {
+        args: ["rev-parse", "--local-env-vars"],
+        stdout: "piped",
+        stderr: "null",
+      }).outputSync().stdout,
+    ).split("\n").filter((name) => name !== ""),
+  );
   return Object.fromEntries(
     Object.entries(Deno.env.toObject()).filter(([name]) =>
-      !name.startsWith("GIT_") || name === "GIT_SSH_COMMAND" ||
-      name === "GIT_SSH"
+      !localGitVariables!.has(name)
     ),
   );
 }
@@ -189,6 +210,21 @@ export async function snapshotPinProblem(
 /** The page's answer for the set an install under `pins` would get now. */
 const liveSetOf = (pins: Pins) => () =>
   livePythonSet(pythonInstallRequest(pins));
+
+/** Why a capture cannot start on the live index's answer: one it cannot
+ * read (which set would this be?) or one without a complete set (none to
+ * install). Before the capture, not after its minutes of install. */
+export function captureSetProblem(
+  live: string | null | undefined,
+): string | undefined {
+  if (live === undefined) {
+    return "cannot read the live package index (20 s): which Python set is this?";
+  }
+  if (live === NO_COMPLETE_SET) {
+    return "the live package index offers no complete Python set to capture";
+  }
+  return undefined;
+}
 
 /** `--check-pin`: whether the snapshot entry of the pins at `path` may
  * stay; release-playground.sh asks before carrying it into a train. */
@@ -347,8 +383,14 @@ async function main(): Promise<void> {
     return at >= 0;
   };
   if (flag("--check-pin")) {
+    let path = pinsPath;
+    const pinsAt = args.indexOf("--pins");
+    if (pinsAt >= 0) {
+      path = args[pinsAt + 1] ?? die("--pins needs a path");
+      args.splice(pinsAt, 2);
+    }
     if (args.length > 0) die(`unknown arguments: ${args.join(" ")}`);
-    const verdict = await checkPin();
+    const verdict = await checkPin(path);
     if (!verdict.ok) die(verdict.problem);
     return say("the pinned snapshot is this train's");
   }
@@ -393,9 +435,8 @@ async function main(): Promise<void> {
   // that decodes in full: reused with --resume; anything else (another
   // train or set, a damaged file) is captured again.
   const live = await liveSetOf(pins)();
-  if (live === undefined) {
-    die("cannot read the live package index (20 s): which Python set is this?");
-  }
+  const setProblem = captureSetProblem(live);
+  if (setProblem !== undefined) die(setProblem);
   const thisTrains = () =>
     checkSnapshotFile(
       snapshotPath,

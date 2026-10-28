@@ -567,17 +567,29 @@ Deno.test("the page marks a capture's outcome for the release script, and lets t
   const page = Deno.readTextFileSync(
     new URL("../src/page.ts", import.meta.url),
   );
+  // Every end of the boot marks a capture's outcome: failed, unless the
+  // file was captured first (an error, shell-ready, a dead worker...).
+  const endBoot = page.match(/const endBoot = \(\) => \{([^}]*)\};/);
+  assert(endBoot !== null && /endCapture\(\);/.test(endBoot[1]));
   assert(
-    /msg\.type === "snapshot-captured"\) \{[^}]*dataset\.snapshotCapture = "captured"/
+    /msg\.type === "snapshot-captured"\) \{[^}]*dataset\.snapshotCapture = "captured";\s*endBoot\(\);/
       .test(page),
-    "snapshot-captured marks captured",
+    "captured is marked before the boot ends",
   );
+  const endCapture = /function endCapture\([^]*?\n\}/.exec(page)?.[0] ?? "";
+  assert(/if \(snapshotMode\(\) !== "capture"\) return;/.test(endCapture));
+  assert(/snapshotCapture === "captured"\) return;/.test(endCapture));
+  assert(/snapshotCapture = "failed";/.test(endCapture));
+  // The reason, where the page has one.
   assert(
-    /msg\.endsBoot === true && snapshotMode\(\) === "capture"\) \{\s*document\.documentElement\.dataset\.snapshotCapture = "failed"/
-      .test(page),
-    "an error that ends a capture's boot marks failed",
+    /if \(msg\.endsBoot === true\) endCapture\(msg\.message\);/.test(page),
   );
-  assert(/URL\.revokeObjectURL\(link\.href\)/.test(page), "the URL is revoked");
+  assert(/worker\.onerror = [^]*?endCapture\(message\);/.test(page));
+  assert(
+    /setTimeout\(\(\) => URL\.revokeObjectURL\(link\.href\), 30_000\)/
+      .test(page),
+    "the URL is revoked once the download has its own hold",
+  );
   const script = Deno.readTextFileSync(
     new URL("../scripts/release-snapshot.ts", import.meta.url),
   );

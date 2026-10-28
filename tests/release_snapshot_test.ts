@@ -1,5 +1,6 @@
 import { assertEquals } from "@std/assert";
 import {
+  captureSetProblem,
   checkoutProblem,
   checkPin,
   releaseProblems,
@@ -128,16 +129,6 @@ Deno.test("a train keeps the snapshot pin only when --check-pin's checks pass", 
     true,
   );
   assertEquals((await check("old shape", set))?.includes("malformed"), true);
-  // release-playground.sh drops the entry on a refusal, saying why.
-  const script = await Deno.readTextFile(
-    new URL("../scripts/release-playground.sh", import.meta.url),
-  );
-  assertEquals(
-    /if ! snapshot_why=\$\(cd "\$root" && deno run -A scripts\/release-snapshot\.ts --check-pin 2>&1\); then\s+jq 'del\(\.snapshot\)'/
-      .test(script),
-    true,
-  );
-  assertEquals(script.includes(".builtFrom"), false);
 });
 
 Deno.test("a snapshot is released only from the pinned kernel rev and a pushed playground head, both clean", async () => {
@@ -428,7 +419,10 @@ Deno.test("--check-pin reads the pins file and answers for its snapshot entry", 
 Deno.test("git runs with the caller's environment but a hook's GIT_* variables", () => {
   const set = {
     GIT_INDEX_FILE: "/elsewhere/index",
+    GIT_DIR: "/elsewhere/.git",
     GIT_SSH_COMMAND: "ssh -i key",
+    GIT_ASKPASS: "/askpass",
+    GIT_SSL_CAINFO: "/ca.pem",
     SSH_AUTH_SOCK: "/agent.sock",
   };
   const before = Object.fromEntries(
@@ -438,7 +432,10 @@ Deno.test("git runs with the caller's environment but a hook's GIT_* variables",
   try {
     const env = withoutGitVariables();
     assertEquals(env.GIT_INDEX_FILE, undefined);
+    assertEquals(env.GIT_DIR, undefined);
     assertEquals(env.GIT_SSH_COMMAND, "ssh -i key");
+    assertEquals(env.GIT_ASKPASS, "/askpass");
+    assertEquals(env.GIT_SSL_CAINFO, "/ca.pem");
     assertEquals(env.SSH_AUTH_SOCK, "/agent.sock");
   } finally {
     for (const [name, value] of Object.entries(before)) {
@@ -467,5 +464,168 @@ Deno.test("an index that does not answer in time is 'cannot tell', not a hang", 
     assertEquals(performance.now() - started < 5_000, true);
   } finally {
     globalThis.fetch = realFetch;
+  }
+});
+
+Deno.test("release-snapshot.ts --check-pin answers through its exit code and says why", async () => {
+  const raw = JSON.parse(
+    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
+  );
+  const dir = await Deno.makeTempDir();
+  const path = `${dir}/pins.json`;
+  const run = async () => {
+    const out = await new Deno.Command(Deno.execPath(), {
+      args: [
+        "run",
+        "-A",
+        new URL("../scripts/release-snapshot.ts", import.meta.url).pathname,
+        "--check-pin",
+        "--pins",
+        path,
+      ],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    return { code: out.code, stderr: new TextDecoder().decode(out.stderr) };
+  };
+  try {
+    // Refused before the live index is asked: no network in this test.
+    await Deno.writeTextFile(path, JSON.stringify({ ...raw, snapshot: "old" }));
+    const malformed = await run();
+    assertEquals(malformed.code, 1);
+    assertEquals(
+      malformed.stderr.includes("malformed"),
+      true,
+      malformed.stderr,
+    );
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({ ...raw, snapshot: undefined }),
+    );
+    const none = await run();
+    assertEquals(none.code, 1);
+    assertEquals(none.stderr.includes("pins no"), true, none.stderr);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** keep_snapshot_pin (scripts/lib/snapshot-pin.sh) on pins with a
+ * snapshot entry, with a `deno` that answers --check-pin as told. */
+async function keepPin(accept: boolean) {
+  const root = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${root}/artifacts`);
+    await Deno.mkdir(`${root}/bin`);
+    await Deno.writeTextFile(
+      `${root}/artifacts/pins.json`,
+      JSON.stringify({ train: "t", snapshot: { release: "snapshot-t" } }),
+    );
+    await Deno.writeTextFile(
+      `${root}/bin/deno`,
+      `#!/usr/bin/env bash
+[ "$*" = "run -A scripts/release-snapshot.ts --check-pin" ] || exit 9
+${
+        accept
+          ? "echo 'release-snapshot: accepted' >&2"
+          : "echo 'release-snapshot: pinned snapshot was built from kernelRev a, not b' >&2; exit 1"
+      }
+`,
+    );
+    await Deno.chmod(`${root}/bin/deno`, 0o755);
+    const out = await new Deno.Command("bash", {
+      args: [
+        "-c",
+        `source "$1"; keep_snapshot_pin "$2"; echo "\${snapshot_dropped:-0}|\${snapshot_why:-}"`,
+        "bash",
+        new URL("../scripts/lib/snapshot-pin.sh", import.meta.url).pathname,
+        root,
+      ],
+      env: { PATH: `${root}/bin:${Deno.env.get("PATH")}` },
+      stdout: "piped",
+    }).output();
+    return {
+      said: new TextDecoder().decode(out.stdout).trim(),
+      pins: JSON.parse(
+        await Deno.readTextFile(`${root}/artifacts/pins.json`),
+      ),
+    };
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+Deno.test("a train keeps the snapshot entry --check-pin accepts and drops one it refuses, saying why", async () => {
+  const kept = await keepPin(true);
+  assertEquals(kept.said, "0|");
+  assertEquals(kept.pins.snapshot, { release: "snapshot-t" });
+  const dropped = await keepPin(false);
+  assertEquals(
+    dropped.said,
+    "1|pinned snapshot was built from kernelRev a, not b",
+  );
+  assertEquals(dropped.pins, { train: "t" });
+});
+
+Deno.test("a capture does not start on an index it cannot read or without a complete set", () => {
+  assertEquals(captureSetProblem("img/python@3.14.7-yurt_0:0123"), undefined);
+  assertEquals(captureSetProblem(null), undefined, "the full image");
+  assertEquals(
+    captureSetProblem(undefined)?.includes("cannot read"),
+    true,
+  );
+  assertEquals(
+    captureSetProblem(NO_COMPLETE_SET)?.includes("no complete Python set"),
+    true,
+  );
+});
+
+Deno.test("a full check of a snapshot file reads it once", async () => {
+  const built = {
+    kernelSha256: "a".repeat(64),
+    kernelRev: "r",
+    sealVersion: 1,
+    bootSetup: 1,
+    imageSha256: "b".repeat(64),
+    pythonSealSha256: null,
+    pythonSet: null,
+  };
+  const file = new Uint8Array(
+    await (await encodeSandboxSnapshot({
+      version: 1,
+      kernelToken: 1n,
+      kernelMemory: new Uint8Array(1 << 12),
+      processes: [],
+      hostWaits: [],
+      monotonicNs: 0n,
+      realtimeOffsetNs: 0n,
+      executor: { contexts: [], freeScratch: [] },
+    }, built)).arrayBuffer(),
+  );
+  const dir = await Deno.makeTempDir();
+  const open = Deno.open;
+  let opens = 0;
+  try {
+    await Deno.writeFile(`${dir}/s.gz`, file);
+    Object.defineProperty(Deno, "open", {
+      value: (...args: Parameters<typeof Deno.open>) => {
+        opens++;
+        return open(...args);
+      },
+      configurable: true,
+      writable: true,
+    });
+    const check = await checkSnapshotFile(`${dir}/s.gz`, built, {
+      decode: true,
+    });
+    assertEquals(check, { ok: true, builtFrom: built });
+    assertEquals(opens, 1);
+  } finally {
+    Object.defineProperty(Deno, "open", {
+      value: open,
+      configurable: true,
+      writable: true,
+    });
+    await Deno.remove(dir, { recursive: true });
   }
 });

@@ -678,9 +678,59 @@ Deno.test("a seal fails when removing the exec files fails or does not finish", 
         host: sealHost([]),
         spawning: () => 0,
         cleanUp: () => new Promise(() => {}),
-        deadlineMs: 50,
+        cleanUpMs: 50,
       }),
     Error,
     "removing the exec files did not finish",
   );
+});
+
+Deno.test("a seal's wait for the guest to stop is bounded, the shell's exit included", async () => {
+  // A process that does not die, and a shell exit that never comes.
+  const stubborn = sealHost([5]);
+  stubborn.killProcess = () => {};
+  await assertRejects(
+    () =>
+      prepareSeal({
+        host: stubborn,
+        spawning: () => 0,
+        cleanUp: () => Promise.resolve(0),
+        deadlineMs: 50,
+        pollMs: 5,
+      }),
+    Error,
+    "the guest did not stop: processes still alive: 5:running",
+  );
+  await assertRejects(
+    () =>
+      prepareSeal({
+        host: sealHost([]),
+        spawning: () => 0,
+        afterSettled: () => new Promise(() => {}),
+        cleanUp: () => Promise.resolve(0),
+        deadlineMs: 50,
+      }),
+    Error,
+    "the guest did not stop",
+  );
+});
+
+Deno.test("a seal's clean-up has its own budget, whatever the wait before it took", async () => {
+  let cleaned = false;
+  await prepareSeal({
+    host: sealHost([]),
+    spawning: () => 0,
+    // The wait uses up its whole bound but for a hair.
+    afterSettled: () => new Promise((resolve) => setTimeout(resolve, 40)),
+    cleanUp: () =>
+      new Promise((resolve) =>
+        setTimeout(() => {
+          cleaned = true;
+          resolve(0);
+        }, 30)
+      ),
+    deadlineMs: 50,
+    cleanUpMs: 100,
+  });
+  assertEquals(cleaned, true);
 });

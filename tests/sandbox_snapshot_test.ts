@@ -11,6 +11,7 @@ import {
   decodeSandboxSnapshot,
   encodeSandboxSnapshot,
   fetchVerifiedSnapshot,
+  FORMAT,
   pinnedSnapshot,
   SEAL_VERSION,
   snapshotIdentity,
@@ -497,9 +498,24 @@ Deno.test("a pin of another snapshot format is not used", () => {
 });
 
 Deno.test("?snapshot=1 asks the live index before it fetches any snapshot byte", async () => {
-  const pinsText = await Deno.readTextFile(
-    new URL("../artifacts/pins.json", import.meta.url),
+  // A pin built for these pins here, not the committed entry: a train
+  // may drop that one.
+  const raw = JSON.parse(
+    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
   );
+  const unpinned = parsePins({ ...raw, snapshot: undefined });
+  const pinsText = JSON.stringify({
+    ...raw,
+    snapshot: {
+      releaseRepo: "YurtOS/yurt-playground",
+      release: "snapshot-t",
+      format: FORMAT,
+      sha256: "a".repeat(64),
+      size: 1,
+      parts: ["b".repeat(64)],
+      builtFrom: { ...snapshotIdentity(unpinned), pythonSet: BUILT.pythonSet },
+    },
+  });
   const fetched: string[] = [];
   const realFetch = globalThis.fetch;
   globalThis.fetch = ((input: RequestInfo | URL) => {

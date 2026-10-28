@@ -484,10 +484,11 @@ export async function restoreSnapshot(
  * What a seal does before sealing, once the page starts nothing more of
  * its own: wait until no spawn is in flight, then kill every live guest
  * process -- the shell and its background jobs, a running exec, a
- * Packages install -- until a look finds none alive and none starting;
- * then run `cleanUp` (one process, removing every exec's /tmp files) and
- * require its exit 0; then look again. All within `deadlineMs`, or it
- * throws and nothing is sealed.
+ * Packages install -- until a look finds none alive and none starting,
+ * and `afterSettled` has resolved; all within `deadlineMs`. Then run
+ * `cleanUp` (one process, removing every exec's /tmp files) within its
+ * own `cleanUpMs`, and require its exit 0; then look again, within
+ * `deadlineMs` once more. Past any bound it throws, and nothing is sealed.
  */
 export async function prepareSeal(deps: {
   host: {
@@ -499,50 +500,67 @@ export async function prepareSeal(deps: {
   /** Awaited once nothing runs, before the clean-up. */
   afterSettled?: () => Promise<unknown>;
   deadlineMs?: number;
+  cleanUpMs?: number;
   pollMs?: number;
 }): Promise<void> {
-  const deadline = Date.now() + (deps.deadlineMs ?? 30_000);
+  const deadlineMs = deps.deadlineMs ?? 30_000;
   const pollMs = deps.pollMs ?? 250;
+  /** `work`, or a throw of `what` once `ms` have passed. */
+  const within = async <T>(ms: number, what: string, work: Promise<T>) => {
+    let timer: number | undefined;
+    try {
+      return await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`cannot seal: ${what}`)),
+            ms,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  let last = "nothing looked at yet";
+  /** Past a bound: the looks stop too. */
+  let gaveUp = false;
   const settle = async () => {
-    for (;;) {
+    while (!gaveUp) {
       const live = deps.host.listProcesses().filter((p) =>
         p.pid !== KERNEL_PID && p.state !== "exited"
       );
       const spawning = deps.spawning();
       if (live.length === 0 && spawning === 0) return;
+      last = `processes still alive: ${
+        live.map((p) => `${p.pid}:${p.state}`).join(",")
+      }${spawning === 0 ? "" : ` (and ${spawning} starting)`}`;
       // A spawn in flight is a process this look may not have seen yet.
       if (spawning === 0) {
         for (const p of live) deps.host.killProcess(p.pid, SIGKILL);
       }
-      if (Date.now() > deadline) {
-        throw new Error(
-          `cannot seal: processes still alive: ${
-            live.map((p) => `${p.pid}:${p.state}`).join(",")
-          }${spawning === 0 ? "" : ` (and ${spawning} starting)`}`,
-        );
-      }
       await new Promise((resolve) => setTimeout(resolve, pollMs));
     }
   };
-  await settle();
-  await deps.afterSettled?.();
-  let timer: number | undefined;
-  const code = await Promise.race([
+  // `last` is read when the bound passes, so the error says what was left.
+  const settled = async () => {
+    await settle();
+    await deps.afterSettled?.();
+  };
+  const giveUp = (error: Error): never => {
+    gaveUp = true;
+    throw new Error(`${error.message}: ${last}`);
+  };
+  await within(deadlineMs, "the guest did not stop", settled()).catch(giveUp);
+  const code = await within(
+    deps.cleanUpMs ?? 10_000,
+    "removing the exec files did not finish",
     deps.cleanUp(),
-    new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () =>
-          reject(
-            new Error("cannot seal: removing the exec files did not finish"),
-          ),
-        Math.max(0, deadline - Date.now()),
-      );
-    }),
-  ]).finally(() => clearTimeout(timer));
+  );
   if (code !== 0) {
     throw new Error(`cannot seal: removing the exec files exited ${code}`);
   }
-  await settle();
+  await within(deadlineMs, "the guest did not stop", settle()).catch(giveUp);
 }
 
 /** The rest of {@link bootPlayground}, on its loaded (or restored) kernel. */

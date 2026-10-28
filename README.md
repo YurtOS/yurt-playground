@@ -202,17 +202,19 @@ already installed instead of booting the slim image and installing it. The
 snapshot is the kernel's memory after an install in the browser, so it is
 captured locally rather than by the train:
 `deno run -A
-scripts/release-snapshot.ts`, from a checkout whose
-`artifacts/pins.json` names the train (with the pinned blobs installed and
-Playwright's Chromium), serves the page, runs `?snapshot=capture` in headless
-Chromium, checks that the file was built from the pinned kernel, image and
-Python set and decodes in full, publishes it as the prerelease
+scripts/release-snapshot.ts`, from a clean checkout at its pushed
+head whose `artifacts/pins.json` names the train (with the pinned blobs
+installed, the sibling kernel checkout clean at the pinned rev, and Playwright's
+Chromium). It serves the page, runs `?snapshot=capture` in headless Chromium,
+checks that the file decodes in full and was built from the pinned kernel and
+image and the Python set the live index offers, publishes it as the prerelease
 `snapshot-<train>` and writes the `snapshot` pin. `--dry-run` stops before the
 release and the pin; `--tag` names a second snapshot of one train (a published
-one is never replaced). A train that changes the kernel, the image or the Python
-set drops the pin and `release-playground.sh` says to run it again; so does a
-change to the page's boot setup (`BOOT_SETUP` in `src/sandbox_snapshot.ts`).
-Only the deploy fetches the snapshot (`YURT_INSTALL_SNAPSHOT=1`).
+one is never replaced). A train keeps the pin only while
+`release-snapshot.ts --check-pin` accepts it, and otherwise drops it and says to
+run the script again; so does a change to the page's boot setup (`BOOT_SETUP` in
+`src/sandbox_snapshot.ts`). Only the deploy fetches the snapshot
+(`YURT_INSTALL_SNAPSHOT=1`), and a problem with it never fails the deploy.
 
 ## License
 
