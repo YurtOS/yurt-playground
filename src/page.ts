@@ -40,7 +40,8 @@ import type { ExecOptions } from "./executions.ts";
 type FromWorker =
   | { type: "status"; text: string }
   | { type: "out"; bytes: number[] }
-  | { type: "error"; message: string }
+  // `endsBoot`: the start's own outcome, not a later error (a cell's).
+  | { type: "error"; message: string; endsBoot?: true }
   | { type: "notebook-ready" }
   | { type: "shell-ready" }
   // The image has no python3: the shell runs, Jupyter was not launched.
@@ -231,6 +232,14 @@ function boot(
   // (a restart refused) must not say "Jupyter did not start" over it.
   let pythonMissing = false;
   let installingPython = false;
+  // From Start (or an Install after python-missing, which may start a fresh
+  // sandbox) until that boot ends: only then is a status worth keeping for
+  // a reloaded tab. A later one (a Jupyter restart) is not a boot.
+  let booting = true;
+  const endBoot = () => {
+    booting = false;
+    rememberBooting(undefined);
+  };
   const pinsPromise = fetchSitePins();
   // The cell's Install: enabled when the pins name a slim image; after a
   // failed install it says why and tries again.
@@ -242,6 +251,7 @@ function boot(
           // A retry: what comes next (a kernel that fails, say) is this
           // attempt's, not the missing Python's.
           pythonMissing = false;
+          booting = true;
           notebook.installing("installing Python");
           worker.postMessage({ type: "python-install" });
         },
@@ -254,7 +264,6 @@ function boot(
     stopWatchingForAnotherSandbox();
   };
   const fail = (message: string) => {
-    rememberBooting(undefined);
     if (!terminalEmpty) {
       status.failure(`failed: ${message}`);
       // The shell is up and stays; a Jupyter that did not start leaves
@@ -335,10 +344,11 @@ function boot(
         notebook.installing(msg.text);
       }
       status.progress(msg.text || "running");
-      rememberBooting(msg.text || "running");
+      if (booting) rememberBooting(msg.text || "running");
       if (msg.text === "") yurtState.running();
     }
     if (msg.type === "error") {
+      if (msg.endsBoot === true) endBoot();
       fail(msg.message);
       // Only a boot failure is the sandbox's failure: an error once the
       // shell is up ("Jupyter is not ready", a restart that failed) leaves
@@ -357,13 +367,13 @@ function boot(
       notebookReady = true;
       notebook.ready();
       status.progress("running", { settled: true });
-      rememberBooting(undefined);
+      endBoot();
     }
     // A tablet's or phone's whole session is the shell; once it runs the
     // boot is over.
     if (msg.type === "shell-ready") {
       status.progress("running", { settled: true });
-      rememberBooting(undefined);
+      endBoot();
     }
     // The slim image: the shell is the session until Python is installed.
     // The boot is over here too, so a later reload is no cut-off boot.
@@ -371,7 +381,7 @@ function boot(
       pythonMissing = true;
       showPythonMissing(msg.error);
       status.progress("running", { settled: true });
-      rememberBooting(undefined);
+      endBoot();
     }
     if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
@@ -386,6 +396,7 @@ function boot(
     if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
   };
   worker.onerror = (event) => {
+    endBoot();
     const message = event.message || "coordinator worker failed";
     fail(message);
     yurtState.failed(message);

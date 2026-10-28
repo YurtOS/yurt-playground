@@ -1,7 +1,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
-  engineCapsSharedMemoryReservations,
   GUEST_MEMORY_RESERVATION_BYTES,
+  isJavaScriptCore,
   playgroundHostState,
 } from "../src/boot.ts";
 
@@ -25,7 +25,7 @@ Deno.test("on JavaScriptCore each guest process reserves a quarter GiB, not the 
   // reservations per tab, and every process used to reserve the 1 GiB
   // sandbox budget, so a burst of a few dozen execs ran it out.
   for (const ua of [SAFARI_UA, IOS_CHROME_UA]) {
-    assert(engineCapsSharedMemoryReservations(ua), ua);
+    assert(isJavaScriptCore(ua), ua);
     assertEquals(
       playgroundHostState(ua).guestMemoryReservationBytes,
       GUEST_MEMORY_RESERVATION_BYTES,
@@ -40,7 +40,7 @@ Deno.test("on V8 and SpiderMonkey each guest process keeps the whole sandbox bud
   // The reservation is a WebKit workaround; elsewhere it would only cap a
   // process (a 1.1 GB NumPy array, a large clang TU) below the budget.
   for (const ua of [CHROME_UA, FIREFOX_UA, undefined]) {
-    assert(!engineCapsSharedMemoryReservations(ua), String(ua));
+    assert(!isJavaScriptCore(ua), String(ua));
     assertEquals(
       playgroundHostState(ua).guestMemoryReservationBytes,
       undefined,
