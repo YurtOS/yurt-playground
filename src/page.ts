@@ -17,6 +17,7 @@ import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
   catalogRows,
   formatBytes,
+  listInstalled,
   loadCatalog,
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
@@ -588,11 +589,23 @@ function wirePackages(): void {
       button.type = "button";
       button.className = "bar-action";
       button.textContent = "Install";
+      // Until `pkg list` says what is already here: an install must not
+      // start while the marking below is still on its way.
+      button.disabled = true;
       button.dataset.package = row.name;
       button.addEventListener("click", () => install(row.name));
       action.append(button);
       tr.append(name, version, size, action);
       list.append(tr);
+    }
+    // What the image (or a restored snapshot) already has is installed
+    // too, not only what this panel installed.
+    const installed = await listInstalled((cmd) =>
+      (globalThis as unknown as { yurt: Yurt }).yurt.exec(cmd)
+    );
+    for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
+      if (installed.has(b.dataset.package ?? "")) b.textContent = "Installed";
+      b.disabled = b.textContent === "Installed";
     }
   };
   toggle.addEventListener("click", () => {

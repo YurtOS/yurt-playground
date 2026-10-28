@@ -6,10 +6,12 @@ import {
   type Catalog,
   type Fetcher,
   fetchWithProgress,
+  installedNames,
   installPackage,
   installScript,
   InstallStalled,
   latestRelease,
+  listInstalled,
   loadCatalog,
   onlyStaged,
   PACKAGE_REPO_URL,
@@ -1274,5 +1276,56 @@ Deno.test("a checked catalog refuses metadata the index does not name, and an ex
     () => loadCatalog(fetcher, PACKAGE_REPO_URL, true, new Date("2099-02-01")),
     Error,
     "expired",
+  );
+});
+
+Deno.test("installedNames reads the names pkg list prints", () => {
+  assertEquals(
+    [...installedNames(
+      "ca-certificates 2026.9.25-yurt_0 official\ngit 2.55.0-yurt_0 official\n" +
+        "python-dev 3.14.7-yurt_0 official\n\n",
+    )],
+    ["ca-certificates", "git", "python-dev"],
+  );
+  assertEquals(installedNames("").size, 0);
+  // Anything that is not a package name (a warning line) is not one.
+  assertEquals([...installedNames("warning: Repo stale\ngit 2 official")], [
+    "git",
+  ]);
+});
+
+Deno.test("listInstalled is what pkg list printed, and nothing when it failed", async () => {
+  const ran: string[] = [];
+  const result = (code: number, stdout: string) => ({
+    code,
+    signal: null,
+    coreDumped: false,
+    timedOut: false,
+    stdout,
+    stderr: "",
+    stdoutTruncated: false,
+    stderrTruncated: false,
+  });
+  assertEquals(
+    [
+      ...await listInstalled((cmd) => {
+        ran.push(cmd);
+        return Promise.resolve(result(0, "git 2.55.0-yurt_0 official\n"));
+      }),
+    ],
+    ["git"],
+  );
+  assertEquals(ran, ["pkg list"]);
+  // A failed listing marks nothing: every button stays an Install, and
+  // pkg says "nothing to install" for what was there.
+  assertEquals(
+    (await listInstalled(() =>
+      Promise.resolve(result(1, "git 2.55.0-yurt_0 official\n"))
+    )).size,
+    0,
+  );
+  assertEquals(
+    (await listInstalled(() => Promise.reject(new Error("no sandbox")))).size,
+    0,
   );
 });

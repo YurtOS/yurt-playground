@@ -17,6 +17,7 @@
  * Installed files live in the tab's memory, like every other file in the
  * sandbox, and are gone after a reload (#81).
  */
+import type { Result } from "./executions.ts";
 
 /** Where the page fetches the repository from: GitHub's raw file host,
  * which answers with `Access-Control-Allow-Origin: *`. */
@@ -560,6 +561,35 @@ export function catalogRows(catalog: Catalog): {
       size: release!.size,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** The names `pkg list` prints, one package per line as
+ * `NAME VERSION REPOSITORY`: what the image or an earlier install already
+ * put in this sandbox. */
+export function installedNames(pkgList: string): Set<string> {
+  return new Set(
+    pkgList.split("\n")
+      .map((line) => line.trim().split(/\s+/)[0])
+      .filter((name) => isPackageName(name)),
+  );
+}
+
+/** What this sandbox already has, by `pkg list`. Only a hint for the
+ * panel's buttons: when the listing fails, nothing is marked, and an
+ * install of something present says "nothing to install". */
+export async function listInstalled(
+  exec: (cmd: string) => Promise<Result>,
+): Promise<Set<string>> {
+  try {
+    const listed = await exec("pkg list");
+    if ("code" in listed && listed.code === 0) {
+      return installedNames(listed.stdout);
+    }
+    console.warn("pkg list failed:", listed);
+  } catch (error) {
+    console.warn("pkg list failed:", error);
+  }
+  return new Set();
 }
 
 /** `pkg`'s cause for a failure: it names the cause first and sums up last
