@@ -16,12 +16,15 @@
  *   stopping the session on it killed the terminal without a word.
  */
 import type { JupyterTransport } from "./jupyter_transport.ts";
-import type { Spawner } from "./executions.ts";
+import { relaunchNote } from "./jupyter.ts";
+import { asWaitStatus, type Spawner } from "./executions.ts";
 
 /** What `start` posts to the page about the boot. */
 export type StartReport =
   | { type: "status"; text: string }
-  | { type: "error"; message: string }
+  // `endsBoot`: the start's own outcome (a boot that failed, a Jupyter
+  // that did not start), apart from a later error such as a cell's.
+  | { type: "error"; message: string; endsBoot?: true }
   | { type: "shell-ready" }
   // The image has no python3: the shell runs, Jupyter is not launched.
   // `error` is why installing it failed, when that was tried.
@@ -65,7 +68,7 @@ export async function probePython(
       }),
     ]);
     if (status === undefined) return undefined;
-    const code = typeof status === "number" ? status : status.code;
+    const code = asWaitStatus(status).code;
     if (code === 0) return true;
     if (code === PYTHON_MISSING_EXIT) return false;
     // A signal death, or any exit the probe itself did not choose, says
@@ -94,7 +97,11 @@ export type StartDeps<S extends StartableSession> = {
   installPython?(session: S): Promise<void>;
   /** Just before the kernel is launched on it: what a restart reuses. */
   launching?(session: S): void;
-  startKernel(session: S): Promise<JupyterTransport>;
+  /** Calls `relaunching` before each launch after a stack overflow. */
+  startKernel(
+    session: S,
+    relaunching: (launch: number) => void,
+  ): Promise<JupyterTransport>;
   post(report: StartReport): void;
   /** How often "starting Jupyter (N s)" is posted. */
   tickMs?: number;
@@ -112,7 +119,7 @@ export async function startSandbox<S extends StartableSession>(
   try {
     session = await deps.boot();
   } catch (error) {
-    deps.post({ type: "error", message: errorText(error) });
+    deps.post({ type: "error", message: errorText(error), endsBoot: true });
     return undefined;
   }
   deps.booted(session);
@@ -170,19 +177,30 @@ async function launchKernel<S extends StartableSession>(
   // the difference between slow and stuck.
   deps.launching?.(session);
   const started = Date.now();
-  const ticking = setInterval(() => {
+  /** Which launch this is, once one overflowed the stack: every tick says
+   * so, or the next one would wipe it within seconds. */
+  let note = "";
+  const tick = () => {
     const seconds = Math.round((Date.now() - started) / 1000);
-    deps.post({ type: "status", text: `starting Jupyter (${seconds} s)` });
-  }, deps.tickMs ?? 5000);
+    deps.post({
+      type: "status",
+      text: `starting Jupyter (${seconds} s${note})`,
+    });
+  };
+  const ticking = setInterval(tick, deps.tickMs ?? 5000);
   let jupyter: JupyterTransport;
   try {
-    jupyter = await deps.startKernel(session);
+    jupyter = await deps.startKernel(session, (launch) => {
+      note = `, ${relaunchNote(launch)}`;
+      tick();
+    });
   } catch (error) {
     // The shell stays: the session is not stopped for a kernel that did
     // not start.
     deps.post({
       type: "error",
       message: `Jupyter did not start: ${errorText(error)}`,
+      endsBoot: true,
     });
     return undefined;
   } finally {
@@ -190,4 +208,50 @@ async function launchKernel<S extends StartableSession>(
   }
   deps.post({ type: "notebook-ready" });
   return jupyter;
+}
+
+/** Whether a start's error says the Python it ran is broken, so a stored
+ * layer that installed it must go. A stack overflow on every launch counts
+ * too: a broken native extension in the layer dies the same way, and a
+ * fresh install on the next visit is the safe direction. */
+export function kernelFailureDropsLayer(report: StartReport): boolean {
+  return report.type === "error" &&
+    report.message.startsWith("Jupyter did not start");
+}
+
+/** The worker's kernel lifecycle: the boot's start, and the restarts and
+ * Python installs that run one at a time. A restart that comes in while a
+ * start runs is refused at once, as before the relaunch: queued, it waited
+ * out minutes of ipykernel import and then restarted the fresh kernel. */
+export function kernelLifecycle() {
+  // A count, not a flag: the boot's start and a fresh sandbox's start
+  // (retryPython → startFresh) may overlap, and the first to end must not
+  // let a restart in beside the other.
+  let starting = 0;
+  let queue: Promise<void> = Promise.resolve();
+  /** Runs `run` after everything queued before it; a rejection is the
+   * caller's, and does not stop what is queued next. */
+  const enqueue = (run: () => Promise<void>): Promise<void> => {
+    const next = queue.then(run);
+    queue = next.catch(() => {});
+    return next;
+  };
+  return {
+    async start(run: () => Promise<void>): Promise<void> {
+      starting++;
+      try {
+        await run();
+      } finally {
+        starting--;
+      }
+    },
+    enqueue,
+    restart(run: () => Promise<void>, refuse: () => void): Promise<void> {
+      if (starting > 0) {
+        refuse();
+        return Promise.resolve();
+      }
+      return enqueue(run);
+    },
+  };
 }

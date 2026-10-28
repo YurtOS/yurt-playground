@@ -280,12 +280,12 @@ function readGuestFile(
 export const GUEST_MEMORY_RESERVATION_BYTES = 256 * 1024 * 1024;
 
 /**
- * Whether this engine is JavaScriptCore (Safari, and every iOS browser),
- * the one that runs out of shared-memory reservations. Chromium and Edge
- * also say `AppleWebKit/`, always with a `Chrome/` token; Firefox and Deno
- * say neither. The same test as the kernel's `workerTeardownWaitsOnCompiles`.
+ * Whether this engine is JavaScriptCore (Safari, and every iOS browser).
+ * Chromium and Edge also say `AppleWebKit/`, always with a `Chrome/`
+ * token; Firefox and Deno say neither. The same test as the kernel's
+ * `workerTeardownWaitsOnCompiles`.
  */
-export function engineCapsSharedMemoryReservations(
+export function isJavaScriptCore(
   userAgent: string | undefined = globalThis.navigator?.userAgent,
 ): boolean {
   if (userAgent === undefined) return false;
@@ -306,7 +306,8 @@ export function playgroundHostState(
   & ReturnType<typeof defaultHostState>
   & { guestMemoryReservationBytes?: number } {
   // Kernels older than yurtos-kernel#3115 do not read the field.
-  if (!engineCapsSharedMemoryReservations(userAgent)) {
+  // Only JavaScriptCore runs out of shared-memory reservations.
+  if (!isJavaScriptCore(userAgent)) {
     return defaultHostState();
   }
   return {
@@ -530,7 +531,11 @@ async function startPlayground(
       // Its exit is the kernel's business (the connection file, the log);
       // the launch only watches for it, to stop waiting for a file a dead
       // kernel will not write.
-      const exited = process.runStartAsync();
+      // The wait status when the host has one, as `process` gives: a
+      // signal death is then a signal, not a folded 128+n.
+      const exited = process.runStartAsync().then((rc) =>
+        process.waitStatus() ?? rc
+      );
       exited.catch(() => {});
       return { exited };
     },

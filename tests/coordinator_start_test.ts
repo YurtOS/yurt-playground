@@ -1,6 +1,8 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   installThenLaunch,
+  kernelFailureDropsLayer,
+  kernelLifecycle,
   probePython,
   PYTHON_MISSING_EXIT,
   PYTHON_PROBE_COMMAND,
@@ -160,6 +162,7 @@ Deno.test("a Jupyter that does not start is an error next to a shell that stays"
   assertEquals(posted.at(-1), {
     type: "error",
     message: "Jupyter did not start: the Jupyter kernel exited before writing",
+    endsBoot: true,
   });
 });
 
@@ -235,7 +238,9 @@ Deno.test("a boot that fails is posted as the error", async () => {
     post: (report) => posted.push(report),
   });
   assertEquals(booted, 0);
-  assertEquals(posted, [{ type: "error", message: "not crossOriginIsolated" }]);
+  assertEquals(posted, [
+    { type: "error", message: "not crossOriginIsolated", endsBoot: true },
+  ]);
 });
 
 Deno.test("the coordinator worker starts through startSandbox and never stops a session", () => {
@@ -328,4 +333,140 @@ Deno.test("an image with python3 is never installed into", async () => {
     post: () => {},
   });
   assertEquals(installs, 0);
+});
+
+Deno.test("a stack-overflow relaunch's note rides on every later 'starting Jupyter' tick", async () => {
+  const posted: StartReport[] = [];
+  await startSandbox({
+    boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(0)).spawn)),
+    booted: () => {},
+    noJupyter: false,
+    startKernel: async (_session, relaunching) => {
+      relaunching(2);
+      // Long enough for the 1 ms ticker to post again.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return transport;
+    },
+    post: (report) => posted.push(report),
+    tickMs: 1,
+  });
+  const statuses = posted.flatMap((r) => r.type === "status" ? [r.text] : []);
+  const note = "launch 2: the last one overflowed the browser's stack";
+  const relaunched = statuses.findIndex((text) => text.includes(note));
+  assertEquals(
+    statuses[relaunched],
+    `starting Jupyter (0 s, ${note})`,
+    "said at once, with the count",
+  );
+  const later = statuses.slice(relaunched + 1);
+  assert(later.length > 0, "the ticker posted after the relaunch");
+  for (const text of later) {
+    assert(
+      /^starting Jupyter \(\d+ s, launch 2: the last one overflowed the browser's stack\)$/
+        .test(text),
+      text,
+    );
+  }
+  assertEquals(posted.at(-1), { type: "notebook-ready" });
+});
+
+Deno.test("a kernel failure drops the Python layer, an error that is not one does not", () => {
+  assert(
+    kernelFailureDropsLayer({
+      type: "error",
+      message: "Jupyter did not start: the Jupyter kernel exited (exit 1)",
+    }),
+  );
+  assertEquals(
+    kernelFailureDropsLayer({ type: "error", message: "Jupyter is not ready" }),
+    false,
+  );
+  assertEquals(kernelFailureDropsLayer({ type: "notebook-ready" }), false);
+});
+
+Deno.test("the coordinator worker hands the relaunch note on at start, retry and restart", () => {
+  const worker = Deno.readTextFileSync(
+    new URL("../src/coordinator_worker.ts", import.meta.url),
+  );
+  // Start and the Install/retry path: launchKernel's ticker carries it.
+  const starts = worker.match(
+    /startKernel: \((\w+), relaunching\) =>\s+startGuestKernel\(\1, kernelPorts, \{ relaunching \}\)/g,
+  );
+  assertEquals(starts?.length, 2, "both startKernel deps forward it");
+  assertEquals(
+    worker.match(/\bstartGuestKernel\(/g)?.length,
+    2,
+    "no startGuestKernel call without it",
+  );
+  // A restart says "restarting", not "starting", with the note.
+  assert(
+    /restartGuestKernel\(\s*launchSession,\s*previous,\s*kernelPorts,\s*\{\s*relaunching: \(launch\) =>\s*post\(\{\s*type: "status",\s*text: `restarting Jupyter \(\$\{relaunchNote\(launch\)\}\)`,?\s*\}\),?\s*\}/
+      .test(worker),
+    "the restart forwards its own relaunch status",
+  );
+  // A stack overflow is the browser's, not the layer's.
+  assert(/kernelFailureDropsLayer\(report\)/.test(worker));
+});
+
+Deno.test("a Jupyter restart during the boot's start is refused at once; one after a failed start runs", async () => {
+  const lifecycle = kernelLifecycle();
+  let fail!: (error: Error) => void;
+  const start = lifecycle.start(() =>
+    new Promise<void>((_resolve, reject) => fail = reject)
+  );
+  const events: string[] = [];
+  const restart = () =>
+    lifecycle.restart(
+      () => {
+        events.push("restarted");
+        return Promise.resolve();
+      },
+      () => events.push("refused"),
+    );
+  // Not queued behind the start (minutes of ipykernel import and its
+  // relaunches, then a restart of the fresh kernel): refused now.
+  await restart();
+  assertEquals(events, ["refused"]);
+  fail(new Error("the boot threw"));
+  await assertRejects(() => start, Error, "the boot threw");
+  await restart();
+  assertEquals(events, ["refused", "restarted"]);
+});
+
+Deno.test("a restart or install that throws does not stop the next one", async () => {
+  const lifecycle = kernelLifecycle();
+  await assertRejects(
+    () => lifecycle.enqueue(() => Promise.reject(new Error("install threw"))),
+    Error,
+    "install threw",
+  );
+  let ran = false;
+  await lifecycle.enqueue(() => {
+    ran = true;
+    return Promise.resolve();
+  });
+  assert(ran, "the queue survived the rejection");
+});
+
+Deno.test("a restart is refused until every overlapping start has ended", async () => {
+  const lifecycle = kernelLifecycle();
+  let endBoot!: () => void;
+  let endFresh!: () => void;
+  const boot = lifecycle.start(() => new Promise((r) => endBoot = r));
+  const fresh = lifecycle.start(() => new Promise((r) => endFresh = r));
+  let refused = 0;
+  let ran = 0;
+  const restart = () =>
+    lifecycle.restart(() => {
+      ran++;
+      return Promise.resolve();
+    }, () => refused++);
+  endBoot();
+  await boot;
+  await restart();
+  assertEquals([refused, ran], [1, 0]);
+  endFresh();
+  await fresh;
+  await restart();
+  assertEquals([refused, ran], [1, 1]);
 });

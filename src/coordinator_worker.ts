@@ -13,12 +13,15 @@ import {
   executeCell,
   type JupyterStream,
   type KernelPorts,
+  relaunchNote,
   restartGuestKernel,
   startGuestKernel,
 } from "./jupyter.ts";
 import { requestCellInterrupt } from "./cell_interrupt.ts";
 import {
   installThenLaunch,
+  kernelFailureDropsLayer,
+  kernelLifecycle,
   probePython,
   type StartReport,
   startSandbox,
@@ -290,8 +293,9 @@ let kernelPorts: KernelPorts | undefined;
 /** The image has no python3 (src/coordinator_start.ts): a restart the
  * frontend asks for gets the same answer, not "Jupyter is not ready". */
 let pythonMissing = false;
-/** Restarts are serialised: a second request waits for the first. */
-let restarting: Promise<void> = Promise.resolve();
+/** Restarts and installs run one at a time; a restart during the boot's
+ * start is refused. */
+const lifecycle = kernelLifecycle();
 /** How the start installs Python on the slim image, kept for a retry. */
 let installPython:
   | ((session: BootedSession) => Promise<void>)
@@ -345,10 +349,7 @@ async function liveLayerKey(
 
 /** A Jupyter that did not start on a layer's Python: drop the layer. */
 function dropLayerIfKernelFailed(report: StartReport): void {
-  if (
-    report.type === "error" && layerInstalled !== undefined &&
-    report.message.startsWith("Jupyter did not start")
-  ) {
+  if (layerInstalled !== undefined && kernelFailureDropsLayer(report)) {
     void layerInstalled.drop();
     layerInstalled = undefined;
   }
@@ -379,7 +380,8 @@ async function retryPython(): Promise<void> {
   const started = await installThenLaunch(session, {
     installPython,
     launching: (s) => launchSession = s,
-    startKernel: (s) => startGuestKernel(s, kernelPorts),
+    startKernel: (s, relaunching) =>
+      startGuestKernel(s, kernelPorts, { relaunching }),
     post: (report) => {
       pythonMissing = report.type === "python-missing";
       dropLayerIfKernelFailed(report);
@@ -468,12 +470,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     return;
   }
   if (msg.type === "python-install") {
-    restarting = restarting.then(retryPython);
-    await restarting;
+    await lifecycle.enqueue(retryPython);
     return;
   }
   if (msg.type === "jupyter-restart") {
-    restarting = restarting.then(async () => {
+    await lifecycle.restart(async () => {
       if (pythonMissing && installPython !== undefined) {
         await retryPython();
         return;
@@ -494,6 +495,13 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           launchSession,
           previous,
           kernelPorts,
+          {
+            relaunching: (launch) =>
+              post({
+                type: "status",
+                text: `restarting Jupyter (${relaunchNote(launch)})`,
+              }),
+          },
         );
         subscribeJupyter(jupyter);
         post({ type: "jupyter-restarted" });
@@ -503,8 +511,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           message: error instanceof Error ? error.message : String(error),
         });
       }
-    });
-    await restarting;
+    }, () => post({ type: "error", message: "Jupyter is not ready" }));
     return;
   }
   if (msg.type === "cell-interrupt") {
@@ -639,7 +646,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       launching: (session) => launchSession = session,
       noJupyter: msg.noJupyter === true,
       installPython,
-      startKernel: (session) => startGuestKernel(session, kernelPorts),
+      startKernel: (session, relaunching) =>
+        startGuestKernel(session, kernelPorts, { relaunching }),
       post: (report) => {
         if (report.type === "python-missing") pythonMissing = true;
         dropLayerIfKernelFailed(report);
@@ -692,7 +700,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       dropSandbox();
       freshBoot = true;
       try {
-        await begin();
+        await lifecycle.start(begin);
       } finally {
         freshBoot = false;
       }
@@ -708,5 +716,5 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       }
     };
   }
-  await begin();
+  await lifecycle.start(begin);
 });

@@ -4,6 +4,8 @@ import {
   type JupyterConfig,
   type JupyterTransport,
 } from "./jupyter_transport.ts";
+import { isJavaScriptCore } from "./boot.ts";
+import { asWaitStatus, signalName, type WaitStatus } from "./executions.ts";
 
 export const JUPYTER_CONNECTION_FILE = "/tmp/yurt-kernel.json";
 /** The launched ipykernel's pid, so a restart can kill exactly that process. */
@@ -199,15 +201,45 @@ export async function stopGuestKernel(
   await runShell(session, buildKernelStopCommand(), 30_000);
 }
 
+/** Drop an exited kernel's files without the user's shell, so the next
+ * launch reads no stale connection file and no stop kills a reused pid. */
+async function clearKernelFiles(session: JupyterLaunchSession): Promise<void> {
+  const cleared = await session.spawn?.(
+    `rm -f ${JUPYTER_CONNECTION_FILE} ${JUPYTER_PID_FILE}`,
+  );
+  // An rm still running when the next launch starts could delete that
+  // launch's files, so one that does not finish in time ends the start.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const done = await Promise.race([
+      cleared?.exited.then(() => true),
+      new Promise<false>((resolve) =>
+        timer = setTimeout(() => resolve(false), CLEAR_FILES_MS)
+      ),
+    ]);
+    if (done === false) {
+      throw new Error(
+        `the old kernel's files were not removed in ${CLEAR_FILES_MS / 1000} s`,
+      );
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** How long a relaunch waits for the old kernel's files to be removed. */
+const CLEAR_FILES_MS = 30_000;
+
 /** Replace the guest kernel with a fresh process. */
 export async function restartGuestKernel(
   session: JupyterLaunchSession,
   previous: JupyterTransport | undefined,
   ports?: KernelPorts,
+  options: StartOptions = {},
 ): Promise<JupyterTransport> {
   await previous?.close().catch(() => {});
   await stopGuestKernel(session);
-  return await startGuestKernel(session, ports);
+  return await startGuestKernel(session, ports, options);
 }
 
 // The PTY echoes the typed command, so the marker must not appear in it:
@@ -215,16 +247,112 @@ export async function restartGuestKernel(
 const CONNECTION_MARKER = "YURT_JUPYTER_CONNECTION_READY";
 const TYPED_CONNECTION_MARKER = 'YURT_JUPYTER_CONNECTION_""READY';
 
+type StartOptions = {
+  pollMs?: number;
+  /** The dial's retry budget -- production waits out a kernel that is
+   * still binding its ports; a test that never dials says so instead of
+   * paying the whole backoff (yurt-playground#123). */
+  connect?: { attempts?: number; delayMs?: number };
+  /** Told before launch N (2 and up) after a stack overflow. */
+  relaunching?: (launch: number) => void;
+  /** The engine's; the relaunch is JavaScriptCore's alone. */
+  userAgent?: string;
+  relaunchDelayMs?: number;
+};
+
+/** How many times ipykernel is launched when it dies of a stack overflow. */
+export const STACK_OVERFLOW_LAUNCHES = 5;
+
+/** The wait before a relaunch: the measured launch 2 came a few seconds
+ * after launch 1, and nothing here needs it sooner. */
+const RELAUNCH_DELAY_MS = 1000;
+
+const STACK_OVERFLOW = "overflowed the browser's stack";
+
+/** What the status line says about launch N after a stack overflow. */
+export function relaunchNote(launch: number): string {
+  return `launch ${launch}: the last one ${STACK_OVERFLOW}`;
+}
+
+/** The guest kernel died before writing its connection file. `status` is
+ * what the host's `exited` resolved with: its number (128+n for a
+ * signal), a wait status, or nothing. */
+class KernelExited extends Error {
+  constructor(message: string, readonly status: unknown) {
+    super(message);
+  }
+}
+
+/** The exit as the host reported it (a number or a wait status), or
+ * `undefined` for a host that gave none. */
+function exitOf(status: unknown): WaitStatus | undefined {
+  return status === undefined || status === null
+    ? undefined
+    : asWaitStatus(status as WaitStatus | number);
+}
+
+/** " (exit N)" or " (signal SIGNAME)"; nothing for an exit with no status. */
+function exitClause(status: unknown): string {
+  const exit = exitOf(status);
+  if (exit?.code != null) return ` (exit ${exit.code})`;
+  if (exit?.signal != null) return ` (signal ${signalName(exit.signal)})`;
+  return "";
+}
+
+/** SIGSEGV: 139 as the host folds it, or signal 11 in a wait status. */
+function isSegfault(status: unknown): boolean {
+  const exit = exitOf(status);
+  return exit?.code === 139 || exit?.signal === 11;
+}
+
+/**
+ * Start the guest kernel and connect to it.
+ *
+ * On Safari the first ipykernel launch in a page can die with SIGSEGV
+ * (exit 139): JavaScriptCore throws "Maximum call stack size exceeded" in
+ * the guest Worker (yurtos-kernel#4204). A launch a few seconds later in the
+ * same page fits (measured: launch 2 started every time) -- most likely
+ * because CPython then runs as optimised wasm with smaller frames than the
+ * first, baseline tier's. So on JavaScriptCore that one failure is launched
+ * again, up to STACK_OVERFLOW_LAUNCHES launches. Elsewhere a SIGSEGV is a
+ * real one, and like any other failure it is final at once: re-running
+ * ipykernel's import would only take minutes to fail the same way.
+ */
 export async function startGuestKernel(
   session: JupyterLaunchSession,
   ports?: KernelPorts,
-  /** `connect` is the dial's retry budget -- production waits out a kernel
-   * that is still binding its ports; a test that never dials says so
-   * instead of paying the whole backoff (yurt-playground#123). */
-  options: {
-    pollMs?: number;
-    connect?: { attempts?: number; delayMs?: number };
-  } = {},
+  options: StartOptions = {},
+): Promise<JupyterTransport> {
+  const relaunches = isJavaScriptCore(
+    options.userAgent ?? globalThis.navigator?.userAgent,
+  );
+  for (let launch = 1;; launch++) {
+    try {
+      return await launchGuestKernel(session, ports, options);
+    } catch (error) {
+      if (
+        !relaunches || !(error instanceof KernelExited) ||
+        !isSegfault(error.status)
+      ) throw error;
+      if (launch >= STACK_OVERFLOW_LAUNCHES) {
+        throw new Error(
+          `the Jupyter kernel died of SIGSEGV on all ${launch} launches ` +
+            `(on Safari most likely the browser's stack, yurtos-kernel#4204); ` +
+            `the last: ${error.message}`,
+        );
+      }
+      options.relaunching?.(launch + 1);
+      await new Promise((resolve) =>
+        setTimeout(resolve, options.relaunchDelayMs ?? RELAUNCH_DELAY_MS)
+      );
+    }
+  }
+}
+
+async function launchGuestKernel(
+  session: JupyterLaunchSession,
+  ports: KernelPorts | undefined,
+  options: StartOptions,
 ): Promise<JupyterTransport> {
   // Only what is typed into the user's shell needs hushing; a session that
   // spawns the launch and reads the file itself types nothing.
@@ -256,11 +384,21 @@ export async function startGuestKernel(
         )
         : await readConnectionFile(session);
     } catch (error) {
-      // The launch is out (a process of its own, or a job of the shell)
-      // and its connection file never came, or could not be read: it is
-      // not left running for nobody. The stop is typed and hushed, and
-      // its own failure is not the news here.
-      await stopGuestKernel(session).catch(() => {});
+      if (error instanceof KernelExited) {
+        // Nothing is left to kill, and its pid may be another process's
+        // by now: only the files go, by a process of the page's own (the
+        // one that saw the exit), so nothing is typed into the user's
+        // shell -- on Safari this runs on most boots.
+        // A cleanup that fails ends the start with its own error: no
+        // relaunch may race an rm that is still running.
+        await clearKernelFiles(session);
+      } else {
+        // The launch is out (a process of its own, or a job of the shell)
+        // and its connection file never came, or could not be read: it is
+        // not left running for nobody. The stop is typed and hushed, and
+        // its own failure is not the news here.
+        await stopGuestKernel(session).catch(() => {});
+      }
       throw error;
     }
   } finally {
@@ -338,7 +476,12 @@ async function pollConnectionFile(
   let gone = false;
   /** The host's own failure to run the process, apart from an exit. */
   let failed: string | undefined;
-  exited?.then(() => gone = true, (error) => {
+  /** How it exited, as the host's `exited` resolved. */
+  let status: unknown;
+  exited?.then((value) => {
+    status = value;
+    gone = true;
+  }, (error) => {
     failed = error instanceof Error ? error.message : String(error);
     gone = true;
   });
@@ -364,11 +507,17 @@ async function pollConnectionFile(
   const tail = log === undefined
     ? "(no log)"
     : decoder.decode(log).split("\n").slice(-30).join("\n");
+  if (failed === undefined && gone) {
+    throw new KernelExited(
+      `the Jupyter kernel exited before writing its connection file${
+        exitClause(status)
+      }; kernel log:\n${tail}`,
+      status,
+    );
+  }
   throw new Error(
     failed !== undefined
       ? `the Jupyter kernel process failed to run: ${failed}; kernel log:\n${tail}`
-      : gone
-      ? `the Jupyter kernel exited before writing its connection file; kernel log:\n${tail}`
       : `Jupyter connection file was not written within ${CONNECTION_FILE_WAIT_SECONDS} s; kernel log:\n${tail}`,
   );
 }
