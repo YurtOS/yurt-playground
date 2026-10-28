@@ -43,7 +43,6 @@ import {
   fetchWithProgress,
   installPackage,
   InstallStalled,
-  ListingStalled,
   listInstalled,
   loadCatalog,
   resolveSet,
@@ -174,16 +173,22 @@ let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 
 /** `work` in the install queue, on the in-tab session as it is when its
  * turn comes (one queued behind a stalled install may find a fresh
- * sandbox, or a stalled one). Anything run here counts as pkg activity
- * for the Python layer's `pristine` check. */
-function inPackageQueue<T>(work: (session: BootedSession) => Promise<T>) {
+ * sandbox, or a stalled one). An install counts as pkg activity for the
+ * Python layer's `pristine` check; a listing changes no package. */
+function inPackageQueue<T>(
+  work: (session: BootedSession) => Promise<T>,
+  { install }: { install: boolean },
+) {
   return installs(() => {
     const session = packageSession;
-    if (session?.process === undefined || session.writeFiles === undefined) {
+    if (
+      session?.process === undefined ||
+      (install && session.writeFiles === undefined)
+    ) {
       throw new Error("this sandbox does not install packages");
     }
     if (sandboxStalled) throw new Error(stalledSandbox());
-    pkgTouched.add(session);
+    if (install) pkgTouched.add(session);
     return work(session);
   });
 }
@@ -200,18 +205,15 @@ function packageReplyError(req: number, error: unknown): void {
 async function serveInstalledList(msg: ToWorker): Promise<void> {
   if (msg.type !== "pkg-list") return;
   try {
-    const names = await inPackageQueue((session) =>
-      listInstalled({
-        spawn: (line) => session.process!(line, { maxOutputBytes: 1 << 20 }),
-        kill: async (pid) => await session.signal?.(pid, SIGKILL),
-      })
+    const names = await inPackageQueue(
+      (session) =>
+        listInstalled((line, maxOutputBytes) =>
+          session.process!(line, { maxOutputBytes })
+        ),
+      { install: false },
     );
     post({ type: "pkg-reply", req: msg.req, ok: true, value: [...names] });
   } catch (error) {
-    if (error instanceof ListingStalled) {
-      sandboxStalled = true;
-      stalledWhy = "a package listing stopped answering";
-    }
     packageReplyError(msg.req, error);
   }
 }
@@ -225,8 +227,7 @@ async function servePackages(msg: ToWorker): Promise<void> {
         host: workerPackageHost(session),
         tablet: msg.tablet,
         progress: (text) => post({ type: "pkg-progress", req, text }),
-      })
-    );
+      }), { install: true });
     post({ type: "pkg-reply", req, ok: true, value: output });
   } catch (error) {
     if (error instanceof InstallStalled && error.inSandbox) {
@@ -243,7 +244,6 @@ async function servePackages(msg: ToWorker): Promise<void> {
  * install wait their turn here, so neither lands between the other's two
  * runs. */
 const installs = runQueue();
-const SIGKILL = 9;
 
 async function serveYurt(msg: ToWorker): Promise<void> {
   if (

@@ -323,15 +323,7 @@ function boot(
           tablet: smallDevice,
         });
       });
-    packageList = () =>
-      new Promise<string[]>((resolve, reject) => {
-        const req = nextReq++;
-        pending.set(req, {
-          resolve: (value) => resolve(value as string[]),
-          reject,
-        });
-        worker.postMessage({ type: "pkg-list", req });
-      });
+    packageList = () => ask<string[]>({ type: "pkg-list" });
   }
   yurtState.set("booting");
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
@@ -551,18 +543,21 @@ function wirePackages(): void {
     // One listing at a time: a reopen while one is queued waits for it.
     if (packageList === undefined || listing) return false;
     listing = true;
+    // What the line said before (an earlier install's outcome or cause)
+    // comes back once the listing is done.
+    const before = outcome ?? status.textContent ?? "";
     if (outcome === undefined) {
       status.textContent = "checking which packages are installed…";
     }
     try {
       mark(new Set(await packageList()));
-      status.textContent = outcome ?? "";
+      status.textContent = before;
       return true;
     } catch (error) {
       const why = `could not check which packages are installed: ${
         error instanceof Error ? error.message : String(error)
       }`;
-      status.textContent = outcome === undefined ? why : `${outcome}; ${why}`;
+      status.textContent = before === "" ? why : `${before}; ${why}`;
       return false;
     } finally {
       listing = false;

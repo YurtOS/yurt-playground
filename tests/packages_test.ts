@@ -1,3 +1,4 @@
+import type { WaitStatus } from "../src/executions.ts";
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   type ArchiveCache,
@@ -11,7 +12,7 @@ import {
   installScript,
   InstallStalled,
   latestRelease,
-  ListingStalled,
+  LIST_INSTALLED_MAX_BYTES,
   listInstalled,
   loadCatalog,
   onlyStaged,
@@ -1297,42 +1298,53 @@ Deno.test("installedNames reads the names pkg list prints", () => {
 
 Deno.test("listInstalled is what sudo pkg list printed, and throws when it fails", async () => {
   const ran: string[] = [];
-  const killed: number[] = [];
-  const guest = (exited: Promise<number>, stdout = "", stderr = "") => ({
-    spawn: (line: string) => {
-      ran.push(line);
-      return Promise.resolve({
-        pid: 7,
-        exited,
-        takeStdout: () => new TextEncoder().encode(stdout),
-        takeStderr: () => new TextEncoder().encode(stderr),
-      });
-    },
-    kill: (pid: number) => {
-      killed.push(pid);
-      return Promise.resolve();
-    },
-  });
+  const spawn = (
+    exited: Promise<number | WaitStatus>,
+    stdout: string | Uint8Array = "",
+    stderr = "",
+  ) =>
+  (line: string, maxOutputBytes: number) => {
+    ran.push(`${line} ${maxOutputBytes}`);
+    return Promise.resolve({
+      pid: 7,
+      exited,
+      takeStdout: () =>
+        typeof stdout === "string" ? new TextEncoder().encode(stdout) : stdout,
+      takeStderr: () => new TextEncoder().encode(stderr),
+    });
+  };
   assertEquals(
     [
       ...await listInstalled(
-        guest(Promise.resolve(0), "git 2.55.0-yurt_0 official\n"),
+        spawn(Promise.resolve(0), "git 2.55.0-yurt_0 official\n"),
       ),
     ],
     ["git"],
   );
-  assertEquals(ran, ["sudo pkg list"]);
+  assertEquals(ran, [`sudo pkg list ${LIST_INSTALLED_MAX_BYTES}`]);
   await assertRejects(
-    () => listInstalled(guest(Promise.resolve(1), "", "database is locked")),
+    () => listInstalled(spawn(Promise.resolve(1), "", "database is locked")),
     Error,
     "pkg list failed (exit 1): database is locked",
   );
-  assertEquals(killed, []);
-  // One past its time is killed before the queue moves on.
   await assertRejects(
-    () => listInstalled(guest(new Promise(() => {})), 10),
-    ListingStalled,
-    "pkg list took over 0.01 s",
+    () =>
+      listInstalled(
+        spawn(Promise.resolve({ code: null, signal: 9, coreDumped: false })),
+      ),
+    Error,
+    "pkg list failed (signal 9)",
   );
-  assertEquals(killed, [7]);
+  // A cut listing would end in a cut name: refused, not parsed.
+  await assertRejects(
+    () =>
+      listInstalled(
+        spawn(
+          Promise.resolve(0),
+          new Uint8Array(LIST_INSTALLED_MAX_BYTES + 1).fill(0x61),
+        ),
+      ),
+    Error,
+    "more than the panel reads",
+  );
 });

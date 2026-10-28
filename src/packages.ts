@@ -575,43 +575,36 @@ export function installedNames(pkgList: string): Set<string> {
   );
 }
 
-/** How long a listing may take: `pkg list` reads one small database, so
- * a minute means the sandbox stopped answering, as a stalled install. */
-export const LIST_INSTALLED_TIMEOUT_MS = 60_000;
-
-/** A listing that did not finish in time; it was killed. */
-export class ListingStalled extends Error {}
+/** The most `pkg list` output the panel reads: far more than the
+ * repository's packages need, and a cut listing is refused, not parsed. */
+export const LIST_INSTALLED_MAX_BYTES = 1024 * 1024;
 
 /** What this sandbox already has, by `pkg list`, under sudo like every
  * other pkg call here (pkg opens its database read-write). The caller runs
  * it in the install queue, so no install is writing that database
- * meanwhile, and one past its time is killed before the queue moves on. */
+ * meanwhile. No deadline of its own, as with the queue's other guest
+ * reads: a listing that never ends is a sandbox that stopped answering,
+ * which the next install's stall checks report. */
 export async function listInstalled(
-  guest: {
-    spawn(line: string): Promise<SpawnedProcess>;
-    kill(pid: number): Promise<void>;
-  },
-  timeoutMs = LIST_INSTALLED_TIMEOUT_MS,
+  spawn: (line: string, maxOutputBytes: number) => Promise<SpawnedProcess>,
 ): Promise<Set<string>> {
-  const process = await guest.spawn("sudo pkg list");
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<"late">((resolve) => {
-    timer = setTimeout(() => resolve("late"), timeoutMs);
-  });
-  const status = await Promise.race([process.exited, late]);
-  clearTimeout(timer);
-  if (status === "late") {
-    await guest.kill(process.pid);
-    throw new ListingStalled(`pkg list took over ${timeoutMs / 1000} s`);
-  }
-  const code = typeof status === "number" ? status : status.code;
+  const process = await spawn("sudo pkg list", LIST_INSTALLED_MAX_BYTES);
+  const status = await process.exited;
   const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+  const code = typeof status === "number" ? status : status.code;
   if (code !== 0) {
+    const how = typeof status !== "number" && status.signal !== null
+      ? `signal ${status.signal}`
+      : `exit ${code}`;
     throw new Error(
-      `pkg list failed (exit ${code}): ${text(process.takeStderr()).trim()}`,
+      `pkg list failed (${how}): ${text(process.takeStderr()).trim()}`,
     );
   }
-  return installedNames(text(process.takeStdout()));
+  const stdout = process.takeStdout();
+  if (stdout.byteLength > LIST_INSTALLED_MAX_BYTES) {
+    throw new Error("pkg list printed more than the panel reads");
+  }
+  return installedNames(text(stdout));
 }
 
 /** `pkg`'s cause for a failure: it names the cause first and sums up last
