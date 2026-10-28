@@ -5,10 +5,11 @@
  *
  * Just enough of the SQLite file format (https://sqlite.org/fileformat.html)
  * for one table: the schema on page 1 names the `packages` table's root
- * page; its b-tree's leaf cells are the rows. pkg opens the file in the
- * default rollback-journal mode, so the main file holds every committed
+ * page and its columns; its b-tree's leaf cells are the rows. Only those
+ * pages are read, each at its offset. pkg opens the file in the default
+ * rollback-journal mode, so the main file holds every committed
  * transaction; there is no WAL to merge. A transaction in flight leaves a
- * `-journal` beside it, and the caller does not read then.
+ * `-journal` beside it.
  */
 
 /** Where pkg keeps it, and the rollback journal a transaction in flight
@@ -16,15 +17,13 @@
 export const INSTALLED_DB_PATH = "/var/lib/yurt-pkg/installed.sqlite";
 export const INSTALLED_DB_JOURNAL = `${INSTALLED_DB_PATH}-journal`;
 
-/** The most of it read: pkg keeps every installed file's record in it,
- * 8.6 MB with the Python set; a cut file is refused, not misread. */
-export const INSTALLED_DB_MAX_BYTES = 64 * 1024 * 1024;
-
-/** pkg's schema version (`PRAGMA user_version`), whose `packages` table has
- * `name` first and `install_state` tenth (yurt-pkg crates/pkg/src/installed.rs). */
-const SCHEMA_VERSION = 3;
-const NAME = 0;
-const INSTALL_STATE = 9;
+/** Up to `length` bytes of a sandbox file from `offset`, fewer at its end;
+ * `undefined` when there is no such file. Any other failure throws. */
+export type ReadAt = (
+  path: string,
+  offset: number,
+  length: number,
+) => Promise<Uint8Array | undefined>;
 
 /** A SQLite varint at `at`: its value and the offset after it. */
 function varint(bytes: Uint8Array, at: number): [number, number] {
@@ -37,50 +36,89 @@ function varint(bytes: Uint8Array, at: number): [number, number] {
   return [value * 256 + bytes[at + 8], at + 9];
 }
 
-/** The packages pkg recorded as installed, by name. A row an install has
- * prepared but not finished is not one. Throws on a file this does not
- * read. */
-export function installedPackages(db: Uint8Array): string[] {
-  const view = new DataView(db.buffer, db.byteOffset, db.byteLength);
+/** A table's column names, in order, from its `CREATE TABLE` text: the
+ * first word of each top-level definition. Table constraints come after
+ * every column, so they move no column's position. */
+function columnNames(sql: string): string[] {
+  const body = sql.slice(sql.indexOf("(") + 1, sql.lastIndexOf(")"));
+  const definitions: string[] = [];
+  let depth = 0;
+  let quote = "";
+  let start = 0;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (quote !== "") {
+      if (c === quote) quote = "";
+    } else if (c === "'" || c === '"' || c === "`") quote = c;
+    else if (c === "[") quote = "]";
+    else if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (c === "," && depth === 0) {
+      definitions.push(body.slice(start, i));
+      start = i + 1;
+    }
+  }
+  definitions.push(body.slice(start));
+  return definitions.map((definition) => {
+    const word = definition.trim().match(
+      /^(?:"([^"]*)"|`([^`]*)`|\[([^\]]*)\]|([^\s(]+))/,
+    );
+    return (word?.slice(1).find((part) => part !== undefined) ?? "")
+      .toLowerCase();
+  });
+}
+
+/** The packages pkg recorded as installed, by name, reading the database
+ * with `read` (fewer bytes at its end). A row an install has prepared but
+ * not finished is not one. Throws on a file this does not read. */
+export async function installedPackages(
+  read: (offset: number, length: number) => Promise<Uint8Array>,
+): Promise<string[]> {
   const text = new TextDecoder();
-  if (text.decode(db.subarray(0, 16)) !== "SQLite format 3\0") {
+  const exactly = async (offset: number, length: number) => {
+    const bytes = await read(offset, length);
+    if (bytes.byteLength < length) {
+      throw new Error(`pkg's database ends before byte ${offset + length}`);
+    }
+    return bytes;
+  };
+  const header = await read(0, 100);
+  if (text.decode(header.subarray(0, 16)) !== "SQLite format 3\0") {
     throw new Error("not a SQLite database");
   }
-  const version = view.getUint32(60);
-  if (version !== SCHEMA_VERSION) {
-    throw new Error(`pkg's database has schema version ${version}`);
-  }
-  if (view.getUint32(56) !== 1) throw new Error("not a UTF-8 database");
-  const size = view.getUint16(16) === 1 ? 65536 : view.getUint16(16);
-  const usable = size - db[20];
-  const start = (page: number) => {
-    if (page < 1 || page * size > db.byteLength) {
-      throw new Error(`page ${page} is past the end of the database`);
-    }
-    return (page - 1) * size;
+  const head = new DataView(header.buffer, header.byteOffset, 100);
+  if (head.getUint32(56) !== 1) throw new Error("not a UTF-8 database");
+  const size = head.getUint16(16) === 1 ? 65536 : head.getUint16(16);
+  const usable = size - header[20];
+  const page = async (number: number) => {
+    const bytes = await exactly((number - 1) * size, size);
+    return { bytes, view: new DataView(bytes.buffer, bytes.byteOffset, size) };
   };
   /** A table cell's payload: its local part, then its overflow pages. */
-  const payload = (at: number): Uint8Array => {
-    const [length, afterLength] = varint(db, at);
-    const [, body] = varint(db, afterLength);
+  const payload = async (bytes: Uint8Array, at: number) => {
+    const [length, afterLength] = varint(bytes, at);
+    const [, body] = varint(bytes, afterLength);
     const max = usable - 35;
     const min = Math.floor((usable - 12) * 32 / 255) - 23;
     const spill = min + (length - min) % (usable - 4);
     const local = length <= max ? length : spill <= max ? spill : min;
     const out = new Uint8Array(length);
-    out.set(db.subarray(body, body + local));
+    out.set(bytes.subarray(body, body + local));
     let filled = local;
-    let next = local < length ? view.getUint32(body + local) : 0;
+    let next = local < length
+      ? new DataView(bytes.buffer, bytes.byteOffset).getUint32(body + local)
+      : 0;
     while (filled < length) {
-      const page = start(next);
+      const overflow = await page(next);
       const take = Math.min(usable - 4, length - filled);
-      out.set(db.subarray(page + 4, page + 4 + take), filled);
+      out.set(overflow.bytes.subarray(4, 4 + take), filled);
       filled += take;
-      next = view.getUint32(page);
+      next = overflow.view.getUint32(0);
     }
     return out;
   };
-  /** A record's columns, as far as `last`: text, integers, or null. */
+  /** A record's columns, as far as `last`: text, small integers, or null
+   * (and null for the kinds no column read here is). */
   const columns = (record: Uint8Array, last: number) => {
     const values: (string | number | null)[] = [];
     let [header, at] = varint(record, 0);
@@ -100,8 +138,6 @@ export function installedPackages(db: Uint8Array): string[] {
       } else if (type === 8 || type === 9) {
         values.push(type - 8);
       } else {
-        // Null, and what no column read here is: wider integers, floats,
-        // blobs.
         values.push(null);
       }
       body += width;
@@ -109,55 +145,73 @@ export function installedPackages(db: Uint8Array): string[] {
     return values;
   };
   /** Every row of the table b-tree rooted at `root`. */
-  const rows = (root: number, last: number) => {
+  const rows = async (root: number, last: number) => {
     const out: (string | number | null)[][] = [];
     const seen = new Set<number>();
-    const walk = (page: number) => {
-      if (seen.has(page)) throw new Error(`page ${page} is in a loop`);
-      seen.add(page);
-      const base = start(page);
-      const header = page === 1 ? base + 100 : base;
-      const kind = db[header];
-      const cells = view.getUint16(header + 3);
-      const pointers = header + (kind === 5 ? 12 : 8);
+    const walk = async (number: number) => {
+      if (seen.has(number)) throw new Error(`page ${number} is in a loop`);
+      seen.add(number);
+      const { bytes, view } = await page(number);
+      const at = number === 1 ? 100 : 0;
+      const kind = bytes[at];
+      const cells = view.getUint16(at + 3);
+      const pointers = at + (kind === 5 ? 12 : 8);
       for (let i = 0; i < cells; i++) {
-        const cell = base + view.getUint16(pointers + 2 * i);
-        if (kind === 13) out.push(columns(payload(cell), last));
-        else if (kind === 5) walk(view.getUint32(cell));
-        else throw new Error(`page ${page} is not a table page`);
+        const cell = view.getUint16(pointers + 2 * i);
+        if (kind === 13) out.push(columns(await payload(bytes, cell), last));
+        else if (kind === 5) await walk(view.getUint32(cell));
+        else throw new Error(`page ${number} is not a table page`);
       }
-      if (kind === 5) walk(view.getUint32(header + 8));
+      if (kind === 5) await walk(view.getUint32(at + 8));
     };
-    walk(root);
+    await walk(root);
     return out;
   };
   // sqlite_schema: type, name, tbl_name, rootpage, sql.
-  const table = rows(1, 3).find(([type, name]) =>
+  const table = (await rows(1, 4)).find(([type, name]) =>
     type === "table" && name === "packages"
   );
   if (table === undefined || typeof table[3] !== "number") {
     throw new Error("pkg's database has no packages table");
   }
-  return rows(table[3], INSTALL_STATE)
-    .filter((row) => row[INSTALL_STATE] === "installed")
-    .map((row) => String(row[NAME]))
+  const names = columnNames(String(table[4]));
+  const name = names.indexOf("name");
+  const state = names.indexOf("install_state");
+  if (name < 0) throw new Error("pkg's packages table has no name column");
+  if (state < 0) {
+    throw new Error("pkg's packages table has no install_state column");
+  }
+  return (await rows(table[3], Math.max(name, state)))
+    .filter((row) => row[state] === "installed")
+    .map((row) => String(row[name]))
     .sort();
 }
 
-/** What pkg has installed, read with `readFile` (`undefined` for a file
- * that is not there). `undefined` while a pkg transaction is in flight
- * (its journal is there, before or after the read): the read after it
- * answers. None in a sandbox without pkg's database. */
+/** What pkg has installed in a sandbox whose files `readAt` reads: none
+ * when it has no database. A pkg run writing it (its journal there, before
+ * or after the read) is waited out once, `retryMs`; a journal still there
+ * is a run that died mid-transaction, and an error, as is any read that
+ * fails. */
 export async function readInstalled(
-  readFile: (
-    path: string,
-    maxBytes: number,
-  ) => Promise<Uint8Array | undefined>,
-): Promise<string[] | undefined> {
-  const inFlight = async () =>
-    await readFile(INSTALLED_DB_JOURNAL, 1) !== undefined;
-  if (await inFlight()) return undefined;
-  const db = await readFile(INSTALLED_DB_PATH, INSTALLED_DB_MAX_BYTES);
-  if (await inFlight()) return undefined;
-  return db === undefined ? [] : installedPackages(db);
+  readAt: ReadAt,
+  retryMs = 500,
+): Promise<string[]> {
+  const journal = async () =>
+    ((await readAt(INSTALLED_DB_JOURNAL, 0, 1))?.byteLength ?? 0) > 0;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((done) => setTimeout(done, retryMs));
+    if (await journal()) continue;
+    if (await readAt(INSTALLED_DB_PATH, 0, 100) === undefined) return [];
+    const names = await installedPackages(async (offset, length) => {
+      const bytes = await readAt(INSTALLED_DB_PATH, offset, length);
+      if (bytes === undefined) {
+        throw new Error("pkg's database went away while it was read");
+      }
+      return bytes;
+    });
+    if (!await journal()) return names;
+  }
+  throw new Error(
+    "pkg's database has an unfinished transaction; the next pkg run repairs it",
+  );
 }

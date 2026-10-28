@@ -172,8 +172,8 @@ type FromWorker =
 let jupyter: JupyterTransport | undefined;
 let launchSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 let executions: ExecutionRegistry | undefined;
-/** The in-tab session, for package installs; the desktop app's has none
- * (its sandbox has a network, and `pkg install` there needs no page). */
+/** The booted session, the desktop app's too. Only the in-tab one installs
+ * packages (it has `writeFiles`) and reads pkg's database (`readAt`). */
 let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 
 async function servePackages(msg: ToWorker): Promise<void> {
@@ -213,14 +213,15 @@ async function servePackages(msg: ToWorker): Promise<void> {
 }
 
 /** Tell the page what pkg has installed in the in-tab sandbox, read from
- * its database (src/installed_db.ts): at boot, after each install, and
- * when the Packages panel opens. Nothing while a pkg run is writing it. */
+ * its database (src/installed_db.ts), or why it could not be read: at
+ * boot, after each install, and when the Packages panel opens. */
 async function postInstalled(): Promise<void> {
-  const readFile = packageSession?.readFile;
-  if (readFile === undefined) return;
+  // The in-tab sandbox only: the desktop app's page has no Packages panel
+  // to mark, and no VFS of its own to read.
+  const readAt = packageSession?.readAt;
+  if (readAt === undefined) return;
   try {
-    const names = await readInstalled(readFile);
-    if (names !== undefined) post({ type: "pkg-installed", names });
+    post({ type: "pkg-installed", names: await readInstalled(readAt) });
   } catch (error) {
     post({
       type: "pkg-installed",
@@ -599,7 +600,6 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           });
         });
         layerInstalled = from === "layer" ? store : undefined;
-        await postInstalled();
       } catch (error) {
         // A sandbox a layer was half written into, like a stalled one,
         // takes no pkg install: the retry is in a fresh one.
@@ -611,6 +611,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           stalledWhy = "a stored Python install did not work";
         }
         throw error;
+      } finally {
+        // Like a panel install's: what it did install, even if it failed.
+        await postInstalled();
       }
     };
   /** Boot, install, start Jupyter: the start, and what a retry after a

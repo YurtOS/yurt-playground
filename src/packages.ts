@@ -545,6 +545,18 @@ export async function loadCatalog(
   return { index, indexBytes, indexBundle, metadata };
 }
 
+/** What a panel install put in: the package, and the dependencies pkg's
+ * plan installed with it (its `install NAME VERSION` lines). The panel
+ * marks them at once; the next read of pkg's database (src/installed_db.ts)
+ * replaces the guess. */
+export function plannedInstalls(output: string, name: string): string[] {
+  const names = new Set(
+    [...output.matchAll(/^install (\S+) /gm)].map((match) => match[1]),
+  );
+  names.add(name);
+  return [...names];
+}
+
 /** The panel's Install buttons, by what the sandbox is known to have: those
  * say Installed and cannot be clicked; none can while an install runs. */
 export function markInstalled(

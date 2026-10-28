@@ -19,6 +19,7 @@ import {
   formatBytes,
   loadCatalog,
   markInstalled,
+  plannedInstalls,
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
@@ -74,8 +75,9 @@ let packageInstall:
  * from pkg's database (`pkg-installed`): at boot, after each install, and
  * whenever the Packages panel opens. */
 const knownInstalled = new Set<string>();
-/** Marks the Packages panel's buttons by `knownInstalled`, and says why
- * the database could not be read; set once the panel is wired. */
+/** Marks the Packages panel's buttons by `knownInstalled`, and says on its
+ * own line why the database could not be read (or clears that); set once
+ * the panel is wired. */
 let markPackages: (error?: string) => void = () => {};
 /** Asks the coordinator to read pkg's database again; set at boot. */
 let askInstalled = () => {};
@@ -545,16 +547,19 @@ function wirePackages(): void {
   // Its own line: the terminal's status is rewritten by the boot (Jupyter
   // starts after the shell), which would bury an install's outcome.
   const status = byId("packages-status");
+  // Its own line, so it never replaces an install's outcome; gone with the
+  // next read that works.
+  const dbError = byId("packages-db");
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
   const mark = () =>
     markInstalled(list.querySelectorAll("button"), knownInstalled, busy);
   markPackages = (error) => {
     mark();
-    if (error !== undefined) {
-      status.textContent =
-        `could not read which packages are installed: ${error}`;
-    }
+    dbError.hidden = error === undefined;
+    dbError.textContent = error === undefined
+      ? ""
+      : `could not read which packages are installed: ${error}`;
   };
   const install = async (name: string) => {
     if (packageInstall === undefined || busy) return;
@@ -569,6 +574,9 @@ function wirePackages(): void {
       status.textContent = /^nothing to install$/m.test(output)
         ? `${name} is already installed`
         : `installed ${name}`;
+      // Marked now; the coordinator's read of pkg's database, which follows,
+      // replaces the guess.
+      for (const n of plannedInstalls(output, name)) knownInstalled.add(n);
       panel.dataset.install = "done";
     } catch (error) {
       status.textContent = error instanceof Error

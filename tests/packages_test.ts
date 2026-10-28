@@ -19,6 +19,7 @@ import {
   type PackageVersion,
   parseIndex,
   parsePackageFile,
+  plannedInstalls,
   resolveSet,
   sha256Hex,
   sizeRefusal,
@@ -1306,4 +1307,21 @@ Deno.test("markInstalled marks the known packages Installed, disabled, and the r
     ["Install", true],
     ["Install", true],
   ]);
+});
+
+Deno.test("plannedInstalls is the package and what pkg's plan installed with it", () => {
+  assertEquals(
+    plannedInstalls(
+      "install libx 1.0.0-yurt_0\ninstall greet 0.1.0-yurt_0\n",
+      "greet",
+    ),
+    ["libx", "greet"],
+  );
+  // Already there: no plan, but it is installed.
+  assertEquals(plannedInstalls("nothing to install\n", "greet"), ["greet"]);
+  // Only pkg's own plan lines, anchored.
+  assertEquals(
+    plannedInstalls("will install foo next\n  install bar 1\n", "greet"),
+    ["greet"],
+  );
 });

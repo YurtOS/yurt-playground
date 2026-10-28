@@ -12,6 +12,7 @@ import {
   setPidCredentials,
   stageLayer,
   stageYurtimg,
+  vfsReadAt,
   vfsReaddir,
   vfsReadFile,
   vfsReadlink,
@@ -79,11 +80,15 @@ export type PlaygroundSession = {
   spawn?: (line: string) => Promise<void | { exited: Promise<unknown> }>;
   /** A guest file's bytes as the login shell would read them, or
    * `undefined` when there is no such file (the Jupyter connection file,
-   * looked for without typing into the user's shell). At most `maxBytes`
-   * (4 MiB unless asked). */
-  readFile?: (
+   * looked for without typing into the user's shell). */
+  readFile?: (path: string) => Promise<Uint8Array | undefined>;
+  /** Part of a guest file, straight from the in-tab kernel's VFS (no
+   * process, no credentials): `length` bytes from `offset`, fewer at its
+   * end, `undefined` when there is no such file; other failures throw. */
+  readAt?: (
     path: string,
-    maxBytes?: number,
+    offset: number,
+    length: number,
   ) => Promise<Uint8Array | undefined>;
   /** The same, handing the process back: what a driver's `exec` runs
    * (src/executions.ts). */
@@ -652,11 +657,13 @@ async function startPlayground(
     // The Jupyter connection file, looked for by the page itself: nothing is
     // typed into the user's shell for it (yurtos-kernel#2824). Read as the
     // login shell, whose credentials apply; a missing file is `undefined`.
-    readFile(path, maxBytes = 4 * 1024 * 1024) {
+    readFile(path) {
       // Enough for the kernel log the failure message tails.
-      const bytes = readGuestFile(mk, user.pid, path, maxBytes);
+      const bytes = readGuestFile(mk, user.pid, path, 4 * 1024 * 1024);
       return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
     },
+    readAt: (path, offset, length) =>
+      Promise.resolve(vfsReadAt(mk, path, offset, length)),
     dialSandboxPort: (port) => mk.dialSandboxPort(port),
     onOutput: output.onOutput,
     hushOutput: output.hushOutput,

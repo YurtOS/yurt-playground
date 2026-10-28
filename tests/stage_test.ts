@@ -8,7 +8,7 @@ import {
 } from "@yurt/kernel-host-interface-js";
 import { handlePlaygroundRequest } from "../src/serve.ts";
 import { loadPins, resolveArtifacts } from "../src/pins.ts";
-import { stageYurtimg } from "../src/stage.ts";
+import { stageYurtimg, vfsReadAt } from "../src/stage.ts";
 
 const STAT_MODE = 12;
 const STAT_UID = 16;
@@ -413,4 +413,45 @@ Deno.test("stageYurtimg applies metadata only to the entries it stages", async (
   assertEquals(metadata.has("/usr/local/bin/pip3"), false);
   // Directories are always staged, so they always take their metadata.
   assertEquals(metadata.get("/root")?.mode, 0o040_700);
+});
+
+Deno.test("vfsReadAt reads from an offset in scratch-sized pieces, fewer at the end, and tells a missing file from a failed read", () => {
+  const file = new Uint8Array(300).map((_, i) => i % 251);
+  const requests: { offset: number; cap: number }[] = [];
+  /** The kernel's VFS read (29): `rc` for every path but /f. */
+  const kernel = (rc: bigint) => ({
+    scratchLen: 64 + 100,
+    syscall(method: number, request: Uint8Array, cap: number) {
+      assertEquals(method, 29);
+      const offset = Number(
+        new DataView(request.buffer, request.byteOffset).getBigUint64(0, true),
+      );
+      if (new TextDecoder().decode(request.subarray(8)) !== "/f") {
+        return { rc, response: new Uint8Array() };
+      }
+      requests.push({ offset, cap });
+      const bytes = file.subarray(offset, offset + cap);
+      return { rc: BigInt(bytes.byteLength), response: bytes };
+    },
+  });
+  // deno-lint-ignore no-explicit-any
+  const mk = (rc: bigint) => kernel(rc) as any;
+  assertEquals(vfsReadAt(mk(-2n), "/f", 50, 200), file.slice(50, 250));
+  // Each piece fits the scratch buffer beside the request.
+  assert(requests.every(({ cap }) => cap <= 100 - 10));
+  assertEquals(requests[0].offset, 50);
+  // Past the end: what there is.
+  assertEquals(vfsReadAt(mk(-2n), "/f", 280, 100), file.slice(280));
+  assertEquals(vfsReadAt(mk(-2n), "/f", 400, 10), new Uint8Array());
+  // No such file (or a parent that is no directory): none.
+  assertEquals(vfsReadAt(mk(-2n), "/gone", 0, 10), undefined);
+  assertEquals(vfsReadAt(mk(-20n), "/gone", 0, 10), undefined);
+  // Anything else is an error, not an absence.
+  let threw = "";
+  try {
+    vfsReadAt(mk(-13n), "/denied", 0, 10);
+  } catch (error) {
+    threw = String(error);
+  }
+  assert(threw.includes("rc=-13"), threw);
 });

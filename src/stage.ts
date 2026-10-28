@@ -451,13 +451,16 @@ export function vfsStat(
   };
 }
 
-/** A regular file's bytes (`size` of them, as its stat says). */
-export function vfsReadFile(
+/** Up to `length` bytes of a file from `offset`, fewer at its end;
+ * `undefined` when there is no such file (or a parent is no directory).
+ * Any other failure throws. A `length` of 0 reads, and so tells, nothing. */
+export function vfsReadAt(
   mk: KernelHostInterface,
   path: string,
-  size: number,
-): Uint8Array {
-  const out = new Uint8Array(size);
+  offset: number,
+  length: number,
+): Uint8Array | undefined {
+  const out = new Uint8Array(length);
   const pathBytes = s(path);
   const request = new Uint8Array(8 + pathBytes.byteLength);
   request.set(pathBytes, 8);
@@ -465,23 +468,34 @@ export function vfsReadFile(
   // The request and the response share the kernel's scratch buffer.
   const cap = responseCap(mk) - request.byteLength;
   let at = 0;
-  while (at < size) {
-    view.setBigUint64(0, BigInt(at), true);
+  while (at < length) {
+    view.setBigUint64(0, BigInt(offset + at), true);
     const { rc, response } = mk.syscall(
       KERNEL_VFS_READ,
       request,
-      Math.min(cap, size - at),
+      Math.min(cap, length - at),
     );
     const count = Number(rc);
+    if (count === -2 || count === -20) return undefined;
     if (count < 0) throw new Error(`read ${path}: rc=${rc}`);
     if (count === 0) break;
     out.set(response.subarray(0, count), at);
     at += count;
   }
-  if (at !== size) {
-    throw new Error(`read ${path}: ${at} of ${size} bytes`);
+  return out.subarray(0, at);
+}
+
+/** A regular file's bytes (`size` of them, as its stat says). */
+export function vfsReadFile(
+  mk: KernelHostInterface,
+  path: string,
+  size: number,
+): Uint8Array {
+  const bytes = vfsReadAt(mk, path, 0, size);
+  if (bytes?.byteLength !== size) {
+    throw new Error(`read ${path}: ${bytes?.byteLength ?? 0} of ${size} bytes`);
   }
-  return out;
+  return bytes;
 }
 
 /** A symlink's target. */
