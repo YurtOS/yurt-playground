@@ -10,6 +10,7 @@ import {
   executeCell,
   hushUntil,
   interruptKernel,
+  restartGuestKernel,
   startGuestKernel,
 } from "../src/jupyter.ts";
 import type { JupyterMessage } from "../src/jupyter_protocol.ts";
@@ -620,4 +621,131 @@ Deno.test("a kernel that wrote its connection file and then exited still gets it
     Error,
     "did not become ready",
   );
+});
+
+/** A session whose kernel launches exit with `exits[n]` (the last one
+ * repeats) before writing a connection file, or -- for `"ready"` -- write
+ * one and keep running; the dial is not made. */
+function launchingSession(exits: (number | "ready")[]) {
+  const handlers = new Set<(bytes: Uint8Array) => void>();
+  let launches = 0;
+  let current: number | "ready" = 0;
+  const connection = new TextEncoder().encode(JSON.stringify({
+    shell_port: 1,
+    iopub_port: 2,
+    stdin_port: 3,
+    control_port: 4,
+    hb_port: 5,
+    key: "k",
+    transport: "tcp",
+  }));
+  return {
+    get launches() {
+      return launches;
+    },
+    terminal: {
+      write(bytes: Uint8Array) {
+        // The stop line (after a failed launch, and before a restart)
+        // ends with an echo marker.
+        const marker = new TextDecoder().decode(bytes).match(
+          /echo (YURT_SHELL_DONE_)""(\w+)/,
+        );
+        if (marker !== null) {
+          const reply = new TextEncoder().encode(
+            `${marker[1]}${marker[2]}\n$ `,
+          );
+          for (const handler of handlers) handler(reply);
+        }
+        return Promise.resolve();
+      },
+    },
+    spawn: () => {
+      current = exits[Math.min(launches, exits.length - 1)];
+      launches++;
+      return Promise.resolve({
+        exited: current === "ready"
+          ? new Promise<never>(() => {})
+          : Promise.resolve(current),
+      });
+    },
+    readFile: (path: string) =>
+      Promise.resolve(
+        path === JUPYTER_CONNECTION_FILE && current === "ready"
+          ? connection
+          : path === JUPYTER_LOG_FILE
+          ? new TextEncoder().encode("Segmentation fault\n")
+          : undefined,
+      ),
+    dialSandboxPort: (): never => {
+      throw new Error("the transport is not dialed in this test");
+    },
+    onOutput(handler: (bytes: Uint8Array) => void) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+  };
+}
+
+const NO_DIAL = { attempts: 1, delayMs: 1 };
+
+Deno.test("a kernel that dies of a stack overflow (exit 139) is launched again", async () => {
+  const session = launchingSession([139, "ready"]);
+  const status: string[] = [];
+  // Past the relaunch: the dial is where this one stops.
+  await assertRejects(
+    () =>
+      startGuestKernel(session, undefined, {
+        pollMs: 1,
+        connect: NO_DIAL,
+        status: (text) => status.push(text),
+      }),
+    Error,
+    "did not become ready",
+  );
+  assertEquals(session.launches, 2);
+  assertEquals(status, [
+    "starting Jupyter (launch 2: the last one overflowed the browser's stack)",
+  ]);
+});
+
+Deno.test("stack-overflow relaunches stop after five launches, and the exit is said", async () => {
+  const session = launchingSession([139]);
+  const status: string[] = [];
+  await assertRejects(
+    () =>
+      startGuestKernel(session, undefined, {
+        pollMs: 1,
+        status: (text) => status.push(text),
+      }),
+    Error,
+    "exited before writing its connection file (exit 139)",
+  );
+  assertEquals(session.launches, 5);
+  assertEquals(status.length, 4);
+});
+
+Deno.test("a kernel that exits with anything but 139 is not launched again", async () => {
+  for (const exit of [1, 127, 134, 1390]) {
+    const session = launchingSession([exit, "ready"]);
+    await assertRejects(
+      () => startGuestKernel(session, undefined, { pollMs: 1 }),
+      Error,
+      `(exit ${exit})`,
+    );
+    assertEquals(session.launches, 1, `exit ${exit}`);
+  }
+});
+
+Deno.test("a Jupyter restart relaunches past a stack overflow too", async () => {
+  const session = launchingSession([139, 139, "ready"]);
+  await assertRejects(
+    () =>
+      restartGuestKernel(session, undefined, undefined, {
+        pollMs: 1,
+        connect: NO_DIAL,
+      }),
+    Error,
+    "did not become ready",
+  );
+  assertEquals(session.launches, 3);
 });

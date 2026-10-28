@@ -341,7 +341,7 @@ async function retryPython(): Promise<void> {
   const started = await installThenLaunch(session, {
     installPython,
     launching: (s) => launchSession = s,
-    startKernel: (s) => startGuestKernel(s, kernelPorts),
+    startKernel: (s) => startGuestKernel(s, kernelPorts, { status }),
     post: (report) => {
       pythonMissing = report.type === "python-missing";
       dropLayerIfKernelFailed(report);
@@ -359,6 +359,11 @@ function subscribeJupyter(transport: JupyterTransport): void {
   transport.subscribe((message, channel) => {
     post({ type: "jupyter-message", message, channel });
   });
+}
+
+/** A status line for the page (what a start is doing). */
+function status(text: string): void {
+  post({ type: "status", text });
 }
 
 function post(msg: FromWorker): void {
@@ -455,6 +460,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           launchSession,
           previous,
           kernelPorts,
+          { status },
         );
         subscribeJupyter(jupyter);
         post({ type: "jupyter-restarted" });
@@ -600,7 +606,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       launching: (session) => launchSession = session,
       noJupyter: msg.noJupyter === true,
       installPython,
-      startKernel: (session) => startGuestKernel(session, kernelPorts),
+      startKernel: (session) =>
+        startGuestKernel(session, kernelPorts, { status }),
       post: (report) => {
         if (report.type === "python-missing") pythonMissing = true;
         dropLayerIfKernelFailed(report);

@@ -204,10 +204,11 @@ export async function restartGuestKernel(
   session: JupyterLaunchSession,
   previous: JupyterTransport | undefined,
   ports?: KernelPorts,
+  options: StartOptions = {},
 ): Promise<JupyterTransport> {
   await previous?.close().catch(() => {});
   await stopGuestKernel(session);
-  return await startGuestKernel(session, ports);
+  return await startGuestKernel(session, ports, options);
 }
 
 // The PTY echoes the typed command, so the marker must not appear in it:
@@ -215,16 +216,64 @@ export async function restartGuestKernel(
 const CONNECTION_MARKER = "YURT_JUPYTER_CONNECTION_READY";
 const TYPED_CONNECTION_MARKER = 'YURT_JUPYTER_CONNECTION_""READY';
 
+type StartOptions = {
+  pollMs?: number;
+  /** The dial's retry budget -- production waits out a kernel that is
+   * still binding its ports; a test that never dials says so instead of
+   * paying the whole backoff (yurt-playground#123). */
+  connect?: { attempts?: number; delayMs?: number };
+  /** Told what the start is doing when it launches the kernel again. */
+  status?: (text: string) => void;
+};
+
+/** How many times ipykernel is launched when it dies of a stack overflow. */
+export const STACK_OVERFLOW_LAUNCHES = 5;
+
+/** The guest kernel died before writing its connection file. `status` is
+ * the host's exit number (128+n for a signal). */
+class KernelExited extends Error {
+  constructor(message: string, readonly status: unknown) {
+    super(message);
+  }
+}
+
+/**
+ * Start the guest kernel and connect to it.
+ *
+ * On Safari the first ipykernel launch in a page can die with SIGSEGV
+ * (exit 139): JavaScriptCore throws "Maximum call stack size exceeded" in
+ * the guest Worker (yurtos-kernel#4204). A launch a few seconds later in the
+ * same page fits (measured: launch 2 started every time) -- most likely
+ * because CPython then runs as optimised wasm with smaller frames than the
+ * first, baseline tier's. So that one failure is launched again, up to
+ * STACK_OVERFLOW_LAUNCHES launches; any other is final.
+ */
 export async function startGuestKernel(
   session: JupyterLaunchSession,
   ports?: KernelPorts,
-  /** `connect` is the dial's retry budget -- production waits out a kernel
-   * that is still binding its ports; a test that never dials says so
-   * instead of paying the whole backoff (yurt-playground#123). */
-  options: {
-    pollMs?: number;
-    connect?: { attempts?: number; delayMs?: number };
-  } = {},
+  options: StartOptions = {},
+): Promise<JupyterTransport> {
+  for (let launch = 1;; launch++) {
+    try {
+      return await launchGuestKernel(session, ports, options);
+    } catch (error) {
+      if (
+        !(error instanceof KernelExited) || error.status !== 139 ||
+        launch >= STACK_OVERFLOW_LAUNCHES
+      ) throw error;
+      console.log(`ipykernel launch ${launch} died of SIGSEGV`);
+      options.status?.(
+        `starting Jupyter (launch ${launch + 1}: the last one ` +
+          "overflowed the browser's stack)",
+      );
+    }
+  }
+}
+
+async function launchGuestKernel(
+  session: JupyterLaunchSession,
+  ports: KernelPorts | undefined,
+  options: StartOptions,
 ): Promise<JupyterTransport> {
   // Only what is typed into the user's shell needs hushing; a session that
   // spawns the launch and reads the file itself types nothing.
@@ -338,7 +387,12 @@ async function pollConnectionFile(
   let gone = false;
   /** The host's own failure to run the process, apart from an exit. */
   let failed: string | undefined;
-  exited?.then(() => gone = true, (error) => {
+  /** How it exited (the host's number: 128+n for a signal). */
+  let status: unknown;
+  exited?.then((value) => {
+    status = value;
+    gone = true;
+  }, (error) => {
     failed = error instanceof Error ? error.message : String(error);
     gone = true;
   });
@@ -364,11 +418,17 @@ async function pollConnectionFile(
   const tail = log === undefined
     ? "(no log)"
     : decoder.decode(log).split("\n").slice(-30).join("\n");
+  if (failed === undefined && gone) {
+    throw new KernelExited(
+      `the Jupyter kernel exited before writing its connection file (exit ${
+        JSON.stringify(status)
+      }); kernel log:\n${tail}`,
+      status,
+    );
+  }
   throw new Error(
     failed !== undefined
       ? `the Jupyter kernel process failed to run: ${failed}; kernel log:\n${tail}`
-      : gone
-      ? `the Jupyter kernel exited before writing its connection file; kernel log:\n${tail}`
       : `Jupyter connection file was not written within ${CONNECTION_FILE_WAIT_SECONDS} s; kernel log:\n${tail}`,
   );
 }
