@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import {
-  kernelCheckoutProblem,
+  checkoutProblem,
   releaseProblems,
 } from "../scripts/release-snapshot.ts";
 import { checkSnapshotFile } from "../scripts/lib/snapshot_file.ts";
@@ -50,10 +50,16 @@ Deno.test("only the deploy fetches the snapshot, with the other blobs' retry", a
     Deno.readTextFile(new URL(`../${path}`, import.meta.url));
   const script = await read("scripts/install-pinned-artifacts.sh");
   assertEquals(
-    /YURT_INSTALL_SNAPSHOT:-\}" == 1 \]\]; then[^]*download "\$tag" "\$repo" 'sandbox\.seal\.gz/
+    /YURT_INSTALL_SNAPSHOT:-\}" == 1 \]\]; then\s+if ! install_snapshot; then/
       .test(script),
     true,
-    "the snapshot is fetched through download(), behind YURT_INSTALL_SNAPSHOT=1",
+    "the snapshot is installed behind YURT_INSTALL_SNAPSHOT=1",
+  );
+  assertEquals(
+    /install_snapshot\(\) \([^]*download "\$tag" "\$repo" 'sandbox\.seal\.gz/
+      .test(script),
+    true,
+    "through download(), the other blobs' retry",
   );
   assertEquals(
     (await read(".github/workflows/deploy-pages.yml")).includes(
@@ -72,31 +78,29 @@ Deno.test("only the deploy fetches the snapshot, with the other blobs' retry", a
   }
 });
 
-Deno.test("a train keeps the snapshot pin only when every part of its identity is unchanged", async () => {
-  const { snapshotIdentity } = await import("../src/sandbox_snapshot.ts");
-  const pins = JSON.parse(
-    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
-  );
+Deno.test("a train keeps the snapshot pin only when release-snapshot.ts --check-pin says it is the train's", async () => {
   const script = await Deno.readTextFile(
     new URL("../scripts/release-playground.sh", import.meta.url),
   );
-  for (const key of Object.keys(snapshotIdentity(pins))) {
-    assertEquals(
-      new RegExp(`\\.${key} == \\$`).test(script),
-      true,
-      `release-playground.sh compares builtFrom.${key}`,
-    );
-  }
+  assertEquals(
+    /if ! \(cd "\$root" && deno run -A scripts\/release-snapshot\.ts --check-pin\); then\s+jq 'del\(\.snapshot\)'/
+      .test(script),
+    true,
+    "the carried entry is checked by --check-pin and dropped when refused",
+  );
+  // No second, hand-written comparison of the identity fields.
+  assertEquals(script.includes(".builtFrom"), false);
 });
 
-Deno.test("a snapshot is released only from the pinned kernel rev, with a clean tree", async () => {
+Deno.test("a snapshot is released only from the pinned kernel rev and a pushed playground head, both clean", async () => {
   const dir = await Deno.makeTempDir();
-  const git = async (...args: string[]) => {
+  const remote = await Deno.makeTempDir();
+  const git = async (cwd: string, ...args: string[]) => {
     const out = await new Deno.Command("git", {
-      args: ["-C", dir, ...args],
+      args: ["-C", cwd, "-c", "user.name=t", "-c", "user.email=t@t", ...args],
       stdout: "piped",
       stderr: "null",
-      // Not a hook's GIT_DIR or GIT_INDEX_FILE: this checkout's own.
+      // Not a hook's GIT_DIR or GIT_INDEX_FILE.
       clearEnv: true,
       env: {
         PATH: Deno.env.get("PATH") ?? "",
@@ -105,47 +109,60 @@ Deno.test("a snapshot is released only from the pinned kernel rev, with a clean 
     }).output();
     return new TextDecoder().decode(out.stdout).trim();
   };
+  const commit = async (content: string) => {
+    await Deno.writeTextFile(`${dir}/a`, content);
+    await git(dir, "add", "a", "deno.lock");
+    await git(dir, "commit", "-q", "-m", content);
+  };
   try {
-    await git("init", "-q");
-    await Deno.writeTextFile(`${dir}/a`, "1");
+    await git(dir, "init", "-q", "-b", "main");
     await Deno.writeTextFile(`${dir}/deno.lock`, "{}");
-    await git("add", "a", "deno.lock");
-    await git(
-      "-c",
-      "user.name=t",
-      "-c",
-      "user.email=t@t",
-      "commit",
-      "-q",
-      "-m",
-      "a",
-    );
-    const head = await git("rev-parse", "HEAD");
-    assertEquals(await kernelCheckoutProblem(dir, head), undefined);
-    // The page's bundle writes the checkout's lockfile; that is no change.
+    await commit("1");
+    const head = await git(dir, "rev-parse", "HEAD");
+    // The kernel checkout: the pinned rev, its lockfile aside.
+    assertEquals(await checkoutProblem(dir, head, ["deno.lock"]), undefined);
     await Deno.writeTextFile(`${dir}/deno.lock`, '{"npm":{}}');
-    assertEquals(await kernelCheckoutProblem(dir, head), undefined);
+    assertEquals(await checkoutProblem(dir, head, ["deno.lock"]), undefined);
     assertEquals(
-      (await kernelCheckoutProblem(dir, "0".repeat(40)))?.includes(
+      (await checkoutProblem(dir, head))?.includes("uncommitted changes"),
+      true,
+    );
+    assertEquals(
+      (await checkoutProblem(dir, "0".repeat(40)))?.includes(
         `is at ${head}, not the pinned ${"0".repeat(40)}`,
       ),
       true,
     );
     await Deno.writeTextFile(`${dir}/a`, "2");
     assertEquals(
-      (await kernelCheckoutProblem(dir, head))?.includes(
+      (await checkoutProblem(dir, head, ["deno.lock"]))?.includes(
         "uncommitted changes",
       ),
       true,
     );
+    await git(dir, "checkout", "-q", "--", "a", "deno.lock");
+    // The playground checkout: its pushed head.
     assertEquals(
-      (await kernelCheckoutProblem(`${dir}/nope`, head))?.startsWith(
-        "cannot read the kernel checkout",
+      (await checkoutProblem(dir, "upstream"))?.startsWith(
+        "cannot read the checkout",
+      ),
+      true,
+      "no upstream",
+    );
+    await git(remote, "init", "-q", "--bare");
+    await git(dir, "remote", "add", "origin", remote);
+    await git(dir, "push", "-q", "-u", "origin", "main");
+    assertEquals(await checkoutProblem(dir, "upstream"), undefined);
+    await commit("3");
+    assertEquals(
+      (await checkoutProblem(dir, "upstream"))?.includes(
+        `not its pushed head ${head}`,
       ),
       true,
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
+    await Deno.remove(remote, { recursive: true });
   }
 });
 
@@ -196,5 +213,103 @@ Deno.test("a damaged or missing snapshot file is a problem to report, never a th
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** install-pinned-artifacts.sh run on its own tree, with a `gh` that
+ * serves each release asset as its name's bytes ("<asset>" in UTF-8) and
+ * fails for the snapshot when `failSnapshot` is set. */
+async function installWith(
+  snapshot: unknown,
+  { failSnapshot = false } = {},
+) {
+  const root = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${root}/scripts`);
+    await Deno.mkdir(`${root}/artifacts`);
+    await Deno.mkdir(`${root}/public/demo`, { recursive: true });
+    await Deno.mkdir(`${root}/bin`);
+    await Deno.copyFile(
+      new URL("../scripts/install-pinned-artifacts.sh", import.meta.url),
+      `${root}/scripts/install-pinned-artifacts.sh`,
+    );
+    const sha = async (text: string) =>
+      [
+        ...new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)),
+        ),
+      ].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const pin = async (asset: string) => ({
+      release: "r",
+      sha256: await sha(asset),
+    });
+    await Deno.writeTextFile(
+      `${root}/artifacts/pins.json`,
+      JSON.stringify({
+        kernelWasm: await pin("kernel-wasm.wasm"),
+        image: await pin("playground-image.yurtimg"),
+        pythonSeal: await pin("python3-seal.wasm"),
+        ...(snapshot === undefined ? {} : { snapshot }),
+      }),
+    );
+    // gh release download TAG --repo R --pattern P --dir D --clobber
+    await Deno.writeTextFile(
+      `${root}/bin/gh`,
+      `#!/usr/bin/env bash
+pattern=$7; dir=$9; mkdir -p "$dir"
+case $pattern in
+  sandbox.seal.gz.*) ${
+        failSnapshot ? 'echo "HTTP 404: Not Found" >&2; exit 1' : ""
+      }
+    printf 'snap' > "$dir/sandbox.seal.gz.0" ;;
+  *) printf '%s' "$pattern" > "$dir/$pattern" ;;
+esac
+`,
+    );
+    await Deno.chmod(`${root}/bin/gh`, 0o755);
+    const out = await new Deno.Command("bash", {
+      args: [`${root}/scripts/install-pinned-artifacts.sh`],
+      env: {
+        PATH: `${root}/bin:${Deno.env.get("PATH")}`,
+        YURT_INSTALL_SNAPSHOT: "1",
+      },
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    const installed = await Deno.stat(
+      `${root}/public/snapshot/sandbox.seal.gz`,
+    ).then(() => true, () => false);
+    return {
+      code: out.code,
+      stderr: new TextDecoder().decode(out.stderr),
+      installed,
+      snapSha: await sha("snap"),
+    };
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+Deno.test("a deploy never fails on the optional snapshot: any problem is a warning and no snapshot", async () => {
+  const good = (sha256: string) => ({
+    releaseRepo: "YurtOS/yurt-playground",
+    release: "snapshot-t",
+    sha256,
+    parts: ["x"],
+  });
+  const ok = await installWith(good((await installWith(undefined)).snapSha));
+  assertEquals([ok.code, ok.installed], [0, true], ok.stderr);
+  for (
+    const [why, snapshot, options] of [
+      ["a wrong sha256", good("0".repeat(64)), {}],
+      ["a failed download", good("0".repeat(64)), { failSnapshot: true }],
+      ["a malformed entry", { release: 7 }, {}],
+      ["an older shape", "snapshot-t", {}],
+    ] as const
+  ) {
+    const run = await installWith(snapshot, options);
+    assertEquals(run.code, 0, `${why}: ${run.stderr}`);
+    assertEquals(run.installed, false, why);
+    assertEquals(run.stderr.includes("WARNING"), true, why);
   }
 });

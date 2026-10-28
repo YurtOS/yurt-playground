@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { DeferredWork } from "../src/boot.ts";
+import { DeferredWork, processesToKill } from "../src/boot.ts";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -53,4 +53,20 @@ Deno.test("a failed exit or a failed run still ends the deferred work", async ()
   await tick();
   await tick();
   assertEquals(work.idle, true);
+});
+
+Deno.test("a seal never kills an exec's sweep, nor anything while one is being spawned", () => {
+  const live = [{ pid: 3 }, { pid: 5 }, { pid: 8 }];
+  assertEquals(processesToKill(live, { pids: new Set(), starting: 0 }), [
+    3,
+    5,
+    8,
+  ]);
+  assertEquals(processesToKill(live, { pids: new Set([5]), starting: 0 }), [
+    3,
+    8,
+  ]);
+  // A sweep whose pid the kernel has not handed back yet could be any of
+  // them: nothing is killed this round.
+  assertEquals(processesToKill(live, { pids: new Set([5]), starting: 1 }), []);
 });

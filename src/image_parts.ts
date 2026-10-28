@@ -59,8 +59,9 @@ export type PartChecks = {
 /**
  * A `fetch` that answers a request for `name` by fetching `name.parts.json`
  * and streaming the parts in order, so callers that read a single body
- * (hash check, progress, cache) need not know the file was split. A part
- * is fetched when the reader asks for more, so at most one is in flight.
+ * (hash check, progress, cache) need not know the file was split. Parts
+ * are read as the reader asks for more, with the next one already asked
+ * for: at most two are in flight.
  */
 export function partsFetch(
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
@@ -81,6 +82,16 @@ export function partsFetch(
     const signal = callerSignal == null
       ? giveUp.signal
       : AbortSignal.any([callerSignal, giveUp.signal]);
+    const request = (at: number) => {
+      const response = fetchImpl(
+        new URL(manifest.parts[at], manifestUrl),
+        { ...init, signal } as RequestInit,
+      );
+      // Not an unhandled rejection when the stream stops before it is read.
+      response.catch(() => {});
+      return response;
+    };
+    let next: Promise<Response> | undefined;
     let index = 0;
     // A reader, not `for await`: WebKit ships ReadableStream without
     // Symbol.asyncIterator, so iterating a body there throws.
@@ -102,10 +113,10 @@ export function partsFetch(
           }
           const part = manifest.parts[index];
           const at = index++;
-          const response = await fetchImpl(
-            new URL(part, manifestUrl),
-            { ...init, signal } as RequestInit,
-          );
+          const response = await (next ?? request(at));
+          // The next part is asked for while this one is read, so the
+          // parts follow one another without a round trip between them.
+          next = at + 1 < manifest.parts.length ? request(at + 1) : undefined;
           if (!response.ok || response.body === null) {
             throw new Error(`fetch ${part} failed: ${response.status}`);
           }

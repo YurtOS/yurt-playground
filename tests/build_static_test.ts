@@ -237,6 +237,7 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
     pythonSeal: { sha256: built.pythonSealSha256 },
     snapshot: {
       releaseRepo: "YurtOS/yurt-playground",
+      format: 3,
       release: "snapshot-t",
       sha256: await sha256Hex(file),
       size: file.byteLength,

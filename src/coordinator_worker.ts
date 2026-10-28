@@ -354,17 +354,12 @@ async function livePythonSet(
  * in the kernel's place: a sealed sandbox runs nothing more. */
 async function captureSnapshot(
   session: Awaited<ReturnType<typeof bootPlayground>>,
-  python: PythonRequest | undefined,
+  /** The Python set the capture installed, as a layer key; null when the
+   * site installs none (the full image has it). */
+  pythonSet: string | null,
 ): Promise<void> {
   if (session.seal === undefined || session.process === undefined) {
     throw new Error("this session cannot seal");
-  }
-  // Which Python set this is, as a restore compares it with the live index.
-  const pythonSet = await livePythonSet(python);
-  if (pythonSet === undefined) {
-    throw new Error(
-      "the live package index could not say which Python set this is",
-    );
   }
   // Bytecode for every module the packages ship as source only: the login
   // user cannot write __pycache__ there, so each start compiled them again
@@ -634,8 +629,31 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const tablet = msg.tablet === true;
   // The desktop app's sandbox has a network and its own pkg; only the
   // in-tab one installs through the page.
+  /** What a capture's install installed: the set resolved once and
+   * installed exactly, so the snapshot's label is the set it holds. */
+  let capturedSet: string | undefined;
+  const captureInstall = async (
+    session: BootedSession,
+    request: PythonRequest & { image: string },
+  ) => {
+    post({ type: "status", text: "installing Python" });
+    const progress = (text: string) => post({ type: "status", text });
+    const cache = await browserArchiveCache();
+    progress("Python: resolving the set");
+    const releases = resolveSet(await loadCatalog(), request.set);
+    await installs(() => {
+      pkgTouched.add(session);
+      return installPackage(
+        { label: request.label, releases, othersAllowed: true },
+        { host: workerPackageHost(session), tablet, progress, cache },
+      );
+    });
+    capturedSet = layerKey(request.image, releases);
+  };
   installPython = python === undefined || kernelPorts !== undefined
     ? undefined
+    : msg.snapshot === "capture" && python.image !== undefined
+    ? (session) => captureInstall(session, { ...python, image: python.image! })
     : async (session) => {
       post({ type: "status", text: "installing Python" });
       const cache = await browserArchiveCache();
@@ -711,7 +729,12 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       startKernel: (session, relaunching) =>
         startGuestKernel(session, kernelPorts, { relaunching }),
       capture: msg.snapshot === "capture"
-        ? (session) => captureSnapshot(session, python)
+        ? (session) => {
+          if (python?.image !== undefined && capturedSet === undefined) {
+            throw new Error("the capture's Python install did not run");
+          }
+          return captureSnapshot(session, capturedSet ?? null);
+        }
         : undefined,
       post: (report) => {
         if (report.type === "python-missing") pythonMissing = true;

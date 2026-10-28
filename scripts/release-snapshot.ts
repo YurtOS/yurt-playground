@@ -22,6 +22,7 @@
  *   5. write the `snapshot` entry into artifacts/pins.json.
  *
  * Usage: deno run -A scripts/release-snapshot.ts [--dry-run] [--resume] [--tag TAG]
+ *        deno run -A scripts/release-snapshot.ts --check-pin
  *
  *   --dry-run  everything but the release and the pins write
  *   --resume   reuse public/snapshot/sandbox.seal.gz when it is a capture
@@ -30,6 +31,13 @@
  *   --tag      the release tag (default snapshot-<train>): a second snapshot
  *              of one train, e.g. after a BOOT_SETUP bump, takes a new tag
  *              (snapshot-<train>-2); a published release is never replaced
+ *   --check-pin  exit 0 when artifacts/pins.json's snapshot entry may stay:
+ *              well formed, this page's format, built from these pins and
+ *              of the Python set the live index offers (release-playground.sh)
+ *
+ * It refuses to run from a kernel checkout that is not at the pinned rev
+ * or a playground checkout that is not its branch's pushed head, either
+ * with uncommitted changes.
  *
  * Needs: the pinned blobs (scripts/install-pinned-artifacts.sh), the sibling
  * yurtos-kernel at the pinned rev (the page bundle), Playwright's Chromium
@@ -40,12 +48,15 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle, kernelRoot } from "./serve.ts";
-import { checkSnapshotFile } from "./lib/snapshot_file.ts";
+import { checkSnapshotFile, livePythonSet } from "./lib/snapshot_file.ts";
 import { handlePlaygroundRequest, ISOLATION_HEADERS } from "../src/serve.ts";
 import { imagePartRange, imagePartsManifest } from "../src/image_parts.ts";
 import { sha256Hex } from "../src/integrity.ts";
-import { parsePins, type SnapshotPin } from "../src/pins.ts";
+import { loadPins, parsePins, type SnapshotPin } from "../src/pins.ts";
 import {
+  checkPythonSet,
+  FORMAT,
+  pinnedSnapshot,
   SANDBOX_SNAPSHOT_NAME,
   snapshotIdentity,
 } from "../src/sandbox_snapshot.ts";
@@ -81,16 +92,17 @@ async function gh(
   return { ok: out.success, stdout: new TextDecoder().decode(out.stdout) };
 }
 
-/** Why the kernel checkout the page is bundled from is not the pinned
- * rev with a clean tree, or undefined when it is: the snapshot records
- * that rev as the one its JS host came from. */
-export async function kernelCheckoutProblem(
-  kernelRoot: string,
+/** Why the checkout at `dir` is not at `rev` with a clean tree (paths in
+ * `ignored` aside), or undefined when it is. `rev` "upstream" is its
+ * branch's pushed head: no commit the PR that carries the pin lacks. */
+export async function checkoutProblem(
+  dir: string,
   rev: string,
+  ignored: string[] = [],
 ): Promise<string | undefined> {
   const git = async (...args: string[]) => {
     const out = await new Deno.Command("git", {
-      args: ["-C", kernelRoot, ...args],
+      args: ["-C", dir, ...args],
       stdout: "piped",
       stderr: "piped",
       // Not a hook's GIT_DIR or GIT_INDEX_FILE: this checkout's own.
@@ -107,28 +119,43 @@ export async function kernelCheckoutProblem(
   };
   try {
     const head = await git("rev-parse", "HEAD");
-    if (head !== rev) {
-      return `the kernel checkout ${kernelRoot} is at ${head}, not the pinned ${rev}`;
+    const want = rev === "upstream" ? await git("rev-parse", "@{u}") : rev;
+    if (head !== want) {
+      return `the checkout ${dir} is at ${head}, not ${
+        rev === "upstream" ? `its pushed head ${want}` : `the pinned ${want}`
+      }`;
     }
-    // Not its deno.lock: bundling the page from the checkout writes the
-    // page's npm entries there, which changes no kernel source.
     const dirty = await git(
       "status",
       "--porcelain",
       "--untracked-files=no",
       "--",
       ".",
-      ":!deno.lock",
+      ...ignored.map((path) => `:!${path}`),
     );
     if (dirty !== "") {
-      return `the kernel checkout ${kernelRoot} has uncommitted changes:\n${dirty}`;
+      return `the checkout ${dir} has uncommitted changes:\n${dirty}`;
     }
     return undefined;
   } catch (error) {
-    return `cannot read the kernel checkout ${kernelRoot}: ${
+    return `cannot read the checkout ${dir}: ${
       error instanceof Error ? error.message : String(error)
     }`;
   }
+}
+
+/** `--check-pin`: whether the pins' snapshot entry may stay -- well formed,
+ * of this page's format, built from these pins, and of the Python set the
+ * live index offers now. release-playground.sh asks before carrying it. */
+async function checkPin(): Promise<void> {
+  const pins = await loadPins(pinsPath);
+  try {
+    const pin = pinnedSnapshot(pins);
+    checkPythonSet(pin.builtFrom, await livePythonSet(pins));
+  } catch (error) {
+    die(error instanceof Error ? error.message : String(error));
+  }
+  say("the pinned snapshot is this train's");
 }
 
 /** Step 1: the page captures the snapshot; the file it downloads. */
@@ -267,6 +294,10 @@ async function main(): Promise<void> {
     if (at >= 0) args.splice(at, 1);
     return at >= 0;
   };
+  if (flag("--check-pin")) {
+    if (args.length > 0) die(`unknown arguments: ${args.join(" ")}`);
+    return await checkPin();
+  }
   const dryRun = flag("--dry-run");
   const resume = flag("--resume");
   let tagArg: string | undefined;
@@ -290,16 +321,32 @@ async function main(): Promise<void> {
     );
   }
 
-  const kernelProblem = await kernelCheckoutProblem(
+  // The page is bundled from these two checkouts: the snapshot is theirs.
+  const kernelProblem = await checkoutProblem(
     kernelRoot(),
     pins.kernelWasm.rev,
+    // The page's bundle writes the kernel checkout's lockfile.
+    ["deno.lock"],
   );
   if (kernelProblem !== undefined) die(kernelProblem);
+  // This script writes the pins.
+  const pageProblem = await checkoutProblem(root, "upstream", [
+    "artifacts/pins.json",
+  ]);
+  if (pageProblem !== undefined) die(pageProblem);
 
-  // A capture of this train that decodes in full: reused with --resume,
-  // anything else (another train, a damaged file) is captured again.
+  // A capture of this train and of the set the live index offers now,
+  // that decodes in full: reused with --resume; anything else (another
+  // train or set, a damaged file) is captured again.
+  const live = await livePythonSet(pins).catch((error) =>
+    die(`cannot read the live package index: ${error}`)
+  );
   const thisTrains = () =>
-    checkSnapshotFile(snapshotPath, snapshotIdentity(pins), { decode: true });
+    checkSnapshotFile(
+      snapshotPath,
+      { ...snapshotIdentity(pins), pythonSet: live },
+      { decode: true },
+    );
   let check = resume ? await thisTrains() : undefined;
   if (check?.ok) {
     say(`--resume: reusing ${snapshotPath}`);
@@ -321,6 +368,7 @@ async function main(): Promise<void> {
     const pin: SnapshotPin = {
       releaseRepo: REPO,
       release: tag,
+      format: FORMAT,
       sha256,
       size: file.byteLength,
       parts: parts.map((part) => part.sha256),

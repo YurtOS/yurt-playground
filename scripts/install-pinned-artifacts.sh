@@ -86,30 +86,39 @@ fetch pythonSeal python3-seal.wasm public/demo/python3-seal.wasm
 # when the train pins one and the caller asks for it (YURT_INSTALL_SNAPSHOT=1:
 # the deploy, which publishes it): 132 MB that no test reads. A yurt-playground
 # release of its parts, joined here and checked against the whole file's
-# sha256 the pin records.
-if [[ "$(jq -r '.snapshot.release // empty' "$pins")" == "" ]]; then
-  # One from earlier pins would be checked and left out by the static
-  # build; it is not this train's.
-  rm -f "$root/public/snapshot/sandbox.seal.gz"
-elif [[ "${YURT_INSTALL_SNAPSHOT:-}" == 1 ]]; then
-  repo=$(jq -r .snapshot.releaseRepo "$pins")
-  tag=$(jq -r .snapshot.release "$pins")
-  count=$(jq -r '.snapshot.parts | length' "$pins")
-  expected=$(jq -r .snapshot.sha256 "$pins")
+# sha256 the pin records. It is optional: any problem with it -- a
+# malformed entry, a failed download, a wrong sha256 -- is a warning and no
+# snapshot, never a failed install (the default page must still ship).
+install_snapshot() (
+  repo=$(jq -er '.snapshot.releaseRepo | strings' "$pins") || exit 1
+  tag=$(jq -er '.snapshot.release | strings' "$pins") || exit 1
+  count=$(jq -er '.snapshot.parts | arrays | length' "$pins") || exit 1
+  expected=$(jq -er '.snapshot.sha256 | strings' "$pins") || exit 1
   echo "fetching sandbox.seal.gz ($count parts) from $repo $tag" >&2
-  download "$tag" "$repo" 'sandbox.seal.gz.[0-9]*' "$cache/snapshot"
-  : > "$cache/sandbox.seal.gz"
+  download "$tag" "$repo" 'sandbox.seal.gz.[0-9]*' "$cache/snapshot" || exit 1
+  : > "$cache/sandbox.seal.gz" || exit 1
   for ((i = 0; i < count; i++)); do
-    cat "$cache/snapshot/sandbox.seal.gz.$i" >> "$cache/sandbox.seal.gz"
+    cat "$cache/snapshot/sandbox.seal.gz.$i" >> "$cache/sandbox.seal.gz" || exit 1
   done
   actual=$(shasum -a 256 "$cache/sandbox.seal.gz" | cut -d' ' -f1)
   if [[ "$actual" != "$expected" ]]; then
     echo "sandbox.seal.gz sha256 mismatch: got $actual, pin $expected" >&2
     exit 1
   fi
-  mkdir -p "$root/public/snapshot"
-  mv "$cache/sandbox.seal.gz" "$root/public/snapshot/sandbox.seal.gz"
+  mkdir -p "$root/public/snapshot" &&
+    mv "$cache/sandbox.seal.gz" "$root/public/snapshot/sandbox.seal.gz" || exit 1
   echo "installed $tag/sandbox.seal.gz as public/snapshot/sandbox.seal.gz" >&2
+)
+
+if [[ "$(jq -r '.snapshot // empty' "$pins")" == "" ]]; then
+  # One from earlier pins would be checked and left out by the static
+  # build; it is not this train's.
+  rm -f "$root/public/snapshot/sandbox.seal.gz"
+elif [[ "${YURT_INSTALL_SNAPSHOT:-}" == 1 ]]; then
+  if ! install_snapshot; then
+    echo "WARNING: the pinned sandbox snapshot was not installed; the site ships without ?snapshot=1" >&2
+    rm -f "$root/public/snapshot/sandbox.seal.gz"
+  fi
 else
   echo "sandbox.seal.gz not fetched (YURT_INSTALL_SNAPSHOT=1 fetches it)" >&2
 fi

@@ -35,7 +35,7 @@ import { watchGuestMemoryRefusals } from "./memory_refused.ts";
 import { parsePins, type Pins } from "./pins.ts";
 import {
   checkPythonSet,
-  decodeSandboxSnapshot,
+  decodeWhileChecking,
   fetchVerifiedSnapshot,
   pinnedSnapshot,
 } from "./sandbox_snapshot.ts";
@@ -439,24 +439,27 @@ async function restoreSnapshot(
   // (SnapshotMismatch both).
   const pins = await browserPins();
   const pin = pinnedSnapshot(pins);
-  // The Python set the capture installed must be the one an install
-  // would get now, as for a stored layer (src/python_layer.ts).
-  checkPythonSet(pin.builtFrom, await env.livePythonSet?.());
   // Only this frame holds the decoded memory (~545 MiB), and only until
-  // the restore copied it: a fallback boot must not run beside it.
-  let image: SandboxSealImage | undefined = await decodeSandboxSnapshot(
-    await fetchVerifiedSnapshot(
-      path,
-      pin,
-      undefined,
-      (loaded, total) =>
-        env.show(
-          `loading snapshot ${(loaded / MIB).toFixed(1)} of ${
-            (total / MIB).toFixed(1)
-          } MiB`,
-        ),
-    ),
+  // the restore copied it: a fallback boot must not run beside it. The
+  // Python set the capture installed must be the one an install would get
+  // now, as for a stored layer (src/python_layer.ts); the live index is
+  // asked while the snapshot downloads, and a different answer stops it.
+  let image: SandboxSealImage | undefined = await decodeWhileChecking(
+    (signal) =>
+      fetchVerifiedSnapshot(
+        path,
+        pin,
+        undefined,
+        (loaded, total) =>
+          env.show(
+            `loading snapshot ${(loaded / MIB).toFixed(1)} of ${
+              (total / MIB).toFixed(1)
+            } MiB`,
+          ),
+        signal,
+      ),
     pin.builtFrom,
+    (async () => checkPythonSet(pin.builtFrom, await env.livePythonSet?.()))(),
   );
   const fetched = performance.now();
   const memoryBytes = image.kernelMemory.byteLength;
@@ -530,6 +533,16 @@ export class DeferredWork {
   }
 }
 
+/** The live processes a seal kills: none while a sweep is being spawned
+ * (its pid is not known yet), and never a sweep's own. */
+export function processesToKill(
+  live: { pid: number }[],
+  sweeps: { pids: ReadonlySet<number>; starting: number },
+): number[] {
+  if (sweeps.starting > 0) return [];
+  return live.map((p) => p.pid).filter((pid) => !sweeps.pids.has(pid));
+}
+
 /** The rest of {@link bootPlayground}, on its loaded (or restored) kernel. */
 async function startPlayground(
   env: PlaygroundEnv,
@@ -560,18 +573,23 @@ async function startPlayground(
   let sealing = false;
   /** The seal is being taken: nothing starts at all, a sweep included. */
   let sealed = false;
-  /** The sweeps' own processes, which a seal lets finish. */
-  const sweepPids = new Set<number>();
+  /** The sweeps' own processes, which a seal lets finish: a pid joins as
+   * soon as the kernel has it and leaves when the sweep has ended. */
+  const sweepProcs = { pids: new Set<number>(), starting: 0 };
 
   /** `/bin/sh` with `argv`, as the login user in the login home, leading
    * its own process group unless `ownGroup` is false. */
-  const spawnShell = async (argv: string[], { ownGroup = true } = {}) => {
+  const spawnShell = async (
+    argv: string[],
+    { ownGroup = true, spawned = (_pid: number) => {} } = {},
+  ) => {
     if (sealed) throw new Error("the sandbox is sealed");
     const process = await mk.spawnUserProcessWithArgsAsync(
       shell,
       argv.map((arg) => s(arg)),
       { ...DEFAULT_ENV },
     );
+    spawned(process.pid);
     setPidCredentials(mk, process.pid, LOGIN_UID, LOGIN_GID);
     // Its own process group, which everything it starts inherits, so
     // `signal` below reaches a pipeline or a background job with it.
@@ -738,11 +756,29 @@ async function startPlayground(
       const tag = crypto.randomUUID();
       const path = (name: string) => `/tmp/.yurt-exec-${tag}.${name}`;
       const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+      // A sweep is known to the seal from before its spawn (`starting`)
+      // and by its pid from the moment the kernel has one, so the seal
+      // never kills it; its pid leaves the set when it has ended.
       const single = async (command: string) => {
-        const p = await spawnShell(["/bin/sh", "-c", command]);
-        sweepPids.add(p.pid);
-        p.closeStdin();
-        await p.runStartAsync();
+        let pid: number | undefined;
+        sweepProcs.starting++;
+        let p: Awaited<ReturnType<typeof spawnShell>>;
+        try {
+          p = await spawnShell(["/bin/sh", "-c", command], {
+            spawned: (id) => {
+              pid = id;
+              sweepProcs.pids.add(id);
+            },
+          });
+        } finally {
+          sweepProcs.starting--;
+        }
+        try {
+          p.closeStdin();
+          await p.runStartAsync();
+        } finally {
+          if (pid !== undefined) sweepProcs.pids.delete(pid);
+        }
       };
       let stdinRedirect = "< /dev/null";
       if (io.stdin !== undefined) {
@@ -815,8 +851,8 @@ async function startPlayground(
           p.pid !== KERNEL_PID && p.state !== "exited"
         );
         if (live.length === 0 && sweeps.idle) break;
-        for (const p of live) {
-          if (!sweepPids.has(p.pid)) mk.killProcess(p.pid, SIGKILL);
+        for (const pid of processesToKill(live, sweepProcs)) {
+          mk.killProcess(pid, SIGKILL);
         }
         if (Date.now() > deadline) {
           throw new Error(

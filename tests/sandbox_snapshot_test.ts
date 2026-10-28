@@ -9,6 +9,7 @@ import {
   checkPythonSet,
   checkSandboxSnapshot,
   decodeSandboxSnapshot,
+  decodeWhileChecking,
   encodeSandboxSnapshot,
   fetchVerifiedSnapshot,
   pinnedSnapshot,
@@ -232,6 +233,7 @@ async function pinFor(file: Uint8Array): Promise<SnapshotPin> {
   }
   return {
     releaseRepo: "YurtOS/yurt-playground",
+    format: 3,
     release: "snapshot-test",
     sha256: await sha256Hex(file),
     size: file.byteLength,
@@ -300,6 +302,7 @@ Deno.test("only a snapshot pinned for the site's own kernel, image and Python se
   };
   const snapshot: SnapshotPin = {
     releaseRepo: "r",
+    format: 3,
     release: "t",
     sha256: "00".repeat(32),
     size: 1,
@@ -329,6 +332,7 @@ Deno.test("a malformed snapshot entry never breaks the pins, and is refused wher
   const pins = parsePins({ ...raw, snapshot: undefined });
   const snapshot = {
     releaseRepo: "YurtOS/yurt-playground",
+    format: 3,
     release: "snapshot-x",
     sha256: "aa".repeat(32),
     size: 10,
@@ -461,4 +465,86 @@ Deno.test("?snapshot=1 boots the image when the snapshot cannot be had, whatever
   } finally {
     console.warn = warn;
   }
+});
+
+Deno.test("a pin of another snapshot format is not used", () => {
+  const pin = (sha256: string) => ({
+    repo: "r",
+    rev: BUILT.kernelRev,
+    build: "b",
+    path: "p",
+    sha256,
+  });
+  const pins = {
+    kernelWasm: pin(BUILT.kernelSha256),
+    image: pin("full"),
+    browserImage: pin(BUILT.imageSha256),
+    pythonSeal: { sha256: BUILT.pythonSealSha256! },
+  };
+  const snapshot = {
+    releaseRepo: "r",
+    release: "t",
+    format: 2,
+    sha256: "00".repeat(32),
+    size: 1,
+    parts: ["00".repeat(32)],
+    builtFrom: BUILT,
+  };
+  assertThrows(
+    () => pinnedSnapshot({ ...pins, snapshot }),
+    SnapshotMismatch,
+    "format 2, not 3",
+  );
+});
+
+Deno.test("the live index is asked while the snapshot downloads, and a different answer stops the download", async () => {
+  const file = new Uint8Array(
+    await (await encodeSandboxSnapshot(image(1 << 10), BUILT)).arrayBuffer(),
+  );
+  // A download that sends half the file and then waits.
+  const slow = (signal: AbortSignal) => {
+    let stopped: AbortSignal | undefined;
+    return {
+      stopped: () => stopped?.aborted,
+      body: Promise.resolve(
+        new ReadableStream<Uint8Array<ArrayBuffer>>({
+          start(controller) {
+            stopped = signal;
+            controller.enqueue(file.slice(0, file.byteLength >> 1));
+            signal.addEventListener(
+              "abort",
+              () => controller.error(signal.reason),
+            );
+          },
+        }),
+      ),
+    };
+  };
+  let download: ReturnType<typeof slow> | undefined;
+  let asked = false;
+  await assertRejects(
+    () =>
+      decodeWhileChecking(
+        (signal) => (download = slow(signal)).body,
+        BUILT,
+        (async () => {
+          asked = true;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          checkPythonSet(BUILT, "another set");
+        })(),
+      ),
+    SnapshotMismatch,
+    "the live index offers another set",
+  );
+  assertEquals(asked, true);
+  assertEquals(download?.stopped(), true, "the download was stopped");
+  // The same answer: the decode's result.
+  assertEquals(
+    await decodeWhileChecking(
+      () => Promise.resolve(new Blob([file]).stream()),
+      BUILT,
+      Promise.resolve(checkPythonSet(BUILT, BUILT.pythonSet)),
+    ),
+    image(1 << 10),
+  );
 });

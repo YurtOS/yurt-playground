@@ -63,6 +63,9 @@ export type BuiltFrom = SnapshotIdentity & {
 export type SnapshotPin = {
   releaseRepo: string;
   release: string;
+  /** The file's header format (src/sandbox_snapshot.ts): a page restores
+   * only its own. */
+  format: number;
   /** The whole gzipped file. */
   sha256: string;
   size: number;
@@ -164,6 +167,7 @@ export function parseSnapshotPin(raw: unknown): SnapshotPin {
       fail(`${key} must be a string`);
     }
   }
+  if (!Number.isInteger(value.format)) fail("format must be an integer");
   if (!isHex(value.sha256)) fail("sha256 must be a lowercase sha256");
   if (!Number.isInteger(value.size) || (value.size as number) <= 0) {
     fail("size must be a positive integer");
@@ -194,6 +198,7 @@ export function parseSnapshotPin(raw: unknown): SnapshotPin {
   return {
     releaseRepo: value.releaseRepo as string,
     release: value.release as string,
+    format: value.format as number,
     sha256: value.sha256 as string,
     size: value.size as number,
     parts: value.parts as string[],

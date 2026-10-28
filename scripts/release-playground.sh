@@ -807,31 +807,11 @@ for target in aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linu
     '. + {($t): {asset: $a, sha256: $s}}' <<< "$cli_json")
 done
 # The sealed sandbox snapshot (scripts/release-snapshot.ts) is captured by
-# hand, not by the train: carried through while it was built from this
-# train's kernel (wasm and rev), browser image and Python set and this
-# page's boot setup and seal version, dropped otherwise -- a
-# restore under anything else is refused, so a stale pin only costs a
-# download.
-snapshot_json='null'
-old_snapshot=$(jq -c '.snapshot // empty' "$root/artifacts/pins.json")
-if [ -n "$old_snapshot" ]; then
-  browser_image_sha=$(jq -r --arg full "$image_sha256" '.sha256 // $full' <<< "$slim_json")
-  # The page's own parts of the identity, as this checkout's source says.
-  boot_setup=$(sed -n 's/^export const BOOT_SETUP = \([0-9]*\);$/\1/p' "$root/src/sandbox_snapshot.ts")
-  seal_version=$(sed -n 's/^export const SEAL_VERSION: .* = \([0-9]*\);$/\1/p' "$root/src/sandbox_snapshot.ts")
-  [ -n "$boot_setup" ] && [ -n "$seal_version" ] || die "cannot read BOOT_SETUP and SEAL_VERSION from src/sandbox_snapshot.ts"
-  if jq -e --arg k "$kernel_sha256" --arg r "$kernel_sha" --arg i "$browser_image_sha" \
-    --arg p "$(jq -r '.sha256 // empty' <<< "$python_seal_json")" \
-    --argjson b "$boot_setup" --argjson v "$seal_version" \
-    '.builtFrom | .kernelSha256 == $k and .kernelRev == $r and .imageSha256 == $i
-      and .pythonSealSha256 == $p and .bootSetup == $b and .sealVersion == $v' \
-    <<< "$old_snapshot" >/dev/null; then
-    snapshot_json=$old_snapshot
-  else
-    say "the pinned snapshot was built from another kernel, image, Python set or boot setup: dropped (run scripts/release-snapshot.ts)"
-    snapshot_dropped=1
-  fi
-fi
+# hand, not by the train: the old entry goes into the new pins, and stays
+# only if release-snapshot.ts --check-pin says it is this train's (well
+# formed, this page's format, built from these pins, of the Python set the
+# live index offers); otherwise it is dropped. The one check the page makes.
+snapshot_json=$(jq -c '.snapshot // null' "$root/artifacts/pins.json")
 # `repo`/`rev` say where the source is; `releaseRepo`/`release` where the
 # bytes are (a train's in the repository that built them, a hand-cut one in
 # yurt-packages). Every consumer fetches through releaseRepo.
@@ -855,6 +835,14 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
     pythonSeal: $python_seal
   } + (if $slim == null then {} else {browserImage: $slim} end)
     + (if $snapshot == null then {} else {snapshot: $snapshot} end)' > "$root/artifacts/pins.json"
+if [ "$snapshot_json" != null ]; then
+  if ! (cd "$root" && deno run -A scripts/release-snapshot.ts --check-pin); then
+    jq 'del(.snapshot)' "$root/artifacts/pins.json" > "$root/artifacts/pins.json.tmp" &&
+      mv "$root/artifacts/pins.json.tmp" "$root/artifacts/pins.json"
+    say "the pinned snapshot is not this train's: dropped"
+    snapshot_dropped=1
+  fi
+fi
 say "verify the pins: scripts/install-pinned-artifacts.sh"
 "$root/scripts/install-pinned-artifacts.sh"
 if [ "$pins_only" = 1 ]; then
