@@ -69,8 +69,9 @@ let packageInstall:
   | ((name: string, progress: (text: string) => void) => Promise<string>)
   | undefined;
 
-/** What the coordinator knows this sandbox has (`pkg-installed`): the
- * Python set once it is in, and what each panel install put there. Installs
+/** What the coordinator knows this sandbox has (`pkg-installed`, the whole
+ * list each time): the Python set once it is in, and what each panel
+ * install put there; empty again in a fresh sandbox. Installs
  * made from the terminal are not seen; Install on one says it is already
  * installed, and marks it. */
 const knownInstalled = new Set<string>();
@@ -396,6 +397,7 @@ function boot(
     }
     if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
     if (msg.type === "pkg-installed") {
+      knownInstalled.clear();
       for (const name of msg.names) knownInstalled.add(name);
       markPackages();
     }

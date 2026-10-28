@@ -45,6 +45,7 @@ import {
   browserArchiveCache,
   fetchWithProgress,
   installedByPlan,
+  installedTracker,
   installPackage,
   InstallStalled,
   loadCatalog,
@@ -123,9 +124,8 @@ type ToWorker =
 
 type FromWorker =
   // status, error, shell-ready (the shell is the whole session),
-  // python-missing / notebook-ready, and pkg-installed: what the Packages
-  // panel marks Installed, also sent after each of its installs
-  // (src/coordinator_start.ts).
+  // python-missing / notebook-ready, and pkg-installed: every package the
+  // sandbox is known to have, for the Packages panel (src/coordinator_start.ts).
   | StartReport
   // The browser refused a new process its memory (src/memory_refused.ts).
   | MemoryRefusedMessage
@@ -370,8 +370,16 @@ function subscribeJupyter(transport: JupyterTransport): void {
   });
 }
 
+/** What the in-tab sandbox is known to have, posted whole to the page. */
+const installed = installedTracker((names) =>
+  self.postMessage({ type: "pkg-installed", names } satisfies FromWorker)
+);
+
 function post(msg: FromWorker): void {
-  self.postMessage(msg);
+  // A `pkg-installed` (the Python set, a panel install's plan) adds to this
+  // sandbox's list; the page is sent the whole list.
+  if (msg.type === "pkg-installed") installed.add(msg.names);
+  else self.postMessage(msg);
 }
 
 /** The worker's terminal; `dropHandlers` forgets every session's handlers,
@@ -642,6 +650,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
    * terminal's handlers were the stopped session's last references. Apart
    * from `startFresh` so no local of that long await holds it. */
   const dropSandbox = () => {
+    installed.reset();
     const stale = packageSession;
     packageSession = undefined;
     launchSession = undefined;

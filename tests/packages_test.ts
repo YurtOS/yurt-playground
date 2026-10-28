@@ -7,6 +7,7 @@ import {
   type Fetcher,
   fetchWithProgress,
   installedByPlan,
+  installedTracker,
   installPackage,
   installScript,
   InstallStalled,
@@ -1328,4 +1329,25 @@ Deno.test("markInstalled marks the known packages Installed, disabled, and the r
     ["Install", true],
     ["Install", true],
   ]);
+});
+
+Deno.test("the installed list is posted whole, and a fresh sandbox starts it empty", () => {
+  const posted: string[][] = [];
+  const installed = installedTracker((names) => posted.push(names));
+  installed.add(["python", "numpy", "pyzmq", "jupyter-kernel"]);
+  installed.add(installedByPlan("install rtk 0.1.0-yurt_0\n", "rtk"));
+  // Every post is the whole list: the page replaces its marks with it.
+  assertEquals(posted.at(-1), [
+    "python",
+    "numpy",
+    "pyzmq",
+    "jupyter-kernel",
+    "rtk",
+  ]);
+  // The sandbox is dropped for a fresh one: nothing is known installed...
+  installed.reset();
+  assertEquals(posted.at(-1), []);
+  // ...and its Python install does not bring back the old sandbox's rtk.
+  installed.add(["python", "numpy", "pyzmq", "jupyter-kernel"]);
+  assertEquals(posted.at(-1), ["python", "numpy", "pyzmq", "jupyter-kernel"]);
 });

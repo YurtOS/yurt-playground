@@ -557,6 +557,26 @@ export function installedByPlan(output: string, name: string): string[] {
   return [...names];
 }
 
+/** What one sandbox is known to have, for the Packages panel: every change
+ * posts the whole list, and `reset` (the sandbox was dropped for a fresh
+ * one, which has none of the panel's installs) empties it. */
+export function installedTracker(post: (names: string[]) => void): {
+  add(names: readonly string[]): void;
+  reset(): void;
+} {
+  const known = new Set<string>();
+  return {
+    add(names) {
+      for (const name of names) known.add(name);
+      post([...known]);
+    },
+    reset() {
+      known.clear();
+      post([]);
+    },
+  };
+}
+
 /** The panel's Install buttons, by what the sandbox is known to have: those
  * say Installed and cannot be clicked; none can while an install runs. */
 export function markInstalled(
