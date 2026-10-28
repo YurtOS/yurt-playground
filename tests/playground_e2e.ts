@@ -698,10 +698,11 @@ if (import.meta.main) {
           (status?.textContent ?? "").includes("failed");
       },
       undefined,
-      // Measured 2026-09-14: ~30 s from page load to ready on an M-series
-      // laptop (cold import of ipykernel + pyzmq in the browser JIT); a
-      // 2-vCPU CI runner needs several times that.
-      { timeout: 300_000 },
+      // Since the slim image (2026.10.27) the page installs Python first:
+      // ~83 s from page load to ready on an M-series laptop, and 120-290 s
+      // on a CI runner (job logs, 10-27/28), against which 300 s failed the
+      // scene at random. The acceptance step's 11 min cap is the bound.
+      { timeout: 480_000 },
     ).catch(() => undefined);
     if (await page.getByTestId("notebook-status").textContent() !== "ready") {
       const status = await page.locator("#status").textContent();
