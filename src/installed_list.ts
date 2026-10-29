@@ -110,17 +110,22 @@ export function installedReporter(
   };
 }
 
-/** The panel's side: the names it marks Installed and the note beside them,
- * given to `render` on every change; `ask` asks the coordinator to read. */
+/** The panel's side: the names it marks Installed, given to `render` on
+ * every change, and the note beside them, given to `showNote` only when it
+ * changes ("" for none); `ask` asks the coordinator to read. */
 export function installedMarks(
   ask: () => void,
-  render: (known: ReadonlySet<string>, note: string | undefined) => void,
+  render: (known: ReadonlySet<string>) => void,
+  showNote: (note: string) => void,
 ) {
   const known = new Set<string>();
-  let note: string | undefined;
+  let note = "";
   /** Bumped when the sandbox is replaced: an install begun before belongs
    * to the old one. */
   let sandbox = 0;
+  const setNote = (text: string) => {
+    if (text !== note) showNote(note = text);
+  };
   return {
     /** Every open: the terminal or an agent may have installed since. */
     opened: () => ask(),
@@ -128,17 +133,17 @@ export function installedMarks(
       if ("names" in report) {
         known.clear();
         for (const name of report.names) known.add(name);
-        note = undefined;
+        setNote("");
       } else if ("error" in report) {
         // No stale name stays Installed beside the note.
         known.clear();
-        note = `cannot tell which packages are installed: ${report.error}`;
+        setNote(`cannot tell which packages are installed: ${report.error}`);
         if (report.reset) sandbox++;
       } else {
         // pkg keeps no list: the panel's own marks stay, without a note.
-        note = undefined;
+        setNote("");
       }
-      render(known, note);
+      render(known);
     },
     /** When an install begins: what `installed` is given back. */
     installStarted: () => sandbox,
@@ -146,9 +151,9 @@ export function installedMarks(
      * not if the sandbox was replaced since it began. */
     installed(started: number, names: readonly string[]) {
       if (started === sandbox) { for (const name of names) known.add(name); }
-      render(known, note);
+      render(known);
     },
     /** The current marks, for rows just made. */
-    render: () => render(known, note),
+    render: () => render(known),
   };
 }

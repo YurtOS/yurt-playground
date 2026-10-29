@@ -175,6 +175,10 @@
       #packages td {
         padding: 2px 16px 2px 0;
       }
+      /* No note: the line takes no room. */
+      #packages-installed-error:empty {
+        display: none;
+      }
       #packages td.size {
         color: var(--muted);
         text-align: right;
@@ -768,7 +772,6 @@
             data-testid="packages-installed-error"
             role="status"
             aria-live="polite"
-            hidden
           >
           </p>
         </div>

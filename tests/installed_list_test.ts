@@ -116,12 +116,14 @@ Deno.test("installedReport is the list's names, or why they cannot be told", asy
  * render recorded as [names marked, the note]. */
 function panel() {
   const renders: [string[], string | undefined][] = [];
+  const notes: string[] = [];
   let asks = 0;
   const marks = installedMarks(
     () => asks++,
-    (known, note) => renders.push([[...known].sort(), note]),
+    (known) => renders.push([[...known].sort(), notes.at(-1) || undefined]),
+    (note) => notes.push(note),
   );
-  return { marks, renders, asks: () => asks };
+  return { marks, renders, notes, asks: () => asks };
 }
 
 Deno.test("the panel asks for a read every time it opens", () => {
@@ -287,5 +289,43 @@ Deno.test("the page reports, asks on open, guesses per install, and renders new 
     /list\.append\(tr\);\s*\}\s*installedPanel\.render\(\);\s*$/.test(
       body("for (const row of catalogRows(catalog))", "\n  };\n"),
     ),
+  );
+});
+
+Deno.test("the panel writes its note only when the note changes", () => {
+  const { marks, notes } = panel();
+  marks.report({ type: "pkg-installed", error: "broken" });
+  marks.report({ type: "pkg-installed", error: "broken" });
+  marks.render();
+  marks.installed(marks.installStarted(), ["jq"]);
+  assertEquals(notes, ["cannot tell which packages are installed: broken"]);
+  // Gone with a read that works (empty: the line collapses), once.
+  marks.report({ type: "pkg-installed", names: [] });
+  marks.report({ type: "pkg-installed", unlisted: true });
+  assertEquals(notes.at(-1), "");
+  assertEquals(notes.length, 2);
+});
+
+Deno.test("the read chain's ends: the page asks with pkg-read-installed, the in-tab session reads its VFS", () => {
+  const source = (file: string) =>
+    Deno.readTextFileSync(new URL(`../src/${file}`, import.meta.url));
+  assert(
+    /askInstalled = \(\) =>\s*worker\.postMessage\(\{ type: "pkg-read-installed" \}\);/
+      .test(source("page.ts")),
+  );
+  const boot = source("boot.ts");
+  const files = boot.slice(
+    boot.indexOf("    files: {"),
+    boot.indexOf("\n    },", boot.indexOf("    files: {")),
+  );
+  assert(
+    /readWhole: \(path\) =>\s*new Promise\(\(resolve\) => resolve\(vfsReadWhole\(mk, path\)\)\)/
+      .test(files),
+    files,
+  );
+  assert(
+    /exists: \(path\) =>\s*new Promise\(\(resolve\) => resolve\(vfsStat\(mk, path\) !== undefined\)\)/
+      .test(files),
+    files,
   );
 });

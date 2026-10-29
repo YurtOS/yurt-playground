@@ -79,16 +79,15 @@ let packageInstall:
 
 /** Asks the coordinator to read pkg's installed list again; set at boot. */
 let askInstalled = () => {};
-/** Shows the Packages panel's marks and note; set once the panel is wired. */
-let renderInstalled: (
-  known: ReadonlySet<string>,
-  note: string | undefined,
-) => void = () => {};
+/** Show the Packages panel's marks, and its note; set once it is wired. */
+let renderInstalled: (known: ReadonlySet<string>) => void = () => {};
+let showInstalledNote: (note: string) => void = () => {};
 /** What pkg has installed in this sandbox, as the coordinator reports it
  * (`pkg-installed`), and the panel's own installs (src/installed_list.ts). */
 const installedPanel = installedMarks(
   () => askInstalled(),
-  (known, note) => renderInstalled(known, note),
+  (known) => renderInstalled(known),
+  (note) => showInstalledNote(note),
 );
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
@@ -600,13 +599,13 @@ function wirePackages(): void {
   // Its own line, so it never replaces an install's outcome; gone with the
   // next read that works.
   const installedError = byId("packages-installed-error");
+  // Truly empty (not the markup's whitespace), so it collapses (:empty).
+  installedError.textContent = "";
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
-  renderInstalled = (known, note) => {
+  renderInstalled = (known) =>
     markInstalled(list.querySelectorAll("button"), known, busy);
-    installedError.hidden = note === undefined;
-    installedError.textContent = note ?? "";
-  };
+  showInstalledNote = (note) => installedError.textContent = note;
   const install = async (name: string) => {
     if (packageInstall === undefined || busy) return;
     busy = true;
