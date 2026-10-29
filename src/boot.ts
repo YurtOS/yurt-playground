@@ -13,6 +13,7 @@ import {
   type SandboxFiles,
 } from "./installed_list.ts";
 import { linuxRemark } from "./linux_remark.ts";
+import { BASE_TOOLS, commandPaths } from "./image_tools.ts";
 import {
   drainDirtyPaths,
   type LayerEntry,
@@ -430,7 +431,9 @@ export async function bootPlayground(
 }
 
 /** This Linux's remark (src/linux_remark.ts) from pkg's installed list
- * in the sandbox; a list that cannot be read counts as none installed. */
+ * in the sandbox and the tools its image has outside pkg
+ * (src/image_tools.ts); a list that cannot be read counts as none
+ * installed. */
 function remarkOf(mk: KernelHostInterface): string {
   let releases: ReturnType<typeof parseInstalledList> = [];
   try {
@@ -440,7 +443,10 @@ function remarkOf(mk: KernelHostInterface): string {
   } catch {
     // No list, or a broken one: the remark names the shell alone.
   }
-  return linuxRemark(releases);
+  const tools = BASE_TOOLS.filter((tool) =>
+    commandPaths(tool).some((path) => vfsStat(mk, path) !== undefined)
+  );
+  return linuxRemark(releases, tools);
 }
 
 /**

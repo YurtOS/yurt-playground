@@ -338,7 +338,7 @@ Deno.test("the panel renders marks on its buttons and the note on its line", () 
   const start = page.indexOf("function wirePackages(");
   const wiring = page.slice(start, page.indexOf("\n}\n", start));
   assert(
-    /renderInstalled = \(known\) =>\s*markInstalled\(list\.querySelectorAll\("button"\), known, busy \|\| stopped\);/
+    /renderInstalled = \(known\) =>\s*markInstalled\(rows, known, inImage, busy \|\| stopped\);/
       .test(wiring),
   );
   assert(

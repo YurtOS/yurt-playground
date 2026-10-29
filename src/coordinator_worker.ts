@@ -77,6 +77,7 @@ import {
   type SnapshotKind,
 } from "./sandbox_snapshot.ts";
 import { linuxRemark } from "./linux_remark.ts";
+import { baseToolsIn } from "./image_tools.ts";
 import {
   isUploadedSnapshotId,
   uploadedSnapshotPath,
@@ -435,9 +436,10 @@ async function captureSnapshot(
   // What it holds, for its pin and for people: pkg's list as the seal
   // keeps it (src/linux_remark.ts).
   const packagesHeld = await installedReleases(session.files) ?? [];
+  const toolsHeld = await baseToolsIn(session.files);
   const contents = {
     packages: packagesHeld,
-    remark: linuxRemark(packagesHeld),
+    remark: linuxRemark(packagesHeld, toolsHeld),
   };
   post({ type: "status", text: "sealing the sandbox" });
   const started = performance.now();

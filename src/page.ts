@@ -25,6 +25,8 @@ import {
   formatBytes,
   loadCatalog,
   markInstalled,
+  type PackageRow,
+  packagesInImage,
   plannedInstalls,
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
@@ -683,12 +685,16 @@ function wirePackages(): void {
   // Truly empty (not the markup's whitespace), so it collapses (:empty).
   installedError.textContent = "";
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
+  // What the image has outside pkg: not listed (the remark above the
+  // terminal names the tools, src/linux_remark.ts).
+  let inImage: ReadonlySet<string> = new Set();
+  const rows: PackageRow[] = [];
   let busy = false;
   // The sandbox stopped answering (src/install_request.ts): the panel
   // keeps that failure, with its reload note, and installs nothing more.
   let stopped = false;
   renderInstalled = (known) =>
-    markInstalled(list.querySelectorAll("button"), known, busy || stopped);
+    markInstalled(rows, known, inImage, busy || stopped);
   showInstalledNote = (note) => installedError.textContent = note;
   const install = async (name: string) => {
     if (packageInstall === undefined || busy || stopped) return;
@@ -735,7 +741,12 @@ function wirePackages(): void {
           "This sandbox's image has no pkg (or no sudo for it), so it cannot install packages.";
         return;
       }
-      catalog = await loadCatalog();
+      const loaded = await loadCatalog();
+      inImage = await packagesInImage(
+        catalogRows(loaded).map((row) => row.name),
+        (cmd) => yurt.exec(cmd),
+      );
+      catalog = loaded;
     } catch (error) {
       state.textContent = `could not load the package list: ${
         error instanceof Error ? error.message : String(error)
@@ -747,6 +758,7 @@ function wirePackages(): void {
     state.hidden = true;
     for (const row of catalogRows(catalog)) {
       const tr = document.createElement("tr");
+      tr.dataset.package = row.name;
       const name = document.createElement("td");
       name.textContent = row.name;
       const version = document.createElement("td");
@@ -762,6 +774,7 @@ function wirePackages(): void {
       button.dataset.package = row.name;
       button.addEventListener("click", () => install(row.name));
       action.append(button);
+      rows.push({ row: tr, button });
       tr.append(name, version, size, action);
       list.append(tr);
     }

@@ -18,6 +18,7 @@
  * sandbox, and are gone after a reload (#81).
  */
 import type { InstalledRelease } from "./installed_list.ts";
+import { COMMAND_DIRS } from "./image_tools.ts";
 
 /** Where the page fetches the repository from: GitHub's raw file host,
  * which answers with `Access-Control-Allow-Origin: *`. */
@@ -714,24 +715,89 @@ export function plannedInstalls(output: string, name: string): string[] {
   return [...names];
 }
 
-/** The panel's Install buttons, by what the sandbox is known to have: those
- * say Installed and cannot be clicked; none can while an install runs. */
+/** Packages the panel never lists, whatever the sandbox holds, each with
+ * why. (What the image already has outside pkg is left out too, but found
+ * in the sandbox: {@link packagesInImage}.) */
+export const NOT_LISTED: ReadonlyMap<string, string> = new Map([
+  [
+    "python-seal",
+    // Not something to run: the page installs and verifies it itself
+    // (src/python_install.ts, src/notebook_kernel_worker.ts).
+    "the Suspend/Resume kernel's sealable interpreter, which that kernel fetches itself",
+  ],
+]);
+
+/** One package's row in the panel, and its Install button. */
+export type PackageRow = {
+  row: { hidden: boolean };
+  button: {
+    dataset: { package?: string };
+    textContent: string | null;
+    disabled: boolean;
+  };
+};
+
+/** The panel's rows, by what the sandbox is known to have: what pkg
+ * installed (`installed`) says Installed and cannot be clicked; what the
+ * image has outside pkg (`inImage`, {@link packagesInImage}) and what is
+ * {@link NOT_LISTED} is not listed at all; no button can be clicked while
+ * an install runs. */
 export function markInstalled(
-  buttons: Iterable<
-    {
-      dataset: { package?: string };
-      textContent: string | null;
-      disabled: boolean;
-    }
-  >,
+  rows: Iterable<PackageRow>,
   installed: ReadonlySet<string>,
+  inImage: ReadonlySet<string>,
   busy: boolean,
 ): void {
-  for (const button of buttons) {
-    const has = installed.has(button.dataset.package ?? "");
+  for (const { row, button } of rows) {
+    const name = button.dataset.package ?? "";
+    const has = installed.has(name);
+    // pkg's list first: a command pkg put there is pkg's, not the image's.
+    row.hidden = NOT_LISTED.has(name) || (!has && inImage.has(name));
     button.textContent = has ? "Installed" : "Install";
     button.disabled = busy || has;
   }
+}
+
+/**
+ * The catalog packages the sandbox already has outside pkg: those whose
+ * command (src/image_tools.ts) is there. The slim image bakes busybox,
+ * make, pkg, zsh and zstd into its base without pkg, so pkg refuses to
+ * install them ("would overwrite unmanaged path bin/zsh"). The
+ * repository's metadata names no files -- each archive's own
+ * `info/files.json` does, and clang's archive alone is 94 MB -- so the
+ * sandbox is asked about the command instead; for every package published
+ * on 2026-10-29 that finds exactly the archives whose files the slim image
+ * has. What pkg itself installed is told apart by its installed list
+ * ({@link markInstalled}). `root` is for tests.
+ */
+export async function packagesInImage(
+  names: readonly string[],
+  /** A stuck run has no `code`. */
+  exec: (cmd: string) => Promise<{ code?: number | null; stdout: string }>,
+  root = "",
+): Promise<Set<string>> {
+  if (names.length === 0) return new Set();
+  for (const name of names) {
+    // Each goes into the script as a word.
+    if (!isPackageName(name)) {
+      throw new Error(`${JSON.stringify(name)} is not a package name`);
+    }
+  }
+  const dirs = COMMAND_DIRS.map((dir) => `'${root}${dir}'`).join(" ");
+  const result = await exec(
+    `for n in ${names.join(" ")}; do for d in ${dirs}; do ` +
+      `if [ -e "$d/$n" ] || [ -L "$d/$n" ]; then echo "$n"; break; fi; ` +
+      `done; done`,
+  );
+  if (result.code !== 0) {
+    throw new Error(
+      `could not tell what the image has: exit ${
+        result.code ?? "none, the probe did not finish"
+      }`,
+    );
+  }
+  const asked = new Set(names);
+  return new Set(result.stdout.split("\n").filter((line) => asked.has(line)));
 }
 
 /** What the menu lists for each package: its latest release and size. */

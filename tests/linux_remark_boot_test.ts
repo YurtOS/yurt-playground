@@ -19,6 +19,11 @@ Deno.test({
     assertEquals(remarks.length, 1, "told the page once at boot");
     const first = remarks[0];
     assert(first.startsWith("BusyBox shell"), first);
+    // The image bakes these into its base outside pkg (src/image_tools.ts).
+    assertStringIncludes(
+      first,
+      "; also zsh, make, curl, jq, sqlite3, zstd, xz",
+    );
     await typeCommand(term, "true");
     assert(
       term.output().indexOf(first) >= 0 &&
@@ -54,6 +59,11 @@ Deno.test({
       }; the write said ${JSON.stringify(wrote.slice(-600))}`,
     );
     assert(remarks[1] !== first, remarks[1]);
+    // jq is pkg's now: counted among its packages, no longer "also".
+    assertStringIncludes(
+      remarks[1],
+      "; also zsh, make, curl, sqlite3, zstd, xz",
+    );
     assertStringIncludes(await typeCommand(term, "cat /etc/motd"), remarks[1]);
     // Unchanged: not said again.
     session.refreshRemark();

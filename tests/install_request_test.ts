@@ -136,7 +136,7 @@ Deno.test("the Packages panel installs nothing more once the sandbox stopped", (
   // disabled once stopped: the render passes `busy || stopped` as busy.
   assert(/installedPanel\.render\(\);/.test(after[1]), after[1]);
   assert(
-    /renderInstalled = \(known\) =>\s*markInstalled\(list\.querySelectorAll\("button"\), known, busy \|\| stopped\);/
+    /renderInstalled = \(known\) =>\s*markInstalled\(rows, known, inImage, busy \|\| stopped\);/
       .test(pageSource()),
   );
   assert(/busy \|\| stopped\) return;/.test(body), body);

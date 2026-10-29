@@ -1,6 +1,7 @@
 /**
  * One line that tells a person what is in this Linux, made from pkg's
- * installed list: the page shows it above the terminal, the shell prints
+ * installed list and the tools the image has outside pkg
+ * (src/image_tools.ts): the page shows it above the terminal, the shell prints
  * it when it starts, and /etc/motd holds it. A snapshot records it too
  * (src/sandbox_snapshot.ts `contents`).
  */
@@ -16,10 +17,15 @@ const NAMED: [string, string][] = [
   ["jupyter-kernel", "Jupyter kernel"],
 ];
 
-/** E.g. "BusyBox shell, git 2.55.0, Python 3.14.7; no Jupyter". The shell
- * is BusyBox in every playground image, so it is always named; pkg does
- * not list it. */
-export function linuxRemark(releases: readonly InstalledRelease[]): string {
+/** E.g. "BusyBox shell, git 2.55.0, Python 3.14.7; also zsh, make; no
+ * Jupyter". The shell is BusyBox in every playground image, so it is
+ * always named; pkg does not list it. `tools`: those of
+ * src/image_tools.ts `BASE_TOOLS` the sandbox has, named after "also" in
+ * the order given, unless pkg lists one by that name. */
+export function linuxRemark(
+  releases: readonly InstalledRelease[],
+  tools: readonly string[] = [],
+): string {
   const byName = new Map(releases.map((release) => [release.name, release]));
   const parts = ["BusyBox shell"];
   for (const [name, label] of NAMED) {
@@ -35,12 +41,14 @@ export function linuxRemark(releases: readonly InstalledRelease[]): string {
         : `${others.length} more packages (pkg list)`,
     );
   }
+  const also = tools.filter((tool) => !byName.has(tool));
+  const held = also.length === 0
+    ? parts.join(", ")
+    : `${parts.join(", ")}; also ${also.join(", ")}`;
   const missing = !byName.has("python")
     ? "no Python, no Jupyter"
     : !byName.has("jupyter-kernel")
     ? "no Jupyter"
     : undefined;
-  return missing === undefined
-    ? parts.join(", ")
-    : `${parts.join(", ")}; ${missing}`;
+  return missing === undefined ? held : `${held}; ${missing}`;
 }
