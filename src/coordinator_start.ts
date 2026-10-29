@@ -75,6 +75,12 @@ export const PYTHON_PROBE_COMMAND = [
  * so its redirects bind here. */
 export const PYTHON_PROBE_LINE = `exec /bin/sh -c '${PYTHON_PROBE_COMMAND}'`;
 
+/** The probe a capture with nothing to install asks instead
+ * (`?snapshot=capture-phone`): only "is there a python3?", 0 or 42. The
+ * phone's snapshot is the image's own python3, without the set. */
+export const PYTHON_INTERPRETER_PROBE_LINE =
+  `exec /bin/sh -c 'command -v python3 >/dev/null && exit 0; exit ${PYTHON_MISSING_EXIT}'`;
+
 /** The probe is a few BusyBox builtins; a probe that takes longer than
  * this is a sandbox in trouble, and the launch goes ahead as before. */
 export const PYTHON_PROBE_TIMEOUT_MS = 30_000;
@@ -87,11 +93,12 @@ export const PYTHON_PROBE_TIMEOUT_MS = 30_000;
 export async function probePython(
   spawn: Spawner | undefined,
   timeoutMs = PYTHON_PROBE_TIMEOUT_MS,
+  line = PYTHON_PROBE_LINE,
 ): Promise<boolean | undefined> {
   if (spawn === undefined) return undefined;
   let timer: number | undefined;
   try {
-    const process = await spawn(PYTHON_PROBE_LINE, { maxOutputBytes: 4096 });
+    const process = await spawn(line, { maxOutputBytes: 4096 });
     const status = await Promise.race([
       process.exited,
       new Promise<undefined>((resolve) => {
@@ -165,9 +172,16 @@ export async function startSandbox<S extends StartableSession>(
     deps.post({ type: "shell-ready" });
     return undefined;
   }
-  if (await probePython(session.process, deps.probeTimeoutMs) === false) {
-    return await installThenLaunch(session, deps);
-  }
+  // A capture the page asks to install nothing for seals the image's own
+  // python3 (the phone's snapshot): it needs python3, not the set.
+  const interpreterOnly = deps.capture !== undefined &&
+    deps.installPython === undefined;
+  const probed = await probePython(
+    session.process,
+    deps.probeTimeoutMs,
+    interpreterOnly ? PYTHON_INTERPRETER_PROBE_LINE : PYTHON_PROBE_LINE,
+  );
+  if (probed === false) return await installThenLaunch(session, deps);
   return await launchKernel(session, deps);
 }
 
@@ -320,15 +334,17 @@ export function kernelLifecycle() {
   };
 }
 
-/** Whether a start restores the sealed sandbox (`?snapshot=1`): only the
- * in-tab sandbox (the desktop app's runs natively), and never on a tablet
- * -- 132 MB downloaded and ~545 MiB inflated is more than a tablet's tab
- * keeps, as a Python layer over 100 MiB already is. */
+/** Whether a start restores a sealed sandbox (`?snapshot=1` or an
+ * uploaded one): only the in-tab sandbox (the desktop app's runs
+ * natively). A phone or tablet too: its page asks for no Python set, so
+ * the restore takes only a snapshot without one (checkPythonSet, before
+ * anything is downloaded) -- the phone's, `?snapshot=capture-phone`. The
+ * full one, 130 MB downloaded and ~520 MiB inflated, is more than such a
+ * tab keeps, and is refused there. */
 export function restoresSnapshot(start: {
   snapshot?: "restore" | "capture";
   tablet?: boolean;
   native: boolean;
 }): boolean {
-  return start.snapshot === "restore" && !start.native &&
-    start.tablet !== true;
+  return start.snapshot === "restore" && !start.native;
 }

@@ -560,12 +560,15 @@ Deno.test("a capture whose Python install fails is a failed capture, not python-
   }
 });
 
-Deno.test("only the in-tab sandbox off a tablet restores a snapshot", () => {
+Deno.test("only the in-tab sandbox restores a snapshot, a phone's or a tablet's too", () => {
   assertEquals(restoresSnapshot({ snapshot: "restore", native: false }), true);
+  // A phone or tablet asks for no Python set, so checkPythonSet lets it
+  // restore only a snapshot without one (?snapshot=capture-phone), before
+  // anything is downloaded.
   assertEquals(
     restoresSnapshot({ snapshot: "restore", native: false, tablet: true }),
-    false,
-    "a tablet",
+    true,
+    "a phone or tablet",
   );
   assertEquals(
     restoresSnapshot({ snapshot: "restore", native: true }),
@@ -664,6 +667,59 @@ Deno.test("the probe says the Python set is there only when the kernel's package
     } finally {
       await Deno.remove(root, { recursive: true });
     }
+  }
+});
+
+Deno.test("a capture with nothing to install seals an image with python3 alone (the phone's snapshot)", async () => {
+  // ?snapshot=capture-phone: the slim image's own python3, no set.
+  const root = await guestRoot(true, []);
+  try {
+    const order: string[] = [];
+    const posted: StartReport[] = [];
+    await startSandbox({
+      boot: () => Promise.resolve(fakeSession(hostSpawner(root))),
+      booted: () => {},
+      noJupyter: false,
+      startKernel: () => {
+        order.push("kernel");
+        return Promise.resolve(transport);
+      },
+      capture: () => {
+        order.push("capture");
+        return Promise.resolve();
+      },
+      post: (report) => posted.push(report),
+    });
+    assertEquals(order, ["capture"]);
+    assertEquals(posted.some((r) => r.type === "error"), false);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+  // An image without python3 has nothing for it to seal: a failed capture.
+  const bare = await guestRoot(false, []);
+  try {
+    const posted: StartReport[] = [];
+    let captured = 0;
+    await startSandbox({
+      boot: () => Promise.resolve(fakeSession(hostSpawner(bare))),
+      booted: () => {},
+      noJupyter: false,
+      startKernel: () => Promise.resolve(transport),
+      capture: () => {
+        captured++;
+        return Promise.resolve();
+      },
+      post: (report) => posted.push(report),
+    });
+    assertEquals(captured, 0);
+    const last = posted.at(-1);
+    assert(
+      last?.type === "error" && last.endsBoot === true &&
+        last.message.startsWith("snapshot capture failed: "),
+      JSON.stringify(last),
+    );
+  } finally {
+    await Deno.remove(bare, { recursive: true });
   }
 });
 

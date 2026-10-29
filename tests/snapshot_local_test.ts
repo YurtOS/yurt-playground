@@ -1,5 +1,6 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  captureBuild,
   captureQuery,
   defaultSnapshotName,
   isSnapshotRemote,
@@ -8,6 +9,8 @@ import {
   snapshotNameProblem,
 } from "../scripts/snapshot-local.ts";
 import { parsePins } from "../src/pins.ts";
+import { snapshotIdentity } from "../src/sandbox_snapshot.ts";
+import { NO_COMPLETE_SET } from "../src/python_install.ts";
 
 const ID = "0123456789abcdef0123456789abcdef01234567";
 
@@ -90,4 +93,26 @@ Deno.test("snapshot-local refuses a checkout whose build the site does not run",
     await siteIdentityProblem("https://pg.example", pins, site({}, 404)),
     "cannot read https://pg.example/pins.json: 404",
   );
+});
+
+Deno.test("snapshot-local expects the live set in a site capture, and no set in a phone's", async () => {
+  const raw = JSON.parse(
+    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
+  );
+  const pins = parsePins({ ...raw, snapshot: undefined });
+  const set = "img/python@3.14.7-yurt_0:ab01e884f08e0619";
+  assertEquals(captureBuild(pins, false, set), {
+    ok: true,
+    builtFrom: { ...snapshotIdentity(pins), pythonSet: set },
+  });
+  for (const live of [undefined, NO_COMPLETE_SET]) {
+    assertEquals(captureBuild(pins, false, live).ok, false, String(live));
+  }
+  // The phone's: no set, whatever the index says (it is not asked).
+  for (const live of [null, undefined, NO_COMPLETE_SET, set]) {
+    assertEquals(captureBuild(pins, true, live), {
+      ok: true,
+      builtFrom: { ...snapshotIdentity(pins), pythonSet: null },
+    });
+  }
 });

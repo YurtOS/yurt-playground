@@ -62,7 +62,11 @@ import {
   type LayerStore,
 } from "./python_layer.ts";
 import { liveAnswers } from "./python_install.ts";
-import { postCaptured, precompileLine } from "./capture_outcome.ts";
+import {
+  capturePrecompiles,
+  postCaptured,
+  precompileLine,
+} from "./capture_outcome.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import {
   encodeSandboxSnapshot,
@@ -339,7 +343,7 @@ type PythonRequest = {
   installed?: InstalledRelease[];
 };
 
-/** `?snapshot=capture`: precompile the installed Python, seal the
+/** `?snapshot=capture`: precompile the installed Python set, seal the
  * sandbox (no process left in it) and hand the snapshot file to the page,
  * in the kernel's place: a sealed sandbox runs nothing more. */
 async function captureSnapshot(
@@ -367,33 +371,40 @@ async function captureSnapshot(
     });
   }
   if (packages.length > 0) await installed.read();
-  // Bytecode for every module the packages ship as source only
-  // (PRECOMPILE_PROGRAM): each start compiled them again, slow on Safari,
-  // where compiling one of wcwidth's modules also overflowed the Worker's
-  // stack and killed ipykernel with SIGSEGV. Its failure is refused, with
-  // its own words.
-  post({ type: "status", text: "precompiling Python modules" });
-  const compiled = performance.now();
-  const compile = await session.process(precompileLine(), {
-    maxOutputBytes: 64 * 1024,
-  });
-  const compileStatus = await compile.exited;
-  const code = typeof compileStatus === "number"
-    ? compileStatus
-    : compileStatus.code;
-  if (code !== 0) {
-    const decoder = new TextDecoder();
-    const said = decoder.decode(compile.takeStdout()) +
-      decoder.decode(compile.takeStderr());
-    throw new Error(
-      `precompiling the Python set exited ${JSON.stringify(compileStatus)}: ${
-        said.slice(-2000)
-      }`,
+  // The phone's snapshot (no Python set installed) is the image's own
+  // python3 left as it boots: bytecode for its standard library would add
+  // ~32 MiB to the memory a phone restores (capturePrecompiles).
+  if (capturePrecompiles(pythonSet)) {
+    // Bytecode for every module the packages ship as source only
+    // (PRECOMPILE_PROGRAM): each start compiled them again, slow on Safari,
+    // where compiling one of wcwidth's modules also overflowed the Worker's
+    // stack and killed ipykernel with SIGSEGV. Its failure is refused, with
+    // its own words.
+    post({ type: "status", text: "precompiling Python modules" });
+    const compiled = performance.now();
+    const compile = await session.process(precompileLine(), {
+      maxOutputBytes: 64 * 1024,
+    });
+    const compileStatus = await compile.exited;
+    const code = typeof compileStatus === "number"
+      ? compileStatus
+      : compileStatus.code;
+    if (code !== 0) {
+      const decoder = new TextDecoder();
+      const said = decoder.decode(compile.takeStdout()) +
+        decoder.decode(compile.takeStderr());
+      throw new Error(
+        `precompiling the Python set exited ${JSON.stringify(compileStatus)}: ${
+          said.slice(-2000)
+        }`,
+      );
+    }
+    console.log(
+      `[snapshot] precompiled in ${
+        Math.round(performance.now() - compiled)
+      } ms`,
     );
   }
-  console.log(
-    `[snapshot] precompiled in ${Math.round(performance.now() - compiled)} ms`,
-  );
   post({ type: "status", text: "sealing the sandbox" });
   const started = performance.now();
   const image = await session.seal();

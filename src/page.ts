@@ -468,7 +468,7 @@ function boot(
     const asked = new URL(location.href).searchParams.get("snapshot");
     if (asked !== null && snapshotMode() === undefined) {
       console.warn(
-        `[snapshot] ?snapshot=${asked} is not 1, capture or an uploaded snapshot's 40-digit commit sha; booting the image`,
+        `[snapshot] ?snapshot=${asked} is not 1, capture, capture-phone or an uploaded snapshot's 40-digit commit sha; booting the image`,
       );
     }
     worker.postMessage({
@@ -479,7 +479,8 @@ function boot(
       kernelPorts,
       apiToken: desktop?.apiToken,
       noJupyter: noPython,
-      python: noPython || desktop !== undefined || pins === undefined
+      python: noPython || desktop !== undefined || pins === undefined ||
+          new URL(location.href).searchParams.get("snapshot") === PHONE_CAPTURE
         ? undefined
         : pythonInstallRequest(pins),
       tablet: smallDevice,
@@ -496,9 +497,16 @@ function boot(
 function snapshotMode(): "restore" | "capture" | undefined {
   const value = new URL(location.href).searchParams.get("snapshot");
   if (value === "1" || isUploadedSnapshotId(value)) return "restore";
-  if (value === "capture") return "capture";
+  if (value === "capture" || value === PHONE_CAPTURE) return "capture";
   return undefined;
 }
+
+/** `?snapshot=capture-phone`: the phone's snapshot, a capture that asks
+ * for no Python install (the slim image's own python3 is the phone's
+ * Python), so it seals the booted image with nothing added and records
+ * no Python set. Only a page that installs no Python -- a phone's or a
+ * tablet's -- restores a snapshot without a set (checkPythonSet). */
+const PHONE_CAPTURE = "capture-phone";
 
 /** `?snapshot=<id>`: the uploaded snapshot to restore instead of the
  * pinned one (src/snapshot_source.ts), a commit sha and nothing else. */

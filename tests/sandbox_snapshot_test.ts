@@ -374,6 +374,9 @@ Deno.test("a snapshot of another Python set than the live index offers is not re
     SnapshotMismatch,
     "this page installs no Python (a phone, a shell-only session, or no pins)",
   );
+  // A phone's snapshot (?snapshot=capture-phone) holds no set: a page
+  // that installs none restores it, and only such a page.
+  checkPythonSet({ ...BUILT, pythonSet: null }, null);
   assertThrows(
     () => checkPythonSet({ ...BUILT, pythonSet: null }, "img/python@1"),
     SnapshotMismatch,

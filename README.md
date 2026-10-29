@@ -238,9 +238,13 @@ repository's path, so the page asks the GitHub API's list of those refs first
 (60 unauthenticated requests an hour per address; without an answer it boots the
 image). The manifest takes every check the pin does, each part is checked
 against it, and anything else boots the image as without the flag. `--file PATH`
-uploads an existing capture, `--dry-run` stops before the push. `--phone` (the
-phone's Python-only capture, and `&start-anyway` in the URL) waits for the phone
-snapshot capture to land on main and says so until then. List the uploads with
+uploads an existing capture, `--dry-run` stops before the push. `--phone` is the
+phone's snapshot (`?snapshot=capture-phone`): the slim image's own python3 as it
+boots, with nothing installed or precompiled and no Python set recorded, so only
+a page that installs no Python (a phone's or a tablet's) restores it, and the
+URL carries `&start-anyway`. A phone or tablet refuses any snapshot with a
+Python set before downloading it. `--before-deploy` turns the site check into a
+note, for a snapshot of pins that a pending deploy brings. List the uploads with
 `git ls-remote origin 'refs/snapshots/*'`; delete one with
 `git push origin :refs/snapshots/<name>`, after which the page refuses its URL.
 Two things the script does not check. First, a capture from page code that

@@ -126,6 +126,16 @@ compiled = [compileall.compile_dir(path, quiet=1) for path in roots]
 sys.exit(0 if all(compiled) else 1)
 `;
 
+/** Whether a capture precompiles before the seal: when it installed a
+ * Python set (`pythonSet`, its layer key), whose modules ship as source.
+ * Not the phone's (`?snapshot=capture-phone`, no set): it seals the image
+ * as it boots, and the bytecode (~32 MiB of kernel memory, measured on
+ * playground-2026.10.29-3d32068.2's slim image) would only make the
+ * phone's restore bigger. */
+export function capturePrecompiles(pythonSet: string | null): boolean {
+  return pythonSet !== null;
+}
+
 /** The shell line that runs {@link PRECOMPILE_PROGRAM}. */
 export function precompileLine(python = "sudo python3"): string {
   return `exec ${python} -c '${PRECOMPILE_PROGRAM.replace(/'/g, "'\\''")}'`;

@@ -25,15 +25,19 @@
  *   --packages  packages to install after the Python set, before the seal
  *               (`?snapshot=capture&packages=`); the restore's checks are
  *               the Python set's alone, so these ride in its memory
- *   --phone     the phone's Python-only capture (`?snapshot=capture-phone`)
- *               and a URL with `&start-anyway`; PENDING: needs the phone
- *               snapshot work on main, and says so until then
+ *   --phone     the phone's snapshot (`?snapshot=capture-phone`): the
+ *               slim image's own python3 as it boots, nothing installed,
+ *               no Python set recorded (so only a phone's or tablet's page
+ *               restores it), and a URL with `&start-anyway`
  *   --name      the ref's name (default <train>-<UTC time>); an existing
  *               one is never replaced
  *   --file      upload this capture instead of capturing (it is checked
  *               the same way)
  *   --dry-run   everything but the push
  *   --site      the site the URL is for (default the live site)
+ *   --before-deploy  a site that does not run this checkout's pins yet is
+ *               a note, not a refusal: for a snapshot of pins a pending
+ *               deploy brings (its URL boots the image until then)
  *
  * List: `git ls-remote origin 'refs/snapshots/*'`. Delete:
  * `git push origin :refs/snapshots/<name>` (the page then refuses its URL:
@@ -60,8 +64,8 @@ import {
 import { imagePartsManifest } from "../src/image_parts.ts";
 import { parsePins, type Pins, type SnapshotPin } from "../src/pins.ts";
 import {
+  type BuiltFrom,
   FORMAT,
-  type SnapshotIdentity,
   snapshotIdentity,
 } from "../src/sandbox_snapshot.ts";
 import {
@@ -227,6 +231,30 @@ export async function siteIdentityProblem(
     `this checkout's pins give ${differs.join("; ")}`;
 }
 
+/** What a capture under `pins` must have been built from: the pins'
+ * identity and a Python set. The site's capture holds the set the live
+ * index offers (`live`, livePythonSet's answer), so an index it cannot
+ * read or one without a complete set is a problem; the phone's holds
+ * none (null), and asks the index nothing. */
+export function captureBuild(
+  pins: Pins,
+  phone: boolean,
+  live: string | null | undefined,
+): { ok: true; builtFrom: BuiltFrom } | { ok: false; problem: string } {
+  if (phone) {
+    return {
+      ok: true,
+      builtFrom: { ...snapshotIdentity(pins), pythonSet: null },
+    };
+  }
+  const problem = captureSetProblem(live);
+  if (problem !== undefined) return { ok: false, problem };
+  return {
+    ok: true,
+    builtFrom: { ...snapshotIdentity(pins), pythonSet: live! },
+  };
+}
+
 async function main(): Promise<void> {
   const args = [...Deno.args];
   const flag = (name: string) => {
@@ -243,6 +271,7 @@ async function main(): Promise<void> {
   };
   const phone = flag("--phone");
   const dryRun = flag("--dry-run");
+  const beforeDeploy = flag("--before-deploy");
   let packages: string[] = [];
   try {
     packages = capturePackages(option("--packages") ?? null);
@@ -265,18 +294,6 @@ async function main(): Promise<void> {
   if (nameProblem !== undefined) die(nameProblem);
   const ref = `${SNAPSHOT_REF_PREFIX}${name}`;
 
-  if (phone) {
-    // The phone capture is the phone-snapshot work's (`capture-phone`, a
-    // Python-only set, and a restore gate that lets phones restore).
-    const page = await Deno.readTextFile(join(root, "src/page.ts"));
-    if (!page.includes('"capture-phone"')) {
-      die(
-        "--phone needs the phone snapshot capture (?snapshot=capture-phone), " +
-          "which is not on this checkout's page yet",
-      );
-    }
-  }
-
   // Where a push goes (a pushurl, when one is set).
   const remote =
     (await git(root, ["remote", "get-url", "--push", "origin"])).stdout;
@@ -297,15 +314,18 @@ async function main(): Promise<void> {
   // behind or ahead of what is deployed would print a URL that always
   // falls back.
   const siteProblem = await siteIdentityProblem(site, pins);
-  if (siteProblem !== undefined) die(siteProblem);
+  if (siteProblem !== undefined) {
+    if (!beforeDeploy) die(siteProblem);
+    say(`note (--before-deploy): ${siteProblem}`);
+  }
 
-  const live = await liveSetOf(pins)();
-  const setProblem = captureSetProblem(live);
-  if (setProblem !== undefined) die(setProblem);
-  // The phone's set is not the site's; its own check comes with it.
-  const expected: SnapshotIdentity | { pythonSet: string | null } = phone
-    ? snapshotIdentity(pins)
-    : { ...snapshotIdentity(pins), pythonSet: live! };
+  const build = captureBuild(
+    pins,
+    phone,
+    phone ? null : await liveSetOf(pins)(),
+  );
+  if (!build.ok) return die(build.problem);
+  const expected = build.builtFrom;
 
   const work = await Deno.makeTempDir({ prefix: "yurt-snapshot-local-" });
   // Ctrl-C removes it too.
@@ -339,7 +359,7 @@ async function main(): Promise<void> {
     }
     const check = await checkSnapshotFile(
       file,
-      expected as SnapshotIdentity,
+      expected,
       { decode: true },
     );
     if (!check.ok) {
