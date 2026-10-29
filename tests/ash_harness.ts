@@ -121,6 +121,7 @@ export type AshSession = {
    * (src/executions.ts) takes these two. */
   process: NonNullable<PlaygroundSession["process"]>;
   signal: NonNullable<PlaygroundSession["signal"]>;
+  seal: NonNullable<PlaygroundSession["seal"]>;
 };
 
 export type AshSessionOptions = {
@@ -149,8 +150,11 @@ export async function bootAshSession(
       JSON.stringify(term.output())
     }`,
   );
-  if (session.process === undefined || session.signal === undefined) {
-    throw new Error("the in-tab session has no process/signal");
+  if (
+    session.process === undefined || session.signal === undefined ||
+    session.seal === undefined
+  ) {
+    throw new Error("the in-tab session has no process/signal/seal");
   }
   return {
     term,
@@ -158,6 +162,7 @@ export async function bootAshSession(
     stop: () => session.stop(),
     process: session.process,
     signal: session.signal,
+    seal: session.seal,
   };
 }
 

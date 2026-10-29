@@ -157,3 +157,125 @@ Deno.test("partsFetch reads a part body that is not async-iterable (Safari)", as
   const response = await partsFetch(fetchImpl)("http://pg/img");
   assertEquals(new TextDecoder().decode(await response.bytes()), "abcdef");
 });
+
+Deno.test("a cancelled partsFetch body stops the parts in flight and fetches no more", async () => {
+  const requested: string[] = [];
+  const signals: AbortSignal[] = [];
+  const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    requested.push(url);
+    if (url.endsWith(".parts.json")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ size: 9, parts: ["img.0", "img.1", "img.2"] }),
+        ),
+      );
+    }
+    // A part that streams one chunk and then waits, as a slow download.
+    signals.push(init!.signal!);
+    return Promise.resolve(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("abc"));
+          },
+        }),
+      ),
+    );
+  }) as typeof fetch;
+  const body = (await partsFetch(fetchImpl)("http://pg/img")).body!;
+  const reader = body.getReader();
+  await reader.read();
+  const before = requested.length;
+  await reader.cancel("decode failed");
+  assertEquals(signals.every((signal) => signal.aborted), true);
+  assertEquals(requested.length, before, "nothing asked for after the cancel");
+  assertEquals(requested.includes("http://pg/img.2"), false);
+});
+
+Deno.test("partsFetch asks for the next part while the current one is read", async () => {
+  const requested: string[] = [];
+  let release = () => {};
+  const fetchImpl = ((input: RequestInfo | URL) => {
+    const url = String(input);
+    requested.push(url);
+    if (url.endsWith(".parts.json")) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ size: 6, parts: ["img.0", "img.1"] })),
+      );
+    }
+    if (url.endsWith("img.0")) {
+      // Part 0 finishes only when released.
+      return Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("abc"));
+              release = () => controller.close();
+            },
+          }),
+        ),
+      );
+    }
+    return Promise.resolve(new Response(new TextEncoder().encode("def")));
+  }) as typeof fetch;
+  const reader = (await partsFetch(fetchImpl)("http://pg/img")).body!
+    .getReader();
+  await reader.read();
+  assertEquals(
+    requested.includes("http://pg/img.1"),
+    true,
+    "part 1 asked for before part 0 ended",
+  );
+  release();
+  const rest: string[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    rest.push(new TextDecoder().decode(value));
+  }
+  assertEquals(rest.join(""), "def");
+});
+
+Deno.test("a part that fails stops the part asked for ahead of it", async () => {
+  const signals = new Map<string, AbortSignal>();
+  const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith(".parts.json")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ size: 9, parts: ["img.0", "img.1", "img.2"] }),
+        ),
+      );
+    }
+    signals.set(url.slice(-5), init!.signal!);
+    return Promise.resolve(
+      url.endsWith("img.1")
+        ? new Response(null, { status: 404 })
+        : new Response(new TextEncoder().encode("abc")),
+    );
+  }) as typeof fetch;
+  const response = await partsFetch(fetchImpl)("http://pg/img");
+  await assertRejects(() => response.bytes(), Error, "img.1 failed: 404");
+  assertEquals(signals.get("img.2")?.aborted, true, "img.2 was asked for");
+});
+
+Deno.test("checked parts are fetched one at a time", async () => {
+  const requested: string[] = [];
+  const fetchImpl = ((input: RequestInfo | URL) => {
+    const url = String(input);
+    requested.push(url.slice(-5));
+    return Promise.resolve(
+      url.endsWith(".parts.json")
+        ? new Response(JSON.stringify({ size: 6, parts: ["img.0", "img.1"] }))
+        : new Response(new TextEncoder().encode("abc")),
+    );
+  }) as typeof fetch;
+  const reader = (await partsFetch(fetchImpl, {
+    part: () => Promise.resolve(),
+  })("http://pg/img")).body!.getReader();
+  await reader.read();
+  assertEquals(requested.includes("img.1"), false);
+  await reader.read();
+  assertEquals(requested.includes("img.1"), true);
+});

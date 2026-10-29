@@ -7,6 +7,7 @@ import {
   PYTHON_MISSING_EXIT,
   PYTHON_PROBE_COMMAND,
   PYTHON_PROBE_LINE,
+  restoresSnapshot,
   type StartReport,
   startSandbox,
 } from "../src/coordinator_start.ts";
@@ -335,6 +336,56 @@ Deno.test("an image with python3 is never installed into", async () => {
   assertEquals(installs, 0);
 });
 
+Deno.test("a capture seals the installed sandbox instead of launching Jupyter, and its success is no error", async () => {
+  const reports: StartReport[] = [];
+  const order: string[] = [];
+  const started = await startSandbox({
+    boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(42)).spawn)),
+    booted: () => {},
+    noJupyter: false,
+    installPython: () => {
+      order.push("install");
+      return Promise.resolve();
+    },
+    launching: () => order.push("launching"),
+    startKernel: () => {
+      order.push("kernel");
+      return Promise.resolve(transport);
+    },
+    capture: () => {
+      order.push("capture");
+      return Promise.resolve();
+    },
+    post: (report) => reports.push(report),
+  });
+  assertEquals(started, undefined);
+  assertEquals(order, ["install", "capture"]);
+  assertEquals(reports.some((r) => r.type === "error"), false);
+  assertEquals(
+    reports.some((r) => r.type === "notebook-ready"),
+    false,
+  );
+});
+
+Deno.test("a failed capture is said as one, not as a Jupyter that did not start", async () => {
+  const reports: StartReport[] = [];
+  await startSandbox({
+    boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(42)).spawn)),
+    booted: () => {},
+    noJupyter: false,
+    installPython: () => Promise.resolve(),
+    startKernel: () => Promise.resolve(transport),
+    capture: () =>
+      Promise.reject(new Error("precompiling the Python set exited 2")),
+    post: (report) => reports.push(report),
+  });
+  assertEquals(reports.at(-1), {
+    type: "error",
+    message: "snapshot capture failed: precompiling the Python set exited 2",
+    endsBoot: true,
+  });
+});
+
 Deno.test("a stack-overflow relaunch's note rides on every later 'starting Jupyter' tick", async () => {
   const posted: StartReport[] = [];
   await startSandbox({
@@ -469,4 +520,53 @@ Deno.test("a restart is refused until every overlapping start has ended", async 
   await fresh;
   await restart();
   assertEquals([refused, ran], [1, 1]);
+});
+
+Deno.test("a capture whose Python install fails is a failed capture, not python-missing", async () => {
+  for (
+    const installPython of [
+      () => Promise.reject(new Error("pkg install python failed: x")),
+      undefined,
+    ]
+  ) {
+    const reports: StartReport[] = [];
+    let captured = 0;
+    await startSandbox({
+      boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(42)).spawn)),
+      booted: () => {},
+      noJupyter: false,
+      installPython,
+      startKernel: () => Promise.resolve(transport),
+      capture: () => {
+        captured++;
+        return Promise.resolve();
+      },
+      post: (report) => reports.push(report),
+    });
+    assertEquals(captured, 0);
+    assertEquals(reports.some((r) => r.type === "python-missing"), false);
+    const last = reports.at(-1);
+    assertEquals(last?.type === "error" && last.endsBoot, true);
+    assert(
+      last?.type === "error" &&
+        last.message.startsWith("snapshot capture failed: "),
+      JSON.stringify(last),
+    );
+  }
+});
+
+Deno.test("only the in-tab sandbox off a tablet restores a snapshot", () => {
+  assertEquals(restoresSnapshot({ snapshot: "restore", native: false }), true);
+  assertEquals(
+    restoresSnapshot({ snapshot: "restore", native: false, tablet: true }),
+    false,
+    "a tablet",
+  );
+  assertEquals(
+    restoresSnapshot({ snapshot: "restore", native: true }),
+    false,
+    "the desktop app",
+  );
+  assertEquals(restoresSnapshot({ snapshot: "capture", native: false }), false);
+  assertEquals(restoresSnapshot({ native: false }), false);
 });

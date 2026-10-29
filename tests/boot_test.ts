@@ -1,6 +1,10 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { KernelHostInterface, METHOD } from "@yurt/kernel-host-interface-js";
-import { bootPlayground, fetchPlaygroundBytes } from "../src/boot.ts";
+import {
+  bootPlayground,
+  fetchPlaygroundBytes,
+  prepareSeal,
+} from "../src/boot.ts";
 import {
   assertNoTouchFailure,
   bootAshSession,
@@ -282,11 +286,19 @@ Deno.test({
     const registry = new ExecutionRegistry(session.process, session.signal);
     const exec = async (cmd: string, stdin?: string) =>
       await registry.wait(await registry.spawn(cmd, { stdin }));
-    // BusyBox ps: PID USER VSZ STAT COMMAND.
-    const zombies = (ps: string) =>
-      ps.split("\n").filter((line) =>
-        line.trim().split(/\s+/)[3]?.startsWith("Z")
-      );
+    // BusyBox ps: PID USER VSZ STAT COMMAND. A process is seen as Z for a
+    // moment between its exit and its reaping -- a poll's own sweep among
+    // them -- so only a zombie still listed on the next poll is one.
+    let lastZombies = new Set<string>();
+    const zombies = (ps: string) => {
+      const now = ps.split("\n")
+        .map((line) => line.trim().split(/\s+/))
+        .filter((fields) => fields[3]?.startsWith("Z"))
+        .map((fields) => fields[0]);
+      const stuck = now.filter((pid) => lastZombies.has(pid));
+      lastZombies = new Set(now);
+      return stuck;
+    };
     try {
       for (
         const [cmd, stdin] of [
@@ -332,6 +344,8 @@ Deno.test({
         }
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
+      // Two looks after the sweeps: a zombie in both is one.
+      await new Promise((resolve) => setTimeout(resolve, 500));
       const ps = (await exec("ps")).stdout;
       assertEquals(zombies(ps), [], ps);
     } finally {
@@ -537,4 +551,196 @@ Deno.test({
       session.stop();
     }
   },
+});
+
+Deno.test({
+  name:
+    "a seal stops every guest process the page started and leaves the status alone",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootAshSession();
+    if (!session) return;
+    try {
+      // A background job: its own process group, which killing the shell
+      // does not reach.
+      const before = session.term.output().length;
+      session.term.type("sleep 1000 & printf '__B''G__\\n'\n");
+      await waitFor(
+        () => session.term.output().slice(before).includes("__BG__"),
+        "the background job",
+        60_000,
+      );
+      // An exec that finished, whose sweep is still seconds away, and one
+      // still running.
+      const finished = await session.process("exec true", {
+        maxOutputBytes: 64,
+      });
+      await finished.exited;
+      await session.process("exec sleep 1000", { maxOutputBytes: 64 });
+      const image = await session.seal();
+      assertEquals(image.processes.length, 0);
+      assertEquals(session.shown() === "shell exited", false);
+      await assertRejects(
+        () => session.process("exec true", { maxOutputBytes: 64 }),
+        Error,
+        "being sealed",
+      );
+    } finally {
+      session.stop();
+    }
+  },
+});
+
+Deno.test({
+  name: "an exec that is starting when a seal begins is waited for and stopped",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootAshSession();
+    if (!session) return;
+    try {
+      // Not awaited: the execs are mid-spawn when the seal starts.
+      const starting = Array.from(
+        { length: 8 },
+        () => session.process("exec sleep 1000", { maxOutputBytes: 64 }),
+      );
+      const image = await session.seal();
+      assertEquals(image.processes.length, 0);
+      // Each started (and was stopped by the seal), or was refused.
+      await Promise.all(
+        starting.map((p) => p.then((s) => s.exited).catch(() => {})),
+      );
+    } finally {
+      session.stop();
+    }
+  },
+});
+
+/** A kernel host for prepareSeal: `pids` are alive until killed. */
+function sealHost(pids: number[]) {
+  const alive = new Set(pids);
+  const killed: number[] = [];
+  let looks = 0;
+  return {
+    alive,
+    killed,
+    get looks() {
+      return looks;
+    },
+    listProcesses() {
+      looks++;
+      return [
+        { pid: 0, state: "running" },
+        ...[...alive].map((pid) => ({
+          pid,
+          state: "running",
+        })),
+      ];
+    },
+    killProcess(pid: number) {
+      killed.push(pid);
+      alive.delete(pid);
+    },
+  };
+}
+
+Deno.test("a seal waits for a spawn in flight and kills the process it starts", async () => {
+  // Nothing alive at the first look, but a spawn in flight: its process
+  // appears only after that look.
+  const host = sealHost([]);
+  let spawning = 1;
+  const listed = host.listProcesses.bind(host);
+  host.listProcesses = () => {
+    const live = listed();
+    if (host.looks === 1) {
+      setTimeout(() => {
+        host.alive.add(9);
+        spawning = 0;
+      }, 0);
+    }
+    return live;
+  };
+  await prepareSeal({
+    host,
+    spawning: () => spawning,
+    cleanUp: () => Promise.resolve(0),
+    pollMs: 5,
+  });
+  assertEquals(host.killed, [9]);
+  assertEquals(host.alive.size, 0, "nothing alive when the seal goes on");
+});
+
+Deno.test("a seal fails when removing the exec files fails or does not finish", async () => {
+  await assertRejects(
+    () =>
+      prepareSeal({
+        host: sealHost([]),
+        spawning: () => 0,
+        cleanUp: () => Promise.resolve(1),
+      }),
+    Error,
+    "removing the exec files exited 1",
+  );
+  await assertRejects(
+    () =>
+      prepareSeal({
+        host: sealHost([]),
+        spawning: () => 0,
+        cleanUp: () => new Promise(() => {}),
+        cleanUpMs: 50,
+      }),
+    Error,
+    "removing the exec files did not finish",
+  );
+});
+
+Deno.test("a seal's wait for the guest to stop is bounded, the shell's exit included", async () => {
+  // A process that does not die, and a shell exit that never comes.
+  const stubborn = sealHost([5]);
+  stubborn.killProcess = () => {};
+  await assertRejects(
+    () =>
+      prepareSeal({
+        host: stubborn,
+        spawning: () => 0,
+        cleanUp: () => Promise.resolve(0),
+        deadlineMs: 50,
+        pollMs: 5,
+      }),
+    Error,
+    "the guest did not stop: processes still alive: 5:running",
+  );
+  await assertRejects(
+    () =>
+      prepareSeal({
+        host: sealHost([]),
+        spawning: () => 0,
+        afterSettled: () => new Promise(() => {}),
+        cleanUp: () => Promise.resolve(0),
+        deadlineMs: 50,
+      }),
+    Error,
+    "the guest did not stop: every process is gone, but the login shell's exit was not seen",
+  );
+});
+
+Deno.test("a seal's clean-up has its own budget, whatever the wait before it took", async () => {
+  let cleaned = false;
+  await prepareSeal({
+    host: sealHost([]),
+    spawning: () => 0,
+    // The wait uses up its whole bound but for a hair.
+    afterSettled: () => new Promise((resolve) => setTimeout(resolve, 40)),
+    cleanUp: () =>
+      new Promise((resolve) =>
+        setTimeout(() => {
+          cleaned = true;
+          resolve(0);
+        }, 30)
+      ),
+    deadlineMs: 50,
+    cleanUpMs: 100,
+  });
+  assertEquals(cleaned, true);
 });

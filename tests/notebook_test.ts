@@ -150,7 +150,9 @@ Deno.test("once the boot is over, a status (a Jupyter restart, its relaunch) lea
   assert(
     /if \(booting\) rememberBooting\(msg\.text \|\| "running"\);/.test(page),
   );
-  const endBoot = page.match(/const endBoot = \(\) => \{([^}]*)\};/);
+  const endBoot = page.match(
+    /const endBoot = \((?:why\?: string)?\) => \{([^}]*)\};/,
+  );
   assert(endBoot !== null, "page.ts has endBoot");
   assert(/booting = false;/.test(endBoot[1]));
   assert(/rememberBooting\(undefined\);/.test(endBoot[1]));
@@ -168,7 +170,7 @@ Deno.test("once the boot is over, a status (a Jupyter restart, its relaunch) lea
   // Only a boot outcome ends it: an early cell's "Jupyter is not ready"
   // mid-boot left a reloaded tab nothing to explain.
   assert(
-    /if \(msg\.type === "error"\) \{\s*if \(msg\.endsBoot === true\) endBoot\(\);\s*fail\(msg\.message\);/
+    /if \(msg\.type === "error"\) \{\s*if \(msg\.endsBoot === true\) endBoot\(msg\.message\);\s*fail\(msg\.message\);/
       .test(page),
   );
   assertEquals(
@@ -176,7 +178,9 @@ Deno.test("once the boot is over, a status (a Jupyter restart, its relaunch) lea
     false,
   );
   // The worker itself dying is the end of everything.
-  assert(/worker\.onerror = \(event\) => \{[^}]*endBoot\(\);/.test(page));
+  assert(
+    /worker\.onerror = \(event\) => \{[^}]*endBoot\(message\);/.test(page),
+  );
 });
 
 Deno.test("an Install after python-missing is a boot again: its statuses are kept for a reloaded tab", () => {

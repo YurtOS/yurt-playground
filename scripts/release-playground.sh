@@ -150,8 +150,9 @@ resume_command() {
     "${train%-validate}" "$( [ "$validate" = 1 ] && echo ' --validate')"
 }
 source "$root/scripts/lib/kernel-release.sh"
+source "$root/scripts/lib/snapshot-pin.sh"
 
-for tool in gh jq git; do
+for tool in gh jq git deno; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
 done
 gh auth status >/dev/null 2>&1 || die "gh is not logged in"
@@ -806,6 +807,12 @@ for target in aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linu
   cli_json=$(jq --arg t "$target" --arg a "$asset" --arg s "$(sidecar_sha "$cli_repo" "$cli_release" "$asset")" \
     '. + {($t): {asset: $a, sha256: $s}}' <<< "$cli_json")
 done
+# The sealed sandbox snapshot (scripts/release-snapshot.ts) is captured by
+# hand, not by the train: the old entry goes into the new pins, and stays
+# only if release-snapshot.ts --check-pin says it is this train's (well
+# formed, this page's format, built from these pins, of the Python set the
+# live index offers); otherwise it is dropped (scripts/lib/snapshot-pin.sh).
+snapshot_json=$(jq -c '.snapshot // null' "$root/artifacts/pins.json")
 # `repo`/`rev` say where the source is; `releaseRepo`/`release` where the
 # bytes are (a train's in the repository that built them, a hand-cut one in
 # yurt-packages). Every consumer fetches through releaseRepo.
@@ -814,7 +821,7 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
   --arg image_release "$image_release" --arg image_repo "$image_repo" --arg image_sha256 "$image_sha256" --arg ports_sha "$ports_sha" \
   --arg host_release "$host_release" --arg host_repo "$host_repo" --arg cli_release "$cli_release" --arg cli_repo "$cli_repo" \
   --argjson host "$host_json" --argjson cli "$cli_json" --argjson python_seal "$python_seal_json" \
-  --argjson slim "$slim_json" '{
+  --argjson slim "$slim_json" --argjson snapshot "$snapshot_json" '{
     train: $train,
     kernelWasm: {repo: "YurtOS/yurtos-kernel", rev: $kernel_sha, releaseRepo: $kernel_repo, release: $kernel_release,
       build: "scripts/build-kernel-wasm.sh", path: "target/kernel-wasm/release/yurt_kernel.wasm", sha256: $kernel_sha256},
@@ -827,10 +834,21 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
       assets: ($cli | with_entries(.value = .value.asset)),
       sha256: ($cli | with_entries(.value = .value.sha256))},
     pythonSeal: $python_seal
-  } + (if $slim == null then {} else {browserImage: $slim} end)' > "$root/artifacts/pins.json"
+  } + (if $slim == null then {} else {browserImage: $slim} end)
+    + (if $snapshot == null then {} else {snapshot: $snapshot} end)' > "$root/artifacts/pins.json"
+keep_snapshot_pin "$root" || die "$snapshot_error; fix that and $(resume_command)"
+if [ "${snapshot_dropped:-0}" = 1 ]; then
+  say "the pinned snapshot is not this train's ($snapshot_why): dropped"
+  # Kept with the train, so a --resume still ends with the reminder below.
+  [ "$pins_only" = 1 ] || step_set snapshot dropped "$(jq -n --arg why "$snapshot_why" '$why')"
+elif [ "${snapshot_kept:-0}" = 1 ] && [ "$pins_only" = 0 ]; then
+  # A resumed train whose pins keep the entry has nothing to recapture.
+  step_set snapshot dropped null
+fi
 say "verify the pins: scripts/install-pinned-artifacts.sh"
 "$root/scripts/install-pinned-artifacts.sh"
 if [ "$pins_only" = 1 ]; then
+  remind_dropped_snapshot "${snapshot_why:-}"
   say "pins regenerated and verified; nothing dispatched, nothing opened"
   exit 0
 fi
@@ -877,7 +895,11 @@ if [ "$pr_state" != MERGED ]; then
   read -r -p "merge $pr_url and deploy? [y/N] " answer
   case $answer in
     y|Y|yes) ;;
-    *) say "left open: $pr_url"; exit 0 ;;
+    *)
+      say "left open: $pr_url"
+      remind_dropped_snapshot "$(step_get snapshot dropped)"
+      exit 0
+      ;;
   esac
   # The merge needs the PR's required checks; watch them first (a failure
   # here is the page's CI against the new pins, fix and --resume).
@@ -898,3 +920,4 @@ if [ "$(step_get desktop conclusion)" != success ]; then
     -f "playground_sha=$merge_sha" -f "train=$train" -f "publish=true"
 fi
 say "released: kernel-wasm-$train, $image_release, $seal_release_of_train, desktop-host-$train, yurt-cli-$train, desktop-$train"
+remind_dropped_snapshot "$(step_get snapshot dropped)"
