@@ -250,3 +250,42 @@ Deno.test("the coordinator reports at boot, after every install, on a panel open
     ),
   );
 });
+
+Deno.test("the page reports, asks on open, guesses per install, and renders new rows", () => {
+  // Where the page calls the panel's marks: read from its source, scoped
+  // to each point's own code (the page needs a DOM to run).
+  const page = Deno.readTextFileSync(
+    new URL("../src/page.ts", import.meta.url),
+  );
+  const body = (from: string, to: string) => {
+    const start = page.indexOf(from);
+    assert(start >= 0, from);
+    return page.slice(start, page.indexOf(to, start));
+  };
+  // Every report the coordinator posts reaches the marks.
+  assert(
+    /^if \(msg\.type === "pkg-installed"\) \{\s*installedPanel\.report\(msg\);\s*$/
+      .test(body('if (msg.type === "pkg-installed")', "\n    }\n")),
+  );
+  // Every open of the panel asks for a read, before anything else.
+  assert(
+    /^const show = async \(\) => \{\s*installedPanel\.opened\(\);/.test(
+      body("const show = async", "\n  };\n"),
+    ),
+  );
+  // An install's sandbox is taken before it is awaited, and its guess is
+  // given back with it after.
+  const install = body("const install = async", "\n  };\n");
+  const started = install.indexOf(
+    "const started = installedPanel.installStarted();",
+  );
+  const awaited = install.indexOf("await packageInstall(");
+  const guessed = install.indexOf("installedPanel.installed(started,");
+  assert(started >= 0 && awaited > started && guessed > awaited, install);
+  // The rows, once built, show the current marks.
+  assert(
+    /list\.append\(tr\);\s*\}\s*installedPanel\.render\(\);\s*$/.test(
+      body("for (const row of catalogRows(catalog))", "\n  };\n"),
+    ),
+  );
+});
