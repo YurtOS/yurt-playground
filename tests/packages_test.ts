@@ -1,4 +1,5 @@
 import {
+  assert,
   assertEquals,
   assertRejects,
   assertStringIncludes,
@@ -19,10 +20,12 @@ import {
   latestRelease,
   loadCatalog,
   markInstalled,
+  NOT_LISTED,
   onlyStaged,
   PACKAGE_REPO_URL,
   type PackageFile,
   type PackageHost,
+  packagesInImage,
   type PackageVersion,
   parseIndex,
   parsePackageFile,
@@ -36,6 +39,10 @@ import {
   stalledSandboxWhy,
   TABLET_MAX_BYTES,
 } from "../src/packages.ts";
+import {
+  INSTALLED_DB_PATH,
+  INSTALLED_LIST_PATH,
+} from "../src/installed_list.ts";
 
 const SUBJECT =
   "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main";
@@ -1290,34 +1297,192 @@ Deno.test("a checked catalog refuses metadata the index does not name, and an ex
   );
 });
 
-Deno.test("markInstalled marks the known packages Installed, disabled, and the rest Install", () => {
-  const button = (name: string) => ({
-    dataset: { package: name } as { package?: string },
-    textContent: "Install" as string | null,
-    disabled: false,
-  });
-  const buttons = [button("git"), button("rtk"), button("numpy")];
-  markInstalled(buttons, new Set(["numpy", "git"]), false);
-  assertEquals(
-    buttons.map((b) => [b.dataset.package, b.textContent, b.disabled]),
-    [["git", "Installed", true], ["rtk", "Install", false], [
-      "numpy",
-      "Installed",
-      true,
-    ]],
-  );
-  // While an install runs, none can be clicked; what is installed stays so.
-  markInstalled(buttons, new Set(["numpy", "git", "rtk"]), true);
-  assertEquals(
-    buttons.map((b) => [b.textContent, b.disabled]),
-    [["Installed", true], ["Installed", true], ["Installed", true]],
-  );
-  markInstalled(buttons, new Set(), true);
-  assertEquals(buttons.map((b) => [b.textContent, b.disabled]), [
-    ["Install", true],
-    ["Install", true],
-    ["Install", true],
+/** A package's row as the panel makes it, with its Install button. */
+function packageRow(name: string) {
+  return {
+    row: { hidden: false },
+    button: {
+      dataset: { package: name } as { package?: string },
+      textContent: "Install" as string | null,
+      disabled: false,
+    },
+  };
+}
+
+/** The rows listed, as the user sees them: name, button text, clickable. */
+function shown(rows: ReturnType<typeof packageRow>[]) {
+  return rows.filter(({ row }) => !row.hidden).map(({ button }) => [
+    button.dataset.package,
+    button.textContent,
+    !button.disabled,
   ]);
+}
+
+Deno.test("markInstalled marks the known packages Installed, disabled, and the rest Install", () => {
+  const rows = [packageRow("git"), packageRow("rtk"), packageRow("numpy")];
+  markInstalled(rows, new Set(["numpy", "git"]), new Set(), false);
+  assertEquals(shown(rows), [
+    ["git", "Installed", false],
+    ["rtk", "Install", true],
+    ["numpy", "Installed", false],
+  ]);
+  // While an install runs, none can be clicked; what is installed stays so.
+  markInstalled(rows, new Set(["numpy", "git", "rtk"]), new Set(), true);
+  assertEquals(shown(rows), [
+    ["git", "Installed", false],
+    ["rtk", "Installed", false],
+    ["numpy", "Installed", false],
+  ]);
+  markInstalled(rows, new Set(), new Set(), true);
+  assertEquals(shown(rows), [
+    ["git", "Install", false],
+    ["rtk", "Install", false],
+    ["numpy", "Install", false],
+  ]);
+});
+
+Deno.test("markInstalled leaves out what the image has outside pkg, and python-seal", () => {
+  const rows = ["busybox", "python-dev", "python-seal", "rtk", "zsh"].map(
+    packageRow,
+  );
+  markInstalled(rows, new Set(), new Set(["zsh", "busybox"]), false);
+  assertEquals(shown(rows), [
+    ["python-dev", "Install", true],
+    ["rtk", "Install", true],
+  ]);
+  // pkg's list wins over the image: a command pkg put there is listed
+  // Installed. python-seal stays out, even once installed.
+  markInstalled(
+    rows,
+    new Set(["rtk", "python-seal"]),
+    new Set(["zsh", "rtk"]),
+    false,
+  );
+  assertEquals(shown(rows), [
+    ["busybox", "Install", true],
+    ["python-dev", "Install", true],
+    ["rtk", "Installed", false],
+  ]);
+  // Each package left out by name says why.
+  assertEquals([...NOT_LISTED.keys()], ["python-seal"]);
+  for (const why of NOT_LISTED.values()) assert(why.length > 0);
+});
+
+/** Runs a probe with the host's own shell. */
+async function hostExec(cmd: string) {
+  const out = await new Deno.Command("/bin/sh", {
+    args: ["-c", cmd],
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  return { code: out.code, stdout: new TextDecoder().decode(out.stdout) };
+}
+
+Deno.test("packagesInImage finds the packages whose command the image has outside pkg", async () => {
+  // The slim image's layout (yurt-ports playground-image): zsh, make and
+  // pkg in /bin, zstd in /usr/bin, BusyBox's applets as symlinks; and
+  // pkg's list naming what it installed.
+  const root = await Deno.makeTempDir({ prefix: "packages-in-image-" });
+  try {
+    for (
+      const dir of [
+        "bin",
+        "usr/bin",
+        "usr/local/bin",
+        "etc",
+        "var/lib/yurt-pkg",
+      ]
+    ) {
+      await Deno.mkdir(`${root}/${dir}`, { recursive: true });
+    }
+    for (
+      const path of [
+        "bin/busybox",
+        "bin/make",
+        "bin/zsh",
+        "usr/bin/zstd",
+        "usr/bin/git",
+        "usr/local/bin/rtk",
+        "etc/pkg",
+      ]
+    ) {
+      await Deno.writeTextFile(`${root}/${path}`, "");
+    }
+    // An applet: a package `wget` would install beside it, not over it.
+    await Deno.symlink("busybox", `${root}/bin/wget`);
+    await Deno.symlink("python3", `${root}/usr/local/bin/python`);
+    await Deno.writeTextFile(
+      `${root}${INSTALLED_LIST_PATH}`,
+      "git\t2.55.0\tyurt_0\nrtk\t0.50.0\t1\n",
+    );
+    const ran: string[] = [];
+    const exec = (cmd: string) => {
+      ran.push(cmd);
+      return hostExec(cmd);
+    };
+    const names = [
+      "busybox",
+      "git",
+      "make",
+      "pkg",
+      "python",
+      "rtk",
+      "wget",
+      "zsh",
+      "zstd",
+    ];
+    // git and rtk are pkg's; pkg here is in /etc, no command directory.
+    assertEquals(
+      [...await packagesInImage(names, exec, root)].sort(),
+      ["busybox", "make", "zsh", "zstd"],
+    );
+    assertEquals(ran.length, 1);
+    // No names, no process.
+    assertEquals((await packagesInImage([], exec, root)).size, 0);
+    assertEquals(ran.length, 1);
+    // No pkg state at all: nothing is pkg's.
+    await Deno.remove(`${root}${INSTALLED_LIST_PATH}`);
+    assertEquals(
+      [...await packagesInImage(names, exec, root)].sort(),
+      ["busybox", "git", "make", "rtk", "zsh", "zstd"],
+    );
+    // pkg's database without its list: what pkg manages is unknown.
+    await Deno.writeTextFile(`${root}${INSTALLED_DB_PATH}`, "");
+    assertEquals((await packagesInImage(names, exec, root)).size, 0);
+    // A list that cannot be read is a failed probe, not an empty list.
+    await Deno.mkdir(`${root}${INSTALLED_LIST_PATH}`);
+    await assertRejects(
+      () => packagesInImage(names, exec, root),
+      Error,
+      "exit 3",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("packagesInImage refuses a name that is not a package name, and a failed probe", async () => {
+  const exec = () => Promise.resolve({ code: 0, stdout: "" });
+  await assertRejects(
+    () => packagesInImage(["zsh", "a;rm -rf /"], exec),
+    Error,
+    "not a package name",
+  );
+  await assertRejects(
+    () =>
+      packagesInImage(
+        ["zsh"],
+        () => Promise.resolve({ code: 2, stdout: "zsh\n" }),
+      ),
+    Error,
+    "exit 2",
+  );
+  // Only names asked about count, whatever else the output says.
+  const found = await packagesInImage(
+    ["zsh"],
+    () => Promise.resolve({ code: 0, stdout: "zsh\nrtk\n\n" }),
+  );
+  assertEquals([...found], ["zsh"]);
 });
 
 Deno.test("plannedInstalls is the package and what pkg's plan installed with it", () => {

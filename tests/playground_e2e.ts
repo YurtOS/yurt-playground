@@ -604,6 +604,49 @@ async function packagesInstall(page: Page): Promise<void> {
     `[data-testid=packages-list] button[data-package="${name}"]`,
   );
   await install.waitFor({ timeout: 60_000 });
+  // The image bakes zsh into its base outside pkg, which refuses to
+  // install over it ("would overwrite unmanaged path bin/zsh"): the panel
+  // leaves it out, and the remark above the terminal names it. python-seal
+  // is left out by name (src/packages.ts NOT_LISTED).
+  const zsh = await exec(page, "test -e /bin/zsh && sudo pkg list");
+  if (zsh.code === 0 && !/^zsh /m.test(zsh.stdout)) {
+    const seen = await page.evaluate(() => {
+      const listed = (name: string) => {
+        const row = document.querySelector<HTMLElement>(
+          `[data-testid=packages-list] tr[data-package="${name}"]`,
+        );
+        return row === null ? null : row.checkVisibility();
+      };
+      return {
+        zsh: listed("zsh"),
+        pythonSeal: listed("python-seal"),
+        yurtGreet: listed("yurt-greet"),
+        remark: document.querySelector("#linux-remark-text")?.textContent ??
+          "",
+      };
+    });
+    if (
+      seen.zsh !== false || seen.pythonSeal === true ||
+      seen.yurtGreet !== true || !/; also zsh\b/.test(seen.remark)
+    ) {
+      throw new Error(
+        `packages: want zsh left out of the list and named in the remark, python-seal left out, got ${
+          JSON.stringify(seen)
+        }`,
+      );
+    }
+    console.log(
+      `playground e2e: Packages leaves zsh out; the remark says ${
+        JSON.stringify(seen.remark)
+      }`,
+    );
+  } else if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS") === "1") {
+    throw new Error(
+      `packages: the pinned image should have an unmanaged /bin/zsh: ${
+        JSON.stringify(zsh)
+      }`,
+    );
+  }
   await install.click();
   await page.waitForFunction(
     () => {

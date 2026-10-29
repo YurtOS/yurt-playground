@@ -41,3 +41,32 @@ Deno.test("the remark names the shell, git and Python, and says what is missing"
     "BusyBox shell, git 2.55.0, 3 more packages (pkg list); no Python, no Jupyter",
   );
 });
+
+Deno.test("the remark names the tools the image has outside pkg, after the packages", () => {
+  const base = [
+    release("ca-certificates", "2026.9.25"),
+    release("git", "2.55.0"),
+  ];
+  const tools = ["zsh", "make", "curl", "jq", "sqlite3", "zstd", "xz"];
+  // The phone's snapshot, and the plain boot of the slim image.
+  assertEquals(
+    linuxRemark(base, tools),
+    "BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter",
+  );
+  // The desktop's: nothing missing to say.
+  assertEquals(
+    linuxRemark([
+      ...base,
+      release("python", "3.14.7"),
+      release("numpy", "2.5.0"),
+      release("pyzmq", "26.4.0"),
+      release("jupyter-kernel", "0.0.1"),
+    ], ["zsh", "make"]),
+    "BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make",
+  );
+  // A tool pkg lists is pkg's: named among the packages, not again.
+  assertEquals(
+    linuxRemark([...base, release("jq", "1.7")], ["zsh", "jq"]),
+    "BusyBox shell, git 2.55.0, 2 more packages (pkg list); also zsh; no Python, no Jupyter",
+  );
+});
