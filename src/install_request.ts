@@ -17,8 +17,10 @@
  * unresponsive. A working coordinator is never this quiet: a running
  * install reports progress every few seconds and gives up by itself after
  * `INSTALL_STALL_MS` without any, and one queued behind the Python install
- * waits through that install's own status messages. Five minutes, the
- * coordinator's longest single run (`INSTALL_RUN_CEILING_MS`). */
+ * waits through that install's own status messages. Five minutes: a run
+ * still going, and a `pkg recover` after one, report their progress
+ * every few seconds (src/packages.ts `PROGRESS_EVERY_MS`), however long
+ * they take. */
 export const INSTALL_SILENCE_MS = 300_000;
 
 /** The way back once the coordinator stopped or failed: it is the

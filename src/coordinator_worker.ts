@@ -53,6 +53,7 @@ import {
   browserArchiveCache,
   installPackage,
   InstallStalled,
+  stalledSandboxWhy,
 } from "./packages.ts";
 import {
   browserLayerStore,
@@ -206,11 +207,14 @@ let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 async function servePackages(msg: ToWorker): Promise<void> {
   if (msg.type !== "pkg-install") return;
   const { req } = msg;
+  /** The sandbox this install ran in. */
+  let used: typeof packageSession;
   try {
     // The session as it is when this install's turn comes: one queued
     // behind a stalled install may find a fresh sandbox, or a stalled one.
     const output = await installs(() => {
       const session = packageSession;
+      used = session;
       if (session?.process === undefined || session.writeFiles === undefined) {
         throw new Error("this sandbox does not install packages");
       }
@@ -224,16 +228,22 @@ async function servePackages(msg: ToWorker): Promise<void> {
     });
     post({ type: "pkg-reply", req, ok: true, value: output });
   } catch (error) {
-    if (error instanceof InstallStalled && error.inSandbox) {
+    let said = error instanceof Error ? error.message : String(error);
+    // Only if it is still the sandbox: a recovery can end after Try again
+    // has dropped it for a fresh one, which this stall says nothing about.
+    if (
+      error instanceof InstallStalled && error.inSandbox &&
+      used === packageSession
+    ) {
       sandboxStalled = true;
-      stalledWhy = "an earlier install stopped making progress";
+      stalledWhy = stalledSandboxWhy(error);
+      // The panel shows this as it is: say the way to a fresh sandbox.
+      said += "; reload the page for a fresh one";
+    } else if (error instanceof InstallStalled && error.inSandbox) {
+      // Its sandbox was dropped meanwhile: the one in use is fresh.
+      said += "; that sandbox has since been replaced by a fresh one";
     }
-    post({
-      type: "pkg-reply",
-      req,
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    post({ type: "pkg-reply", req, ok: false, error: said });
   } finally {
     await installed.read();
   }
@@ -307,8 +317,8 @@ let installPython:
   | ((session: BootedSession) => Promise<void>)
   | undefined;
 /** An install stopped making progress in this sandbox's `pkg` run
- * (src/packages.ts `InstallStalled`): it may no longer answer, and its
- * packages are half applied. The Python install's next try is in a fresh
+ * (src/packages.ts `InstallStalled`): it may no longer answer, and, unless
+ * `pkg recover` finished it, its packages may be half applied. The Python install's next try is in a fresh
  * sandbox; the Packages panel installs nothing more into this one. */
 let sandboxStalled = false;
 /** Why the sandbox takes no more installs (set with `sandboxStalled`). */
@@ -657,6 +667,15 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         // land while a layer is written or read out. Not on a tablet: a
         // layer is over 100 MiB in this worker while it is made or used.
         const from = await installs(() => {
+          // A Packages install queued before this one stalled here (it is
+          // marked only once its recovery ends, which Try again may not
+          // have waited for): install nothing into it. The next Try again
+          // starts a fresh sandbox.
+          if (sandboxStalled && session === packageSession) {
+            throw new Error(
+              `${stalledWhy} in this sandbox; Try again starts a fresh one`,
+            );
+          }
           // In the turn: a Packages install queued before this one has run.
           const pristine = !pkgTouched.has(session);
           pkgTouched.add(session);
@@ -695,10 +714,13 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         layerInstalled = from === "layer" ? store : undefined;
       } catch (error) {
         // A sandbox a layer was half written into, like a stalled one,
-        // takes no pkg install: the retry is in a fresh one.
-        if (error instanceof InstallStalled && error.inSandbox) {
+        // takes no pkg install: the retry is in a fresh one. Not if this
+        // sandbox is already gone (a recovery that ended after the switch).
+        if (session !== packageSession) {
+          // Nothing to mark: the sandbox now in use is another one.
+        } else if (error instanceof InstallStalled && error.inSandbox) {
           sandboxStalled = true;
-          stalledWhy = "an earlier install stopped making progress";
+          stalledWhy = stalledSandboxWhy(error);
         } else if (error instanceof LayerFailed) {
           sandboxStalled = true;
           stalledWhy = "a stored Python install did not work";
