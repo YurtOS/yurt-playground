@@ -670,7 +670,7 @@ Deno.test("the probe says the Python set is there only when the kernel's package
   }
 });
 
-Deno.test("a capture with nothing to install seals an image with python3 alone (the phone's snapshot)", async () => {
+Deno.test("the phone's capture seals an image with python3 alone; no other capture does", async () => {
   // ?snapshot=capture-phone: the slim image's own python3, no set.
   const root = await guestRoot(true, []);
   try {
@@ -680,6 +680,7 @@ Deno.test("a capture with nothing to install seals an image with python3 alone (
       boot: () => Promise.resolve(fakeSession(hostSpawner(root))),
       booted: () => {},
       noJupyter: false,
+      captureInterpreterOnly: true,
       startKernel: () => {
         order.push("kernel");
         return Promise.resolve(transport);
@@ -692,6 +693,28 @@ Deno.test("a capture with nothing to install seals an image with python3 alone (
     });
     assertEquals(order, ["capture"]);
     assertEquals(posted.some((r) => r.type === "error"), false);
+    // A full capture with nothing to install (the page's pins unread) is
+    // not the phone's: it fails rather than seal a set-less snapshot.
+    const full: StartReport[] = [];
+    let captured = 0;
+    await startSandbox({
+      boot: () => Promise.resolve(fakeSession(hostSpawner(root))),
+      booted: () => {},
+      noJupyter: false,
+      startKernel: () => Promise.resolve(transport),
+      capture: () => {
+        captured++;
+        return Promise.resolve();
+      },
+      post: (report) => full.push(report),
+    });
+    assertEquals(captured, 0);
+    const failed = full.at(-1);
+    assert(
+      failed?.type === "error" && failed.endsBoot === true &&
+        failed.message.startsWith("snapshot capture failed: "),
+      JSON.stringify(failed),
+    );
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -704,6 +727,7 @@ Deno.test("a capture with nothing to install seals an image with python3 alone (
       boot: () => Promise.resolve(fakeSession(hostSpawner(bare))),
       booted: () => {},
       noJupyter: false,
+      captureInterpreterOnly: true,
       startKernel: () => Promise.resolve(transport),
       capture: () => {
         captured++;

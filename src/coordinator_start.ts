@@ -75,8 +75,8 @@ export const PYTHON_PROBE_COMMAND = [
  * so its redirects bind here. */
 export const PYTHON_PROBE_LINE = `exec /bin/sh -c '${PYTHON_PROBE_COMMAND}'`;
 
-/** The probe a capture with nothing to install asks instead
- * (`?snapshot=capture-phone`): only "is there a python3?", 0 or 42. The
+/** The probe the phone's capture asks instead (`?snapshot=capture-phone`,
+ * `captureInterpreterOnly`): only "is there a python3?", 0 or 42. The
  * phone's snapshot is the image's own python3, without the set. */
 export const PYTHON_INTERPRETER_PROBE_LINE =
   `exec /bin/sh -c 'command -v python3 >/dev/null && exit 0; exit ${PYTHON_MISSING_EXIT}'`;
@@ -146,6 +146,9 @@ export type StartDeps<S extends StartableSession> = {
    * once Python is there. It says its own success; its failure is posted
    * as a failed capture, not as a Jupyter that did not start. */
   capture?(session: S): Promise<void>;
+  /** The phone's capture (`?snapshot=capture-phone`): it installs
+   * nothing and needs only python3, not the Python set. */
+  captureInterpreterOnly?: boolean;
   post(report: StartReport): void;
   /** How often "starting Jupyter (N s)" is posted. */
   tickMs?: number;
@@ -172,10 +175,10 @@ export async function startSandbox<S extends StartableSession>(
     deps.post({ type: "shell-ready" });
     return undefined;
   }
-  // A capture the page asks to install nothing for seals the image's own
-  // python3 (the phone's snapshot): it needs python3, not the set.
+  // The phone's capture seals the image's own python3: it needs python3,
+  // not the set.
   const interpreterOnly = deps.capture !== undefined &&
-    deps.installPython === undefined;
+    deps.captureInterpreterOnly === true;
   const probed = await probePython(
     session.process,
     deps.probeTimeoutMs,

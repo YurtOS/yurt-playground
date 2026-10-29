@@ -487,6 +487,8 @@ function boot(
       snapshot: snapshotMode(),
       snapshotId: uploadedSnapshotId(),
       capturePackages: extra,
+      capturePhone: new URL(location.href).searchParams.get("snapshot") ===
+        PHONE_CAPTURE,
     });
   });
 }

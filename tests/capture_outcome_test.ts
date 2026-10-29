@@ -228,9 +228,6 @@ Deno.test("a library directory inside another is walked once, with it", async ()
 });
 
 Deno.test("a capture precompiles an installed Python set, never the phone's image-only Python", () => {
-  assertEquals(
-    capturePrecompiles("img/python@3.14.7-yurt_0:ab01e884f08e0619"),
-    true,
-  );
-  assertEquals(capturePrecompiles(null), false);
+  assertEquals(capturePrecompiles("full"), true);
+  assertEquals(capturePrecompiles("phone"), false);
 });

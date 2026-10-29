@@ -119,6 +119,11 @@ type ToWorker =
     // `?snapshot=capture&packages=a,b`: packages a capture installs after
     // the Python set, before it seals (scripts/snapshot-local.ts).
     capturePackages?: string[];
+    // `?snapshot=capture-phone`: the phone's capture, with
+    // `snapshot: "capture"` and no `python` request: it seals the image's
+    // own python3 as it boots, records no Python set and precompiles
+    // nothing. Any other capture must install a Python set.
+    capturePhone?: boolean;
   }
   // Install Python again after a failed install (the cell's Install), then
   // start the kernel. Answered like a boot: status, then notebook-ready or
@@ -348,13 +353,14 @@ type PythonRequest = {
  * in the kernel's place: a sealed sandbox runs nothing more. */
 async function captureSnapshot(
   session: Awaited<ReturnType<typeof bootPlayground>>,
-  /** The Python set the capture installed, as a layer key; null when the
-   * site installs none (the full image has it). */
+  /** The Python set the capture installed, as a layer key; null for the
+   * phone's capture, which installs none. */
   pythonSet: string | null,
   /** Packages to install after the Python set, before the seal
    * (`?snapshot=capture&packages=`): in the snapshot's memory only, so a
    * restore's checks are the Python set's alone. */
-  packages: readonly string[] = [],
+  packages: readonly string[],
+  kind: "full" | "phone",
 ): Promise<void> {
   if (session.seal === undefined || session.process === undefined) {
     throw new Error("this session cannot seal");
@@ -371,10 +377,10 @@ async function captureSnapshot(
     });
   }
   if (packages.length > 0) await installed.read();
-  // The phone's snapshot (no Python set installed) is the image's own
-  // python3 left as it boots: bytecode for its standard library would add
-  // ~32 MiB to the memory a phone restores (capturePrecompiles).
-  if (capturePrecompiles(pythonSet)) {
+  // The phone's snapshot is the image's own python3 left as it boots:
+  // bytecode for its standard library would add ~32 MiB to the memory a
+  // phone restores (capturePrecompiles).
+  if (capturePrecompiles(kind)) {
     // Bytecode for every module the packages ship as source only
     // (PRECOMPILE_PROGRAM): each start compiled them again, slow on Safari,
     // where compiling one of wcwidth's modules also overflowed the Worker's
@@ -724,6 +730,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
    * stalled install runs again on a fresh sandbox (the one deliberate
    * exception to "never stops the session": the stalled one is dropped
    * first). */
+  const phoneCapture = msg.snapshot === "capture" &&
+    msg.capturePhone === true;
   const begin = async () => {
     live = liveAnswers(msg.python);
     // Never stops the session once its shell is up (src/coordinator_start.ts).
@@ -746,15 +754,26 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       installPython,
       startKernel: (session, relaunching) =>
         startGuestKernel(session, kernelPorts, { relaunching }),
+      captureInterpreterOnly: phoneCapture,
       capture: msg.snapshot === "capture"
         ? (session) => {
-          if (python?.image !== undefined && capturedSet === undefined) {
-            throw new Error("the capture's Python install did not run");
+          // A snapshot without a Python set is a phone's, and is restored
+          // only by a page that installs none: only the phone's capture
+          // may make one.
+          if (phoneCapture && python !== undefined) {
+            throw new Error("the phone's capture asks for no Python install");
+          }
+          if (!phoneCapture && capturedSet === undefined) {
+            throw new Error(
+              "this capture installed no Python set (the phone's capture, " +
+                "without one, is ?snapshot=capture-phone)",
+            );
           }
           return captureSnapshot(
             session,
-            capturedSet ?? null,
+            phoneCapture ? null : capturedSet!,
             msg.capturePackages ?? [],
+            phoneCapture ? "phone" : "full",
           );
         }
         : undefined,

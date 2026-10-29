@@ -35,9 +35,10 @@
  *               the same way)
  *   --dry-run   everything but the push
  *   --site      the site the URL is for (default the live site)
- *   --before-deploy  a site that does not run this checkout's pins yet is
- *               a note, not a refusal: for a snapshot of pins a pending
- *               deploy brings (its URL boots the image until then)
+ *   --before-deploy  a site that runs another build than this checkout's
+ *               pins is a note, not a refusal: for a snapshot of pins a
+ *               pending deploy brings (its URL boots the image until
+ *               then); a site whose pins cannot be read is still refused
  *
  * List: `git ls-remote origin 'refs/snapshots/*'`. Delete:
  * `git push origin :refs/snapshots/<name>` (the page then refuses its URL:
@@ -315,7 +316,11 @@ async function main(): Promise<void> {
   // falls back.
   const siteProblem = await siteIdentityProblem(site, pins);
   if (siteProblem !== undefined) {
-    if (!beforeDeploy) die(siteProblem);
+    // Only "runs another build" waits for a deploy; a site whose pins
+    // cannot be read (a mistyped --site) is refused either way.
+    if (!beforeDeploy || siteProblem.startsWith("cannot read ")) {
+      die(siteProblem);
+    }
     say(`note (--before-deploy): ${siteProblem}`);
   }
 
