@@ -108,18 +108,21 @@ export function postCaptured(
  * The program a capture runs (as root, in the guest's python3) to write
  * bytecode for the Python set: the login user cannot write __pycache__
  * there, so every start compiled the modules again. The directories are
- * the interpreter's own (sysconfig's stdlib and purelib), not a version's
- * path; none of them present, or a module that does not compile, is a
- * non-zero exit that fails the capture -- a snapshot without its bytecode
- * is not sealed.
+ * the interpreter's own (sysconfig's stdlib and purelib, where the set is
+ * installed), not a version's path, each walked once (purelib usually lies
+ * inside stdlib). A directory that is missing, or a module that does not
+ * compile, is a non-zero exit that fails the capture -- a snapshot without
+ * its bytecode is not sealed.
  */
 export const PRECOMPILE_PROGRAM = `
 import compileall, os, sys, sysconfig
 paths = sorted({sysconfig.get_path("stdlib"), sysconfig.get_path("purelib")})
-present = [path for path in paths if os.path.isdir(path)]
-if not present:
-    sys.exit("no Python library directory to compile: " + ", ".join(paths))
-compiled = [compileall.compile_dir(path, quiet=1) for path in present]
+missing = [path for path in paths if not os.path.isdir(path)]
+if missing:
+    sys.exit("a Python library directory to compile is missing: " + ", ".join(missing))
+roots = [path for path in paths
+         if not any(path.startswith(other + os.sep) for other in paths)]
+compiled = [compileall.compile_dir(path, quiet=1) for path in roots]
 sys.exit(0 if all(compiled) else 1)
 `;
 

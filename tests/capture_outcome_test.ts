@@ -14,10 +14,15 @@ Deno.test("in a capture, any end of the boot but the captured file is a failed c
   // An error, with its reason.
   const error: CaptureMark = {};
   markBootEnded(error, true);
-  markBootEnded(error, true, "snapshot capture failed: compileall exited 1");
+  markBootEnded(
+    error,
+    true,
+    "snapshot capture failed: precompiling the Python set exited 1",
+  );
   assertEquals(error, {
     snapshotCapture: "failed",
-    snapshotCaptureError: "snapshot capture failed: compileall exited 1",
+    snapshotCaptureError:
+      "snapshot capture failed: precompiling the Python set exited 1",
   });
   // shell-ready (a shell-only session): no reason but the generic one.
   const shellOnly: CaptureMark = {};
@@ -61,12 +66,12 @@ Deno.test("a named reason for a failed capture stays; only the generic one is re
   const mark: CaptureMark = {};
   markBootEnded(mark, true);
   assertEquals(mark.snapshotCaptureError, NO_SNAPSHOT);
-  markBootEnded(mark, true, "compileall exited 1");
+  markBootEnded(mark, true, "precompiling the Python set exited 1");
   markBootEnded(mark, true, "coordinator worker failed");
   markBootEnded(mark, true);
   assertEquals(mark, {
     snapshotCapture: "failed",
-    snapshotCaptureError: "compileall exited 1",
+    snapshotCaptureError: "precompiling the Python set exited 1",
   });
 });
 
@@ -101,8 +106,11 @@ Deno.test("an empty reason names nothing: a real one replaces it", () => {
   const mark: CaptureMark = {};
   markBootEnded(mark, true, "");
   assertEquals(mark.snapshotCaptureError, NO_SNAPSHOT);
-  markBootEnded(mark, true, "compileall exited 1");
-  assertEquals(mark.snapshotCaptureError, "compileall exited 1");
+  markBootEnded(mark, true, "precompiling the Python set exited 1");
+  assertEquals(
+    mark.snapshotCaptureError,
+    "precompiling the Python set exited 1",
+  );
   const blank: CaptureMark = { snapshotCaptureError: "" };
   markBootEnded(blank, true, "coordinator worker failed");
   assertEquals(blank.snapshotCaptureError, "coordinator worker failed");
@@ -124,13 +132,23 @@ Deno.test("the worker posts its 'captured' status before the file, so a save fai
 
 /** precompileLine's program, run by this machine's python3 with a
  * sysconfig that names `paths`. */
-async function precompile(paths: { stdlib: string; purelib: string }) {
+async function precompile(
+  paths: { stdlib: string; purelib: string },
+  { countWalks = false } = {},
+) {
   const fake = await Deno.makeTempDir();
   try {
     await Deno.writeTextFile(
       `${fake}/sysconfig.py`,
       `def get_path(name):\n    return ${JSON.stringify(paths)}[name]\n`,
     );
+    if (countWalks) {
+      // A compileall that only says which directory it was asked to walk.
+      await Deno.writeTextFile(
+        `${fake}/compileall.py`,
+        "def compile_dir(path, quiet=0):\n    print('walk', path)\n    return True\n",
+      );
+    }
     // -S: no site, which would import the real sysconfig first.
     const out = await new Deno.Command("sh", {
       args: ["-c", precompileLine("python3 -S")],
@@ -138,13 +156,17 @@ async function precompile(paths: { stdlib: string; purelib: string }) {
       stdout: "piped",
       stderr: "piped",
     }).output();
-    return { code: out.code, stderr: new TextDecoder().decode(out.stderr) };
+    return {
+      code: out.code,
+      stdout: new TextDecoder().decode(out.stdout),
+      stderr: new TextDecoder().decode(out.stderr),
+    };
   } finally {
     await Deno.remove(fake, { recursive: true });
   }
 }
 
-Deno.test("a capture compiles the interpreter's own library directories, and fails without them", async () => {
+Deno.test("a capture compiles the interpreter's own library directories once each, and fails when one is missing", async () => {
   const lib = await Deno.makeTempDir();
   try {
     await Deno.mkdir(`${lib}/site-packages`);
@@ -157,16 +179,18 @@ Deno.test("a capture compiles the interpreter's own library directories, and fai
     assertEquals(ok.code, 0, ok.stderr);
     const cached = [...Deno.readDirSync(`${lib}/site-packages/__pycache__`)];
     assertEquals(cached.length, 1);
-    // Another minor version's path: nothing there to compile.
-    const none = await precompile({
-      stdlib: `${lib}/python3.15`,
+    // The interpreter's stdlib is there; the set's purelib is not.
+    const noSet = await precompile({
+      stdlib: lib,
       purelib: `${lib}/python3.15/site-packages`,
     });
-    assertEquals(none.code, 1);
+    assertEquals(noSet.code, 1);
     assertEquals(
-      none.stderr.includes("no Python library directory to compile"),
+      noSet.stderr.includes(
+        `a Python library directory to compile is missing: ${lib}/python3.15/site-packages`,
+      ),
       true,
-      none.stderr,
+      noSet.stderr,
     );
     // A module that does not compile fails it too.
     await Deno.writeTextFile(`${lib}/broken.py`, "def (:\n");
@@ -177,5 +201,27 @@ Deno.test("a capture compiles the interpreter's own library directories, and fai
     assertEquals(broken.code, 1);
   } finally {
     await Deno.remove(lib, { recursive: true });
+  }
+});
+
+Deno.test("a library directory inside another is walked once, with it", async () => {
+  const lib = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${lib}/site-packages`);
+    await Deno.mkdir(`${lib}-site`);
+    const nested = await precompile({
+      stdlib: lib,
+      purelib: `${lib}/site-packages`,
+    }, { countWalks: true });
+    assertEquals(nested.stdout, `walk ${lib}\n`, nested.stderr);
+    // A sibling whose name only starts the same is its own directory.
+    const apart = await precompile({
+      stdlib: lib,
+      purelib: `${lib}-site`,
+    }, { countWalks: true });
+    assertEquals(apart.stdout, `walk ${lib}\nwalk ${lib}-site\n`);
+  } finally {
+    await Deno.remove(lib, { recursive: true });
+    await Deno.remove(`${lib}-site`, { recursive: true });
   }
 });

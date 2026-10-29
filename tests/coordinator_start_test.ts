@@ -375,12 +375,13 @@ Deno.test("a failed capture is said as one, not as a Jupyter that did not start"
     noJupyter: false,
     installPython: () => Promise.resolve(),
     startKernel: () => Promise.resolve(transport),
-    capture: () => Promise.reject(new Error("compileall exited 2")),
+    capture: () =>
+      Promise.reject(new Error("precompiling the Python set exited 2")),
     post: (report) => reports.push(report),
   });
   assertEquals(reports.at(-1), {
     type: "error",
-    message: "snapshot capture failed: compileall exited 2",
+    message: "snapshot capture failed: precompiling the Python set exited 2",
     endsBoot: true,
   });
 });

@@ -275,7 +275,7 @@ async function capture(): Promise<void> {
     const page = await browser.newPage({ acceptDownloads: true });
     page.on("console", (message) => {
       const text = message.text();
-      if (message.type() === "error" || /snapshot|compileall/.test(text)) {
+      if (message.type() === "error" || /snapshot/.test(text)) {
         say(`page: ${text.slice(0, 300)}`);
       }
     });
@@ -371,20 +371,25 @@ async function split(file: Uint8Array, dir: string) {
   };
 }
 
-function releaseNotes(train: string, pin: SnapshotPin): string {
+export function releaseNotes(train: string, pin: SnapshotPin): string {
   const built = pin.builtFrom;
   return [
     `The sealed sandbox \`?snapshot=1\` restores for ${train}: the in-tab`,
     "Yurt kernel's memory after the slim image booted and the Python set was",
     "installed and precompiled, with no process left in it. A restore needs",
-    "exactly this kernel, image and Python set:",
+    "every one of these to be the page's own:",
     "",
     `- kernel wasm sha256 \`${built.kernelSha256}\``,
+    `- yurtos-kernel rev (the page's JS host) \`${built.kernelRev}\``,
+    `- seal image version \`${built.sealVersion}\``,
+    `- page boot setup \`${built.bootSetup}\``,
     `- image sha256 \`${built.imageSha256}\``,
-    `- Python set (python-seal) sha256 \`${built.pythonSealSha256}\``,
+    `- the train's sealable CPython (pythonSeal) sha256 \`${built.pythonSealSha256}\``,
+    `- the Python set installed, as the live index offers it \`${built.pythonSet}\``,
     "",
-    `\`${ASSET}\` is published in ${pin.parts.length} parts (\`${ASSET}.0\`...),`,
-    `${pin.size} bytes in all, sha256 \`${pin.sha256}\` (\`${ASSET}.sha256\`).`,
+    `Header format ${pin.format}. \`${ASSET}\` is published in ${pin.parts.length} parts`,
+    `(\`${ASSET}.0\`...), ${pin.size} bytes in all, sha256 \`${pin.sha256}\``,
+    `(\`${ASSET}.sha256\`).`,
     "",
     "Captured locally by `scripts/release-snapshot.ts`: the page served by the",
     "dev server, `/?start&snapshot=capture` in headless Chromium, from a",

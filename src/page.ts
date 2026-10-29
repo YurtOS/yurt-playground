@@ -242,10 +242,13 @@ function boot(
   // sandbox) until that boot ends: only then is a status worth keeping for
   // a reloaded tab. A later one (a Jupyter restart) is not a boot.
   let booting = true;
+  // `?snapshot=capture`: each end of the boot marks its outcome on <html>,
+  // where scripts/release-snapshot.ts waits (src/capture_outcome.ts).
+  const capturing = snapshotMode() === "capture";
   const endBoot = (why?: string) => {
     booting = false;
     rememberBooting(undefined);
-    endCapture(why);
+    markBootEnded(document.documentElement.dataset, capturing, why);
   };
   const pinsPromise = fetchSitePins();
   // The cell's Install: enabled when the pins name a slim image; after a
@@ -455,16 +458,6 @@ function snapshotMode(): "restore" | "capture" | undefined {
   if (value === "1") return "restore";
   if (value === "capture") return "capture";
   return undefined;
-}
-
-/** `?snapshot=capture`'s outcome, on <html> for scripts/release-snapshot.ts
- * to wait on (src/capture_outcome.ts). */
-function endCapture(why?: string): void {
-  markBootEnded(
-    document.documentElement.dataset,
-    snapshotMode() === "capture",
-    why,
-  );
 }
 
 /** `?snapshot=capture`'s result, saved as a download. */

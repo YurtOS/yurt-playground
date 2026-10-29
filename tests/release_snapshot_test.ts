@@ -4,6 +4,7 @@ import {
   checkoutProblem,
   checkPin,
   PIN_REFUSED_EXIT,
+  releaseNotes,
   releaseProblems,
   snapshotPinProblem,
   withoutGitVariables,
@@ -760,4 +761,31 @@ Deno.test("a full check of a snapshot file reads it once", async () => {
     });
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("a snapshot release's notes name everything a restore checks", () => {
+  const builtFrom = {
+    kernelSha256: "k".repeat(64),
+    kernelRev: "rev0123",
+    sealVersion: 1,
+    bootSetup: 2,
+    imageSha256: "i".repeat(64),
+    pythonSealSha256: "p".repeat(64),
+    pythonSet: "img/python@3.14.7-yurt_0:0123456789abcdef",
+  };
+  const notes = releaseNotes("playground-t", {
+    releaseRepo: "YurtOS/yurt-playground",
+    release: "snapshot-playground-t",
+    format: 3,
+    sha256: "s".repeat(64),
+    size: 10,
+    parts: ["a".repeat(64)],
+    builtFrom,
+  });
+  for (const value of Object.values(builtFrom)) {
+    assertEquals(notes.includes(`\`${value}\``), true, String(value));
+  }
+  assertEquals(notes.includes("sealable CPython (pythonSeal) sha256"), true);
+  assertEquals(notes.includes("Python set installed"), true);
+  assertEquals(notes.includes("Header format 3"), true);
 });
