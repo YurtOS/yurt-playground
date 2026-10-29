@@ -457,6 +457,8 @@ export async function installWithLayer<E>(
     deps.pristine
   ) {
     let key: string | undefined;
+    /** The live index could not be had: offline. */
+    let offline: IndexUnreadable | undefined;
     try {
       live = await deps.liveKey();
       key = live;
@@ -466,19 +468,22 @@ export async function installWithLayer<E>(
       // Anything else went wrong in resolving the answer: no layer, and the
       // install below uses pkg -- said, not swallowed.
       if (error instanceof IndexUnreadable) {
+        offline = error;
         key = await store.storedKey(image);
-        console.info(
-          key === undefined
-            ? "the live index could not be had and this browser keeps no layer for this image: installing with pkg"
-            : "the live index could not be had: using this browser's stored layer",
-          error,
-        );
       } else {
         console.warn("the live Python set could not be resolved:", error);
         key = undefined;
       }
     }
     const entries = key === undefined ? undefined : await store.get(key);
+    if (offline !== undefined) {
+      console.info(
+        entries === undefined
+          ? "the live index could not be had and this browser keeps no usable layer for this image: installing with pkg"
+          : "the live index could not be had: using this browser's stored layer",
+        offline,
+      );
+    }
     if (entries !== undefined) {
       deps.progress("Python: installing from this browser's earlier install");
       let cause: string;

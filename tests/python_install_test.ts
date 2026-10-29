@@ -2,7 +2,6 @@ import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { Catalog } from "../src/packages.ts";
 import { parsePins } from "../src/pins.ts";
 import {
-  catalogOnce,
   IndexUnreadable,
   liveAnswers,
   liveLayerKey,
@@ -162,29 +161,41 @@ Deno.test("one boot's two questions to the live index come from one read of it",
   assertEquals(loads, 1);
 });
 
-Deno.test("a failed read of the live index is not kept: the next question reads again", async () => {
-  const results = [
-    Promise.reject(new TypeError("network down")),
-    Promise.resolve({ metadata: new Map() } as unknown as Catalog),
-  ];
-  results[0].catch(() => {});
+Deno.test("a boot keeps its read of the live index, a failed one included, until the install's question is answered", async () => {
+  const catalog = { metadata: new Map() } as unknown as Catalog;
+  const reads: ("fail" | "ok")[] = ["fail", "ok", "ok"];
   let loads = 0;
-  const once = catalogOnce(() => results[loads++]);
+  const live = liveAnswers({ set: ["python"], image: "img" }, () => {
+    const result = reads[loads++];
+    return result === "fail"
+      ? Promise.reject(new TypeError("network down"))
+      : Promise.resolve(catalog);
+  });
   const info = console.info;
   console.info = () => {};
   try {
-    assertEquals(
-      await livePythonSet({ set: ["python"], image: "img" }, 1000, once),
-      undefined,
-      "the first read failed: no answer",
-    );
-    assertEquals(
-      await livePythonSet({ set: ["python"], image: "img" }, 1000, once),
-      NO_COMPLETE_SET,
-      "the second read answered",
-    );
+    // The snapshot's question fails; the install's, in the same boot,
+    // waits no second time on the index.
+    assertEquals(await live.pythonSet(), undefined);
+    await assertRejects(() => live.layerKey(), IndexUnreadable);
+    assertEquals(loads, 1);
+    // Answered: a later question (a retry on this sandbox) reads again.
+    assertEquals(await live.layerKey(), undefined);
+    assertEquals(loads, 2);
+    assertEquals(await live.pythonSet(), NO_COMPLETE_SET);
+    assertEquals(loads, 3);
   } finally {
     console.info = info;
   }
-  assertEquals(loads, 2);
+});
+
+Deno.test("each boot makes its own live answers (coordinator_worker's begin)", async () => {
+  // The worker cannot run here: its begin() is checked as written.
+  const worker = await Deno.readTextFile(
+    new URL("../src/coordinator_worker.ts", import.meta.url),
+  );
+  const begin = worker.match(/const begin = async \(\) => \{\n\s*(.*)\n/);
+  assertEquals(begin?.[1], "live = liveAnswers(msg.python);");
+  assertEquals(worker.includes("livePythonSet: () => live.pythonSet(),"), true);
+  assertEquals(worker.includes("liveKey: () => live.layerKey(),"), true);
 });

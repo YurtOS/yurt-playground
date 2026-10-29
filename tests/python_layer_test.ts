@@ -521,11 +521,19 @@ Deno.test("offline, the page says whether it uses a stored layer or installs wit
     assertEquals(await installWithLayer(withLayer.deps), "layer");
     const without = fakeDeps({ live: new IndexUnreadable("offline") });
     assertEquals(await installWithLayer(without.deps), "pkg");
+    // A key that names a layer the store no longer gives back.
+    const lost = fakeDeps({
+      stored: { key: "img/set1", entries: ["e1"] },
+      live: new IndexUnreadable("offline"),
+    });
+    lost.deps.store!.get = () => Promise.resolve(undefined);
+    assertEquals(await installWithLayer(lost.deps), "pkg");
   } finally {
     console.info = info;
   }
   assertEquals(said, [
     "the live index could not be had: using this browser's stored layer",
-    "the live index could not be had and this browser keeps no layer for this image: installing with pkg",
+    "the live index could not be had and this browser keeps no usable layer for this image: installing with pkg",
+    "the live index could not be had and this browser keeps no usable layer for this image: installing with pkg",
   ]);
 });

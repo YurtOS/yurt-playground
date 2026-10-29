@@ -547,9 +547,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   if (msg.type !== "start") return;
   kernelPorts = msg.kernelPorts;
   // The live index's answers for this boot: a snapshot's check and the
-  // install's stored-layer question, from one read. Made anew by each
-  // begin() below, so a fresh sandbox asks again.
-  let live = liveAnswers(msg.python);
+  // install's stored-layer question, from one read. Made by each begin()
+  // below, so a fresh sandbox asks again.
+  let live: ReturnType<typeof liveAnswers>;
   const term = workerTerm({ cols: msg.cols, rows: msg.rows });
   const env = {
     isolated: msg.isolated,

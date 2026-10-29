@@ -154,26 +154,13 @@ export async function livePythonSet(
   }
 }
 
-/** A loader for {@link liveLayerKey} and {@link livePythonSet} that reads
- * the live index once and shares it between them. A failed read is not
- * kept: the next question reads again. The calls must not overlap -- the
- * first caller's signal (its time bound) bounds the shared read -- which
- * holds for one boot, where they come one after another. */
-export function catalogOnce(
-  load: (signal: AbortSignal) => Promise<Catalog> = defaultCatalogLoad,
-): (signal: AbortSignal) => Promise<Catalog> {
-  let loaded: Promise<Catalog> | undefined;
-  return (signal) =>
-    loaded ??= load(signal).catch((error) => {
-      loaded = undefined;
-      throw error;
-    });
-}
-
 /** One boot's two questions to the live index about `request`'s Python
- * set -- a snapshot's (`pythonSet`) and the install's stored layer
- * (`layerKey`) -- answered from one read of it. Made anew for each boot,
- * so a fresh sandbox asks the index again. */
+ * set -- a snapshot's (`pythonSet`), then the install's stored layer
+ * (`layerKey`) -- answered from one read of it, kept for that boot, a
+ * failed read included (no second 20 s wait). The install's answer ends
+ * the boot's read: a later question (a retry on the same sandbox) reads
+ * again. Made anew for each boot. The two questions come one after the
+ * other: the first one's time bound bounds the shared read. */
 export function liveAnswers(
   request: { set: readonly string[]; image?: string } | undefined,
   load: (signal: AbortSignal) => Promise<Catalog> = defaultCatalogLoad,
@@ -181,13 +168,21 @@ export function liveAnswers(
   pythonSet: () => Promise<string | null | undefined>;
   layerKey: () => Promise<string | undefined>;
 } {
-  const once = catalogOnce(load);
+  let read: Promise<Catalog> | undefined;
+  let answered = false;
+  const once = (signal: AbortSignal) =>
+    answered ? load(signal) : read ??= load(signal);
   return {
     pythonSet: () => livePythonSet(request, undefined, once),
-    layerKey: () =>
-      request?.image === undefined
-        ? Promise.resolve(undefined)
-        : liveLayerKey(request.image, request.set, undefined, once),
+    layerKey: async () => {
+      if (request?.image === undefined) return undefined;
+      try {
+        return await liveLayerKey(request.image, request.set, undefined, once);
+      } finally {
+        answered = true;
+        read = undefined;
+      }
+    },
   };
 }
 
