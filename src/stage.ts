@@ -39,7 +39,9 @@ export function setPidCredentials(
   }
   const { rc } = mk.syscall(METHOD.KERNEL_SET_PROCESS_CREDENTIALS, req, 0);
   if (Number(rc) !== 0) {
-    throw new Error(`set credentials pid=${pid} uid=${uid}: rc=${rc}`);
+    throw new Error(
+      `set credentials pid=${pid} uid=${uid}: ${errnoText(Number(rc))}`,
+    );
   }
 }
 
@@ -58,7 +60,9 @@ function chownPath(
   req.set(pathBytes, 8);
   const { rc } = mk.syscall(SYS_CHOWN, req, 0);
   if (Number(rc) !== 0) {
-    throw new Error(`chown ${path} ${uid}:${gid} failed: rc=${rc}`);
+    throw new Error(
+      `chown ${path} ${uid}:${gid} failed: ${errnoText(Number(rc))}`,
+    );
   }
 }
 
@@ -103,9 +107,9 @@ function setEntryMetadata(
   const { rc } = mk.syscall(KERNEL_VFS_SET_METADATA, req, 0);
   if (Number(rc) !== 0) {
     throw new Error(
-      `set metadata on ${path} (mode ${
-        entry.mode.toString(8)
-      }) failed: rc=${rc}`,
+      `set metadata on ${path} (mode ${entry.mode.toString(8)}) failed: ${
+        errnoText(Number(rc))
+      }`,
     );
   }
 }
@@ -205,7 +209,7 @@ function registerRamfsDirectory(mk: KernelHostInterface, path: string): void {
   const { rc } = mk.syscall(METHOD.KERNEL_FS_MKDIR, s(path), 0);
   const code = Number(rc);
   if (code !== 0 && code !== NEG_EEXIST) {
-    throw new Error(`kernel mkdir failed for ${path}: rc=${rc}`);
+    throw new Error(`kernel mkdir failed for ${path}: ${errnoText(code)}`);
   }
 }
 
@@ -222,7 +226,9 @@ function registerRamfsSymlink(
   req.set(linkBytes, 4 + targetBytes.byteLength);
   const { rc } = mk.syscall(METHOD.KERNEL_FS_SYMLINK, req, 0);
   if (Number(rc) !== 0) {
-    throw new Error(`kernel symlink failed for ${linkPath}: rc=${rc}`);
+    throw new Error(
+      `kernel symlink failed for ${linkPath}: ${errnoText(Number(rc))}`,
+    );
   }
 }
 
@@ -390,7 +396,9 @@ export function drainDirtyPaths(mk: KernelHostInterface): string[] {
       responseCap(mk),
     );
     const written = Number(rc);
-    if (written < 0) throw new Error(`drain dirty paths: rc=${rc}`);
+    if (written < 0) {
+      throw new Error(`drain dirty paths: ${errnoText(written)}`);
+    }
     if (written === 0) return paths;
     const view = new DataView(
       response.buffer,
@@ -427,8 +435,8 @@ export function vfsStat(
   const code = Number(rc);
   // Gone (or a parent that is no directory now): no entry. Anything else
   // is an error, not an absence a layer may silently skip.
-  if (code === -2 || code === -20) return undefined;
-  if (code !== 32) throw new Error(`stat ${path}: rc=${rc}`);
+  if (missing(code)) return undefined;
+  if (code !== 32) throw new Error(`stat ${path}: ${errnoText(code)}`);
   const view = new DataView(
     response.buffer,
     response.byteOffset,
@@ -451,6 +459,43 @@ export function vfsStat(
   };
 }
 
+/** A VFS read's request (offset 0, then `path`; `view` sets the offset),
+ * and the most it can answer: the request and the response share the
+ * kernel's scratch buffer. */
+function vfsReadRequest(mk: KernelHostInterface, path: string) {
+  const pathBytes = s(path);
+  const request = new Uint8Array(8 + pathBytes.byteLength);
+  request.set(pathBytes, 8);
+  return {
+    request,
+    view: new DataView(request.buffer),
+    cap: responseCap(mk) - request.byteLength,
+  };
+}
+
+/** A path that is not there: no entry (ENOENT), or a parent that is no
+ * directory (ENOTDIR). Anything else is an error, not an absence. */
+function missing(rc: number): boolean {
+  return rc === -2 || rc === -20;
+}
+
+/** The errnos the kernel answers these calls with, in words. */
+const ERRNO_WORDS: Record<number, string> = {
+  1: "operation not permitted",
+  2: "no such file",
+  5: "I/O error",
+  9: "bad file descriptor",
+  13: "permission denied",
+  17: "file exists",
+  20: "not a directory",
+  21: "is a directory",
+  22: "invalid argument",
+  40: "too many levels of symbolic links",
+};
+function errnoText(rc: number): string {
+  return ERRNO_WORDS[-rc] ?? `error ${-rc}`;
+}
+
 /** A regular file's bytes (`size` of them, as its stat says). */
 export function vfsReadFile(
   mk: KernelHostInterface,
@@ -458,12 +503,7 @@ export function vfsReadFile(
   size: number,
 ): Uint8Array {
   const out = new Uint8Array(size);
-  const pathBytes = s(path);
-  const request = new Uint8Array(8 + pathBytes.byteLength);
-  request.set(pathBytes, 8);
-  const view = new DataView(request.buffer);
-  // The request and the response share the kernel's scratch buffer.
-  const cap = responseCap(mk) - request.byteLength;
+  const { request, view, cap } = vfsReadRequest(mk, path);
   let at = 0;
   while (at < size) {
     view.setBigUint64(0, BigInt(at), true);
@@ -473,7 +513,7 @@ export function vfsReadFile(
       Math.min(cap, size - at),
     );
     const count = Number(rc);
-    if (count < 0) throw new Error(`read ${path}: rc=${rc}`);
+    if (count < 0) throw new Error(`read ${path}: ${errnoText(count)}`);
     if (count === 0) break;
     out.set(response.subarray(0, count), at);
     at += count;
@@ -484,11 +524,29 @@ export function vfsReadFile(
   return out;
 }
 
+/** A whole file in one VFS read, so one version of it even if it is
+ * replaced meanwhile; `undefined` when there is none. A file that fills
+ * the read (the kernel's scratch room) may go on past it, and throws. */
+export function vfsReadWhole(
+  mk: KernelHostInterface,
+  path: string,
+): Uint8Array | undefined {
+  const { request, cap } = vfsReadRequest(mk, path);
+  const { rc, response } = mk.syscall(KERNEL_VFS_READ, request, cap);
+  const count = Number(rc);
+  if (missing(count)) return undefined;
+  if (count < 0) throw new Error(`read ${path}: ${errnoText(count)}`);
+  if (count >= cap) {
+    throw new Error(`${path} does not fit one read (${cap} bytes)`);
+  }
+  return response.slice(0, count);
+}
+
 /** A symlink's target. */
 export function vfsReadlink(mk: KernelHostInterface, path: string): string {
   const { rc, response } = mk.syscall(KERNEL_VFS_READLINK, s(path), 4096);
   const length = Number(rc);
-  if (length < 0) throw new Error(`readlink ${path}: rc=${rc}`);
+  if (length < 0) throw new Error(`readlink ${path}: ${errnoText(length)}`);
   return textDecoder.decode(response.subarray(0, length));
 }
 
@@ -500,7 +558,7 @@ export function vfsReaddir(mk: KernelHostInterface, path: string): string[] {
   for (;;) {
     const { rc, response } = mk.syscall(KERNEL_VFS_READDIR, request, cap);
     const needed = Number(rc);
-    if (needed < 0) throw new Error(`readdir ${path}: rc=${rc}`);
+    if (needed < 0) throw new Error(`readdir ${path}: ${errnoText(needed)}`);
     if (needed > cap) {
       if (needed > most) {
         throw new Error(`readdir ${path}: ${needed} bytes of names`);
@@ -554,7 +612,7 @@ export function stageLayer(
     if (existing !== undefined) {
       const { rc } = mk.syscall(KERNEL_VFS_UNLINK_TREE, s(entry.path), 0);
       if (Number(rc) !== 0) {
-        throw new Error(`replace ${entry.path}: rc=${rc}`);
+        throw new Error(`replace ${entry.path}: ${errnoText(Number(rc))}`);
       }
     }
     if (entry.type === "file") writeRamfsFile(mk, entry.path, entry.bytes);

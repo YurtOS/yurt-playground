@@ -545,6 +545,38 @@ export async function loadCatalog(
   return { index, indexBytes, indexBundle, metadata };
 }
 
+/** What a panel install put in: the package, and the dependencies pkg's
+ * plan installed with it (its `install NAME VERSION` lines). The panel
+ * marks them at once; the next read of pkg's installed list
+ * (src/installed_list.ts) replaces the guess. */
+export function plannedInstalls(output: string, name: string): string[] {
+  const names = new Set(
+    [...output.matchAll(/^install (\S+) /gm)].map((match) => match[1]),
+  );
+  names.add(name);
+  return [...names];
+}
+
+/** The panel's Install buttons, by what the sandbox is known to have: those
+ * say Installed and cannot be clicked; none can while an install runs. */
+export function markInstalled(
+  buttons: Iterable<
+    {
+      dataset: { package?: string };
+      textContent: string | null;
+      disabled: boolean;
+    }
+  >,
+  installed: ReadonlySet<string>,
+  busy: boolean,
+): void {
+  for (const button of buttons) {
+    const has = installed.has(button.dataset.package ?? "");
+    button.textContent = has ? "Installed" : "Install";
+    button.disabled = busy || has;
+  }
+}
+
 /** What the menu lists for each package: its latest release and size. */
 export function catalogRows(catalog: Catalog): {
   name: string;

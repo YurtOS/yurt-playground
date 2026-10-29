@@ -148,12 +148,16 @@
         padding: 1px 8px;
         cursor: pointer;
       }
-      .bar-action:hover,
+      .bar-action:not([disabled]):hover,
       .bar-action:focus-visible {
         color: var(--text);
       }
       .bar-action[disabled] {
         cursor: progress;
+      }
+      /* Installed, not busy: nothing to wait for. */
+      #packages:not([data-install="running"]) .bar-action[disabled] {
+        cursor: default;
       }
       /* Packages: install from YurtOS/yurt-packages into this tab. */
       #packages {
@@ -170,6 +174,11 @@
       }
       #packages td {
         padding: 2px 16px 2px 0;
+      }
+      /* No note: the line takes no room, but stays in the accessibility
+         tree (display:none would drop it, as hidden does). */
+      #packages-installed-error:empty {
+        margin: 0;
       }
       #packages td.size {
         color: var(--muted);
@@ -755,6 +764,13 @@
           <p
             id="packages-status"
             data-testid="packages-status"
+            role="status"
+            aria-live="polite"
+          >
+          </p>
+          <p
+            id="packages-installed-error"
+            data-testid="packages-installed-error"
             role="status"
             aria-live="polite"
           >

@@ -1,4 +1,5 @@
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
+import { installedMarks, type InstalledReport } from "./installed_list.ts";
 import {
   hideMemoryRefused,
   MEMORY_REFUSED_RELOAD_ID,
@@ -23,6 +24,8 @@ import {
   catalogRows,
   formatBytes,
   loadCatalog,
+  markInstalled,
+  plannedInstalls,
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
 import {
@@ -57,6 +60,7 @@ type FromWorker =
   // The image has no python3: the shell runs, Jupyter was not launched.
   | { type: "python-missing"; error?: string }
   | { type: "pkg-progress"; req: number; text: string }
+  | InstalledReport
   | { type: "snapshot-captured"; blob: Blob; ms: number }
   | {
     type: "yurt-reply";
@@ -78,6 +82,19 @@ type FromWorker =
 let packageInstall:
   | ((name: string, progress: (text: string) => void) => Promise<string>)
   | undefined;
+
+/** Asks the coordinator to read pkg's installed list again; set at boot. */
+let askInstalled = () => {};
+/** Show the Packages panel's marks, and its note; set once it is wired. */
+let renderInstalled: (known: ReadonlySet<string>) => void = () => {};
+let showInstalledNote: (note: string) => void = () => {};
+/** What pkg has installed in this sandbox, as the coordinator reports it
+ * (`pkg-installed`), and the panel's own installs (src/installed_list.ts). */
+const installedPanel = installedMarks(
+  () => askInstalled(),
+  (known) => renderInstalled(known),
+  (note) => showInstalledNote(note),
+);
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
@@ -321,6 +338,7 @@ function boot(
       list: () => ask({ type: "yurt-list" }),
     };
   yurtState.connect(transport);
+  askInstalled = () => worker.postMessage({ type: "pkg-read-installed" });
   const installs = desktop === undefined
     ? packageRequests((req, name) =>
       worker.postMessage({
@@ -388,6 +406,9 @@ function boot(
     }
     if (msg.type === "pkg-progress" || msg.type === "pkg-reply") {
       installs?.answer(msg);
+    }
+    if (msg.type === "pkg-installed") {
+      installedPanel.report(msg);
     }
     // A capture ends in the sealed sandbox, with no Jupyter to wait for.
     if (msg.type === "snapshot-captured") {
@@ -571,16 +592,25 @@ function wirePackages(): void {
   // Its own line: the terminal's status is rewritten by the boot (Jupyter
   // starts after the shell), which would bury an install's outcome.
   const status = byId("packages-status");
+  // Its own line, so it never replaces an install's outcome; gone with the
+  // next read that works.
+  const installedError = byId("packages-installed-error");
+  // Truly empty (not the markup's whitespace), so it collapses (:empty).
+  installedError.textContent = "";
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
   // The sandbox stopped answering (src/install_request.ts): the panel
   // keeps that failure, with its reload note, and installs nothing more.
   let stopped = false;
+  renderInstalled = (known) =>
+    markInstalled(list.querySelectorAll("button"), known, busy || stopped);
+  showInstalledNote = (note) => installedError.textContent = note;
   const install = async (name: string) => {
     if (packageInstall === undefined || busy || stopped) return;
     busy = true;
     panel.dataset.install = "running";
-    for (const b of list.querySelectorAll("button")) b.disabled = true;
+    installedPanel.render();
+    const started = installedPanel.installStarted();
     try {
       const output = await packageInstall(
         name,
@@ -589,14 +619,9 @@ function wirePackages(): void {
       status.textContent = /^nothing to install$/m.test(output)
         ? `${name} is already installed`
         : `installed ${name}`;
-      // Everything pkg installed with it (its dependencies) is installed too.
-      const installed = new Set(
-        [...output.matchAll(/^install (\S+) /gm)].map((match) => match[1]),
-      );
-      installed.add(name);
-      for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
-        if (installed.has(b.dataset.package ?? "")) b.textContent = "Installed";
-      }
+      // Marked now; the coordinator's read of pkg's installed list, which
+      // follows, replaces the guess.
+      installedPanel.installed(started, plannedInstalls(output, name));
       panel.dataset.install = "done";
     } catch (error) {
       status.textContent = error instanceof Error
@@ -606,13 +631,12 @@ function wirePackages(): void {
       stopped = error instanceof InstallsStopped;
     } finally {
       busy = false;
-      for (const b of list.querySelectorAll("button")) {
-        b.disabled = stopped || b.textContent === "Installed";
-      }
+      installedPanel.render();
     }
   };
   let loading = false;
   const show = async () => {
+    installedPanel.opened();
     if (catalog !== undefined || loading) return;
     loading = true;
     try {
@@ -656,6 +680,7 @@ function wirePackages(): void {
       tr.append(name, version, size, action);
       list.append(tr);
     }
+    installedPanel.render();
   };
   toggle.addEventListener("click", () => {
     panel.hidden = !panel.hidden;

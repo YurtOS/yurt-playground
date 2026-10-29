@@ -43,6 +43,7 @@ import type {
 } from "./jupyter_transport.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
+import { type InstalledReport, installedReporter } from "./installed_list.ts";
 import {
   browserArchiveCache,
   installPackage,
@@ -129,7 +130,9 @@ type ToWorker =
   // The Packages panel's install of one package (src/packages.ts), run
   // here like the automatic Python install and queued with it: one
   // install at a time. Progress comes back as `pkg-progress`.
-  | { type: "pkg-install"; req: number; name: string; tablet: boolean };
+  | { type: "pkg-install"; req: number; name: string; tablet: boolean }
+  // The Packages panel opened: what pkg has installed, as `pkg-installed`.
+  | { type: "pkg-read-installed" };
 
 type FromWorker =
   // status, error, shell-ready (the shell is the whole session), and
@@ -165,6 +168,9 @@ type FromWorker =
     error?: string;
   }
   | { type: "pkg-progress"; req: number; text: string }
+  // What pkg has installed (src/installed_list.ts), or why that cannot be
+  // told: the Packages panel marks those Installed.
+  | InstalledReport
   | { type: "snapshot-captured"; blob: Blob; ms: number }
   | {
     type: "pkg-reply";
@@ -177,8 +183,8 @@ type FromWorker =
 let jupyter: JupyterTransport | undefined;
 let launchSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 let executions: ExecutionRegistry | undefined;
-/** The in-tab session, for package installs; the desktop app's has none
- * (its sandbox has a network, and `pkg install` there needs no page). */
+/** The booted session, the desktop app's too. Only the in-tab one installs
+ * packages (it has `writeFiles`) and reads pkg's installed list (`files`). */
 let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 
 async function servePackages(msg: ToWorker): Promise<void> {
@@ -212,8 +218,18 @@ async function servePackages(msg: ToWorker): Promise<void> {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
     });
+  } finally {
+    await installed.read();
   }
 }
+
+/** What pkg has installed in the in-tab sandbox, told to the page
+ * (src/installed_list.ts). The desktop app's session has no `files`: its
+ * page has no Packages panel to mark. */
+const installed = installedReporter(
+  (report) => post(report),
+  () => packageSession?.files,
+);
 
 /** One install at a time, whole: an install is a plan run, the downloads
  * and an install run, every run stages at the same directory, and pkg
@@ -449,6 +465,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
   await serveYurt(msg);
   await servePackages(msg);
+  if (msg.type === "pkg-read-installed") await installed.read();
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });
@@ -638,6 +655,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           stalledWhy = "a stored Python install did not work";
         }
         throw error;
+      } finally {
+        // Like a panel install's: what it did install, even if it failed.
+        await installed.read();
       }
     };
   /** Boot, install, start Jupyter: the start, and what a retry after a
@@ -658,6 +678,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           executions = new ExecutionRegistry(session.process, session.signal);
         }
         packageSession = session;
+        void installed.read();
       },
       // A restart relaunches on it, whether or not the first launch worked.
       launching: (session) => launchSession = session,
@@ -702,6 +723,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
    * terminal's handlers were the stopped session's last references. Apart
    * from `startFresh` so no local of that long await holds it. */
   const dropSandbox = () => {
+    // What the fresh one has is unknown until it boots.
+    installed.dropped();
     const stale = packageSession;
     packageSession = undefined;
     launchSession = undefined;
@@ -741,6 +764,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           type: "python-missing",
           error: `a fresh sandbox did not start: ${bootError ?? "unknown"}`,
         });
+        installed.freshFailed(bootError ?? "unknown");
       }
     };
   }

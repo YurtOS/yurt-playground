@@ -132,11 +132,12 @@ Deno.test("the Packages panel installs nothing more once the sandbox stopped", (
   );
   const after = body.match(/\} finally \{([^]*)$/);
   assert(after !== null, body);
+  // The buttons are re-marked (src/installed_list.ts), and every one is
+  // disabled once stopped: the render passes `busy || stopped` as busy.
+  assert(/installedPanel\.render\(\);/.test(after[1]), after[1]);
   assert(
-    /b\.disabled = stopped \|\| b\.textContent === "Installed";/.test(
-      after[1],
-    ),
-    after[1],
+    /renderInstalled = \(known\) =>\s*markInstalled\(list\.querySelectorAll\("button"\), known, busy \|\| stopped\);/
+      .test(pageSource()),
   );
   assert(/busy \|\| stopped\) return;/.test(body), body);
 });

@@ -7,6 +7,7 @@ import {
   s,
   type SandboxSealImage,
 } from "@yurt/kernel-host-interface-js";
+import type { SandboxFiles } from "./installed_list.ts";
 import {
   drainDirtyPaths,
   type LayerEntry,
@@ -16,6 +17,7 @@ import {
   vfsReaddir,
   vfsReadFile,
   vfsReadlink,
+  vfsReadWhole,
   vfsStat,
   writeRamfsFile,
   writeRamfsTree,
@@ -96,6 +98,9 @@ export type PlaygroundSession = {
    * `undefined` when there is no such file (the Jupyter connection file,
    * looked for without typing into the user's shell). */
   readFile?: (path: string) => Promise<Uint8Array | undefined>;
+  /** Guest files read straight from the in-tab kernel's VFS (no process,
+   * no credentials): what pkg has installed (src/installed_list.ts). */
+  files?: SandboxFiles;
   /** The same, handing the process back: what a driver's `exec` runs
    * (src/executions.ts). */
   process?: Spawner;
@@ -912,6 +917,13 @@ async function startPlayground(
       // Enough for the kernel log the failure message tails.
       const bytes = readGuestFile(mk, user.pid, path, 4 * 1024 * 1024);
       return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
+    },
+    files: {
+      // In an executor, so a failed read is a rejection, not a throw.
+      readWhole: (path) =>
+        new Promise((resolve) => resolve(vfsReadWhole(mk, path))),
+      exists: (path) =>
+        new Promise((resolve) => resolve(vfsStat(mk, path) !== undefined)),
     },
     dialSandboxPort: (port) => mk.dialSandboxPort(port),
     onOutput: output.onOutput,

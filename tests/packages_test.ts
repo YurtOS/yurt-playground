@@ -11,6 +11,7 @@ import {
   InstallStalled,
   latestRelease,
   loadCatalog,
+  markInstalled,
   onlyStaged,
   PACKAGE_REPO_URL,
   type PackageFile,
@@ -18,6 +19,7 @@ import {
   type PackageVersion,
   parseIndex,
   parsePackageFile,
+  plannedInstalls,
   resolveSet,
   sha256Hex,
   sizeRefusal,
@@ -1274,6 +1276,53 @@ Deno.test("a checked catalog refuses metadata the index does not name, and an ex
     () => loadCatalog(fetcher, PACKAGE_REPO_URL, true, new Date("2099-02-01")),
     Error,
     "expired",
+  );
+});
+
+Deno.test("markInstalled marks the known packages Installed, disabled, and the rest Install", () => {
+  const button = (name: string) => ({
+    dataset: { package: name } as { package?: string },
+    textContent: "Install" as string | null,
+    disabled: false,
+  });
+  const buttons = [button("git"), button("rtk"), button("numpy")];
+  markInstalled(buttons, new Set(["numpy", "git"]), false);
+  assertEquals(
+    buttons.map((b) => [b.dataset.package, b.textContent, b.disabled]),
+    [["git", "Installed", true], ["rtk", "Install", false], [
+      "numpy",
+      "Installed",
+      true,
+    ]],
+  );
+  // While an install runs, none can be clicked; what is installed stays so.
+  markInstalled(buttons, new Set(["numpy", "git", "rtk"]), true);
+  assertEquals(
+    buttons.map((b) => [b.textContent, b.disabled]),
+    [["Installed", true], ["Installed", true], ["Installed", true]],
+  );
+  markInstalled(buttons, new Set(), true);
+  assertEquals(buttons.map((b) => [b.textContent, b.disabled]), [
+    ["Install", true],
+    ["Install", true],
+    ["Install", true],
+  ]);
+});
+
+Deno.test("plannedInstalls is the package and what pkg's plan installed with it", () => {
+  assertEquals(
+    plannedInstalls(
+      "install libx 1.0.0-yurt_0\ninstall greet 0.1.0-yurt_0\n",
+      "greet",
+    ),
+    ["libx", "greet"],
+  );
+  // Already there: no plan, but it is installed.
+  assertEquals(plannedInstalls("nothing to install\n", "greet"), ["greet"]);
+  // Only pkg's own plan lines, anchored.
+  assertEquals(
+    plannedInstalls("will install foo next\n  install bar 1\n", "greet"),
+    ["greet"],
   );
 });
 
