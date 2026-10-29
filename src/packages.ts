@@ -456,6 +456,8 @@ export class InstallStalled extends Error {
    * run may yet do more). `false`: the sandbox may
    * hold a half-installed package, and needs a reload. */
   recovered?: boolean;
+  /** Whether `pkg recover` was run at all (set with `recovered`). */
+  recoveryRan?: boolean;
   constructor(
     name: string,
     ms: number,
@@ -479,16 +481,22 @@ export class InstallStalled extends Error {
     this.ceiling = ceiling;
   }
 
-  /** The same stall, with what recovery made of it. */
-  withRecovery(recovered: boolean, why = ""): InstallStalled {
+  /** The same stall, with what recovery made of it. `ran: false`: no
+   * recovery was run (`why` says why), so nothing was recovered. */
+  withRecovery(recovered: boolean, why = "", ran = true): InstallStalled {
     const error = new InstallStalled("", 0, this.inSandbox, this.ceiling);
-    error.message = recovered
+    const said = why === "" ? "" : ` (${why})`;
+    const reload =
+      ", so this sandbox may hold a half-installed package: reload the page";
+    error.message = !ran
+      ? `${this.message}; pkg recover was not run${said}${reload}`
+      : recovered
       ? `${this.message}; pkg recover then found none of pkg's ` +
         `transactions left unfinished, but the install did not complete`
       : `${this.message}; pkg recover could not finish what it left ` +
-        `unfinished${why === "" ? "" : ` (${why})`}, so this sandbox may ` +
-        `hold a half-installed package: reload the page`;
-    error.recovered = recovered;
+        `unfinished${said}${reload}`;
+    error.recovered = ran && recovered;
+    error.recoveryRan = ran;
     return error;
   }
 }
@@ -497,10 +505,18 @@ export class InstallStalled extends Error {
  * `pkg` run: said with "in this sandbox, so it installs nothing more;
  * reload the page" after it (src/coordinator_worker.ts). */
 export function stalledSandboxWhy(error: InstallStalled): string {
-  return error.recovered === false
-    ? "an earlier install stopped part way and pkg recover could not " +
-      "finish it, so a package may be half installed"
-    : "an earlier install stopped making progress";
+  if (error.ceiling) {
+    return "an earlier install was still running past its time limit, " +
+      "so a package may be half installed";
+  }
+  if (error.recovered !== false) {
+    return "an earlier install stopped making progress";
+  }
+  return error.recoveryRan === false
+    ? "an earlier install stopped part way, so a package may be half " +
+      "installed"
+    : "an earlier install stopped part way and pkg recover could not " +
+      "finish it, so a package may be half installed";
 }
 
 /** `pkg recover` after a run the install gave up on, watched like a run:
@@ -564,7 +580,11 @@ async function recoverStalled(
     const said = `${outcome.stdout}${outcome.stderr}`.trim().split("\n").at(-1);
     return {
       recovered: false,
-      why: said === undefined || said === "" ? `exit ${outcome.code}` : said,
+      why: said !== undefined && said !== ""
+        ? said
+        : outcome.code === null
+        ? "it was killed by a signal"
+        : `exit ${outcome.code}`,
     };
   } catch (error) {
     return {
@@ -1079,8 +1099,10 @@ export async function installPackage(
     // retry that transaction before the failure is said, so nothing is
     // left half installed and looking installed.
     if (!(error instanceof InstallStalled) || !error.inSandbox) throw error;
+    // A sandbox thrown away after this install has nothing to recover.
+    if (options.recoverAfterStall === false) throw error;
     if (options.host.recover === undefined) {
-      throw error.withRecovery(false, "this sandbox cannot run it");
+      throw error.withRecovery(false, "this sandbox cannot run it", false);
     }
     // A run past the ceiling is still beating: its pkg is alive and holds
     // pkg's lock, which `pkg recover` would wait on -- beating, so for
@@ -1088,7 +1110,8 @@ export async function installPackage(
     if (error.ceiling) {
       throw error.withRecovery(
         false,
-        "the stopped run is still going, and holds pkg's lock",
+        "the run is still going, and holds pkg's lock",
+        false,
       );
     }
     const status = `${name}: running pkg recover after the stopped install`;
@@ -1125,6 +1148,10 @@ type InstallOptions = {
   resolved?: (releases: readonly PinnedRelease[]) => void;
   /** {@link PROGRESS_EVERY_MS}; shorter in tests. */
   progressEveryMs?: number;
+  /** `false` for a sandbox that is thrown away after the install (the
+   * Suspend/Resume check): a stall then runs no `pkg recover`, and its
+   * error does not ask for a reload. */
+  recoverAfterStall?: boolean;
 };
 
 type InstallWatcher = {

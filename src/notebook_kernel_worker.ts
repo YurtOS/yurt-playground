@@ -897,6 +897,8 @@ async function verifySealSet(set: SealSet, isolated: boolean): Promise<void> {
         tablet: false,
         progress: (text) => status(text),
         cache: await sealCache(),
+        // This sandbox goes when the check ends: nothing to recover.
+        recoverAfterStall: false,
       },
     );
   } catch (error) {
