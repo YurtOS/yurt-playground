@@ -329,3 +329,41 @@ Deno.test("the read chain's ends: the page asks with pkg-read-installed, the in-
     files,
   );
 });
+
+Deno.test("the panel renders marks on its buttons and the note on its line", () => {
+  const page = Deno.readTextFileSync(
+    new URL("../src/page.ts", import.meta.url),
+  );
+  const start = page.indexOf("function wirePackages(");
+  const wiring = page.slice(start, page.indexOf("\n}\n", start));
+  assert(
+    /renderInstalled = \(known\) =>\s*markInstalled\(list\.querySelectorAll\("button"\), known, busy\);/
+      .test(wiring),
+  );
+  assert(
+    /showInstalledNote = \(note\) => installedError\.textContent = note;/
+      .test(wiring),
+  );
+});
+
+Deno.test("the note's line stays in the accessibility tree when empty", () => {
+  const html = Deno.readTextFileSync(
+    new URL("../public/index.html", import.meta.url),
+  );
+  // Its element: a live status region, never hidden.
+  const element = html.slice(
+    html.lastIndexOf("<p", html.indexOf('id="packages-installed-error"')),
+    html.indexOf(">", html.indexOf('id="packages-installed-error"')) + 1,
+  );
+  assert(/role="status"/.test(element) && /aria-live="polite"/.test(element));
+  assert(!/\bhidden\b/.test(element), element);
+  // Every rule that names it: collapsed by margin, never display:none or
+  // visibility:hidden, which drop it from the tree as `hidden` does.
+  const rules = [...html.matchAll(/#packages-installed-error[^{]*\{([^}]*)\}/g)]
+    .map((match) => match[1]);
+  assert(rules.length > 0);
+  for (const rule of rules) {
+    assert(!/display:\s*none|visibility:\s*hidden/.test(rule), rule);
+  }
+  assert(rules.some((rule) => /margin:\s*0\b/.test(rule)));
+});

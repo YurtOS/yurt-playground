@@ -175,9 +175,10 @@
       #packages td {
         padding: 2px 16px 2px 0;
       }
-      /* No note: the line takes no room. */
+      /* No note: the line takes no room, but stays in the accessibility
+         tree (display:none would drop it, as hidden does). */
       #packages-installed-error:empty {
-        display: none;
+        margin: 0;
       }
       #packages td.size {
         color: var(--muted);
