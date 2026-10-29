@@ -34,7 +34,17 @@ import {
   packageRequests,
 } from "./install_request.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
-import { deviceClass } from "./device.ts";
+import {
+  choosePlatform,
+  deviceClass,
+  type Platform,
+  withPlatform,
+} from "./device.ts";
+import {
+  captureKindOf,
+  type SnapshotKind,
+  tabletPythonRequest,
+} from "./sandbox_snapshot.ts";
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
 import { capturePackages, isUploadedSnapshotId } from "./snapshot_source.ts";
 import {
@@ -63,6 +73,7 @@ type FromWorker =
   | { type: "pkg-progress"; req: number; text: string }
   | InstalledReport
   | { type: "snapshot-captured"; blob: Blob; ms: number }
+  | { type: "linux-remark"; remark: string }
   | {
     type: "yurt-reply";
     req: number;
@@ -99,6 +110,9 @@ const installedPanel = installedMarks(
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
+/** What this page runs as (src/device.ts choosePlatform): its device's,
+ * or the one `?platform=` asks for. Set first thing by runPage. */
+let platform: Platform = "desktop";
 
 /**
  * window.yurt (src/agent_api.ts): a driver's view of the sandbox, present
@@ -269,6 +283,10 @@ function boot(
   // `?snapshot=capture`: each end of the boot marks its outcome on <html>,
   // where scripts/release-snapshot.ts waits (src/capture_outcome.ts).
   const capturing = snapshotMode() === "capture";
+  // The snapshot this start restores (the device's own) or captures.
+  const kind: SnapshotKind = capturing
+    ? captureKindOf(snapshotParam())!
+    : platform;
   const endBoot = (why?: string) => {
     booting = false;
     rememberBooting(undefined);
@@ -308,7 +326,7 @@ function boot(
       return;
     }
     status.failure("failed");
-    showFailure(deviceClass() === "tablet" ? "tablet" : "error", message);
+    showFailure(platform === "tablet" ? "tablet" : "error", message);
     notebook.unavailable("no sandbox");
   };
   // window.yurt (src/agent_api.ts): a driver's view of the same sandbox.
@@ -412,6 +430,12 @@ function boot(
       installedPanel.report(msg);
     }
     // A capture ends in the sealed sandbox, with no Jupyter to wait for.
+    // What this Linux holds, above the terminal (src/linux_remark.ts).
+    if (msg.type === "linux-remark") {
+      const note = byId("linux-remark");
+      byId("linux-remark-text").textContent = msg.remark;
+      note.hidden = false;
+    }
     if (msg.type === "snapshot-captured") {
       finishCapture(
         document.documentElement.dataset,
@@ -459,6 +483,13 @@ function boot(
       extra = capturing
         ? capturePackages(new URL(location.href).searchParams.get("packages"))
         : undefined;
+      // The phone's snapshot is the image as it boots: extras would ride,
+      // unlabelled, onto every phone that restores it.
+      if (kind === "phone" && capturing && (extra?.length ?? 0) > 0) {
+        throw new Error(
+          "?snapshot=capture-phone takes no &packages=: the phone's snapshot is the image as it boots",
+        );
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       fail(message);
@@ -466,9 +497,9 @@ function boot(
       return;
     }
     const asked = new URL(location.href).searchParams.get("snapshot");
-    if (asked !== null && snapshotMode() === undefined) {
+    if (asked !== null && asked !== "0" && snapshotMode() === undefined) {
       console.warn(
-        `[snapshot] ?snapshot=${asked} is not 1, capture or an uploaded snapshot's 40-digit commit sha; booting the image`,
+        `[snapshot] ?snapshot=${asked} is not 0, 1, capture, capture-tablet, capture-phone or an uploaded snapshot's 40-digit commit sha; booting the image`,
       );
     }
     worker.postMessage({
@@ -479,9 +510,25 @@ function boot(
       kernelPorts,
       apiToken: desktop?.apiToken,
       noJupyter: noPython,
-      python: noPython || desktop !== undefined || pins === undefined
+      // A capture installs its kind's Python: the set (desktop), python
+      // alone (tablet), none (phone).
+      python: desktop !== undefined || pins === undefined
+        ? undefined
+        : capturing
+        ? kind === "desktop"
+          ? pythonInstallRequest(pins)
+          : kind === "tablet"
+          ? tabletPythonRequest(pins)
+          : undefined
+        : noPython
         ? undefined
         : pythonInstallRequest(pins),
+      // A tablet installs no Python, but its snapshot holds python: the
+      // live index is asked about that for the snapshot's check.
+      snapshotPython: !capturing && kind === "tablet" && pins !== undefined
+        ? tabletPythonRequest(pins)
+        : undefined,
+      snapshotKind: kind,
       tablet: smallDevice,
       snapshot: snapshotMode(),
       snapshotId: uploadedSnapshotId(),
@@ -490,14 +537,22 @@ function boot(
   });
 }
 
-/** `?snapshot=1` restores the sealed sandbox (src/sandbox_snapshot.ts),
- * `?snapshot=<id>` an uploaded one (src/snapshot_source.ts);
- * `?snapshot=capture` makes one. Off by default. */
+/** The page restores its device's sealed sandbox by default
+ * (src/sandbox_snapshot.ts SNAPSHOT_KINDS), booting the image when it
+ * cannot; `?snapshot=0` boots the image. `?snapshot=<id>` restores an
+ * uploaded one (src/snapshot_source.ts); `?snapshot=capture`,
+ * `capture-tablet` and `capture-phone` make one of each kind. */
 function snapshotMode(): "restore" | "capture" | undefined {
-  const value = new URL(location.href).searchParams.get("snapshot");
-  if (value === "1" || isUploadedSnapshotId(value)) return "restore";
-  if (value === "capture") return "capture";
+  const value = snapshotParam();
+  if (value === null || value === "1" || isUploadedSnapshotId(value)) {
+    return "restore";
+  }
+  if (captureKindOf(value) !== undefined) return "capture";
   return undefined;
+}
+
+function snapshotParam(): string | null {
+  return new URL(location.href).searchParams.get("snapshot");
 }
 
 /** `?snapshot=<id>`: the uploaded snapshot to restore instead of the
@@ -720,6 +775,27 @@ function wirePackages(): void {
 }
 
 async function runPage(): Promise<void> {
+  // The platform first, before anything is fetched: a URL without one
+  // gains the device's (`?platform=phone|tablet|desktop`), so it says which
+  // snapshot this page restores; one written by hand is kept, and run as
+  // far as this device can.
+  const chosen = choosePlatform(
+    deviceClass(),
+    new URL(location.href).searchParams.get("platform"),
+  );
+  platform = chosen.platform;
+  document.documentElement.dataset.platform = platform;
+  if (chosen.redirect) {
+    history.replaceState(
+      history.state,
+      "",
+      withPlatform(location.href, platform),
+    );
+  }
+  if (chosen.note !== undefined) {
+    byId("platform-note-text").textContent = chosen.note;
+    byId("platform-note").hidden = false;
+  }
   watchNetwork(byId("net"));
   // One writer for #status: the boot's progress must not bury the outcome
   // of a Download home or an Upload (src/status_line.ts).
@@ -757,20 +833,20 @@ async function runPage(): Promise<void> {
   // JupyterLab pages) and the agent need more memory than a tablet browser
   // gives one tab: iPadOS refused new processes after ~13 while ipykernel
   // started. The desktop app runs natively and keeps everything.
-  const device = deviceClass();
+  const device = platform;
   const shellOnly = desktop === undefined && device === "tablet";
   // The panel's installs run in the coordinator, capped like the tab's
   // other installs (16 MiB on a phone or tablet: boot's `smallDevice`).
   wirePackages();
   // Only the in-tab kernel has the memory problem; the desktop app's page
-  // runs the sandbox natively. A phone, and a tab the browser reloaded
-  // mid-boot, get no sandbox unless `?start-anyway`. Read (and clear) the
-  // boot memory either way, so `?start-anyway` does not leave it for the
-  // next load.
+  // runs the sandbox natively. A tab the browser reloaded mid-boot gets no
+  // sandbox unless `?start-anyway`. (A phone gets one now: it restores the
+  // small snapshot made for phones.) Read (and clear) the boot memory
+  // either way, so `?start-anyway` does not leave it for the next load.
   const cutOff = desktop === undefined ? cutOffBoot() : undefined;
   const refused = desktop === undefined &&
     !new URL(location.href).searchParams.has("start-anyway") &&
-    (device === "phone" || cutOff !== undefined);
+    cutOff !== undefined;
   const phone = device === "phone";
   // A phone that starts anyway boots the shell (and the agent) without
   // Python or Jupyter: the automatic Python install ran an iPhone tab out
@@ -792,9 +868,7 @@ async function runPage(): Promise<void> {
     void mountAgentPane(byId("agent"), {
       yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
       start: () => document.getElementById("start-sandbox")?.click(),
-      unavailable: refused
-        ? (phone ? "not on phones" : "no sandbox")
-        : undefined,
+      unavailable: refused ? "no sandbox" : undefined,
     });
   }
   const start = document.getElementById("start");
@@ -827,12 +901,10 @@ async function runPage(): Promise<void> {
   if (desktop === undefined) {
     if (device === "tablet") byId("mobile-note").hidden = false;
     if (refused) {
-      status.failure(phone ? "not on phones" : "failed");
-      showFailure(phone ? "phone" : "reloaded", phone ? undefined : cutOff);
-      notebook.unavailable(phone ? "not on phones" : "no sandbox");
-      yurtState.failed(
-        phone ? "not on phones" : `a previous boot was cut off at ${cutOff}`,
-      );
+      status.failure("failed");
+      showFailure("reloaded", cutOff);
+      notebook.unavailable("no sandbox");
+      yurtState.failed(`a previous boot was cut off at ${cutOff}`);
       return;
     }
     if (phone) {

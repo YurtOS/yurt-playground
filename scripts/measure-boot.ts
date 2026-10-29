@@ -1,0 +1,236 @@
+#!/usr/bin/env -S deno run --allow-all
+/**
+ * measure-boot.ts -- how fast the page gets to a usable shell, and how
+ * much memory it takes, in a device's emulation: the numbers behind the
+ * README's "Snapshots in use" (its RAM column is this script's peak).
+ *
+ * It serves this checkout (the dev server), opens the page in a fresh
+ * browser profile (cold: nothing cached), waits for the shell to answer a
+ * typed line, then loads the page again in the same profile (warm: the
+ * snapshot's parts in the Cache API). For each load it prints one JSON
+ * line: seconds to a usable prompt, the console's snapshot line (download,
+ * inflate and restore times), whether it fell back to booting the image,
+ * and in Chromium the renderer processes' peak resident memory.
+ *
+ * Usage: deno run -A scripts/measure-boot.ts [--device NAME]
+ *          [--engine chromium|webkit] [--query start] [--pins PATH] [--warm N]
+ *
+ *   --device  the emulation: phone (iPhone 13), tablet (iPad Pro 11),
+ *             ipados-landscape and ipados-mini (iPadOS Safari's desktop UA
+ *             with 5 touch points), desktop
+ *   --query   the page's query (default `start`: Start pressed at load, no
+ *             platform, so the page picks it; add `&snapshot=0` for the
+ *             plain boot, `&platform=...` to force one)
+ *   --pins    serve these pins.json instead of artifacts/pins.json (with
+ *             the blobs and snapshots they name installed)
+ *   --warm    repeat loads after the cold one (default 1)
+ *
+ * Needs the pinned blobs and, for a restore, the pinned snapshots in
+ * public/snapshot/ (YURT_INSTALL_SNAPSHOT=1 scripts/install-pinned-artifacts.sh)
+ * and Playwright's browsers. Memory is sampled with `ps` (macOS, Linux).
+ */
+import { ensureBundle } from "./serve.ts";
+import { handlePlaygroundRequest, ISOLATION_HEADERS } from "../src/serve.ts";
+
+/** iPadOS Safari asks for the desktop site: its UA is a Mac Safari's;
+ * only its touch points (5) tell it from a Mac (tests/playground_e2e.ts). */
+const IPADOS_SAFARI_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+
+/** Each emulation: a Playwright descriptor, or a real iPad's own. */
+const DEVICES: Record<string, {
+  descriptor?: string;
+  options?: Record<string, unknown>;
+  maxTouchPoints?: number;
+  expect: "phone" | "tablet" | "desktop";
+}> = {
+  phone: { descriptor: "iPhone 13", expect: "phone" },
+  tablet: { descriptor: "iPad Pro 11", expect: "tablet" },
+  "ipados-landscape": {
+    options: {
+      userAgent: IPADOS_SAFARI_UA,
+      viewport: { width: 1194, height: 834 },
+      screen: { width: 834, height: 1194 },
+      hasTouch: true,
+    },
+    maxTouchPoints: 5,
+    expect: "tablet",
+  },
+  "ipados-mini": {
+    options: {
+      userAgent: IPADOS_SAFARI_UA,
+      viewport: { width: 744, height: 1133 },
+      screen: { width: 744, height: 1133 },
+      hasTouch: true,
+    },
+    maxTouchPoints: 5,
+    expect: "tablet",
+  },
+  desktop: { descriptor: "Desktop Safari", expect: "desktop" },
+};
+
+function option(name: string, fallback: string): string {
+  const at = Deno.args.indexOf(name);
+  return at < 0 ? fallback : Deno.args[at + 1] ?? fallback;
+}
+
+/** Resident MiB of the renderer processes under the browser started with
+ * `profile`: what the page and its workers hold, wasm memory included. */
+function rendererMiB(profile: string): number {
+  const out = new TextDecoder().decode(
+    new Deno.Command("ps", {
+      args: ["-axo", "pid=,ppid=,rss=,command="],
+      stdout: "piped",
+    }).outputSync().stdout,
+  );
+  const rows = out.split("\n").filter(Boolean).map((line) => {
+    const [pid, ppid, rss, ...command] = line.trim().split(/\s+/);
+    return { pid, ppid, rss: Number(rss), command: command.join(" ") };
+  });
+  const browsers = new Set(
+    rows.filter((row) =>
+      row.command.includes(profile) && !row.command.includes("--type=")
+    ).map((row) => row.pid),
+  );
+  return rows.filter((row) =>
+    browsers.has(row.ppid) && row.command.includes("--type=renderer")
+  ).reduce((sum, row) => sum + row.rss, 0) / 1024;
+}
+
+if (import.meta.main) {
+  const device = option("--device", "phone");
+  const engine = option("--engine", "chromium") as "chromium" | "webkit";
+  const query = option("--query", "start");
+  const pinsPath = option("--pins", "");
+  const warm = Number(option("--warm", "1"));
+  const { chromium, webkit, devices } = await import("playwright");
+  await ensureBundle();
+  const pins = pinsPath === ""
+    ? undefined
+    : JSON.parse(await Deno.readTextFile(pinsPath));
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (request) =>
+      pins !== undefined && new URL(request.url).pathname === "/pins.json"
+        ? Response.json(pins, { headers: ISOLATION_HEADERS })
+        : handlePlaygroundRequest(request),
+  );
+  const profile = await Deno.makeTempDir({ prefix: "yurt-measure-boot-" });
+  const spec = DEVICES[device];
+  if (spec === undefined) throw new Error(`no device ${device}`);
+  const descriptor: Record<string, unknown> = spec.descriptor === undefined
+    ? { ...spec.options }
+    : { ...devices[spec.descriptor] };
+  // WebKit takes no isMobile; the viewport, UA and touch stay.
+  if (engine === "webkit") delete descriptor.isMobile;
+  // One context for every load: the warm one finds the cold one's Cache
+  // API. The flag names this browser's process tree for `ps`.
+  const browser = await (engine === "chromium" ? chromium : webkit).launch({
+    headless: true,
+    args: engine === "chromium" ? [`--yurt-measure=${profile}`] : [],
+  });
+  const context = await browser.newContext(descriptor);
+  if (spec.maxTouchPoints !== undefined) {
+    await context.addInitScript((points: number) => {
+      Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
+        get: () => points,
+      });
+    }, spec.maxTouchPoints);
+  }
+  try {
+    const page = context.pages()[0] ?? await context.newPage();
+    let logs: string[] = [];
+    page.on("console", (message) => logs.push(message.text()));
+    for (let load = 0; load <= warm; load++) {
+      logs = [];
+      let peak = 0;
+      const sampler = engine === "chromium"
+        ? setInterval(() => peak = Math.max(peak, rendererMiB(profile)), 50)
+        : undefined;
+      const started = performance.now();
+      await page.goto(`http://127.0.0.1:${server.addr.port}/?${query}`);
+      await page.waitForFunction(
+        () =>
+          /running/.test(document.querySelector("#status")?.textContent ?? ""),
+        undefined,
+        { timeout: 300_000, polling: 50 },
+      );
+      // Typed into the shell: the terminal is focused before each line
+      // (Jupyter's cell may take the focus once it is ready), and a line
+      // that went elsewhere is typed again.
+      const typeAndWait = async (line: string, done: RegExp) => {
+        for (let attempt = 0;; attempt++) {
+          await page.locator(".xterm-helper-textarea").first().focus();
+          await page.keyboard.type(`${line}\n`);
+          const answered = await page.waitForFunction(
+            (pattern) =>
+              new RegExp(pattern).test(
+                document.querySelector("#term")?.textContent ?? "",
+              ),
+            done.source,
+            { timeout: 20_000, polling: 50 },
+          ).then(() => true, () => false);
+          if (answered) return;
+          if (attempt === 5) {
+            const seen = await page.evaluate(() => ({
+              status: document.querySelector("#status")?.textContent,
+              focused: document.activeElement?.outerHTML.slice(0, 120),
+              term: [...document.querySelectorAll(".xterm-rows > div")]
+                .map((row) => row.textContent).join("\n").trimEnd().slice(-800),
+            }));
+            throw new Error(
+              `the shell never answered ${line}: ${JSON.stringify(seen)}`,
+            );
+          }
+        }
+      };
+      await typeAndWait("echo READY-$((6*7))", /READY-42/);
+      const seconds = (performance.now() - started) / 1000;
+      // Python as the page's kind should have it: none on a phone, python
+      // alone on a tablet, the set (and Jupyter) on a desktop.
+      await typeAndWait(
+        "command -v python3 >/dev/null && echo PY-$((1+1))-yes || echo PY-$((1+1))-no",
+        /PY-2-(yes|no)/,
+      );
+      const python3 = /PY-2-yes/.test(
+        (await page.locator("#term").textContent()) ?? "",
+      );
+      let jupyterSeconds: number | undefined;
+      if (new URL(page.url()).searchParams.get("platform") === "desktop") {
+        await page.waitForFunction(
+          () =>
+            document.querySelector("[data-testid=notebook-status]")
+              ?.textContent === "ready",
+          undefined,
+          { timeout: 300_000, polling: 100 },
+        ).then(() => jupyterSeconds = (performance.now() - started) / 1000)
+          .catch(() => {});
+      }
+      if (sampler !== undefined) clearInterval(sampler);
+      console.log(JSON.stringify({
+        device,
+        engine,
+        query,
+        load: load === 0 ? "cold" : "warm",
+        platform: new URL(page.url()).searchParams.get("platform"),
+        expected: spec.expect,
+        python3,
+        jupyterReadySeconds: jupyterSeconds === undefined
+          ? null
+          : Number(jupyterSeconds.toFixed(1)),
+        secondsToPrompt: Number(seconds.toFixed(2)),
+        peakRendererMiB: engine === "chromium" ? Math.round(peak) : null,
+        snapshot: logs.find((line) => /bytes of kernel memory/.test(line)) ??
+          null,
+        fellBack: logs.find((line) => /booting the image instead/.test(line)) ??
+          null,
+        remark: await page.locator("#linux-remark-text").textContent(),
+      }));
+    }
+  } finally {
+    await context.close();
+    await browser.close();
+    await server.shutdown();
+    await Deno.remove(profile, { recursive: true });
+  }
+}

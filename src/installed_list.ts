@@ -67,7 +67,8 @@ export async function installedReleases(
   return list === undefined ? [] : parseInstalledList(list);
 }
 
-function parseInstalledList(bytes: Uint8Array): InstalledRelease[] {
+/** pkg's installed list, release by release; throws on a broken one. */
+export function parseInstalledList(bytes: Uint8Array): InstalledRelease[] {
   let list: string;
   try {
     list = new TextDecoder("utf-8", { fatal: true }).decode(bytes);

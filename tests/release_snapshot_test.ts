@@ -58,17 +58,22 @@ Deno.test("only the deploy fetches the snapshot, with the other blobs' retry", a
     Deno.readTextFile(new URL(`../${path}`, import.meta.url));
   const script = await read("scripts/install-pinned-artifacts.sh");
   assertEquals(
-    /YURT_INSTALL_SNAPSHOT:-\}" == 1 \]\]; then\s+if ! install_snapshot; then/
+    /YURT_INSTALL_SNAPSHOT:-\}" == 1 \]\]; then\s+if ! install_snapshot "\$key" "\$asset"; then/
       .test(script),
     true,
-    "the snapshot is installed behind YURT_INSTALL_SNAPSHOT=1",
+    "each snapshot is installed behind YURT_INSTALL_SNAPSHOT=1",
   );
   assertEquals(
-    /install_snapshot\(\) \([^]*download "\$tag" "\$repo" 'sandbox\.seal\.gz/
+    /install_snapshot\(\) \([^]*download "\$tag" "\$repo" "\$asset\.\[0-9\]\*"/
       .test(script),
     true,
     "through download(), the other blobs' retry",
   );
+  // Every kind the page restores (src/sandbox_snapshot.ts SNAPSHOT_KINDS).
+  const { SNAPSHOT_KINDS } = await import("../src/sandbox_snapshot.ts");
+  for (const { pinKey, asset } of Object.values(SNAPSHOT_KINDS)) {
+    assertEquals(script.includes(`${pinKey}:${asset}`), true, pinKey);
+  }
   assertEquals(
     (await read(".github/workflows/deploy-pages.yml")).includes(
       'YURT_INSTALL_SNAPSHOT: "1"',

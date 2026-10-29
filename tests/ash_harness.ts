@@ -122,6 +122,9 @@ export type AshSession = {
   process: NonNullable<PlaygroundSession["process"]>;
   signal: NonNullable<PlaygroundSession["signal"]>;
   seal: NonNullable<PlaygroundSession["seal"]>;
+  /** Every "This Linux" remark the boot told the page, in order. */
+  remarks: string[];
+  refreshRemark: NonNullable<PlaygroundSession["refreshRemark"]>;
 };
 
 export type AshSessionOptions = {
@@ -136,6 +139,7 @@ export async function bootAshSession(
   }
   const term = memoryTerm();
   let shown = "";
+  const remarks: string[] = [];
   const session = await bootPlayground({
     isolated: true,
     fetchBytes: fetchViaHandler,
@@ -143,6 +147,7 @@ export async function bootAshSession(
       shown = text;
     },
     term,
+    linuxRemark: (remark) => remarks.push(remark),
   });
   await waitFor(
     () => /[$#]/.test(term.output()) || term.output().length > 0,
@@ -163,6 +168,8 @@ export async function bootAshSession(
     process: session.process,
     signal: session.signal,
     seal: session.seal,
+    remarks,
+    refreshRemark: session.refreshRemark!,
   };
 }
 

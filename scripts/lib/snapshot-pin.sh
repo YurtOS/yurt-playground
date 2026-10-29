@@ -1,8 +1,10 @@
 # shellcheck shell=bash
 # snapshot-pin.sh -- sourced by release-playground.sh.
 #
-# keep_snapshot_pin ROOT: ROOT/artifacts/pins.json keeps its `snapshot`
-# entry unless `scripts/release-snapshot.ts --check-pin` refuses it (exit 3,
+# keep_snapshot_pin ROOT [KEY KIND]: ROOT/artifacts/pins.json keeps its KEY
+# entry (default `snapshot`, the desktop's; `tabletSnapshot` tablet,
+# `phoneSnapshot` phone: src/sandbox_snapshot.ts SNAPSHOT_KINDS) unless
+# `scripts/release-snapshot.ts --check-pin --kind KIND` refuses it (exit 3,
 # with a "snapshot pin refused: <reason>" line): well formed, this page's
 # format, built from these pins, of the Python set the live index offers --
 # the checks the page makes. A kept entry sets snapshot_kept=1. A refused
@@ -12,9 +14,11 @@
 # snapshot_error saying which (the check's whole output goes to stderr),
 # the pin untouched: a check that did not run is no verdict.
 keep_snapshot_pin() {
-  local root=$1 pins=$1/artifacts/pins.json out code=0 why err
-  [ "$(jq -c '.snapshot // null' "$pins")" != null ] || return 0
-  out=$(cd "$root" && deno run -A scripts/release-snapshot.ts --check-pin 2>&1) || code=$?
+  local root=$1 key=${2:-snapshot} kind=${3:-desktop} pins=$1/artifacts/pins.json out code=0 why err
+  [ "$(jq -c --arg k "$key" '.[$k] // null' "$pins")" != null ] || return 0
+  local by_kind=()
+  [ "$kind" = desktop ] || by_kind=(--kind "$kind")
+  out=$(cd "$root" && deno run -A scripts/release-snapshot.ts --check-pin ${by_kind[@]+"${by_kind[@]}"} 2>&1) || code=$?
   case $code in
     0)
       snapshot_kept=1
@@ -37,9 +41,9 @@ keep_snapshot_pin() {
       ;;
   esac
   why=$(sed -n 's/^snapshot pin refused: //p' <<< "$out" | tail -1)
-  if ! err=$( { jq 'del(.snapshot)' "$pins" > "$pins.tmp" && mv "$pins.tmp" "$pins"; } 2>&1); then
+  if ! err=$( { jq --arg k "$key" 'del(.[$k])' "$pins" > "$pins.tmp" && mv "$pins.tmp" "$pins"; } 2>&1); then
     rm -f "$pins.tmp"
-    snapshot_error="the snapshot entry was refused (${why:-no reason given}) but could not be removed from $pins: $err"
+    snapshot_error="the $key entry was refused (${why:-no reason given}) but could not be removed from $pins: $err"
     return 1
   fi
   snapshot_why=${why:-no reason given}
@@ -50,5 +54,6 @@ keep_snapshot_pin() {
 # dropped its snapshot pin (WHY empty: none).
 remind_dropped_snapshot() {
   [ -n "$1" ] || return 0
-  say "the snapshot pin was dropped ($1): run scripts/release-snapshot.ts (deno run -A), then commit artifacts/pins.json"
+  # One line per dropped pin (release-playground.sh), shown on one.
+  say "the snapshot pin was dropped (${1//$'\n'/ | }): run scripts/release-snapshot.ts (deno run -A; --kind tablet or phone for those pins), then commit artifacts/pins.json"
 }

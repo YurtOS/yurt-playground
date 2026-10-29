@@ -62,14 +62,20 @@ if (import.meta.main) {
   const server = startPlaygroundServer(0);
   const browser = await chromium.launch();
   try {
-    // A phone is not sent away: it reaches the home page and its links, and
-    // the pane in the terminal's place says why there is no Start.
+    // A phone is not sent away: it reaches the home page and its links, as
+    // the phone platform (the URL says so), with the Start of its shell.
     const phone = await browser.newContext({ ...devices["iPhone 13"] });
     const phonePage = await phone.newPage();
     const phoneCsp = watchCspViolations(phonePage);
     await phonePage.goto(`${server.url}/`, { waitUntil: "load" });
     await phonePage.getByTestId("choose-notebook").waitFor({ timeout: 10_000 });
-    await phonePage.getByTestId("boot-failed").waitFor({ timeout: 10_000 });
+    await phonePage.getByTestId("start-sandbox").waitFor({ timeout: 10_000 });
+    const phonePlatform = await phonePage.evaluate(() =>
+      new URL(location.href).searchParams.get("platform")
+    );
+    if (phonePlatform !== "phone") {
+      fail(`a phone's home page is platform ${phonePlatform}, not phone`);
+    }
     phoneCsp();
     // Its Notebook link leads to a page that boots no sandbox there (both
     // kernels need Python) and says why, `?start-anyway` or not.

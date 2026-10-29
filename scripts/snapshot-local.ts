@@ -19,21 +19,29 @@
  *      commit, as the page will;
  *   4. print `<site>/?snapshot=<commit sha>`.
  *
- * Usage: deno run -A scripts/snapshot-local.ts [--packages a,b] [--phone]
+ * Usage: deno run -A scripts/snapshot-local.ts [--packages a,b]
+ *          [--kind desktop|tablet|phone]
  *          [--name NAME] [--file PATH] [--dry-run] [--site URL]
  *
  *   --packages  packages to install after the Python set, before the seal
  *               (`?snapshot=capture&packages=`); the restore's checks are
  *               the Python set's alone, so these ride in its memory
- *   --phone     the phone's Python-only capture (`?snapshot=capture-phone`)
- *               and a URL with `&start-anyway`; PENDING: needs the phone
- *               snapshot work on main, and says so until then
+ *   --kind      which snapshot (src/sandbox_snapshot.ts SNAPSHOT_KINDS):
+ *               the desktop's (default: the Python set and Jupyter), the
+ *               tablet's (`?snapshot=capture-tablet`: python alone) or the
+ *               phone's (`?snapshot=capture-phone`: the image as it boots,
+ *               no Python); the URL names its platform, and each restores
+ *               only on a page of its kind
  *   --name      the ref's name (default <train>-<UTC time>); an existing
  *               one is never replaced
  *   --file      upload this capture instead of capturing (it is checked
  *               the same way)
  *   --dry-run   everything but the push
  *   --site      the site the URL is for (default the live site)
+ *   --before-deploy  a site that runs another build than this checkout's
+ *               pins is a note, not a refusal: for a snapshot of pins a
+ *               pending deploy brings (its URL boots the image until
+ *               then); a site whose pins cannot be read is still refused
  *
  * List: `git ls-remote origin 'refs/snapshots/*'`. Delete:
  * `git push origin :refs/snapshots/<name>` (the page then refuses its URL:
@@ -60,9 +68,13 @@ import {
 import { imagePartsManifest } from "../src/image_parts.ts";
 import { parsePins, type Pins, type SnapshotPin } from "../src/pins.ts";
 import {
+  type BuiltFrom,
   FORMAT,
-  type SnapshotIdentity,
+  SNAPSHOT_KIND_NAMES,
+  SNAPSHOT_KINDS,
+  snapshotHeaderFacts,
   snapshotIdentity,
+  type SnapshotKind,
 } from "../src/sandbox_snapshot.ts";
 import {
   capturePackages,
@@ -103,19 +115,26 @@ export function defaultSnapshotName(train: string, now = new Date()): string {
 }
 
 /** The page query a capture runs (release-snapshot.ts `capture`). */
-export function captureQuery(packages: string[], phone: boolean): string {
+export function captureQuery(
+  packages: string[],
+  kind: SnapshotKind,
+): string {
   return [
     "start",
-    `snapshot=${phone ? "capture-phone" : "capture"}`,
+    `snapshot=${SNAPSHOT_KINDS[kind].capture}`,
     ...(packages.length > 0 ? [`packages=${packages.join(",")}`] : []),
   ].join("&");
 }
 
 /** The URL that restores snapshot `id` on `site`. */
-export function restoreUrl(site: string, id: string, phone: boolean): string {
+export function restoreUrl(
+  site: string,
+  id: string,
+  kind: SnapshotKind,
+): string {
   uploadedSnapshotBase(id); // only an id
   const url = new URL(site);
-  url.search = `?snapshot=${id}${phone ? "&start-anyway" : ""}`;
+  url.search = `?snapshot=${id}&platform=${kind}`;
   return url.href;
 }
 
@@ -227,6 +246,38 @@ export async function siteIdentityProblem(
     `this checkout's pins give ${differs.join("; ")}`;
 }
 
+/** What a capture of `kind` under `pins` must have been built from: the
+ * pins' identity and its Python. The desktop's holds the set the live
+ * index offers, the tablet's python alone (`live`, livePythonSet's
+ * answer for it), so an index it cannot read or one without that Python
+ * is a problem; the phone's holds none (null), and asks the index
+ * nothing. The tablet's and the phone's are the slim image's: a train
+ * without one boots the full image, which holds the whole set. */
+export function captureBuild(
+  pins: Pins,
+  kind: SnapshotKind,
+  live: string | null | undefined,
+): { ok: true; builtFrom: BuiltFrom } | { ok: false; problem: string } {
+  if (kind !== "desktop" && pins.browserImage === undefined) {
+    return {
+      ok: false,
+      problem: `--kind ${kind} needs a train with a slim image (browserImage)`,
+    };
+  }
+  if (kind === "phone") {
+    return {
+      ok: true,
+      builtFrom: { ...snapshotIdentity(pins), pythonSet: null },
+    };
+  }
+  const problem = captureSetProblem(live, kind);
+  if (problem !== undefined) return { ok: false, problem };
+  return {
+    ok: true,
+    builtFrom: { ...snapshotIdentity(pins), pythonSet: live! },
+  };
+}
+
 async function main(): Promise<void> {
   const args = [...Deno.args];
   const flag = (name: string) => {
@@ -241,8 +292,18 @@ async function main(): Promise<void> {
     args.splice(at, 2);
     return value;
   };
-  const phone = flag("--phone");
+  const kindAt = args.indexOf("--kind");
+  let kind: SnapshotKind = "desktop";
+  if (kindAt >= 0) {
+    const value = args[kindAt + 1];
+    args.splice(kindAt, 2);
+    if (!SNAPSHOT_KIND_NAMES.includes(value as SnapshotKind)) {
+      die(`--kind takes ${SNAPSHOT_KIND_NAMES.join(", ")}, not ${value}`);
+    }
+    kind = value as SnapshotKind;
+  }
   const dryRun = flag("--dry-run");
+  const beforeDeploy = flag("--before-deploy");
   let packages: string[] = [];
   try {
     packages = capturePackages(option("--packages") ?? null);
@@ -253,6 +314,11 @@ async function main(): Promise<void> {
   const fileArg = option("--file");
   const site = option("--site") ?? DEFAULT_SITE;
   if (args.length > 0) die(`unknown arguments: ${args.join(" ")}`);
+  if (kind === "phone" && packages.length > 0) {
+    die(
+      "--kind phone takes no --packages: the phone's snapshot is the image as it boots",
+    );
+  }
   if (fileArg !== undefined && packages.length > 0) {
     die("--packages is for a capture; --file uploads one as it is");
   }
@@ -264,18 +330,6 @@ async function main(): Promise<void> {
   const nameProblem = snapshotNameProblem(name);
   if (nameProblem !== undefined) die(nameProblem);
   const ref = `${SNAPSHOT_REF_PREFIX}${name}`;
-
-  if (phone) {
-    // The phone capture is the phone-snapshot work's (`capture-phone`, a
-    // Python-only set, and a restore gate that lets phones restore).
-    const page = await Deno.readTextFile(join(root, "src/page.ts"));
-    if (!page.includes('"capture-phone"')) {
-      die(
-        "--phone needs the phone snapshot capture (?snapshot=capture-phone), " +
-          "which is not on this checkout's page yet",
-      );
-    }
-  }
 
   // Where a push goes (a pushurl, when one is set).
   const remote =
@@ -297,15 +351,22 @@ async function main(): Promise<void> {
   // behind or ahead of what is deployed would print a URL that always
   // falls back.
   const siteProblem = await siteIdentityProblem(site, pins);
-  if (siteProblem !== undefined) die(siteProblem);
+  if (siteProblem !== undefined) {
+    // Only "runs another build" waits for a deploy; a site whose pins
+    // cannot be read (a mistyped --site) is refused either way.
+    if (!beforeDeploy || siteProblem.startsWith("cannot read ")) {
+      die(siteProblem);
+    }
+    say(`note (--before-deploy): ${siteProblem}`);
+  }
 
-  const live = await liveSetOf(pins)();
-  const setProblem = captureSetProblem(live);
-  if (setProblem !== undefined) die(setProblem);
-  // The phone's set is not the site's; its own check comes with it.
-  const expected: SnapshotIdentity | { pythonSet: string | null } = phone
-    ? snapshotIdentity(pins)
-    : { ...snapshotIdentity(pins), pythonSet: live! };
+  const build = captureBuild(
+    pins,
+    kind,
+    await liveSetOf(pins, kind)(),
+  );
+  if (!build.ok) return die(build.problem);
+  const expected = build.builtFrom;
 
   const work = await Deno.makeTempDir({ prefix: "yurt-snapshot-local-" });
   // Ctrl-C removes it too.
@@ -335,11 +396,11 @@ async function main(): Promise<void> {
       const pageProblem = await checkoutProblem(root, "upstream");
       if (pageProblem !== undefined) say(`note: ${pageProblem}`);
       file = join(work, "capture", SNAPSHOT_FILE);
-      await capture({ query: captureQuery(packages, phone), out: file });
+      await capture({ query: captureQuery(packages, kind), out: file });
     }
     const check = await checkSnapshotFile(
       file,
-      expected as SnapshotIdentity,
+      expected,
       { decode: true },
     );
     if (!check.ok) {
@@ -365,9 +426,10 @@ async function main(): Promise<void> {
       size: bytes.byteLength,
       parts: parts.map((part) => part.sha256),
       builtFrom: check.builtFrom,
+      ...await snapshotHeaderFacts((await Deno.open(file)).readable),
     };
     const manifest = `${
-      JSON.stringify({ ...pin, name, train, packages, phone }, null, 2)
+      JSON.stringify({ ...pin, name, train, packages, kind }, null, 2)
     }\n`;
     await Deno.writeTextFile(join(tree, SNAPSHOT_MANIFEST), manifest);
     say(`${SNAPSHOT_FILE}: ${pin.size} bytes, ${parts.length} parts`);
@@ -385,14 +447,14 @@ async function main(): Promise<void> {
     const id = (await git(tree, ["rev-parse", "HEAD"])).stdout;
     if (dryRun) {
       say(`--dry-run: would push ${id} to ${remote} ${ref}`);
-      console.log(restoreUrl(site, id, phone));
+      console.log(restoreUrl(site, id, kind));
       return;
     }
     say(`pushing ${id} to ${ref}`);
     await git(tree, ["push", "-q", remote, `HEAD:${ref}`]);
     await readBack(id, manifest);
     say(`${ref} is served at ${uploadedSnapshotBase(id)}`);
-    console.log(restoreUrl(site, id, phone));
+    console.log(restoreUrl(site, id, kind));
   } finally {
     Deno.removeSignalListener("SIGINT", interrupted);
     await Deno.remove(work, { recursive: true });

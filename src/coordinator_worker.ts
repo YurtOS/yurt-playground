@@ -9,6 +9,7 @@ import {
   fetchPlaygroundBytes,
   playgroundPins,
   type PlaygroundTerm,
+  SLIM_IMAGE_PATH,
 } from "./boot.ts";
 import {
   executeCell,
@@ -63,13 +64,19 @@ import {
   type LayerStore,
 } from "./python_layer.ts";
 import { liveAnswers } from "./python_install.ts";
-import { postCaptured, precompileLine } from "./capture_outcome.ts";
+import {
+  capturePrecompiles,
+  postCaptured,
+  precompileLine,
+} from "./capture_outcome.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import {
   encodeSandboxSnapshot,
-  SANDBOX_SNAPSHOT_PATH,
+  SNAPSHOT_KINDS,
   snapshotIdentity,
+  type SnapshotKind,
 } from "./sandbox_snapshot.ts";
+import { linuxRemark } from "./linux_remark.ts";
 import {
   isUploadedSnapshotId,
   uploadedSnapshotPath,
@@ -116,6 +123,15 @@ type ToWorker =
     // `?snapshot=capture&packages=a,b`: packages a capture installs after
     // the Python set, before it seals (scripts/snapshot-local.ts).
     capturePackages?: string[];
+    // Which snapshot (src/sandbox_snapshot.ts SNAPSHOT_KINDS): the one a
+    // restore takes (the device's), or the one a capture makes. The
+    // phone's capture comes with no `python` request (the image as it
+    // boots); the tablet's with python alone; the desktop's with the set.
+    snapshotKind?: SnapshotKind;
+    // A restore's Python, when the page installs none itself: what the
+    // live index is asked about for the snapshot's check (a tablet's
+    // python alone). `python` takes its place when there is one.
+    snapshotPython?: PythonRequest;
   }
   // Install Python again after a failed install (the cell's Install), then
   // start the kernel. Answered like a boot: status, then notebook-ready or
@@ -189,6 +205,8 @@ type FromWorker =
   // told: the Packages panel marks those Installed.
   | InstalledReport
   | { type: "snapshot-captured"; blob: Blob; ms: number }
+  // What this Linux holds (src/linux_remark.ts), as the shell starts.
+  | { type: "linux-remark"; remark: string }
   | {
     type: "pkg-reply";
     req: number;
@@ -253,7 +271,11 @@ async function servePackages(msg: ToWorker): Promise<void> {
  * (src/installed_list.ts). The desktop app's session has no `files`: its
  * page has no Packages panel to mark. */
 const installed = installedReporter(
-  (report) => post(report),
+  (report) => {
+    post(report);
+    // What this Linux holds follows what pkg now lists (src/linux_remark.ts).
+    if ("names" in report) packageSession?.refreshRemark?.();
+  },
   () => packageSession?.files,
 );
 
@@ -349,18 +371,19 @@ type PythonRequest = {
   installed?: InstalledRelease[];
 };
 
-/** `?snapshot=capture`: precompile the installed Python, seal the
+/** `?snapshot=capture`: precompile the installed Python set, seal the
  * sandbox (no process left in it) and hand the snapshot file to the page,
  * in the kernel's place: a sealed sandbox runs nothing more. */
 async function captureSnapshot(
   session: Awaited<ReturnType<typeof bootPlayground>>,
-  /** The Python set the capture installed, as a layer key; null when the
-   * site installs none (the full image has it). */
+  /** The Python set the capture installed, as a layer key; null for the
+   * phone's capture, which installs none. */
   pythonSet: string | null,
   /** Packages to install after the Python set, before the seal
    * (`?snapshot=capture&packages=`): in the snapshot's memory only, so a
    * restore's checks are the Python set's alone. */
-  packages: readonly string[] = [],
+  packages: readonly string[],
+  kind: SnapshotKind,
 ): Promise<void> {
   if (session.seal === undefined || session.process === undefined) {
     throw new Error("this session cannot seal");
@@ -377,39 +400,52 @@ async function captureSnapshot(
     });
   }
   if (packages.length > 0) await installed.read();
-  // Bytecode for every module the packages ship as source only
-  // (PRECOMPILE_PROGRAM): each start compiled them again, slow on Safari,
-  // where compiling one of wcwidth's modules also overflowed the Worker's
-  // stack and killed ipykernel with SIGSEGV. Its failure is refused, with
-  // its own words.
-  post({ type: "status", text: "precompiling Python modules" });
-  const compiled = performance.now();
-  const compile = await session.process(precompileLine(), {
-    maxOutputBytes: 64 * 1024,
-  });
-  const compileStatus = await compile.exited;
-  const code = typeof compileStatus === "number"
-    ? compileStatus
-    : compileStatus.code;
-  if (code !== 0) {
-    const decoder = new TextDecoder();
-    const said = decoder.decode(compile.takeStdout()) +
-      decoder.decode(compile.takeStderr());
-    throw new Error(
-      `precompiling the Python set exited ${JSON.stringify(compileStatus)}: ${
-        said.slice(-2000)
-      }`,
+  // The phone's snapshot holds no Python to compile (capturePrecompiles).
+  if (capturePrecompiles(kind)) {
+    // Bytecode for every module the packages ship as source only
+    // (PRECOMPILE_PROGRAM): each start compiled them again, slow on Safari,
+    // where compiling one of wcwidth's modules also overflowed the Worker's
+    // stack and killed ipykernel with SIGSEGV. Its failure is refused, with
+    // its own words.
+    post({ type: "status", text: "precompiling Python modules" });
+    const compiled = performance.now();
+    const compile = await session.process(precompileLine(), {
+      maxOutputBytes: 64 * 1024,
+    });
+    const compileStatus = await compile.exited;
+    const code = typeof compileStatus === "number"
+      ? compileStatus
+      : compileStatus.code;
+    if (code !== 0) {
+      const decoder = new TextDecoder();
+      const said = decoder.decode(compile.takeStdout()) +
+        decoder.decode(compile.takeStderr());
+      throw new Error(
+        `precompiling the Python set exited ${JSON.stringify(compileStatus)}: ${
+          said.slice(-2000)
+        }`,
+      );
+    }
+    console.log(
+      `[snapshot] precompiled in ${
+        Math.round(performance.now() - compiled)
+      } ms`,
     );
   }
-  console.log(
-    `[snapshot] precompiled in ${Math.round(performance.now() - compiled)} ms`,
-  );
+  // What it holds, for its pin and for people: pkg's list as the seal
+  // keeps it (src/linux_remark.ts).
+  const packagesHeld = await installedReleases(session.files) ?? [];
+  const contents = {
+    packages: packagesHeld,
+    remark: linuxRemark(packagesHeld),
+  };
   post({ type: "status", text: "sealing the sandbox" });
   const started = performance.now();
   const image = await session.seal();
   const blob = await encodeSandboxSnapshot(
     image,
     { ...snapshotIdentity(await playgroundPins()), pythonSet },
+    contents,
   );
   postCaptured(post, blob, Math.round(performance.now() - started));
 }
@@ -611,6 +647,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   // below, so a fresh sandbox asks again.
   let live: ReturnType<typeof liveAnswers>;
   const term = workerTerm({ cols: msg.cols, rows: msg.rows });
+  const restoreKind: SnapshotKind = msg.snapshotKind ?? "desktop";
   const env = {
     isolated: msg.isolated,
     // The slim image when the train pins one; the desktop app's native
@@ -622,8 +659,10 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       restoresSnapshot({ ...msg, native: kernelPorts !== undefined })
         ? isUploadedSnapshotId(msg.snapshotId)
           ? uploadedSnapshotPath(msg.snapshotId!)
-          : SANDBOX_SNAPSHOT_PATH
+          : `./${SNAPSHOT_KINDS[restoreKind].name}`
         : undefined,
+    snapshotKind: restoreKind,
+    snapshotCache: typeof caches === "undefined" ? undefined : caches,
     snapshotId: isUploadedSnapshotId(msg.snapshotId)
       ? msg.snapshotId
       : undefined,
@@ -638,6 +677,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     show: (text: string) => post({ type: "status", text }),
     term,
     memoryRefused: () => post(memoryRefusedMessage()),
+    linuxRemark: (remark: string) => post({ type: "linux-remark", remark }),
   };
   // The slim image's Python: the coordinator installs the set itself, so
   // every page that boots a sandbox gets the same install.
@@ -735,8 +775,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
    * stalled install runs again on a fresh sandbox (the one deliberate
    * exception to "never stops the session": the stalled one is dropped
    * first). */
+  const captureKind: SnapshotKind = msg.snapshotKind ?? "desktop";
   const begin = async () => {
-    live = liveAnswers(msg.python);
+    live = liveAnswers(msg.python ?? msg.snapshotPython);
     // Never stops the session once its shell is up (src/coordinator_start.ts).
     const started = await startSandbox({
       boot: () =>
@@ -757,15 +798,34 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       installPython,
       startKernel: (session, relaunching) =>
         startGuestKernel(session, kernelPorts, { relaunching }),
+      captureNeeds: captureKind === "phone" ? "none" : "set",
       capture: msg.snapshot === "capture"
         ? (session) => {
-          if (python?.image !== undefined && capturedSet === undefined) {
-            throw new Error("the capture's Python install did not run");
+          const phone = captureKind === "phone";
+          // A snapshot without a Python set is a phone's, restored only by
+          // a page that asks about none: only the phone's capture may make
+          // one, and it installs nothing.
+          if (phone && python !== undefined) {
+            throw new Error("the phone's capture asks for no Python install");
+          }
+          // The phone's and the tablet's snapshots are the slim image's:
+          // the full image (a train without one) holds the whole set.
+          if (captureKind !== "desktop" && env.imagePath !== SLIM_IMAGE_PATH) {
+            throw new Error(
+              `the ${captureKind}'s capture needs the train's slim image (browserImage)`,
+            );
+          }
+          if (!phone && capturedSet === undefined) {
+            throw new Error(
+              "this capture installed no Python (the phone's capture, " +
+                "without any, is ?snapshot=capture-phone)",
+            );
           }
           return captureSnapshot(
             session,
-            capturedSet ?? null,
+            phone ? null : capturedSet!,
             msg.capturePackages ?? [],
+            captureKind,
           );
         }
         : undefined,

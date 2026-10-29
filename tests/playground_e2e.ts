@@ -161,12 +161,11 @@ async function tabletIsShellOnly(
   await context.close();
 }
 
-/** The agent pane on a phone (#197): the page refuses the boot, so there is
- * no sandbox for the agent's Run to start, and the pane says so instead of
- * offering a download and a Run that does nothing. `?start-anyway` gets the
- * sandbox's Start, and with it the agent's. WebGPU is stubbed: headless
- * Chromium has none, and without it the pane never offers a Run anyway. */
-export async function phoneAgentIsUnavailable(
+/** The agent pane on a phone (#197): a phone boots now (its own small
+ * snapshot), so the pane offers the sandbox's Start and the agent's Run,
+ * as on a tablet. WebGPU is stubbed: headless Chromium has none, and
+ * without it the pane never offers a Run anyway. */
+export async function phoneAgentHasTheSandbox(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   url: string,
 ): Promise<void> {
@@ -178,42 +177,23 @@ export async function phoneAgentIsUnavailable(
     });
   });
   const page = await phone.newPage();
-  const agent = () =>
-    page.evaluate(() => {
-      const q = (id: string) =>
-        document.querySelector<HTMLElement>(`[data-testid=${id}]`);
-      return {
-        shown: document.querySelector<HTMLElement>("#agent")!
-          .offsetParent !== null,
-        status: q("agent-status")?.textContent ?? null,
-        unavailable: q("agent-unavailable") !== null,
-        start: q("agent-start") !== null,
-        run: q("agent-run") !== null,
-      };
-    });
-  await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
-  await page.getByTestId("boot-failed").waitFor({ state: "visible" });
-  await page.getByTestId("agent-status").waitFor({ state: "visible" });
-  const refused = await agent();
-  const want = {
-    shown: true,
-    status: "not on phones",
-    unavailable: true,
-    start: false,
-    run: false,
-  };
-  if (JSON.stringify(refused) !== JSON.stringify(want)) {
-    throw new Error(
-      `phone agent: want ${JSON.stringify(want)}, got ${
-        JSON.stringify(refused)
-      }`,
-    );
-  }
-  await page.goto(`${url}/?start-anyway`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${url}/`, { waitUntil: "domcontentloaded" });
   await page.getByTestId("agent-start").waitFor({ state: "visible" });
-  const anyway = await agent();
-  if (anyway.unavailable || !anyway.run) {
-    throw new Error(`phone agent ?start-anyway: ${JSON.stringify(anyway)}`);
+  const agent = await page.evaluate(() => {
+    const q = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-testid=${id}]`);
+    return {
+      unavailable: q("agent-unavailable") !== null,
+      run: q("agent-run") !== null,
+      start: (q("start-sandbox")?.offsetParent ?? null) !== null,
+      platform: new URL(location.href).searchParams.get("platform"),
+    };
+  });
+  if (
+    agent.unavailable || !agent.run || !agent.start ||
+    agent.platform !== "phone"
+  ) {
+    throw new Error(`phone agent: ${JSON.stringify(agent)}`);
   }
   await phone.close();
 }
@@ -226,12 +206,12 @@ const IPADOS_SAFARI_UA =
 const ANDROID_DESKTOP_SITE_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 
-/** What the page knows before and after a boot it could not finish: a phone
- * is not offered Start (a phone tab has too little memory for Python), and
- * says so as a refusal, not a failure, unless `?start-anyway`; a boot
- * that dies in-page explains itself in the terminal's place, with the likely
- * cause on a tablet; and a tab the browser reloaded mid-boot says so on the
- * next load instead of offering a fresh Start. */
+/** What the page knows before and after a boot it could not finish: each
+ * device is told apart and its platform written into the URL (a phone, a
+ * tablet, a desktop; a hand-written `?platform=` kept); a boot that dies
+ * in-page explains itself in the terminal's place, with the likely cause on
+ * a tablet; and a tab the browser reloaded mid-boot says so on the next
+ * load instead of offering a fresh Start. */
 async function bootFailuresAreExplained(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   url: string,
@@ -267,107 +247,84 @@ async function bootFailuresAreExplained(
       page.off("pageerror", onError);
     }
   };
-  // iPhone Safari with "Request Desktop Website" sends the Mac Safari UA,
-  // reports 5 touch points like an iPad, and lays out at 980 px; only its
-  // screen, 390 px wide, says phone (#214).
-  const desktopModeIPhone = await browser.newContext({
-    userAgent: IPADOS_SAFARI_UA,
-    viewport: { width: 980, height: 1700 },
-    screen: { width: 390, height: 844 },
-    hasTouch: true,
-  });
-  const desktopModePage = await desktopModeIPhone.newPage();
-  await desktopModePage.addInitScript(() => {
-    Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
-      get: () => 5,
-    });
-  });
-  await desktopModePage.goto(`${url}/?start`, {
-    waitUntil: "domcontentloaded",
-  });
-  await failed(desktopModePage);
-  expectPane(
-    "iPhone Safari, desktop website",
-    await readFailurePane(desktopModePage),
-    {
-      status: "not on phones",
-      title: "The sandbox does not run on phones",
-      notebook: "not on phones",
-      start: true,
-      why: ["phone"],
-      reason: null,
-    },
-  );
-  await desktopModeIPhone.close();
-
-  // Android Chrome's "Desktop site" sends a Linux desktop UA and
-  // `userAgentData.mobile` false, and ignores the viewport meta tag, so it
-  // lays out at 980 px; its screen and coarse pointer are the phone's
-  // (Chromium: ContentUtils SetUserAgentOverride, #216).
-  const desktopSiteAndroid = await browser.newContext({
-    userAgent: ANDROID_DESKTOP_SITE_UA,
-    viewport: { width: 980, height: 2180 },
-    screen: { width: 412, height: 915 },
-    hasTouch: true,
-  });
-  const desktopSitePage = await desktopSiteAndroid.newPage();
-  await desktopSitePage.addInitScript(() => {
-    Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
-      get: () => 5,
-    });
-    Object.defineProperty(Navigator.prototype, "userAgentData", {
-      get: () => ({ mobile: false, platform: "Linux", brands: [] }),
-    });
-  });
-  await desktopSitePage.goto(`${url}/?start`, {
-    waitUntil: "domcontentloaded",
-  });
-  await failed(desktopSitePage);
-  expectPane(
-    "Android Chrome, desktop site",
-    await readFailurePane(desktopSitePage),
-    {
-      status: "not on phones",
-      title: "The sandbox does not run on phones",
-      notebook: "not on phones",
-      start: true,
-      why: ["phone"],
-      reason: null,
-    },
-  );
-  await desktopSiteAndroid.close();
-
-  const phone = await browser.newContext(devices["iPhone 13"]);
-  const phonePage = await phone.newPage();
-  await phonePage.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
-  await failed(phonePage);
-  expectPane("phone", await readFailurePane(phonePage), {
-    status: "not on phones",
-    title: "The sandbox does not run on phones",
-    notebook: "not on phones",
-    start: true,
-    why: ["phone"],
-    reason: null,
-  });
-  // `?start-anyway`: the same phone gets the Start button and no refusal,
-  // for the shell alone: the note says so, and the cell has no Python.
-  await phonePage.goto(`${url}/?start-anyway`, {
-    waitUntil: "domcontentloaded",
-  });
-  await phonePage.getByTestId("start-sandbox").waitFor({ state: "visible" });
-  const anyway = await phonePage.evaluate(() => ({
-    failed: document.querySelector<HTMLElement>("#failed")!.hidden,
-    notebook: document.querySelector("#notebook-status")!.textContent,
-    note: !document.querySelector<HTMLElement>("#phone-note")!.hidden,
-  }));
-  if (
-    !anyway.failed || anyway.notebook !== "not on phones" || !anyway.note
-  ) {
-    throw new Error(`phone ?start-anyway: ${JSON.stringify(anyway)}`);
-  }
-  await phone.close();
-
   const reason = "fetch ./yurt_kernel.wasm failed: 503";
+  // Phones: each one is told apart from a tablet or a desktop, and the bare
+  // URL gains `platform=phone` before anything loads. A phone now boots,
+  // the shell only (its own small snapshot, or the image): a failed boot
+  // explains itself as on any device, and the cell says no Jupyter here.
+  const phones: {
+    name: string;
+    options: Parameters<typeof browser.newContext>[0];
+    init?: () => void;
+  }[] = [
+    // iPhone Safari with "Request Desktop Website" sends the Mac Safari UA,
+    // reports 5 touch points like an iPad, and lays out at 980 px; only its
+    // screen, 390 px wide, says phone (#214).
+    {
+      name: "iPhone Safari, desktop website",
+      options: {
+        userAgent: IPADOS_SAFARI_UA,
+        viewport: { width: 980, height: 1700 },
+        screen: { width: 390, height: 844 },
+        hasTouch: true,
+      },
+      init: () =>
+        Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
+          get: () => 5,
+        }),
+    },
+    // Android Chrome's "Desktop site" sends a Linux desktop UA and
+    // `userAgentData.mobile` false, and ignores the viewport meta tag, so it
+    // lays out at 980 px; its screen and coarse pointer are the phone's
+    // (Chromium: ContentUtils SetUserAgentOverride, #216).
+    {
+      name: "Android Chrome, desktop site",
+      options: {
+        userAgent: ANDROID_DESKTOP_SITE_UA,
+        viewport: { width: 980, height: 2180 },
+        screen: { width: 412, height: 915 },
+        hasTouch: true,
+      },
+      init: () => {
+        Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
+          get: () => 5,
+        });
+        Object.defineProperty(Navigator.prototype, "userAgentData", {
+          get: () => ({ mobile: false, platform: "Linux", brands: [] }),
+        });
+      },
+    },
+    { name: "phone", options: devices["iPhone 13"] },
+  ];
+  for (const { name, options, init } of phones) {
+    const context = await browser.newContext(options);
+    const page = await context.newPage();
+    if (init !== undefined) await page.addInitScript(init);
+    await page.route(
+      "**/yurt_kernel.wasm",
+      (route) => route.fulfill({ status: 503 }),
+    );
+    await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
+    await failed(page);
+    const seen = await page.evaluate(() => ({
+      platform: new URL(location.href).searchParams.get("platform"),
+      data: document.documentElement.dataset.platform,
+      note: !document.querySelector<HTMLElement>("#phone-note")!.hidden,
+    }));
+    if (seen.platform !== "phone" || seen.data !== "phone" || !seen.note) {
+      throw new Error(`${name}: ${JSON.stringify(seen)}`);
+    }
+    expectPane(name, await readFailurePane(page), {
+      status: "failed",
+      title: "The sandbox did not start",
+      notebook: "no sandbox",
+      start: true,
+      why: ["error"],
+      reason,
+    });
+    await context.close();
+  }
+
   const scenes = [
     { name: "tablet", tablet: true, ...devices["iPad Pro 11"] },
     // What a real iPad sends: iPadOS Safari asks for the desktop site, so
@@ -475,6 +432,16 @@ async function bootFailuresAreExplained(
     );
     await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
     await failed(page);
+    // The bare URL gains the device's platform.
+    const want = tablet ? "tablet" : "desktop";
+    const seen = await page.evaluate(() => [
+      new URL(location.href).searchParams.get("platform"),
+      new URL(location.href).searchParams.has("start"),
+      document.documentElement.dataset.platform,
+    ]);
+    if (seen[0] !== want || seen[1] !== true || seen[2] !== want) {
+      throw new Error(`${name}: platform ${JSON.stringify(seen)}, not ${want}`);
+    }
     expectPane(name, await readFailurePane(page), {
       status: "failed",
       title: "The sandbox did not start",
@@ -483,6 +450,39 @@ async function bootFailuresAreExplained(
       why: [tablet ? "tablet" : "error"],
       reason,
     });
+    await context.close();
+  }
+
+  // `?platform=` by hand: a smaller platform is run as asked (a desktop
+  // trying the phone's page), a bigger one than the device runs the
+  // device's own and says so; neither is written away from the URL.
+  for (
+    const [name, options, asked, want, noted] of [
+      ["desktop as a phone", {}, "phone", "phone", false],
+      ["phone as a desktop", devices["iPhone 13"], "desktop", "phone", true],
+      [
+        "tablet as a desktop",
+        devices["iPad Pro 11"],
+        "desktop",
+        "tablet",
+        true,
+      ],
+    ] as const
+  ) {
+    const context = await browser.newContext(options);
+    const page = await context.newPage();
+    await page.goto(`${url}/?platform=${asked}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.getByTestId("start-sandbox").waitFor({ state: "visible" });
+    const seen = await page.evaluate(() => ({
+      url: new URL(location.href).searchParams.get("platform"),
+      data: document.documentElement.dataset.platform,
+      note: !document.querySelector<HTMLElement>("#platform-note")!.hidden,
+    }));
+    if (seen.url !== asked || seen.data !== want || seen.note !== noted) {
+      throw new Error(`${name}: ${JSON.stringify(seen)}`);
+    }
     await context.close();
   }
 
@@ -1132,7 +1132,7 @@ if (import.meta.main) {
     await page.close();
     await bootFailuresAreExplained(browser, server.url);
     await tabletIsShellOnly(browser, server.url);
-    await phoneAgentIsUnavailable(browser, server.url);
+    await phoneAgentHasTheSandbox(browser, server.url);
   } finally {
     await browser.close();
     await server.shutdown();

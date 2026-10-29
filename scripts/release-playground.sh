@@ -827,7 +827,9 @@ done
 # only if release-snapshot.ts --check-pin says it is this train's (well
 # formed, this page's format, built from these pins, of the Python set the
 # live index offers); otherwise it is dropped (scripts/lib/snapshot-pin.sh).
-snapshot_json=$(jq -c '.snapshot // null' "$root/artifacts/pins.json")
+# Each device's (src/sandbox_snapshot.ts SNAPSHOT_KINDS), checked by kind.
+snapshots_json=$(jq -c '{snapshot, tabletSnapshot, phoneSnapshot}
+  | with_entries(select(.value != null))' "$root/artifacts/pins.json")
 # `repo`/`rev` say where the source is; `releaseRepo`/`release` where the
 # bytes are (a train's in the repository that built them, a hand-cut one in
 # yurt-packages). Every consumer fetches through releaseRepo.
@@ -836,7 +838,7 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
   --arg image_release "$image_release" --arg image_repo "$image_repo" --arg image_sha256 "$image_sha256" --arg ports_sha "$ports_sha" \
   --arg host_release "$host_release" --arg host_repo "$host_repo" --arg cli_release "$cli_release" --arg cli_repo "$cli_repo" \
   --argjson host "$host_json" --argjson cli "$cli_json" --argjson python_seal "$python_seal_json" \
-  --argjson slim "$slim_json" --argjson snapshot "$snapshot_json" '{
+  --argjson slim "$slim_json" --argjson snapshots "$snapshots_json" '{
     train: $train,
     kernelWasm: {repo: "YurtOS/yurtos-kernel", rev: $kernel_sha, releaseRepo: $kernel_repo, release: $kernel_release,
       build: "scripts/build-kernel-wasm.sh", path: "target/kernel-wasm/release/yurt_kernel.wasm", sha256: $kernel_sha256},
@@ -850,14 +852,53 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
       sha256: ($cli | with_entries(.value = .value.sha256))},
     pythonSeal: $python_seal
   } + (if $slim == null then {} else {browserImage: $slim} end)
-    + (if $snapshot == null then {} else {snapshot: $snapshot} end)' > "$root/artifacts/pins.json"
-keep_snapshot_pin "$root" || die "$snapshot_error; fix that and $(resume_command)"
-if [ "${snapshot_dropped:-0}" = 1 ]; then
-  say "the pinned snapshot is not this train's ($snapshot_why): dropped"
+    + $snapshots' > "$root/artifacts/pins.json"
+# One verdict per kind. The train's record of dropped pins is one line per
+# pin -- the desktop's reason as it was, the others as "<key>: <reason>"
+# (a reason may itself hold "; ") -- and keeps an earlier run's line while
+# that pin is still absent: a resumed train rebuilds its pins from this
+# run's, which no longer have it, so nothing else would say so again.
+dropped_parts=() dropped_keys=" "
+for kind_entry in snapshot:desktop tabletSnapshot:tablet phoneSnapshot:phone; do
+  snapshot_dropped=0 snapshot_kept=0 snapshot_why=
+  keep_snapshot_pin "$root" "${kind_entry%%:*}" "${kind_entry#*:}" ||
+    die "$snapshot_error; fix that and $(resume_command)"
+  if [ "$snapshot_dropped" = 1 ]; then
+    if [ "${kind_entry%%:*}" = snapshot ]; then
+      dropped_parts+=("$snapshot_why")
+    else
+      dropped_parts+=("${kind_entry%%:*}: $snapshot_why")
+    fi
+    dropped_keys+="${kind_entry%%:*} "
+  fi
+done
+all_parts=()
+[ ${#dropped_parts[@]} -eq 0 ] || all_parts+=("${dropped_parts[@]}")
+if [ "$pins_only" = 0 ]; then
+  while IFS= read -r part; do
+    [ -n "$part" ] || continue
+    case "$part" in
+      tabletSnapshot:*) key=tabletSnapshot ;;
+      phoneSnapshot:*) key=phoneSnapshot ;;
+      *) key=snapshot ;;
+    esac
+    case "$dropped_keys" in *" $key "*) continue ;; esac
+    jq -e --arg k "$key" 'has($k)' "$root/artifacts/pins.json" >/dev/null ||
+      all_parts+=("$part")
+  done <<< "$(step_get snapshot dropped)"
+fi
+snapshot_dropped=0 snapshot_why=
+if [ ${#dropped_parts[@]} -gt 0 ]; then
+  snapshot_dropped=1
+  shown=$(printf '%s\n' "${dropped_parts[@]}")
+  say "the pinned snapshot is not this train's (${shown//$'\n'/ | }): dropped"
+fi
+if [ ${#all_parts[@]} -gt 0 ]; then
+  snapshot_why=$(printf '%s\n' "${all_parts[@]}")
   # Kept with the train, so a --resume still ends with the reminder below.
   [ "$pins_only" = 1 ] || step_set snapshot dropped "$(jq -n --arg why "$snapshot_why" '$why')"
-elif [ "${snapshot_kept:-0}" = 1 ] && [ "$pins_only" = 0 ]; then
-  # A resumed train whose pins keep the entry has nothing to recapture.
+elif [ "$pins_only" = 0 ]; then
+  # Every pin an earlier run dropped is back: nothing left to recapture.
   step_set snapshot dropped null
 fi
 say "verify the pins: scripts/install-pinned-artifacts.sh"

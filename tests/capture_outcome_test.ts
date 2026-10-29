@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert";
 import {
   type CaptureMark,
+  capturePrecompiles,
   DOWNLOAD_URL_KEEP_MS,
   finishCapture,
   markBootEnded,
@@ -224,4 +225,10 @@ Deno.test("a library directory inside another is walked once, with it", async ()
     await Deno.remove(lib, { recursive: true });
     await Deno.remove(`${lib}-site`, { recursive: true });
   }
+});
+
+Deno.test("a capture precompiles the Python it installed; the phone's has none", () => {
+  assertEquals(capturePrecompiles("desktop"), true);
+  assertEquals(capturePrecompiles("tablet"), true);
+  assertEquals(capturePrecompiles("phone"), false);
 });

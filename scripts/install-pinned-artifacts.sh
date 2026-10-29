@@ -82,43 +82,50 @@ else
   rm -f "$root/artifacts/playground-slim.yurtimg"
 fi
 fetch pythonSeal python3-seal.wasm public/demo/python3-seal.wasm
-# The sealed sandbox `?snapshot=1` restores (scripts/release-snapshot.ts),
-# when the train pins one and the caller asks for it (YURT_INSTALL_SNAPSHOT=1:
-# the deploy, which publishes it): 132 MB that no test reads. A yurt-playground
-# release of its parts, joined here and checked against the whole file's
-# sha256 the pin records. It is optional: any problem with it -- a
-# malformed entry, a failed download, a wrong sha256 -- is a warning and no
-# snapshot, never a failed install (the default page must still ship).
+# Each device's sealed sandbox (src/sandbox_snapshot.ts SNAPSHOT_KINDS:
+# `snapshot` the desktop's, `tabletSnapshot`, `phoneSnapshot`), when the
+# train pins it and the caller asks for it (YURT_INSTALL_SNAPSHOT=1: the
+# deploy, which publishes them): up to 132 MB each that no test reads. A
+# yurt-playground release of its parts, joined here and checked against
+# the whole file's sha256 the pin records. Each is optional: any problem
+# with one -- a malformed entry, a failed download, a wrong sha256 -- is a
+# warning and no snapshot of that kind, never a failed install (the
+# default page must still ship, booting the image).
+# install_snapshot KEY ASSET
 install_snapshot() (
-  repo=$(jq -er '.snapshot.releaseRepo | strings' "$pins") || exit 1
-  tag=$(jq -er '.snapshot.release | strings' "$pins") || exit 1
-  count=$(jq -er '.snapshot.parts | arrays | length' "$pins") || exit 1
-  expected=$(jq -er '.snapshot.sha256 | strings' "$pins") || exit 1
-  echo "fetching sandbox.seal.gz ($count parts) from $repo $tag" >&2
-  download "$tag" "$repo" 'sandbox.seal.gz.[0-9]*' "$cache/snapshot" || exit 1
-  : > "$cache/sandbox.seal.gz" || exit 1
+  key=$1 asset=$2
+  repo=$(jq -er ".$key.releaseRepo | strings" "$pins") || exit 1
+  tag=$(jq -er ".$key.release | strings" "$pins") || exit 1
+  count=$(jq -er ".$key.parts | arrays | length" "$pins") || exit 1
+  expected=$(jq -er ".$key.sha256 | strings" "$pins") || exit 1
+  echo "fetching $asset ($count parts) from $repo $tag" >&2
+  download "$tag" "$repo" "$asset.[0-9]*" "$cache/$key" || exit 1
+  : > "$cache/$asset" || exit 1
   for ((i = 0; i < count; i++)); do
-    cat "$cache/snapshot/sandbox.seal.gz.$i" >> "$cache/sandbox.seal.gz" || exit 1
+    cat "$cache/$key/$asset.$i" >> "$cache/$asset" || exit 1
   done
-  actual=$(shasum -a 256 "$cache/sandbox.seal.gz" | cut -d' ' -f1)
+  actual=$(shasum -a 256 "$cache/$asset" | cut -d' ' -f1)
   if [[ "$actual" != "$expected" ]]; then
-    echo "sandbox.seal.gz sha256 mismatch: got $actual, pin $expected" >&2
+    echo "$asset sha256 mismatch: got $actual, pin $expected" >&2
     exit 1
   fi
   mkdir -p "$root/public/snapshot" &&
-    mv "$cache/sandbox.seal.gz" "$root/public/snapshot/sandbox.seal.gz" || exit 1
-  echo "installed $tag/sandbox.seal.gz as public/snapshot/sandbox.seal.gz" >&2
+    mv "$cache/$asset" "$root/public/snapshot/$asset" || exit 1
+  echo "installed $tag/$asset as public/snapshot/$asset" >&2
 )
 
-if [[ "$(jq -r '.snapshot // empty' "$pins")" == "" ]]; then
-  # One from earlier pins would be checked and left out by the static
-  # build; it is not this train's.
-  rm -f "$root/public/snapshot/sandbox.seal.gz"
-elif [[ "${YURT_INSTALL_SNAPSHOT:-}" == 1 ]]; then
-  if ! install_snapshot; then
-    echo "WARNING: the pinned sandbox snapshot was not installed; the site ships without ?snapshot=1" >&2
-    rm -f "$root/public/snapshot/sandbox.seal.gz"
+for kind in snapshot:sandbox.seal.gz tabletSnapshot:tablet.seal.gz phoneSnapshot:phone.seal.gz; do
+  key=${kind%%:*} asset=${kind#*:}
+  if [[ "$(jq -r ".$key // empty" "$pins")" == "" ]]; then
+    # One from earlier pins would be checked and left out by the static
+    # build; it is not this train's.
+    rm -f "$root/public/snapshot/$asset"
+  elif [[ "${YURT_INSTALL_SNAPSHOT:-}" == 1 ]]; then
+    if ! install_snapshot "$key" "$asset"; then
+      echo "WARNING: the pinned $key was not installed; the site ships without it (that device boots the image)" >&2
+      rm -f "$root/public/snapshot/$asset"
+    fi
+  else
+    echo "$asset not fetched (YURT_INSTALL_SNAPSHOT=1 fetches it)" >&2
   fi
-else
-  echo "sandbox.seal.gz not fetched (YURT_INSTALL_SNAPSHOT=1 fetches it)" >&2
-fi
+done

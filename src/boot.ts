@@ -7,7 +7,12 @@ import {
   s,
   type SandboxSealImage,
 } from "@yurt/kernel-host-interface-js";
-import type { SandboxFiles } from "./installed_list.ts";
+import {
+  INSTALLED_LIST_PATH,
+  parseInstalledList,
+  type SandboxFiles,
+} from "./installed_list.ts";
+import { linuxRemark } from "./linux_remark.ts";
 import {
   drainDirtyPaths,
   type LayerEntry,
@@ -40,6 +45,7 @@ import {
   decodeSandboxSnapshot,
   fetchVerifiedSnapshot,
   pinnedSnapshot,
+  type SnapshotKind,
 } from "./sandbox_snapshot.ts";
 import { uploadedSnapshot } from "./snapshot_source.ts";
 import type { Spawner, WaitStatus } from "./executions.ts";
@@ -75,6 +81,15 @@ export type PlaygroundEnv = {
   /** `?snapshot=<id>`: restore that uploaded snapshot
    * (src/snapshot_source.ts) instead of the pinned one. */
   snapshotId?: string;
+  /** Which pinned snapshot a restore takes (the device's,
+   * src/sandbox_snapshot.ts SNAPSHOT_KINDS); the desktop's when absent. */
+  snapshotKind?: SnapshotKind;
+  /** Where a restore keeps the snapshot's checked parts between visits
+   * (the browser's Cache API); none, every visit downloads them. */
+  snapshotCache?: CacheStorage;
+  /** Told what this Linux holds once the shell is about to start
+   * (src/linux_remark.ts), whether booted or restored. */
+  linuxRemark?: (remark: string) => void;
   /** The Python set the live index offers now, as a layer key
    * (src/python_layer.ts): null when the site installs none, undefined
    * when the index cannot be asked. A snapshot of another set is not
@@ -105,6 +120,10 @@ export type PlaygroundSession = {
   /** Guest files read straight from the in-tab kernel's VFS (no process,
    * no credentials): what pkg has installed (src/installed_list.ts). */
   files?: SandboxFiles;
+  /** Read pkg's list again after an install: /etc/motd and the page's
+   * "This Linux" line follow what the sandbox now holds
+   * (src/linux_remark.ts). */
+  refreshRemark?: () => void;
   /** The same, handing the process back: what a driver's `exec` runs
    * (src/executions.ts). */
   process?: Spawner;
@@ -410,6 +429,20 @@ export async function bootPlayground(
   )).kernel;
 }
 
+/** This Linux's remark (src/linux_remark.ts) from pkg's installed list
+ * in the sandbox; a list that cannot be read counts as none installed. */
+function remarkOf(mk: KernelHostInterface): string {
+  let releases: ReturnType<typeof parseInstalledList> = [];
+  try {
+    releases = parseInstalledList(
+      readGuestFile(mk, KERNEL_PID, INSTALLED_LIST_PATH, 1024 * 1024),
+    );
+  } catch {
+    // No list, or a broken one: the remark names the shell alone.
+  }
+  return linuxRemark(releases);
+}
+
 /**
  * `?snapshot=1`'s kernel: the restored snapshot, or the image's boot when
  * the snapshot cannot be had -- none pinned, one of another build, a
@@ -450,29 +483,54 @@ export async function restoreSnapshot(
   // An uploaded snapshot's manifest takes the pin's checks, from its own
   // commit; only its manifest (a few hundred bytes) is read before them.
   const source = env.snapshotId === undefined
-    ? { pin: pinnedSnapshot(pins), path, fetch: undefined }
+    ? {
+      pin: pinnedSnapshot(pins, env.snapshotKind),
+      path,
+      fetch: undefined,
+    }
     : await uploadedSnapshot(env.snapshotId, pins);
   const pin = source.pin;
-  // The Python set the capture installed must be the one an install
-  // would get now, as for a stored layer (src/python_layer.ts): asked
-  // before anything is downloaded (liveLayerKey's own bound, 20 s).
-  checkPythonSet(pin.builtFrom, await env.livePythonSet?.());
-  // Only this frame holds the decoded memory (~545 MiB), and only until
-  // the restore copied it: a fallback boot must not run beside it.
-  let image: SandboxSealImage | undefined = await decodeSandboxSnapshot(
-    await fetchVerifiedSnapshot(
-      source.path,
-      pin,
-      source.fetch,
-      (loaded, total) =>
-        env.show(
-          `loading snapshot ${(loaded / MIB).toFixed(1)} of ${
-            (total / MIB).toFixed(1)
-          } MiB`,
-        ),
-    ),
-    pin.builtFrom,
+  // The Python the capture installed must be what an install would get
+  // now, as for a stored layer (src/python_layer.ts). Asked beside the
+  // download, not before it (liveLayerKey's own bound, 20 s): a refusal
+  // stops the download, and the restore waits for the answer.
+  const stop = new AbortController();
+  const checked = Promise.resolve(env.livePythonSet?.()).then((live) =>
+    checkPythonSet(pin.builtFrom, live)
   );
+  checked.catch((error) => stop.abort(error));
+  // Only this frame holds the decoded memory (~250-545 MiB), and only
+  // until the restore copied it: a fallback boot must not run beside it.
+  let downloaded = started;
+  let image: SandboxSealImage | undefined =
+    await (async () =>
+      decodeSandboxSnapshot(
+        (await fetchVerifiedSnapshot(
+          source.path,
+          pin,
+          source.fetch,
+          (loaded, total) => {
+            if (loaded === total) downloaded = performance.now();
+            env.show(
+              `loading snapshot ${(loaded / MIB).toFixed(1)} of ${
+                (total / MIB).toFixed(1)
+              } MiB`,
+            );
+          },
+          env.snapshotCache,
+        )).pipeThrough(new TransformStream(), { signal: stop.signal }),
+        pin.builtFrom,
+        undefined,
+        // The live index's verdict before the memory is allocated: a
+        // refused snapshot never holds it, so a fallback boot never runs
+        // beside it.
+        () => checked,
+      ))().catch(async (error) => {
+        // A refused set says so, rather than the aborted download's reason.
+        await checked;
+        throw error;
+      });
+  await checked;
   const fetched = performance.now();
   const memoryBytes = image.kernelMemory.byteLength;
   env.show("restoring snapshot");
@@ -488,7 +546,8 @@ export async function restoreSnapshot(
   }
   console.log(
     `[snapshot] ${memoryBytes} bytes of kernel memory: ` +
-      `fetched+inflated in ${Math.round(fetched - started)} ms, ` +
+      `fetched+inflated in ${Math.round(fetched - started)} ms ` +
+      `(parts had at ${Math.round(downloaded - started)} ms), ` +
       `restored in ${Math.round(performance.now() - fetched)} ms`,
   );
   return restored.host;
@@ -690,6 +749,19 @@ async function startPlayground(
       waitStatus: (): WaitStatus | undefined => status,
     });
   };
+  // What this Linux holds, from pkg's own list: said to the page, kept in
+  // /etc/motd, and printed above the shell's first prompt; said and kept
+  // again after each install (refreshRemark).
+  let lastRemark: string | undefined;
+  const sayRemark = () => {
+    const remark = remarkOf(mk);
+    if (remark === lastRemark) return remark;
+    lastRemark = remark;
+    writeRamfsFile(mk, "/etc/motd", new TextEncoder().encode(`${remark}\n`));
+    env.linuxRemark?.(remark);
+    return remark;
+  };
+  env.term.write(`\x1b[2m${sayRemark()}\x1b[0m\r\n`);
   env.show("starting ash");
   // Not a group leader: attaching the terminal makes the login shell a
   // session leader, which the kernel refuses a group leader (EPERM).
@@ -927,6 +999,7 @@ async function startPlayground(
       const bytes = readGuestFile(mk, user.pid, path, 4 * 1024 * 1024);
       return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
     },
+    refreshRemark: () => void sayRemark(),
     files: {
       // In an executor, so a failed read is a rejection, not a throw.
       readWhole: (path) =>

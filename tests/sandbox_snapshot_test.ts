@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
 import { restoreSnapshot, snapshotOrBoot } from "../src/boot.ts";
 import { sha256Hex } from "../src/integrity.ts";
@@ -14,6 +14,7 @@ import {
   FORMAT,
   pinnedSnapshot,
   SEAL_VERSION,
+  snapshotHeaderFacts,
   snapshotIdentity,
   SnapshotMismatch,
   type SnapshotPin,
@@ -49,7 +50,7 @@ const BUILT: BuiltFrom = {
   kernelSha256: "ab".repeat(32),
   kernelRev: "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
   sealVersion: 1,
-  bootSetup: 1,
+  bootSetup: BOOT_SETUP,
   imageSha256: "cd".repeat(32),
   pythonSealSha256: "ef".repeat(32),
   pythonSet: "cd/python@3.14.7-yurt_0:0123456789abcdef",
@@ -84,7 +85,7 @@ Deno.test("a sandbox snapshot built from anything else is refused, by name", asy
     kernelSha256: "00".repeat(32),
     kernelRev: "0000000",
     sealVersion: 2,
-    bootSetup: 2,
+    bootSetup: BOOT_SETUP + 1,
     imageSha256: "00".repeat(32),
     pythonSealSha256: "00".repeat(32),
   };
@@ -374,6 +375,9 @@ Deno.test("a snapshot of another Python set than the live index offers is not re
     SnapshotMismatch,
     "this page installs no Python (a phone, a shell-only session, or no pins)",
   );
+  // A phone's snapshot (?snapshot=capture-phone) holds no set: a page
+  // that installs none restores it, and only such a page.
+  checkPythonSet({ ...BUILT, pythonSet: null }, null);
   assertThrows(
     () => checkPythonSet({ ...BUILT, pythonSet: null }, "img/python@1"),
     SnapshotMismatch,
@@ -507,60 +511,231 @@ Deno.test("a pin of another snapshot format is not used", () => {
   );
 });
 
-Deno.test("?snapshot=1 asks the live index before it fetches any snapshot byte", async () => {
+Deno.test("a snapshot of another Python set is refused, with the download beside the check, and never restored", async () => {
   // A pin built for these pins here, not the committed entry: a train
   // may drop that one.
   const raw = JSON.parse(
     await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
   );
   const unpinned = parsePins({ ...raw, snapshot: undefined });
-  const pinsText = JSON.stringify({
-    ...raw,
-    snapshot: {
-      releaseRepo: "YurtOS/yurt-playground",
-      release: "snapshot-t",
-      format: FORMAT,
-      sha256: "a".repeat(64),
-      size: 1,
-      parts: ["b".repeat(64)],
-      builtFrom: { ...snapshotIdentity(unpinned), pythonSet: BUILT.pythonSet },
-    },
-  });
+  const built = { ...snapshotIdentity(unpinned), pythonSet: BUILT.pythonSet };
+  const file = new Uint8Array(
+    await (await encodeSandboxSnapshot(image(1 << 10), built)).arrayBuffer(),
+  );
+  const pin = { ...await pinFor(file), builtFrom: built };
+  const name = "snapshot/sandbox.seal.gz";
+  const served = site(name, file);
+  const pinsText = JSON.stringify({ ...raw, snapshot: pin });
   const fetched: string[] = [];
   const realFetch = globalThis.fetch;
-  globalThis.fetch = ((input: RequestInfo | URL) => {
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     fetched.push(url);
-    return Promise.resolve(
-      url.endsWith("pins.json")
-        ? new Response(pinsText)
-        : new Response(null, { status: 404 }),
-    );
+    return url.endsWith("pins.json")
+      ? Promise.resolve(new Response(pinsText))
+      : served(url, init);
   }) as typeof fetch;
-  let asked = false;
   try {
-    await assertRejects(
-      () =>
-        restoreSnapshot(
-          {
-            isolated: true,
-            fetchBytes: () => Promise.reject(new Error("not in this test")),
-            show: () => {},
-            term: {} as never,
-            livePythonSet: () => {
-              asked = true;
-              return Promise.resolve("a set the snapshot does not hold");
+    for (const delayMs of [0, 50]) {
+      fetched.length = 0;
+      await assertRejects(
+        () =>
+          restoreSnapshot(
+            {
+              isolated: true,
+              fetchBytes: () => Promise.reject(new Error("not in this test")),
+              show: () => {},
+              term: {} as never,
+              // The index answers before or after the download is done.
+              livePythonSet: () =>
+                new Promise((resolve) =>
+                  setTimeout(
+                    () => resolve("a set the snapshot does not hold"),
+                    delayMs,
+                  )
+                ),
             },
-          },
-          new Uint8Array(),
-          "http://pg/snapshot/sandbox.seal.gz",
-        ),
-      SnapshotMismatch,
-      "the live index offers a set the snapshot does not hold",
-    );
+            // Not a kernel: a restore that went ahead would fail on it
+            // with another error.
+            new Uint8Array(),
+            `http://pg/${name}`,
+          ),
+        SnapshotMismatch,
+        "the live index offers a set the snapshot does not hold",
+      );
+      // The download ran beside the check: it is not on the critical path.
+      assertEquals(
+        fetched.some((url) => url.includes("snapshot/")),
+        true,
+        `delay ${delayMs}`,
+      );
+    }
   } finally {
     globalThis.fetch = realFetch;
   }
-  assertEquals(asked, true);
-  assertEquals(fetched.filter((url) => url.includes("snapshot/")), []);
+});
+
+/** A CacheStorage that keeps everything in memory. */
+function memoryCaches(): CacheStorage & { store: Map<string, Uint8Array> } {
+  const store = new Map<string, Uint8Array>();
+  const cache = {
+    match: (key: string) =>
+      Promise.resolve(
+        store.has(key) ? new Response(store.get(key)!.slice()) : undefined,
+      ),
+    put: async (key: string, response: Response) => {
+      store.set(key, new Uint8Array(await response.arrayBuffer()));
+    },
+    delete: (key: string | Request) =>
+      Promise.resolve(store.delete(typeof key === "string" ? key : key.url)),
+    keys: () =>
+      Promise.resolve([...store.keys()].map((url) => new Request(url))),
+  };
+  return {
+    store,
+    open: () => Promise.resolve(cache as unknown as Cache),
+  } as unknown as CacheStorage & { store: Map<string, Uint8Array> };
+}
+
+Deno.test("a repeat restore takes the checked parts from the cache, and drops other snapshots' parts", async () => {
+  const sealed = image(1 << 10);
+  const file = new Uint8Array(
+    await (await encodeSandboxSnapshot(sealed, BUILT)).arrayBuffer(),
+  );
+  const name = "snapshot/tablet.seal.gz";
+  const path = `http://pg/${name}`;
+  const pin = await pinFor(file);
+  const served = site(name, file);
+  let partFetches = 0;
+  const counting: typeof fetch = (input, init) => {
+    if (!String(input).endsWith(".parts.json")) partFetches++;
+    return served(input, init);
+  };
+  const cache = memoryCaches();
+  const foreign = `https://yurt-snapshot-parts.invalid/${"0".repeat(64)}`;
+  cache.store.set(foreign, new Uint8Array([1]));
+  const restore = () =>
+    fetchVerifiedSnapshot(path, pin, counting, undefined, cache).then((
+      body,
+    ) => decodeSandboxSnapshot(body, BUILT));
+  assertEquals(await restore(), sealed);
+  // Each part with a sha256 not yet held (this test's 3-byte parts
+  // repeat; a real snapshot's do not).
+  assert(
+    partFetches >= new Set(pin.parts).size && partFetches <= pin.parts.length,
+    `the first visit downloads: ${partFetches}`,
+  );
+  assertEquals(cache.store.has(foreign), false, "another snapshot's part");
+  assertEquals(cache.store.size, new Set(pin.parts).size);
+  partFetches = 0;
+  assertEquals(await restore(), sealed);
+  assertEquals(partFetches, 0, "a repeat visit downloads no part");
+  // A damaged cached part is fetched again, never used.
+  const first = `https://yurt-snapshot-parts.invalid/${pin.parts[0]}`;
+  cache.store.set(first, new Uint8Array([9, 9, 9]));
+  partFetches = 0;
+  assertEquals(await restore(), sealed);
+  assertEquals(partFetches > 0, true);
+});
+
+Deno.test("each device's snapshot is its own pins.json entry", async () => {
+  const raw = JSON.parse(
+    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
+  );
+  const pins = parsePins({
+    ...raw,
+    snapshot: undefined,
+    tabletSnapshot: undefined,
+    phoneSnapshot: undefined,
+  });
+  const entry = (pythonSet: string | null) => ({
+    releaseRepo: "YurtOS/yurt-playground",
+    release: "snapshot-x",
+    format: FORMAT,
+    sha256: "a".repeat(64),
+    size: 1,
+    parts: ["b".repeat(64)],
+    builtFrom: { ...snapshotIdentity(pins), pythonSet },
+    memoryBytes: 4096,
+    contents: {
+      packages: [{ name: "git", version: "2.55.0", build: "yurt_0" }],
+      remark: "BusyBox shell, git 2.55.0; no Python, no Jupyter",
+    },
+  });
+  const all = {
+    ...pins,
+    snapshot: entry("set"),
+    tabletSnapshot: entry("python"),
+    phoneSnapshot: entry(null),
+  };
+  assertEquals(pinnedSnapshot(all).builtFrom.pythonSet, "set");
+  assertEquals(pinnedSnapshot(all, "tablet").builtFrom.pythonSet, "python");
+  assertEquals(pinnedSnapshot(all, "phone").builtFrom.pythonSet, null);
+  assertEquals(pinnedSnapshot(all, "phone").memoryBytes, 4096);
+  assertEquals(
+    pinnedSnapshot(all, "phone").contents?.remark,
+    "BusyBox shell, git 2.55.0; no Python, no Jupyter",
+  );
+  assertThrows(
+    () => pinnedSnapshot({ ...pins, snapshot: entry("set") }, "phone"),
+    SnapshotMismatch,
+    "the site pins no phone snapshot (phoneSnapshot)",
+  );
+  assertThrows(
+    () =>
+      pinnedSnapshot(
+        { ...pins, tabletSnapshot: { ...entry("p"), contents: { remark: 1 } } },
+        "tablet",
+      ),
+    SnapshotMismatch,
+    "contents must be",
+  );
+});
+
+Deno.test("a snapshot's header records what it holds, read without its memory", async () => {
+  const contents = {
+    packages: [{ name: "python", version: "3.14.7", build: "yurt_0" }],
+    remark: "BusyBox shell, Python 3.14.7; no Jupyter",
+  };
+  const blob = await encodeSandboxSnapshot(image(1 << 12), BUILT, contents);
+  assertEquals(
+    await snapshotHeaderFacts(
+      blob.stream() as ReadableStream<Uint8Array<ArrayBuffer>>,
+    ),
+    { memoryBytes: 1 << 12, contents },
+  );
+  // And the decode is the same seal as without them.
+  assertEquals(
+    await decodeSandboxSnapshot(
+      blob.stream() as ReadableStream<Uint8Array<ArrayBuffer>>,
+      BUILT,
+    ),
+    image(1 << 12),
+  );
+});
+
+Deno.test("a check still pending refuses the snapshot before its memory is allocated", async () => {
+  // More memory than any allocation gets: allocating it would throw a
+  // RangeError, so the gate's own refusal shows it came first.
+  const file = await rawSnapshot({
+    format: FORMAT,
+    builtFrom: BUILT,
+    memoryBytes: 2 ** 52,
+  });
+  let headerSeen = false;
+  await assertRejects(
+    () =>
+      decodeSandboxSnapshot(
+        file.stream(),
+        BUILT,
+        () => headerSeen = true,
+        () =>
+          Promise.reject(
+            new SnapshotMismatch("the live index offers another set"),
+          ),
+      ),
+    SnapshotMismatch,
+    "the live index offers another set",
+  );
+  assertEquals(headerSeen, true, "the header was read and accepted first");
 });

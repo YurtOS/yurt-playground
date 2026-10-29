@@ -29,6 +29,10 @@ export type Pins = {
    * script read it, through parseSnapshotPin, so an entry of another shape
    * never breaks a default boot or a deploy. */
   snapshot?: unknown;
+  /** The tablet's and the phone's snapshots (src/sandbox_snapshot.ts
+   * SNAPSHOT_KINDS), kept as written like `snapshot`. */
+  tabletSnapshot?: unknown;
+  phoneSnapshot?: unknown;
 };
 
 /** What a sandbox snapshot was built from: a restore needs the same of
@@ -78,6 +82,16 @@ export type SnapshotPin = {
    * all 125 MB at once, which a Safari tab does not survive. */
   parts: string[];
   builtFrom: BuiltFrom;
+  /** The kernel memory a restore allocates (the header's memoryBytes). */
+  memoryBytes?: number;
+  /** What it holds (src/sandbox_snapshot.ts SnapshotContents). */
+  contents?: {
+    packages: { name: string; version: string; build: string }[];
+    remark: string;
+  };
+  /** The renderer's peak memory while restoring it, in MiB, as
+   * scripts/measure-boot.ts measured it in the device's emulation. */
+  restorePeakMiB?: number;
 };
 
 export type ArtifactSource = "artifacts" | "siblings" | "urls";
@@ -138,6 +152,8 @@ export function parsePins(raw: unknown): Pins {
     browserImage?: unknown;
     pythonSeal?: { sha256?: unknown } | null;
     snapshot?: unknown;
+    tabletSnapshot?: unknown;
+    phoneSnapshot?: unknown;
   };
   const pins: Pins = {
     kernelWasm: parsePin(value.kernelWasm, "kernelWasm"),
@@ -168,6 +184,12 @@ export function parsePins(raw: unknown): Pins {
     pins.pythonSeal = { sha256: sealSha256.toLowerCase() };
   }
   if (value.snapshot !== undefined) pins.snapshot = value.snapshot;
+  if (value.tabletSnapshot !== undefined) {
+    pins.tabletSnapshot = value.tabletSnapshot;
+  }
+  if (value.phoneSnapshot !== undefined) {
+    pins.phoneSnapshot = value.phoneSnapshot;
+  }
   return pins;
 }
 
@@ -212,6 +234,29 @@ export function parseSnapshotPin(raw: unknown): SnapshotPin {
     built.pythonSet !== null &&
     (typeof built.pythonSet !== "string" || built.pythonSet === "")
   ) fail("builtFrom.pythonSet must be a string or null");
+  if (
+    value.memoryBytes !== undefined &&
+    (!Number.isInteger(value.memoryBytes) || (value.memoryBytes as number) <= 0)
+  ) fail("memoryBytes must be a positive integer");
+  if (
+    value.restorePeakMiB !== undefined &&
+    (!Number.isInteger(value.restorePeakMiB) ||
+      (value.restorePeakMiB as number) <= 0)
+  ) fail("restorePeakMiB must be a positive integer");
+  const contents = value.contents as
+    | { packages?: unknown; remark?: unknown }
+    | undefined;
+  if (
+    contents !== undefined &&
+    (typeof contents?.remark !== "string" ||
+      !Array.isArray(contents.packages) ||
+      !contents.packages.every((p) =>
+        p !== null && typeof p === "object" &&
+        ["name", "version", "build"].every((k) =>
+          typeof (p as Record<string, unknown>)[k] === "string"
+        )
+      ))
+  ) fail("contents must be {packages: [{name, version, build}], remark}");
   return {
     releaseRepo: value.releaseRepo as string,
     release: value.release as string,
@@ -228,6 +273,15 @@ export function parseSnapshotPin(raw: unknown): SnapshotPin {
       pythonSealSha256: built.pythonSealSha256 as string | null,
       pythonSet: built.pythonSet as string | null,
     },
+    ...(value.memoryBytes === undefined
+      ? {}
+      : { memoryBytes: value.memoryBytes as number }),
+    ...(contents === undefined
+      ? {}
+      : { contents: contents as NonNullable<SnapshotPin["contents"]> }),
+    ...(value.restorePeakMiB === undefined
+      ? {}
+      : { restorePeakMiB: value.restorePeakMiB as number }),
   };
 }
 

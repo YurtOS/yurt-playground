@@ -145,5 +145,5 @@ Deno.test("the Notebook pages boot nothing on a phone, and say why", () => {
   assertEquals(line.attributes.get("role"), "alert");
   assertEquals(line.textContent, `Yurt sandbox: ${PHONE_REFUSAL}`);
   assert(/desktop browser/.test(line.textContent));
-  assert(/start-anyway/.test(line.textContent));
+  assert(/the home page runs the shell here/.test(line.textContent));
 });

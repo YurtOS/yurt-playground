@@ -217,24 +217,37 @@ it dispatches yurt-sandbox's release workflows from exact commits, generates
 merging the pin PR that deploys the page. `--validate` builds everything and
 publishes nothing; `--pins-only` regenerates the pins from releases cut by hand.
 
-`?snapshot=1` (an experiment) restores a sealed sandbox with the Python set
-already installed instead of booting the slim image and installing it. The
-snapshot is the kernel's memory after an install in the browser, so it is
+The page restores a sealed sandbox made for its device by default, instead of
+booting the slim image and installing into it: a desktop browser the one with
+the Python set and Jupyter (`snapshot` in the pins), a tablet one with python
+alone (`tabletSnapshot`), a phone the slim image as it boots, without Python
+(`phoneSnapshot`). Whenever its snapshot cannot be had or is refused, the page
+boots the image as before, with a console note; `?snapshot=0` always boots the
+image. Each snapshot records what is in that Linux, which the page shows above
+the terminal and the shell prints when it starts (it is also `/etc/motd`). A
+repeat visit takes the checked parts from the browser's cache (Cache API, keyed
+by each part's sha256) instead of downloading them again. See
+[Snapshots in use](#snapshots-in-use) for each one's size and the memory it
+needs.
+
+A snapshot is the kernel's memory after an install in the browser, so it is
 captured locally rather than by the train:
 `deno run -A
-scripts/release-snapshot.ts`, from a clean checkout at its pushed
-head whose `artifacts/pins.json` names the train (with the pinned blobs
-installed, the sibling kernel checkout clean at the pinned rev, and Playwright's
-Chromium). It serves the page, runs `?snapshot=capture` in headless Chromium,
-checks that the file decodes in full and was built from the pinned kernel and
-image and the Python set the live index offers, publishes it as the prerelease
-`snapshot-<train>` and writes the `snapshot` pin. `--dry-run` stops before the
-release and the pin; `--tag` names a second snapshot of one train (a published
-one is never replaced). A train keeps the pin only while
-`release-snapshot.ts --check-pin` accepts it, and otherwise drops it and says to
-run the script again; so does a change to the page's boot setup (`BOOT_SETUP` in
-`src/sandbox_snapshot.ts`). Only the deploy fetches the snapshot
-(`YURT_INSTALL_SNAPSHOT=1`), and a problem with it never fails the deploy.
+scripts/release-snapshot.ts --kind desktop|tablet|phone`, from a
+clean checkout at its pushed head whose `artifacts/pins.json` names the train
+(with the pinned blobs installed, the sibling kernel checkout clean at the
+pinned rev, and Playwright's Chromium). It serves the page, runs
+`?snapshot=capture` in headless Chromium, checks that the file decodes in full
+and was built from the pinned kernel and image and the Python the live index
+offers, publishes it as the prerelease `snapshot-<train>`
+(`snapshot-tablet-<train>`, `snapshot-phone-<train>`) and writes its pin, with
+its kernel memory and what it holds. `--dry-run` stops before the release and
+the pin; `--tag` names a second snapshot of one train (a published one is never
+replaced). A train keeps the pin only while `release-snapshot.ts --check-pin`
+accepts it, and otherwise drops it and says to run the script again; so does a
+change to the page's boot setup (`BOOT_SETUP` in `src/sandbox_snapshot.ts`).
+Only the deploy fetches the snapshot (`YURT_INSTALL_SNAPSHOT=1`), and a problem
+with it never fails the deploy.
 
 To try another snapshot without a pin or a deploy, capture and upload it
 locally:
@@ -258,17 +271,64 @@ repository's path, so the page asks the GitHub API's list of those refs first
 (60 unauthenticated requests an hour per address; without an answer it boots the
 image). The manifest takes every check the pin does, each part is checked
 against it, and anything else boots the image as without the flag. `--file PATH`
-uploads an existing capture, `--dry-run` stops before the push. `--phone` (the
-phone's Python-only capture, and `&start-anyway` in the URL) waits for the phone
-snapshot capture to land on main and says so until then. List the uploads with
-`git ls-remote origin 'refs/snapshots/*'`; delete one with
-`git push origin :refs/snapshots/<name>`, after which the page refuses its URL.
-Two things the script does not check. First, a capture from page code that
-changed `SEAL_VERSION`, `BOOT_SETUP` or the header format against the deployed
-page: only the pins are compared, and the site then boots the image (keep the
-page checkout at the pushed main). Second, `--packages` extras whose install
-moves a member of the Python set: the snapshot keeps the set's label, which no
-longer describes its memory.
+uploads an existing capture, `--dry-run` stops before the push. `--kind` picks
+the snapshot as above (`?snapshot=capture`, `capture-tablet`, `capture-phone`);
+each restores only on a page of its kind, since a page refuses a snapshot whose
+Python is not the one it asks the live index about (none on a phone, python
+alone on a tablet), and the printed URL names its platform. `--before-deploy`
+turns the site check into a note, for a snapshot of pins that a pending deploy
+brings. List the uploads with `git ls-remote origin 'refs/snapshots/*'`; delete
+one with `git push origin :refs/snapshots/<name>`, after which the page refuses
+its URL. Two things the script does not check. First, a capture from page code
+that changed `SEAL_VERSION`, `BOOT_SETUP` or the header format against the
+deployed page: only the pins are compared, and the site then boots the image
+(keep the page checkout at the pushed main). Second, `--packages` extras whose
+install moves a member of the Python set: the snapshot keeps the set's label,
+which no longer describes its memory.
+
+## Snapshots in use
+
+<!-- snapshot-table:start (scripts/snapshot-table.ts) -->
+<!-- deno-fmt-ignore-start -->
+
+Train `playground-2026.10.29-3d32068`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
+
+| Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
+| --- | --- | --- | --- | --- | --- | --- |
+| desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.10.29-3d32068-2` | 131.0 MB in 7 parts | 520.6 MiB | 2449 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates |
+| tablet | tablet (iPad): `?platform=tablet` | `snapshot-tablet-playground-2026.10.29-3d32068` | 94.8 MB in 5 parts | 381.1 MiB | 1254 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; no Jupyter |
+| phone | phone (iPhone): `?platform=phone` | `snapshot-phone-playground-2026.10.29-3d32068` | 31.2 MB in 2 parts | 136.1 MiB | 612 MiB | BusyBox shell, git 2.55.0, ca-certificates; no Python, no Jupyter |
+
+<!-- deno-fmt-ignore-end -->
+<!-- snapshot-table:end -->
+
+The page picks its platform from the device: the bare URL gains
+`?platform=phone`, `tablet` or `desktop` (aliases `iphone`, `ipad`, `mac`)
+before anything loads, and that platform's snapshot is the only one it fetches.
+A hand-written `?platform=` overrides the device as far as the device can run
+it: a desktop may run the phone's page; a phone asked for the desktop's runs its
+own and says so. `?snapshot=0` boots the image instead.
+
+Measured by hand with `scripts/measure-boot.ts` (headless, served by the dev
+server, so the download is local and fast) on 2026-10-29. "RAM to restore" is
+the peak resident memory of Chromium's renderer processes while the page
+restores and starts its shell, in the device's emulation, the page itself
+included (about 110 MiB before Start). WebKit's is not measured.
+
+| Platform                                        | Engine   | Time to a prompt, cold / warm | Jupyter ready |
+| ----------------------------------------------- | -------- | ----------------------------- | ------------- |
+| phone (iPhone 13)                               | Chromium | 0.96 s / 0.63 s               | none          |
+| phone (iPhone 13)                               | WebKit   | 0.74 s / 0.53 s               | none          |
+| tablet (iPad Pro 11, iPadOS landscape and mini) | Chromium | 1.48-1.52 s / 1.06-1.07 s     | none          |
+| tablet (same three)                             | WebKit   | 1.11-1.15 s / 0.83-0.89 s     | none          |
+| desktop                                         | Chromium | 1.88 s / 1.48 s               | 5.2 s / 4.4 s |
+| desktop                                         | WebKit   | 1.78 s / 1.43 s               | 8.2 s / 7.9 s |
+
+For comparison, booting the slim image instead (`?snapshot=0`, Chromium): a
+prompt at about 1.4 s on every platform, with a renderer peak of 620-630 MiB on
+a phone or tablet since the boot keeps one copy of each file for its symlinks
+(#267; 1,830-1,910 MiB before it); a desktop then installs the Python set and
+starts Jupyter, ready at about 88 s, with a peak of about 2,700 MiB.
 
 ## License
 

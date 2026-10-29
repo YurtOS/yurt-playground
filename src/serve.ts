@@ -11,7 +11,7 @@ import {
   imagePartsManifest,
   PYTHON_SEAL_NAME,
 } from "./image_parts.ts";
-import { SANDBOX_SNAPSHOT_NAME } from "./sandbox_snapshot.ts";
+import { SNAPSHOT_KINDS } from "./sandbox_snapshot.ts";
 import {
   IMAGE_NAME,
   INTEGRITY_FILES,
@@ -119,7 +119,12 @@ const PARTED_FILES: Record<string, string> = {
   [IMAGE_NAME]: join(artifactsDir, IMAGE_NAME),
   [SLIM_IMAGE_NAME]: join(artifactsDir, SLIM_IMAGE_NAME),
   [PYTHON_SEAL_NAME]: join(publicDir, PYTHON_SEAL_NAME),
-  [SANDBOX_SNAPSHOT_NAME]: join(publicDir, SANDBOX_SNAPSHOT_NAME),
+  // Each device's sealed sandbox (src/sandbox_snapshot.ts SNAPSHOT_KINDS).
+  ...Object.fromEntries(
+    Object.values(SNAPSHOT_KINDS).map((
+      { name },
+    ) => [name, join(publicDir, name)]),
+  ),
 };
 
 /** The parts the static build publishes, sliced from the single file so the

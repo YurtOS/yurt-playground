@@ -126,6 +126,16 @@ compiled = [compileall.compile_dir(path, quiet=1) for path in roots]
 sys.exit(0 if all(compiled) else 1)
 `;
 
+/** Whether a capture precompiles before the seal: one that installed
+ * Python (the desktop's set, the tablet's interpreter), whose modules ship
+ * as source. Not the phone's (`?snapshot=capture-phone`): it seals the
+ * image as it boots, with no Python to compile. */
+export function capturePrecompiles(
+  kind: "desktop" | "tablet" | "phone",
+): boolean {
+  return kind !== "phone";
+}
+
 /** The shell line that runs {@link PRECOMPILE_PROGRAM}. */
 export function precompileLine(python = "sudo python3"): string {
   return `exec ${python} -c '${PRECOMPILE_PROGRAM.replace(/'/g, "'\\''")}'`;
