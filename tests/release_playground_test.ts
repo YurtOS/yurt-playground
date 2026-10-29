@@ -1461,6 +1461,40 @@ echo 'snapshot pin refused: built from bootSetup 1, not 2' >&2; exit 3`,
   assertStringIncludes(run.output, "DROPPED=1");
 });
 
+Deno.test("a resumed train keeps an earlier run's dropped tablet or phone pin until it is back", async () => {
+  // The earlier run dropped the tablet's; this one keeps the desktop's.
+  const still = await pinsWrite(
+    "exit 0",
+    {
+      steps: {
+        snapshot: { dropped: "tabletSnapshot: built from bootSetup 1, not 2" },
+      },
+    },
+    { snapshots: { snapshot: { release: "d" } } },
+  );
+  assertEquals(still.code, 0, still.output);
+  assertEquals(still.state.steps.snapshot, {
+    dropped: "tabletSnapshot: built from bootSetup 1, not 2",
+  });
+  // Once a recapture put it back, nothing is left to remind of.
+  const back = await pinsWrite(
+    "exit 0",
+    {
+      steps: {
+        snapshot: { dropped: "tabletSnapshot: built from bootSetup 1, not 2" },
+      },
+    },
+    {
+      snapshots: {
+        snapshot: { release: "d" },
+        tabletSnapshot: { release: "t" },
+      },
+    },
+  );
+  assertEquals(back.code, 0, back.output);
+  assertEquals(back.state.steps.snapshot, { dropped: null });
+});
+
 Deno.test("a train drops the snapshot pin --check-pin refuses, with its reason", async () => {
   const run = await pinsWrite(
     "echo 'snapshot pin refused: built from kernelRev k0, not k' >&2; exit 3",

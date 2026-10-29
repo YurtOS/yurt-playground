@@ -1,7 +1,7 @@
 /**
  * Which kind of device the page runs on. A phone or tablet tab has too
- * little memory for Python and Jupyter: a tablet gets the shell only; a
- * phone gets no Start unless `?start-anyway`, and then no Python, and the
+ * little memory for Jupyter: each gets the shell only, restoring its own
+ * small snapshot (python alone on a tablet, no Python on a phone), and the
  * Notebook and JupyterLab pages boot nothing on a phone.
  *
  * iPadOS Safari reports a Mac, at any width (a 13" iPad in landscape is

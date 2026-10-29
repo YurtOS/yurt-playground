@@ -879,8 +879,23 @@ if [ "${snapshot_dropped:-0}" = 1 ]; then
   # Kept with the train, so a --resume still ends with the reminder below.
   [ "$pins_only" = 1 ] || step_set snapshot dropped "$(jq -n --arg why "$snapshot_why" '$why')"
 elif [ "${snapshot_kept:-0}" = 1 ] && [ "$pins_only" = 0 ]; then
-  # A resumed train whose pins keep the entry has nothing to recapture.
-  step_set snapshot dropped null
+  # A resumed train has nothing left to recapture only when every pin an
+  # earlier run dropped is back: a kept desktop pin says nothing about a
+  # dropped tablet or phone one ("tabletSnapshot: why" in the record).
+  earlier=$(step_get snapshot dropped) all_back=1
+  if [ -n "$earlier" ]; then
+    while IFS= read -r part; do
+      [ -n "$part" ] || continue
+      case "$part" in
+        tabletSnapshot:*) key=tabletSnapshot ;;
+        phoneSnapshot:*) key=phoneSnapshot ;;
+        *) key=snapshot ;;
+      esac
+      jq -e --arg k "$key" 'has($k)' "$root/artifacts/pins.json" >/dev/null ||
+        all_back=0
+    done <<< "$(sed 's/; /\n/g' <<< "$earlier")"
+  fi
+  [ "$all_back" = 0 ] || step_set snapshot dropped null
 fi
 say "verify the pins: scripts/install-pinned-artifacts.sh"
 "$root/scripts/install-pinned-artifacts.sh"

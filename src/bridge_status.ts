@@ -86,7 +86,7 @@ export function showBridgeState(doc: Document, state: BridgeState): void {
 export const PHONE_REFUSAL =
   "the Notebook and JupyterLab do not run on phones: a phone tab has too " +
   "little memory for Python. Use a desktop browser, the desktop app or the " +
-  "command line; the home page runs the shell here with ?start-anyway.";
+  "command line; the home page runs the shell here.";
 
 /**
  * On a phone, say why there is no kernel and throw, before any sandbox

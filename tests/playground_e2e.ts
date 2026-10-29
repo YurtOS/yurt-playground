@@ -185,7 +185,7 @@ export async function phoneAgentHasTheSandbox(
     return {
       unavailable: q("agent-unavailable") !== null,
       run: q("agent-run") !== null,
-      start: q("start-sandbox")?.offsetParent !== null,
+      start: (q("start-sandbox")?.offsetParent ?? null) !== null,
       platform: new URL(location.href).searchParams.get("platform"),
     };
   });
