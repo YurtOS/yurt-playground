@@ -1,0 +1,25 @@
+{
+  "releaseRepo": "YurtOS/yurt-playground",
+  "release": "refs/snapshots/phone-playground-2026.10.29-3d32068.2",
+  "format": 3,
+  "sha256": "c37acfa465f0fd3aae3a964b045ac0d3f4637d244fb4b59d1e5441faa5e9933f",
+  "size": 55822817,
+  "parts": [
+    "468767b533be23535a0a2c60e735b81e45b7538f2b33c707d010118b68e30fb1",
+    "5d439cef3a38630789e7cc7db0f3c824c2502f82431b0f985bd71e5128e74dcb",
+    "9d4430e88228f5ba448ab39766dd1df127bacf77b7ee8ccdc641f911fb526cbc"
+  ],
+  "builtFrom": {
+    "kernelSha256": "defa8da648d122fcfd30e6e96360d1b2da1cdf7440d50d82536a825e02fa338c",
+    "kernelRev": "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
+    "sealVersion": 1,
+    "bootSetup": 1,
+    "imageSha256": "1a3a997c873f05a4f2f322db86b8dd96a9cea31ce29af4b990ca9e6bb9f62877",
+    "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
+    "pythonSet": null
+  },
+  "name": "phone-playground-2026.10.29-3d32068.2",
+  "train": "playground-2026.10.29-3d32068.2",
+  "packages": [],
+  "phone": true
+}
