@@ -25,7 +25,9 @@ import {
   isUploadedSnapshotId,
   SNAPSHOT_FILE,
   SNAPSHOT_MANIFEST,
+  SNAPSHOT_REFS_API,
   SNAPSHOT_SOURCE,
+  snapshotRef,
   uploadedSnapshot,
   uploadedSnapshotBase,
   uploadedSnapshotPath,
@@ -33,6 +35,16 @@ import {
 
 const ID = "0123456789abcdef0123456789abcdef01234567";
 const BASE = `https://raw.githubusercontent.com/YurtOS/yurt-playground/${ID}/`;
+
+/** The GitHub API's answer for the repository's snapshot refs. */
+function refsAnswer(shas: string[] = [ID]): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(
+    shas.map((sha, at) => ({
+      ref: `refs/snapshots/s${at}`,
+      object: { sha, type: "commit" },
+    })),
+  ));
+}
 
 const raw = JSON.parse(
   await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
@@ -93,6 +105,7 @@ async function upload(
     parts: sums,
     builtFrom,
   };
+  files.set(SNAPSHOT_REFS_API, refsAnswer());
   files.set(
     `${BASE}${SNAPSHOT_MANIFEST}`,
     new TextEncoder().encode(
@@ -236,7 +249,12 @@ Deno.test("an uploaded snapshot's manifest takes every check a pin does", async 
     );
   }
   await assertRejects(
-    () => uploadedSnapshot(ID, pins, fetchFrom(new Map())),
+    () =>
+      uploadedSnapshot(
+        ID,
+        pins,
+        fetchFrom(new Map([[SNAPSHOT_REFS_API, refsAnswer()]])),
+      ),
     Error,
     "fetch manifest.json failed: 404",
   );
@@ -246,7 +264,10 @@ Deno.test("an uploaded snapshot's manifest takes every check a pin does", async 
         ID,
         pins,
         fetchFrom(
-          new Map([[`${BASE}manifest.json`, new TextEncoder().encode("{")]]),
+          new Map([
+            [SNAPSHOT_REFS_API, refsAnswer()],
+            [`${BASE}manifest.json`, new TextEncoder().encode("{")],
+          ]),
         ),
       ),
     Error,
@@ -267,11 +288,12 @@ Deno.test("?snapshot=<id> checks every part against the uploaded manifest", asyn
       Error,
       "sandbox snapshot part sandbox.seal.gz.1 sha256 mismatch",
     );
-    // Nothing but the site's pins and the snapshot's own commit; never
+    // Nothing but the site's pins, the refs list and the snapshot's own
+    // commit; never
     // the pinned snapshot's path; and no part after the bad one.
     assertEquals(
       fetched.filter((url) => !url.startsWith(BASE)),
-      ["./pins.json"],
+      ["./pins.json", SNAPSHOT_REFS_API],
     );
     assertEquals(fetched.includes(`${BASE}sandbox.seal.gz.2`), false);
   });
@@ -296,7 +318,16 @@ Deno.test("?snapshot=<id> asks the live index before it fetches any part", async
 
 Deno.test("an uploaded snapshot that cannot be had boots the image, as ?snapshot=1 does", async () => {
   const other = await upload({ ...BUILT, imageSha256: "11".repeat(32) }, 1024);
-  for (const files of [new Map<string, Uint8Array>(), other.files]) {
+  for (
+    const files of [
+      // The refs API cannot be had (rate limited, offline).
+      new Map<string, Uint8Array>(),
+      // No manifest at that commit.
+      new Map([[SNAPSHOT_REFS_API, refsAnswer()]]),
+      // Another build's.
+      other.files,
+    ]
+  ) {
     await withFetch(files, async () => {
       const warn = console.warn;
       const notes: string[] = [];
@@ -335,11 +366,71 @@ Deno.test("an uploaded snapshot's file is fetched whole and inflated before the 
   });
 });
 
+Deno.test("a commit no refs/snapshots ref names is refused before any byte of it is read", async () => {
+  // A fork's or a pull request's commit: raw.githubusercontent.com serves
+  // it under the repository's path, but the repository never published it.
+  const { files } = await upload(BUILT, 1024);
+  files.set(SNAPSHOT_REFS_API, refsAnswer(["ab".repeat(20)]));
+  await withFetch(files, async (fetched) => {
+    await assertRejects(
+      () => restoreSnapshot(env(), new Uint8Array(), uploadedSnapshotPath(ID)),
+      SnapshotMismatch,
+      `uploaded snapshot ${ID} is not a refs/snapshots/* commit of YurtOS/yurt-playground`,
+    );
+    assertEquals(fetched.filter((url) => url.startsWith(BASE)), []);
+  });
+});
+
+Deno.test("only a refs/snapshots ref to that very commit publishes it", async () => {
+  const answer =
+    (body: unknown, status = 200) => (input: RequestInfo | URL) => {
+      assertEquals(String(input), SNAPSHOT_REFS_API);
+      return Promise.resolve(new Response(JSON.stringify(body), { status }));
+    };
+  assertEquals(
+    await snapshotRef(
+      ID,
+      answer([
+        {
+          ref: "refs/snapshots/a",
+          object: { sha: "cd".repeat(20), type: "commit" },
+        },
+        { ref: "refs/snapshots/b", object: { sha: ID, type: "commit" } },
+      ]),
+    ),
+    "refs/snapshots/b",
+  );
+  for (
+    const body of [
+      [],
+      [{ ref: "refs/heads/main", object: { sha: ID, type: "commit" } }],
+      [{ ref: "refs/snapshots/t", object: { sha: ID, type: "tag" } }],
+      { message: "Not Found" },
+    ]
+  ) {
+    await assertRejects(
+      () => snapshotRef(ID, answer(body)),
+      SnapshotMismatch,
+      "is not a refs/snapshots/* commit",
+    );
+  }
+  await assertRejects(
+    () => snapshotRef(ID, answer({ message: "rate limited" }, 403)),
+    Error,
+    "cannot list YurtOS/yurt-playground's snapshot refs: 403",
+  );
+});
+
 Deno.test("the site policy lets the page read uploaded snapshots; JupyterLite's does not", () => {
   assertStringIncludes(contentSecurityPolicy(), ` ${SNAPSHOT_SOURCE}`);
+  assertStringIncludes(contentSecurityPolicy(), ` ${SNAPSHOT_REFS_API}`);
   assertStringIncludes(documentPolicy("/index.html", []), SNAPSHOT_SOURCE);
   assertEquals(
     documentPolicy("/jupyter/lab/index.html", []).includes(SNAPSHOT_SOURCE),
+    false,
+  );
+  assertEquals(
+    documentPolicy("/jupyter/lab/index.html", []).includes("api.github.com"),
     false,
   );
 });

@@ -20,13 +20,25 @@
  * - `sandbox.seal.gz.parts.json` and the parts, as the site publishes the
  *   pinned one (src/image_parts.ts).
  *
- * Only that one repository path is ever read, and only for an id of 40 hex
+ * Who may publish one: raw.githubusercontent.com serves, under this
+ * repository's path, any commit of its fork network -- a fork's, a pull
+ * request's. So before anything of a snapshot is read, the page asks the
+ * GitHub API ({@link SNAPSHOT_REFS_API}, CORS-enabled) for the repository's
+ * `refs/snapshots/*` and requires one of them to point at `<id>`: only the
+ * repository's writers can push those refs. An answer that cannot be had
+ * (60 unauthenticated requests an hour per address) refuses the snapshot.
+ *
+ * Only those two fixed paths are ever read, and only for an id of 40 hex
  * digits: the query string never names a URL. The manifest goes through
  * every check a pin does (format, build, Python set), and each part is
  * checked against it as it arrives; any failure boots the image as without
  * the flag (src/boot.ts `snapshotOrBoot`).
  */
-import { acceptedSnapshot, type SnapshotPin } from "./sandbox_snapshot.ts";
+import {
+  acceptedSnapshot,
+  SnapshotMismatch,
+  type SnapshotPin,
+} from "./sandbox_snapshot.ts";
 import type { Pins } from "./pins.ts";
 import { isPackageName } from "./packages.ts";
 
@@ -38,6 +50,10 @@ export const SNAPSHOT_SOURCE =
   `https://raw.githubusercontent.com/${SNAPSHOT_REPO}/`;
 /** The ref namespace a snapshot's commit is pushed under. */
 export const SNAPSHOT_REF_PREFIX = "refs/snapshots/";
+/** Where the page learns which commits those refs point at: also a CSP
+ * entry (src/csp.ts). */
+export const SNAPSHOT_REFS_API =
+  `https://api.github.com/repos/${SNAPSHOT_REPO}/git/matching-refs/snapshots/`;
 /** The commit's files. */
 export const SNAPSHOT_MANIFEST = "manifest.json";
 export const SNAPSHOT_FILE = "sandbox.seal.gz";
@@ -79,8 +95,43 @@ export function confinedFetch(
         new Error(`refusing ${url.href}: not under ${base}`),
       );
     }
-    return fetchImpl(url, init);
+    // A redirect would leave the checked URL.
+    return fetchImpl(url, { ...init, redirect: "error" });
   };
+}
+
+/** The `refs/snapshots/*` ref of {@link SNAPSHOT_REPO} that points at
+ * commit `id`. A commit no such ref names -- one that came from a fork or
+ * a pull request -- is refused ({@link SnapshotMismatch}); an answer that
+ * cannot be had throws too. */
+export async function snapshotRef(
+  id: string,
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+): Promise<string> {
+  uploadedSnapshotBase(id);
+  const response = await fetchImpl(SNAPSHOT_REFS_API, {
+    headers: { accept: "application/vnd.github+json" },
+    redirect: "error",
+  });
+  if (!response.ok) {
+    throw new Error(
+      `uploaded snapshot ${id}: cannot list ${SNAPSHOT_REPO}'s snapshot refs: ${response.status}`,
+    );
+  }
+  const refs = await response.json() as unknown;
+  const match = Array.isArray(refs)
+    ? refs.find((entry) =>
+      typeof entry?.ref === "string" &&
+      entry.ref.startsWith(SNAPSHOT_REF_PREFIX) &&
+      entry.object?.type === "commit" && entry.object?.sha === id
+    )
+    : undefined;
+  if (match === undefined) {
+    throw new SnapshotMismatch(
+      `uploaded snapshot ${id} is not a ${SNAPSHOT_REF_PREFIX}* commit of ${SNAPSHOT_REPO}`,
+    );
+  }
+  return match.ref;
 }
 
 /** An uploaded snapshot, as `?snapshot=1`'s pin is used: its manifest,
@@ -93,6 +144,8 @@ export async function uploadedSnapshot(
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<{ pin: SnapshotPin; path: string; fetch: typeof fetch }> {
   const base = uploadedSnapshotBase(id);
+  // Published by the repository's writers, before any byte of it is read.
+  await snapshotRef(id, fetchImpl);
   const fetch = confinedFetch(base, fetchImpl);
   const response = await fetch(`${base}${SNAPSHOT_MANIFEST}`);
   if (!response.ok) {

@@ -229,12 +229,17 @@ the page checkout need not be a pushed head, which it only notes), and
 then pushes the parts and a `manifest.json` (the pin's fields) as one parentless
 commit to `refs/snapshots/<name>` in YurtOS/yurt-playground (not a branch, so a
 clone does not fetch it), reads the manifest back from raw.githubusercontent.com
-and prints `https://yurt-playground.pages.dev/?snapshot=<commit sha>`. The page
-reads only that repository path, and only for a 40-digit commit sha; the
-manifest takes every check the pin does, each part is checked against it, and
-anything else boots the image as without the flag. `--file PATH` uploads an
-existing capture, `--dry-run` stops before the push. `--phone` (the phone's
-Python-only capture, and `&start-anyway` in the URL) waits for the phone
+and prints `https://yurt-playground.pages.dev/?snapshot=<commit sha>`. It first
+checks that the live site runs this checkout's build (its `/pins.json`), since
+the site restores only its own. The page takes only a 40-digit commit sha, and
+restores it only when a `refs/snapshots/*` ref of the repository points at it:
+raw.githubusercontent.com also serves fork and pull-request commits under the
+repository's path, so the page asks the GitHub API's list of those refs first
+(60 unauthenticated requests an hour per address; without an answer it boots the
+image). The manifest takes every check the pin does, each part is checked
+against it, and anything else boots the image as without the flag. `--file PATH`
+uploads an existing capture, `--dry-run` stops before the push. `--phone` (the
+phone's Python-only capture, and `&start-anyway` in the URL) waits for the phone
 snapshot capture to land on main and says so until then. List the uploads with
 `git ls-remote origin 'refs/snapshots/*'`; delete one with
 `git push origin :refs/snapshots/<name>`.

@@ -4,8 +4,10 @@ import {
   defaultSnapshotName,
   isSnapshotRemote,
   restoreUrl,
+  siteIdentityProblem,
   snapshotNameProblem,
 } from "../scripts/snapshot-local.ts";
+import { parsePins } from "../src/pins.ts";
 
 const ID = "0123456789abcdef0123456789abcdef01234567";
 
@@ -59,4 +61,33 @@ Deno.test("snapshot-local pushes only to YurtOS/yurt-playground", () => {
       "/Users/me/yurt-playground",
     ]
   ) assertEquals(isSnapshotRemote(url), false, url);
+});
+
+Deno.test("snapshot-local refuses a checkout whose build the site does not run", async () => {
+  const raw = JSON.parse(
+    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
+  );
+  const pins = parsePins({ ...raw, snapshot: undefined });
+  const site = (body: unknown, status = 200) => (input: RequestInfo | URL) => {
+    assertEquals(String(input), "https://pg.example/pins.json");
+    return Promise.resolve(new Response(JSON.stringify(body), { status }));
+  };
+  assertEquals(
+    await siteIdentityProblem("https://pg.example/", pins, site(raw)),
+    undefined,
+  );
+  const behind = {
+    ...raw,
+    kernelWasm: { ...raw.kernelWasm, rev: "0".repeat(40) },
+  };
+  assertEquals(
+    await siteIdentityProblem("https://pg.example", pins, site(behind)),
+    `https://pg.example runs another build: this checkout's pins give kernelRev ${pins.kernelWasm.rev}, not ${
+      "0".repeat(40)
+    }`,
+  );
+  assertEquals(
+    await siteIdentityProblem("https://pg.example", pins, site({}, 404)),
+    "cannot read https://pg.example/pins.json: 404",
+  );
 });

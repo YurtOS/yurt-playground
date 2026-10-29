@@ -58,7 +58,7 @@ import {
   withoutGitVariables,
 } from "./release-snapshot.ts";
 import { imagePartsManifest } from "../src/image_parts.ts";
-import { parsePins, type SnapshotPin } from "../src/pins.ts";
+import { parsePins, type Pins, type SnapshotPin } from "../src/pins.ts";
 import {
   FORMAT,
   type SnapshotIdentity,
@@ -70,6 +70,7 @@ import {
   SNAPSHOT_MANIFEST,
   SNAPSHOT_REF_PREFIX,
   SNAPSHOT_REPO,
+  snapshotRef,
   uploadedSnapshotBase,
 } from "../src/snapshot_source.ts";
 
@@ -79,9 +80,12 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const pinsPath = join(root, "artifacts/pins.json");
 
 const say = (text: string) => console.error(`snapshot-local: ${text}`);
+/** A refusal: thrown, so the temporary directory (a capture, its parts
+ * and their git objects, ~400 MB) is removed on the way out; `Deno.exit`
+ * would skip the `finally` that removes it. */
+class Refused extends Error {}
 const die = (text: string): never => {
-  say(text);
-  Deno.exit(1);
+  throw new Refused(text);
 };
 
 /** A ref name a snapshot may take: one path segment. */
@@ -125,9 +129,20 @@ async function git(
   dir: string,
   args: string[],
   { allowFailure = false } = {},
-): Promise<{ ok: boolean; stdout: string }> {
+): Promise<{ ok: boolean; code: number; stdout: string }> {
   const out = await new Deno.Command("git", {
-    args: ["-C", dir, ...args],
+    // The snapshot's own repository runs no hook of the caller's and
+    // signs nothing: a global pre-commit hook over 130 MB, or a signing
+    // key's prompt, is not this script's to run.
+    args: [
+      "-c",
+      "core.hooksPath=/dev/null",
+      "-c",
+      "commit.gpgsign=false",
+      "-C",
+      dir,
+      ...args,
+    ],
     stdout: "piped",
     stderr: "piped",
     clearEnv: true,
@@ -142,16 +157,19 @@ async function git(
   }
   return {
     ok: out.success,
+    code: out.code,
     stdout: new TextDecoder().decode(out.stdout).trim(),
   };
 }
 
-/** The manifest, read back from where the page reads it; raw serves a new
- * commit within seconds, so it is asked a few times. */
+/** The manifest, read back from where the page reads it, and the ref
+ * listed where the page looks for it (src/snapshot_source.ts
+ * `snapshotRef`). raw serves a new commit within seconds; the API's list
+ * may be a minute old (`s-maxage=60`), so both are asked for two minutes. */
 async function readBack(id: string, want: string): Promise<void> {
   const url = `${uploadedSnapshotBase(id)}${SNAPSHOT_MANIFEST}`;
   let last = "";
-  for (let attempt = 0; attempt < 12; attempt++) {
+  for (let attempt = 0; attempt < 24; attempt++) {
     const response = await fetch(url, {
       headers: { origin: DEFAULT_SITE },
     }).catch((error) => error as Error);
@@ -160,13 +178,48 @@ async function readBack(id: string, want: string): Promise<void> {
       if (response.ok && text === want) {
         const cors = response.headers.get("access-control-allow-origin");
         if (cors !== "*") die(`${url} answers without CORS (${cors})`);
-        return;
+        try {
+          await snapshotRef(id);
+          return;
+        } catch (error) {
+          last = `the snapshot refs list: ${(error as Error).message}`;
+        }
+      } else {
+        last = `${url}: ${response.status}${
+          response.ok ? " (other bytes)" : ""
+        }`;
       }
-      last = `${response.status}${response.ok ? " (other bytes)" : ""}`;
-    } else last = response.message;
+    } else last = `${url}: ${response.message}`;
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
-  die(`${url} did not serve the manifest: ${last}`);
+  die(`the upload is not readable as the page reads it: ${last}`);
+}
+
+/** Why a snapshot made under `pins` would not be restored by `site`'s
+ * deployed pins (its `/pins.json`), or undefined when it would. */
+export async function siteIdentityProblem(
+  site: string,
+  pins: Pins,
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+): Promise<string | undefined> {
+  const url = new URL("/pins.json", site).href;
+  let deployed: Pins;
+  try {
+    const response = await fetchImpl(url);
+    if (!response.ok) return `cannot read ${url}: ${response.status}`;
+    deployed = parsePins({ ...await response.json(), snapshot: undefined });
+  } catch (error) {
+    return `cannot read ${url}: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+  const want = snapshotIdentity(deployed);
+  const have = snapshotIdentity(pins);
+  const differs = (Object.keys(want) as (keyof typeof want)[])
+    .filter((key) => want[key] !== have[key])
+    .map((key) => `${key} ${have[key]}, not ${want[key]}`);
+  return differs.length === 0 ? undefined : `${site} runs another build: ` +
+    `this checkout's pins give ${differs.join("; ")}`;
 }
 
 async function main(): Promise<void> {
@@ -219,14 +272,27 @@ async function main(): Promise<void> {
     }
   }
 
-  const remote = (await git(root, ["remote", "get-url", "origin"])).stdout;
+  // Where a push goes (a pushurl, when one is set).
+  const remote =
+    (await git(root, ["remote", "get-url", "--push", "origin"])).stdout;
   if (!isSnapshotRemote(remote)) {
     die(`origin is ${remote}, not ${SNAPSHOT_REPO} on GitHub`);
   }
   const taken = await git(root, ["ls-remote", "--exit-code", remote, ref], {
     allowFailure: true,
   });
+  // --exit-code: 2 is "no such ref"; anything else but 0 is a failure to
+  // ask (network, credentials), not a free name.
   if (taken.ok) die(`${ref} already exists; give another --name`);
+  if (taken.code !== 2) {
+    die(`cannot ask ${remote} for ${ref}: git exited ${taken.code}`);
+  }
+
+  // The live site restores only a snapshot of its own build: a checkout
+  // behind or ahead of what is deployed would print a URL that always
+  // falls back.
+  const siteProblem = await siteIdentityProblem(site, pins);
+  if (siteProblem !== undefined) die(siteProblem);
 
   const live = await liveSetOf(pins)();
   const setProblem = captureSetProblem(live);
@@ -237,6 +303,12 @@ async function main(): Promise<void> {
     : { ...snapshotIdentity(pins), pythonSet: live! };
 
   const work = await Deno.makeTempDir({ prefix: "yurt-snapshot-local-" });
+  // Ctrl-C removes it too.
+  const interrupted = () => {
+    Deno.removeSync(work, { recursive: true });
+    Deno.exit(130);
+  };
+  Deno.addSignalListener("SIGINT", interrupted);
   try {
     let file = fileArg;
     if (file === undefined) {
@@ -317,8 +389,17 @@ async function main(): Promise<void> {
     say(`${ref} is served at ${uploadedSnapshotBase(id)}`);
     console.log(restoreUrl(site, id, phone));
   } finally {
+    Deno.removeSignalListener("SIGINT", interrupted);
     await Deno.remove(work, { recursive: true });
   }
 }
 
-if (import.meta.main) await main();
+if (import.meta.main) {
+  try {
+    await main();
+  } catch (error) {
+    if (!(error instanceof Refused)) throw error;
+    say(error.message);
+    Deno.exit(1);
+  }
+}

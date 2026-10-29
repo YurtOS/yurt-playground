@@ -34,7 +34,7 @@ Deno.test("the policy keeps every request on the origin but the model's, the pac
   assertStringIncludes(policy, "default-src 'self'");
   assertStringIncludes(
     policy,
-    "connect-src 'self' https://huggingface.co https://*.hf.co https://raw.githubusercontent.com/YurtOS/yurt-packages/ https://raw.githubusercontent.com/YurtOS/yurt-playground/;",
+    "connect-src 'self' https://huggingface.co https://*.hf.co https://raw.githubusercontent.com/YurtOS/yurt-packages/ https://raw.githubusercontent.com/YurtOS/yurt-playground/ https://api.github.com/repos/YurtOS/yurt-playground/git/matching-refs/snapshots/;",
   );
   assertStringIncludes(policy, "frame-src 'none'");
   assertStringIncludes(policy, "object-src 'none'");
@@ -47,7 +47,7 @@ Deno.test("the policy keeps every request on the origin but the model's, the pac
   assertEquals(
     policy.split("; ").filter((d) => d.includes("http")),
     [
-      "connect-src 'self' https://huggingface.co https://*.hf.co https://raw.githubusercontent.com/YurtOS/yurt-packages/ https://raw.githubusercontent.com/YurtOS/yurt-playground/",
+      "connect-src 'self' https://huggingface.co https://*.hf.co https://raw.githubusercontent.com/YurtOS/yurt-packages/ https://raw.githubusercontent.com/YurtOS/yurt-playground/ https://api.github.com/repos/YurtOS/yurt-playground/git/matching-refs/snapshots/",
     ],
   );
 });
