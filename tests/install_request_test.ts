@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { InstallsStopped, packageRequests } from "../src/install_request.ts";
 
 const SILENCE_MS = 50;
@@ -92,16 +92,51 @@ Deno.test("a coordinator that fails ends the install in flight with its error, a
   const installs = packageRequests((_, name) => sent.push(name), SILENCE_MS);
   const outcome = installs.install("go", () => {});
   installs.failAll("coordinator worker failed: out of memory");
-  await assertRejects(
-    () => outcome,
-    InstallsStopped,
-    "coordinator worker failed: out of memory",
-  );
+  // The worker's own error, and the way back.
+  const said =
+    "coordinator worker failed: out of memory. Reload the page to start a fresh sandbox.";
+  await assertRejects(() => outcome, InstallsStopped, said);
   await assertRejects(
     () => installs.install("jq", () => {}),
     InstallsStopped,
-    "coordinator worker failed: out of memory",
+    said,
   );
   assertEquals(sent, ["go"]);
   // The test sanitizer fails this test if the failed install left its timer.
+});
+
+// The page's wiring of the above (src/page.ts), which has no DOM-free
+// test of its own: each check is scoped to the code that must hold it.
+const pageSource = () =>
+  Deno.readTextFileSync(new URL("../src/page.ts", import.meta.url));
+
+Deno.test("the page fails its installs when the coordinator worker fails", () => {
+  const onerror = pageSource().match(
+    /worker\.onerror = \(event\) => \{([^]*?)\n {2}\};/,
+  );
+  assert(onerror !== null, "page.ts has worker.onerror");
+  assert(/installs\?\.failAll\(message\);/.test(onerror[1]), onerror[1]);
+});
+
+Deno.test("the Packages panel installs nothing more once the sandbox stopped", () => {
+  const install = pageSource().match(
+    /const install = async \(name: string\) => \{([^]*?)\n {2}\};/,
+  );
+  assert(install !== null, "page.ts has the panel's install");
+  const body = install[1];
+  const caught = body.match(/\} catch \(error\) \{([^]*?)\} finally \{/);
+  assert(caught !== null, body);
+  assert(
+    /stopped = error instanceof InstallsStopped;/.test(caught[1]),
+    caught[1],
+  );
+  const after = body.match(/\} finally \{([^]*)$/);
+  assert(after !== null, body);
+  assert(
+    /b\.disabled = stopped \|\| b\.textContent === "Installed";/.test(
+      after[1],
+    ),
+    after[1],
+  );
+  assert(/busy \|\| stopped\) return;/.test(body), body);
 });

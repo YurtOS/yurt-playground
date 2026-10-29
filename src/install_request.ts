@@ -21,11 +21,13 @@
  * coordinator's longest single run (`INSTALL_RUN_CEILING_MS`). */
 export const INSTALL_SILENCE_MS = 300_000;
 
-/** What the Packages panel says when the deadline passes. There is no
- * other way back: the coordinator that stopped is the sandbox's. */
+/** The way back once the coordinator stopped or failed: it is the
+ * sandbox's, and nothing restarts it short of a reload. */
+const RELOAD = "Reload the page to start a fresh sandbox.";
+
+/** What the Packages panel says when the deadline passes. */
 export function sandboxStoppedResponding(name: string): string {
-  return `The sandbox stopped responding while installing ${name}. ` +
-    "Reload the page to start a fresh sandbox.";
+  return `The sandbox stopped responding while installing ${name}. ${RELOAD}`;
 }
 
 /** The coordinator stopped answering, or failed: the install ends with
@@ -107,7 +109,7 @@ export function packageRequests(
     /** The coordinator failed (its worker's `error`): nothing will answer
      * the installs in flight, or any later one. */
     failAll(message: string) {
-      stopped = new InstallsStopped(message);
+      stopped = new InstallsStopped(`${message}. ${RELOAD}`);
       for (const waiter of waiting.values()) waiter.reject(stopped);
     },
     /** Any message at all from the coordinator: it is still running. */
