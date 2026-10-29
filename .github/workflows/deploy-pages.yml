@@ -1,9 +1,26 @@
 name: Deploy playground
 
+# Production is main: every push to main, and a dispatch from main with no
+# `ref`, publishes it as the Pages project's production deployment. Any other
+# branch is published only as a preview, at its own branch alias
+# (https://<alias>.yurt-playground.pages.dev): dispatch this workflow from
+# main with `ref: <branch>`, or from the branch itself. scripts/deploy-target.sh
+# decides which, and the two modes deploy from separate steps. There is no
+# pull_request trigger: a fork's pull request must never reach the Cloudflare
+# secret, and only repository writers can dispatch.
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      ref:
+        description: >-
+          Branch to publish as a preview (never main). Empty: production when
+          run from main, a preview of the branch it is run from otherwise.
+        required: false
+        default: ""
+        type: string
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -52,9 +69,36 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  target:
+    name: deploy target
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.target.outputs.mode }}
+      branch: ${{ steps.target.outputs.branch }}
+      ref: ${{ steps.target.outputs.ref }}
+      alias: ${{ steps.target.outputs.alias }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/deploy-target.sh
+          sparse-checkout-cone-mode: false
+      - name: Decide production or preview
+        id: target
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          bash scripts/deploy-target.sh > target.txt
+          cat target.txt
+          cat target.txt >> "$GITHUB_OUTPUT"
+
   deploy:
-    needs: secrets-present
-    if: needs.secrets-present.outputs.present == 'true'
+    needs: [target, secrets-present]
+    # A target with no ref (an output GitHub dropped) builds nothing.
+    if: needs.secrets-present.outputs.present == 'true' && needs.target.outputs.ref != ''
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -66,6 +110,9 @@ jobs:
         with:
           persist-credentials: false
           path: playground
+          # Production: the pushed (or dispatched) main commit. Preview: the
+          # branch's head, built and verified exactly as production is.
+          ref: ${{ needs.target.outputs.ref }}
       - uses: ./playground/.github/actions/site-inputs
         with:
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
@@ -83,14 +130,18 @@ jobs:
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
+        # integrity.json names GITHUB_SHA as the commit the site was built
+        # from; a preview dispatched from main builds another branch, so
+        # name the commit actually checked out (the same one in production).
         run: |
-          deno task build-static
+          GITHUB_SHA=$(git rev-parse HEAD) deno task build-static
           test -f dist/_headers
       # Wrangler itself, not an action: `cloudflare/pages-action` (which
       # wrapped it) was removed from GitHub on 2026-09-18 and every deploy
       # failed with "Unable to resolve action"; the pinned Wrangler CLI is
       # what it ran underneath, and needs no entry in the Actions allowlist.
       - name: Deploy to Cloudflare Pages
+        if: needs.target.outputs.mode == 'production'
         timeout-minutes: 10
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -102,3 +153,66 @@ jobs:
             || { echo "::error::the Cloudflare secrets are not all set"; exit 1; }
           npx --yes wrangler@4.135.0 pages deploy playground/dist \
             --project-name "$PROJECT" --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false
+      - name: Deploy a preview to Cloudflare Pages
+        if: needs.target.outputs.mode == 'preview'
+        timeout-minutes: 10
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PROJECT: ${{ secrets.CLOUDFLARE_PROJECT_NAME }}
+          BRANCH: ${{ needs.target.outputs.branch }}
+          ALIAS: ${{ needs.target.outputs.alias }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.jsonl
+        run: |
+          set -euo pipefail
+          [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ] && [ -n "$PROJECT" ] \
+            || { echo "::error::the Cloudflare secrets are not all set"; exit 1; }
+          # An empty --branch makes wrangler send no branch, which Cloudflare
+          # deploys as production.
+          [ -n "$BRANCH" ] && [ -n "$ALIAS" ] \
+            || { echo "::error::the deploy target has no branch or alias"; exit 1; }
+          # Cloudflare makes a deployment production when its branch is the
+          # project's production branch, whatever this repository calls it.
+          # Ask the project, and refuse that branch or no answer.
+          project=$(curl -fsS --retry 3 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/$PROJECT")
+          production=$(jq -er '.result.production_branch' <<<"$project")
+          subdomain=$(jq -er '.result.subdomain' <<<"$project")
+          if [ -z "$production" ] || [ "$BRANCH" = "$production" ]; then
+            echo "::error::'$BRANCH' is the project's production branch; a preview never deploys it"
+            exit 1
+          fi
+          commit=$(git -C playground rev-parse HEAD)
+          npx --yes wrangler@4.135.0 pages deploy playground/dist \
+            --project-name "$PROJECT" --branch "$BRANCH" --commit-hash "$commit" --commit-dirty=false
+          # What Cloudflare says it made (wrangler's machine-readable output).
+          detail=$(jq -c 'select(.type == "pages-deploy-detailed")' "$WRANGLER_OUTPUT_FILE_PATH" | tail -n 1)
+          environment=$(jq -r '.environment // empty' <<<"$detail")
+          deployment=$(jq -r '.url // empty' <<<"$detail")
+          url=$(jq -r '.alias // empty' <<<"$detail")
+          expected="https://$ALIAS.$subdomain"
+          if [ "$environment" != preview ]; then
+            echo "::error::Cloudflare reports a '$environment' deployment for '$BRANCH', not a preview"
+            exit 1
+          fi
+          if [ -z "$url" ]; then
+            url=$expected
+            echo "::warning::Cloudflare reported no branch alias; expected $expected"
+          elif [ "$url" != "$expected" ]; then
+            echo "::warning::Cloudflare assigned $url, not the computed $expected"
+          fi
+          # The project name is a secret, so the runner masks it, and every
+          # alias containing it, to *** in logs and in this summary. It is
+          # not confidential (the README links the site), so the summary
+          # writes the URLs as HTML character references, which render as
+          # the URLs. Nothing else is written this way.
+          chars() { printf '%s' "$1" | od -An -v -tu1 | xargs printf '&#%s;'; }
+          {
+            echo "### Preview: <a href=\"$(chars "$url")\">$(chars "$url")</a>"
+            echo
+            echo "Branch $(chars "$BRANCH") at \`$commit\`."
+            if [ -n "$deployment" ]; then
+              echo "This deployment alone: <a href=\"$(chars "$deployment")\">$(chars "$deployment")</a>."
+            fi
+            echo "Production (\`$production\`) was not touched."
+          } >> "$GITHUB_STEP_SUMMARY"

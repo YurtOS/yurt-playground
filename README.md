@@ -168,6 +168,26 @@ the launcher's own is refused, so no web page can reach it. The page's
 `window.yurt` and a `curl` share one registry: at most 16 running or stuck
 executions per sandbox, results kept ten minutes or until read.
 
+## Previewing a branch
+
+A merge to main deploys the site (`.github/workflows/deploy-pages.yml`). To try
+a branch on a real device before it merges, publish it as a preview:
+
+```sh
+gh workflow run deploy-pages.yml --ref main -f ref=<branch>
+```
+
+It builds and verifies that branch exactly as the production deploy does (the
+snapshot included) and publishes it at its Cloudflare branch alias,
+`https://<alias>.yurt-playground.pages.dev`: the branch name lowercased, every
+other character a hyphen, cut to 28 characters, with no leading or trailing
+hyphen (`agent/foo_Bar` → `agent-foo-bar`). The run's summary links the exact
+URL. Production is never the target: the preview path refuses `main` and the
+Pages project's production branch. Run it from main (`--ref main`), not from the
+branch: a branch older than this preview mode carries the old workflow, which
+deploys to production. Previews carry the production headers (`dist/_headers`:
+the CSP and cross-origin isolation).
+
 ## How the browser version works
 
 A static page loads `kernel.wasm` and the playground image, boots the kernel in
