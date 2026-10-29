@@ -5,16 +5,18 @@ import {
 } from "../src/boot.ts";
 import {
   GUEST_MEMORY_RESERVATION_BYTES,
-  isMobileDevice,
   KERNEL_MEMORY_RESERVATION_BYTES,
   MIN_GUEST_MEMORY_RESERVATION_BYTES,
   planGuestMemory,
   PROBE_LIMIT_BYTES,
+  PROBE_SCRIPT_PATH,
   PROBE_UNIT_BYTES,
   probeAvailableBytes,
   type ProbeWorker,
   RESERVATION_HEADROOM_BYTES,
   reservationForAvailableBytes,
+  spawnProbeWorker,
+  UNPROBED_RESERVATION_BYTES,
   WANTED_PROCESSES,
 } from "../src/guest_memory_reservation.ts";
 
@@ -54,7 +56,7 @@ Deno.test("on an iPad or iPhone the guests leave room for a Packages install bes
   for (const ua of [IPAD_UA, IPHONE_UA, IOS_CHROME_UA, IPAD_DESKTOP_UA]) {
     const state = await plannedPlaygroundHostState(
       ua,
-      () => planGuestMemory(() => Promise.resolve(IOS_EMPTY_TAB_BYTES), true),
+      () => planGuestMemory(() => Promise.resolve(IOS_EMPTY_TAB_BYTES)),
     );
     const reservation = state.guestMemoryReservationBytes;
     assert(reservation !== undefined, ua);
@@ -63,18 +65,24 @@ Deno.test("on an iPad or iPhone the guests leave room for a Packages install bes
         WANTED_PROCESSES,
       `${ua}: ${reservation / MIB} MiB`,
     );
-    // Still a size CPython runs in (an idle one takes about 21 MiB).
-    assert(reservation >= MIN_GUEST_MEMORY_RESERVATION_BYTES);
+    // And still one ipykernel (81 MiB) and a NumPy-sized cell run in.
+    assert(reservation >= 96 * MIB, `${ua}: ${reservation / MIB} MiB`);
   }
   // The desktop reservation is what failed there.
-  assert(fit(IOS_EMPTY_TAB_BYTES, GUEST_MEMORY_RESERVATION_BYTES) < 12);
+  assert(
+    fit(
+      IOS_EMPTY_TAB_BYTES - RESERVATION_HEADROOM_BYTES,
+      GUEST_MEMORY_RESERVATION_BYTES,
+    ) < WANTED_PROCESSES,
+  );
+  assert(MIN_GUEST_MEMORY_RESERVATION_BYTES <= 32 * MIB);
 });
 
 Deno.test("a desktop Safari tab keeps the quarter-GiB reservation", async () => {
   // macOS WebKit reserves about 30 GiB; the probe stops at its limit.
   const state = await plannedPlaygroundHostState(
     IPAD_DESKTOP_UA,
-    () => planGuestMemory(() => Promise.resolve(PROBE_LIMIT_BYTES), false),
+    () => planGuestMemory(() => Promise.resolve(PROBE_LIMIT_BYTES)),
   );
   assertEquals(
     state.guestMemoryReservationBytes,
@@ -127,30 +135,33 @@ Deno.test("the reservation steps down by halves to fit the wanted processes", ()
   assertEquals(PROBE_LIMIT_BYTES % PROBE_UNIT_BYTES, 0);
 });
 
-Deno.test("without a probe, a phone or tablet gets 64 MiB and a desktop a quarter GiB", async () => {
+Deno.test("without a probe every JavaScriptCore page gets what fits on iOS", async () => {
+  // A Worker cannot tell an iPad (Mac user agent, no maxTouchPoints in
+  // WorkerNavigator) from a Mac, so the fallback is the same everywhere.
   const none = () => Promise.resolve(undefined);
-  assertEquals((await planGuestMemory(none, true)).reservationBytes, 64 * MIB);
   assertEquals(
-    (await planGuestMemory(none, false)).reservationBytes,
-    GUEST_MEMORY_RESERVATION_BYTES,
+    (await planGuestMemory(none)).reservationBytes,
+    UNPROBED_RESERVATION_BYTES,
   );
   const fails = () => Promise.reject(new Error("no Worker"));
-  assertEquals((await planGuestMemory(fails, true)).reservationBytes, 64 * MIB);
-  // 64 MiB fits the wanted processes in an empty iOS tab.
-  assert(
-    fit(IOS_EMPTY_TAB_BYTES - RESERVATION_HEADROOM_BYTES, 64 * MIB) >=
-      WANTED_PROCESSES,
+  assertEquals(
+    (await planGuestMemory(fails)).reservationBytes,
+    UNPROBED_RESERVATION_BYTES,
   );
-});
-
-Deno.test("iPadOS counts as a phone or tablet with either user agent", () => {
-  assert(isMobileDevice(IPAD_UA, 5));
-  assert(isMobileDevice(IPHONE_UA, 5));
-  assert(isMobileDevice(IOS_CHROME_UA, 5));
-  assert(isMobileDevice(IPAD_DESKTOP_UA, 5));
-  assert(!isMobileDevice(IPAD_DESKTOP_UA, 0));
-  assert(!isMobileDevice(CHROME_UA, 0));
-  assert(!isMobileDevice(undefined, 5));
+  // It is what an empty iOS tab gets measured, and it fits there.
+  assertEquals(
+    reservationForAvailableBytes(IOS_EMPTY_TAB_BYTES).reservationBytes,
+    UNPROBED_RESERVATION_BYTES,
+  );
+  // Through the planned host state too, with the iPad's Mac user agent.
+  const state = await plannedPlaygroundHostState(
+    IPAD_DESKTOP_UA,
+    () => planGuestMemory(none),
+  );
+  assertEquals(
+    state.guestMemoryReservationBytes,
+    UNPROBED_RESERVATION_BYTES,
+  );
 });
 
 /** A probe Worker that answers `answer` (or never, for `undefined`). */
@@ -215,17 +226,51 @@ Deno.test("the probe counts 32 MiB memories up to its limit and always terminate
   );
 });
 
-Deno.test("a probe that reached the cap waits before the kernel reserves", async () => {
-  const time = async (firstError: string) => {
+Deno.test("every probe that started a Worker waits before the kernel reserves", async () => {
+  const time = async (spawn: () => ProbeWorker) => {
     const started = performance.now();
-    await probeAvailableBytes(
-      fakeWorker({ totalMiB: 64, firstError }, []),
-      { settleMs: 200 },
-    );
+    await probeAvailableBytes(spawn, { settleMs: 200, timeoutMs: 20 });
     return performance.now() - started;
   };
-  assert(await time("RangeError: Out of memory") >= 190);
-  assert(await time("") < 150);
+  // Refused at the cap, stopped at the limit, or timed out mid-reserve.
+  for (
+    const answer of [
+      { totalMiB: 64, firstError: "RangeError: Out of memory" },
+      { totalMiB: PROBE_LIMIT_BYTES / MIB, firstError: "" },
+      undefined,
+    ]
+  ) {
+    assert(await time(fakeWorker(answer, [])) >= 190, JSON.stringify(answer));
+  }
+  // No Worker at all: nothing was reserved, nothing to wait for.
+  assert(
+    await time(() => {
+      throw new Error("no Worker here");
+    }) < 150,
+  );
+});
+
+Deno.test("the probe Worker is the engine's own, not a coordinator's guest proxy", async () => {
+  // A coordinator replaces self.Worker with a page-backed proxy after the
+  // modules load (installCoordinatorWorkerProxy); the probe must not use it.
+  const original = globalThis.Worker;
+  globalThis.Worker = class {
+    constructor() {
+      throw new Error("the guest proxy");
+    }
+  } as unknown as typeof Worker;
+  try {
+    const bytes = await probeAvailableBytes(
+      () =>
+        spawnProbeWorker(
+          new URL(`../public${PROBE_SCRIPT_PATH}`, import.meta.url),
+        ),
+      { settleMs: 0 },
+    );
+    assert(bytes !== undefined && bytes >= PROBE_UNIT_BYTES, String(bytes));
+  } finally {
+    globalThis.Worker = original;
+  }
 });
 
 Deno.test("public/memory-probe.js answers the probe's message as a Worker", async () => {
@@ -253,7 +298,8 @@ Deno.test("the static site ships the probe script at the path boot asks for", ()
   const build = Deno.readTextFileSync(
     new URL("../scripts/build-static.ts", import.meta.url),
   );
-  assert(build.includes('"memory-probe.js"'));
+  assertEquals(PROBE_SCRIPT_PATH, "/memory-probe.js");
+  assert(build.includes(`"${PROBE_SCRIPT_PATH.slice(1)}"`));
   const page = Deno.readTextFileSync(
     new URL("../public/memory-probe.html", import.meta.url),
   );

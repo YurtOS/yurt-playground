@@ -18,6 +18,7 @@ import {
   GUEST_MEMORY_RESERVATION_BYTES,
   type GuestMemoryPlan,
   planGuestMemory,
+  PROBE_LIMIT_BYTES,
 } from "./guest_memory_reservation.ts";
 import {
   drainDirtyPaths,
@@ -382,7 +383,9 @@ export async function plannedPlaygroundHostState(
     `[memory] ${planned.reservationBytes / (1024 * 1024)} MiB per process` +
       (planned.availableBytes === undefined
         ? " (no probe)"
-        : `; ${Math.floor(planned.availableBytes / (1024 * 1024))} MiB ` +
+        : `; ${planned.availableBytes >= PROBE_LIMIT_BYTES ? "at least " : ""}${
+          Math.floor(planned.availableBytes / (1024 * 1024))
+        } MiB ` +
           `free to reserve, room for ${planned.processes} processes`),
   );
   return playgroundHostState(userAgent, planned.reservationBytes);

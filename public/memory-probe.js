@@ -36,7 +36,7 @@ function reserve(sizes, limit) {
 
 if (typeof document === "undefined") {
   self.onmessage = (event) => {
-    const { sizes, limit } = event.data;
+    const { sizes, limit = 20000 } = event.data;
     self.postMessage(reserve(sizes, limit));
   };
 } else {

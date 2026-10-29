@@ -14,12 +14,17 @@
  * start `mkdir` (exec: ENOMEM) and the shell could not fork (EAGAIN).
  *
  * So before it builds a kernel, a JavaScriptCore page measures what it can
- * still reserve, in a short-lived Worker (`public/memory-probe.js`; a
- * terminated Worker's reservations come back at once), and picks the
- * largest per-process reservation that leaves room for
+ * still reserve, in a short-lived Worker (`public/memory-probe.js`), and
+ * picks the largest per-process reservation that leaves room for
  * {@link WANTED_PROCESSES} processes beside the kernel and
  * {@link RESERVATION_HEADROOM_BYTES} of slack. A process that outgrows its
  * reservation gets ENOMEM, as under Linux's RLIMIT_AS.
+ *
+ * On iOS that is 128 MiB: room for about 15 processes, and enough for
+ * ipykernel (81 MiB) and a NumPy-sized cell. 64 MiB would fit twice as many
+ * but could not run them; with the kernel host's per-exec copies
+ * (yurtos-kernel#4238) in the same pool, a run of commands under a
+ * simulated iOS cap got no further at 64 MiB than at 128 MiB.
  */
 
 const MIB = 1024 * 1024;
@@ -38,8 +43,8 @@ export const KERNEL_MEMORY_RESERVATION_BYTES = 1024 * MIB;
 export const RESERVATION_HEADROOM_BYTES = 512 * MIB;
 /** How many processes the reservation must leave room for at once: a
  *  Packages install (sudo, sh, mkdir, tar, ...) beside the shell and its
- *  jobs, with margin. */
-export const WANTED_PROCESSES = 24;
+ *  jobs. */
+export const WANTED_PROCESSES = 12;
 /** The probe's unit, and how far it counts: enough to show that the
  *  largest reservation fits, so a desktop browser stops well short of its
  *  cap. */
@@ -105,21 +110,31 @@ export type ProbeWorker = {
 };
 
 /**
+ * Start the probe Worker, by default from {@link PROBE_SCRIPT_PATH} at
+ * this script's site, with the engine's own Worker ({@link NativeWorker}).
+ */
+export function spawnProbeWorker(
+  script: string | URL = new URL(PROBE_SCRIPT_PATH, self.location.href),
+): ProbeWorker {
+  if (NativeWorker === undefined) throw new Error("no Worker here");
+  return new NativeWorker(script, { type: "module" }) as unknown as ProbeWorker;
+}
+
+/**
  * How many bytes of shared memory this tab can still reserve, counted in
  * {@link PROBE_UNIT_BYTES} memories up to {@link PROBE_LIMIT_BYTES}, in a
  * Worker that is terminated once it answers. `undefined` when no Worker
- * starts or it does not answer in `timeoutMs`. A probe that reached the
- * cap waits `settleMs` after the terminate, so its reservations are back
- * before the kernel asks for its own (the iPad gave identical counts on
- * runs 1.5 s apart).
+ * starts or it does not answer in `timeoutMs`.
+ *
+ * Once a Worker was started, the probe waits `settleMs` after terminating
+ * it, whatever it answered: macOS WebKit gave a probe's reservations back
+ * at once (4 x 1 GiB reserved right after a probe that took the whole
+ * cap), but iOS is unmeasured (the iPad gave identical counts on runs
+ * 1.5 s apart), and a Worker that timed out may still have been
+ * reserving. The kernel's own 1 GiB comes next and must not be refused.
  */
 export async function probeAvailableBytes(
-  spawn: () => ProbeWorker = () => {
-    if (NativeWorker === undefined) throw new Error("no Worker here");
-    return new NativeWorker(new URL(PROBE_SCRIPT_PATH, self.location.href), {
-      type: "module",
-    }) as unknown as ProbeWorker;
-  },
+  spawn: () => ProbeWorker = () => spawnProbeWorker(),
   options: { timeoutMs?: number; settleMs?: number } = {},
 ): Promise<number | undefined> {
   const { timeoutMs = 10_000, settleMs = 1_500 } = options;
@@ -155,39 +170,24 @@ export async function probeAvailableBytes(
     }
   });
   worker.terminate();
-  if (answer === undefined) return undefined;
-  if (answer.firstError !== "" && settleMs > 0) {
+  if (settleMs > 0) {
     await new Promise((resolve) => setTimeout(resolve, settleMs));
   }
-  return answer.totalMiB * MIB;
+  return answer === undefined ? undefined : answer.totalMiB * MIB;
 }
 
-/**
- * Whether this is a phone or tablet. iPadOS Safari may say it is a Mac;
- * a Mac has no touch points.
- */
-export function isMobileDevice(
-  userAgent: string | undefined = globalThis.navigator?.userAgent,
-  maxTouchPoints: number | undefined = globalThis.navigator?.maxTouchPoints,
-): boolean {
-  if (userAgent === undefined) return false;
-  if (/\b(iPad|iPhone|iPod|Android)\b/.test(userAgent)) return true;
-  return /Macintosh/.test(userAgent) && (maxTouchPoints ?? 0) > 1;
-}
+/** The reservation when the probe cannot run. A Worker cannot tell an
+ *  iPad from a Mac (iPadOS Safari sends a Mac user agent, and
+ *  `WorkerNavigator` has no `maxTouchPoints`), so every JavaScriptCore page
+ *  gets what fits on iOS. */
+export const UNPROBED_RESERVATION_BYTES = 128 * MIB;
 
-/**
- * The plan for this page: measured when the probe runs, and otherwise the
- * reservation an iPad measurement supports on a phone or tablet (64 MiB:
- * about 4 GiB less the kernel and headroom leaves room for 40) or the
- * desktop's.
- */
+/** The plan for this page: measured when the probe runs, and otherwise
+ *  {@link UNPROBED_RESERVATION_BYTES}. */
 export async function planGuestMemory(
   probe: () => Promise<number | undefined> = () => probeAvailableBytes(),
-  mobile: boolean = isMobileDevice(),
 ): Promise<GuestMemoryPlan> {
   const available = await probe().catch(() => undefined);
   if (available !== undefined) return reservationForAvailableBytes(available);
-  return {
-    reservationBytes: mobile ? 64 * MIB : GUEST_MEMORY_RESERVATION_BYTES,
-  };
+  return { reservationBytes: UNPROBED_RESERVATION_BYTES };
 }
