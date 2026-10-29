@@ -12,13 +12,15 @@
  * inflate and restore times), whether it fell back to booting the image,
  * and in Chromium the renderer processes' peak resident memory.
  *
- * Usage: deno run -A scripts/measure-boot.ts [--device phone|tablet|desktop]
- *          [--engine chromium|webkit] [--query 'start&start-anyway']
- *          [--pins PATH] [--warm N]
+ * Usage: deno run -A scripts/measure-boot.ts [--device NAME]
+ *          [--engine chromium|webkit] [--query start] [--pins PATH] [--warm N]
  *
- *   --device  the emulation: iPhone 13, iPad Pro 11, or a desktop
- *   --query   the page's query (default `start&start-anyway`: Start pressed
- *             at load; add `&snapshot=0` for the plain boot)
+ *   --device  the emulation: phone (iPhone 13), tablet (iPad Pro 11),
+ *             ipados-landscape and ipados-mini (iPadOS Safari's desktop UA
+ *             with 5 touch points), desktop
+ *   --query   the page's query (default `start`: Start pressed at load, no
+ *             platform, so the page picks it; add `&snapshot=0` for the
+ *             plain boot, `&platform=...` to force one)
  *   --pins    serve these pins.json instead of artifacts/pins.json (with
  *             the blobs and snapshots they name installed)
  *   --warm    repeat loads after the cold one (default 1)
@@ -30,11 +32,42 @@
 import { ensureBundle } from "./serve.ts";
 import { handlePlaygroundRequest, ISOLATION_HEADERS } from "../src/serve.ts";
 
-const DEVICES = {
-  phone: "iPhone 13",
-  tablet: "iPad Pro 11",
-  desktop: "Desktop Chrome",
-} as const;
+/** iPadOS Safari asks for the desktop site: its UA is a Mac Safari's;
+ * only its touch points (5) tell it from a Mac (tests/playground_e2e.ts). */
+const IPADOS_SAFARI_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+
+/** Each emulation: a Playwright descriptor, or a real iPad's own. */
+const DEVICES: Record<string, {
+  descriptor?: string;
+  options?: Record<string, unknown>;
+  maxTouchPoints?: number;
+  expect: "phone" | "tablet" | "desktop";
+}> = {
+  phone: { descriptor: "iPhone 13", expect: "phone" },
+  tablet: { descriptor: "iPad Pro 11", expect: "tablet" },
+  "ipados-landscape": {
+    options: {
+      userAgent: IPADOS_SAFARI_UA,
+      viewport: { width: 1194, height: 834 },
+      screen: { width: 834, height: 1194 },
+      hasTouch: true,
+    },
+    maxTouchPoints: 5,
+    expect: "tablet",
+  },
+  "ipados-mini": {
+    options: {
+      userAgent: IPADOS_SAFARI_UA,
+      viewport: { width: 744, height: 1133 },
+      screen: { width: 744, height: 1133 },
+      hasTouch: true,
+    },
+    maxTouchPoints: 5,
+    expect: "tablet",
+  },
+  desktop: { descriptor: "Desktop Safari", expect: "desktop" },
+};
 
 function option(name: string, fallback: string): string {
   const at = Deno.args.indexOf(name);
@@ -65,9 +98,9 @@ function rendererMiB(profile: string): number {
 }
 
 if (import.meta.main) {
-  const device = option("--device", "phone") as keyof typeof DEVICES;
+  const device = option("--device", "phone");
   const engine = option("--engine", "chromium") as "chromium" | "webkit";
-  const query = option("--query", "start&start-anyway");
+  const query = option("--query", "start");
   const pinsPath = option("--pins", "");
   const warm = Number(option("--warm", "1"));
   const { chromium, webkit, devices } = await import("playwright");
@@ -83,13 +116,22 @@ if (import.meta.main) {
         : handlePlaygroundRequest(request),
   );
   const profile = await Deno.makeTempDir({ prefix: "yurt-measure-boot-" });
-  const descriptor = { ...devices[DEVICES[device]] };
+  const spec = DEVICES[device];
+  if (spec === undefined) throw new Error(`no device ${device}`);
+  const descriptor: Record<string, unknown> = spec.descriptor === undefined
+    ? { ...spec.options }
+    : { ...devices[spec.descriptor] };
   // WebKit takes no isMobile; the viewport, UA and touch stay.
-  if (engine === "webkit") {
-    delete (descriptor as { isMobile?: boolean }).isMobile;
-  }
+  if (engine === "webkit") delete descriptor.isMobile;
   const context = await (engine === "chromium" ? chromium : webkit)
     .launchPersistentContext(profile, { ...descriptor, headless: true });
+  if (spec.maxTouchPoints !== undefined) {
+    await context.addInitScript((points: number) => {
+      Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
+        get: () => points,
+      });
+    }, spec.maxTouchPoints);
+  }
   try {
     const page = context.pages()[0] ?? await context.newPage();
     let logs: string[] = [];
@@ -117,12 +159,45 @@ if (import.meta.main) {
         { timeout: 120_000, polling: 50 },
       );
       const seconds = (performance.now() - started) / 1000;
+      // Python as the page's kind should have it: none on a phone, python
+      // alone on a tablet, the set (and Jupyter) on a desktop.
+      await page.keyboard.type(
+        "command -v python3 >/dev/null && echo PY-$((1+1))-yes || echo PY-$((1+1))-no\n",
+      );
+      await page.waitForFunction(
+        () =>
+          /PY-2-(yes|no)/.test(
+            document.querySelector("#term")?.textContent ?? "",
+          ),
+        undefined,
+        { timeout: 60_000, polling: 50 },
+      );
+      const python3 = /PY-2-yes/.test(
+        (await page.locator("#term").textContent()) ?? "",
+      );
+      let jupyterSeconds: number | undefined;
+      if (new URL(page.url()).searchParams.get("platform") === "desktop") {
+        await page.waitForFunction(
+          () =>
+            document.querySelector("[data-testid=notebook-status]")
+              ?.textContent === "ready",
+          undefined,
+          { timeout: 300_000, polling: 100 },
+        ).then(() => jupyterSeconds = (performance.now() - started) / 1000)
+          .catch(() => {});
+      }
       if (sampler !== undefined) clearInterval(sampler);
       console.log(JSON.stringify({
         device,
         engine,
         query,
         load: load === 0 ? "cold" : "warm",
+        platform: new URL(page.url()).searchParams.get("platform"),
+        expected: spec.expect,
+        python3,
+        jupyterReadySeconds: jupyterSeconds === undefined
+          ? null
+          : Number(jupyterSeconds.toFixed(1)),
         secondsToPrompt: Number(seconds.toFixed(2)),
         peakRendererMiB: engine === "chromium" ? Math.round(peak) : null,
         snapshot: logs.find((line) => /bytes of kernel memory/.test(line)) ??

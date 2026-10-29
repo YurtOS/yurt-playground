@@ -30,7 +30,7 @@
  *               the desktop's (default: the Python set and Jupyter), the
  *               tablet's (`?snapshot=capture-tablet`: python alone) or the
  *               phone's (`?snapshot=capture-phone`: the image as it boots,
- *               no Python, and a URL with `&start-anyway`); each restores
+ *               no Python); the URL names its platform, and each restores
  *               only on a page of its kind
  *   --name      the ref's name (default <train>-<UTC time>); an existing
  *               one is never replaced
@@ -134,7 +134,7 @@ export function restoreUrl(
 ): string {
   uploadedSnapshotBase(id); // only an id
   const url = new URL(site);
-  url.search = `?snapshot=${id}${kind === "phone" ? "&start-anyway" : ""}`;
+  url.search = `?snapshot=${id}&platform=${kind}`;
   return url.href;
 }
 

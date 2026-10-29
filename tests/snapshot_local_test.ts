@@ -17,11 +17,11 @@ const ID = "0123456789abcdef0123456789abcdef01234567";
 Deno.test("snapshot-local prints a URL the page restores, and only for an id", () => {
   assertEquals(
     restoreUrl("https://yurt-playground.pages.dev", ID, "desktop"),
-    `https://yurt-playground.pages.dev/?snapshot=${ID}`,
+    `https://yurt-playground.pages.dev/?snapshot=${ID}&platform=desktop`,
   );
   assertEquals(
     restoreUrl("https://yurt-playground.pages.dev/", ID, "phone"),
-    `https://yurt-playground.pages.dev/?snapshot=${ID}&start-anyway`,
+    `https://yurt-playground.pages.dev/?snapshot=${ID}&platform=phone`,
   );
   assertThrows(() => restoreUrl("https://x", "1", "desktop"));
 });

@@ -34,7 +34,12 @@ import {
   packageRequests,
 } from "./install_request.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
-import { deviceClass } from "./device.ts";
+import {
+  choosePlatform,
+  deviceClass,
+  type Platform,
+  withPlatform,
+} from "./device.ts";
 import {
   captureKindOf,
   type SnapshotKind,
@@ -105,6 +110,9 @@ const installedPanel = installedMarks(
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
+/** What this page runs as (src/device.ts choosePlatform): its device's,
+ * or the one `?platform=` asks for. Set first thing by runPage. */
+let platform: Platform = "desktop";
 
 /**
  * window.yurt (src/agent_api.ts): a driver's view of the sandbox, present
@@ -278,7 +286,7 @@ function boot(
   // The snapshot this start restores (the device's own) or captures.
   const kind: SnapshotKind = capturing
     ? captureKindOf(snapshotParam())!
-    : deviceClass();
+    : platform;
   const endBoot = (why?: string) => {
     booting = false;
     rememberBooting(undefined);
@@ -318,7 +326,7 @@ function boot(
       return;
     }
     status.failure("failed");
-    showFailure(deviceClass() === "tablet" ? "tablet" : "error", message);
+    showFailure(platform === "tablet" ? "tablet" : "error", message);
     notebook.unavailable("no sandbox");
   };
   // window.yurt (src/agent_api.ts): a driver's view of the same sandbox.
@@ -767,6 +775,27 @@ function wirePackages(): void {
 }
 
 async function runPage(): Promise<void> {
+  // The platform first, before anything is fetched: a URL without one
+  // gains the device's (`?platform=phone|tablet|desktop`), so it says which
+  // snapshot this page restores; one written by hand is kept, and run as
+  // far as this device can.
+  const chosen = choosePlatform(
+    deviceClass(),
+    new URL(location.href).searchParams.get("platform"),
+  );
+  platform = chosen.platform;
+  document.documentElement.dataset.platform = platform;
+  if (chosen.redirect) {
+    history.replaceState(
+      history.state,
+      "",
+      withPlatform(location.href, platform),
+    );
+  }
+  if (chosen.note !== undefined) {
+    byId("platform-note-text").textContent = chosen.note;
+    byId("platform-note").hidden = false;
+  }
   watchNetwork(byId("net"));
   // One writer for #status: the boot's progress must not bury the outcome
   // of a Download home or an Upload (src/status_line.ts).
@@ -804,20 +833,20 @@ async function runPage(): Promise<void> {
   // JupyterLab pages) and the agent need more memory than a tablet browser
   // gives one tab: iPadOS refused new processes after ~13 while ipykernel
   // started. The desktop app runs natively and keeps everything.
-  const device = deviceClass();
+  const device = platform;
   const shellOnly = desktop === undefined && device === "tablet";
   // The panel's installs run in the coordinator, capped like the tab's
   // other installs (16 MiB on a phone or tablet: boot's `smallDevice`).
   wirePackages();
   // Only the in-tab kernel has the memory problem; the desktop app's page
-  // runs the sandbox natively. A phone, and a tab the browser reloaded
-  // mid-boot, get no sandbox unless `?start-anyway`. Read (and clear) the
-  // boot memory either way, so `?start-anyway` does not leave it for the
-  // next load.
+  // runs the sandbox natively. A tab the browser reloaded mid-boot gets no
+  // sandbox unless `?start-anyway`. (A phone gets one now: it restores the
+  // small snapshot made for phones.) Read (and clear) the boot memory
+  // either way, so `?start-anyway` does not leave it for the next load.
   const cutOff = desktop === undefined ? cutOffBoot() : undefined;
   const refused = desktop === undefined &&
     !new URL(location.href).searchParams.has("start-anyway") &&
-    (device === "phone" || cutOff !== undefined);
+    cutOff !== undefined;
   const phone = device === "phone";
   // A phone that starts anyway boots the shell (and the agent) without
   // Python or Jupyter: the automatic Python install ran an iPhone tab out
@@ -839,9 +868,7 @@ async function runPage(): Promise<void> {
     void mountAgentPane(byId("agent"), {
       yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
       start: () => document.getElementById("start-sandbox")?.click(),
-      unavailable: refused
-        ? (phone ? "not on phones" : "no sandbox")
-        : undefined,
+      unavailable: refused ? "no sandbox" : undefined,
     });
   }
   const start = document.getElementById("start");
@@ -874,12 +901,10 @@ async function runPage(): Promise<void> {
   if (desktop === undefined) {
     if (device === "tablet") byId("mobile-note").hidden = false;
     if (refused) {
-      status.failure(phone ? "not on phones" : "failed");
-      showFailure(phone ? "phone" : "reloaded", phone ? undefined : cutOff);
-      notebook.unavailable(phone ? "not on phones" : "no sandbox");
-      yurtState.failed(
-        phone ? "not on phones" : `a previous boot was cut off at ${cutOff}`,
-      );
+      status.failure("failed");
+      showFailure("reloaded", cutOff);
+      notebook.unavailable("no sandbox");
+      yurtState.failed(`a previous boot was cut off at ${cutOff}`);
       return;
     }
     if (phone) {

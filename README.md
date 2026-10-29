@@ -255,7 +255,7 @@ uploads an existing capture, `--dry-run` stops before the push. `--kind` picks
 the snapshot as above (`?snapshot=capture`, `capture-tablet`, `capture-phone`);
 each restores only on a page of its kind, since a page refuses a snapshot whose
 Python is not the one it asks the live index about (none on a phone, python
-alone on a tablet), and a phone's URL carries `&start-anyway`. `--before-deploy`
+alone on a tablet), and the printed URL names its platform. `--before-deploy`
 turns the site check into a note, for a snapshot of pins that a pending deploy
 brings. List the uploads with `git ls-remote origin 'refs/snapshots/*'`; delete
 one with `git push origin :refs/snapshots/<name>`, after which the page refuses
@@ -275,9 +275,9 @@ Train `playground-2026.10.29-3d32068`. Generated from artifacts/pins.json; `deno
 
 | Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
 | --- | --- | --- | --- | --- | --- | --- |
-| desktop | desktop browser (Mac, PC) | `snapshot-playground-2026.10.29-3d32068` | 130.2 MB in 7 parts | ? | ? | ? |
-| tablet | tablet (iPad) | not pinned: boots the image | | | | |
-| phone | phone (iPhone), with `?start-anyway` | not pinned: boots the image | | | | |
+| desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.10.29-3d32068` | 130.2 MB in 7 parts | ? | ? | ? |
+| tablet | tablet (iPad): `?platform=tablet` | not pinned: boots the image | | | | |
+| phone | phone (iPhone): `?platform=phone` | not pinned: boots the image | | | | |
 
 <!-- deno-fmt-ignore-end -->
 <!-- snapshot-table:end -->

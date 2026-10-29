@@ -22,9 +22,9 @@ export const TABLE_START =
 export const TABLE_END = "<!-- snapshot-table:end -->";
 
 const DEVICE = {
-  desktop: "desktop browser (Mac, PC)",
-  tablet: "tablet (iPad)",
-  phone: "phone (iPhone), with `?start-anyway`",
+  desktop: "desktop browser (Mac, PC): `?platform=desktop`",
+  tablet: "tablet (iPad): `?platform=tablet`",
+  phone: "phone (iPhone): `?platform=phone`",
 };
 
 const MIB = 1024 * 1024;

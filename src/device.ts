@@ -40,3 +40,73 @@ export function deviceClass(): "phone" | "tablet" | "desktop" {
   ) return "tablet";
   return "desktop";
 }
+
+/** Which kind of page this is: what it starts (the shell only on a phone
+ * or tablet, Jupyter on a desktop) and which snapshot it restores
+ * (src/sandbox_snapshot.ts SNAPSHOT_KINDS). `?platform=` says it in the
+ * URL: the page writes its device's there when there is none, and a hand
+ * written one overrides the device -- as far as the device can run it. */
+export type Platform = "phone" | "tablet" | "desktop";
+
+const PLATFORM_ALIASES: Record<string, Platform> = {
+  phone: "phone",
+  iphone: "phone",
+  tablet: "tablet",
+  ipad: "tablet",
+  desktop: "desktop",
+  mac: "desktop",
+};
+
+/** How much a platform asks of the device's memory. */
+const PLATFORM_SIZE: Record<Platform, number> = {
+  phone: 0,
+  tablet: 1,
+  desktop: 2,
+};
+
+/** `?platform=`'s value as a platform (case aside), or undefined. */
+export function parsePlatform(value: string | null): Platform | undefined {
+  return value === null ? undefined : PLATFORM_ALIASES[value.toLowerCase()];
+}
+
+/** The platform a page on `device` runs as, given `?platform=` (`asked`):
+ *
+ * - none: the device's own, and the URL gains it (`redirect`);
+ * - one the device can run (its own, or a smaller one: a desktop trying
+ *   the phone's snapshot): that one;
+ * - a bigger one than the device (the desktop's on a phone) or a value
+ *   that is no platform: the device's own, with a `note` saying so. An
+ *   asked platform is never written away from the URL.
+ */
+export function choosePlatform(
+  device: Platform,
+  asked: string | null,
+): { platform: Platform; redirect: boolean; note?: string } {
+  if (asked === null) return { platform: device, redirect: true };
+  const platform = parsePlatform(asked);
+  if (platform === undefined) {
+    return {
+      platform: device,
+      redirect: false,
+      note:
+        `?platform=${asked} is not phone, tablet or desktop (or iphone, ipad, mac): this page runs as this ${device}`,
+    };
+  }
+  if (PLATFORM_SIZE[platform] > PLATFORM_SIZE[device]) {
+    return {
+      platform: device,
+      redirect: false,
+      note:
+        `This ${device} has too little memory for the ${platform} page, so it runs the ${device}'s instead`,
+    };
+  }
+  return { platform, redirect: false };
+}
+
+/** `href` with `?platform=<platform>` added, every other parameter and the
+ * fragment kept. */
+export function withPlatform(href: string, platform: Platform): string {
+  const url = new URL(href);
+  url.searchParams.set("platform", platform);
+  return url.href;
+}
