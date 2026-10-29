@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import { packageRequests } from "../src/install_request.ts";
+import { InstallsStopped, packageRequests } from "../src/install_request.ts";
 
 const SILENCE_MS = 50;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -35,10 +35,6 @@ Deno.test("a progress or reply that comes after the deadline is ignored", async 
   installs.answer({ type: "pkg-progress", req: 1, text: "go: installing" });
   installs.answer({ type: "pkg-reply", req: 1, ok: true, value: "done" });
   assertEquals(shown, ["go: resolving"]);
-  // A later install has a request of its own and is answered as usual.
-  const next = installs.install("jq", () => {});
-  installs.answer({ type: "pkg-reply", req: 2, ok: true, value: "jq out" });
-  assertEquals(await next, "jq out");
 });
 
 Deno.test("any coordinator message keeps an install waiting past the deadline", async () => {
@@ -71,4 +67,41 @@ Deno.test("an answered install ends with its reply and leaves no timer", async (
   });
   await assertRejects(() => failed, Error, "no package named nope");
   // The test sanitizer fails this test if either install left its timer.
+});
+
+Deno.test("after a deadline, a second install is refused without posting to the coordinator", async () => {
+  const sent: string[] = [];
+  const installs = packageRequests((_, name) => sent.push(name), SILENCE_MS);
+  await assertRejects(
+    () => installs.install("go", () => {}),
+    InstallsStopped,
+    "stopped responding while installing go",
+  );
+  // The coordinator speaks again, but the sandbox is not trusted again.
+  installs.heard();
+  await assertRejects(
+    () => installs.install("jq", () => {}),
+    InstallsStopped,
+    "stopped responding while installing go",
+  );
+  assertEquals(sent, ["go"]);
+});
+
+Deno.test("a coordinator that fails ends the install in flight with its error, and takes no more", async () => {
+  const sent: string[] = [];
+  const installs = packageRequests((_, name) => sent.push(name), SILENCE_MS);
+  const outcome = installs.install("go", () => {});
+  installs.failAll("coordinator worker failed: out of memory");
+  await assertRejects(
+    () => outcome,
+    InstallsStopped,
+    "coordinator worker failed: out of memory",
+  );
+  await assertRejects(
+    () => installs.install("jq", () => {}),
+    InstallsStopped,
+    "coordinator worker failed: out of memory",
+  );
+  assertEquals(sent, ["go"]);
+  // The test sanitizer fails this test if the failed install left its timer.
 });

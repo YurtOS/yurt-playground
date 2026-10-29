@@ -28,6 +28,15 @@ export function sandboxStoppedResponding(name: string): string {
     "Reload the page to start a fresh sandbox.";
 }
 
+/** The coordinator stopped answering, or failed: the install ends with
+ * this, and so does every later one, without reaching the coordinator. */
+export class InstallsStopped extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InstallsStopped";
+  }
+}
+
 export type InstallProgress = {
   type: "pkg-progress";
   req: number;
@@ -45,12 +54,15 @@ export type InstallReply = {
  * numbered `req`; the coordinator's messages come back through `heard`
  * (every message) and `answer` (this install's own). An install that
  * hears nothing for `silenceMs` fails, and is forgotten: what the
- * coordinator says about it later is ignored. */
+ * coordinator says about it later is ignored. From then on, and after
+ * `failAll`, every install is refused without being sent. */
 export function packageRequests(
   send: (req: number, name: string) => void,
   silenceMs = INSTALL_SILENCE_MS,
 ) {
   let nextReq = 1;
+  /** Why installs end without reaching the coordinator, once they do. */
+  let stopped: InstallsStopped | undefined;
   const waiting = new Map<number, {
     progress: (text: string) => void;
     resolve: (output: string) => void;
@@ -60,6 +72,7 @@ export function packageRequests(
   }>();
   return {
     install(name: string, progress: (text: string) => void): Promise<string> {
+      if (stopped !== undefined) return Promise.reject(stopped);
       return new Promise<string>((resolve, reject) => {
         const req = nextReq++;
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -71,7 +84,8 @@ export function packageRequests(
           clearTimeout(timer);
           timer = setTimeout(() => {
             done();
-            reject(new Error(sandboxStoppedResponding(name)));
+            stopped = new InstallsStopped(sandboxStoppedResponding(name));
+            reject(stopped);
           }, silenceMs);
         };
         waiting.set(req, {
@@ -89,6 +103,12 @@ export function packageRequests(
         rearm();
         send(req, name);
       });
+    },
+    /** The coordinator failed (its worker's `error`): nothing will answer
+     * the installs in flight, or any later one. */
+    failAll(message: string) {
+      stopped = new InstallsStopped(message);
+      for (const waiter of waiting.values()) waiter.reject(stopped);
     },
     /** Any message at all from the coordinator: it is still running. */
     heard() {

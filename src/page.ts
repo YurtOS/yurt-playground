@@ -25,7 +25,11 @@ import {
   loadCatalog,
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
-import { type InstallReply, packageRequests } from "./install_request.ts";
+import {
+  type InstallReply,
+  InstallsStopped,
+  packageRequests,
+} from "./install_request.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import { deviceClass } from "./device.ts";
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
@@ -414,6 +418,7 @@ function boot(
     // Nothing will answer them now.
     for (const waiter of pending.values()) waiter.reject(new Error(message));
     pending.clear();
+    installs?.failAll(message);
   };
   term.onData((text) => worker.postMessage({ type: "in", text }));
   term.onResize((size) =>
@@ -568,8 +573,11 @@ function wirePackages(): void {
   const status = byId("packages-status");
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
+  // The sandbox stopped answering (src/install_request.ts): the panel
+  // keeps that failure, with its reload note, and installs nothing more.
+  let stopped = false;
   const install = async (name: string) => {
-    if (packageInstall === undefined || busy) return;
+    if (packageInstall === undefined || busy || stopped) return;
     busy = true;
     panel.dataset.install = "running";
     for (const b of list.querySelectorAll("button")) b.disabled = true;
@@ -595,10 +603,11 @@ function wirePackages(): void {
         ? error.message
         : String(error);
       panel.dataset.install = "failed";
+      stopped = error instanceof InstallsStopped;
     } finally {
       busy = false;
       for (const b of list.querySelectorAll("button")) {
-        b.disabled = b.textContent === "Installed";
+        b.disabled = stopped || b.textContent === "Installed";
       }
     }
   };
