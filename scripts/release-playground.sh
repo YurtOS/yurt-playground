@@ -853,49 +853,53 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
     pythonSeal: $python_seal
   } + (if $slim == null then {} else {browserImage: $slim} end)
     + $snapshots' > "$root/artifacts/pins.json"
-# One verdict per kind; the reasons of every dropped one, together.
-dropped_whys=() any_kept=0
+# One verdict per kind. The train's record of dropped pins is one line per
+# pin -- the desktop's reason as it was, the others as "<key>: <reason>"
+# (a reason may itself hold "; ") -- and keeps an earlier run's line while
+# that pin is still absent: a resumed train rebuilds its pins from this
+# run's, which no longer have it, so nothing else would say so again.
+dropped_parts=() dropped_keys=" "
 for kind_entry in snapshot:desktop tabletSnapshot:tablet phoneSnapshot:phone; do
   snapshot_dropped=0 snapshot_kept=0 snapshot_why=
   keep_snapshot_pin "$root" "${kind_entry%%:*}" "${kind_entry#*:}" ||
     die "$snapshot_error; fix that and $(resume_command)"
   if [ "$snapshot_dropped" = 1 ]; then
-    # The desktop's reason as it was; the others name their pin.
     if [ "${kind_entry%%:*}" = snapshot ]; then
-      dropped_whys+=("$snapshot_why")
+      dropped_parts+=("$snapshot_why")
     else
-      dropped_whys+=("${kind_entry%%:*}: $snapshot_why")
+      dropped_parts+=("${kind_entry%%:*}: $snapshot_why")
     fi
+    dropped_keys+="${kind_entry%%:*} "
   fi
-  [ "$snapshot_kept" = 1 ] && any_kept=1
 done
-snapshot_dropped=0 snapshot_kept=$any_kept snapshot_why=
-if [ ${#dropped_whys[@]} -gt 0 ]; then
-  snapshot_dropped=1
-  snapshot_why=$(IFS=';'; printf '%s' "${dropped_whys[*]}" | sed 's/;/; /g')
+all_parts=()
+[ ${#dropped_parts[@]} -eq 0 ] || all_parts+=("${dropped_parts[@]}")
+if [ "$pins_only" = 0 ]; then
+  while IFS= read -r part; do
+    [ -n "$part" ] || continue
+    case "$part" in
+      tabletSnapshot:*) key=tabletSnapshot ;;
+      phoneSnapshot:*) key=phoneSnapshot ;;
+      *) key=snapshot ;;
+    esac
+    case "$dropped_keys" in *" $key "*) continue ;; esac
+    jq -e --arg k "$key" 'has($k)' "$root/artifacts/pins.json" >/dev/null ||
+      all_parts+=("$part")
+  done <<< "$(step_get snapshot dropped)"
 fi
-if [ "${snapshot_dropped:-0}" = 1 ]; then
-  say "the pinned snapshot is not this train's ($snapshot_why): dropped"
+snapshot_dropped=0 snapshot_why=
+if [ ${#dropped_parts[@]} -gt 0 ]; then
+  snapshot_dropped=1
+  shown=$(printf '%s\n' "${dropped_parts[@]}")
+  say "the pinned snapshot is not this train's (${shown//$'\n'/ | }): dropped"
+fi
+if [ ${#all_parts[@]} -gt 0 ]; then
+  snapshot_why=$(printf '%s\n' "${all_parts[@]}")
   # Kept with the train, so a --resume still ends with the reminder below.
   [ "$pins_only" = 1 ] || step_set snapshot dropped "$(jq -n --arg why "$snapshot_why" '$why')"
-elif [ "${snapshot_kept:-0}" = 1 ] && [ "$pins_only" = 0 ]; then
-  # A resumed train has nothing left to recapture only when every pin an
-  # earlier run dropped is back: a kept desktop pin says nothing about a
-  # dropped tablet or phone one ("tabletSnapshot: why" in the record).
-  earlier=$(step_get snapshot dropped) all_back=1
-  if [ -n "$earlier" ]; then
-    while IFS= read -r part; do
-      [ -n "$part" ] || continue
-      case "$part" in
-        tabletSnapshot:*) key=tabletSnapshot ;;
-        phoneSnapshot:*) key=phoneSnapshot ;;
-        *) key=snapshot ;;
-      esac
-      jq -e --arg k "$key" 'has($k)' "$root/artifacts/pins.json" >/dev/null ||
-        all_back=0
-    done <<< "$(sed 's/; /\n/g' <<< "$earlier")"
-  fi
-  [ "$all_back" = 0 ] || step_set snapshot dropped null
+elif [ "$pins_only" = 0 ]; then
+  # Every pin an earlier run dropped is back: nothing left to recapture.
+  step_set snapshot dropped null
 fi
 say "verify the pins: scripts/install-pinned-artifacts.sh"
 "$root/scripts/install-pinned-artifacts.sh"

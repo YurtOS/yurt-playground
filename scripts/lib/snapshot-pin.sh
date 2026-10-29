@@ -54,5 +54,6 @@ keep_snapshot_pin() {
 # dropped its snapshot pin (WHY empty: none).
 remind_dropped_snapshot() {
   [ -n "$1" ] || return 0
-  say "the snapshot pin was dropped ($1): run scripts/release-snapshot.ts (deno run -A; --kind tablet or phone for those pins), then commit artifacts/pins.json"
+  # One line per dropped pin (release-playground.sh), shown on one.
+  say "the snapshot pin was dropped (${1//$'\n'/ | }): run scripts/release-snapshot.ts (deno run -A; --kind tablet or phone for those pins), then commit artifacts/pins.json"
 }
