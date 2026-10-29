@@ -242,7 +242,13 @@ uploads an existing capture, `--dry-run` stops before the push. `--phone` (the
 phone's Python-only capture, and `&start-anyway` in the URL) waits for the phone
 snapshot capture to land on main and says so until then. List the uploads with
 `git ls-remote origin 'refs/snapshots/*'`; delete one with
-`git push origin :refs/snapshots/<name>`.
+`git push origin :refs/snapshots/<name>`, after which the page refuses its URL.
+Two things the script does not check. First, a capture from page code that
+changed `SEAL_VERSION`, `BOOT_SETUP` or the header format against the deployed
+page: only the pins are compared, and the site then boots the image (keep the
+page checkout at the pushed main). Second, `--packages` extras whose install
+moves a member of the Python set: the snapshot keeps the set's label, which no
+longer describes its memory.
 
 ## License
 

@@ -188,8 +188,10 @@ Deno.test("an uploaded snapshot is read from the one repository path, at its com
 
 Deno.test("a confined fetch reads only under its base", async () => {
   const asked: string[] = [];
-  const fetch = confinedFetch(BASE, (input) => {
+  const fetch = confinedFetch(BASE, (input, init) => {
     asked.push(String(input));
+    // A redirect would leave the checked URL.
+    assertEquals((init as RequestInit | undefined)?.redirect, "error");
     return Promise.resolve(new Response("ok"));
   });
   assertEquals(await (await fetch(`${BASE}sandbox.seal.gz.0`)).text(), "ok");
@@ -319,14 +321,20 @@ Deno.test("?snapshot=<id> asks the live index before it fetches any part", async
 Deno.test("an uploaded snapshot that cannot be had boots the image, as ?snapshot=1 does", async () => {
   const other = await upload({ ...BUILT, imageSha256: "11".repeat(32) }, 1024);
   for (
-    const files of [
+    const [files, why] of [
       // The refs API cannot be had (rate limited, offline).
-      new Map<string, Uint8Array>(),
+      [
+        new Map<string, Uint8Array>(),
+        "cannot list YurtOS/yurt-playground's snapshot refs: 404",
+      ],
       // No manifest at that commit.
-      new Map([[SNAPSHOT_REFS_API, refsAnswer()]]),
+      [
+        new Map([[SNAPSHOT_REFS_API, refsAnswer()]]),
+        "fetch manifest.json failed: 404",
+      ],
       // Another build's.
-      other.files,
-    ]
+      [other.files, `was built from imageSha256 ${"11".repeat(32)}`],
+    ] as const
   ) {
     await withFetch(files, async () => {
       const warn = console.warn;
@@ -343,6 +351,7 @@ Deno.test("an uploaded snapshot that cannot be had boots the image, as ?snapshot
         console.warn = warn;
       }
       assertEquals(notes.length, 1);
+      assertStringIncludes(notes[0], why);
       assertStringIncludes(notes[0], "booting the image instead");
     });
   }
@@ -383,8 +392,13 @@ Deno.test("a commit no refs/snapshots ref names is refused before any byte of it
 
 Deno.test("only a refs/snapshots ref to that very commit publishes it", async () => {
   const answer =
-    (body: unknown, status = 200) => (input: RequestInfo | URL) => {
+    (body: unknown, status = 200) =>
+    (input: RequestInfo | URL, init?: RequestInit) => {
       assertEquals(String(input), SNAPSHOT_REFS_API);
+      // Revalidated, not a browser copy up to a minute old; and no
+      // redirect elsewhere.
+      assertEquals(init?.cache, "no-cache");
+      assertEquals((init as RequestInit | undefined)?.redirect, "error");
       return Promise.resolve(new Response(JSON.stringify(body), { status }));
     };
   assertEquals(

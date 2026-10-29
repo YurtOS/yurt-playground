@@ -36,8 +36,8 @@
  *   --site      the site the URL is for (default the live site)
  *
  * List: `git ls-remote origin 'refs/snapshots/*'`. Delete:
- * `git push origin :refs/snapshots/<name>` (the URL keeps working until
- * GitHub collects the commit).
+ * `git push origin :refs/snapshots/<name>` (the page then refuses its URL:
+ * it restores only a commit a snapshot ref points at).
  *
  * Needs what release-snapshot.ts needs to capture (the pinned blobs, the
  * sibling yurtos-kernel at the pinned rev, Playwright's Chromium, network
@@ -196,7 +196,12 @@ async function readBack(id: string, want: string): Promise<void> {
 }
 
 /** Why a snapshot made under `pins` would not be restored by `site`'s
- * deployed pins (its `/pins.json`), or undefined when it would. */
+ * deployed pins (its `/pins.json`), or undefined when it would. Only the
+ * pins are compared: the page's own constants in the identity
+ * (`SEAL_VERSION`, `BOOT_SETUP`, and the header `FORMAT`) are this
+ * checkout's on both sides, so a capture from page code that changed one
+ * of them (which the script only notes) is not caught here; the site then
+ * boots the image, with a console note. */
 export async function siteIdentityProblem(
   site: string,
   pins: Pins,

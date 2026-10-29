@@ -112,6 +112,10 @@ export async function snapshotRef(
   const response = await fetchImpl(SNAPSHOT_REFS_API, {
     headers: { accept: "application/vnd.github+json" },
     redirect: "error",
+    // The list is served with `max-age=60`: a snapshot uploaded within
+    // the minute after this browser last asked would not be in its copy.
+    // Revalidated (ETag) instead.
+    cache: "no-cache",
   });
   if (!response.ok) {
     throw new Error(
