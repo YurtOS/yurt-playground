@@ -1,5 +1,5 @@
 {
-  "train": "playground-2026.10.27-3d32068.2",
+  "train": "playground-2026.10.29-3d32068",
   "kernelWasm": {
     "repo": "YurtOS/yurtos-kernel",
     "rev": "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
@@ -11,12 +11,12 @@
   },
   "image": {
     "repo": "YurtOS/yurt-ports",
-    "rev": "f4ff9bcebbc67d5424cab6d3361b2e3daecf5975",
+    "rev": "c7b5d36a15e8ad005e7c4de76d2a1db1f8be247d",
     "releaseRepo": "YurtOS/yurt-ports",
-    "release": "playground-image-playground-2026.10.27-3d32068.2",
+    "release": "playground-image-playground-2026.10.29-3d32068",
     "build": "scripts/build-playground-image.sh",
     "path": "ports/playground-image/build/dist/playground.yurtimg",
-    "sha256": "7ba1d67f8fee18d84445af9ebaabf2424f25d110d8b554fa2876638325e4234c"
+    "sha256": "66fd1103bb27778fe4ab949062f03fd16b56ef668d55215978a3fad3d2ab515f"
   },
   "desktopHost": {
     "repo": "YurtOS/yurt-sandbox",
@@ -49,44 +49,44 @@
   },
   "pythonSeal": {
     "repo": "YurtOS/yurt-ports",
-    "rev": "f4ff9bcebbc67d5424cab6d3361b2e3daecf5975",
+    "rev": "c7b5d36a15e8ad005e7c4de76d2a1db1f8be247d",
     "releaseRepo": "YurtOS/yurt-ports",
-    "release": "python-seal-playground-2026.10.27-3d32068.2",
+    "release": "python-seal-playground-2026.10.29-3d32068",
     "build": "ports/cpython/scripts/build-seal.sh",
     "sha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e"
   },
   "browserImage": {
     "repo": "YurtOS/yurt-ports",
-    "rev": "f4ff9bcebbc67d5424cab6d3361b2e3daecf5975",
+    "rev": "c7b5d36a15e8ad005e7c4de76d2a1db1f8be247d",
     "releaseRepo": "YurtOS/yurt-ports",
-    "release": "playground-image-playground-2026.10.27-3d32068.2",
+    "release": "playground-image-playground-2026.10.29-3d32068",
     "build": "scripts/build-playground-image.sh",
     "path": "ports/playground-image/build/dist/playground-slim.yurtimg",
-    "sha256": "0e3b4b52de31cb2c9845fcef1d893684947f324fa58cde91cc6d13457bebcd70"
+    "sha256": "142ee2e089b505538eb87f5c1dad2bb176f5bc591e9858ecb959622164f5fd88"
   },
   "snapshot": {
     "releaseRepo": "YurtOS/yurt-playground",
-    "release": "snapshot-playground-2026.10.27-3d32068.2-4",
+    "release": "snapshot-playground-2026.10.29-3d32068",
     "format": 3,
-    "sha256": "8713f29a92dd7e28b1c21799ea6f21ab2cb8508c1e76e5ea3d2d091f3b944dff",
-    "size": 131007661,
+    "sha256": "de40cc1dab43e182c910e1d61bdfb57aeea27b7ba5208b3c1037bd313b32902e",
+    "size": 130201949,
     "parts": [
-      "91d8ec55f31b640d5c6cf88eea69f730ac2c73d9618d7defc83352c4cf7c3546",
-      "531611aeedcd0b0a917e07c94e57ca773cbb3d143a2e5146974bbc34e1ac2444",
-      "e4cb0f895b2fffa5ea559933942d68a52d0cca45b91f136f97c1e8bc07235d67",
-      "76edca9ac3ede8127473d21086c52e94b80ef8f0fd02f9260036e962fc2277e7",
-      "3cd6ff718790cc3c2b29feabaf655dc8ee75e2bd92cfeb97b50c3c227f6f44a9",
-      "eb503d4076c25e29915a2262d14648a1c4e2a60f0c4554597c7ef00ebff0285d",
-      "24e4857f17542d00fa17f9bc084a5870999dd10772a72617822adcc11e37045b"
+      "2244350736832833b6e2495c3178680886758d2b696ce0ddfb55f9ca69ed3d62",
+      "70b06a06d0e00b4edf17fa350117db3dc2a79103e59e2aae7e15eb62b8901c26",
+      "907055de18ffd17b8a9d26ebef523707654c80ffc696cdb763efb7fd8833a073",
+      "64091b9562ea088a189ff150d4a833216cb363bdc6494078bc3d88b5d21acba6",
+      "86b7a2198029c4b8f4df051aab8bb173dd7bc709280d077ecfd9d78458b20a90",
+      "1515454cb390ba83f678d9ea91fa276c6eb82c56b9916d3ace021a681e211f52",
+      "babab34ea52b95d2214a08a00f8cb7bcf4cb96369dc8a3fea51a1cc399fa9d4e"
     ],
     "builtFrom": {
       "kernelSha256": "defa8da648d122fcfd30e6e96360d1b2da1cdf7440d50d82536a825e02fa338c",
       "kernelRev": "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
       "sealVersion": 1,
       "bootSetup": 1,
-      "imageSha256": "0e3b4b52de31cb2c9845fcef1d893684947f324fa58cde91cc6d13457bebcd70",
+      "imageSha256": "142ee2e089b505538eb87f5c1dad2bb176f5bc591e9858ecb959622164f5fd88",
       "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
-      "pythonSet": "0e3b4b52de31cb2c9845fcef1d893684947f324fa58cde91cc6d13457bebcd70/jupyter-kernel@0.0.1-yurt_0:c8e575a68c03a8e4+numpy@2.5.0-yurt_0:c3cc1743278a9763+python@3.14.7-yurt_0:ab01e884f08e0619+pyzmq@26.4.0-yurt_0:429b9bb415b7f5a2"
+      "pythonSet": "142ee2e089b505538eb87f5c1dad2bb176f5bc591e9858ecb959622164f5fd88/jupyter-kernel@0.0.1-yurt_0:c8e575a68c03a8e4+numpy@2.5.0-yurt_0:c3cc1743278a9763+python@3.14.7-yurt_0:ab01e884f08e0619+pyzmq@26.4.0-yurt_0:429b9bb415b7f5a2"
     }
   }
 }
