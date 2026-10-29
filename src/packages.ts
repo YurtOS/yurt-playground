@@ -1030,6 +1030,9 @@ async function installWatched(
     : exact.filter((r) => !have.has(r.name)).map((r) =>
       `${r.name}@${r.version}-${r.build}`
     );
+  // Only a set's members can all be installed already: a pinned list (a
+  // verify-all one included) names at least one release, or the name
+  // check above refused it, and none of its releases is skipped.
   if (specs.length === 0) {
     progress(`${name}: already installed`);
     return "";

@@ -354,9 +354,69 @@ Deno.test("the Suspend/Resume set is pinned to the slim image's python too", asy
     true,
   );
   assertEquals(
-    /sealVerification\(\s*\[set\.python, set\.seal\],\s*await installedReleases\(session\.files\) \?\? \[\],\s*\)/
+    /sealVerification\(\s*\[set\.python, set\.seal\],\s*await installedReleases\(session\.files\) \?\? \[\],/
       .test(source),
     true,
   );
   assertEquals(source.includes("releases: verify,"), true);
+});
+
+Deno.test("the Suspend/Resume set refuses an image that disagrees with its pins about python", () => {
+  const python = { name: "python", version: "3.14.7", build: "yurt_0" };
+  const seal = { name: "python-seal", version: "3.14.7", build: "yurt_0" };
+  // Agreeing: as without the check.
+  assertEquals(sealVerification([python, seal], [python], true).verify, [
+    seal,
+  ]);
+  assertEquals(sealVerification([python, seal], [], false).verify, [
+    python,
+    seal,
+  ]);
+  // The pins name a python the image does not ship: its stdlib would be
+  // looked for in the image, where it is not.
+  assertThrows(
+    () => sealVerification([python, seal], [], true),
+    Error,
+    "does not ship the python its pins name",
+  );
+  assertThrows(
+    () => sealVerification([python, seal], [python], false),
+    Error,
+    "ships a python its pins do not name",
+  );
+});
+
+Deno.test("the Suspend/Resume kernel stages an image-shipped python's stdlib from the image, and checks the pins against the sandbox", async () => {
+  // Scoped source checks: the worker is not loadable in a test.
+  const source = await Deno.readTextFile(
+    new URL("../src/notebook_kernel_worker.ts", import.meta.url),
+  );
+  // The verifying sandbox's list is checked against the pins.
+  assertEquals(
+    /sealVerification\(\s*\[set\.python, set\.seal\],\s*await installedReleases\(session\.files\) \?\? \[\],\s*set\.stdlibFromImage,\s*\)/
+      .test(source),
+    true,
+    "verifySealSet passes the pins' word to sealVerification",
+  );
+  // A fresh boot stages the image's stdlib when it ships python, and the
+  // archive's only when it does not.
+  const boot = source.slice(
+    source.indexOf("async function bootFresh("),
+    source.indexOf("async function restoreStored("),
+  );
+  assertEquals(
+    /sealSet\.stdlibFromImage \? stagedPath : \(path\) => path\.startsWith\("\/etc\/"\)/
+      .test(boot),
+    true,
+    "the image's stdlib is staged when it ships python",
+  );
+  const archive = boot.indexOf("await fetchRelease(sealSet.python");
+  const guard = boot.lastIndexOf("if (!sealSet.stdlibFromImage) {", archive);
+  assertEquals(archive > 0 && guard > 0, true, "the archive only without");
+  // No block closes between the guard and the fetch.
+  assertEquals(
+    /\n\s*\}\n/.test(boot.slice(guard, archive)),
+    false,
+    "the archive is fetched inside the guard",
+  );
 });

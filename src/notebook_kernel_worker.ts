@@ -880,17 +880,11 @@ async function verifySealSet(set: SealSet, isolated: boolean): Promise<void> {
   try {
     // pkg verifies what it fetches: not a python the image already has
     // (whose standard library then comes from the image, by its sha256).
-    const { verify, stdlibFromImage } = sealVerification(
+    const { verify } = sealVerification(
       [set.python, set.seal],
       await installedReleases(session.files) ?? [],
+      set.stdlibFromImage,
     );
-    if (stdlibFromImage !== set.stdlibFromImage) {
-      throw new Error(
-        stdlibFromImage
-          ? "the slim image ships a python its pins do not name"
-          : "the slim image does not ship the python its pins name",
-      );
-    }
     await installPackage(
       {
         label: "Suspend/Resume",

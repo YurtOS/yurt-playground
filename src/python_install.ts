@@ -52,6 +52,10 @@ export function sealVerification<
 >(
   releases: readonly R[],
   installed: readonly InstalledRelease[],
+  /** Whether the pins say the image ships python (`browserImage.python`):
+   * the kernel stages its standard library from the image only then, so
+   * a sandbox that disagrees is refused. */
+  pinsNamePython?: boolean,
 ): { verify: R[]; stdlibFromImage: boolean } {
   const verify: R[] = [];
   for (const release of releases) {
@@ -67,10 +71,15 @@ export function sealVerification<
       );
     }
   }
-  return {
-    verify,
-    stdlibFromImage: !verify.some((release) => release.name === "python"),
-  };
+  const stdlibFromImage = !verify.some((release) => release.name === "python");
+  if (pinsNamePython !== undefined && pinsNamePython !== stdlibFromImage) {
+    throw new Error(
+      stdlibFromImage
+        ? "the slim image ships a python its pins do not name"
+        : "the slim image does not ship the python its pins name",
+    );
+  }
+  return { verify, stdlibFromImage };
 }
 
 /** What the coordinator installs for Python: the set, resolved against the

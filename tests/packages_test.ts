@@ -1473,3 +1473,20 @@ Deno.test("a set's install asks pkg only for what is not installed, and says the
   );
   assertEquals(resolved, ["libx@1.0.0-yurt_0", "greet@0.1.0-yurt_0"]);
 });
+
+Deno.test("a verify-all list with nothing to verify is refused before pkg runs, never passed as verified", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, runs } = fakeHost(PLAN, INSTALLED);
+  await assertRejects(
+    () =>
+      installPackage({ label: "Seal", releases: [], verifyAll: true }, {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+      }),
+    Error,
+    "not a package name: []",
+  );
+  assertEquals(runs.length, 0);
+});
