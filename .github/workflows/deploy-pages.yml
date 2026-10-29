@@ -97,7 +97,8 @@ jobs:
 
   deploy:
     needs: [target, secrets-present]
-    if: needs.secrets-present.outputs.present == 'true'
+    # A target with no ref (an output GitHub dropped) builds nothing.
+    if: needs.secrets-present.outputs.present == 'true' && needs.target.outputs.ref != ''
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -129,8 +130,11 @@ jobs:
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
+        # integrity.json names GITHUB_SHA as the commit the site was built
+        # from; a preview dispatched from main builds another branch, so
+        # name the commit actually checked out (the same one in production).
         run: |
-          deno task build-static
+          GITHUB_SHA=$(git rev-parse HEAD) deno task build-static
           test -f dist/_headers
       # Wrangler itself, not an action: `cloudflare/pages-action` (which
       # wrapped it) was removed from GitHub on 2026-09-18 and every deploy
@@ -163,6 +167,10 @@ jobs:
           set -euo pipefail
           [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ] && [ -n "$PROJECT" ] \
             || { echo "::error::the Cloudflare secrets are not all set"; exit 1; }
+          # An empty --branch makes wrangler send no branch, which Cloudflare
+          # deploys as production.
+          [ -n "$BRANCH" ] && [ -n "$ALIAS" ] \
+            || { echo "::error::the deploy target has no branch or alias"; exit 1; }
           # Cloudflare makes a deployment production when its branch is the
           # project's production branch, whatever this repository calls it.
           # Ask the project, and refuse that branch or no answer.

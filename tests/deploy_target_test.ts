@@ -164,6 +164,15 @@ Deno.test("deploy-pages.yml routes production and previews to separate steps", a
   assertEquals(workflow.includes("scripts/deploy-target.sh"), true);
   // The site is built from the target's ref, so a preview is that branch.
   assertEquals(workflow.includes("ref: ${{ needs.target.outputs.ref }}"), true);
+  assertEquals(workflow.includes("needs.target.outputs.ref != ''"), true);
+  // The site names the commit it was built from: the checked-out one, which
+  // in a preview dispatched from main is not GITHUB_SHA.
+  assertEquals(
+    step(workflow, "Build static site").includes(
+      "GITHUB_SHA=$(git rev-parse HEAD) deno task build-static",
+    ),
+    true,
+  );
 
   const production = step(workflow, "Deploy to Cloudflare Pages");
   assertEquals(
@@ -179,6 +188,12 @@ Deno.test("deploy-pages.yml routes production and previews to separate steps", a
     true,
   );
   assertEquals(preview.includes('--branch "$BRANCH"'), true);
+  // An empty branch would make wrangler deploy production; refused first.
+  assertEquals(
+    preview.indexOf('[ -n "$BRANCH" ]') >= 0 &&
+      preview.indexOf('[ -n "$BRANCH" ]') < preview.indexOf("pages deploy"),
+    true,
+  );
   assertEquals(/--branch main/.test(preview), false, "preview names main");
   // Cloudflare makes a deployment production when its branch is the
   // project's production branch, whatever this repository calls it: the step

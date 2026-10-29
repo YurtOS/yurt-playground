@@ -180,13 +180,13 @@ gh workflow run deploy-pages.yml --ref main -f ref=<branch>
 It builds and verifies that branch exactly as the production deploy does (the
 snapshot included) and publishes it at its Cloudflare branch alias,
 `https://<alias>.yurt-playground.pages.dev`: the branch name lowercased, every
-other character a hyphen, cut to 28 characters (`agent/foo_Bar` →
-`agent-foo-bar`). The run's summary links the exact URL. Production is never the
-target: the preview path refuses `main` and the Pages project's production
-branch. Run it from main (`--ref main`), not from the branch: a branch older
-than this preview mode carries the old workflow, which deploys to production.
-Previews carry the production headers (`dist/_headers`: the CSP and cross-origin
-isolation).
+other character a hyphen, cut to 28 characters, with no leading or trailing
+hyphen (`agent/foo_Bar` → `agent-foo-bar`). The run's summary links the exact
+URL. Production is never the target: the preview path refuses `main` and the
+Pages project's production branch. Run it from main (`--ref main`), not from the
+branch: a branch older than this preview mode carries the old workflow, which
+deploys to production. Previews carry the production headers (`dist/_headers`:
+the CSP and cross-origin isolation).
 
 ## How the browser version works
 
