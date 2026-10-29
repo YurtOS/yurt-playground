@@ -10,13 +10,17 @@
  * every page: the packages the sandbox installs come from the one
  * repository path YurtOS/yurt-packages ({@link PACKAGE_SOURCES},
  * src/packages.ts) -- on the slim image the Notebook and Lab pages install
- * Python from there before their kernel starts. Scripts come from the origin
+ * Python from there before their kernel starts. Outside JupyterLite only:
+ * uploaded sandbox snapshots (`?snapshot=<id>`) come from the one
+ * repository path YurtOS/yurt-playground ({@link SNAPSHOT_SOURCE},
+ * src/snapshot_source.ts). Scripts come from the origin
  * plus the inline bootstraps JupyterLite emits in its index pages, allowed
  * by hash; the WebAssembly kernel needs `'wasm-unsafe-eval'`. Styles allow
  * inline because JupyterLab sets them everywhere.
  */
 
 import { PACKAGE_SOURCES } from "./packages.ts";
+import { SNAPSHOT_SOURCE } from "./snapshot_source.ts";
 
 const INLINE_SCRIPT = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
 
@@ -66,8 +70,8 @@ export type CspOptions = {
    * validators with `new Function`; only the JupyterLite pages get this.
    */
   allowEval?: boolean;
-  /** No model download: `connect-src` is the origin and the packages
-   * repository's path only. */
+  /** No model download and no uploaded snapshot: `connect-src` is the
+   * origin and the packages repository's path only. */
   sameOriginOnly?: boolean;
 };
 
@@ -89,6 +93,7 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
       "connect-src 'self'",
       ...(options.sameOriginOnly ? [] : MODEL_ORIGINS),
       ...PACKAGE_SOURCES,
+      ...(options.sameOriginOnly ? [] : [SNAPSHOT_SOURCE]),
     ].join(" "),
     "worker-src 'self'",
     "frame-src 'none'",

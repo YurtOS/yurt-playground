@@ -216,6 +216,29 @@ run the script again; so does a change to the page's boot setup (`BOOT_SETUP` in
 `src/sandbox_snapshot.ts`). Only the deploy fetches the snapshot
 (`YURT_INSTALL_SNAPSHOT=1`), and a problem with it never fails the deploy.
 
+To try another snapshot without a pin or a deploy, capture and upload it
+locally:
+
+```sh
+deno run -A scripts/snapshot-local.ts [--packages pandas,scipy] [--name NAME]
+```
+
+It captures the way `release-snapshot.ts` does (same prerequisites, same checks;
+the page checkout need not be a pushed head, which it only notes), and
+`--packages` installs those packages after the Python set, before the seal. It
+then pushes the parts and a `manifest.json` (the pin's fields) as one parentless
+commit to `refs/snapshots/<name>` in YurtOS/yurt-playground (not a branch, so a
+clone does not fetch it), reads the manifest back from raw.githubusercontent.com
+and prints `https://yurt-playground.pages.dev/?snapshot=<commit sha>`. The page
+reads only that repository path, and only for a 40-digit commit sha; the
+manifest takes every check the pin does, each part is checked against it, and
+anything else boots the image as without the flag. `--file PATH` uploads an
+existing capture, `--dry-run` stops before the push. `--phone` (the phone's
+Python-only capture, and `&start-anyway` in the URL) waits for the phone
+snapshot capture to land on main and says so until then. List the uploads with
+`git ls-remote origin 'refs/snapshots/*'`; delete one with
+`git push origin :refs/snapshots/<name>`.
+
 ## License
 
 Apache-2.0.

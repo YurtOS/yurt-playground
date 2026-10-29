@@ -29,12 +29,12 @@ Deno.test("inline script hashes are CSP sha256 sources of the exact body", async
   ]);
 });
 
-Deno.test("the policy keeps every request on the origin but the model's and the packages'", () => {
+Deno.test("the policy keeps every request on the origin but the model's, the packages' and the uploaded snapshots'", () => {
   const policy = contentSecurityPolicy({ scriptHashes: ["'sha256-x'"] });
   assertStringIncludes(policy, "default-src 'self'");
   assertStringIncludes(
     policy,
-    "connect-src 'self' https://huggingface.co https://*.hf.co https://raw.githubusercontent.com/YurtOS/yurt-packages/;",
+    "connect-src 'self' https://huggingface.co https://*.hf.co https://raw.githubusercontent.com/YurtOS/yurt-packages/ https://raw.githubusercontent.com/YurtOS/yurt-playground/;",
   );
   assertStringIncludes(policy, "frame-src 'none'");
   assertStringIncludes(policy, "object-src 'none'");
@@ -47,7 +47,7 @@ Deno.test("the policy keeps every request on the origin but the model's and the 
   assertEquals(
     policy.split("; ").filter((d) => d.includes("http")),
     [
-      "connect-src 'self' https://huggingface.co https://*.hf.co https://raw.githubusercontent.com/YurtOS/yurt-packages/",
+      "connect-src 'self' https://huggingface.co https://*.hf.co https://raw.githubusercontent.com/YurtOS/yurt-packages/ https://raw.githubusercontent.com/YurtOS/yurt-playground/",
     ],
   );
 });

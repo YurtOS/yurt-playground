@@ -36,6 +36,7 @@ import {
 import { createPlaygroundTerminal } from "./terminal.ts";
 import { deviceClass } from "./device.ts";
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
+import { capturePackages, isUploadedSnapshotId } from "./snapshot_source.ts";
 import {
   type DesktopInfo,
   desktopInfo,
@@ -450,7 +451,26 @@ function boot(
   // On the slim image the coordinator installs the newest complete Python
   // set before Jupyter; a tablet's session, and a phone's, is the shell
   // alone, and the desktop app's sandbox needs no page to install anything.
-  void pinsPromise.then((pins) =>
+  void pinsPromise.then((pins) => {
+    // `?snapshot=capture&packages=a,b` (scripts/snapshot-local.ts): a
+    // name pkg would refuse fails the capture before it starts.
+    let extra: string[] | undefined;
+    try {
+      extra = capturing
+        ? capturePackages(new URL(location.href).searchParams.get("packages"))
+        : undefined;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      fail(message);
+      endBoot(message);
+      return;
+    }
+    const asked = new URL(location.href).searchParams.get("snapshot");
+    if (asked !== null && snapshotMode() === undefined) {
+      console.warn(
+        `[snapshot] ?snapshot=${asked} is not 1, capture or an uploaded snapshot's 40-digit commit sha; booting the image`,
+      );
+    }
     worker.postMessage({
       type: "start",
       cols: term.cols,
@@ -464,17 +484,27 @@ function boot(
         : pythonInstallRequest(pins),
       tablet: smallDevice,
       snapshot: snapshotMode(),
-    })
-  );
+      snapshotId: uploadedSnapshotId(),
+      capturePackages: extra,
+    });
+  });
 }
 
-/** `?snapshot=1` restores the sealed sandbox (src/sandbox_snapshot.ts);
+/** `?snapshot=1` restores the sealed sandbox (src/sandbox_snapshot.ts),
+ * `?snapshot=<id>` an uploaded one (src/snapshot_source.ts);
  * `?snapshot=capture` makes one. Off by default. */
 function snapshotMode(): "restore" | "capture" | undefined {
   const value = new URL(location.href).searchParams.get("snapshot");
-  if (value === "1") return "restore";
+  if (value === "1" || isUploadedSnapshotId(value)) return "restore";
   if (value === "capture") return "capture";
   return undefined;
+}
+
+/** `?snapshot=<id>`: the uploaded snapshot to restore instead of the
+ * pinned one (src/snapshot_source.ts), a commit sha and nothing else. */
+function uploadedSnapshotId(): string | undefined {
+  const value = new URL(location.href).searchParams.get("snapshot");
+  return isUploadedSnapshotId(value) ? value! : undefined;
 }
 
 /** `?snapshot=capture`'s result, saved as a download. */

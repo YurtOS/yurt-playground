@@ -64,6 +64,10 @@ import {
   SANDBOX_SNAPSHOT_PATH,
   snapshotIdentity,
 } from "./sandbox_snapshot.ts";
+import {
+  isUploadedSnapshotId,
+  uploadedSnapshotPath,
+} from "./snapshot_source.ts";
 import { runQueue } from "./run_queue.ts";
 import { type BootedSession, workerPackageHost } from "./session_packages.ts";
 import {
@@ -99,6 +103,12 @@ type ToWorker =
     // as usual, then seal instead of starting Jupyter and hand the file
     // to the page (`snapshot-captured`).
     snapshot?: "restore" | "capture";
+    // `?snapshot=<id>`: the uploaded snapshot to restore instead of the
+    // pinned one (src/snapshot_source.ts); with `snapshot: "restore"`.
+    snapshotId?: string;
+    // `?snapshot=capture&packages=a,b`: packages a capture installs after
+    // the Python set, before it seals (scripts/snapshot-local.ts).
+    capturePackages?: string[];
   }
   // Install Python again after a failed install (the cell's Install), then
   // start the kernel. Answered like a boot: status, then notebook-ready or
@@ -326,10 +336,26 @@ async function captureSnapshot(
   /** The Python set the capture installed, as a layer key; null when the
    * site installs none (the full image has it). */
   pythonSet: string | null,
+  /** Packages to install after the Python set, before the seal
+   * (`?snapshot=capture&packages=`): in the snapshot's memory only, so a
+   * restore's checks are the Python set's alone. */
+  packages: readonly string[] = [],
 ): Promise<void> {
   if (session.seal === undefined || session.process === undefined) {
     throw new Error("this session cannot seal");
   }
+  for (const name of packages) {
+    // As the Packages panel installs one: in the install queue's turn.
+    await installs(() => {
+      pkgTouched.add(session);
+      return installPackage(name, {
+        host: workerPackageHost(session),
+        tablet: false,
+        progress: (text) => post({ type: "status", text }),
+      });
+    });
+  }
+  if (packages.length > 0) await installed.read();
   // Bytecode for every module the packages ship as source only
   // (PRECOMPILE_PROGRAM): each start compiled them again, slow on Safari,
   // where compiling one of wcwidth's modules also overflowed the Worker's
@@ -573,8 +599,13 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       : undefined,
     snapshotPath:
       restoresSnapshot({ ...msg, native: kernelPorts !== undefined })
-        ? SANDBOX_SNAPSHOT_PATH
+        ? isUploadedSnapshotId(msg.snapshotId)
+          ? uploadedSnapshotPath(msg.snapshotId!)
+          : SANDBOX_SNAPSHOT_PATH
         : undefined,
+    snapshotId: isUploadedSnapshotId(msg.snapshotId)
+      ? msg.snapshotId
+      : undefined,
     livePythonSet: () => live.pythonSet(),
     fetchBytes: (path: string) =>
       fetchPlaygroundBytes(path, (progress) => {
@@ -691,7 +722,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           if (python?.image !== undefined && capturedSet === undefined) {
             throw new Error("the capture's Python install did not run");
           }
-          return captureSnapshot(session, capturedSet ?? null);
+          return captureSnapshot(
+            session,
+            capturedSet ?? null,
+            msg.capturePackages ?? [],
+          );
         }
         : undefined,
       post: (report) => {

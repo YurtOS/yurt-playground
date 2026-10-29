@@ -41,6 +41,7 @@ import {
   fetchVerifiedSnapshot,
   pinnedSnapshot,
 } from "./sandbox_snapshot.ts";
+import { uploadedSnapshot } from "./snapshot_source.ts";
 import type { Spawner, WaitStatus } from "./executions.ts";
 import {
   decodeWaitRecord,
@@ -71,6 +72,9 @@ export type PlaygroundEnv = {
   /** A sealed sandbox to restore instead of booting `imagePath`
    * (src/sandbox_snapshot.ts). */
   snapshotPath?: string;
+  /** `?snapshot=<id>`: restore that uploaded snapshot
+   * (src/snapshot_source.ts) instead of the pinned one. */
+  snapshotId?: string;
   /** The Python set the live index offers now, as a layer key
    * (src/python_layer.ts): null when the site installs none, undefined
    * when the index cannot be asked. A snapshot of another set is not
@@ -443,7 +447,12 @@ export async function restoreSnapshot(
   // file whose own header says so before the kernel's memory is allocated
   // (SnapshotMismatch both).
   const pins = await browserPins();
-  const pin = pinnedSnapshot(pins);
+  // An uploaded snapshot's manifest takes the pin's checks, from its own
+  // commit; only its manifest (a few hundred bytes) is read before them.
+  const source = env.snapshotId === undefined
+    ? { pin: pinnedSnapshot(pins), path, fetch: undefined }
+    : await uploadedSnapshot(env.snapshotId, pins);
+  const pin = source.pin;
   // The Python set the capture installed must be the one an install
   // would get now, as for a stored layer (src/python_layer.ts): asked
   // before anything is downloaded (liveLayerKey's own bound, 20 s).
@@ -452,9 +461,9 @@ export async function restoreSnapshot(
   // the restore copied it: a fallback boot must not run beside it.
   let image: SandboxSealImage | undefined = await decodeSandboxSnapshot(
     await fetchVerifiedSnapshot(
-      path,
+      source.path,
       pin,
-      undefined,
+      source.fetch,
       (loaded, total) =>
         env.show(
           `loading snapshot ${(loaded / MIB).toFixed(1)} of ${

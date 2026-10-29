@@ -72,24 +72,38 @@ export function pinnedSnapshot(pins: Pins): SnapshotPin {
   if (pins.snapshot === undefined) {
     throw new SnapshotMismatch("the site pins no sandbox snapshot");
   }
+  return acceptedSnapshot(pins.snapshot, pins);
+}
+
+/** A snapshot entry (the pin's shape: `?snapshot=1`'s pin, or an uploaded
+ * snapshot's manifest, src/snapshot_source.ts) when it is well formed, of
+ * this page's format and built from `pins`; else {@link SnapshotMismatch},
+ * its message starting with `what`. */
+export function acceptedSnapshot(
+  entry: unknown,
+  pins: Pins,
+  what = "pinned snapshot",
+): SnapshotPin {
   let pin: SnapshotPin;
   try {
-    pin = parseSnapshotPin(pins.snapshot);
+    pin = parseSnapshotPin(entry);
   } catch (error) {
     throw new SnapshotMismatch(
-      `the pinned snapshot entry is malformed: ${
+      `the ${what} entry is malformed: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
   }
   if (pin.format !== FORMAT) {
     throw new SnapshotMismatch(
-      `the pinned snapshot is format ${pin.format}, not ${FORMAT}`,
+      `the ${what} is format ${pin.format}, not ${FORMAT}`,
     );
   }
   const why = mismatch(pin.builtFrom, snapshotIdentity(pins));
   if (why !== undefined) {
-    throw new SnapshotMismatch(`pinned ${why.replace(/^sandbox /, "")}`);
+    throw new SnapshotMismatch(
+      `${what} ${why.replace(/^sandbox snapshot /, "")}`,
+    );
   }
   return pin;
 }
