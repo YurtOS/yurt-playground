@@ -43,7 +43,12 @@ import type {
 } from "./jupyter_transport.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
-import { type InstalledReport, installedReporter } from "./installed_list.ts";
+import {
+  type InstalledRelease,
+  installedReleases,
+  type InstalledReport,
+  installedReporter,
+} from "./installed_list.ts";
 import {
   browserArchiveCache,
   installPackage,
@@ -87,9 +92,10 @@ type ToWorker =
     // browser refuses first (iPadOS stopped spawning after ~13 processes
     // while Jupyter started), so it is never launched there.
     noJupyter?: boolean;
-    // The slim image: the Python set to install when the image has no
-    // python3, before ipykernel -- the newest complete one in the live
-    // signed index (src/python_install.ts). Absent, such an image is
+    // The slim image: the Python set to install when the image lacks it
+    // (src/coordinator_start.ts), before ipykernel -- the newest complete
+    // one in the live signed index, or the one at the build of the python
+    // the image ships (src/python_install.ts). Absent, such an image is
     // reported as `python-missing`, as before.
     python?: PythonRequest;
     // A tablet or phone: installs over 16 MiB are refused there.
@@ -280,7 +286,7 @@ async function serveYurt(msg: ToWorker): Promise<void> {
   }
 }
 let kernelPorts: KernelPorts | undefined;
-/** The image has no python3 (src/coordinator_start.ts): a restart the
+/** The image has no Python set (src/coordinator_start.ts): a restart the
  * frontend asks for gets the same answer, not "Jupyter is not ready". */
 let pythonMissing = false;
 /** Restarts and installs run one at a time; a restart during the boot's
@@ -316,7 +322,12 @@ function dropLayerIfKernelFailed(report: StartReport): void {
   }
 }
 
-type PythonRequest = { label: string; set: string[]; image?: string };
+type PythonRequest = {
+  label: string;
+  set: string[];
+  image?: string;
+  installed?: InstalledRelease[];
+};
 
 /** `?snapshot=capture`: precompile the installed Python, seal the
  * sandbox (no process left in it) and hand the snapshot file to the page,
@@ -625,8 +636,15 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
             pristine,
             liveKey: () => live.layerKey(),
             install: async (between) => {
+              // What pkg already has here pins the set (python, in a slim
+              // image that ships it): the sandbox's own list, read now,
+              // over what the pins say the image ships.
+              const have = await installedReleases(session.files);
               between.before();
-              await installPackage(python, {
+              await installPackage({
+                ...python,
+                installed: have ?? python.installed,
+              }, {
                 host: workerPackageHost(session),
                 tablet,
                 progress,

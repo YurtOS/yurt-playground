@@ -11,11 +11,14 @@ export type Pins = {
   /** The full image: the desktop app, the CLI, and (on a site with no
    * slim pin) the suspend/resume kernel's standard library. */
   image: ArtifactPin;
-  /** The slim image the browser boots: no Python, no Node. Absent, the
-   * browser boots `image`, as before. Its pages install Python from the
-   * live signed repository (src/python_install.ts): packages are not
-   * pinned here. */
-  browserImage?: ArtifactPin;
+  /** The slim image the browser boots: no Node, and no Python set. Absent,
+   * the browser boots `image`, as before. Its pages install the Python set
+   * from the live signed repository (src/python_install.ts): packages are
+   * not pinned here. `python` is the python package the image itself
+   * ships, from its pkg installed list (scripts/release-playground.sh);
+   * absent, it ships none. pkg never replaces it, so the set installed
+   * beside it is the one at its build. */
+  browserImage?: ArtifactPin & { python?: { version: string; build: string } };
   /** The train's sealable CPython (the notebook kernel's interpreter),
    * built with the Python set it belongs to: what names that set here. */
   pythonSeal?: { sha256: string };
@@ -142,6 +145,20 @@ export function parsePins(raw: unknown): Pins {
   };
   if (value.browserImage !== undefined) {
     pins.browserImage = parsePin(value.browserImage, "browserImage");
+    const python = (value.browserImage as { python?: unknown }).python;
+    if (python !== undefined) {
+      const { version, build } = (python ?? {}) as Record<string, unknown>;
+      if (
+        typeof version !== "string" || version === "" ||
+        typeof build !== "string" || !/^yurt_\d+$/.test(build)
+      ) {
+        throw new PinResolutionError(
+          "browserImage.python must be {version, build: yurt_N}",
+          1,
+        );
+      }
+      pins.browserImage.python = { version, build };
+    }
   }
   // Read only for a snapshot's identity: an entry of another shape is
   // left out (the identity then names none, and no snapshot matches it)

@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   FRESH_SANDBOX,
   freshSandboxFailed,
@@ -6,6 +6,7 @@ import {
   INSTALLED_LIST_PATH,
   installedMarks,
   installedNames,
+  installedReleases,
   installedReport,
   installedReporter,
   type SandboxFiles,
@@ -366,4 +367,33 @@ Deno.test("the note's line stays in the accessibility tree when empty", () => {
     assert(!/display:\s*none|visibility:\s*hidden/.test(rule), rule);
   }
   assert(rules.some((rule) => /margin:\s*0\b/.test(rule)));
+});
+
+Deno.test("the sandbox's installed releases, for pinning a set to what pkg already has", async () => {
+  const files = (list?: string): SandboxFiles => ({
+    readWhole: () =>
+      Promise.resolve(
+        list === undefined ? undefined : new TextEncoder().encode(list),
+      ),
+    exists: () => Promise.resolve(false),
+  });
+  assertEquals(
+    await installedReleases(
+      files("ca-certificates\t2026.9.25\tyurt_0\npython\t3.14.7\tyurt_0\n"),
+    ),
+    [
+      { name: "ca-certificates", version: "2026.9.25", build: "yurt_0" },
+      { name: "python", version: "3.14.7", build: "yurt_0" },
+    ],
+  );
+  // No list: nothing installed.
+  assertEquals(await installedReleases(files()), []);
+  // No files of the page's own (the desktop app): cannot tell.
+  assertEquals(await installedReleases(undefined), undefined);
+  // A broken list is said, not taken for nothing installed.
+  await assertRejects(
+    () => installedReleases(files("python 3.14.7\n")),
+    Error,
+    "NAME<TAB>VERSION<TAB>BUILD",
+  );
 });

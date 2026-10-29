@@ -43,10 +43,31 @@ export function freshSandboxFailed(why: string): InstalledReport {
   };
 }
 
+/** One installed release, as pkg's list names it. */
+export type InstalledRelease = { name: string; version: string; build: string };
+
 /** The package names in an installed list. A line that is not three
  * tab-separated fields, or has no name, or a list that is not UTF-8, is a
  * broken list, and throws. */
 export function installedNames(bytes: Uint8Array): string[] {
+  return parseInstalledList(bytes).map((release) => release.name);
+}
+
+/** What pkg has installed in a sandbox, release by release: pkg never
+ * replaces an installed package, so a set installed beside one must hold
+ * that exact release (src/packages.ts `resolveSet`). `[]` when there is no
+ * list (nothing installed), `undefined` when the page has no `files` of
+ * its own (the desktop app's session); a list that cannot be read, or is
+ * broken, rejects. */
+export async function installedReleases(
+  files: SandboxFiles | undefined,
+): Promise<InstalledRelease[] | undefined> {
+  if (files === undefined) return undefined;
+  const list = await files.readWhole(INSTALLED_LIST_PATH);
+  return list === undefined ? [] : parseInstalledList(list);
+}
+
+function parseInstalledList(bytes: Uint8Array): InstalledRelease[] {
   let list: string;
   try {
     list = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -63,7 +84,7 @@ export function installedNames(bytes: Uint8Array): string[] {
         `pkg's installed list: line ${i + 1} is not NAME<TAB>VERSION<TAB>BUILD`,
       );
     }
-    return fields[0];
+    return { name: fields[0], version: fields[1], build: fields[2] };
   });
 }
 
