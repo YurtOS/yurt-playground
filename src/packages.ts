@@ -399,6 +399,16 @@ export type PackageHost = {
    * without the guest's help). Without it nothing can tell a long run
    * from a hung one, so the no-progress check pauses during runs. */
   observesProgress?: boolean;
+  /** Run `pkg recover` in the guest, watched like a run: what finishes, or
+   * retries, a transaction a run the install gave up on left unfinished
+   * (pkg writes each file private first and sets its mode in a later
+   * pass, so such a transaction can leave a python3 nobody may run). pkg
+   * waits for the lock while that run is still going. Absent: no
+   * recovery, and a run given up on is said to leave a sandbox that
+   * takes no more installs. */
+  recover?(
+    watch: RunWatch,
+  ): Promise<{ code: number | null; stdout: string; stderr: string }>;
 };
 
 /** How an install follows one `pkg` run: `alive` at least every few
@@ -417,9 +427,20 @@ export const INSTALL_STALL_MS = 60_000;
 /** The longest one guest `pkg` run may take, heartbeat or not: the
  * backstop for a `pkg` that is alive but blocked, which keeps the
  * heartbeat going (src/session_packages.ts `withHeartbeat`) and shows no
- * other sign. Python's install run takes about a minute, 80-90 s on a
- * loaded host; this is several times that. */
-export const INSTALL_RUN_CEILING_MS = 300_000;
+ * other sign. Wall time, with room for a tab the browser slows down. In
+ * desktop Safari 27 on an M-series Mac, Python's install run took
+ * 136-157 s with the window in front and 538 s with it minimized
+ * (hidden, as on a locked screen); twenty minutes is more than twice
+ * that. Guest time is no better a measure: the guest's clock and its
+ * `sleep` follow the host's monotonic clock, so the hidden tab still beat
+ * every 2.4 s while pkg ran at under a third of its speed. A sandbox that
+ * stopped is caught by {@link INSTALL_STALL_MS} long before this. */
+export const INSTALL_RUN_CEILING_MS = 20 * 60_000;
+
+/** How often a watched run's status says how long it has been going:
+ * the page's own silence deadline (src/install_request.ts
+ * `INSTALL_SILENCE_MS`) hears from a run that is still working. */
+export const PROGRESS_EVERY_MS = 5000;
 
 /** An install that stopped making progress ({@link INSTALL_STALL_MS}).
  * `inSandbox`: it stopped in the guest's `pkg` run, so the sandbox may no
@@ -427,6 +448,17 @@ export const INSTALL_RUN_CEILING_MS = 300_000;
  * download, and the sandbox is as it was. */
 export class InstallStalled extends Error {
   readonly inSandbox: boolean;
+  /** The run went past {@link INSTALL_RUN_CEILING_MS}, still beating: its
+   * `pkg` is alive, and holds pkg's lock. */
+  readonly ceiling: boolean;
+  /** For a stall in the sandbox, once recovery was tried: whether `pkg
+   * recover` then left none of pkg's transactions unfinished, finishing
+   * any it found. It says nothing more about the install: recovery may
+   * have committed it, or the abandoned run may yet do more. `false`: the
+   * sandbox may hold a half-installed package, and needs a fresh one. */
+  recovered?: boolean;
+  /** Whether `pkg recover` was run at all (set with `recovered`). */
+  recoveryRan?: boolean;
   constructor(
     name: string,
     ms: number,
@@ -437,7 +469,7 @@ export class InstallStalled extends Error {
     const seconds = Math.round(ms / 1000);
     super(
       ceiling
-        ? `${name}: the install stopped making progress (the sandbox ` +
+        ? `${name}: the install ran past its time limit (the sandbox ` +
           `did not finish it in ${seconds} s)`
         : inSandbox
         ? `${name}: the install stopped making progress (the sandbox's ` +
@@ -447,6 +479,130 @@ export class InstallStalled extends Error {
     );
     this.name = "InstallStalled";
     this.inSandbox = inSandbox;
+    this.ceiling = ceiling;
+  }
+
+  /** The same stall, with what recovery made of it. `ran: false`: no
+   * recovery was run (`why` says why), so nothing was recovered. */
+  withRecovery(recovered: boolean, why = "", ran = true): InstallStalled {
+    const error = new InstallStalled("", 0, this.inSandbox, this.ceiling);
+    const said = why === "" ? "" : ` (${why})`;
+    // The next try needs a fresh sandbox: the Python install's Try again
+    // starts one, and the Packages panel's reply adds that a reload gives
+    // one (src/coordinator_worker.ts `servePackages`).
+    const noMore = ", so this sandbox may hold a half-installed package " +
+      "and takes no more installs";
+    error.message = !ran
+      ? `${this.message}; pkg recover was not run${said}${noMore}`
+      : recovered
+      ? `${this.message}; pkg recover then left none of pkg's ` +
+        `transactions unfinished, but the page did not see the install ` +
+        `finish, so this sandbox takes no more installs`
+      : `${this.message}; pkg recover could not finish what it left ` +
+        `unfinished${said}${noMore}`;
+    error.recovered = ran && recovered;
+    error.recoveryRan = ran;
+    return error;
+  }
+}
+
+/** Why a sandbox takes no more installs after `error`, a stall in its
+ * `pkg` run: said with "in this sandbox, so it installs nothing more;
+ * reload the page" after it (src/coordinator_worker.ts). */
+export function stalledSandboxWhy(error: InstallStalled): string {
+  if (error.ceiling) {
+    return "an earlier install was still running past its time limit, " +
+      "so a package may be half installed";
+  }
+  if (error.recovered !== false) {
+    return "an earlier install stopped making progress";
+  }
+  return error.recoveryRan === false
+    ? "an earlier install stopped part way, so a package may be half " +
+      "installed"
+    : "an earlier install stopped part way and pkg recover could not " +
+      "finish it, so a package may be half installed";
+}
+
+/** `pkg recover` after a run the install gave up on, watched like a run:
+ * no progress for `stallMs`, or running longer than `ceilingMs`, gives up
+ * on it too. While it beats, `status` is said with its seconds every
+ * `everyMs`, as a run's is, so the page's own silence deadline
+ * (src/install_request.ts) hears from it. Whether it finished, and if
+ * not, why. */
+async function recoverStalled(
+  recover: NonNullable<PackageHost["recover"]>,
+  limits: { stallMs: number; ceilingMs: number; everyMs: number },
+  status: string,
+  progress: (message: string) => void,
+): Promise<{ recovered: boolean; why: string }> {
+  const { stallMs, ceilingMs, everyMs } = limits;
+  const giveUp = new AbortController();
+  const started = Date.now();
+  let last = started;
+  let shown = started;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stopped = new Promise<string>((resolve) => {
+    // Said before the abort, which makes the recovery reject at once: the
+    // race then answers with why the install gave up on it.
+    const stop = (why: string) => {
+      resolve(why);
+      giveUp.abort();
+    };
+    const check = () => {
+      const now = Date.now();
+      // Silence first: a late timer that finds both limits passed has a
+      // recovery that stopped beating, not one still at work.
+      const idle = now - last;
+      if (idle >= stallMs) {
+        return stop(`it did nothing for ${Math.round(idle / 1000)} s`);
+      }
+      if (now - started >= ceilingMs) {
+        return stop(`it did not finish in ${Math.round(ceilingMs / 1000)} s`);
+      }
+      timer = setTimeout(
+        check,
+        Math.max(Math.min(stallMs - idle, ceilingMs - (now - started)), 10),
+      );
+    };
+    timer = setTimeout(check, Math.min(stallMs, ceilingMs));
+  });
+  try {
+    const outcome = await Promise.race([
+      recover({
+        alive: () => {
+          const now = Date.now();
+          last = now;
+          if (!giveUp.signal.aborted && now - shown >= everyMs) {
+            shown = now;
+            progress(`${status} (${Math.round((now - started) / 1000)} s)`);
+          }
+        },
+        signal: giveUp.signal,
+      }),
+      stopped,
+    ]);
+    if (typeof outcome === "string") return { recovered: false, why: outcome };
+    if (outcome.code === 0) return { recovered: true, why: "" };
+    const said = `${outcome.stdout}\n${outcome.stderr}`.trim().split("\n").at(
+      -1,
+    );
+    return {
+      recovered: false,
+      why: said !== undefined && said !== ""
+        ? said
+        : outcome.code === null
+        ? "it was killed by a signal"
+        : `exit ${outcome.code}`,
+    };
+  } catch (error) {
+    return {
+      recovered: false,
+      why: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timer);
+    giveUp.abort();
   }
 }
 
@@ -877,10 +1033,16 @@ export async function installPackage(
   let check = () => {};
   const stalled = new Promise<never>((_, reject) => {
     check = () => {
+      if (giveUp.signal.aborted) return;
       const now = Date.now();
       const idle = now - last;
       const running = runStarted === undefined ? 0 : now - runStarted;
-      if (runStarted !== undefined && running >= ceilingMs) {
+      // Past the ceiling and still heard from: a live run. A run also
+      // silent for the stall window (a late timer sees both at once) is a
+      // stall like any other, which recovery may help.
+      if (
+        runStarted !== undefined && running >= ceilingMs && idle < stallMs
+      ) {
         giveUp.abort();
         reject(new InstallStalled(name, ceilingMs, true, true));
         return;
@@ -945,6 +1107,40 @@ export async function installPackage(
       }, watcher),
       stalled,
     ]);
+  } catch (error) {
+    // The page gave up on a guest `pkg` run, which may have stopped
+    // between writing files and setting their modes: let pkg finish or
+    // retry that transaction before the failure is said, so nothing is
+    // left half installed and looking installed.
+    if (!(error instanceof InstallStalled) || !error.inSandbox) throw error;
+    // A sandbox thrown away after this install has nothing to recover.
+    if (options.recoverAfterStall === false) throw error;
+    if (options.host.recover === undefined) {
+      throw error.withRecovery(false, "this sandbox cannot run it", false);
+    }
+    // A run past the ceiling is still beating: its pkg is alive and holds
+    // pkg's lock, which `pkg recover` would wait on -- beating, so for
+    // another whole ceiling -- before it could do anything.
+    if (error.ceiling) {
+      throw error.withRecovery(
+        false,
+        "the run is still going, and holds pkg's lock",
+        false,
+      );
+    }
+    const status = `${name}: running pkg recover after the stopped install`;
+    options.progress(status);
+    const { recovered, why } = await recoverStalled(
+      options.host.recover,
+      {
+        stallMs,
+        ceilingMs,
+        everyMs: options.progressEveryMs ?? PROGRESS_EVERY_MS,
+      },
+      status,
+      options.progress,
+    );
+    throw error.withRecovery(recovered, why);
   } finally {
     clearTimeout(timer);
   }
@@ -964,6 +1160,12 @@ type InstallOptions = {
   /** Told the exact releases a set or pinned list resolved to, from the
    * install's own index read: what this install puts in the sandbox. */
   resolved?: (releases: readonly PinnedRelease[]) => void;
+  /** {@link PROGRESS_EVERY_MS}; shorter in tests. */
+  progressEveryMs?: number;
+  /** `false` for a sandbox that is thrown away after the install (the
+   * Suspend/Resume check): a stall then runs no `pkg recover`, and its
+   * error is the stall alone. */
+  recoverAfterStall?: boolean;
 };
 
 type InstallWatcher = {
@@ -1083,12 +1285,13 @@ async function installWatched(
     }
     const started = Date.now();
     let shown = started;
+    const progressEveryMs = options.progressEveryMs ?? PROGRESS_EVERY_MS;
     return watcher.watched(() =>
       host.stageAndRun(files, script, {
         alive: () => {
           watcher.touch();
           const now = Date.now();
-          if (now - shown >= 5000) {
+          if (now - shown >= progressEveryMs) {
             shown = now;
             progress(`${status} (${Math.round((now - started) / 1000)} s)`);
           }

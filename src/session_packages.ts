@@ -79,6 +79,15 @@ export function withHeartbeat(
   ].join("\n");
 }
 
+/** The script that runs `command` (`pkg recover`) under the heartbeat.
+ * Not the command alone: `sh -c` with one simple command execs it in the
+ * shell's place, and the heartbeat then sees the shell with no child and
+ * never beats (a recovery waiting on pkg's lock would look stopped). The
+ * `exit` after it, a builtin, keeps the shell waiting on it. */
+export function recoverScript(command = "sudo pkg recover"): string {
+  return `${command}; exit $?`;
+}
+
 /** `bytes` without the heartbeat's byte. */
 function withoutBeats(bytes: Uint8Array): Uint8Array {
   return bytes.includes(HEARTBEAT_BYTE)
@@ -95,6 +104,9 @@ export async function runStaged(
   script: string,
   watch?: RunWatch,
   pollMs = HEARTBEAT_SECONDS * 1000,
+  /** Remove {@link STAGING_DIR} after the run. Not for `pkg recover`: a
+   * run given up on may still be reading its staged copy. */
+  cleanUp = true,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   if (session.process === undefined || session.writeFiles === undefined) {
     throw new Error("this sandbox does not install packages");
@@ -173,7 +185,7 @@ export async function runStaged(
     // happened. Before returning: the next run stages at the same path.
     // Best effort. Not for a run given up on: its sandbox may not run
     // anything, and the copy goes with it (the next try is in a fresh one).
-    if (!abandoned) {
+    if (!abandoned && cleanUp) {
       await run(`sudo rm -rf ${quoted(STAGING_DIR)}`).then((p) => p.exited)
         .catch(() => {});
     }
@@ -199,6 +211,12 @@ export function workerPackageHost(session: BootedSession): PackageHost {
     },
     stageAndRun: (files, script, watch) =>
       runStaged(session, files, script, watch),
+    // Nothing staged, and so nothing to remove: `pkg recover` reads only
+    // its own state (the transaction's staging tree under
+    // /var/lib/yurt-pkg). It waits for pkg's lock while a run the install
+    // gave up on still holds it.
+    recover: (watch) =>
+      runStaged(session, [], recoverScript(), watch, undefined, false),
     // The in-tab session's processes can be read while they run.
     observesProgress: session.process !== undefined,
   };

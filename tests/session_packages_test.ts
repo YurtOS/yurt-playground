@@ -1,8 +1,11 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import {
+  type BootedSession,
   HEARTBEAT,
+  recoverScript,
   runStaged,
   withHeartbeat,
+  workerPackageHost,
 } from "../src/session_packages.ts";
 import { STAGING_DIR } from "../src/packages.ts";
 import type { SpawnedProcess } from "../src/executions.ts";
@@ -230,4 +233,38 @@ Deno.test("a run the install gave up on stops being watched", async () => {
   // Deno's leak check fails the test if the poll were still running; and
   // no cleanup is spawned into a sandbox that may not run it.
   assertEquals(lines.length, 1);
+});
+
+Deno.test("the worker's host runs pkg recover as root, watched, staging nothing", async () => {
+  const { session, lines } = fakeSession([
+    { stderr: HEARTBEAT },
+    { stdout: "recovered 0001\n" },
+  ], 10);
+  const host = workerPackageHost(session as unknown as BootedSession);
+  const result = await host.recover!({
+    alive: () => {},
+    signal: new AbortController().signal,
+  });
+  // The beats are not its output; it runs with the heartbeat (watched),
+  // and no clean-up of the staging copy follows it.
+  assertEquals(result, { code: 0, stdout: "recovered 0001\n", stderr: "" });
+  assertEquals(lines, [
+    `exec /bin/sh -c '${
+      withHeartbeat(recoverScript()).replaceAll("'", "'\\''")
+    }'`,
+  ]);
+});
+
+Deno.test("pkg recover alone gives the heartbeat no child to see; in a shell that waits on it, it beats", async () => {
+  // The guest's BusyBox ash, given `sh -c` with one simple command, execs
+  // it in place of the shell, which then has no child: the loop beats
+  // nothing, and a recovery waiting on pkg's lock would look stopped.
+  // Host shells differ (Ubuntu's dash keeps the shell here), so the lone
+  // case says `exec` itself. The recovery's script keeps the shell on
+  // any of them: its last command is the `exit` builtin.
+  const lone = await hostHeartbeat("exec sleep 1.2", [1000]);
+  assertEquals(lone.beats[0], 0, `beats ${lone.beats}`);
+  const kept = await hostHeartbeat(recoverScript("sleep 1.2"), [1000]);
+  assertEquals(kept.beats[0] >= 3, true, `beats ${kept.beats}`);
+  assertEquals(recoverScript(), "sudo pkg recover; exit $?");
 });

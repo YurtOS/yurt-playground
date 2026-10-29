@@ -11,6 +11,8 @@ import {
   type Catalog,
   type Fetcher,
   fetchWithProgress,
+  INSTALL_RUN_CEILING_MS,
+  INSTALL_STALL_MS,
   installPackage,
   installScript,
   InstallStalled,
@@ -31,6 +33,7 @@ import {
   sizeRefusal,
   type StagedFile,
   STAGING_DIR,
+  stalledSandboxWhy,
   TABLET_MAX_BYTES,
 } from "../src/packages.ts";
 
@@ -428,10 +431,12 @@ Deno.test("an install whose sandbox stops answering fails as stalled, not foreve
       }),
     InstallStalled,
   );
+  // A host that cannot run pkg recover: the sandbox needs a reload.
   assertEquals(
     error.message,
-    "greet: the install stopped making progress (the sandbox's pkg did nothing for 0 s)",
+    "greet: the install stopped making progress (the sandbox's pkg did nothing for 0 s); pkg recover was not run (this sandbox cannot run it), so this sandbox may hold a half-installed package and takes no more installs",
   );
+  assertEquals(error.recovered, false);
   // In the guest's run: the retry needs a fresh sandbox.
   assertEquals(error.inSandbox, true);
   // It gave up at the stall, and told the host to stop watching the run.
@@ -513,9 +518,9 @@ Deno.test("a run that beats but never finishes ends at the ceiling", async () =>
     InstallStalled,
   );
   assertEquals(error.inSandbox, true);
-  assertEquals(
+  assertStringIncludes(
     error.message,
-    "greet: the install stopped making progress (the sandbox did not finish it in 0 s)",
+    "greet: the install ran past its time limit (the sandbox did not finish it in 0 s)",
   );
   assertEquals(aborted, [false, true]);
 });
@@ -1346,6 +1351,373 @@ Deno.test("a set's install says which releases its own index read resolved to", 
       resolved.push(releases.map((r) => `${r.name}@${r.version}-${r.build}`)),
   });
   assertEquals(resolved, [["greet@0.1.0-yurt_0"]]);
+});
+
+Deno.test("the run ceiling leaves a slowed tab's run room: twenty minutes", () => {
+  // Hidden desktop Safari ran Python's install run in 538 s, past the old
+  // five minutes, while pkg was still working; the no-progress check
+  // stays the fast guard against a sandbox that stopped.
+  assertEquals(INSTALL_RUN_CEILING_MS, 20 * 60_000);
+  assertEquals(INSTALL_STALL_MS, 60_000);
+});
+
+/** `watchedHost`, with pkg's recovery answering `recover` (or hanging). */
+function recoveringHost(
+  runs: Parameters<typeof watchedHost>[0],
+  recover:
+    | { code: number; stdout: string; stderr: string }
+    | "hang"
+    // Beats every `everyMs`, `beats` times (or forever), then answers.
+    | { beats: number; everyMs: number; result: typeof PLAN },
+) {
+  const watched = watchedHost(runs);
+  const events: string[] = [];
+  const host: PackageHost = {
+    ...watched.host,
+    stageAndRun: (files, script, watch) => {
+      events.push("run");
+      watch?.signal.addEventListener("abort", () => events.push("abort"));
+      return watched.host.stageAndRun(files, script, watch);
+    },
+    recover: (watch) => {
+      events.push("recover");
+      if (recover !== "hang" && "code" in recover) {
+        return Promise.resolve(recover);
+      }
+      return new Promise((resolve, reject) => {
+        let beaten = 0;
+        const timer = recover === "hang" ? undefined : setInterval(() => {
+          if (beaten++ < recover.beats) return watch.alive();
+          clearInterval(timer);
+          resolve(recover.result);
+        }, recover.everyMs);
+        watch.signal.addEventListener("abort", () => {
+          clearInterval(timer);
+          reject(new Error("stopped watching"));
+        });
+      });
+    },
+  };
+  return { host, events };
+}
+
+Deno.test("a run past the ceiling, still beating, runs no recovery: it would wait on pkg's lock", async () => {
+  // The run's pkg is alive and holds pkg's lock; pkg recover would wait
+  // for it, beating, for another whole ceiling.
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, events } = recoveringHost([
+    { beats: 0, everyMs: 5, result: PLAN },
+    { beats: 100, everyMs: 10, result: INSTALLED },
+  ], { code: 0, stdout: "", stderr: "" });
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+        runCeilingMs: 300,
+      }),
+    InstallStalled,
+  );
+  assertEquals(events.includes("recover"), false);
+  assertEquals(error.ceiling, true);
+  assertEquals(error.recovered, false);
+  assertStringIncludes(error.message, "did not finish it in 0 s");
+  assertStringIncludes(error.message, "holds pkg's lock");
+  // It says recovery was not run, not that it ran and failed.
+  assertStringIncludes(error.message, "pkg recover was not run");
+  assertEquals(error.recoveryRan, false);
+  assertStringIncludes(stalledSandboxWhy(error), "past its time limit");
+  assertStringIncludes(error.message, "takes no more installs");
+});
+
+const HUNG_RUN = [
+  { beats: 0, everyMs: 5, result: PLAN },
+  { beats: Infinity, everyMs: 5, result: INSTALLED },
+];
+
+Deno.test("a silent recovery past both limits did nothing; a failed one's reason is its last line", async () => {
+  // A late timer can find both limits passed at once (equal here): a
+  // recovery that went silent did nothing, whatever the clock says.
+  {
+    const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+    const { host } = recoveringHost(HUNG_RUN, "hang");
+    const error = await assertRejects(
+      () =>
+        installPackage("greet", {
+          host,
+          tablet: false,
+          fetcher,
+          progress: () => {},
+          stallMs: 100,
+          runCeilingMs: 100,
+        }),
+      InstallStalled,
+    );
+    assertStringIncludes(error.message, "(it did nothing for 0 s)");
+  }
+  // stdout without a final newline does not run into stderr.
+  {
+    const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+    const { host } = recoveringHost(HUNG_RUN, {
+      code: 1,
+      stdout: "recovering 0001",
+      stderr: "Error: recovery incomplete\n",
+    });
+    const error = await assertRejects(
+      () =>
+        installPackage("greet", {
+          host,
+          tablet: false,
+          fetcher,
+          progress: () => {},
+          stallMs: 100,
+        }),
+      InstallStalled,
+    );
+    assertStringIncludes(error.message, "(Error: recovery incomplete)");
+  }
+});
+
+Deno.test("a run silent for the stall window when the ceiling also passes is a stall, and recovery runs", async () => {
+  // A late timer can find both limits passed at once (here they are
+  // equal): a silent run is no live pkg holding the lock, so it is
+  // treated as a stall, and pkg recover runs.
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, events } = recoveringHost(HUNG_RUN, {
+    code: 0,
+    stdout: "",
+    stderr: "",
+  });
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+        runCeilingMs: 100,
+      }),
+    InstallStalled,
+  );
+  assertEquals(error.ceiling, false);
+  assertEquals(events.includes("recover"), true);
+  assertEquals(error.recovered, true);
+});
+
+Deno.test("a sandbox thrown away after the install runs no recovery after a stall", async () => {
+  // The Suspend/Resume check's sandbox goes when the check ends: there is
+  // nothing to recover, and nothing for a reload to fix.
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, events } = recoveringHost(HUNG_RUN, {
+    code: 0,
+    stdout: "",
+    stderr: "",
+  });
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+        recoverAfterStall: false,
+      }),
+    InstallStalled,
+  );
+  assertEquals(events.includes("recover"), false);
+  assertEquals(error.recovered, undefined);
+  assertEquals(
+    error.message,
+    "greet: the install stopped making progress (the sandbox's pkg did nothing for 0 s)",
+  );
+});
+
+Deno.test("a recovery killed by a signal, saying nothing, says so", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host } = recoveringHost(HUNG_RUN, {
+    code: null as unknown as number,
+    stdout: "",
+    stderr: "",
+  });
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+      }),
+    InstallStalled,
+  );
+  assertEquals(error.recovered, false);
+  assertStringIncludes(error.message, "(it was killed by a signal)");
+});
+
+Deno.test("after the page gives up on a pkg run, pkg recover runs before the failure is said", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, events } = recoveringHost(HUNG_RUN, {
+    code: 0,
+    stdout: "",
+    stderr: "",
+  });
+  const messages: string[] = [];
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: (m) => messages.push(m),
+        stallMs: 100,
+      }),
+    InstallStalled,
+  );
+  // The run is given up on (every run's listener hears it), then pkg
+  // recover runs, then the failure is said.
+  assertEquals(events.filter((e) => e !== "abort"), ["run", "run", "recover"]);
+  assertEquals(events.indexOf("abort") < events.indexOf("recover"), true);
+  assertEquals(error.inSandbox, true);
+  assertEquals(error.recovered, true);
+  assertStringIncludes(error.message, "pkg recover");
+  // Recovery speaks for pkg's transactions only: the install itself did
+  // not complete.
+  assertStringIncludes(
+    error.message,
+    "pkg recover then left none of pkg's transactions unfinished, but the page did not see the install finish, so this sandbox takes no more installs",
+  );
+  assertStringIncludes(messages.at(-1)!, "pkg recover");
+});
+
+Deno.test("a recovery that fails or stops making progress says the sandbox takes no more installs", async () => {
+  for (
+    const recover of [
+      { code: 1, stdout: "", stderr: "recovery incomplete" },
+      "hang" as const,
+    ]
+  ) {
+    const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+    const { host, events } = recoveringHost(HUNG_RUN, recover);
+    const error = await assertRejects(
+      () =>
+        installPackage("greet", {
+          host,
+          tablet: false,
+          fetcher,
+          progress: () => {},
+          stallMs: 100,
+        }),
+      InstallStalled,
+    );
+    assertEquals(events.at(-1), "recover", JSON.stringify(recover));
+    assertEquals(error.recovered, false);
+    assertStringIncludes(error.message, "half-installed");
+    assertStringIncludes(error.message, "takes no more installs");
+  }
+});
+
+Deno.test("a download that stalls runs no recovery: pkg never started", async () => {
+  const archive = new Uint8Array([1, 2, 3]);
+  const repo = await fakeRepo(archive);
+  const fetcher: Fetcher = (url) =>
+    url.endsWith(".yurtpkg")
+      ? new Promise((resolve) => setTimeout(() => resolve(repo(url)), 300))
+      : repo(url);
+  const { host, events } = recoveringHost([
+    { beats: 0, everyMs: 5, result: PLAN },
+  ], { code: 0, stdout: "", stderr: "" });
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+      }),
+    InstallStalled,
+  );
+  assertEquals(error.inSandbox, false);
+  assertEquals(events.includes("recover"), false);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+});
+
+Deno.test("a sandbox whose stalled install pkg could not recover says a package may be half installed", () => {
+  const stall = new InstallStalled("greet", 60_000, true);
+  assertStringIncludes(
+    stalledSandboxWhy(stall.withRecovery(false, "exit 1")),
+    "half installed",
+  );
+  assertEquals(
+    stalledSandboxWhy(stall.withRecovery(false, "cannot", false)),
+    "an earlier install stopped part way, so a package may be half installed",
+  );
+  assertEquals(
+    stalledSandboxWhy(stall.withRecovery(true)),
+    "an earlier install stopped making progress",
+  );
+});
+
+Deno.test("a live recovery keeps telling the page it is still going", async () => {
+  // The page's own silence deadline (src/install_request.ts) must not fire
+  // while pkg recover waits on a lock, beating.
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host } = recoveringHost(HUNG_RUN, {
+    beats: 20,
+    everyMs: 20,
+    result: { code: 0, stdout: "", stderr: "" },
+  });
+  const messages: string[] = [];
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: (m) => messages.push(m),
+        stallMs: 100,
+        progressEveryMs: 100,
+      }),
+    InstallStalled,
+  );
+  assertEquals(error.recovered, true);
+  const ticks = messages.filter((m) =>
+    /^greet: running pkg recover after the stopped install \(\d+ s\)$/.test(m)
+  );
+  assertEquals(ticks.length >= 2, true, JSON.stringify(messages));
+});
+
+Deno.test("a recovery that keeps beating past the ceiling is given up on", async () => {
+  // A pkg recover alive but blocked keeps the heartbeat going; the run
+  // ceiling ends it too. It does answer, much later (3 s): a missing
+  // ceiling then says it recovered, rather than hanging the test.
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host } = recoveringHost(HUNG_RUN, {
+    beats: 300,
+    everyMs: 10,
+    result: { code: 0, stdout: "", stderr: "" },
+  });
+  const started = Date.now();
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+        runCeilingMs: 300,
+      }),
+    InstallStalled,
+  );
+  assertEquals(error.recovered, false);
+  assertStringIncludes(error.message, "it did not finish in 0 s");
+  assertEquals(Date.now() - started < 3000, true);
 });
 
 /** The slim image's python, from pkg's installed list: pkg never replaces
