@@ -15,6 +15,11 @@ import {
 import { mountAgentPane } from "./agent_pane.ts";
 import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
+  finishCapture,
+  markBootEnded,
+  saveDownload,
+} from "./capture_outcome.ts";
+import {
   catalogRows,
   formatBytes,
   loadCatalog,
@@ -51,6 +56,7 @@ type FromWorker =
   | { type: "pkg-progress"; req: number; text: string }
   | { type: "pkg-installed"; names: string[] }
   | { type: "pkg-installed"; error: string }
+  | { type: "snapshot-captured"; blob: Blob; ms: number }
   | {
     type: "yurt-reply" | "pkg-reply";
     req: number;
@@ -251,9 +257,13 @@ function boot(
   // sandbox) until that boot ends: only then is a status worth keeping for
   // a reloaded tab. A later one (a Jupyter restart) is not a boot.
   let booting = true;
-  const endBoot = () => {
+  // `?snapshot=capture`: each end of the boot marks its outcome on <html>,
+  // where scripts/release-snapshot.ts waits (src/capture_outcome.ts).
+  const capturing = snapshotMode() === "capture";
+  const endBoot = (why?: string) => {
     booting = false;
     rememberBooting(undefined);
+    markBootEnded(document.documentElement.dataset, capturing, why);
   };
   const pinsPromise = fetchSitePins();
   // The cell's Install: enabled when the pins name a slim image; after a
@@ -364,7 +374,7 @@ function boot(
       if (msg.text === "") yurtState.running();
     }
     if (msg.type === "error") {
-      if (msg.endsBoot === true) endBoot();
+      if (msg.endsBoot === true) endBoot(msg.message);
       fail(msg.message);
       // Only a boot failure is the sandbox's failure: an error once the
       // shell is up ("Jupyter is not ready", a restart that failed) leaves
@@ -407,6 +417,15 @@ function boot(
       }
       markPackages("error" in msg ? msg.error : undefined);
     }
+    // A capture ends in the sealed sandbox, with no Jupyter to wait for.
+    if (msg.type === "snapshot-captured") {
+      finishCapture(
+        document.documentElement.dataset,
+        () => saveSnapshot(msg.blob, msg.ms),
+        endBoot,
+        fail,
+      );
+    }
     if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
       const waiter = pending.get(msg.req);
       pending.delete(msg.req);
@@ -419,8 +438,8 @@ function boot(
     if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
   };
   worker.onerror = (event) => {
-    endBoot();
     const message = event.message || "coordinator worker failed";
+    endBoot(message);
     fail(message);
     yurtState.failed(message);
     sandboxGone();
@@ -450,7 +469,39 @@ function boot(
         ? undefined
         : pythonInstallRequest(pins),
       tablet: smallDevice,
+      snapshot: snapshotMode(),
     })
+  );
+}
+
+/** `?snapshot=1` restores the sealed sandbox (src/sandbox_snapshot.ts);
+ * `?snapshot=capture` makes one. Off by default. */
+function snapshotMode(): "restore" | "capture" | undefined {
+  const value = new URL(location.href).searchParams.get("snapshot");
+  if (value === "1") return "restore";
+  if (value === "capture") return "capture";
+  return undefined;
+}
+
+/** `?snapshot=capture`'s result, saved as a download. */
+function saveSnapshot(blob: Blob, ms: number): void {
+  console.log(`[snapshot] sealed and encoded in ${ms} ms: ${blob.size} bytes`);
+  saveDownload(
+    {
+      createObjectURL: (file) => URL.createObjectURL(file),
+      revokeObjectURL: (url) => URL.revokeObjectURL(url),
+      click(href, name) {
+        const link = document.createElement("a");
+        link.href = href;
+        link.download = name;
+        document.body.append(link);
+        link.click();
+        link.remove();
+      },
+      later: (run, ms) => setTimeout(run, ms),
+    },
+    blob,
+    "sandbox.seal.gz",
   );
 }
 

@@ -57,6 +57,10 @@ jobs:
     if: needs.secrets-present.outputs.present == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      # The site publishes the pinned sandbox snapshot (?snapshot=1); no
+      # other job fetches its 132 MB.
+      YURT_INSTALL_SNAPSHOT: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

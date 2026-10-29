@@ -1325,3 +1325,19 @@ Deno.test("plannedInstalls is the package and what pkg's plan installed with it"
     ["greet"],
   );
 });
+
+Deno.test("a set's install says which releases its own index read resolved to", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([3, 1, 4]));
+  const { host } = fakeHost(PLAN, INSTALLED);
+  const resolved: string[][] = [];
+  await installPackage({ label: "Greet", set: ["greet"] }, {
+    host,
+    tablet: false,
+    fetcher,
+    cache: memoryCache({}).cache,
+    progress: () => {},
+    resolved: (releases) =>
+      resolved.push(releases.map((r) => `${r.name}@${r.version}-${r.build}`)),
+  });
+  assertEquals(resolved, [["greet@0.1.0-yurt_0"]]);
+});

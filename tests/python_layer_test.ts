@@ -4,6 +4,7 @@ import {
   decodeTar,
   encodeTar,
   type GuestFs,
+  IndexUnreadable,
   inLayer,
   installWithLayer,
   LayerFailed,
@@ -11,6 +12,8 @@ import {
   layerKey,
 } from "../src/python_layer.ts";
 import type { LayerEntry } from "../src/stage.ts";
+import type { Catalog } from "../src/packages.ts";
+import { liveLayerKey } from "../src/python_install.ts";
 
 const enc = new TextEncoder();
 const meta = { mode: 0o755, uid: 0, gid: 0, mtime: 1_761_600_000 };
@@ -324,7 +327,7 @@ Deno.test("a newer live set installs with pkg and replaces the stored layer", as
 Deno.test("offline, the layer stored for this image is used", async () => {
   const { deps, log } = fakeDeps({
     stored: { key: "img/set1", entries: ["e1"] },
-    live: new Error("offline"),
+    live: new IndexUnreadable("offline"),
   });
   assertEquals(await installWithLayer(deps), "layer");
   assertEquals(log.includes("apply e1"), true);
@@ -333,7 +336,7 @@ Deno.test("offline, the layer stored for this image is used", async () => {
 Deno.test("offline with no layer for this image: pkg, and nothing kept under a guessed key", async () => {
   const { deps, log } = fakeDeps({
     stored: { key: "other-image/set1", entries: ["e1"] },
-    live: new Error("offline"),
+    live: new IndexUnreadable("offline"),
   });
   assertEquals(await installWithLayer(deps), "pkg");
   assertEquals(
@@ -457,4 +460,80 @@ Deno.test("with no layer support (no store, no image), pkg installs as before", 
     log.some((line) => line.startsWith("capture") || line.startsWith("put")),
     false,
   );
+});
+
+Deno.test("an index that downloads but does not parse is no answer: the stored layer, as on main", async () => {
+  const { deps, log } = fakeDeps({
+    stored: { key: "img/set1", entries: ["e1"] },
+  });
+  // The real live answer (liveLayerKey and its loader), over an index
+  // that arrives and is not JSON.
+  deps.liveKey = () => liveLayerKey("img", ["python"], 1000);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response("<html>maintenance</html>"),
+    )) as typeof fetch;
+  try {
+    assertEquals(await installWithLayer(deps), "layer");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assertEquals(log.includes("apply e1"), true);
+});
+
+Deno.test("a set that cannot be resolved uses no layer: pkg, as on main, with a warning", async () => {
+  const { deps, log } = fakeDeps({
+    stored: { key: "img/set1", entries: ["e1"] },
+  });
+  // The index arrives, and resolving the set over it crashes.
+  deps.liveKey = () =>
+    liveLayerKey(
+      "img",
+      ["python"],
+      1000,
+      () => Promise.resolve({ metadata: null } as unknown as Catalog),
+    );
+  const warned: unknown[][] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => warned.push(args);
+  try {
+    assertEquals(await installWithLayer(deps), "pkg");
+  } finally {
+    console.warn = warn;
+  }
+  assertEquals(log.includes("apply e1"), false, "the stored layer is not used");
+  assertEquals(log.includes("pkg install"), true);
+  assertEquals(log.some((line) => line.startsWith("put")), false);
+  assertEquals(warned.length, 1);
+  assertEquals(warned[0][1] instanceof TypeError, true);
+});
+
+Deno.test("offline, the page says whether it uses a stored layer or installs with pkg", async () => {
+  const said: string[] = [];
+  const info = console.info;
+  console.info = (message: string) => said.push(message);
+  try {
+    const withLayer = fakeDeps({
+      stored: { key: "img/set1", entries: ["e1"] },
+      live: new IndexUnreadable("offline"),
+    });
+    assertEquals(await installWithLayer(withLayer.deps), "layer");
+    const without = fakeDeps({ live: new IndexUnreadable("offline") });
+    assertEquals(await installWithLayer(without.deps), "pkg");
+    // A key that names a layer the store no longer gives back.
+    const lost = fakeDeps({
+      stored: { key: "img/set1", entries: ["e1"] },
+      live: new IndexUnreadable("offline"),
+    });
+    lost.deps.store!.get = () => Promise.resolve(undefined);
+    assertEquals(await installWithLayer(lost.deps), "pkg");
+  } finally {
+    console.info = info;
+  }
+  assertEquals(said, [
+    "the live index could not be had: using this browser's stored layer",
+    "the live index could not be had and this browser keeps no usable layer for this image: installing with pkg",
+    "the live index could not be had and this browser keeps no usable layer for this image: installing with pkg",
+  ]);
 });

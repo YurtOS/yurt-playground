@@ -5,6 +5,7 @@ import {
   METHOD,
   pumpPtyMaster,
   s,
+  type SandboxSealImage,
 } from "@yurt/kernel-host-interface-js";
 import {
   drainDirtyPaths,
@@ -33,6 +34,12 @@ import { partsFetch } from "./image_parts.ts";
 import { captureLayer } from "./python_layer.ts";
 import { watchGuestMemoryRefusals } from "./memory_refused.ts";
 import { parsePins, type Pins } from "./pins.ts";
+import {
+  checkPythonSet,
+  decodeSandboxSnapshot,
+  fetchVerifiedSnapshot,
+  pinnedSnapshot,
+} from "./sandbox_snapshot.ts";
 import type { Spawner, WaitStatus } from "./executions.ts";
 import {
   decodeWaitRecord,
@@ -60,6 +67,14 @@ export type PlaygroundEnv = {
   /** The image to boot ({@link browserImagePath}); the full image when
    * unset. */
   imagePath?: string;
+  /** A sealed sandbox to restore instead of booting `imagePath`
+   * (src/sandbox_snapshot.ts). */
+  snapshotPath?: string;
+  /** The Python set the live index offers now, as a layer key
+   * (src/python_layer.ts): null when the site installs none, undefined
+   * when the index cannot be asked. A snapshot of another set is not
+   * restored. */
+  livePythonSet?: () => Promise<string | null | undefined>;
   show: (text: string) => void;
   term: PlaygroundTerm;
   /** The browser refused a new process its memory; only a reload helps. */
@@ -105,6 +120,10 @@ export type PlaygroundSession = {
     capture(touched: string[]): LayerEntry[];
     apply(entries: LayerEntry[]): void;
   };
+  /** Kill the shell, wait for every guest process to be gone, and seal the
+   * sandbox: what `?snapshot=capture` ships (src/sandbox_snapshot.ts). The
+   * session is over afterwards. */
+  seal?: () => Promise<SandboxSealImage>;
   /** Deliver a signal to a process this page started. */
   signal?: (pid: number, signal: number) => Promise<void>;
   dialSandboxPort: (
@@ -144,12 +163,17 @@ export function outputFanout(term: PlaygroundTerm) {
   };
 }
 
+// The login setup and what a boot stages beside the image are part of a
+// sandbox snapshot: a change to them is a new BOOT_SETUP
+// (src/sandbox_snapshot.ts).
 const LOGIN_USER = "user";
 const LOGIN_UID = 1000;
 const LOGIN_GID = 1000;
 const LOGIN_HOME = "/home/user";
 /** No such process: a `SYS_KILLPG` to a group with no live member. */
 const ESRCH = 3;
+const SIGKILL = 9;
+const MIB = 1024 * 1024;
 
 const DEFAULT_ENV: Record<string, string> = {
   HOME: LOGIN_HOME,
@@ -353,48 +377,248 @@ export async function bootPlayground(
 
   env.show("loading kernel");
   const kernel = await env.fetchBytes("./yurt_kernel.wasm");
-  env.show("compiling kernel");
-  const mk = await loadPlaygroundKernel(kernel);
-  const stopWatchingRefusals = watchGuestMemoryRefusals(
-    mk,
-    () => env.memoryRefused?.(),
-  );
-  try {
-    return await startPlayground(env, mk, stopWatchingRefusals);
-  } catch (error) {
-    // A boot that failed past here leaves nothing running: its kernel goes
-    // (a page may boot again, as a fresh sandbox after a stalled install).
-    stopWatchingRefusals();
+  /** The rest of the boot on a loaded or restored kernel; a boot that
+   * fails there leaves nothing running: its kernel goes (a page may boot
+   * again, as a fresh sandbox after a stalled install). */
+  const start = async (mk: KernelHostInterface, restored: boolean) => {
+    const stopWatchingRefusals = watchGuestMemoryRefusals(
+      mk,
+      () => env.memoryRefused?.(),
+    );
     try {
-      mk.dispose();
-    } catch {
-      // Already gone.
+      return await startPlayground(env, mk, stopWatchingRefusals, restored);
+    } catch (error) {
+      stopWatchingRefusals();
+      try {
+        mk.dispose();
+      } catch {
+        // Already gone.
+      }
+      throw error;
     }
-    throw error;
+  };
+  const bootImage = async () => {
+    env.show("compiling kernel");
+    return await start(await loadPlaygroundKernel(kernel), false);
+  };
+  const snapshotPath = env.snapshotPath;
+  if (snapshotPath === undefined) return await bootImage();
+  // A restored kernel that then fails to start its shell falls back too.
+  return (await snapshotOrBoot(
+    async () => start(await restoreSnapshot(env, kernel, snapshotPath), true),
+    bootImage,
+  )).kernel;
+}
+
+/**
+ * `?snapshot=1`'s kernel: the restored snapshot, or the image's boot when
+ * the snapshot cannot be had -- none pinned, one of another build, a
+ * download that fails or is not the pinned bytes, a file that does not
+ * inflate, a restore that is refused. The snapshot only saves time; the
+ * image boot is always there, so any of these is a console note, not the
+ * boot's failure.
+ */
+export async function snapshotOrBoot<K>(
+  restore: () => Promise<K>,
+  boot: () => Promise<K>,
+): Promise<{ kernel: K; restored: boolean }> {
+  try {
+    return { kernel: await restore(), restored: true };
+  } catch (error) {
+    console.warn(
+      `[snapshot] ${
+        error instanceof Error ? error.message : String(error)
+      }; booting the image instead`,
+    );
+    return { kernel: await boot(), restored: false };
   }
 }
 
-/** The rest of {@link bootPlayground}, on its loaded kernel. */
+/** A kernel over a sealed sandbox with no process in it: its filesystem is
+ * all in the kernel's memory, so nothing is staged. */
+export async function restoreSnapshot(
+  env: PlaygroundEnv,
+  kernel: Uint8Array,
+  path: string,
+): Promise<KernelHostInterface> {
+  const started = performance.now();
+  env.show("loading snapshot");
+  // A pin of another build is refused before anything is downloaded, a
+  // file whose own header says so before the kernel's memory is allocated
+  // (SnapshotMismatch both).
+  const pins = await browserPins();
+  const pin = pinnedSnapshot(pins);
+  // The Python set the capture installed must be the one an install
+  // would get now, as for a stored layer (src/python_layer.ts): asked
+  // before anything is downloaded (liveLayerKey's own bound, 20 s).
+  checkPythonSet(pin.builtFrom, await env.livePythonSet?.());
+  // Only this frame holds the decoded memory (~545 MiB), and only until
+  // the restore copied it: a fallback boot must not run beside it.
+  let image: SandboxSealImage | undefined = await decodeSandboxSnapshot(
+    await fetchVerifiedSnapshot(
+      path,
+      pin,
+      undefined,
+      (loaded, total) =>
+        env.show(
+          `loading snapshot ${(loaded / MIB).toFixed(1)} of ${
+            (total / MIB).toFixed(1)
+          } MiB`,
+        ),
+    ),
+    pin.builtFrom,
+  );
+  const fetched = performance.now();
+  const memoryBytes = image.kernelMemory.byteLength;
+  env.show("restoring snapshot");
+  let restored: Awaited<ReturnType<typeof restorePlaygroundKernel>>;
+  try {
+    restored = await restorePlaygroundKernel(kernel, image);
+  } finally {
+    image = undefined;
+  }
+  if (restored.processes.length !== 0) {
+    restored.host.dispose();
+    throw new Error("a sandbox snapshot must hold no process");
+  }
+  console.log(
+    `[snapshot] ${memoryBytes} bytes of kernel memory: ` +
+      `fetched+inflated in ${Math.round(fetched - started)} ms, ` +
+      `restored in ${Math.round(performance.now() - fetched)} ms`,
+  );
+  return restored.host;
+}
+
+/**
+ * What a seal does before sealing, once the page starts nothing more of
+ * its own: wait until no spawn is in flight, then kill every live guest
+ * process -- the shell and its background jobs, a running exec, a
+ * Packages install -- until a look finds none alive and none starting,
+ * and `afterSettled` has resolved; all within `deadlineMs`. Then run
+ * `cleanUp` (one process, removing every exec's /tmp files) within its
+ * own `cleanUpMs`, and require its exit 0; then look again, within
+ * `deadlineMs` once more. Past any bound it throws, and nothing is sealed.
+ */
+export async function prepareSeal(deps: {
+  host: {
+    listProcesses(): { pid: number; state: string }[];
+    killProcess(pid: number, signal: number): unknown;
+  };
+  spawning: () => number;
+  cleanUp: () => Promise<number | null>;
+  /** Awaited once nothing runs, before the clean-up. */
+  afterSettled?: () => Promise<unknown>;
+  deadlineMs?: number;
+  cleanUpMs?: number;
+  pollMs?: number;
+}): Promise<void> {
+  const deadlineMs = deps.deadlineMs ?? 30_000;
+  const pollMs = deps.pollMs ?? 250;
+  /** `work`, or a throw of `what` once `ms` have passed. */
+  const within = async <T>(ms: number, what: string, work: Promise<T>) => {
+    let timer: number | undefined;
+    try {
+      return await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`cannot seal: ${what}`)),
+            ms,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  let last = "nothing looked at yet";
+  /** Past a bound: the looks stop too. */
+  let gaveUp = false;
+  const settle = async () => {
+    while (!gaveUp) {
+      const live = deps.host.listProcesses().filter((p) =>
+        p.pid !== KERNEL_PID && p.state !== "exited"
+      );
+      const spawning = deps.spawning();
+      if (live.length === 0 && spawning === 0) return;
+      last = `processes still alive: ${
+        live.map((p) => `${p.pid}:${p.state}`).join(",")
+      }${spawning === 0 ? "" : ` (and ${spawning} starting)`}`;
+      // A spawn in flight is a process this look may not have seen yet.
+      if (spawning === 0) {
+        for (const p of live) deps.host.killProcess(p.pid, SIGKILL);
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  };
+  // `last` is read when the bound passes, so the error says what was left.
+  const settled = async () => {
+    await settle();
+    last = "every process is gone, but the login shell's exit was not seen";
+    await deps.afterSettled?.();
+  };
+  const giveUp = (error: Error): never => {
+    gaveUp = true;
+    throw new Error(`${error.message}: ${last}`);
+  };
+  await within(deadlineMs, "the guest did not stop", settled()).catch(giveUp);
+  const code = await within(
+    deps.cleanUpMs ?? 10_000,
+    "removing the exec files did not finish",
+    deps.cleanUp(),
+  );
+  if (code !== 0) {
+    throw new Error(`cannot seal: removing the exec files exited ${code}`);
+  }
+  await within(deadlineMs, "the guest did not stop", settle()).catch(giveUp);
+}
+
+/** The rest of {@link bootPlayground}, on its loaded (or restored) kernel. */
 async function startPlayground(
   env: PlaygroundEnv,
   mk: Awaited<ReturnType<typeof loadPlaygroundKernel>>,
   stopWatchingRefusals: () => void,
+  restored: boolean,
 ): Promise<PlaygroundSession> {
-  env.show("loading image");
-  const image = await env.fetchBytes(env.imagePath ?? FULL_IMAGE_PATH);
-  env.show("unpacking image");
-  const files = new Map<string, Uint8Array>();
-  await stageYurtimg(mk, image, files);
-  const sh = files.get("/bin/sh");
+  let sh: Uint8Array | undefined;
+  if (restored) {
+    sh = readGuestFile(mk, KERNEL_PID, "/bin/sh", 64 * 1024 * 1024);
+    if (sh.byteLength === 0) sh = undefined;
+  } else {
+    env.show("loading image");
+    const image = await env.fetchBytes(env.imagePath ?? FULL_IMAGE_PATH);
+    env.show("unpacking image");
+    const files = new Map<string, Uint8Array>();
+    await stageYurtimg(mk, image, files);
+    sh = files.get("/bin/sh");
+  }
   if (sh === undefined) {
     throw new Error("playground image is missing /bin/sh");
   }
+  const shell = sh;
+
+  /** Each exec's sweep of its files, waiting out its delay (below). */
+  const sweepTimers = new Set<number>();
+  /** A seal has begun: the page starts nothing more of its own -- an exec,
+   * a process, a sweep -- but the seal's own clean-up. */
+  let sealing = false;
+  /** Spawns that have begun and not yet returned: a seal waits for them,
+   * so no process it has not seen can start under it. */
+  let spawning = 0;
 
   /** `/bin/sh` with `argv`, as the login user in the login home, leading
    * its own process group unless `ownGroup` is false. */
   const spawnShell = async (argv: string[], { ownGroup = true } = {}) => {
+    spawning++;
+    try {
+      return await spawnShellNow(argv, ownGroup);
+    } finally {
+      spawning--;
+    }
+  };
+  const spawnShellNow = async (argv: string[], ownGroup: boolean) => {
     const process = await mk.spawnUserProcessWithArgsAsync(
-      sh,
+      shell,
       argv.map((arg) => s(arg)),
       { ...DEFAULT_ENV },
     );
@@ -507,18 +731,19 @@ async function startPlayground(
     }
   };
 
-  void user.runStartAsync().then(() => {
+  const userExited = user.runStartAsync().then(() => {
     // `exit` at the prompt: the shell is done, the sandbox is still there
     // (the notebook's kernel keeps answering). Say so where the prompt
     // was, and in the status, instead of failing the next keystroke.
-    if (!stopped) {
+    // A seal kills it on purpose; the capture says what happens next.
+    if (!stopped && !sealing) {
       env.term.write(
         "\r\n[the shell exited; reload the page for a new one]\r\n",
       );
       env.show("shell exited");
     }
   }).catch((error) => {
-    if (!stopped) {
+    if (!stopped && !sealing) {
       const message = error instanceof Error ? error.message : String(error);
       env.show(message);
     }
@@ -534,6 +759,7 @@ async function startPlayground(
     controller,
     terminal,
     async spawn(line) {
+      if (sealing) throw new Error("the sandbox is being sealed");
       const process = await spawnShell(["/bin/sh", "-c", line]);
       // Nothing feeds it: stdin is at end-of-file from the start.
       process.closeStdin();
@@ -558,10 +784,14 @@ async function startPlayground(
       // `head` -- a single command, whose own stdout the host does
       // capture. `line` ends in the exec of the command, so the redirects
       // bind to the command and every child inherits them.
+      if (sealing) throw new Error("the sandbox is being sealed");
       const tag = crypto.randomUUID();
       const path = (name: string) => `/tmp/.yurt-exec-${tag}.${name}`;
       const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+      // A sweep after a seal began is the seal's to do (it removes every
+      // exec's files itself, once nothing runs).
       const single = async (command: string) => {
+        if (sealing) return;
         const p = await spawnShell(["/bin/sh", "-c", command]);
         p.closeStdin();
         await p.runStartAsync();
@@ -590,7 +820,7 @@ async function startPlayground(
       // so the registry sees the cut and says so; the files go afterwards.
       let done = false;
       const sweep = () =>
-        void single(
+        single(
           `exec rm -f ${q(path("out"))} ${q(path("err"))} ${q(path("in"))}`,
         );
       const exited = process.runStartAsync().then((rc) => {
@@ -602,7 +832,13 @@ async function startPlayground(
       });
       // The registry reads the files right after the exit; the sweep comes
       // well after, whichever way the exit went.
-      exited.finally(() => setTimeout(sweep, 5000)).catch(() => {});
+      exited.finally(() => {
+        const timer = setTimeout(() => {
+          sweepTimers.delete(timer);
+          void sweep().catch(() => {});
+        }, 5000);
+        sweepTimers.add(timer);
+      }).catch(() => {});
       const cap = io.maxOutputBytes + 1;
       const taken = { out: false, err: false };
       const take = (stream: "out" | "err") => {
@@ -622,6 +858,30 @@ async function startPlayground(
           stderr: readGuestFile(mk, user.pid, path("err"), cap),
         }),
       };
+    },
+    async seal() {
+      // From here the page starts nothing (an exec, a process and a sweep
+      // are refused): see prepareSeal.
+      sealing = true;
+      for (const timer of sweepTimers) clearTimeout(timer);
+      sweepTimers.clear();
+      await prepareSeal({
+        host: mk,
+        spawning: () => spawning,
+        // Every exec's files, the ones whose sweep never ran included.
+        cleanUp: async () => {
+          const clean = await spawnShell([
+            "/bin/sh",
+            "-c",
+            "exec rm -f /tmp/.yurt-exec-*",
+          ]);
+          clean.closeStdin();
+          const rc = await clean.runStartAsync();
+          return clean.waitStatus()?.code ?? Number(rc);
+        },
+        afterSettled: () => userExited,
+      });
+      return await mk.sealSandbox();
     },
     writeFiles(files) {
       for (const { path, bytes } of files) writeRamfsTree(mk, path, bytes);

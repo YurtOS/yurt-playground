@@ -20,6 +20,13 @@ import {
   integrityManifest,
   SLIM_IMAGE_NAME,
 } from "../src/integrity.ts";
+import { loadPins, type Pins } from "../src/pins.ts";
+import { checkSnapshotFile } from "./lib/snapshot_file.ts";
+import {
+  pinnedSnapshot,
+  SANDBOX_SNAPSHOT_NAME,
+  SnapshotMismatch,
+} from "../src/sandbox_snapshot.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -102,6 +109,36 @@ async function writeImageParts(
   );
 }
 
+/** Whether the sandbox snapshot at `path` is the one `pins` pin, built
+ * from the pins' own kernel, image and Python set. One that is not is left
+ * out of the site with a loud warning rather than failing the build: it is
+ * optional, `?snapshot=1` is the only page that reads it, and that page
+ * would refuse it anyway -- after downloading it. */
+export async function snapshotMatchesPins(
+  path: string,
+  pins: Pins,
+): Promise<boolean> {
+  const leftOut = (why: string) => {
+    console.warn(
+      `!!! ${SANDBOX_SNAPSHOT_NAME} is NOT published: ${why}. ` +
+        "scripts/install-pinned-artifacts.sh fetches the pinned one; " +
+        "scripts/release-snapshot.ts captures a new one.",
+    );
+    return false;
+  };
+  let pin;
+  try {
+    pin = pinnedSnapshot(pins);
+  } catch (error) {
+    if (!(error instanceof SnapshotMismatch)) throw error;
+    return leftOut(error.message);
+  }
+  const check = await checkSnapshotFile(path, pin.builtFrom, {
+    sha256: pin.sha256,
+  });
+  return check.ok || leftOut(check.problem);
+}
+
 export async function buildStaticSite(): Promise<void> {
   await ensureBundle(kernelRoot());
   await Deno.remove(distDir, { recursive: true }).catch(() => {});
@@ -141,6 +178,22 @@ export async function buildStaticSite(): Promise<void> {
     console.warn(
       `${PYTHON_SEAL_NAME} missing; the yurt-snapshot kernel will not boot (scripts/install-pinned-artifacts.sh)`,
     );
+  }
+  // The sealed sandbox `?snapshot=1` restores (src/sandbox_snapshot.ts):
+  // the pinned one, which scripts/install-pinned-artifacts.sh fetched.
+  // Optional; nothing else needs it.
+  const snapshotPath = join(publicDir, SANDBOX_SNAPSHOT_NAME);
+  const snapshot = await Deno.stat(snapshotPath).then(() => true, () => false);
+  const pins = await loadPins(join(artifactsDir, "pins.json"));
+  if (!snapshot && pins.snapshot !== undefined) {
+    console.warn(
+      `${SANDBOX_SNAPSHOT_NAME} is pinned but not here, so not published ` +
+        "(YURT_INSTALL_SNAPSHOT=1 scripts/install-pinned-artifacts.sh fetches it)",
+    );
+  }
+  if (snapshot && await snapshotMatchesPins(snapshotPath, pins)) {
+    await Deno.mkdir(join(distDir, "snapshot"), { recursive: true });
+    await writeImageParts(SANDBOX_SNAPSHOT_NAME, publicDir);
   }
   // The "check the bytes" card hashes what it downloaded against this. dist/
   // holds the image only as parts; hash the file they were sliced from.

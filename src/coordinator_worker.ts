@@ -7,6 +7,7 @@ import {
   bootPlayground,
   browserImagePath,
   fetchPlaygroundBytes,
+  playgroundPins,
   type PlaygroundTerm,
 } from "./boot.ts";
 import {
@@ -23,6 +24,7 @@ import {
   kernelFailureDropsLayer,
   kernelLifecycle,
   probePython,
+  restoresSnapshot,
   type StartReport,
   startSandbox,
 } from "./coordinator_start.ts";
@@ -44,11 +46,8 @@ import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 import { readInstalled } from "./installed_db.ts";
 import {
   browserArchiveCache,
-  fetchWithProgress,
   installPackage,
   InstallStalled,
-  loadCatalog,
-  resolveSet,
 } from "./packages.ts";
 import {
   browserLayerStore,
@@ -57,7 +56,14 @@ import {
   layerKey,
   type LayerStore,
 } from "./python_layer.ts";
+import { liveAnswers } from "./python_install.ts";
+import { postCaptured, precompileLine } from "./capture_outcome.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
+import {
+  encodeSandboxSnapshot,
+  SANDBOX_SNAPSHOT_PATH,
+  snapshotIdentity,
+} from "./sandbox_snapshot.ts";
 import { runQueue } from "./run_queue.ts";
 import { type BootedSession, workerPackageHost } from "./session_packages.ts";
 import {
@@ -85,9 +91,14 @@ type ToWorker =
     // python3, before ipykernel -- the newest complete one in the live
     // signed index (src/python_install.ts). Absent, such an image is
     // reported as `python-missing`, as before.
-    python?: { label: string; set: string[]; image?: string };
+    python?: PythonRequest;
     // A tablet or phone: installs over 16 MiB are refused there.
     tablet?: boolean;
+    // `?snapshot=1`: restore the sealed sandbox (src/sandbox_snapshot.ts)
+    // instead of booting the image; `?snapshot=capture`: boot and install
+    // as usual, then seal instead of starting Jupyter and hand the file
+    // to the page (`snapshot-captured`).
+    snapshot?: "restore" | "capture";
   }
   // Install Python again after a failed install (the cell's Install), then
   // start the kernel. Answered like a boot: status, then notebook-ready or
@@ -161,6 +172,7 @@ type FromWorker =
   // read: the Packages panel marks those Installed.
   | { type: "pkg-installed"; names: string[] }
   | { type: "pkg-installed"; error: string }
+  | { type: "snapshot-captured"; blob: Blob; ms: number }
   | {
     type: "pkg-reply";
     req: number;
@@ -314,41 +326,63 @@ const pkgTouched = new WeakSet<object>();
  * kernel that then does not start drops the layer, rather than every
  * later visit failing the same way. */
 let layerInstalled: LayerStore | undefined;
-/** How long the live index may take to answer whether the stored layer is
- * still the set; past it, the stored layer is used as when offline. */
-const LIVE_INDEX_TIMEOUT_MS = 20_000;
-
-async function liveLayerKey(
-  image: string,
-  set: string[],
-): Promise<string | undefined> {
-  const giveUp = new AbortController();
-  const timer = setTimeout(() => giveUp.abort(), LIVE_INDEX_TIMEOUT_MS);
-  let catalog: Awaited<ReturnType<typeof loadCatalog>>;
-  try {
-    // Throws when the repository cannot be had: the stored layer then.
-    catalog = await loadCatalog(
-      (url, limit, onBytes) =>
-        fetchWithProgress(url, limit, onBytes, giveUp.signal),
-    );
-  } finally {
-    clearTimeout(timer);
-  }
-  // The repository answered: a set it no longer offers (yanked, removed)
-  // is no layer's either.
-  try {
-    return layerKey(image, resolveSet(catalog, set));
-  } catch {
-    return undefined;
-  }
-}
-
 /** A Jupyter that did not start on a layer's Python: drop the layer. */
 function dropLayerIfKernelFailed(report: StartReport): void {
   if (layerInstalled !== undefined && kernelFailureDropsLayer(report)) {
     void layerInstalled.drop();
     layerInstalled = undefined;
   }
+}
+
+type PythonRequest = { label: string; set: string[]; image?: string };
+
+/** `?snapshot=capture`: precompile the installed Python, seal the
+ * sandbox (no process left in it) and hand the snapshot file to the page,
+ * in the kernel's place: a sealed sandbox runs nothing more. */
+async function captureSnapshot(
+  session: Awaited<ReturnType<typeof bootPlayground>>,
+  /** The Python set the capture installed, as a layer key; null when the
+   * site installs none (the full image has it). */
+  pythonSet: string | null,
+): Promise<void> {
+  if (session.seal === undefined || session.process === undefined) {
+    throw new Error("this session cannot seal");
+  }
+  // Bytecode for every module the packages ship as source only
+  // (PRECOMPILE_PROGRAM): each start compiled them again, slow on Safari,
+  // where compiling one of wcwidth's modules also overflowed the Worker's
+  // stack and killed ipykernel with SIGSEGV. Its failure is refused, with
+  // its own words.
+  post({ type: "status", text: "precompiling Python modules" });
+  const compiled = performance.now();
+  const compile = await session.process(precompileLine(), {
+    maxOutputBytes: 64 * 1024,
+  });
+  const compileStatus = await compile.exited;
+  const code = typeof compileStatus === "number"
+    ? compileStatus
+    : compileStatus.code;
+  if (code !== 0) {
+    const decoder = new TextDecoder();
+    const said = decoder.decode(compile.takeStdout()) +
+      decoder.decode(compile.takeStderr());
+    throw new Error(
+      `precompiling the Python set exited ${JSON.stringify(compileStatus)}: ${
+        said.slice(-2000)
+      }`,
+    );
+  }
+  console.log(
+    `[snapshot] precompiled in ${Math.round(performance.now() - compiled)} ms`,
+  );
+  post({ type: "status", text: "sealing the sandbox" });
+  const started = performance.now();
+  const image = await session.seal();
+  const blob = await encodeSandboxSnapshot(
+    image,
+    { ...snapshotIdentity(await playgroundPins()), pythonSet },
+  );
+  postCaptured(post, blob, Math.round(performance.now() - started));
 }
 
 /** Drop the in-tab sandbox and start a fresh one the way the page's start
@@ -543,6 +577,10 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   }
   if (msg.type !== "start") return;
   kernelPorts = msg.kernelPorts;
+  // The live index's answers for this boot: a snapshot's check and the
+  // install's stored-layer question, from one read. Made by each begin()
+  // below, so a fresh sandbox asks again.
+  let live: ReturnType<typeof liveAnswers>;
   const term = workerTerm({ cols: msg.cols, rows: msg.rows });
   const env = {
     isolated: msg.isolated,
@@ -551,6 +589,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     imagePath: kernelPorts === undefined
       ? await browserImagePath().catch(() => undefined)
       : undefined,
+    snapshotPath:
+      restoresSnapshot({ ...msg, native: kernelPorts !== undefined })
+        ? SANDBOX_SNAPSHOT_PATH
+        : undefined,
+    livePythonSet: () => live.pythonSet(),
     fetchBytes: (path: string) =>
       fetchPlaygroundBytes(path, (progress) => {
         const percent = progress.total === undefined
@@ -568,6 +611,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const tablet = msg.tablet === true;
   // The desktop app's sandbox has a network and its own pkg; only the
   // in-tab one installs through the page.
+  /** What a capture's install installed, as a layer key: the set its
+   * own index read resolved to, so the snapshot's label is the set it
+   * holds. */
+  let capturedSet: string | undefined;
+  const capturing = msg.snapshot === "capture";
   installPython = python === undefined || kernelPorts !== undefined
     ? undefined
     : async (session) => {
@@ -575,7 +623,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       const cache = await browserArchiveCache();
       const progress = (text: string) => post({ type: "status", text });
       layerInstalled = undefined;
-      const store = tablet ? undefined : await browserLayerStore();
+      // A capture installs with pkg, never from a stored layer: the
+      // snapshot is what the live index gives now.
+      const store = tablet || capturing ? undefined : await browserLayerStore();
       try {
         // Instant on a later visit: this browser's earlier install, kept
         // as a layer (src/python_layer.ts), when it is still the set. All
@@ -591,7 +641,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
             store,
             image: python.image,
             pristine,
-            liveKey: () => liveLayerKey(python.image!, python.set),
+            liveKey: () => live.layerKey(),
             install: async (between) => {
               between.before();
               await installPackage(python, {
@@ -599,6 +649,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
                 tablet,
                 progress,
                 cache,
+                resolved: capturing && python.image !== undefined
+                  ? (releases) => {
+                    capturedSet = layerKey(python.image!, [...releases]);
+                  }
+                  : undefined,
               });
               between.after();
             },
@@ -628,6 +683,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
    * exception to "never stops the session": the stalled one is dropped
    * first). */
   const begin = async () => {
+    live = liveAnswers(msg.python);
     // Never stops the session once its shell is up (src/coordinator_start.ts).
     const started = await startSandbox({
       boot: () =>
@@ -648,6 +704,14 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       installPython,
       startKernel: (session, relaunching) =>
         startGuestKernel(session, kernelPorts, { relaunching }),
+      capture: msg.snapshot === "capture"
+        ? (session) => {
+          if (python?.image !== undefined && capturedSet === undefined) {
+            throw new Error("the capture's Python install did not run");
+          }
+          return captureSnapshot(session, capturedSet ?? null);
+        }
+        : undefined,
       post: (report) => {
         if (report.type === "python-missing") pythonMissing = true;
         dropLayerIfKernelFailed(report);
@@ -660,6 +724,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         post(report);
       },
     });
+    // The boot is over: its read of the live index goes with it (a later
+    // install on this sandbox asks again).
+    live.finish();
     if (started !== undefined) {
       jupyter = started;
       subscribeJupyter(jupyter);

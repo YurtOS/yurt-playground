@@ -18,6 +18,8 @@ public/notebook_kernel.bundle.js
 public/import-map.json
 # Pinned (artifacts/pins.json pythonSeal), installed by scripts/install-pinned-artifacts.sh
 public/demo/python3-seal.wasm
+# The sealed sandbox ?snapshot=capture makes (src/sandbox_snapshot.ts).
+public/snapshot/
 
 # Local / generated
 /dist

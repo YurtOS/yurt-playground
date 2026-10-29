@@ -686,6 +686,10 @@ export type InstallRequest =
   // the newest build every one of them has (src/python_install.ts).
   | { label: string; set: readonly string[] };
 
+/** The repository does not offer the set: a member it has no package for,
+ * or no `yurt_N` build that all of them have. */
+export class SetNotOffered extends Error {}
+
 /** The newest complete set: for each `yurt_N` build every package in
  * `names` has (unyanked, in a release the page can read), the highest N
  * wins, and each package's release with that build (the highest version,
@@ -704,7 +708,7 @@ export function resolveSet(
   };
   const byName = names.map((name) => {
     const file = catalog.metadata.get(name)?.file;
-    if (file === undefined) throw new Error(`no package named ${name}`);
+    if (file === undefined) throw new SetNotOffered(`no package named ${name}`);
     return file.versions.filter((v) =>
       !v.yanked && /^yurt_\d+$/.test(v.build) && readable(name, v)
     );
@@ -714,7 +718,7 @@ export function resolveSet(
   );
   const common = [...builds[0]].filter((n) => builds.every((b) => b.has(n)));
   if (common.length === 0) {
-    throw new Error(
+    throw new SetNotOffered(
       `the repository has no complete set of ${
         names.join(", ")
       } (one yurt_N build of all of them)`,
@@ -928,6 +932,9 @@ type InstallOptions = {
   stallMs?: number;
   /** {@link INSTALL_RUN_CEILING_MS}; shorter in tests. */
   runCeilingMs?: number;
+  /** Told the exact releases a set or pinned list resolved to, from the
+   * install's own index read: what this install puts in the sandbox. */
+  resolved?: (releases: readonly PinnedRelease[]) => void;
 };
 
 type InstallWatcher = {
@@ -980,6 +987,7 @@ async function installWatched(
     : "set" in request
     ? resolveSet(catalog, request.set)
     : request.releases;
+  if (exact !== undefined) options.resolved?.(exact);
   const pinned = exact === undefined
     ? undefined
     : new Map(exact.map((release) => [release.name, release]));

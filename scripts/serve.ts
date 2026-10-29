@@ -12,7 +12,7 @@ export function resolveKernelRoot(
   return resolve(base, root);
 }
 
-function kernelRoot(): string {
+export function kernelRoot(): string {
   return resolveKernelRoot(
     Deno.env.get("YURT_KERNEL_ROOT") ?? "../yurtos-kernel",
   );

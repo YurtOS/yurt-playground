@@ -102,6 +102,10 @@ export type StartDeps<S extends StartableSession> = {
     session: S,
     relaunching: (launch: number) => void,
   ): Promise<JupyterTransport>;
+  /** `?snapshot=capture`: what runs on the sandbox in the kernel's place,
+   * once Python is there. It says its own success; its failure is posted
+   * as a failed capture, not as a Jupyter that did not start. */
+  capture?(session: S): Promise<void>;
   post(report: StartReport): void;
   /** How often "starting Jupyter (N s)" is posted. */
   tickMs?: number;
@@ -129,10 +133,6 @@ export async function startSandbox<S extends StartableSession>(
     return undefined;
   }
   if (await probePython(session.process, deps.probeTimeoutMs) === false) {
-    if (deps.installPython === undefined) {
-      deps.post({ type: "python-missing" });
-      return undefined;
-    }
     return await installThenLaunch(session, deps);
   }
   return await launchKernel(session, deps);
@@ -146,20 +146,36 @@ export async function installThenLaunch<S extends StartableSession>(
   session: S,
   deps: Pick<
     StartDeps<S>,
-    "installPython" | "launching" | "startKernel" | "post" | "tickMs"
+    | "installPython"
+    | "launching"
+    | "startKernel"
+    | "capture"
+    | "post"
+    | "tickMs"
   >,
 ): Promise<JupyterTransport | undefined> {
+  // A capture without its Python is a failed capture, said as one: it
+  // ends the boot, where python-missing would leave a shell to use.
+  const missing = (error?: string) =>
+    deps.post(
+      deps.capture === undefined
+        ? { type: "python-missing", ...(error === undefined ? {} : { error }) }
+        : {
+          type: "error",
+          message: `snapshot capture failed: ${
+            error ?? "this site installs no Python"
+          }`,
+          endsBoot: true,
+        },
+    );
   if (deps.installPython === undefined) {
-    deps.post({ type: "python-missing" });
+    missing();
     return undefined;
   }
   try {
     await deps.installPython(session);
   } catch (error) {
-    deps.post({
-      type: "python-missing",
-      error: error instanceof Error ? error.message : String(error),
-    });
+    missing(error instanceof Error ? error.message : String(error));
     return undefined;
   }
   return await launchKernel(session, deps);
@@ -167,10 +183,25 @@ export async function installThenLaunch<S extends StartableSession>(
 
 async function launchKernel<S extends StartableSession>(
   session: S,
-  deps: Pick<StartDeps<S>, "launching" | "startKernel" | "post" | "tickMs">,
+  deps: Pick<
+    StartDeps<S>,
+    "launching" | "startKernel" | "capture" | "post" | "tickMs"
+  >,
 ): Promise<JupyterTransport | undefined> {
   const errorText = (error: unknown) =>
     error instanceof Error ? error.message : String(error);
+  if (deps.capture !== undefined) {
+    try {
+      await deps.capture(session);
+    } catch (error) {
+      deps.post({
+        type: "error",
+        message: `snapshot capture failed: ${errorText(error)}`,
+        endsBoot: true,
+      });
+    }
+    return undefined;
+  }
   deps.post({ type: "status", text: "starting Jupyter" });
   // ipykernel's imports are JIT-bound: ~30 s on a laptop, minutes on a
   // small or busy machine (yurt-playground#89). A count that moves is
@@ -254,4 +285,17 @@ export function kernelLifecycle() {
       return enqueue(run);
     },
   };
+}
+
+/** Whether a start restores the sealed sandbox (`?snapshot=1`): only the
+ * in-tab sandbox (the desktop app's runs natively), and never on a tablet
+ * -- 132 MB downloaded and ~545 MiB inflated is more than a tablet's tab
+ * keeps, as a Python layer over 100 MiB already is. */
+export function restoresSnapshot(start: {
+  snapshot?: "restore" | "capture";
+  tablet?: boolean;
+  native: boolean;
+}): boolean {
+  return start.snapshot === "restore" && !start.native &&
+    start.tablet !== true;
 }
