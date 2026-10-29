@@ -227,7 +227,8 @@ Deno.test("a library directory inside another is walked once, with it", async ()
   }
 });
 
-Deno.test("a capture precompiles an installed Python set, never the phone's image-only Python", () => {
-  assertEquals(capturePrecompiles("full"), true);
+Deno.test("a capture precompiles the Python it installed; the phone's has none", () => {
+  assertEquals(capturePrecompiles("desktop"), true);
+  assertEquals(capturePrecompiles("tablet"), true);
   assertEquals(capturePrecompiles("phone"), false);
 });

@@ -16,23 +16,24 @@ const ID = "0123456789abcdef0123456789abcdef01234567";
 
 Deno.test("snapshot-local prints a URL the page restores, and only for an id", () => {
   assertEquals(
-    restoreUrl("https://yurt-playground.pages.dev", ID, false),
+    restoreUrl("https://yurt-playground.pages.dev", ID, "desktop"),
     `https://yurt-playground.pages.dev/?snapshot=${ID}`,
   );
   assertEquals(
-    restoreUrl("https://yurt-playground.pages.dev/", ID, true),
+    restoreUrl("https://yurt-playground.pages.dev/", ID, "phone"),
     `https://yurt-playground.pages.dev/?snapshot=${ID}&start-anyway`,
   );
-  assertThrows(() => restoreUrl("https://x", "1", false));
+  assertThrows(() => restoreUrl("https://x", "1", "desktop"));
 });
 
 Deno.test("snapshot-local captures with the page's own capture query", () => {
-  assertEquals(captureQuery([], false), "start&snapshot=capture");
+  assertEquals(captureQuery([], "desktop"), "start&snapshot=capture");
   assertEquals(
-    captureQuery(["pandas", "scipy"], false),
+    captureQuery(["pandas", "scipy"], "desktop"),
     "start&snapshot=capture&packages=pandas,scipy",
   );
-  assertEquals(captureQuery([], true), "start&snapshot=capture-phone");
+  assertEquals(captureQuery([], "phone"), "start&snapshot=capture-phone");
+  assertEquals(captureQuery([], "tablet"), "start&snapshot=capture-tablet");
 });
 
 Deno.test("snapshot-local names a ref with one safe path segment", () => {
@@ -95,24 +96,30 @@ Deno.test("snapshot-local refuses a checkout whose build the site does not run",
   );
 });
 
-Deno.test("snapshot-local expects the live set in a site capture, and no set in a phone's", async () => {
+Deno.test("snapshot-local expects each kind's own Python: the set, python alone, none", async () => {
   const raw = JSON.parse(
     await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
   );
   const pins = parsePins({ ...raw, snapshot: undefined });
   const set = "img/python@3.14.7-yurt_0:ab01e884f08e0619";
-  assertEquals(captureBuild(pins, false, set), {
-    ok: true,
-    builtFrom: { ...snapshotIdentity(pins), pythonSet: set },
-  });
-  for (const live of [undefined, NO_COMPLETE_SET]) {
-    assertEquals(captureBuild(pins, false, live).ok, false, String(live));
+  for (const kind of ["desktop", "tablet"] as const) {
+    assertEquals(captureBuild(pins, kind, set), {
+      ok: true,
+      builtFrom: { ...snapshotIdentity(pins), pythonSet: set },
+    });
+    for (const live of [undefined, NO_COMPLETE_SET]) {
+      assertEquals(captureBuild(pins, kind, live).ok, false, String(live));
+    }
   }
-  // The phone's: no set, whatever the index says (it is not asked).
+  // The phone's: no Python, whatever the index says (it is not asked).
   for (const live of [null, undefined, NO_COMPLETE_SET, set]) {
-    assertEquals(captureBuild(pins, true, live), {
+    assertEquals(captureBuild(pins, "phone", live), {
       ok: true,
       builtFrom: { ...snapshotIdentity(pins), pythonSet: null },
     });
   }
+  // The tablet's and the phone's are the slim image's.
+  const full = { ...pins, browserImage: undefined };
+  assertEquals(captureBuild(full, "phone", null).ok, false);
+  assertEquals(captureBuild(full, "tablet", set).ok, false);
 });

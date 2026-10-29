@@ -76,8 +76,13 @@ import {
   FORMAT,
   pinnedSnapshot,
   SANDBOX_SNAPSHOT_NAME,
+  SNAPSHOT_KIND_NAMES,
+  SNAPSHOT_KINDS,
+  snapshotHeaderFacts,
   snapshotIdentity,
+  type SnapshotKind,
   SnapshotMismatch,
+  tabletPythonRequest,
 } from "../src/sandbox_snapshot.ts";
 
 const REPO = "YurtOS/yurt-playground";
@@ -198,9 +203,10 @@ export async function checkoutProblem(
 export async function snapshotPinProblem(
   pins: Pins,
   live: () => Promise<string | null | undefined>,
+  kind: SnapshotKind = "desktop",
 ): Promise<string | undefined> {
   try {
-    const pin = pinnedSnapshot(pins);
+    const pin = pinnedSnapshot(pins, kind);
     const set = await live();
     if (set === undefined) {
       say("the live package index could not be read; the pin is kept");
@@ -221,16 +227,22 @@ export async function snapshotPinProblem(
 export const PIN_REFUSED_EXIT = 3;
 export const PIN_REFUSED_MARKER = "snapshot pin refused: ";
 
-/** The page's answer for the set an install under `pins` would get now. */
-export const liveSetOf = (pins: Pins) => () =>
-  livePythonSet(pythonInstallRequest(pins));
+/** The page's answer for the Python a snapshot of `kind` under `pins`
+ * holds now: the set (desktop), python alone (tablet), none (phone). */
+export const liveSetOf = (pins: Pins, kind: SnapshotKind = "desktop") => () =>
+  kind === "phone" ? Promise.resolve(null) : livePythonSet(
+    kind === "tablet" ? tabletPythonRequest(pins) : pythonInstallRequest(pins),
+  );
 
 /** Why a capture cannot start on the live index's answer: one it cannot
  * read (which set would this be?) or one without a complete set (none to
  * install). Before the capture, not after its minutes of install. */
 export function captureSetProblem(
   live: string | null | undefined,
+  kind: SnapshotKind = "desktop",
 ): string | undefined {
+  // The phone's holds no Python: nothing to ask the index about.
+  if (kind === "phone") return undefined;
   if (live === undefined) {
     return "cannot read the live package index (20 s): which Python set is this?";
   }
@@ -244,10 +256,13 @@ export function captureSetProblem(
  * stay; release-playground.sh asks before carrying it into a train. */
 export async function checkPin(
   path = pinsPath,
-  live: (pins: Pins) => () => Promise<string | null | undefined> = liveSetOf,
+  live: (pins: Pins, kind: SnapshotKind) => () => Promise<
+    string | null | undefined
+  > = liveSetOf,
+  kind: SnapshotKind = "desktop",
 ): Promise<{ ok: true } | { ok: false; problem: string }> {
   const pins = await loadPins(path);
-  const problem = await snapshotPinProblem(pins, live(pins));
+  const problem = await snapshotPinProblem(pins, live(pins, kind), kind);
   return problem === undefined ? { ok: true } : { ok: false, problem };
 }
 
@@ -265,6 +280,8 @@ export async function capture(
   // replaced may be of an older shape, and a capture does not need it.
   const pins = JSON.parse(await Deno.readTextFile(pinsPath));
   delete pins.snapshot;
+  delete pins.tabletSnapshot;
+  delete pins.phoneSnapshot;
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
     (request) =>
@@ -351,8 +368,8 @@ export function releaseProblems(
 
 /** Step 3: the parts as the site and the release publish them, written
  * to `dir`. */
-export async function split(file: Uint8Array, dir: string) {
-  const manifest = imagePartsManifest(ASSET, file.byteLength);
+export async function split(file: Uint8Array, dir: string, asset = ASSET) {
+  const manifest = imagePartsManifest(asset, file.byteLength);
   const parts: PartInfo[] = [];
   for (const [index, name] of manifest.parts.entries()) {
     const [start, end] = imagePartRange(index, file.byteLength)!;
@@ -366,8 +383,8 @@ export async function split(file: Uint8Array, dir: string) {
   }
   const sha256 = await sha256Hex(file);
   await Deno.writeTextFile(
-    join(dir, `${ASSET}.sha256`),
-    `${sha256}  ${ASSET}\n`,
+    join(dir, `${asset}.sha256`),
+    `${sha256}  ${asset}\n`,
   );
   return {
     sha256,
@@ -376,13 +393,27 @@ export async function split(file: Uint8Array, dir: string) {
   };
 }
 
-export function releaseNotes(train: string, pin: SnapshotPin): string {
+export function releaseNotes(
+  train: string,
+  pin: SnapshotPin,
+  kind: SnapshotKind = "desktop",
+): string {
   const built = pin.builtFrom;
+  const ASSET = SNAPSHOT_KINDS[kind].asset;
+  const what = kind === "desktop"
+    ? "the Python set was installed and precompiled"
+    : kind === "tablet"
+    ? "python alone was installed and precompiled"
+    : "nothing was installed";
   return [
-    `The sealed sandbox \`?snapshot=1\` restores for ${train}: the in-tab`,
-    "Yurt kernel's memory after the slim image booted and the Python set was",
-    "installed and precompiled, with no process left in it. A restore needs",
-    "every one of these to be the page's own:",
+    `The sealed sandbox a ${kind} page restores by default for ${train}: the`,
+    `in-tab Yurt kernel's memory after the slim image booted and ${what},`,
+    "with no process left in it.",
+    "",
+    `This Linux: ${pin.contents?.remark ?? "(not recorded)"}. Kernel memory:`,
+    `${pin.memoryBytes ?? "(not recorded)"} bytes.`,
+    "",
+    "A restore needs every one of these to be the page's own:",
     "",
     `- kernel wasm sha256 \`${built.kernelSha256}\``,
     `- yurtos-kernel rev (the page's JS host) \`${built.kernelRev}\``,
@@ -397,9 +428,23 @@ export function releaseNotes(train: string, pin: SnapshotPin): string {
     `(\`${ASSET}.sha256\`).`,
     "",
     "Captured locally by `scripts/release-snapshot.ts`: the page served by the",
-    "dev server, `/?start&snapshot=capture` in headless Chromium, from a",
+    `dev server, \`/?start&snapshot=${
+      SNAPSHOT_KINDS[kind].capture
+    }\` in headless Chromium, from a`,
     "checkout whose artifacts/pins.json names this train.",
   ].join("\n");
+}
+
+/** `--kind desktop|tablet|phone` (default desktop), taken out of `args`. */
+function kindOption(args: string[]): SnapshotKind {
+  const at = args.indexOf("--kind");
+  if (at < 0) return "desktop";
+  const value = args[at + 1];
+  args.splice(at, 2);
+  if (!SNAPSHOT_KIND_NAMES.includes(value as SnapshotKind)) {
+    die(`--kind takes ${SNAPSHOT_KIND_NAMES.join(", ")}, not ${value}`);
+  }
+  return value as SnapshotKind;
 }
 
 async function main(): Promise<void> {
@@ -416,8 +461,9 @@ async function main(): Promise<void> {
       path = args[pinsAt + 1] ?? die("--pins needs a path");
       args.splice(pinsAt, 2);
     }
+    const checkKind = kindOption(args);
     if (args.length > 0) die(`unknown arguments: ${args.join(" ")}`);
-    const verdict = await checkPin(path);
+    const verdict = await checkPin(path, liveSetOf, checkKind);
     if (!verdict.ok) {
       // The verdict "not this train's", apart from any other failure
       // (exit 1): only this one drops the pin (scripts/lib/snapshot-pin.sh).
@@ -428,6 +474,11 @@ async function main(): Promise<void> {
   }
   const dryRun = flag("--dry-run");
   const resume = flag("--resume");
+  const kind = kindOption(args);
+  const { asset, capture: captureMode, pinKey, tagPrefix } =
+    SNAPSHOT_KINDS[kind];
+  const ASSET = asset;
+  const snapshotPath = join(root, "public", SNAPSHOT_KINDS[kind].name);
   let tagArg: string | undefined;
   const tagAt = args.indexOf("--tag");
   if (tagAt >= 0) {
@@ -440,7 +491,7 @@ async function main(): Promise<void> {
   // another train, or an older shape) is not read.
   const pins = parsePins({ ...raw, snapshot: undefined });
   const train: string = raw.train ?? die("artifacts/pins.json names no train");
-  const tag = tagArg ?? `snapshot-${train}`;
+  const tag = tagArg ?? `${tagPrefix}${train}`;
   for (const blob of ["yurt_kernel.wasm", "playground-slim.yurtimg"]) {
     await Deno.stat(join(root, "artifacts", blob)).catch(() =>
       die(
@@ -466,13 +517,13 @@ async function main(): Promise<void> {
   // A capture of this train and of the set the live index offers now,
   // that decodes in full: reused with --resume; anything else (another
   // train or set, a damaged file) is captured again.
-  const live = await liveSetOf(pins)();
-  const setProblem = captureSetProblem(live);
+  const live = await liveSetOf(pins, kind)();
+  const setProblem = captureSetProblem(live, kind);
   if (setProblem !== undefined) die(setProblem);
   const thisTrains = () =>
     checkSnapshotFile(
       snapshotPath,
-      { ...snapshotIdentity(pins), pythonSet: live },
+      { ...snapshotIdentity(pins), pythonSet: live! },
       { decode: true },
     );
   let check = resume ? await thisTrains() : undefined;
@@ -480,7 +531,10 @@ async function main(): Promise<void> {
     say(`--resume: reusing ${snapshotPath}`);
   } else {
     if (check !== undefined) say(`--resume: capturing again: ${check.problem}`);
-    await capture();
+    await capture({
+      query: `start&snapshot=${captureMode}`,
+      out: snapshotPath,
+    });
     // Step 2.
     check = await thisTrains();
   }
@@ -489,10 +543,13 @@ async function main(): Promise<void> {
   }
   const builtFrom = check.builtFrom;
   say("the capture decodes in full");
+  const facts = await snapshotHeaderFacts(
+    (await Deno.open(snapshotPath)).readable,
+  );
   const file = await Deno.readFile(snapshotPath);
   const dir = await Deno.makeTempDir({ prefix: "yurt-snapshot-" });
   try {
-    const { sha256, parts, files } = await split(file, dir);
+    const { sha256, parts, files } = await split(file, dir, ASSET);
     const pin: SnapshotPin = {
       releaseRepo: REPO,
       release: tag,
@@ -501,8 +558,14 @@ async function main(): Promise<void> {
       size: file.byteLength,
       parts: parts.map((part) => part.sha256),
       builtFrom,
+      memoryBytes: facts.memoryBytes,
+      ...(facts.contents === undefined ? {} : { contents: facts.contents }),
     };
-    say(`${ASSET}: ${pin.size} bytes, ${parts.length} parts, sha256 ${sha256}`);
+    say(
+      `${ASSET}: ${pin.size} bytes, ${parts.length} parts, ${facts.memoryBytes} bytes of kernel memory, sha256 ${sha256}; this Linux: ${
+        facts.contents?.remark ?? "(not recorded)"
+      }`,
+    );
 
     // Step 4.
     const existing = await gh(
@@ -541,7 +604,7 @@ async function main(): Promise<void> {
       say(`--dry-run: would create the prerelease ${REPO} ${tag}`);
     } else {
       const notes = join(dir, "notes.md");
-      await Deno.writeTextFile(notes, releaseNotes(train, pin));
+      await Deno.writeTextFile(notes, releaseNotes(train, pin, kind));
       await gh([
         "release",
         "create",
@@ -551,7 +614,7 @@ async function main(): Promise<void> {
         "--prerelease",
         "--latest=false",
         "--title",
-        `Sandbox snapshot for ${train}`,
+        `Sandbox snapshot (${kind}) for ${train}`,
         "--notes-file",
         notes,
         ...files,
@@ -565,7 +628,7 @@ async function main(): Promise<void> {
       say(`--dry-run: would pin\n${JSON.stringify(pin, null, 2)}`);
       return;
     }
-    raw.snapshot = pin;
+    raw[pinKey] = pin;
     await Deno.writeTextFile(pinsPath, `${JSON.stringify(raw, null, 2)}\n`);
     say("pinned in artifacts/pins.json; commit it");
   } finally {

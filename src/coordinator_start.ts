@@ -75,12 +75,6 @@ export const PYTHON_PROBE_COMMAND = [
  * so its redirects bind here. */
 export const PYTHON_PROBE_LINE = `exec /bin/sh -c '${PYTHON_PROBE_COMMAND}'`;
 
-/** The probe the phone's capture asks instead (`?snapshot=capture-phone`,
- * `captureInterpreterOnly`): only "is there a python3?", 0 or 42. The
- * phone's snapshot is the image's own python3, without the set. */
-export const PYTHON_INTERPRETER_PROBE_LINE =
-  `exec /bin/sh -c 'command -v python3 >/dev/null && exit 0; exit ${PYTHON_MISSING_EXIT}'`;
-
 /** The probe is a few BusyBox builtins; a probe that takes longer than
  * this is a sandbox in trouble, and the launch goes ahead as before. */
 export const PYTHON_PROBE_TIMEOUT_MS = 30_000;
@@ -93,12 +87,11 @@ export const PYTHON_PROBE_TIMEOUT_MS = 30_000;
 export async function probePython(
   spawn: Spawner | undefined,
   timeoutMs = PYTHON_PROBE_TIMEOUT_MS,
-  line = PYTHON_PROBE_LINE,
 ): Promise<boolean | undefined> {
   if (spawn === undefined) return undefined;
   let timer: number | undefined;
   try {
-    const process = await spawn(line, { maxOutputBytes: 4096 });
+    const process = await spawn(PYTHON_PROBE_LINE, { maxOutputBytes: 4096 });
     const status = await Promise.race([
       process.exited,
       new Promise<undefined>((resolve) => {
@@ -146,9 +139,11 @@ export type StartDeps<S extends StartableSession> = {
    * once Python is there. It says its own success; its failure is posted
    * as a failed capture, not as a Jupyter that did not start. */
   capture?(session: S): Promise<void>;
-  /** The phone's capture (`?snapshot=capture-phone`): it installs
-   * nothing and needs only python3, not the Python set. */
-  captureInterpreterOnly?: boolean;
+  /** What a capture needs before it seals: the Python it installs
+   * (`"set"`, the default: the desktop's set, the tablet's python), or
+   * nothing (`"none"`: the phone's, the image as it boots). Only with
+   * `capture`. */
+  captureNeeds?: "set" | "none";
   post(report: StartReport): void;
   /** How often "starting Jupyter (N s)" is posted. */
   tickMs?: number;
@@ -175,16 +170,14 @@ export async function startSandbox<S extends StartableSession>(
     deps.post({ type: "shell-ready" });
     return undefined;
   }
-  // The phone's capture seals the image's own python3: it needs python3,
-  // not the set.
-  const interpreterOnly = deps.capture !== undefined &&
-    deps.captureInterpreterOnly === true;
-  const probed = await probePython(
-    session.process,
-    deps.probeTimeoutMs,
-    interpreterOnly ? PYTHON_INTERPRETER_PROBE_LINE : PYTHON_PROBE_LINE,
-  );
-  if (probed === false) return await installThenLaunch(session, deps);
+  // The phone's capture seals the image as it boots: nothing to probe
+  // for or install.
+  if (deps.capture !== undefined && deps.captureNeeds === "none") {
+    return await launchKernel(session, deps);
+  }
+  if (await probePython(session.process, deps.probeTimeoutMs) === false) {
+    return await installThenLaunch(session, deps);
+  }
   return await launchKernel(session, deps);
 }
 
@@ -337,16 +330,15 @@ export function kernelLifecycle() {
   };
 }
 
-/** Whether a start restores a sealed sandbox (`?snapshot=1` or an
- * uploaded one): only the in-tab sandbox (the desktop app's runs
- * natively). A phone or tablet too: its page asks for no Python set, so
- * the restore takes only a snapshot without one (checkPythonSet, before
- * anything is downloaded) -- the phone's, `?snapshot=capture-phone`. The
- * full one, 130 MB downloaded and ~520 MiB inflated, is more than such a
- * tab keeps, and is refused there. */
+/** Whether a start restores a sealed sandbox (by default, `?snapshot=1`
+ * or an uploaded one): only the in-tab sandbox (the desktop app's runs
+ * natively). A phone or tablet too, its own kind (src/sandbox_snapshot.ts
+ * SNAPSHOT_KINDS): the restore takes only a snapshot of the Python the
+ * page asks the live index about (checkPythonSet, before the restore) --
+ * none on a phone, python alone on a tablet -- so the desktop's 130 MB,
+ * ~520 MiB one is refused there. */
 export function restoresSnapshot(start: {
   snapshot?: "restore" | "capture";
-  tablet?: boolean;
   native: boolean;
 }): boolean {
   return start.snapshot === "restore" && !start.native;

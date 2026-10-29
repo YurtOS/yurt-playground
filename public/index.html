@@ -659,18 +659,21 @@
       </p>
 
       <p id="mobile-note" data-testid="mobile-note" hidden>
-        This looks like a tablet, so this page runs the Linux shell only:
-        Jupyter and the agent need more memory than a tablet browser gives one
-        tab. Even the shell may stall, or the tab may reload. A desktop browser,
-        or the desktop app, runs all of it.
+        This looks like a tablet, so this page runs the Linux shell only, with a
+        snapshot made for tablets: Jupyter and the agent need more memory than a
+        tablet browser gives one tab. A desktop browser, or the desktop app,
+        runs all of it.
       </p>
 
       <p id="phone-note" data-testid="phone-note" hidden>
-        This is a phone, so this page starts the Linux shell without Python: a
-        phone tab has too little memory to install it automatically. You can
-        still install <code>python</code> from <em>Packages</em>, but the tab
-        may run out of memory. A desktop browser, or the desktop app, runs all
-        of it.
+        This is a phone, so this page runs the Linux shell only, with a small
+        snapshot made for phones: a phone tab has too little memory for more.
+        Installing more from <em>Packages</em> may run the tab out of memory. A
+        desktop browser, or the desktop app, runs all of it.
+      </p>
+
+      <p id="linux-remark" data-testid="linux-remark" hidden>
+        This Linux: <span id="linux-remark-text"></span>
       </p>
 
       <p id="memory-refused" data-testid="memory-refused" role="alert" hidden>

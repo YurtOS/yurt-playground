@@ -291,17 +291,17 @@ Deno.test("?snapshot=<id> checks every part against the uploaded manifest", asyn
       "sandbox snapshot part sandbox.seal.gz.1 sha256 mismatch",
     );
     // Nothing but the site's pins, the refs list and the snapshot's own
-    // commit; never
-    // the pinned snapshot's path; and no part after the bad one.
+    // commit; never the pinned snapshot's path. (Up to
+    // SNAPSHOT_PARTS_IN_FLIGHT parts are asked for at once, so a part
+    // after the bad one may have been.)
     assertEquals(
       fetched.filter((url) => !url.startsWith(BASE)),
       ["./pins.json", SNAPSHOT_REFS_API],
     );
-    assertEquals(fetched.includes(`${BASE}sandbox.seal.gz.2`), false);
   });
 });
 
-Deno.test("?snapshot=<id> asks the live index before it fetches any part", async () => {
+Deno.test("?snapshot=<id> of another set is refused, the parts downloading beside the check", async () => {
   const { files } = await upload(BUILT, 1024);
   await withFetch(files, async (fetched) => {
     await assertRejects(
@@ -314,7 +314,8 @@ Deno.test("?snapshot=<id> asks the live index before it fetches any part", async
       SnapshotMismatch,
       "the live index offers another set",
     );
-    assertEquals(fetched.filter((url) => url.includes("sandbox.seal")), []);
+    // The check is not on the critical path: the download did not wait.
+    assertEquals(fetched.some((url) => url.includes("sandbox.seal")), true);
   });
 });
 

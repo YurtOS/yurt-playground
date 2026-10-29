@@ -35,6 +35,11 @@ import {
 } from "./install_request.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import { deviceClass } from "./device.ts";
+import {
+  captureKindOf,
+  type SnapshotKind,
+  tabletPythonRequest,
+} from "./sandbox_snapshot.ts";
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
 import { capturePackages, isUploadedSnapshotId } from "./snapshot_source.ts";
 import {
@@ -63,6 +68,7 @@ type FromWorker =
   | { type: "pkg-progress"; req: number; text: string }
   | InstalledReport
   | { type: "snapshot-captured"; blob: Blob; ms: number }
+  | { type: "linux-remark"; remark: string }
   | {
     type: "yurt-reply";
     req: number;
@@ -269,6 +275,10 @@ function boot(
   // `?snapshot=capture`: each end of the boot marks its outcome on <html>,
   // where scripts/release-snapshot.ts waits (src/capture_outcome.ts).
   const capturing = snapshotMode() === "capture";
+  // The snapshot this start restores (the device's own) or captures.
+  const kind: SnapshotKind = capturing
+    ? captureKindOf(snapshotParam())!
+    : deviceClass();
   const endBoot = (why?: string) => {
     booting = false;
     rememberBooting(undefined);
@@ -412,6 +422,12 @@ function boot(
       installedPanel.report(msg);
     }
     // A capture ends in the sealed sandbox, with no Jupyter to wait for.
+    // What this Linux holds, above the terminal (src/linux_remark.ts).
+    if (msg.type === "linux-remark") {
+      const note = byId("linux-remark");
+      byId("linux-remark-text").textContent = msg.remark;
+      note.hidden = false;
+    }
     if (msg.type === "snapshot-captured") {
       finishCapture(
         document.documentElement.dataset,
@@ -459,6 +475,13 @@ function boot(
       extra = capturing
         ? capturePackages(new URL(location.href).searchParams.get("packages"))
         : undefined;
+      // The phone's snapshot is the image as it boots: extras would ride,
+      // unlabelled, onto every phone that restores it.
+      if (kind === "phone" && capturing && (extra?.length ?? 0) > 0) {
+        throw new Error(
+          "?snapshot=capture-phone takes no &packages=: the phone's snapshot is the image as it boots",
+        );
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       fail(message);
@@ -466,9 +489,9 @@ function boot(
       return;
     }
     const asked = new URL(location.href).searchParams.get("snapshot");
-    if (asked !== null && snapshotMode() === undefined) {
+    if (asked !== null && asked !== "0" && snapshotMode() === undefined) {
       console.warn(
-        `[snapshot] ?snapshot=${asked} is not 1, capture, capture-phone or an uploaded snapshot's 40-digit commit sha; booting the image`,
+        `[snapshot] ?snapshot=${asked} is not 0, 1, capture, capture-tablet, capture-phone or an uploaded snapshot's 40-digit commit sha; booting the image`,
       );
     }
     worker.postMessage({
@@ -479,36 +502,50 @@ function boot(
       kernelPorts,
       apiToken: desktop?.apiToken,
       noJupyter: noPython,
-      python: noPython || desktop !== undefined || pins === undefined ||
-          new URL(location.href).searchParams.get("snapshot") === PHONE_CAPTURE
+      // A capture installs its kind's Python: the set (desktop), python
+      // alone (tablet), none (phone).
+      python: desktop !== undefined || pins === undefined
+        ? undefined
+        : capturing
+        ? kind === "desktop"
+          ? pythonInstallRequest(pins)
+          : kind === "tablet"
+          ? tabletPythonRequest(pins)
+          : undefined
+        : noPython
         ? undefined
         : pythonInstallRequest(pins),
+      // A tablet installs no Python, but its snapshot holds python: the
+      // live index is asked about that for the snapshot's check.
+      snapshotPython: !capturing && kind === "tablet" && pins !== undefined
+        ? tabletPythonRequest(pins)
+        : undefined,
+      snapshotKind: kind,
       tablet: smallDevice,
       snapshot: snapshotMode(),
       snapshotId: uploadedSnapshotId(),
       capturePackages: extra,
-      capturePhone: new URL(location.href).searchParams.get("snapshot") ===
-        PHONE_CAPTURE,
     });
   });
 }
 
-/** `?snapshot=1` restores the sealed sandbox (src/sandbox_snapshot.ts),
- * `?snapshot=<id>` an uploaded one (src/snapshot_source.ts);
- * `?snapshot=capture` makes one. Off by default. */
+/** The page restores its device's sealed sandbox by default
+ * (src/sandbox_snapshot.ts SNAPSHOT_KINDS), booting the image when it
+ * cannot; `?snapshot=0` boots the image. `?snapshot=<id>` restores an
+ * uploaded one (src/snapshot_source.ts); `?snapshot=capture`,
+ * `capture-tablet` and `capture-phone` make one of each kind. */
 function snapshotMode(): "restore" | "capture" | undefined {
-  const value = new URL(location.href).searchParams.get("snapshot");
-  if (value === "1" || isUploadedSnapshotId(value)) return "restore";
-  if (value === "capture" || value === PHONE_CAPTURE) return "capture";
+  const value = snapshotParam();
+  if (value === null || value === "1" || isUploadedSnapshotId(value)) {
+    return "restore";
+  }
+  if (captureKindOf(value) !== undefined) return "capture";
   return undefined;
 }
 
-/** `?snapshot=capture-phone`: the phone's snapshot, a capture that asks
- * for no Python install (the slim image's own python3 is the phone's
- * Python), so it seals the booted image with nothing added and records
- * no Python set. Only a page that installs no Python -- a phone's or a
- * tablet's -- restores a snapshot without a set (checkPythonSet). */
-const PHONE_CAPTURE = "capture-phone";
+function snapshotParam(): string | null {
+  return new URL(location.href).searchParams.get("snapshot");
+}
 
 /** `?snapshot=<id>`: the uploaded snapshot to restore instead of the
  * pinned one (src/snapshot_source.ts), a commit sha and nothing else. */

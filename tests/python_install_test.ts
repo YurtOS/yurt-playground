@@ -196,7 +196,12 @@ Deno.test("each boot makes its own live answers (coordinator_worker's begin)", a
     new URL("../src/coordinator_worker.ts", import.meta.url),
   );
   const begin = worker.match(/const begin = async \(\) => \{\n\s*(.*)\n/);
-  assertEquals(begin?.[1], "live = liveAnswers(msg.python);");
+  // A tablet's restore asks about its snapshot's python, as it installs
+  // none itself.
+  assertEquals(
+    begin?.[1],
+    "live = liveAnswers(msg.python ?? msg.snapshotPython);",
+  );
   // ...and ends its read once startSandbox has returned.
   assertEquals(
     /const started = await startSandbox\(\{[^]*?\n {4}\}\);\n(?:\s*\/\/.*\n)*\s*live\.finish\(\);/

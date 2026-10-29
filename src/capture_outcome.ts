@@ -126,14 +126,14 @@ compiled = [compileall.compile_dir(path, quiet=1) for path in roots]
 sys.exit(0 if all(compiled) else 1)
 `;
 
-/** Whether a capture precompiles before the seal: the full one, whose
- * Python set ships its modules as source. Not the phone's
- * (`?snapshot=capture-phone`): it seals the image as it boots, and the
- * bytecode (~32 MiB of kernel memory, measured on
- * playground-2026.10.29-3d32068.2's slim image) would only make the
- * phone's restore bigger. */
-export function capturePrecompiles(kind: "full" | "phone"): boolean {
-  return kind === "full";
+/** Whether a capture precompiles before the seal: one that installed
+ * Python (the desktop's set, the tablet's interpreter), whose modules ship
+ * as source. Not the phone's (`?snapshot=capture-phone`): it seals the
+ * image as it boots, with no Python to compile. */
+export function capturePrecompiles(
+  kind: "desktop" | "tablet" | "phone",
+): boolean {
+  return kind !== "phone";
 }
 
 /** The shell line that runs {@link PRECOMPILE_PROGRAM}. */

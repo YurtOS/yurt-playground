@@ -197,24 +197,37 @@ it dispatches yurt-sandbox's release workflows from exact commits, generates
 merging the pin PR that deploys the page. `--validate` builds everything and
 publishes nothing; `--pins-only` regenerates the pins from releases cut by hand.
 
-`?snapshot=1` (an experiment) restores a sealed sandbox with the Python set
-already installed instead of booting the slim image and installing it. The
-snapshot is the kernel's memory after an install in the browser, so it is
+The page restores a sealed sandbox made for its device by default, instead of
+booting the slim image and installing into it: a desktop browser the one with
+the Python set and Jupyter (`snapshot` in the pins), a tablet one with python
+alone (`tabletSnapshot`), a phone the slim image as it boots, without Python
+(`phoneSnapshot`). Whenever its snapshot cannot be had or is refused, the page
+boots the image as before, with a console note; `?snapshot=0` always boots the
+image. Each snapshot records what is in that Linux, which the page shows above
+the terminal and the shell prints when it starts (it is also `/etc/motd`). A
+repeat visit takes the checked parts from the browser's cache (Cache API, keyed
+by each part's sha256) instead of downloading them again. See
+[Snapshots in use](#snapshots-in-use) for each one's size and the memory it
+needs.
+
+A snapshot is the kernel's memory after an install in the browser, so it is
 captured locally rather than by the train:
 `deno run -A
-scripts/release-snapshot.ts`, from a clean checkout at its pushed
-head whose `artifacts/pins.json` names the train (with the pinned blobs
-installed, the sibling kernel checkout clean at the pinned rev, and Playwright's
-Chromium). It serves the page, runs `?snapshot=capture` in headless Chromium,
-checks that the file decodes in full and was built from the pinned kernel and
-image and the Python set the live index offers, publishes it as the prerelease
-`snapshot-<train>` and writes the `snapshot` pin. `--dry-run` stops before the
-release and the pin; `--tag` names a second snapshot of one train (a published
-one is never replaced). A train keeps the pin only while
-`release-snapshot.ts --check-pin` accepts it, and otherwise drops it and says to
-run the script again; so does a change to the page's boot setup (`BOOT_SETUP` in
-`src/sandbox_snapshot.ts`). Only the deploy fetches the snapshot
-(`YURT_INSTALL_SNAPSHOT=1`), and a problem with it never fails the deploy.
+scripts/release-snapshot.ts --kind desktop|tablet|phone`, from a
+clean checkout at its pushed head whose `artifacts/pins.json` names the train
+(with the pinned blobs installed, the sibling kernel checkout clean at the
+pinned rev, and Playwright's Chromium). It serves the page, runs
+`?snapshot=capture` in headless Chromium, checks that the file decodes in full
+and was built from the pinned kernel and image and the Python the live index
+offers, publishes it as the prerelease `snapshot-<train>`
+(`snapshot-tablet-<train>`, `snapshot-phone-<train>`) and writes its pin, with
+its kernel memory and what it holds. `--dry-run` stops before the release and
+the pin; `--tag` names a second snapshot of one train (a published one is never
+replaced). A train keeps the pin only while `release-snapshot.ts --check-pin`
+accepts it, and otherwise drops it and says to run the script again; so does a
+change to the page's boot setup (`BOOT_SETUP` in `src/sandbox_snapshot.ts`).
+Only the deploy fetches the snapshot (`YURT_INSTALL_SNAPSHOT=1`), and a problem
+with it never fails the deploy.
 
 To try another snapshot without a pin or a deploy, capture and upload it
 locally:
@@ -238,21 +251,36 @@ repository's path, so the page asks the GitHub API's list of those refs first
 (60 unauthenticated requests an hour per address; without an answer it boots the
 image). The manifest takes every check the pin does, each part is checked
 against it, and anything else boots the image as without the flag. `--file PATH`
-uploads an existing capture, `--dry-run` stops before the push. `--phone` is the
-phone's snapshot (`?snapshot=capture-phone`): the slim image's own python3 as it
-boots, with nothing installed or precompiled and no Python set recorded, so only
-a page that installs no Python (a phone's or a tablet's) restores it, and the
-URL carries `&start-anyway`. A phone or tablet refuses any snapshot with a
-Python set before downloading it. `--before-deploy` turns the site check into a
-note, for a snapshot of pins that a pending deploy brings. List the uploads with
-`git ls-remote origin 'refs/snapshots/*'`; delete one with
-`git push origin :refs/snapshots/<name>`, after which the page refuses its URL.
-Two things the script does not check. First, a capture from page code that
-changed `SEAL_VERSION`, `BOOT_SETUP` or the header format against the deployed
-page: only the pins are compared, and the site then boots the image (keep the
-page checkout at the pushed main). Second, `--packages` extras whose install
-moves a member of the Python set: the snapshot keeps the set's label, which no
-longer describes its memory.
+uploads an existing capture, `--dry-run` stops before the push. `--kind` picks
+the snapshot as above (`?snapshot=capture`, `capture-tablet`, `capture-phone`);
+each restores only on a page of its kind, since a page refuses a snapshot whose
+Python is not the one it asks the live index about (none on a phone, python
+alone on a tablet), and a phone's URL carries `&start-anyway`. `--before-deploy`
+turns the site check into a note, for a snapshot of pins that a pending deploy
+brings. List the uploads with `git ls-remote origin 'refs/snapshots/*'`; delete
+one with `git push origin :refs/snapshots/<name>`, after which the page refuses
+its URL. Two things the script does not check. First, a capture from page code
+that changed `SEAL_VERSION`, `BOOT_SETUP` or the header format against the
+deployed page: only the pins are compared, and the site then boots the image
+(keep the page checkout at the pushed main). Second, `--packages` extras whose
+install moves a member of the Python set: the snapshot keeps the set's label,
+which no longer describes its memory.
+
+## Snapshots in use
+
+<!-- snapshot-table:start (scripts/snapshot-table.ts) -->
+<!-- deno-fmt-ignore-start -->
+
+Train `playground-2026.10.29-3d32068.2`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
+
+| Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
+| --- | --- | --- | --- | --- | --- | --- |
+| desktop | desktop browser (Mac, PC) | `snapshot-playground-2026.10.29-3d32068.2` | 127.5 MB in 7 parts | ? | ? | ? |
+| tablet | tablet (iPad) | not pinned: boots the image | | | | |
+| phone | phone (iPhone), with `?start-anyway` | not pinned: boots the image | | | | |
+
+<!-- deno-fmt-ignore-end -->
+<!-- snapshot-table:end -->
 
 ## License
 

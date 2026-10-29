@@ -197,7 +197,9 @@ Deno.test("static build writes every file the pages need", async () => {
 
 Deno.test("the static build publishes a sandbox snapshot only when it is the pinned one, built from the pins", async () => {
   const { snapshotMatchesPins } = await import("../scripts/build-static.ts");
-  const { encodeSandboxSnapshot } = await import("../src/sandbox_snapshot.ts");
+  const { BOOT_SETUP, encodeSandboxSnapshot } = await import(
+    "../src/sandbox_snapshot.ts"
+  );
   const hex = (c: string) => c.repeat(64);
   const pin = (sha256: string) => ({
     repo: "r",
@@ -210,7 +212,7 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
     kernelSha256: hex("a"),
     kernelRev: "v",
     sealVersion: 1,
-    bootSetup: 1,
+    bootSetup: BOOT_SETUP,
     imageSha256: hex("b"),
     pythonSealSha256: hex("c"),
     pythonSet: "b/python@3.14.7-yurt_0:0123456789abcdef",
