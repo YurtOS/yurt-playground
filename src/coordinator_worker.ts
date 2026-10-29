@@ -45,6 +45,7 @@ import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 import {
   FRESH_SANDBOX,
+  freshSandboxFailed,
   type InstalledReport,
   installedReport,
 } from "./installed_list.ts";
@@ -770,6 +771,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           type: "python-missing",
           error: `a fresh sandbox did not start: ${bootError ?? "unknown"}`,
         });
+        post(freshSandboxFailed(bootError ?? "unknown"));
       }
     };
   }

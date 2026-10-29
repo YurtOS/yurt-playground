@@ -451,6 +451,34 @@ export function vfsStat(
   };
 }
 
+/** A VFS read's request (offset 0, then `path`; `view` sets the offset),
+ * and the most it can answer: the request and the response share the
+ * kernel's scratch buffer. */
+function vfsReadRequest(mk: KernelHostInterface, path: string) {
+  const pathBytes = s(path);
+  const request = new Uint8Array(8 + pathBytes.byteLength);
+  request.set(pathBytes, 8);
+  return {
+    request,
+    view: new DataView(request.buffer),
+    cap: responseCap(mk) - request.byteLength,
+  };
+}
+
+/** The errnos the kernel's VFS read answers with, in words. */
+const ENOENT = 2;
+const ERRNO_WORDS: Record<number, string> = {
+  2: "no such file",
+  5: "I/O error",
+  9: "bad file descriptor",
+  21: "is a directory",
+  22: "invalid argument",
+  40: "too many levels of symbolic links",
+};
+function errnoText(rc: number): string {
+  return ERRNO_WORDS[-rc] ?? `error ${-rc}`;
+}
+
 /** A regular file's bytes (`size` of them, as its stat says). */
 export function vfsReadFile(
   mk: KernelHostInterface,
@@ -458,12 +486,7 @@ export function vfsReadFile(
   size: number,
 ): Uint8Array {
   const out = new Uint8Array(size);
-  const pathBytes = s(path);
-  const request = new Uint8Array(8 + pathBytes.byteLength);
-  request.set(pathBytes, 8);
-  const view = new DataView(request.buffer);
-  // The request and the response share the kernel's scratch buffer.
-  const cap = responseCap(mk) - request.byteLength;
+  const { request, view, cap } = vfsReadRequest(mk, path);
   let at = 0;
   while (at < size) {
     view.setBigUint64(0, BigInt(at), true);
@@ -491,14 +514,11 @@ export function vfsReadWhole(
   mk: KernelHostInterface,
   path: string,
 ): Uint8Array | undefined {
-  const pathBytes = s(path);
-  const request = new Uint8Array(8 + pathBytes.byteLength);
-  request.set(pathBytes, 8);
-  const cap = responseCap(mk) - request.byteLength;
+  const { request, cap } = vfsReadRequest(mk, path);
   const { rc, response } = mk.syscall(KERNEL_VFS_READ, request, cap);
   const count = Number(rc);
-  if (count === -2) return undefined;
-  if (count < 0) throw new Error(`read ${path}: rc=${rc}`);
+  if (count === -ENOENT) return undefined;
+  if (count < 0) throw new Error(`read ${path}: ${errnoText(count)}`);
   if (count >= cap) {
     throw new Error(`${path} does not fit one read (${cap} bytes)`);
   }

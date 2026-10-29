@@ -919,8 +919,11 @@ async function startPlayground(
       return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
     },
     files: {
-      readWhole: (path) => Promise.resolve(vfsReadWhole(mk, path)),
-      exists: (path) => Promise.resolve(vfsStat(mk, path) !== undefined),
+      // In an executor, so a failed read is a rejection, not a throw.
+      readWhole: (path) =>
+        new Promise((resolve) => resolve(vfsReadWhole(mk, path))),
+      exists: (path) =>
+        new Promise((resolve) => resolve(vfsStat(mk, path) !== undefined)),
     },
     dialSandboxPort: (port) => mk.dialSandboxPort(port),
     onOutput: output.onOutput,

@@ -84,7 +84,7 @@ const knownInstalled = new Set<string>();
 /** Marks the Packages panel's buttons by `knownInstalled`, and says on its
  * own line why that cannot be told (or clears that); set once the panel is
  * wired. */
-let markPackages: (error?: string) => void = () => {};
+let markPackages: (note?: string) => void = () => {};
 /** Asks the coordinator to read pkg's installed list again; set at boot. */
 let askInstalled = () => {};
 
@@ -601,12 +601,10 @@ function wirePackages(): void {
   let busy = false;
   const mark = () =>
     markInstalled(list.querySelectorAll("button"), knownInstalled, busy);
-  markPackages = (error) => {
+  markPackages = (note) => {
     mark();
-    installedError.hidden = error === undefined;
-    installedError.textContent = error === undefined
-      ? ""
-      : `cannot tell which packages are installed: ${error}`;
+    installedError.hidden = note === undefined;
+    installedError.textContent = note ?? "";
   };
   const install = async (name: string) => {
     if (packageInstall === undefined || busy) return;

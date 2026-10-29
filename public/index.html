@@ -155,6 +155,10 @@
       .bar-action[disabled] {
         cursor: progress;
       }
+      /* Installed, not busy: nothing to wait for. */
+      #packages:not([data-install="running"]) .bar-action[disabled] {
+        cursor: default;
+      }
       /* Packages: install from YurtOS/yurt-packages into this tab. */
       #packages {
         border-bottom: 1px solid var(--rule);

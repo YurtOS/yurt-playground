@@ -459,5 +459,6 @@ Deno.test("vfsReadWhole is a file in one VFS read, none when missing, and refuse
   } catch (error) {
     threw = String(error);
   }
-  assert(threw.includes("rc=-21"), threw);
+  // In words: a directory where the file should be.
+  assert(threw.includes("read /dir: is a directory"), threw);
 });
