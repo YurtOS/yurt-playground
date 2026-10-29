@@ -119,6 +119,10 @@ function setEntryMetadata(
  * it accepts (directories are always kept): the ramfs lives in the kernel's
  * memory, and a sandbox that will be sealed pays for every staged byte on
  * every seal, so a demo stages what its one program needs.
+ *
+ * `host` gets each staged file's bytes under every name that reaches it:
+ * its own, its hardlinks' and its symlinks'. The names of one file share
+ * one buffer, so its values are read-only.
  */
 export async function stageYurtimg(
   mk: KernelHostInterface,
@@ -139,23 +143,33 @@ export async function stageYurtimg(
     registerRamfsDirectory(mk, path);
     knownDirectories.add(path);
   }
+  // One copy of each file's bytes, shared by every name that reaches it
+  // (its hardlinks, and its symlinks, which `stat` follows to the same
+  // inode). A copy per symlink -- 151 of busybox and 146 of git -- held
+  // ~1.3 GB at once and ran an iPhone tab out of memory. Sharing is safe
+  // because nothing writes these buffers: the kernel copies what it is
+  // given, so a guest write to one path never reaches them.
+  const bytesByInode = new Map<bigint, Uint8Array>();
+  const fileBytes = (path: string): Uint8Array => {
+    const inode = provider.stat(path).inode;
+    let bytes = bytesByInode.get(inode);
+    if (bytes === undefined) {
+      bytes = provider.readFile(path);
+      bytesByInode.set(inode, bytes);
+    }
+    return bytes;
+  };
   for (const [path, entry] of Object.entries(index.entries)) {
     if (entry.type !== "file" && entry.type !== "hardlink") continue;
     if (!include(path)) continue;
-    stageRamfsFile(
-      mk,
-      host,
-      path,
-      provider.readFile(path),
-      knownDirectories,
-    );
+    stageRamfsFile(mk, host, path, fileBytes(path), knownDirectories);
   }
   for (const [path, entry] of Object.entries(index.entries)) {
     if (entry.type !== "symlink") continue;
     if (!include(path)) continue;
     registerRamfsSymlink(mk, entry.target, path);
     try {
-      host.set(path, provider.readFile(path));
+      host.set(path, fileBytes(path));
     } catch {
       // Dangling or non-file symlink: valid VFS entry, not a module.
     }

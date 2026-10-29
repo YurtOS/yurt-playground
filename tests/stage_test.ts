@@ -8,7 +8,12 @@ import {
 } from "@yurt/kernel-host-interface-js";
 import { handlePlaygroundRequest } from "../src/serve.ts";
 import { loadPins, resolveArtifacts } from "../src/pins.ts";
-import { stageYurtimg, vfsReadWhole, vfsStat } from "../src/stage.ts";
+import {
+  stageYurtimg,
+  vfsReadWhole,
+  vfsStat,
+  writeRamfsFile,
+} from "../src/stage.ts";
 
 const STAT_MODE = 12;
 const STAT_UID = 16;
@@ -79,7 +84,12 @@ function stagedKernel(): Promise<KernelHostInterface | null> {
   return staged;
 }
 
-async function buildStagedKernel(): Promise<KernelHostInterface | null> {
+/** A fresh kernel from the pinned wasm and the pinned image's bytes, or
+ * `null` when the artifacts are not resolvable here (see
+ * {@link stagedKernel}). */
+async function pinnedKernel(): Promise<
+  { mk: KernelHostInterface; image: Uint8Array } | null
+> {
   const artifactsDir = join(repoRoot, "artifacts");
   try {
     await resolveArtifacts({
@@ -112,12 +122,14 @@ async function buildStagedKernel(): Promise<KernelHostInterface | null> {
     new Uint8Array(await kernelRes.arrayBuffer()),
     defaultHostState(),
   );
-  await stageYurtimg(
-    mk,
-    new Uint8Array(await imageRes.arrayBuffer()),
-    new Map(),
-  );
-  return mk;
+  return { mk, image: new Uint8Array(await imageRes.arrayBuffer()) };
+}
+
+async function buildStagedKernel(): Promise<KernelHostInterface | null> {
+  const pinned = await pinnedKernel();
+  if (!pinned) return null;
+  await stageYurtimg(pinned.mk, pinned.image, new Map());
+  return pinned.mk;
 }
 
 Deno.test({
@@ -413,6 +425,108 @@ Deno.test("stageYurtimg applies metadata only to the entries it stages", async (
   assertEquals(metadata.has("/usr/local/bin/pip3"), false);
   // Directories are always staged, so they always take their metadata.
   assertEquals(metadata.get("/root")?.mode, 0o040_700);
+});
+
+/** One file reached by many names, as busybox and git are in the image,
+ * beside a distinct file with the same bytes. */
+const LINKED_IMAGE: TarSpec[] = [
+  { path: "/bin", type: "5", mode: 0o755, uid: 0, gid: 0, mtime: 1 },
+  { path: "/usr", type: "5", mode: 0o755, uid: 0, gid: 0, mtime: 1 },
+  { path: "/usr/bin", type: "5", mode: 0o755, uid: 0, gid: 0, mtime: 1 },
+  ...[
+    { path: "/bin/busybox", type: "0", body: "busybox" },
+    { path: "/bin/sh", type: "2", link: "busybox" },
+    { path: "/bin/ls", type: "2", link: "busybox" },
+    { path: "/usr/bin/env", type: "2", link: "/bin/busybox" },
+    // A symlink to a symlink: still the one file.
+    { path: "/usr/bin/sh", type: "2", link: "../../bin/sh" },
+    { path: "/bin/busybox-hard", type: "1", link: "bin/busybox" },
+    // Same bytes, its own file: never the same buffer.
+    { path: "/bin/twin", type: "0", body: "busybox" },
+    { path: "/bin/usr", type: "2", link: "/usr" },
+    { path: "/bin/dangling", type: "2", link: "/nowhere" },
+  ].map((entry) => ({
+    ...entry,
+    type: entry.type as TarSpec["type"],
+    mode: 0o755,
+    uid: 0,
+    gid: 0,
+    mtime: 2,
+  })),
+];
+
+Deno.test("stageYurtimg gives every name of a file one copy of its bytes, and a distinct file its own", async () => {
+  const { mk } = fakeKernel();
+  const host = new Map<string, Uint8Array>();
+  await stageYurtimg(mk, zstdStored(ustar(LINKED_IMAGE)), host);
+
+  const busybox = host.get("/bin/busybox");
+  assert(busybox !== undefined, "busybox was not staged");
+  assertEquals(new TextDecoder().decode(busybox), "busybox");
+  // Each symlink used to hold its own copy of its target: 151 of busybox
+  // and 146 of git, ~1.3 GB alive at once, ran an iPhone tab out of memory.
+  for (
+    const name of [
+      "/bin/sh",
+      "/bin/ls",
+      "/usr/bin/env",
+      "/usr/bin/sh",
+      "/bin/busybox-hard",
+    ]
+  ) {
+    assert(host.get(name) === busybox, `${name} has its own copy`);
+  }
+  const twin = host.get("/bin/twin");
+  assert(twin !== undefined, "twin was not staged");
+  assert(twin.buffer !== busybox.buffer, "a distinct file shares a buffer");
+  busybox[0] = "B".charCodeAt(0);
+  assertEquals(new TextDecoder().decode(twin), "busybox");
+  // A symlink to a directory and a dangling one are VFS entries, not files.
+  assertEquals(host.has("/bin/usr"), false);
+  assertEquals(host.has("/bin/dangling"), false);
+});
+
+Deno.test("stageYurtimg gives a symlink its target's bytes when only the symlink is staged", async () => {
+  const { mk } = fakeKernel();
+  const host = new Map<string, Uint8Array>();
+  await stageYurtimg(
+    mk,
+    zstdStored(ustar(LINKED_IMAGE)),
+    host,
+    (path) => path === "/bin/sh" || path === "/usr/bin/env",
+  );
+  assertEquals([...host.keys()].sort(), ["/bin/sh", "/usr/bin/env"]);
+  assertEquals(new TextDecoder().decode(host.get("/bin/sh")), "busybox");
+  assert(host.get("/usr/bin/env") === host.get("/bin/sh"));
+});
+
+Deno.test({
+  name:
+    "a write to one staged file reaches its symlinks but no other file, nor the host's bytes",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const pinned = await pinnedKernel();
+    if (!pinned) return;
+    const { mk } = pinned;
+    const host = new Map<string, Uint8Array>();
+    await stageYurtimg(mk, zstdStored(ustar(LINKED_IMAGE)), host);
+    const text = (bytes: Uint8Array | undefined) =>
+      bytes === undefined ? undefined : new TextDecoder().decode(bytes);
+
+    writeRamfsFile(mk, "/bin/busybox", new TextEncoder().encode("rewritten"));
+    assertEquals(text(vfsReadWhole(mk, "/bin/busybox")), "rewritten");
+    assertEquals(text(vfsReadWhole(mk, "/bin/sh")), "rewritten");
+    assertEquals(text(vfsReadWhole(mk, "/usr/bin/sh")), "rewritten");
+    assertEquals(text(vfsReadWhole(mk, "/bin/twin")), "busybox");
+    // The kernel keeps its own copy: the bytes the host was handed are
+    // not the guest's file.
+    assertEquals(text(host.get("/bin/sh")), "busybox");
+
+    writeRamfsFile(mk, "/bin/twin", new TextEncoder().encode("twin"));
+    assertEquals(text(vfsReadWhole(mk, "/bin/twin")), "twin");
+    assertEquals(text(vfsReadWhole(mk, "/bin/ls")), "rewritten");
+  },
 });
 
 Deno.test("vfsReadWhole is a file in one VFS read, none when missing, and refuses one that does not fit", () => {
