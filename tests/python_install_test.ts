@@ -333,6 +333,15 @@ Deno.test("the Suspend/Resume set verifies only what pkg fetches, and takes an i
     Error,
     "python 3.14.7-yurt_1 installed, not the set's 3.14.7-yurt_0",
   );
+  // An installed seal, even at the set's release, would go unverified
+  // while the kernel reads its archive: refused, with or without python.
+  for (const installed of [[seal], [python, seal]]) {
+    assertThrows(
+      () => sealVerification([python, seal], installed),
+      Error,
+      "the slim image has python-seal installed: this kernel reads its archive",
+    );
+  }
 });
 
 Deno.test("the Suspend/Resume set is pinned to the slim image's python too", async () => {
@@ -405,7 +414,7 @@ Deno.test("the Suspend/Resume kernel stages an image-shipped python's stdlib fro
     source.indexOf("async function restoreStored("),
   );
   assertEquals(
-    /sealSet\.stdlibFromImage \? stagedPath : \(path\) => path\.startsWith\("\/etc\/"\)/
+    /,\s*sealSet\.stdlibFromImage \? stagedPath : \(path\) => path\.startsWith\("\/etc\/"\)/
       .test(boot),
     true,
     "the image's stdlib is staged when it ships python",

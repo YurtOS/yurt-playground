@@ -783,11 +783,11 @@ if grep -qx 'playground-slim.yurtimg' <<< "$image_assets"; then
   command -v zstd >/dev/null 2>&1 || die "zstd is required to read the slim image's installed list"
   slim_dir=$(mktemp -d "${TMPDIR:-/tmp}/yurt-slim.XXXXXX")
   gh release download "$image_release" --repo "$image_repo" --pattern playground-slim.yurtimg --dir "$slim_dir" >/dev/null ||
-    die "cannot download playground-slim.yurtimg from $image_repo $image_release"
+    { rm -rf "$slim_dir"; die "cannot download playground-slim.yurtimg from $image_repo $image_release"; }
   [ "$(shasum -a 256 "$slim_dir/playground-slim.yurtimg" | cut -d' ' -f1)" = "$(jq -r .sha256 <<< "$slim_json")" ] ||
-    die "playground-slim.yurtimg from $image_release does not match its .sha256"
+    { rm -rf "$slim_dir"; die "playground-slim.yurtimg from $image_release does not match its .sha256"; }
   slim_python=$(slim_image_python "$slim_dir/playground-slim.yurtimg") ||
-    die "cannot read playground-slim.yurtimg from $image_release as a zstd tar"
+    { rm -rf "$slim_dir"; die "cannot read playground-slim.yurtimg from $image_release as a zstd tar"; }
   rm -rf "$slim_dir"
   if [ -n "$slim_python" ]; then
     read -r slim_python_version slim_python_build <<< "$slim_python"
