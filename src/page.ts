@@ -78,14 +78,14 @@ let packageInstall:
   | undefined;
 
 /** What pkg has installed in this sandbox, as the coordinator last read it
- * from pkg's database (`pkg-installed`): at boot, after each install, and
- * whenever the Packages panel opens. */
+ * from pkg's installed list (`pkg-installed`): at boot, after each install,
+ * and whenever the Packages panel opens. */
 const knownInstalled = new Set<string>();
 /** Marks the Packages panel's buttons by `knownInstalled`, and says on its
- * own line why the database could not be read (or clears that); set once
+ * own line why that cannot be told (or clears that); set once
  * the panel is wired. */
 let markPackages: (error?: string) => void = () => {};
-/** Asks the coordinator to read pkg's database again; set at boot. */
+/** Asks the coordinator to read pkg's installed list again; set at boot. */
 let askInstalled = () => {};
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
@@ -610,7 +610,7 @@ function wirePackages(): void {
     dbError.hidden = error === undefined;
     dbError.textContent = error === undefined
       ? ""
-      : `could not read which packages are installed: ${error}`;
+      : `cannot tell which packages are installed: ${error}`;
   };
   const install = async (name: string) => {
     if (packageInstall === undefined || busy) return;
@@ -625,7 +625,7 @@ function wirePackages(): void {
       status.textContent = /^nothing to install$/m.test(output)
         ? `${name} is already installed`
         : `installed ${name}`;
-      // Marked now; the coordinator's read of pkg's database, which follows,
+      // Marked now; the coordinator's read of pkg's installed list, which follows,
       // replaces the guess.
       for (const n of plannedInstalls(output, name)) knownInstalled.add(n);
       panel.dataset.install = "done";

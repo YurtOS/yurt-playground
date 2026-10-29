@@ -43,7 +43,7 @@ import type {
 } from "./jupyter_transport.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
-import { readInstalled } from "./installed_db.ts";
+import { readInstalled } from "./installed_list.ts";
 import {
   browserArchiveCache,
   installPackage,
@@ -168,8 +168,8 @@ type FromWorker =
     error?: string;
   }
   | { type: "pkg-progress"; req: number; text: string }
-  // What pkg has installed (src/installed_db.ts), or why it could not be
-  // read: the Packages panel marks those Installed.
+  // What pkg has installed (src/installed_list.ts), or why that cannot be
+  // told: the Packages panel marks those Installed.
   | { type: "pkg-installed"; names: string[] }
   | { type: "pkg-installed"; error: string }
   | { type: "snapshot-captured"; blob: Blob; ms: number }
@@ -185,7 +185,7 @@ let jupyter: JupyterTransport | undefined;
 let launchSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 let executions: ExecutionRegistry | undefined;
 /** The booted session, the desktop app's too. Only the in-tab one installs
- * packages (it has `writeFiles`) and reads pkg's database (`readAt`). */
+ * packages (it has `writeFiles`) and reads pkg's installed list (`readAt`). */
 let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 
 async function servePackages(msg: ToWorker): Promise<void> {
@@ -224,28 +224,29 @@ async function servePackages(msg: ToWorker): Promise<void> {
   }
 }
 
-/** Tell the page what pkg has installed in the in-tab sandbox, read from
- * its database (src/installed_db.ts), or why it could not be read: at
+/** Tell the page what pkg has installed in the in-tab sandbox, from its
+ * installed list (src/installed_list.ts), or why that cannot be told: at
  * boot, after each install, and when the Packages panel opens. */
 async function postInstalled(): Promise<void> {
   // The in-tab sandbox only: the desktop app's page has no Packages panel
   // to mark, and no VFS of its own to read.
-  const session = packageSession;
-  const readAt = session?.readAt;
+  const readAt = packageSession?.readAt;
   if (readAt === undefined) return;
-  // A read still going when the sandbox is dropped stops, and posts
-  // nothing over the fresh sandbox's list.
-  const live = () => packageSession === session;
   try {
-    const names = await readInstalled(readAt, live);
-    if (names !== undefined) post({ type: "pkg-installed", names });
+    const names = await readInstalled(readAt);
+    post(
+      names === undefined
+        ? {
+          type: "pkg-installed",
+          error: "this image's pkg keeps no installed list",
+        }
+        : { type: "pkg-installed", names },
+    );
   } catch (error) {
-    if (live()) {
-      post({
-        type: "pkg-installed",
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    post({
+      type: "pkg-installed",
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
