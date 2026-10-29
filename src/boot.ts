@@ -15,6 +15,11 @@ import {
 import { linuxRemark } from "./linux_remark.ts";
 import { baseToolsHeld } from "./image_tools.ts";
 import {
+  GUEST_MEMORY_RESERVATION_BYTES,
+  type GuestMemoryPlan,
+  planGuestMemory,
+} from "./guest_memory_reservation.ts";
+import {
   drainDirtyPaths,
   type LayerEntry,
   setPidCredentials,
@@ -319,18 +324,9 @@ function readGuestFile(
   return out;
 }
 
-/**
- * The address space each guest process reserves on JavaScriptCore
- * (yurtos-kernel#2996). A browser reserves a shared wasm memory's whole
- * maximum up front, and Safari holds about 32 GiB of them per tab; every
- * guest build declares 4 GiB, and the kernel's default is the whole 1 GiB
- * sandbox budget, so a burst of a few dozen execs ran Safari out. A quarter
- * GiB leaves room for more than 100 processes and several times what
- * CPython needs here (ipykernel 81 MiB, a 2000x2000 NumPy matmul 98 MiB). A
- * process that outgrows it gets ENOMEM; the sandbox budget still caps them
- * all.
- */
-export const GUEST_MEMORY_RESERVATION_BYTES = 256 * 1024 * 1024;
+/** The desktop per-process reservation on JavaScriptCore; a smaller one
+ *  is picked where the tab cannot fit it (src/guest_memory_reservation.ts). */
+export { GUEST_MEMORY_RESERVATION_BYTES };
 
 /**
  * Whether this engine is JavaScriptCore (Safari, and every iOS browser).
@@ -355,6 +351,7 @@ export function isJavaScriptCore(
  */
 export function playgroundHostState(
   userAgent: string | undefined = globalThis.navigator?.userAgent,
+  reservationBytes: number = GUEST_MEMORY_RESERVATION_BYTES,
 ):
   & ReturnType<typeof defaultHostState>
   & { guestMemoryReservationBytes?: number } {
@@ -365,26 +362,52 @@ export function playgroundHostState(
   }
   return {
     ...defaultHostState(),
-    guestMemoryReservationBytes: GUEST_MEMORY_RESERVATION_BYTES,
+    guestMemoryReservationBytes: reservationBytes,
   };
+}
+
+/**
+ * The host state for a kernel this page is about to build: on
+ * JavaScriptCore, with the per-process reservation sized from what the tab
+ * can still reserve right now ({@link planGuestMemory}, #270); elsewhere
+ * {@link playgroundHostState} as it is.
+ */
+export async function plannedPlaygroundHostState(
+  userAgent: string | undefined = globalThis.navigator?.userAgent,
+  plan: () => Promise<GuestMemoryPlan> = () => planGuestMemory(),
+): Promise<ReturnType<typeof playgroundHostState>> {
+  if (!isJavaScriptCore(userAgent)) return playgroundHostState(userAgent);
+  const planned = await plan();
+  console.info(
+    `[memory] ${planned.reservationBytes / (1024 * 1024)} MiB per process` +
+      (planned.availableBytes === undefined
+        ? " (no probe)"
+        : `; ${Math.floor(planned.availableBytes / (1024 * 1024))} MiB ` +
+          `free to reserve, room for ${planned.processes} processes`),
+  );
+  return playgroundHostState(userAgent, planned.reservationBytes);
 }
 
 /** Load a kernel for an in-browser sandbox. Every page and worker goes
  *  through this or {@link restorePlaygroundKernel}, so on JavaScriptCore
- *  each one reserves {@link GUEST_MEMORY_RESERVATION_BYTES} per guest
- *  process (see {@link playgroundHostState}). */
-export function loadPlaygroundKernel(
+ *  each one reserves what {@link plannedPlaygroundHostState} picks per
+ *  guest process. */
+export async function loadPlaygroundKernel(
   kernel: Uint8Array,
 ): Promise<KernelHostInterface> {
-  return KernelHostInterface.load(kernel, playgroundHostState());
+  return KernelHostInterface.load(kernel, await plannedPlaygroundHostState());
 }
 
 /** Restore a sealed in-browser sandbox; see {@link loadPlaygroundKernel}. */
-export function restorePlaygroundKernel(
+export async function restorePlaygroundKernel(
   kernel: Uint8Array,
   image: Parameters<typeof KernelHostInterface.restore>[1],
-): ReturnType<typeof KernelHostInterface.restore> {
-  return KernelHostInterface.restore(kernel, image, playgroundHostState());
+): Promise<Awaited<ReturnType<typeof KernelHostInterface.restore>>> {
+  return KernelHostInterface.restore(
+    kernel,
+    image,
+    await plannedPlaygroundHostState(),
+  );
 }
 
 export async function bootPlayground(
