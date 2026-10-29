@@ -38,6 +38,41 @@ export const PYTHON_SET = ["python", "numpy", "pyzmq", "jupyter-kernel"];
 export const SEAL_PACKAGE = "python-seal";
 export const SEAL_WASM_PATH = "/usr/local/lib/yurt/python3-seal.wasm";
 
+/** How the Suspend/Resume kernel's set (python and python-seal, from
+ * src/notebook_kernel_worker.ts) is verified in a sandbox of the slim
+ * image, given what that sandbox's pkg has installed. pkg reuses an
+ * installed release and fetches nothing for it, so a verify-all install
+ * may name only what is not installed. An installed python is the image's
+ * own, at the set's exact release (resolveSet pinned the set to it): its
+ * standard library is staged from the image, which the pins name by its
+ * sha256, instead of from the python archive. An installed member at any
+ * other release than the set's is an image that cannot run this set. */
+export function sealVerification<
+  R extends { name: string; version: string; build: string },
+>(
+  releases: readonly R[],
+  installed: readonly InstalledRelease[],
+): { verify: R[]; stdlibFromImage: boolean } {
+  const verify: R[] = [];
+  for (const release of releases) {
+    const have = installed.find((r) => r.name === release.name);
+    if (have === undefined) {
+      verify.push(release);
+      continue;
+    }
+    if (have.version !== release.version || have.build !== release.build) {
+      throw new Error(
+        `the slim image has ${release.name} ${have.version}-${have.build} ` +
+          `installed, not the set's ${release.version}-${release.build}`,
+      );
+    }
+  }
+  return {
+    verify,
+    stdlibFromImage: !verify.some((release) => release.name === "python"),
+  };
+}
+
 /** What the coordinator installs for Python: the set, resolved against the
  * live index at install time. `undefined` when the site boots the full
  * image (which has Python) and so installs nothing. `installed`: the

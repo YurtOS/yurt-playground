@@ -645,6 +645,17 @@ Deno.test("the probe says the Python set is there only when the kernel's package
     ],
     // The full image, an installed set, a layer or a snapshot.
     ["the full set", true, KERNEL_SET_FILES, true],
+    // Each package of the set missing alone.
+    ...[
+      ["numpy", "numpy/"],
+      ["pyzmq", "zmq/"],
+      ["jupyter-kernel", "ipykernel"],
+    ].map(([name, prefix]): [string, boolean, string[], boolean] => [
+      `the set without ${name}`,
+      true,
+      KERNEL_SET_FILES.filter((file) => !file.startsWith(prefix)),
+      false,
+    ]),
   ];
   for (const [name, python3, files, present] of cases) {
     const root = await guestRoot(python3, files);
@@ -694,4 +705,28 @@ Deno.test("an image with python3 but not the kernel's packages installs the set 
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+Deno.test("the worker installs the set pinned to the sandbox's own installed list", async () => {
+  // A scoped source check: the worker is not loadable in a test. The
+  // install's request carries what pkg has in this sandbox, read just
+  // before it, else what the pins say the image ships.
+  const source = await Deno.readTextFile(
+    new URL("../src/coordinator_worker.ts", import.meta.url),
+  );
+  const install = source.slice(
+    source.indexOf("install: async (between) => {"),
+    source.indexOf("between.after();"),
+  );
+  assert(install.length > 0, "the install closure moved");
+  const read = install.indexOf(
+    "const have = await installedReleases(session.files);",
+  );
+  const call = install.indexOf("await installPackage({");
+  assert(read >= 0 && call > read, "the installed list is read first");
+  assert(
+    /await installPackage\(\{\s*\.\.\.python,\s*installed: have \?\? python\.installed,\s*\}/
+      .test(install),
+    "the request carries the installed list",
+  );
 });

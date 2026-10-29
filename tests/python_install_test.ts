@@ -11,6 +11,7 @@ import {
   PYTHON_SET,
   pythonInstallRequest,
   pythonInstallState,
+  sealVerification,
 } from "../src/python_install.ts";
 
 const artifact = {
@@ -303,4 +304,59 @@ Deno.test("a slim image's python entry of another shape is a broken pin", () => 
       JSON.stringify(python),
     );
   }
+});
+
+Deno.test("the Suspend/Resume set verifies only what pkg fetches, and takes an image's own python's stdlib from the image", () => {
+  const python = { name: "python", version: "3.14.7", build: "yurt_0" };
+  const seal = { name: "python-seal", version: "3.14.7", build: "yurt_0" };
+  // Today's slim image: no python; both are verified, the stdlib comes
+  // from the python archive.
+  assertEquals(sealVerification([python, seal], []), {
+    verify: [python, seal],
+    stdlibFromImage: false,
+  });
+  assertEquals(
+    sealVerification([python, seal], [
+      { name: "git", version: "2.55.0", build: "yurt_0" },
+    ]).verify,
+    [python, seal],
+  );
+  // The next slim image: its python is the set's (resolveSet pinned it);
+  // pkg reuses it and fetches only the seal.
+  assertEquals(sealVerification([python, seal], [python]), {
+    verify: [seal],
+    stdlibFromImage: true,
+  });
+  // An image with another python cannot run this set.
+  assertThrows(
+    () => sealVerification([python, seal], [{ ...python, build: "yurt_1" }]),
+    Error,
+    "python 3.14.7-yurt_1 installed, not the set's 3.14.7-yurt_0",
+  );
+});
+
+Deno.test("the Suspend/Resume set is pinned to the slim image's python too", async () => {
+  const source = await Deno.readTextFile(
+    new URL("../src/notebook_kernel_worker.ts", import.meta.url),
+  );
+  // A scoped source check (the worker is not loadable in a test): the set
+  // is resolved with the pins' installed python, and verified through
+  // sealVerification against the verifying sandbox's own list.
+  assertEquals(
+    /resolveSet\(catalog, \[\.\.\.PYTHON_SET, SEAL_PACKAGE\], installed\)/
+      .test(source),
+    true,
+  );
+  assertEquals(
+    source.includes(
+      "const installed = pythonInstallRequest(pins)?.installed ?? [];",
+    ),
+    true,
+  );
+  assertEquals(
+    /sealVerification\(\s*\[set\.python, set\.seal\],\s*await installedReleases\(session\.files\) \?\? \[\],\s*\)/
+      .test(source),
+    true,
+  );
+  assertEquals(source.includes("releases: verify,"), true);
 });
