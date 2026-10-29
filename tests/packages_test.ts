@@ -1401,6 +1401,34 @@ function recoveringHost(
   return { host, events };
 }
 
+Deno.test("a run past the ceiling, still beating, runs no recovery: it would wait on pkg's lock", async () => {
+  // The run's pkg is alive and holds pkg's lock; pkg recover would wait
+  // for it, beating, for another whole ceiling.
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, events } = recoveringHost([
+    { beats: 0, everyMs: 5, result: PLAN },
+    { beats: 100, everyMs: 10, result: INSTALLED },
+  ], { code: 0, stdout: "", stderr: "" });
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+        runCeilingMs: 300,
+      }),
+    InstallStalled,
+  );
+  assertEquals(events.includes("recover"), false);
+  assertEquals(error.ceiling, true);
+  assertEquals(error.recovered, false);
+  assertStringIncludes(error.message, "did not finish it in 0 s");
+  assertStringIncludes(error.message, "holds pkg's lock");
+  assertStringIncludes(error.message, "reload the page");
+});
+
 const HUNG_RUN = [
   { beats: 0, everyMs: 5, result: PLAN },
   { beats: Infinity, everyMs: 5, result: INSTALLED },
@@ -1432,6 +1460,9 @@ Deno.test("after the page gives up on a pkg run, pkg recover runs before the fai
   assertEquals(error.inSandbox, true);
   assertEquals(error.recovered, true);
   assertStringIncludes(error.message, "pkg recover");
+  // Recovery speaks for pkg's transactions only: the install itself did
+  // not complete.
+  assertStringIncludes(error.message, "the install did not complete");
   assertStringIncludes(messages.at(-1)!, "pkg recover");
 });
 

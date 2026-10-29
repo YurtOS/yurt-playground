@@ -447,8 +447,13 @@ export const PROGRESS_EVERY_MS = 5000;
  * download, and the sandbox is as it was. */
 export class InstallStalled extends Error {
   readonly inSandbox: boolean;
+  /** The run went past {@link INSTALL_RUN_CEILING_MS}, still beating: its
+   * `pkg` is alive, and holds pkg's lock. */
+  readonly ceiling: boolean;
   /** For a stall in the sandbox, once recovery was tried: whether `pkg
-   * recover` left no transaction unfinished. `false`: the sandbox may
+   * recover` then found none of pkg's transactions left unfinished (it
+   * says nothing about the install, which did not complete: the abandoned
+   * run may yet do more). `false`: the sandbox may
    * hold a half-installed package, and needs a reload. */
   recovered?: boolean;
   constructor(
@@ -471,13 +476,15 @@ export class InstallStalled extends Error {
     );
     this.name = "InstallStalled";
     this.inSandbox = inSandbox;
+    this.ceiling = ceiling;
   }
 
   /** The same stall, with what recovery made of it. */
   withRecovery(recovered: boolean, why = ""): InstallStalled {
-    const error = new InstallStalled("", 0, this.inSandbox);
+    const error = new InstallStalled("", 0, this.inSandbox, this.ceiling);
     error.message = recovered
-      ? `${this.message}; pkg recover then left no transaction unfinished`
+      ? `${this.message}; pkg recover then found none of pkg's ` +
+        `transactions left unfinished, but the install did not complete`
       : `${this.message}; pkg recover could not finish what it left ` +
         `unfinished${why === "" ? "" : ` (${why})`}, so this sandbox may ` +
         `hold a half-installed package: reload the page`;
@@ -1074,6 +1081,15 @@ export async function installPackage(
     if (!(error instanceof InstallStalled) || !error.inSandbox) throw error;
     if (options.host.recover === undefined) {
       throw error.withRecovery(false, "this sandbox cannot run it");
+    }
+    // A run past the ceiling is still beating: its pkg is alive and holds
+    // pkg's lock, which `pkg recover` would wait on -- beating, so for
+    // another whole ceiling -- before it could do anything.
+    if (error.ceiling) {
+      throw error.withRecovery(
+        false,
+        "the stopped run is still going, and holds pkg's lock",
+      );
     }
     const status = `${name}: running pkg recover after the stopped install`;
     options.progress(status);
