@@ -434,7 +434,7 @@ const LINKED_IMAGE: TarSpec[] = [
   { path: "/usr", type: "5", mode: 0o755, uid: 0, gid: 0, mtime: 1 },
   { path: "/usr/bin", type: "5", mode: 0o755, uid: 0, gid: 0, mtime: 1 },
   ...[
-    { path: "/bin/busybox", type: "0", body: "busybox" },
+    { path: "/bin/busybox", type: "0", body: "busybox bytes" },
     { path: "/bin/sh", type: "2", link: "busybox" },
     { path: "/bin/ls", type: "2", link: "busybox" },
     { path: "/usr/bin/env", type: "2", link: "/bin/busybox" },
@@ -442,7 +442,7 @@ const LINKED_IMAGE: TarSpec[] = [
     { path: "/usr/bin/sh", type: "2", link: "../../bin/sh" },
     { path: "/bin/busybox-hard", type: "1", link: "bin/busybox" },
     // Same bytes, its own file: never the same buffer.
-    { path: "/bin/twin", type: "0", body: "busybox" },
+    { path: "/bin/twin", type: "0", body: "busybox bytes" },
     { path: "/bin/usr", type: "2", link: "/usr" },
     { path: "/bin/dangling", type: "2", link: "/nowhere" },
   ].map((entry) => ({
@@ -462,9 +462,9 @@ Deno.test("stageYurtimg gives every name of a file one copy of its bytes, and a 
 
   const busybox = host.get("/bin/busybox");
   assert(busybox !== undefined, "busybox was not staged");
-  assertEquals(new TextDecoder().decode(busybox), "busybox");
-  // Each symlink used to hold its own copy of its target: 151 of busybox
-  // and 146 of git, ~1.3 GB alive at once, ran an iPhone tab out of memory.
+  assertEquals(new TextDecoder().decode(busybox), "busybox bytes");
+  // Each symlink used to hold its own copy of its target: 154 of busybox
+  // and 149 of git, ~1.3 GB alive at once, ran an iPhone tab out of memory.
   for (
     const name of [
       "/bin/sh",
@@ -480,7 +480,7 @@ Deno.test("stageYurtimg gives every name of a file one copy of its bytes, and a 
   assert(twin !== undefined, "twin was not staged");
   assert(twin.buffer !== busybox.buffer, "a distinct file shares a buffer");
   busybox[0] = "B".charCodeAt(0);
-  assertEquals(new TextDecoder().decode(twin), "busybox");
+  assertEquals(new TextDecoder().decode(twin), "busybox bytes");
   // A symlink to a directory and a dangling one are VFS entries, not files.
   assertEquals(host.has("/bin/usr"), false);
   assertEquals(host.has("/bin/dangling"), false);
@@ -496,7 +496,7 @@ Deno.test("stageYurtimg gives a symlink its target's bytes when only the symlink
     (path) => path === "/bin/sh" || path === "/usr/bin/env",
   );
   assertEquals([...host.keys()].sort(), ["/bin/sh", "/usr/bin/env"]);
-  assertEquals(new TextDecoder().decode(host.get("/bin/sh")), "busybox");
+  assertEquals(new TextDecoder().decode(host.get("/bin/sh")), "busybox bytes");
   assert(host.get("/usr/bin/env") === host.get("/bin/sh"));
 });
 
@@ -518,10 +518,10 @@ Deno.test({
     assertEquals(text(vfsReadWhole(mk, "/bin/busybox")), "rewritten");
     assertEquals(text(vfsReadWhole(mk, "/bin/sh")), "rewritten");
     assertEquals(text(vfsReadWhole(mk, "/usr/bin/sh")), "rewritten");
-    assertEquals(text(vfsReadWhole(mk, "/bin/twin")), "busybox");
+    assertEquals(text(vfsReadWhole(mk, "/bin/twin")), "busybox bytes");
     // The kernel keeps its own copy: the bytes the host was handed are
     // not the guest's file.
-    assertEquals(text(host.get("/bin/sh")), "busybox");
+    assertEquals(text(host.get("/bin/sh")), "busybox bytes");
 
     writeRamfsFile(mk, "/bin/twin", new TextEncoder().encode("twin"));
     assertEquals(text(vfsReadWhole(mk, "/bin/twin")), "twin");

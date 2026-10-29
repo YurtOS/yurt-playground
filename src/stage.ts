@@ -145,7 +145,7 @@ export async function stageYurtimg(
   }
   // One copy of each file's bytes, shared by every name that reaches it
   // (its hardlinks, and its symlinks, which `stat` follows to the same
-  // inode). A copy per symlink -- 151 of busybox and 146 of git -- held
+  // inode). A copy per symlink -- 154 of busybox and 149 of git -- held
   // ~1.3 GB at once and ran an iPhone tab out of memory. Sharing is safe
   // because nothing writes these buffers: the kernel copies what it is
   // given, so a guest write to one path never reaches them.
