@@ -17,6 +17,7 @@
  * Installed files live in the tab's memory, like every other file in the
  * sandbox, and are gone after a reload (#81).
  */
+import type { InstalledRelease } from "./installed_list.ts";
 
 /** Where the page fetches the repository from: GitHub's raw file host,
  * which answers with `Access-Control-Allow-Origin: *`. */
@@ -803,8 +804,14 @@ export type InstallRequest =
     verifyAll?: boolean;
   }
   // A set of packages that share one `yurt_N` build, their set's marker:
-  // the newest build every one of them has (src/python_install.ts).
-  | { label: string; set: readonly string[] };
+  // the newest build every one of them has (src/python_install.ts), or the
+  // build of the members already `installed` (resolveSet); only the
+  // members not installed are asked of pkg.
+  | {
+    label: string;
+    set: readonly string[];
+    installed?: readonly InstalledRelease[];
+  };
 
 /** The repository does not offer the set: a member it has no package for,
  * or no `yurt_N` build that all of them have. */
@@ -813,10 +820,17 @@ export class SetNotOffered extends Error {}
 /** The newest complete set: for each `yurt_N` build every package in
  * `names` has (unyanked, in a release the page can read), the highest N
  * wins, and each package's release with that build (the highest version,
- * should there be several). A set only partly published is never chosen. */
+ * should there be several). A set only partly published is never chosen.
+ *
+ * Members already `installed` (pkg's installed list) pin it: pkg never
+ * replaces an installed package, so the set is the one at their build,
+ * with their exact releases, however much newer a set is live -- and none
+ * at all (SetNotOffered, naming them) when the repository no longer has a
+ * complete set there. What is installed outside `names` pins nothing. */
 export function resolveSet(
   catalog: Catalog,
   names: readonly string[],
+  installed: readonly InstalledRelease[] = [],
 ): (PinnedRelease & { url: string })[] {
   const readable = (name: string, release: PackageVersion) => {
     try {
@@ -826,11 +840,17 @@ export function resolveSet(
       return false;
     }
   };
+  const pins = new Map(
+    installed.filter((r) => names.includes(r.name)).map((r) => [r.name, r]),
+  );
   const byName = names.map((name) => {
     const file = catalog.metadata.get(name)?.file;
     if (file === undefined) throw new SetNotOffered(`no package named ${name}`);
+    const pin = pins.get(name);
     return file.versions.filter((v) =>
-      !v.yanked && /^yurt_\d+$/.test(v.build) && readable(name, v)
+      !v.yanked && /^yurt_\d+$/.test(v.build) && readable(name, v) &&
+      (pin === undefined ||
+        (v.version === pin.version && v.build === pin.build))
     );
   });
   const builds = byName.map((versions) =>
@@ -838,10 +858,19 @@ export function resolveSet(
   );
   const common = [...builds[0]].filter((n) => builds.every((b) => b.has(n)));
   if (common.length === 0) {
+    const at = [...pins.values()].map((r) =>
+      `${r.name} ${r.version}-${r.build}`
+    );
     throw new SetNotOffered(
-      `the repository has no complete set of ${
-        names.join(", ")
-      } (one yurt_N build of all of them)`,
+      at.length === 0
+        ? `the repository has no complete set of ${
+          names.join(", ")
+        } (one yurt_N build of all of them)`
+        : `the repository has no complete set of ${
+          names.join(", ")
+        } at the installed ${
+          at.join(", ")
+        } (pkg cannot replace an installed package, so only a set of that build can be installed beside it)`,
     );
   }
   const newest = Math.max(...common);
@@ -1130,15 +1159,29 @@ async function installWatched(
   const exact = typeof request === "string"
     ? undefined
     : "set" in request
-    ? resolveSet(catalog, request.set)
+    ? resolveSet(catalog, request.set, request.installed)
     : request.releases;
   if (exact !== undefined) options.resolved?.(exact);
   const pinned = exact === undefined
     ? undefined
     : new Map(exact.map((release) => [release.name, release]));
+  // A set's members already installed (at exactly these releases, which
+  // resolveSet made sure of) are not asked for again.
+  const have = typeof request !== "string" && "set" in request
+    ? new Set((request.installed ?? []).map((r) => r.name))
+    : new Set<string>();
   const specs = exact === undefined
     ? [request as string]
-    : exact.map((r) => `${r.name}@${r.version}-${r.build}`);
+    : exact.filter((r) => !have.has(r.name)).map((r) =>
+      `${r.name}@${r.version}-${r.build}`
+    );
+  // Only a set's members can all be installed already: a pinned list (a
+  // verify-all one included) names at least one release, or the name
+  // check above refused it, and none of its releases is skipped.
+  if (specs.length === 0) {
+    progress(`${name}: already installed`);
+    return "";
+  }
   const command = `pkg install ${specs.join(" ")}`;
   // A guest process too: a sandbox that stops answering here is the
   // sandbox's stall, not a download's.

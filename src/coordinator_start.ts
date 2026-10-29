@@ -5,7 +5,8 @@
  *
  * Two rules hold here:
  *
- * - An image without python3 (the slim base image) gets the shell, then
+ * - An image without the Python set (the slim base image: no python3, or
+ *   only the python package) gets the shell, then
  *   the Python set installed from the live index when the page asked for it
  *   (`installPython`), then ipykernel. Without that, or when the install
  *   fails, it gets `python-missing` (with the install's error); no
@@ -37,19 +38,49 @@ export type StartReport =
  * `command -v`'s own 127 -- is not an answer, and the launch goes ahead. */
 export const PYTHON_MISSING_EXIT = 42;
 
-/** The command that answers "is there a python3?": 0 yes, 42 no. */
-export const PYTHON_PROBE_COMMAND =
-  `command -v python3 >/dev/null && exit 0; exit ${PYTHON_MISSING_EXIT}`;
+/** The probe's answer for "python3, but not the Python set": the slim
+ * image's own python package, or an install that stopped part way. The
+ * kernel cannot start on it, so the page installs the set, as for 42; the
+ * agent's prompt (src/agent_tools.ts) still has a python3. */
+export const PYTHON_SET_MISSING_EXIT = 43;
+
+/** Where the Python set's packages are: the python package's
+ * site-packages, whichever 3.x it is. */
+export const PYTHON_SITE_PACKAGES = "/usr/local/lib/python3.*/site-packages";
+
+/** What the Jupyter kernel imports beside python3, one file per package of
+ * the set (src/python_install.ts `PYTHON_SET`): numpy's and pyzmq's, and
+ * jupyter-kernel's launcher, which `python3 -m ipykernel_launcher` runs.
+ * Files, not imports: `python3 -c 'import ipykernel'` is the kernel's own
+ * JIT-bound start, tens of seconds at boot. */
+export const PYTHON_SET_FILES = [
+  "numpy/__init__.py",
+  "zmq/__init__.py",
+  "ipykernel_launcher.py",
+];
+
+/** The command that answers "can the Jupyter kernel start here?": 0 when
+ * python3 is on PATH and the set's files are in its site-packages, 42 when
+ * there is no python3, 43 when there is one without the set. Shell
+ * builtins only, no python3 run: it is the boot's, and must be cheap. */
+export const PYTHON_PROBE_COMMAND = [
+  `command -v python3 >/dev/null || exit ${PYTHON_MISSING_EXIT}`,
+  `for s in ${PYTHON_SITE_PACKAGES}; do ${
+    PYTHON_SET_FILES.map((file) => `[ -f "$s/${file}" ] &&`).join(" ")
+  } exit 0; done`,
+  `exit ${PYTHON_SET_MISSING_EXIT}`,
+].join("; ");
 
 /** The probe as a Spawner line, `exec`'d like every line a Spawner runs,
  * so its redirects bind here. */
 export const PYTHON_PROBE_LINE = `exec /bin/sh -c '${PYTHON_PROBE_COMMAND}'`;
 
-/** The probe is one BusyBox builtin; a probe that takes longer than this
- * is a sandbox in trouble, and the launch goes ahead as before. */
+/** The probe is a few BusyBox builtins; a probe that takes longer than
+ * this is a sandbox in trouble, and the launch goes ahead as before. */
 export const PYTHON_PROBE_TIMEOUT_MS = 30_000;
 
-/** `false` when the image has no python3, `true` when it has one, and
+/** `false` when the image has no python3 or not the Python set beside it
+ * (the kernel cannot start), `true` when it has both, and
  * `undefined` when the session cannot tell (no process of its own, as on
  * the desktop app's page, or a probe that failed or hung): the launch is
  * then tried as before, and fails on its own if it must. */
@@ -70,9 +101,11 @@ export async function probePython(
     if (status === undefined) return undefined;
     const code = asWaitStatus(status).code;
     if (code === 0) return true;
-    if (code === PYTHON_MISSING_EXIT) return false;
+    if (code === PYTHON_MISSING_EXIT || code === PYTHON_SET_MISSING_EXIT) {
+      return false;
+    }
     // A signal death, or any exit the probe itself did not choose, says
-    // nothing about python3.
+    // nothing about Python.
     return undefined;
   } catch {
     return undefined;
