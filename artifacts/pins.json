@@ -67,5 +67,30 @@
       "version": "3.14.7",
       "build": "yurt_0"
     }
+  },
+  "snapshot": {
+    "releaseRepo": "YurtOS/yurt-playground",
+    "release": "snapshot-playground-2026.10.29-3d32068.2",
+    "format": 3,
+    "sha256": "b92d4a2c5785e2a92aa39489732883bea083ede0c656356770c7a94077c493de",
+    "size": 127470860,
+    "parts": [
+      "c01ca54ef3ed4781298d49a18d949129eb49b6c53b239342d413d5d5d5ee8175",
+      "db456814369fd01fce1fb52eb4dc5b869ebbdac1657ead1afbdbb7f4d26f8abb",
+      "df616bffa4ccee4a69dad21f2a08830fe84ebc522e938276feea3151c608645d",
+      "548a16c076b5b9e4984550131f46e89cb46f6153d5e548aa53a769b74d1d73f8",
+      "d674832b3f7442cd81a7b1d79e45b37543914a0958e148b29488db224cf5439b",
+      "46b4a3d2836d8b50daafe4ab002042c6264ec8958a7f38ea0ede4b901618bcf1",
+      "fe85e596c8cb8849caee45f55b0f3a6274ec68e97096064e5b3dd1b1b3574e5d"
+    ],
+    "builtFrom": {
+      "kernelSha256": "defa8da648d122fcfd30e6e96360d1b2da1cdf7440d50d82536a825e02fa338c",
+      "kernelRev": "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
+      "sealVersion": 1,
+      "bootSetup": 1,
+      "imageSha256": "1a3a997c873f05a4f2f322db86b8dd96a9cea31ce29af4b990ca9e6bb9f62877",
+      "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
+      "pythonSet": "1a3a997c873f05a4f2f322db86b8dd96a9cea31ce29af4b990ca9e6bb9f62877/jupyter-kernel@0.0.1-yurt_0:c8e575a68c03a8e4+numpy@2.5.0-yurt_0:c3cc1743278a9763+python@3.14.7-yurt_0:ab01e884f08e0619+pyzmq@26.4.0-yurt_0:429b9bb415b7f5a2"
+    }
   }
 }
