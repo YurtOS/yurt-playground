@@ -286,3 +286,16 @@ export function kernelLifecycle() {
     },
   };
 }
+
+/** Whether a start restores the sealed sandbox (`?snapshot=1`): only the
+ * in-tab sandbox (the desktop app's runs natively), and never on a tablet
+ * -- 132 MB downloaded and ~545 MiB inflated is more than a tablet's tab
+ * keeps, as a Python layer over 100 MiB already is. */
+export function restoresSnapshot(start: {
+  snapshot?: "restore" | "capture";
+  tablet?: boolean;
+  native: boolean;
+}): boolean {
+  return start.snapshot === "restore" && !start.native &&
+    start.tablet !== true;
+}

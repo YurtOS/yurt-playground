@@ -7,6 +7,7 @@ import {
   PYTHON_MISSING_EXIT,
   PYTHON_PROBE_COMMAND,
   PYTHON_PROBE_LINE,
+  restoresSnapshot,
   type StartReport,
   startSandbox,
 } from "../src/coordinator_start.ts";
@@ -551,4 +552,20 @@ Deno.test("a capture whose Python install fails is a failed capture, not python-
       JSON.stringify(last),
     );
   }
+});
+
+Deno.test("only the in-tab sandbox off a tablet restores a snapshot", () => {
+  assertEquals(restoresSnapshot({ snapshot: "restore", native: false }), true);
+  assertEquals(
+    restoresSnapshot({ snapshot: "restore", native: false, tablet: true }),
+    false,
+    "a tablet",
+  );
+  assertEquals(
+    restoresSnapshot({ snapshot: "restore", native: true }),
+    false,
+    "the desktop app",
+  );
+  assertEquals(restoresSnapshot({ snapshot: "capture", native: false }), false);
+  assertEquals(restoresSnapshot({ native: false }), false);
 });

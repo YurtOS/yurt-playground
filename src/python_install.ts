@@ -78,7 +78,7 @@ export async function fetchSitePins(): Promise<Pins | undefined> {
 /** How long the live index may take to answer which set it offers; past
  * it, the answer is "cannot tell" (a stored layer, or a snapshot, is then
  * used as when offline). */
-export const LIVE_INDEX_TIMEOUT_MS = 20_000;
+const LIVE_INDEX_TIMEOUT_MS = 20_000;
 
 /** The live repository's catalog, its downloads bounded by `signal`. */
 const defaultCatalogLoad = (signal: AbortSignal) =>
@@ -157,9 +157,10 @@ export async function livePythonSet(
 /** One boot's two questions to the live index about `request`'s Python
  * set -- a snapshot's (`pythonSet`), then the install's stored layer
  * (`layerKey`) -- answered from one read of it, kept for that boot, a
- * failed read included (no second 20 s wait). The install's answer ends
- * the boot's read: a later question (a retry on the same sandbox) reads
- * again. Made anew for each boot. The two questions come one after the
+ * failed read included (no second 20 s wait). The install's answer, or
+ * `finish` when the boot is over (a restore, a capture, a tablet: no
+ * install's question), ends the boot's read: a later question (a retry on
+ * the same sandbox) reads again. Made anew for each boot. The two questions come one after the
  * other: the first one's time bound bounds the shared read. */
 export function liveAnswers(
   request: { set: readonly string[]; image?: string } | undefined,
@@ -167,11 +168,17 @@ export function liveAnswers(
 ): {
   pythonSet: () => Promise<string | null | undefined>;
   layerKey: () => Promise<string | undefined>;
+  /** The boot is over: drop its read; a later question reads again. */
+  finish: () => void;
 } {
   let read: Promise<Catalog> | undefined;
-  let answered = false;
+  let finished = false;
   const once = (signal: AbortSignal) =>
-    answered ? load(signal) : read ??= load(signal);
+    finished ? load(signal) : read ??= load(signal);
+  const finish = () => {
+    finished = true;
+    read = undefined;
+  };
   return {
     pythonSet: () => livePythonSet(request, undefined, once),
     layerKey: async () => {
@@ -179,10 +186,10 @@ export function liveAnswers(
       try {
         return await liveLayerKey(request.image, request.set, undefined, once);
       } finally {
-        answered = true;
-        read = undefined;
+        finish();
       }
     },
+    finish,
   };
 }
 

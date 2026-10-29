@@ -1,8 +1,9 @@
 /**
- * `?snapshot=capture`'s hand-over, apart from the DOM and the worker so it
- * can be tested: the worker announces the captured file; the page marks
- * the capture's outcome where scripts/release-snapshot.ts waits for it,
- * and hands the file to the browser as a download.
+ * `?snapshot=capture`'s parts that can be tested apart from the DOM and
+ * the worker: what the worker runs to precompile the Python set, how it
+ * announces the captured file; how the page marks the capture's outcome
+ * where scripts/release-snapshot.ts waits for it, and hands the file to
+ * the browser as a download.
  */
 
 /** Where the outcome is marked: `<html>`'s dataset in the page
@@ -11,12 +12,6 @@ export type CaptureMark = {
   snapshotCapture?: string;
   snapshotCaptureError?: string;
 };
-
-/** The file was captured: whatever ends the boot after this is no
- * failure. */
-export function markCaptured(mark: CaptureMark): void {
-  mark.snapshotCapture = "captured";
-}
 
 /** The reason a failed capture gets when no caller names one. */
 export const NO_SNAPSHOT = "the boot ended without a snapshot";
@@ -58,7 +53,8 @@ export function finishCapture(
     fail(message);
     return;
   }
-  markCaptured(mark);
+  // Captured: whatever ends the boot after this is no failure.
+  mark.snapshotCapture = "captured";
   endBoot();
 }
 
@@ -106,4 +102,28 @@ export function postCaptured(
       "the sealed sandbox runs no Jupyter",
   });
   post({ type: "snapshot-captured", blob, ms });
+}
+
+/**
+ * The program a capture runs (as root, in the guest's python3) to write
+ * bytecode for the Python set: the login user cannot write __pycache__
+ * there, so every start compiled the modules again. The directories are
+ * the interpreter's own (sysconfig's stdlib and purelib), not a version's
+ * path; none of them present, or a module that does not compile, is a
+ * non-zero exit that fails the capture -- a snapshot without its bytecode
+ * is not sealed.
+ */
+export const PRECOMPILE_PROGRAM = `
+import compileall, os, sys, sysconfig
+paths = sorted({sysconfig.get_path("stdlib"), sysconfig.get_path("purelib")})
+present = [path for path in paths if os.path.isdir(path)]
+if not present:
+    sys.exit("no Python library directory to compile: " + ", ".join(paths))
+compiled = [compileall.compile_dir(path, quiet=1) for path in present]
+sys.exit(0 if all(compiled) else 1)
+`;
+
+/** The shell line that runs {@link PRECOMPILE_PROGRAM}. */
+export function precompileLine(python = "sudo python3"): string {
+  return `exec ${python} -c '${PRECOMPILE_PROGRAM.replace(/'/g, "'\\''")}'`;
 }

@@ -4,9 +4,9 @@ import {
   DOWNLOAD_URL_KEEP_MS,
   finishCapture,
   markBootEnded,
-  markCaptured,
   NO_SNAPSHOT,
   postCaptured,
+  precompileLine,
   saveDownload,
 } from "../src/capture_outcome.ts";
 
@@ -28,7 +28,7 @@ Deno.test("in a capture, any end of the boot but the captured file is a failed c
   });
   // The file came first: the boot's end after it is no failure.
   const captured: CaptureMark = {};
-  markCaptured(captured);
+  finishCapture(captured, () => {}, () => {}, () => {});
   markBootEnded(captured, true, "late error");
   assertEquals(captured, { snapshotCapture: "captured" });
   // Not a capture: nothing is marked.
@@ -120,4 +120,62 @@ Deno.test("the worker posts its 'captured' status before the file, so a save fai
     "snapshot captured (5 bytes); the sealed sandbox runs no Jupyter",
     "snapshot-captured",
   ]);
+});
+
+/** precompileLine's program, run by this machine's python3 with a
+ * sysconfig that names `paths`. */
+async function precompile(paths: { stdlib: string; purelib: string }) {
+  const fake = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(
+      `${fake}/sysconfig.py`,
+      `def get_path(name):\n    return ${JSON.stringify(paths)}[name]\n`,
+    );
+    // -S: no site, which would import the real sysconfig first.
+    const out = await new Deno.Command("sh", {
+      args: ["-c", precompileLine("python3 -S")],
+      env: { PYTHONPATH: fake, PYTHONDONTWRITEBYTECODE: "" },
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    return { code: out.code, stderr: new TextDecoder().decode(out.stderr) };
+  } finally {
+    await Deno.remove(fake, { recursive: true });
+  }
+}
+
+Deno.test("a capture compiles the interpreter's own library directories, and fails without them", async () => {
+  const lib = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${lib}/site-packages`);
+    await Deno.writeTextFile(`${lib}/mod.py`, "x = 1\n");
+    await Deno.writeTextFile(`${lib}/site-packages/pkg.py`, "y = 2\n");
+    const ok = await precompile({
+      stdlib: lib,
+      purelib: `${lib}/site-packages`,
+    });
+    assertEquals(ok.code, 0, ok.stderr);
+    const cached = [...Deno.readDirSync(`${lib}/site-packages/__pycache__`)];
+    assertEquals(cached.length, 1);
+    // Another minor version's path: nothing there to compile.
+    const none = await precompile({
+      stdlib: `${lib}/python3.15`,
+      purelib: `${lib}/python3.15/site-packages`,
+    });
+    assertEquals(none.code, 1);
+    assertEquals(
+      none.stderr.includes("no Python library directory to compile"),
+      true,
+      none.stderr,
+    );
+    // A module that does not compile fails it too.
+    await Deno.writeTextFile(`${lib}/broken.py`, "def (:\n");
+    const broken = await precompile({
+      stdlib: lib,
+      purelib: `${lib}/site-packages`,
+    });
+    assertEquals(broken.code, 1);
+  } finally {
+    await Deno.remove(lib, { recursive: true });
+  }
 });

@@ -196,6 +196,32 @@ Deno.test("each boot makes its own live answers (coordinator_worker's begin)", a
   );
   const begin = worker.match(/const begin = async \(\) => \{\n\s*(.*)\n/);
   assertEquals(begin?.[1], "live = liveAnswers(msg.python);");
+  // ...and ends its read once startSandbox has returned.
+  assertEquals(
+    /const started = await startSandbox\(\{[^]*?\n {4}\}\);\n(?:\s*\/\/.*\n)*\s*live\.finish\(\);/
+      .test(worker),
+    true,
+  );
   assertEquals(worker.includes("livePythonSet: () => live.pythonSet(),"), true);
   assertEquals(worker.includes("liveKey: () => live.layerKey(),"), true);
+});
+
+Deno.test("a boot with no install's question drops its read when it is over", async () => {
+  let loads = 0;
+  const live = liveAnswers({ set: ["python"], image: "img" }, () => {
+    loads++;
+    return Promise.reject(new TypeError("network down"));
+  });
+  const info = console.info;
+  console.info = () => {};
+  try {
+    // A restore asks once; the boot ends with no install's question.
+    assertEquals(await live.pythonSet(), undefined);
+    live.finish();
+    // A later Install on this sandbox reads the index again.
+    await assertRejects(() => live.layerKey(), IndexUnreadable);
+    assertEquals(loads, 2);
+  } finally {
+    console.info = info;
+  }
 });

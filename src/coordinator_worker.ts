@@ -24,6 +24,7 @@ import {
   kernelFailureDropsLayer,
   kernelLifecycle,
   probePython,
+  restoresSnapshot,
   type StartReport,
   startSandbox,
 } from "./coordinator_start.ts";
@@ -55,7 +56,7 @@ import {
   type LayerStore,
 } from "./python_layer.ts";
 import { liveAnswers } from "./python_install.ts";
-import { postCaptured } from "./capture_outcome.ts";
+import { postCaptured, precompileLine } from "./capture_outcome.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
 import {
   encodeSandboxSnapshot,
@@ -299,9 +300,6 @@ function dropLayerIfKernelFailed(report: StartReport): void {
   }
 }
 
-/** Where the Python set puts its standard library and site-packages. */
-const PYTHON_LIB = "/usr/local/lib/python3.14";
-
 type PythonRequest = { label: string; set: string[]; image?: string };
 
 /** `?snapshot=capture`: precompile the installed Python, seal the
@@ -316,18 +314,16 @@ async function captureSnapshot(
   if (session.seal === undefined || session.process === undefined) {
     throw new Error("this session cannot seal");
   }
-  // Bytecode for every module the packages ship as source only: the login
-  // user cannot write __pycache__ there, so each start compiled them again
-  // (slow on Safari, where compiling one of wcwidth's modules also
-  // overflowed the Worker's stack and killed ipykernel with SIGSEGV). A
-  // module that does not compile is a snapshot without its bytecode:
-  // refused, with compileall's own words.
+  // Bytecode for every module the packages ship as source only
+  // (PRECOMPILE_PROGRAM): each start compiled them again, slow on Safari,
+  // where compiling one of wcwidth's modules also overflowed the Worker's
+  // stack and killed ipykernel with SIGSEGV. Its failure is refused, with
+  // its own words.
   post({ type: "status", text: "precompiling Python modules" });
   const compiled = performance.now();
-  const compile = await session.process(
-    `exec sudo python3 -m compileall -q ${PYTHON_LIB}`,
-    { maxOutputBytes: 64 * 1024 },
-  );
+  const compile = await session.process(precompileLine(), {
+    maxOutputBytes: 64 * 1024,
+  });
   const compileStatus = await compile.exited;
   const code = typeof compileStatus === "number"
     ? compileStatus
@@ -337,13 +333,13 @@ async function captureSnapshot(
     const said = decoder.decode(compile.takeStdout()) +
       decoder.decode(compile.takeStderr());
     throw new Error(
-      `python3 -m compileall ${PYTHON_LIB} exited ${
-        JSON.stringify(compileStatus)
-      }: ${said.slice(-2000)}`,
+      `precompiling the Python set exited ${JSON.stringify(compileStatus)}: ${
+        said.slice(-2000)
+      }`,
     );
   }
   console.log(
-    `[snapshot] compileall in ${Math.round(performance.now() - compiled)} ms`,
+    `[snapshot] precompiled in ${Math.round(performance.now() - compiled)} ms`,
   );
   post({ type: "status", text: "sealing the sandbox" });
   const started = performance.now();
@@ -558,9 +554,10 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     imagePath: kernelPorts === undefined
       ? await browserImagePath().catch(() => undefined)
       : undefined,
-    snapshotPath: msg.snapshot === "restore" && kernelPorts === undefined
-      ? SANDBOX_SNAPSHOT_PATH
-      : undefined,
+    snapshotPath:
+      restoresSnapshot({ ...msg, native: kernelPorts !== undefined })
+        ? SANDBOX_SNAPSHOT_PATH
+        : undefined,
     livePythonSet: () => live.pythonSet(),
     fetchBytes: (path: string) =>
       fetchPlaygroundBytes(path, (progress) => {
@@ -688,6 +685,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         post(report);
       },
     });
+    // The boot is over: its read of the live index goes with it (a later
+    // install on this sandbox asks again).
+    live.finish();
     if (started !== undefined) {
       jupyter = started;
       subscribeJupyter(jupyter);
