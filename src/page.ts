@@ -28,6 +28,11 @@ import {
   plannedInstalls,
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
+import {
+  type InstallReply,
+  InstallsStopped,
+  packageRequests,
+} from "./install_request.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import { deviceClass } from "./device.ts";
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
@@ -58,12 +63,13 @@ type FromWorker =
   | InstalledReport
   | { type: "snapshot-captured"; blob: Blob; ms: number }
   | {
-    type: "yurt-reply" | "pkg-reply";
+    type: "yurt-reply";
     req: number;
     ok: boolean;
     value?: unknown;
     error?: string;
   }
+  | InstallReply
   | { type: "cell-stream"; id: string; chunk: JupyterStream }
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string }
@@ -332,35 +338,22 @@ function boot(
       list: () => ask({ type: "yurt-list" }),
     };
   yurtState.connect(transport);
-  /** Each install's progress, by request. */
-  const progressOf = new Map<number, (text: string) => void>();
   askInstalled = () => worker.postMessage({ type: "pkg-read-installed" });
-  if (desktop === undefined) {
-    packageInstall = (name, progress) =>
-      new Promise<string>((resolve, reject) => {
-        const req = nextReq++;
-        progressOf.set(req, progress);
-        pending.set(req, {
-          resolve: (value) => {
-            progressOf.delete(req);
-            resolve(value as string);
-          },
-          reject: (error) => {
-            progressOf.delete(req);
-            reject(error);
-          },
-        });
-        worker.postMessage({
-          type: "pkg-install",
-          req,
-          name,
-          tablet: smallDevice,
-        });
-      });
-  }
+  const installs = desktop === undefined
+    ? packageRequests((req, name) =>
+      worker.postMessage({
+        type: "pkg-install",
+        req,
+        name,
+        tablet: smallDevice,
+      })
+    )
+    : undefined;
+  if (installs !== undefined) packageInstall = installs.install;
   yurtState.set("booting");
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
+    installs?.heard();
     // The coordinator's empty status is "booted"; say so.
     if (msg.type === "status") {
       // Installing Python, then starting Jupyter on it, is the cell's
@@ -411,7 +404,9 @@ function boot(
       status.progress("running", { settled: true });
       endBoot();
     }
-    if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
+    if (msg.type === "pkg-progress" || msg.type === "pkg-reply") {
+      installs?.answer(msg);
+    }
     if (msg.type === "pkg-installed") {
       installedPanel.report(msg);
     }
@@ -424,7 +419,7 @@ function boot(
         fail,
       );
     }
-    if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
+    if (msg.type === "yurt-reply") {
       const waiter = pending.get(msg.req);
       pending.delete(msg.req);
       if (waiter === undefined) return;
@@ -444,6 +439,7 @@ function boot(
     // Nothing will answer them now.
     for (const waiter of pending.values()) waiter.reject(new Error(message));
     pending.clear();
+    installs?.failAll(message);
   };
   term.onData((text) => worker.postMessage({ type: "in", text }));
   term.onResize((size) =>
@@ -603,11 +599,14 @@ function wirePackages(): void {
   installedError.textContent = "";
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
+  // The sandbox stopped answering (src/install_request.ts): the panel
+  // keeps that failure, with its reload note, and installs nothing more.
+  let stopped = false;
   renderInstalled = (known) =>
-    markInstalled(list.querySelectorAll("button"), known, busy);
+    markInstalled(list.querySelectorAll("button"), known, busy || stopped);
   showInstalledNote = (note) => installedError.textContent = note;
   const install = async (name: string) => {
-    if (packageInstall === undefined || busy) return;
+    if (packageInstall === undefined || busy || stopped) return;
     busy = true;
     panel.dataset.install = "running";
     installedPanel.render();
@@ -629,6 +628,7 @@ function wirePackages(): void {
         ? error.message
         : String(error);
       panel.dataset.install = "failed";
+      stopped = error instanceof InstallsStopped;
     } finally {
       busy = false;
       installedPanel.render();
