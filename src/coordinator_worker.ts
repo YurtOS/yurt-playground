@@ -229,6 +229,9 @@ async function servePackages(msg: ToWorker): Promise<void> {
       stalledWhy = stalledSandboxWhy(error);
       // The panel shows this as it is: say the way to a fresh sandbox.
       said += "; reload the page for a fresh one";
+    } else if (error instanceof InstallStalled && error.inSandbox) {
+      // Its sandbox was dropped meanwhile: the one in use is fresh.
+      said += "; that sandbox has since been replaced by a fresh one";
     }
     post({ type: "pkg-reply", req, ok: false, error: said });
   } finally {
@@ -633,6 +636,15 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         // land while a layer is written or read out. Not on a tablet: a
         // layer is over 100 MiB in this worker while it is made or used.
         const from = await installs(() => {
+          // A Packages install queued before this one stalled here (it is
+          // marked only once its recovery ends, which Try again may not
+          // have waited for): install nothing into it. The next Try again
+          // starts a fresh sandbox.
+          if (sandboxStalled && session === packageSession) {
+            throw new Error(
+              `${stalledWhy} in this sandbox; Try again starts a fresh one`,
+            );
+          }
           // In the turn: a Packages install queued before this one has run.
           const pristine = !pkgTouched.has(session);
           pkgTouched.add(session);
