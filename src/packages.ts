@@ -410,13 +410,9 @@ export type PackageHost = {
 };
 
 /** How an install follows one `pkg` run: `alive` at least every few
- * seconds while the sandbox is still working on it, with the run's guest
- * heartbeats so far when the host counts them; `signal` aborts once the
- * install has given up on the run (it stopped making progress). */
-export type RunWatch = {
-  alive: (beats?: number) => void;
-  signal: AbortSignal;
-};
+ * seconds while the sandbox is still working on it; `signal` aborts once
+ * the install has given up on the run (it stopped making progress). */
+export type RunWatch = { alive: () => void; signal: AbortSignal };
 
 /** How long an install may go with no progress at all -- no status, no
  * downloaded bytes, no heartbeat from the guest's `pkg` run -- before it
@@ -426,15 +422,23 @@ export type RunWatch = {
  * sandbox that stopped answering (yurtos-kernel#4170). */
 export const INSTALL_STALL_MS = 60_000;
 
-/** The most guest heartbeats one `pkg` run may take: the backstop for a
- * `pkg` that is alive but blocked, which keeps the heartbeat going
- * (src/session_packages.ts `withHeartbeat`) and shows no other sign.
- * Counted in beats, not wall time: the guest beats every 2 s of its own
- * time, so a throttled tab (a locked screen) that runs the guest slowly
- * beats slowly too, and its slow but advancing install is not cut off.
- * Python's install run takes about a minute (30-45 beats); 150 beats is
- * five minutes of a guest that runs at full speed. */
-export const INSTALL_RUN_CEILING_BEATS = 150;
+/** The longest one guest `pkg` run may take, heartbeat or not: the
+ * backstop for a `pkg` that is alive but blocked, which keeps the
+ * heartbeat going (src/session_packages.ts `withHeartbeat`) and shows no
+ * other sign. Wall time, with room for a tab the browser slows down:
+ * desktop Safari 27 on an M-series Mac ran Python's install run in 157 s
+ * with the window in front, and with it minimized (hidden, like a locked
+ * screen) the run was still going when the old five-minute ceiling cut
+ * it off. Guest time is no better a measure: the guest's clock and its
+ * `sleep` follow the host's monotonic clock, so a slowed tab still beats
+ * about every 2 s. A sandbox that stopped is caught by
+ * {@link INSTALL_STALL_MS} long before this. */
+export const INSTALL_RUN_CEILING_MS = 15 * 60_000;
+
+/** How often a watched run's status says how long it has been going:
+ * the page's own silence deadline (src/install_request.ts
+ * `INSTALL_SILENCE_MS`) hears from a run that is still working. */
+export const PROGRESS_EVERY_MS = 5000;
 
 /** An install that stopped making progress ({@link INSTALL_STALL_MS}).
  * `inSandbox`: it stopped in the guest's `pkg` run, so the sandbox may no
@@ -450,14 +454,14 @@ export class InstallStalled extends Error {
     name: string,
     ms: number,
     inSandbox: boolean,
-    /** The run went past {@link INSTALL_RUN_CEILING_BEATS} beats. */
-    ceilingBeats?: number,
+    /** The run went past {@link INSTALL_RUN_CEILING_MS}, beating. */
+    ceiling = false,
   ) {
     const seconds = Math.round(ms / 1000);
     super(
-      ceilingBeats !== undefined
-        ? `${name}: the install stopped making progress (the sandbox's ` +
-          `pkg beat ${ceilingBeats} times without finishing)`
+      ceiling
+        ? `${name}: the install stopped making progress (the sandbox ` +
+          `did not finish it in ${seconds} s)`
         : inSandbox
         ? `${name}: the install stopped making progress (the sandbox's ` +
           `pkg did nothing for ${seconds} s)`
@@ -492,40 +496,56 @@ export function stalledSandboxWhy(error: InstallStalled): string {
 }
 
 /** `pkg recover` after a run the install gave up on, watched like a run:
- * no progress for `stallMs`, or more than `ceilingBeats` beats, gives up
- * on it too. Whether it finished, and if not, why. */
+ * no progress for `stallMs`, or running longer than `ceilingMs`, gives up
+ * on it too. While it beats, `status` is said with its seconds every
+ * `everyMs`, as a run's is, so the page's own silence deadline
+ * (src/install_request.ts) hears from it. Whether it finished, and if
+ * not, why. */
 async function recoverStalled(
   recover: NonNullable<PackageHost["recover"]>,
-  stallMs: number,
-  ceilingBeats: number,
+  limits: { stallMs: number; ceilingMs: number; everyMs: number },
+  status: string,
+  progress: (message: string) => void,
 ): Promise<{ recovered: boolean; why: string }> {
+  const { stallMs, ceilingMs, everyMs } = limits;
   const giveUp = new AbortController();
-  let last = Date.now();
-  let beats = 0;
+  const started = Date.now();
+  let last = started;
+  let shown = started;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let fail = (_why: string) => {};
   const stopped = new Promise<string>((resolve) => {
-    fail = (why) => {
-      giveUp.abort();
+    // Said before the abort, which makes the recovery reject at once: the
+    // race then answers with why the install gave up on it.
+    const stop = (why: string) => {
       resolve(why);
+      giveUp.abort();
     };
     const check = () => {
-      if (beats >= ceilingBeats) return fail(`it beat ${beats} times`);
-      const idle = Date.now() - last;
-      if (idle >= stallMs) {
-        return fail(`it did nothing for ${Math.round(idle / 1000)} s`);
+      const now = Date.now();
+      if (now - started >= ceilingMs) {
+        return stop(`it did not finish in ${Math.round(ceilingMs / 1000)} s`);
       }
-      timer = setTimeout(check, Math.max(stallMs - idle, 10));
+      const idle = now - last;
+      if (idle >= stallMs) {
+        return stop(`it did nothing for ${Math.round(idle / 1000)} s`);
+      }
+      timer = setTimeout(
+        check,
+        Math.max(Math.min(stallMs - idle, ceilingMs - (now - started)), 10),
+      );
     };
-    timer = setTimeout(check, stallMs);
+    timer = setTimeout(check, Math.min(stallMs, ceilingMs));
   });
   try {
     const outcome = await Promise.race([
       recover({
-        alive: (n) => {
-          last = Date.now();
-          beats = n ?? beats + 1;
-          if (beats >= ceilingBeats) fail(`it beat ${beats} times`);
+        alive: () => {
+          const now = Date.now();
+          last = now;
+          if (!giveUp.signal.aborted && now - shown >= everyMs) {
+            shown = now;
+            progress(`${status} (${Math.round((now - started) / 1000)} s)`);
+          }
         },
         signal: giveUp.signal,
       }),
@@ -930,9 +950,9 @@ export async function installPackage(
 ): Promise<string> {
   const name = typeof request === "string" ? request : request.label;
   const stallMs = options.stallMs ?? INSTALL_STALL_MS;
-  const ceilingBeats = options.runCeilingBeats ?? INSTALL_RUN_CEILING_BEATS;
-  /** The watched run in flight's guest heartbeats so far. */
-  let runBeats: number | undefined;
+  const ceilingMs = options.runCeilingMs ?? INSTALL_RUN_CEILING_MS;
+  /** When the watched run in flight started. */
+  let runStarted: number | undefined;
   let last = Date.now();
   /** Runs in flight that nothing can watch: the check waits for them. */
   let unwatched = 0;
@@ -949,10 +969,12 @@ export async function installPackage(
   const stalled = new Promise<never>((_, reject) => {
     check = () => {
       if (giveUp.signal.aborted) return;
-      const idle = Date.now() - last;
-      if (runBeats !== undefined && runBeats >= ceilingBeats) {
+      const now = Date.now();
+      const idle = now - last;
+      const running = runStarted === undefined ? 0 : now - runStarted;
+      if (runStarted !== undefined && running >= ceilingMs) {
         giveUp.abort();
-        reject(new InstallStalled(name, 0, true, runBeats));
+        reject(new InstallStalled(name, ceilingMs, true, true));
         return;
       }
       if (unwatched === 0 && idle >= stallMs) {
@@ -960,35 +982,35 @@ export async function installPackage(
         reject(new InstallStalled(name, stallMs, watched > 0));
         return;
       }
+      const untilCeiling = runStarted === undefined
+        ? Infinity
+        : ceilingMs - running;
       // An unwatched run touches when it ends: look again a window later.
       const untilIdle = unwatched > 0 ? stallMs : stallMs - idle;
-      timer = setTimeout(check, Math.max(untilIdle, 10));
+      timer = setTimeout(
+        check,
+        Math.max(Math.min(untilIdle, untilCeiling), 10),
+      );
     };
     timer = setTimeout(check, stallMs);
   });
   const watcher: InstallWatcher = {
     touch,
-    beat: (beats) => {
-      if (runBeats === undefined) return;
-      runBeats = beats ?? runBeats + 1;
-      // The ceiling may come before the next idle check.
-      if (runBeats >= ceilingBeats) {
-        clearTimeout(timer);
-        check();
-      }
-    },
     signal: giveUp.signal,
     check: () => {
       if (giveUp.signal.aborted) throw new Error(`${name}: given up`);
     },
     watched: async (run) => {
       watched++;
-      runBeats = 0;
+      runStarted = Date.now();
+      // The ceiling may come before the next idle check: reschedule.
+      clearTimeout(timer);
+      check();
       try {
         return await run();
       } finally {
         watched--;
-        runBeats = undefined;
+        runStarted = undefined;
       }
     },
     unwatched: async (run) => {
@@ -1024,11 +1046,17 @@ export async function installPackage(
     if (options.host.recover === undefined) {
       throw error.withRecovery(false, "this sandbox cannot run it");
     }
-    options.progress(`${name}: running pkg recover after the stopped install`);
+    const status = `${name}: running pkg recover after the stopped install`;
+    options.progress(status);
     const { recovered, why } = await recoverStalled(
       options.host.recover,
-      stallMs,
-      ceilingBeats,
+      {
+        stallMs,
+        ceilingMs,
+        everyMs: options.progressEveryMs ?? PROGRESS_EVERY_MS,
+      },
+      status,
+      options.progress,
     );
     throw error.withRecovery(recovered, why);
   } finally {
@@ -1045,17 +1073,17 @@ type InstallOptions = {
   cache?: ArchiveCache;
   /** {@link INSTALL_STALL_MS}; shorter in tests. */
   stallMs?: number;
-  /** {@link INSTALL_RUN_CEILING_BEATS}; fewer in tests. */
-  runCeilingBeats?: number;
+  /** {@link INSTALL_RUN_CEILING_MS}; shorter in tests. */
+  runCeilingMs?: number;
   /** Told the exact releases a set or pinned list resolved to, from the
    * install's own index read: what this install puts in the sandbox. */
   resolved?: (releases: readonly PinnedRelease[]) => void;
+  /** {@link PROGRESS_EVERY_MS}; shorter in tests. */
+  progressEveryMs?: number;
 };
 
 type InstallWatcher = {
   touch(): void;
-  /** A watched run's heartbeats so far, for the run ceiling. */
-  beat(beats?: number): void;
   signal: AbortSignal;
   /** Throws once the install has given up: it does nothing more. */
   check(): void;
@@ -1157,13 +1185,13 @@ async function installWatched(
     }
     const started = Date.now();
     let shown = started;
+    const progressEveryMs = options.progressEveryMs ?? PROGRESS_EVERY_MS;
     return watcher.watched(() =>
       host.stageAndRun(files, script, {
-        alive: (beats) => {
+        alive: () => {
           watcher.touch();
-          watcher.beat(beats);
           const now = Date.now();
-          if (now - shown >= 5000) {
+          if (now - shown >= progressEveryMs) {
             shown = now;
             progress(`${status} (${Math.round((now - started) / 1000)} s)`);
           }

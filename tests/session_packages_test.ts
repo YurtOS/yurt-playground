@@ -2,6 +2,7 @@ import { assertEquals, assertRejects } from "@std/assert";
 import {
   type BootedSession,
   HEARTBEAT,
+  recoverScript,
   runStaged,
   withHeartbeat,
   workerPackageHost,
@@ -234,22 +235,6 @@ Deno.test("a run the install gave up on stops being watched", async () => {
   assertEquals(lines.length, 1);
 });
 
-Deno.test("a watched run tells the install how many times the guest beat", async () => {
-  const { session } = fakeSession([
-    { stderr: HEARTBEAT },
-    { stdout: "x" },
-    { stderr: HEARTBEAT + HEARTBEAT },
-  ], 10);
-  const counts: (number | undefined)[] = [];
-  await runStaged(session, [], "pkg install greet", {
-    alive: (beats) => counts.push(beats),
-    signal: new AbortController().signal,
-  }, 5);
-  // Output that is not a beat is progress, but no beat.
-  assertEquals(counts.at(-1), 3);
-  assertEquals(counts.every((n) => n !== undefined), true);
-});
-
 Deno.test("the worker's host runs pkg recover as root, watched, staging nothing", async () => {
   const { session, lines } = fakeSession([
     { stderr: HEARTBEAT },
@@ -265,7 +250,18 @@ Deno.test("the worker's host runs pkg recover as root, watched, staging nothing"
   assertEquals(result, { code: 0, stdout: "recovered 0001\n", stderr: "" });
   assertEquals(lines, [
     `exec /bin/sh -c '${
-      withHeartbeat("sudo pkg recover").replaceAll("'", "'\\''")
+      withHeartbeat(recoverScript()).replaceAll("'", "'\\''")
     }'`,
   ]);
+});
+
+Deno.test("pkg recover alone gives the heartbeat no child to see; in a shell that waits on it, it beats", async () => {
+  // sh -c execs a lone simple command in place of the shell, which then
+  // has no child: the loop beats nothing, and a recovery waiting on pkg's
+  // lock would look stopped. The recovery's script keeps the shell.
+  const lone = await hostHeartbeat("sleep 1.2", [1000]);
+  assertEquals(lone.beats[0], 0, `beats ${lone.beats}`);
+  const kept = await hostHeartbeat(recoverScript("sleep 1.2"), [1000]);
+  assertEquals(kept.beats[0] >= 3, true, `beats ${kept.beats}`);
+  assertEquals(recoverScript(), "sudo pkg recover; exit $?");
 });

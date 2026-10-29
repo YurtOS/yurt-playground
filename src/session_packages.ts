@@ -38,7 +38,7 @@ export const HEARTBEAT_SECONDS = 2;
  * but the shell was never told (a lost child exit), and when the sandbox
  * stops running anything. A `pkg`
  * that is alive but blocked keeps it beating; the install's run ceiling
- * (src/packages.ts `INSTALL_RUN_CEILING_BEATS`) is the backstop for that. A
+ * (src/packages.ts `INSTALL_RUN_CEILING_MS`) is the backstop for that. A
  * shell between two commands has no child for a moment; one missed beat
  * is nothing next to the no-progress window. A zombie child does not
  * count. It ends within one beat of the shell. */
@@ -79,11 +79,13 @@ export function withHeartbeat(
   ].join("\n");
 }
 
-/** How many heartbeats `bytes` holds. */
-function countBeats(bytes: Uint8Array): number {
-  let n = 0;
-  for (const byte of bytes) if (byte === HEARTBEAT_BYTE) n++;
-  return n;
+/** The script that runs `command` (`pkg recover`) under the heartbeat.
+ * Not the command alone: `sh -c` with one simple command execs it in the
+ * shell's place, and the heartbeat then sees the shell with no child and
+ * never beats (a recovery waiting on pkg's lock would look stopped). The
+ * `exit` after it, a builtin, keeps the shell waiting on it. */
+export function recoverScript(command = "sudo pkg recover"): string {
+  return `${command}; exit $?`;
 }
 
 /** `bytes` without the heartbeat's byte. */
@@ -148,9 +150,7 @@ export async function runStaged(
           const size = now.stdout.byteLength + now.stderr.byteLength;
           if (size > seen) {
             seen = size;
-            // The beats so far: the guest's own time on the run, which the
-            // install's ceiling counts (a throttled tab beats slowly).
-            watch.alive(countBeats(now.stderr));
+            watch.alive();
           }
         } catch {
           // A read that failed is no progress, and no reason to stop.
@@ -216,7 +216,7 @@ export function workerPackageHost(session: BootedSession): PackageHost {
     // /var/lib/yurt-pkg). It waits for pkg's lock while a run the install
     // gave up on still holds it.
     recover: (watch) =>
-      runStaged(session, [], "sudo pkg recover", watch, undefined, false),
+      runStaged(session, [], recoverScript(), watch, undefined, false),
     // The in-tab session's processes can be read while they run.
     observesProgress: session.process !== undefined,
   };
