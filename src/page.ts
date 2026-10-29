@@ -25,6 +25,7 @@ import {
   loadCatalog,
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
+import { type InstallReply, packageRequests } from "./install_request.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import { deviceClass } from "./device.ts";
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
@@ -54,12 +55,13 @@ type FromWorker =
   | { type: "pkg-progress"; req: number; text: string }
   | { type: "snapshot-captured"; blob: Blob; ms: number }
   | {
-    type: "yurt-reply" | "pkg-reply";
+    type: "yurt-reply";
     req: number;
     ok: boolean;
     value?: unknown;
     error?: string;
   }
+  | InstallReply
   | { type: "cell-stream"; id: string; chunk: JupyterStream }
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string }
@@ -315,34 +317,21 @@ function boot(
       list: () => ask({ type: "yurt-list" }),
     };
   yurtState.connect(transport);
-  /** Each install's progress, by request. */
-  const progressOf = new Map<number, (text: string) => void>();
-  if (desktop === undefined) {
-    packageInstall = (name, progress) =>
-      new Promise<string>((resolve, reject) => {
-        const req = nextReq++;
-        progressOf.set(req, progress);
-        pending.set(req, {
-          resolve: (value) => {
-            progressOf.delete(req);
-            resolve(value as string);
-          },
-          reject: (error) => {
-            progressOf.delete(req);
-            reject(error);
-          },
-        });
-        worker.postMessage({
-          type: "pkg-install",
-          req,
-          name,
-          tablet: smallDevice,
-        });
-      });
-  }
+  const installs = desktop === undefined
+    ? packageRequests((req, name) =>
+      worker.postMessage({
+        type: "pkg-install",
+        req,
+        name,
+        tablet: smallDevice,
+      })
+    )
+    : undefined;
+  if (installs !== undefined) packageInstall = installs.install;
   yurtState.set("booting");
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
+    installs?.heard();
     // The coordinator's empty status is "booted"; say so.
     if (msg.type === "status") {
       // Installing Python, then starting Jupyter on it, is the cell's
@@ -393,7 +382,9 @@ function boot(
       status.progress("running", { settled: true });
       endBoot();
     }
-    if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
+    if (msg.type === "pkg-progress" || msg.type === "pkg-reply") {
+      installs?.answer(msg);
+    }
     // A capture ends in the sealed sandbox, with no Jupyter to wait for.
     if (msg.type === "snapshot-captured") {
       finishCapture(
@@ -403,7 +394,7 @@ function boot(
         fail,
       );
     }
-    if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
+    if (msg.type === "yurt-reply") {
       const waiter = pending.get(msg.req);
       pending.delete(msg.req);
       if (waiter === undefined) return;
