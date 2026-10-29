@@ -11,6 +11,7 @@ import {
   PYTHON_SET,
   pythonInstallRequest,
   pythonInstallState,
+  sealVerification,
 } from "../src/python_install.ts";
 
 const artifact = {
@@ -224,4 +225,207 @@ Deno.test("a boot with no install's question drops its read when it is over", as
   } finally {
     console.info = info;
   }
+});
+
+/** A catalog with the whole Python set at each of `builds`. */
+function setCatalog(builds: number[]): Catalog {
+  const versions: Record<string, string> = {
+    python: "3.14.7",
+    numpy: "2.5.0",
+    pyzmq: "26.4.0",
+    "jupyter-kernel": "0.0.1",
+  };
+  return {
+    metadata: new Map(
+      Object.entries(versions).map(([name, version]) => [name, {
+        bytes: new Uint8Array(),
+        file: {
+          name,
+          versions: builds.map((n) => ({
+            version,
+            build: `yurt_${n}`,
+            url: `artifacts/${name}/${name}-${version}-yurt_${n}.yurtpkg`,
+            sha256: `${name}${n}`.padEnd(64, "0"),
+            size: 1,
+            depends: [],
+            yanked: false,
+          })),
+        },
+      }]),
+    ),
+  } as unknown as Catalog;
+}
+
+Deno.test("a slim image that ships python names it, and its set is the one at that python's build", async () => {
+  const slim = { ...artifact, sha256: "d".repeat(64) };
+  const pins = parsePins({
+    ...base,
+    browserImage: { ...slim, python: { version: "3.14.7", build: "yurt_0" } },
+  });
+  const request = pythonInstallRequest(pins)!;
+  assertEquals(request.installed, [
+    { name: "python", version: "3.14.7", build: "yurt_0" },
+  ]);
+  // python at yurt_0 with yurt_0's set still live: that set, not yurt_1's
+  // -- for the snapshot and the stored layer as for the install.
+  const both = () => Promise.resolve(setCatalog([0, 1]));
+  const key = await livePythonSet(request, 1000, both);
+  assertEquals(key?.includes("python@3.14.7-yurt_0"), true, key ?? "");
+  assertEquals(key?.includes("yurt_1"), false, key ?? "");
+  // Only yurt_1 live: no set this image can take.
+  assertEquals(
+    await livePythonSet(request, 1000, () => Promise.resolve(setCatalog([1]))),
+    NO_COMPLETE_SET,
+  );
+  // No python in the image: the newest set, as before.
+  const today = pythonInstallRequest(
+    parsePins({ ...base, browserImage: slim }),
+  )!;
+  assertEquals("installed" in today, false);
+  assertEquals(
+    (await livePythonSet(today, 1000, both))?.includes("python@3.14.7-yurt_1"),
+    true,
+  );
+});
+
+Deno.test("a slim image's python entry of another shape is a broken pin", () => {
+  for (
+    const python of [
+      "3.14.7-yurt_0",
+      { version: "3.14.7" },
+      { version: "", build: "yurt_0" },
+      { version: "3.14.7", build: "0" },
+    ]
+  ) {
+    assertThrows(
+      () => parsePins({ ...base, browserImage: { ...artifact, python } }),
+      Error,
+      "browserImage.python",
+      JSON.stringify(python),
+    );
+  }
+});
+
+Deno.test("the Suspend/Resume set verifies only what pkg fetches, and takes an image's own python's stdlib from the image", () => {
+  const python = { name: "python", version: "3.14.7", build: "yurt_0" };
+  const seal = { name: "python-seal", version: "3.14.7", build: "yurt_0" };
+  // Today's slim image: no python; both are verified, the stdlib comes
+  // from the python archive.
+  assertEquals(sealVerification([python, seal], []), {
+    verify: [python, seal],
+    stdlibFromImage: false,
+  });
+  assertEquals(
+    sealVerification([python, seal], [
+      { name: "git", version: "2.55.0", build: "yurt_0" },
+    ]).verify,
+    [python, seal],
+  );
+  // The next slim image: its python is the set's (resolveSet pinned it);
+  // pkg reuses it and fetches only the seal.
+  assertEquals(sealVerification([python, seal], [python]), {
+    verify: [seal],
+    stdlibFromImage: true,
+  });
+  // An image with another python cannot run this set.
+  assertThrows(
+    () => sealVerification([python, seal], [{ ...python, build: "yurt_1" }]),
+    Error,
+    "python 3.14.7-yurt_1 installed, not the set's 3.14.7-yurt_0",
+  );
+  // An installed seal, even at the set's release, would go unverified
+  // while the kernel reads its archive: refused, with or without python.
+  for (const installed of [[seal], [python, seal]]) {
+    assertThrows(
+      () => sealVerification([python, seal], installed),
+      Error,
+      "the slim image has python-seal installed: this kernel reads its archive",
+    );
+  }
+});
+
+Deno.test("the Suspend/Resume set is pinned to the slim image's python too", async () => {
+  const source = await Deno.readTextFile(
+    new URL("../src/notebook_kernel_worker.ts", import.meta.url),
+  );
+  // A scoped source check (the worker is not loadable in a test): the set
+  // is resolved with the pins' installed python, and verified through
+  // sealVerification against the verifying sandbox's own list.
+  assertEquals(
+    /resolveSet\(catalog, \[\.\.\.PYTHON_SET, SEAL_PACKAGE\], installed\)/
+      .test(source),
+    true,
+  );
+  assertEquals(
+    source.includes(
+      "const installed = pythonInstallRequest(pins)?.installed ?? [];",
+    ),
+    true,
+  );
+  assertEquals(
+    /sealVerification\(\s*\[set\.python, set\.seal\],\s*await installedReleases\(session\.files\) \?\? \[\],/
+      .test(source),
+    true,
+  );
+  assertEquals(source.includes("releases: verify,"), true);
+});
+
+Deno.test("the Suspend/Resume set refuses an image that disagrees with its pins about python", () => {
+  const python = { name: "python", version: "3.14.7", build: "yurt_0" };
+  const seal = { name: "python-seal", version: "3.14.7", build: "yurt_0" };
+  // Agreeing: as without the check.
+  assertEquals(sealVerification([python, seal], [python], true).verify, [
+    seal,
+  ]);
+  assertEquals(sealVerification([python, seal], [], false).verify, [
+    python,
+    seal,
+  ]);
+  // The pins name a python the image does not ship: its stdlib would be
+  // looked for in the image, where it is not.
+  assertThrows(
+    () => sealVerification([python, seal], [], true),
+    Error,
+    "does not ship the python its pins name",
+  );
+  assertThrows(
+    () => sealVerification([python, seal], [python], false),
+    Error,
+    "ships a python its pins do not name",
+  );
+});
+
+Deno.test("the Suspend/Resume kernel stages an image-shipped python's stdlib from the image, and checks the pins against the sandbox", async () => {
+  // Scoped source checks: the worker is not loadable in a test.
+  const source = await Deno.readTextFile(
+    new URL("../src/notebook_kernel_worker.ts", import.meta.url),
+  );
+  // The verifying sandbox's list is checked against the pins.
+  assertEquals(
+    /sealVerification\(\s*\[set\.python, set\.seal\],\s*await installedReleases\(session\.files\) \?\? \[\],\s*set\.stdlibFromImage,\s*\)/
+      .test(source),
+    true,
+    "verifySealSet passes the pins' word to sealVerification",
+  );
+  // A fresh boot stages the image's stdlib when it ships python, and the
+  // archive's only when it does not.
+  const boot = source.slice(
+    source.indexOf("async function bootFresh("),
+    source.indexOf("async function restoreStored("),
+  );
+  assertEquals(
+    /,\s*sealSet\.stdlibFromImage \? stagedPath : \(path\) => path\.startsWith\("\/etc\/"\)/
+      .test(boot),
+    true,
+    "the image's stdlib is staged when it ships python",
+  );
+  const archive = boot.indexOf("await fetchRelease(sealSet.python");
+  const guard = boot.lastIndexOf("if (!sealSet.stdlibFromImage) {", archive);
+  assertEquals(archive > 0 && guard > 0, true, "the archive only without");
+  // No block closes between the guard and the fetch.
+  assertEquals(
+    /\n\s*\}\n/.test(boot.slice(guard, archive)),
+    false,
+    "the archive is fetched inside the guard",
+  );
 });

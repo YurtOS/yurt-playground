@@ -113,8 +113,10 @@ export function waitForSandbox(
 }
 
 /** Whether the sandbox has a python3, for the system prompt. Only the
- * probe's own "missing" code says no; a probe that fails or exits any
- * other way says yes, the prompt the agent always had. */
+ * probe's own "no python3" code says no: a python3 without the Python set
+ * (the slim image's python package) is still one, and the prompt promises
+ * no more than "Python 3". A probe that fails or exits any other way says
+ * yes, the prompt the agent always had. */
 export async function sandboxHasPython(
   tools: Tools,
   signal: AbortSignal,

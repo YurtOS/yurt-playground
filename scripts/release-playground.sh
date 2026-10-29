@@ -151,6 +151,7 @@ resume_command() {
 }
 source "$root/scripts/lib/kernel-release.sh"
 source "$root/scripts/lib/snapshot-pin.sh"
+source "$root/scripts/lib/python-set.sh"
 
 for tool in gh jq git deno; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
@@ -774,19 +775,33 @@ if grep -qx 'playground-slim.yurtimg' <<< "$image_assets"; then
     --arg sha "$(sidecar_sha "$image_repo" "$image_release" playground-slim.yurtimg)" \
     '{repo: "YurtOS/yurt-ports", rev: $ports, releaseRepo: $repo, release: $release,
       build: "scripts/build-playground-image.sh", path: "ports/playground-image/build/dist/playground-slim.yurtimg", sha256: $sha}')
-  # Its pages install the newest complete Python set from the live
-  # repository (src/python_install.ts): one must exist before a train pins
-  # the slim image, or every Python page would fail.
-  common=""
-  # python-seal too: the set's Suspend/Resume interpreter.
-  for name in python numpy pyzmq jupyter-kernel python-seal; do
-    builds=$(curl -fsSL --retry 3 "https://raw.githubusercontent.com/YurtOS/yurt-packages/main/packages/$name.json" |
-      jq -r '.versions[] | select((.yanked | not) and (.build | test("^yurt_[0-9]+$"))) | .build' | sort -u) ||
-      die "yurt-packages has no $name package: publish the Python set before pinning the slim image"
-    if [ "$name" = python ]; then common=$builds; else common=$(comm -12 <(echo "$common") <(echo "$builds")); fi
-  done
-  [ -n "$common" ] || die "yurt-packages has no complete Python set (python, numpy, pyzmq, jupyter-kernel, python-seal with one yurt_N build)"
-  say "slim image: the newest Python set complete with its seal is $(sort -t_ -k2 -n <<< "$common" | tail -1)"
+  # Its pages install the Python set from the live repository
+  # (src/python_install.ts), at the build of the python the image ships
+  # when it ships one (pkg never replaces it): such a set must exist before
+  # a train pins the slim image, or every Python page would fail. Which
+  # python is the image's own pkg installed list, read from the image.
+  command -v zstd >/dev/null 2>&1 || die "zstd is required to read the slim image's installed list"
+  slim_dir=$(mktemp -d "${TMPDIR:-/tmp}/yurt-slim.XXXXXX")
+  gh release download "$image_release" --repo "$image_repo" --pattern playground-slim.yurtimg --dir "$slim_dir" >/dev/null ||
+    { rm -rf "$slim_dir"; die "cannot download playground-slim.yurtimg from $image_repo $image_release"; }
+  [ "$(shasum -a 256 "$slim_dir/playground-slim.yurtimg" | cut -d' ' -f1)" = "$(jq -r .sha256 <<< "$slim_json")" ] ||
+    { rm -rf "$slim_dir"; die "playground-slim.yurtimg from $image_release does not match its .sha256"; }
+  slim_python=$(slim_image_python "$slim_dir/playground-slim.yurtimg") ||
+    { rm -rf "$slim_dir"; die "cannot read playground-slim.yurtimg from $image_release as a zstd tar"; }
+  rm -rf "$slim_dir"
+  if [ -n "$slim_python" ]; then
+    read -r slim_python_version slim_python_build <<< "$slim_python"
+    slim_json=$(jq --arg v "$slim_python_version" --arg b "$slim_python_build" '. + {python: {version: $v, build: $b}}' <<< "$slim_json")
+    common=$(python_set_builds "$slim_python_version" "$slim_python_build") ||
+      die "cannot read the Python set's packages from yurt-packages"
+    [ -n "$common" ] || die "yurt-packages has no complete Python set (python, numpy, pyzmq, jupyter-kernel, python-seal) at the slim image's python $slim_python_version-$slim_python_build, which pkg cannot replace: publish that build's set, or rebuild the image on the live one"
+    say "slim image: ships python $slim_python_version-$slim_python_build; the Python set complete with its seal at that build is live"
+  else
+    common=$(python_set_builds) ||
+      die "yurt-packages has no Python set package: publish the Python set before pinning the slim image"
+    [ -n "$common" ] || die "yurt-packages has no complete Python set (python, numpy, pyzmq, jupyter-kernel, python-seal with one yurt_N build)"
+    say "slim image: the newest Python set complete with its seal is $(tail -1 <<< "$common")"
+  fi
 fi
 host_json='{}'
 cli_json='{}'

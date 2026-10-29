@@ -430,8 +430,9 @@ export type LayerInstallDeps<E> = {
    * after it succeeded. The caller runs all of this in one turn of the
    * install queue, so nothing else installs meanwhile. */
   install(between: { before(): void; after(): void }): Promise<void>;
-  /** Whether the sandbox has a python3 now (src/coordinator_start.ts):
-   * `undefined` when the probe could not tell. */
+  /** Whether the sandbox has the Python set now, python3 and the
+   * kernel's packages (src/coordinator_start.ts): `undefined` when the
+   * probe could not tell. */
   probe(): Promise<boolean | undefined>;
   progress(text: string): void;
 };
@@ -445,7 +446,7 @@ export class IndexUnreadable extends Error {}
  * the set the live index resolves to (or, when the index cannot be had,
  * the one stored for this image), else with the guest's `pkg` -- keeping
  * what that install wrote as the layer for the next visit. A layer that
- * does not apply, or leaves no python3, is dropped and fails as
+ * does not apply, or leaves no Python set, is dropped and fails as
  * {@link LayerFailed}. Failing to keep a layer fails nothing. */
 export async function installWithLayer<E>(
   deps: LayerInstallDeps<E>,
@@ -492,7 +493,7 @@ export async function installWithLayer<E>(
         // A probe that could not tell (it timed out) is no reason to throw
         // a good layer away; the kernel's start tells.
         if (await deps.probe() !== false) return "layer";
-        cause = "no python3 after it";
+        cause = "no Python set after it";
       } catch (error) {
         cause = error instanceof Error ? error.message : String(error);
       }

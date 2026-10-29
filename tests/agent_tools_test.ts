@@ -166,3 +166,37 @@ Deno.test("the agent probe says no python3 only on the missing code", async () =
   assertEquals(await sandboxHasPython(tools(null), signal), true);
   assertEquals(await sandboxHasPython(tools(0, true), signal), true);
 });
+
+Deno.test("the agent's prompt keeps Python 3 on an image whose python3 lacks the kernel's packages", async () => {
+  const signal = new AbortController().signal;
+  // The probe run by the host's own /bin/sh against a guest root.
+  const hostTools = (root: string): Tools => ({
+    exec: async (cmd) => {
+      const output = await new Deno.Command("/bin/sh", {
+        args: ["-c", cmd.replaceAll("/usr/local/", `${root}/usr/local/`)],
+        clearEnv: true,
+        env: { PATH: `${root}/usr/local/bin` },
+        stdout: "null",
+        stderr: "null",
+      }).output();
+      return { code: output.code, stdout: "", stderr: "" };
+    },
+    readFile: () => Promise.reject(new Error("unused")),
+  });
+  const root = await Deno.makeTempDir({ prefix: "agent-pyprobe-" });
+  try {
+    await Deno.mkdir(`${root}/usr/local/bin`, { recursive: true });
+    await Deno.mkdir(`${root}/usr/local/lib/python3.14/site-packages`, {
+      recursive: true,
+    });
+    // Today's slim image: no python3.
+    assertEquals(await sandboxHasPython(hostTools(root), signal), false);
+    // The next slim image: python3 alone. It runs Python 3, which is all
+    // the prompt says.
+    await Deno.writeTextFile(`${root}/usr/local/bin/python3`, "#!/bin/sh\n");
+    await Deno.chmod(`${root}/usr/local/bin/python3`, 0o755);
+    assertEquals(await sandboxHasPython(hostTools(root), signal), true);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

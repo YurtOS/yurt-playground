@@ -1568,3 +1568,121 @@ echo NOT-REACHED
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+/** Runs `body` in bash with scripts/lib/python-set.sh sourced, and `curl`
+ * answering each yurt-packages package file from `packages` (name ->
+ * `version@build` list, `!` for yanked). */
+async function pythonSetLib(
+  body: string,
+  packages: Record<string, string[]> = {},
+): Promise<{ code: number; stdout: string }> {
+  const dir = await Deno.makeTempDir({ prefix: "python-set-" });
+  try {
+    const bin = join(dir, "bin");
+    await Deno.mkdir(join(dir, "packages"), { recursive: true });
+    await Deno.mkdir(bin);
+    for (const [name, list] of Object.entries(packages)) {
+      await Deno.writeTextFile(
+        join(dir, "packages", `${name}.json`),
+        JSON.stringify({
+          name,
+          versions: list.map((r) => {
+            const [version, build] = r.replace("!", "").split("@");
+            return { version, build, yanked: r.startsWith("!") };
+          }),
+        }),
+      );
+    }
+    await Deno.writeTextFile(
+      join(bin, "curl"),
+      `#!/usr/bin/env bash
+url=\${!#}
+cat ${JSON.stringify(join(dir, "packages"))}/"\${url##*/}"
+`,
+    );
+    await Deno.chmod(join(bin, "curl"), 0o755);
+    const result = await command("bash", [
+      "-c",
+      `set -euo pipefail; source ${
+        JSON.stringify(join(repoRoot, "scripts/lib/python-set.sh"))
+      }; cd ${JSON.stringify(dir)}; ${body}`,
+    ], { env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` } });
+    return {
+      code: result.code,
+      stdout: new TextDecoder().decode(result.stdout).trim(),
+    };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+const SET_AT = (builds: number[], python = "3.14.7") => ({
+  python: builds.map((n) => `${python}@yurt_${n}`),
+  numpy: builds.map((n) => `2.5.0@yurt_${n}`),
+  pyzmq: builds.map((n) => `26.4.0@yurt_${n}`),
+  "jupyter-kernel": builds.map((n) => `0.0.1@yurt_${n}`),
+  "python-seal": builds.map((n) => `3.14.7@yurt_${n}`),
+});
+
+Deno.test("the slim image's python is read from its own pkg installed list", async () => {
+  const image = (list?: string) => `
+mkdir -p root/var/lib/yurt-pkg root/bin
+touch root/bin/busybox
+${
+    list === undefined
+      ? ""
+      : `printf ${JSON.stringify(list)} > root/var/lib/yurt-pkg/installed.list`
+  }
+(cd root && tar -cf - bin var) | zstd -q -o slim.yurtimg
+slim_image_python slim.yurtimg`;
+  assertEquals(
+    (await pythonSetLib(image(
+      "ca-certificates\\t2026.9.25\\tyurt_0\\npython\\t3.14.7\\tyurt_0\\n",
+    ))).stdout,
+    "3.14.7 yurt_0",
+  );
+  // Today's slim image: a list without python, or (older) none at all.
+  assertEquals(
+    (await pythonSetLib(image("git\\t2.55.0\\tyurt_0\\n"))).stdout,
+    "",
+  );
+  assertEquals((await pythonSetLib(image())).stdout, "");
+  // Not an image at all.
+  assertEquals(
+    (await pythonSetLib("echo x > bad; slim_image_python bad")).code !== 0,
+    true,
+  );
+});
+
+Deno.test("a train needs a complete live Python set at the slim image's python build, not just the newest", async () => {
+  // python at yurt_0 with yurt_0's set still live beside yurt_1's.
+  assertEquals(
+    (await pythonSetLib("python_set_builds 3.14.7 yurt_0", SET_AT([0, 1])))
+      .stdout,
+    "yurt_0",
+  );
+  // Only yurt_1 live: nothing the image can take.
+  const newer = { ...SET_AT([1]), numpy: ["2.5.0@yurt_0", "2.5.0@yurt_1"] };
+  assertEquals(
+    (await pythonSetLib("python_set_builds 3.14.7 yurt_0", newer)).stdout,
+    "",
+  );
+  // yurt_0 live, but with another python version than the image's.
+  assertEquals(
+    (await pythonSetLib(
+      "python_set_builds 3.14.7 yurt_0",
+      SET_AT([0], "3.14.8"),
+    )).stdout,
+    "",
+  );
+  // No python in the image: every complete build, newest last, as before;
+  // a yanked member takes its build out.
+  const yanked = {
+    ...SET_AT([0, 1, 2]),
+    pyzmq: ["26.4.0@yurt_0", "!26.4.0@yurt_1", "26.4.0@yurt_2"],
+  };
+  assertEquals(
+    (await pythonSetLib("python_set_builds", yanked)).stdout,
+    "yurt_0\nyurt_2",
+  );
+});

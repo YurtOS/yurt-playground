@@ -1,4 +1,9 @@
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   type ArchiveCache,
   browserTrustedRepos,
@@ -21,6 +26,7 @@ import {
   parsePackageFile,
   plannedInstalls,
   resolveSet,
+  SetNotOffered,
   sha256Hex,
   sizeRefusal,
   type StagedFile,
@@ -1340,4 +1346,147 @@ Deno.test("a set's install says which releases its own index read resolved to", 
       resolved.push(releases.map((r) => `${r.name}@${r.version}-${r.build}`)),
   });
   assertEquals(resolved, [["greet@0.1.0-yurt_0"]]);
+});
+
+/** The slim image's python, from pkg's installed list: pkg never replaces
+ * an installed package, so the set must be the one with this build. */
+const SLIM_PYTHON = { name: "python", version: "3.14.7", build: "yurt_0" };
+
+Deno.test("an installed python pins the set to its own build, even with a newer set live", () => {
+  const catalog = catalogOf({
+    python: ["3.14.7@yurt_0", "3.14.7@yurt_1"],
+    numpy: ["2.5.0@yurt_0", "2.5.0@yurt_1"],
+    pyzmq: ["26.4.0@yurt_0", "26.4.0@yurt_1"],
+    "jupyter-kernel": ["0.0.1@yurt_0", "0.0.1@yurt_1"],
+  });
+  assertEquals(
+    resolveSet(catalog, SET, [SLIM_PYTHON]).map((r) =>
+      `${r.name}@${r.version}-${r.build}`
+    ),
+    [
+      "python@3.14.7-yurt_0",
+      "numpy@2.5.0-yurt_0",
+      "pyzmq@26.4.0-yurt_0",
+      "jupyter-kernel@0.0.1-yurt_0",
+    ],
+  );
+  // What is installed outside the set pins nothing; with no python, the
+  // newest set, as before.
+  for (
+    const installed of [
+      [],
+      [{ name: "git", version: "2.55.0", build: "yurt_0" }],
+      undefined,
+    ]
+  ) {
+    assertEquals(
+      resolveSet(catalog, SET, installed).map((r) => r.build),
+      ["yurt_1", "yurt_1", "yurt_1", "yurt_1"],
+    );
+  }
+});
+
+Deno.test("an installed python with no complete set at its build is a clear failure", () => {
+  // Only yurt_1 is live: the set was republished and yurt_0's withdrawn.
+  const newer = catalogOf({
+    python: ["3.14.7@yurt_1"],
+    numpy: ["2.5.0@yurt_0", "2.5.0@yurt_1"],
+    pyzmq: ["26.4.0@yurt_1"],
+    "jupyter-kernel": ["0.0.1@yurt_1"],
+  });
+  const error = assertThrows(
+    () => resolveSet(newer, SET, [SLIM_PYTHON]),
+    SetNotOffered,
+  );
+  assertStringIncludes(error.message, "python 3.14.7-yurt_0");
+  assertStringIncludes(error.message, "installed");
+  // The build is live, but not that python's version.
+  assertThrows(
+    () =>
+      resolveSet(
+        catalogOf({
+          python: ["3.14.8@yurt_0"],
+          numpy: ["2.5.0@yurt_0"],
+          pyzmq: ["26.4.0@yurt_0"],
+          "jupyter-kernel": ["0.0.1@yurt_0"],
+        }),
+        SET,
+        [SLIM_PYTHON],
+      ),
+    SetNotOffered,
+    "python 3.14.7-yurt_0",
+  );
+  // Two installed members of different builds: no set has both.
+  assertThrows(
+    () =>
+      resolveSet(newer, SET, [SLIM_PYTHON, {
+        name: "numpy",
+        version: "2.5.0",
+        build: "yurt_1",
+      }]),
+    SetNotOffered,
+  );
+});
+
+Deno.test("a set's install asks pkg only for what is not installed, and says the whole set", async () => {
+  const archive = new Uint8Array([5, 5]);
+  const base = await fakeRepo(archive);
+  const enc = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value));
+  const libx = enc({
+    name: "libx",
+    versions: [
+      version("1.0.0", "yurt_0"),
+      version("1.0.0", "yurt_1"),
+    ],
+  });
+  const fetcher = async (url: string) => {
+    const path = url.slice(PACKAGE_REPO_URL.length);
+    if (path === "packages/libx.json") return libx;
+    const bytes = await base(url);
+    if (path !== "index.json") return bytes;
+    const index = JSON.parse(new TextDecoder().decode(bytes));
+    index.packages.libx = { sha256: "", size: 1, url: "packages/libx.json" };
+    return enc(index);
+  };
+  const { host, runs } = fakeHost(PLAN, INSTALLED);
+  let resolved: string[] = [];
+  await installPackage(
+    {
+      label: "Set",
+      set: ["libx", "greet"],
+      installed: [{ name: "libx", version: "1.0.0", build: "yurt_0" }],
+    },
+    {
+      host,
+      tablet: false,
+      fetcher,
+      progress: () => {},
+      resolved: (releases) => {
+        resolved = releases.map((r) => `${r.name}@${r.version}-${r.build}`);
+      },
+    },
+  );
+  assertEquals(
+    runs[0].script,
+    installScript(["greet@0.1.0-yurt_0"], "official"),
+  );
+  assertEquals(resolved, ["libx@1.0.0-yurt_0", "greet@0.1.0-yurt_0"]);
+});
+
+Deno.test("a verify-all list with nothing to verify is refused before pkg runs, never passed as verified", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, runs } = fakeHost(PLAN, INSTALLED);
+  await assertRejects(
+    () =>
+      installPackage({ label: "Seal", releases: [], verifyAll: true }, {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+      }),
+    Error,
+    "not a package name: []",
+  );
+  assertEquals(runs.length, 0);
 });
