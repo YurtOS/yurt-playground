@@ -3,7 +3,13 @@ import { bootAshSession, typeCommand } from "./ash_harness.ts";
 
 // A boot says what is in this Linux: to the page, above the shell's first
 // prompt, and in /etc/motd; and says it again once pkg lists more.
-Deno.test("a boot says what is in this Linux, and says it again after an install", async () => {
+Deno.test({
+  name: "a boot says what is in this Linux, and says it again after an install",
+  // A spawned process leaves its exec sweep's timer (src/boot.ts), as in
+  // boot_test's process tests.
+  sanitizeOps: false,
+  sanitizeResources: false,
+}, async () => {
   const session = await bootAshSession({ requireArtifacts: true });
   if (session === undefined) {
     throw new Error("required session unexpectedly skipped");
@@ -23,10 +29,21 @@ Deno.test("a boot says what is in this Linux, and says it again after an install
     );
     assertStringIncludes(await typeCommand(term, "cat /etc/motd"), first);
     // What pkg would write after installing one more package (its state
-    // directory made first, should this image have none).
-    const wrote = await typeCommand(
-      term,
-      "sudo mkdir -p /var/lib/yurt-pkg && printf 'jq\\t1.7\\tyurt_0\\n' | sudo tee -a /var/lib/yurt-pkg/installed.list >/dev/null; echo rc=$?; cat /var/lib/yurt-pkg/installed.list",
+    // directory made first, should this image have none). Through the
+    // session's own process, not typed: `sudo` at the terminal needs a
+    // tty process group, which CI's runner does not give.
+    const write = await session.process(
+      `exec sudo /bin/sh -c 'mkdir -p /var/lib/yurt-pkg && printf "jq\\t1.7\\tyurt_0\\n" >> /var/lib/yurt-pkg/installed.list'`,
+      { maxOutputBytes: 4096 },
+    );
+    const status = await write.exited;
+    const wrote = `${JSON.stringify(status)} ${
+      new TextDecoder().decode(write.takeStdout())
+    }${new TextDecoder().decode(write.takeStderr())}`;
+    assertEquals(
+      typeof status === "number" ? status : status.code,
+      0,
+      `the write: ${wrote}`,
     );
     session.refreshRemark();
     assertEquals(
