@@ -1353,11 +1353,11 @@ Deno.test("a set's install says which releases its own index read resolved to", 
   assertEquals(resolved, [["greet@0.1.0-yurt_0"]]);
 });
 
-Deno.test("the run ceiling leaves a throttled tab's run room: fifteen minutes", () => {
-  // A locked screen's throttled tab ran Python's ~73 s install past the
-  // old five minutes while pkg was still working; the no-progress check
+Deno.test("the run ceiling leaves a slowed tab's run room: twenty minutes", () => {
+  // Hidden desktop Safari ran Python's install run in 538 s, past the old
+  // five minutes, while pkg was still working; the no-progress check
   // stays the fast guard against a sandbox that stopped.
-  assertEquals(INSTALL_RUN_CEILING_MS, 15 * 60_000);
+  assertEquals(INSTALL_RUN_CEILING_MS, 20 * 60_000);
   assertEquals(INSTALL_STALL_MS, 60_000);
 });
 

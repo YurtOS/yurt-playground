@@ -426,15 +426,15 @@ export const INSTALL_STALL_MS = 60_000;
 /** The longest one guest `pkg` run may take, heartbeat or not: the
  * backstop for a `pkg` that is alive but blocked, which keeps the
  * heartbeat going (src/session_packages.ts `withHeartbeat`) and shows no
- * other sign. Wall time, with room for a tab the browser slows down:
- * desktop Safari 27 on an M-series Mac ran Python's install run in 157 s
- * with the window in front, and with it minimized (hidden, like a locked
- * screen) the run was still going when the old five-minute ceiling cut
- * it off. Guest time is no better a measure: the guest's clock and its
- * `sleep` follow the host's monotonic clock, so a slowed tab still beats
- * about every 2 s. A sandbox that stopped is caught by
- * {@link INSTALL_STALL_MS} long before this. */
-export const INSTALL_RUN_CEILING_MS = 15 * 60_000;
+ * other sign. Wall time, with room for a tab the browser slows down. In
+ * desktop Safari 27 on an M-series Mac, Python's install run took
+ * 136-157 s with the window in front and 538 s with it minimized
+ * (hidden, as on a locked screen); twenty minutes is more than twice
+ * that. Guest time is no better a measure: the guest's clock and its
+ * `sleep` follow the host's monotonic clock, so the hidden tab still beat
+ * every 2.4 s while pkg ran at under a third of its speed. A sandbox that
+ * stopped is caught by {@link INSTALL_STALL_MS} long before this. */
+export const INSTALL_RUN_CEILING_MS = 20 * 60_000;
 
 /** How often a watched run's status says how long it has been going:
  * the page's own silence deadline (src/install_request.ts
