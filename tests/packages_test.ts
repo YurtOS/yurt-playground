@@ -1438,6 +1438,49 @@ const HUNG_RUN = [
   { beats: Infinity, everyMs: 5, result: INSTALLED },
 ];
 
+Deno.test("a silent recovery past both limits did nothing; a failed one's reason is its last line", async () => {
+  // A late timer can find both limits passed at once (equal here): a
+  // recovery that went silent did nothing, whatever the clock says.
+  {
+    const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+    const { host } = recoveringHost(HUNG_RUN, "hang");
+    const error = await assertRejects(
+      () =>
+        installPackage("greet", {
+          host,
+          tablet: false,
+          fetcher,
+          progress: () => {},
+          stallMs: 100,
+          runCeilingMs: 100,
+        }),
+      InstallStalled,
+    );
+    assertStringIncludes(error.message, "(it did nothing for 0 s)");
+  }
+  // stdout without a final newline does not run into stderr.
+  {
+    const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+    const { host } = recoveringHost(HUNG_RUN, {
+      code: 1,
+      stdout: "recovering 0001",
+      stderr: "Error: recovery incomplete\n",
+    });
+    const error = await assertRejects(
+      () =>
+        installPackage("greet", {
+          host,
+          tablet: false,
+          fetcher,
+          progress: () => {},
+          stallMs: 100,
+        }),
+      InstallStalled,
+    );
+    assertStringIncludes(error.message, "(Error: recovery incomplete)");
+  }
+});
+
 Deno.test("a run silent for the stall window when the ceiling also passes is a stall, and recovery runs", async () => {
   // A late timer can find both limits passed at once (here they are
   // equal): a silent run is no live pkg holding the lock, so it is
@@ -1546,12 +1589,12 @@ Deno.test("after the page gives up on a pkg run, pkg recover runs before the fai
   // not complete.
   assertStringIncludes(
     error.message,
-    "pkg recover then left none of pkg's transactions unfinished, but the page did not see the install finish",
+    "pkg recover then left none of pkg's transactions unfinished, but the page did not see the install finish, so this sandbox takes no more installs",
   );
   assertStringIncludes(messages.at(-1)!, "pkg recover");
 });
 
-Deno.test("a recovery that fails or stops making progress says the sandbox needs a reload", async () => {
+Deno.test("a recovery that fails or stops making progress says the sandbox takes no more installs", async () => {
   for (
     const recover of [
       { code: 1, stdout: "", stderr: "recovery incomplete" },

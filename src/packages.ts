@@ -404,7 +404,8 @@ export type PackageHost = {
    * (pkg writes each file private first and sets its mode in a later
    * pass, so such a transaction can leave a python3 nobody may run). pkg
    * waits for the lock while that run is still going. Absent: no
-   * recovery, and a run given up on is said to need a reload. */
+   * recovery, and a run given up on is said to leave a sandbox that
+   * takes no more installs. */
   recover?(
     watch: RunWatch,
   ): Promise<{ code: number | null; stdout: string; stderr: string }>;
@@ -487,17 +488,18 @@ export class InstallStalled extends Error {
     const error = new InstallStalled("", 0, this.inSandbox, this.ceiling);
     const said = why === "" ? "" : ` (${why})`;
     // The next try needs a fresh sandbox: the Python install's Try again
-    // starts one, and the Packages panel says to reload for one.
-    const reload = ", so this sandbox may hold a half-installed package " +
+    // starts one, and the Packages panel's reply adds that a reload gives
+    // one (src/coordinator_worker.ts `servePackages`).
+    const noMore = ", so this sandbox may hold a half-installed package " +
       "and takes no more installs";
     error.message = !ran
-      ? `${this.message}; pkg recover was not run${said}${reload}`
+      ? `${this.message}; pkg recover was not run${said}${noMore}`
       : recovered
       ? `${this.message}; pkg recover then left none of pkg's ` +
         `transactions unfinished, but the page did not see the install ` +
-        `finish`
+        `finish, so this sandbox takes no more installs`
       : `${this.message}; pkg recover could not finish what it left ` +
-        `unfinished${said}${reload}`;
+        `unfinished${said}${noMore}`;
     error.recovered = ran && recovered;
     error.recoveryRan = ran;
     return error;
@@ -549,12 +551,14 @@ async function recoverStalled(
     };
     const check = () => {
       const now = Date.now();
-      if (now - started >= ceilingMs) {
-        return stop(`it did not finish in ${Math.round(ceilingMs / 1000)} s`);
-      }
+      // Silence first: a late timer that finds both limits passed has a
+      // recovery that stopped beating, not one still at work.
       const idle = now - last;
       if (idle >= stallMs) {
         return stop(`it did nothing for ${Math.round(idle / 1000)} s`);
+      }
+      if (now - started >= ceilingMs) {
+        return stop(`it did not finish in ${Math.round(ceilingMs / 1000)} s`);
       }
       timer = setTimeout(
         check,
@@ -580,7 +584,9 @@ async function recoverStalled(
     ]);
     if (typeof outcome === "string") return { recovered: false, why: outcome };
     if (outcome.code === 0) return { recovered: true, why: "" };
-    const said = `${outcome.stdout}${outcome.stderr}`.trim().split("\n").at(-1);
+    const said = `${outcome.stdout}\n${outcome.stderr}`.trim().split("\n").at(
+      -1,
+    );
     return {
       recovered: false,
       why: said !== undefined && said !== ""
@@ -1158,7 +1164,7 @@ type InstallOptions = {
   progressEveryMs?: number;
   /** `false` for a sandbox that is thrown away after the install (the
    * Suspend/Resume check): a stall then runs no `pkg recover`, and its
-   * error does not ask for a reload. */
+   * error is the stall alone. */
   recoverAfterStall?: boolean;
 };
 

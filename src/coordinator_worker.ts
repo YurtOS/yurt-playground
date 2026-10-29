@@ -218,6 +218,7 @@ async function servePackages(msg: ToWorker): Promise<void> {
     });
     post({ type: "pkg-reply", req, ok: true, value: output });
   } catch (error) {
+    let said = error instanceof Error ? error.message : String(error);
     // Only if it is still the sandbox: a recovery can end after Try again
     // has dropped it for a fresh one, which this stall says nothing about.
     if (
@@ -226,13 +227,10 @@ async function servePackages(msg: ToWorker): Promise<void> {
     ) {
       sandboxStalled = true;
       stalledWhy = stalledSandboxWhy(error);
+      // The panel shows this as it is: say the way to a fresh sandbox.
+      said += "; reload the page for a fresh one";
     }
-    post({
-      type: "pkg-reply",
-      req,
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    post({ type: "pkg-reply", req, ok: false, error: said });
   } finally {
     await installed.read();
   }
