@@ -116,7 +116,11 @@ if (import.meta.main) {
     console.log("memory plans:", JSON.stringify(memoryPlans));
     if (
       memoryPlans.length === 0 ||
-      !memoryPlans.every((plan) => plan.includes("free to reserve"))
+      !memoryPlans.every((plan) =>
+        // Desktop WebKit has room for the quarter GiB (#270).
+        plan.startsWith("[memory] 256 MiB per process") &&
+        plan.includes("free to reserve")
+      )
     ) {
       throw new Error(
         `the boot probe did not run: ${JSON.stringify(memoryPlans)}`,

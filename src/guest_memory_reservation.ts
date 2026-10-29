@@ -20,11 +20,14 @@
  * {@link RESERVATION_HEADROOM_BYTES} of slack. A process that outgrows its
  * reservation gets ENOMEM, as under Linux's RLIMIT_AS.
  *
- * On iOS that is 128 MiB: room for about 15 processes, and enough for
- * ipykernel (81 MiB) and a NumPy-sized cell. 64 MiB would fit twice as many
- * but could not run them; with the kernel host's per-exec copies
- * (yurtos-kernel#4238) in the same pool, a run of commands under a
- * simulated iOS cap got no further at 64 MiB than at 128 MiB.
+ * On iOS that is 128 MiB (room for 19 processes in an empty tab), the
+ * floor: ipykernel (81 MiB) and a NumPy-sized cell run in it. A smaller
+ * reservation would fit more processes but could not run CPython, and with
+ * the kernel host's per-exec copies (yurtos-kernel#4238) in the same pool,
+ * a run of commands under a simulated iOS cap got no further at 64 MiB than
+ * at 128 MiB. So a probe that under-counts (a disposed kernel not yet
+ * collected, or a probe whose every allocation failed) never takes a page
+ * below it.
  */
 
 const MIB = 1024 * 1024;
@@ -32,9 +35,9 @@ const MIB = 1024 * 1024;
 /** The desktop reservation (yurtos-kernel#2996): several times what
  *  CPython needs here (ipykernel 81 MiB, a 2000x2000 NumPy matmul 98 MiB). */
 export const GUEST_MEMORY_RESERVATION_BYTES = 256 * MIB;
-/** The smallest reservation offered: BusyBox runs in about 4 MiB and an
- *  idle CPython in about 21 MiB. */
-export const MIN_GUEST_MEMORY_RESERVATION_BYTES = 32 * MIB;
+/** The smallest reservation offered: what CPython needs here (ipykernel
+ *  81 MiB, a 2000x2000 NumPy matmul 98 MiB), with room to grow. */
+export const MIN_GUEST_MEMORY_RESERVATION_BYTES = 128 * MIB;
 /** The kernel's own shared memory maximum (the kernel host's
  *  `KERNEL_MAXIMUM_PAGES`, 16384 wasm pages). */
 export const KERNEL_MEMORY_RESERVATION_BYTES = 1024 * MIB;
@@ -65,8 +68,8 @@ export type GuestMemoryPlan = {
 };
 
 /**
- * The largest power-of-two reservation, from the desktop's quarter GiB
- * down to {@link MIN_GUEST_MEMORY_RESERVATION_BYTES}, that leaves room for
+ * The larger power-of-two reservation, the desktop's quarter GiB or
+ * {@link MIN_GUEST_MEMORY_RESERVATION_BYTES}, that leaves room for
  * {@link WANTED_PROCESSES} processes in `availableBytes`, beside the kernel
  * and the headroom. When even the smallest does not, the smallest.
  */

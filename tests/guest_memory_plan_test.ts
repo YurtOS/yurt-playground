@@ -75,7 +75,8 @@ Deno.test("on an iPad or iPhone the guests leave room for a Packages install bes
       GUEST_MEMORY_RESERVATION_BYTES,
     ) < WANTED_PROCESSES,
   );
-  assert(MIN_GUEST_MEMORY_RESERVATION_BYTES <= 32 * MIB);
+  // The floor is what CPython needs here.
+  assertEquals(MIN_GUEST_MEMORY_RESERVATION_BYTES, 128 * MIB);
 });
 
 Deno.test("a desktop Safari tab keeps the quarter-GiB reservation", async () => {
@@ -101,32 +102,39 @@ Deno.test("V8 and SpiderMonkey never probe and keep the whole sandbox budget", a
   assertEquals(state.guestMemoryReservationBytes, undefined);
 });
 
-Deno.test("the reservation steps down by halves to fit the wanted processes", () => {
+Deno.test("the reservation is the desktop's quarter GiB when it fits, else the 128 MiB floor", () => {
   const overhead = KERNEL_MEMORY_RESERVATION_BYTES + RESERVATION_HEADROOM_BYTES;
-  for (const mib of [256, 128, 64, 32]) {
-    const exact = overhead + WANTED_PROCESSES * mib * MIB;
+  const exact = overhead + WANTED_PROCESSES * GUEST_MEMORY_RESERVATION_BYTES;
+  assertEquals(
+    reservationForAvailableBytes(exact).reservationBytes,
+    GUEST_MEMORY_RESERVATION_BYTES,
+  );
+  assertEquals(
+    reservationForAvailableBytes(exact - PROBE_UNIT_BYTES).reservationBytes,
+    MIN_GUEST_MEMORY_RESERVATION_BYTES,
+  );
+  // An under-count never goes below the floor (#270 round 2): a probe whose
+  // every allocation failed, or one that ran while a disposed kernel's 1 GiB
+  // was not yet collected (an empty iOS tab less that 1 GiB).
+  for (
+    const available of [
+      0,
+      IOS_EMPTY_TAB_BYTES - KERNEL_MEMORY_RESERVATION_BYTES,
+      overhead + 3 * 32 * MIB,
+    ]
+  ) {
     assertEquals(
-      reservationForAvailableBytes(exact).reservationBytes,
-      mib * MIB,
+      reservationForAvailableBytes(available).reservationBytes,
+      MIN_GUEST_MEMORY_RESERVATION_BYTES,
+      String(available / MIB),
     );
-    if (mib < 256) {
-      assertEquals(
-        reservationForAvailableBytes(exact * 2 - overhead).reservationBytes,
-        mib * 2 * MIB,
-      );
-    }
-    if (mib > 32) {
-      assertEquals(
-        reservationForAvailableBytes(exact - 1).reservationBytes,
-        (mib / 2) * MIB,
-      );
-    }
   }
-  // Too little for even the smallest: the smallest, and says how few fit.
-  const tight = reservationForAvailableBytes(overhead + 3 * 32 * MIB);
-  assertEquals(tight.reservationBytes, 32 * MIB);
-  assertEquals(tight.processes, 3);
+  // And says how few fit.
   assertEquals(reservationForAvailableBytes(0).processes, 0);
+  assertEquals(
+    reservationForAvailableBytes(overhead + 3 * 128 * MIB).processes,
+    3,
+  );
   // The probe counts far enough to show the largest fits.
   assertEquals(
     reservationForAvailableBytes(PROBE_LIMIT_BYTES).reservationBytes,
@@ -206,14 +214,19 @@ Deno.test("the probe counts 32 MiB memories up to its limit and always terminate
 
   const silent: string[] = [];
   assertEquals(
-    await probeAvailableBytes(fakeWorker(undefined, silent), { timeoutMs: 5 }),
+    await probeAvailableBytes(fakeWorker(undefined, silent), {
+      timeoutMs: 5,
+      settleMs: 0,
+    }),
     undefined,
   );
   assertEquals(silent.at(-1), "terminate");
 
   const garbled: string[] = [];
   assertEquals(
-    await probeAvailableBytes(fakeWorker({ nope: 1 }, garbled)),
+    await probeAvailableBytes(fakeWorker({ nope: 1 }, garbled), {
+      settleMs: 0,
+    }),
     undefined,
   );
   assertEquals(garbled.at(-1), "terminate");
@@ -237,6 +250,7 @@ Deno.test("every probe that started a Worker waits before the kernel reserves", 
     const answer of [
       { totalMiB: 64, firstError: "RangeError: Out of memory" },
       { totalMiB: PROBE_LIMIT_BYTES / MIB, firstError: "" },
+      { nope: 1 },
       undefined,
     ]
   ) {
