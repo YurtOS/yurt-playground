@@ -1,7 +1,8 @@
 /**
  * Python on the slim image: when the site's pins name a slim image
  * (`browserImage`), the coordinator installs the Python set with the
- * guest's own `pkg` (src/packages.ts) when the image has no python3, before
+ * guest's own `pkg` (src/packages.ts) when the image lacks it (no python3,
+ * or only the python package; src/coordinator_start.ts), before
  * it starts ipykernel. Which builds is the live signed repository's answer,
  * not the page's: the newest complete set (see {@link PYTHON_SET}).
  */
@@ -12,6 +13,7 @@ import {
   resolveSet,
   SetNotOffered,
 } from "./packages.ts";
+import type { InstalledRelease } from "./installed_list.ts";
 import { parsePins, type Pins } from "./pins.ts";
 import { IndexUnreadable, layerKey } from "./python_layer.ts";
 
@@ -38,15 +40,30 @@ export const SEAL_WASM_PATH = "/usr/local/lib/yurt/python3-seal.wasm";
 
 /** What the coordinator installs for Python: the set, resolved against the
  * live index at install time. `undefined` when the site boots the full
- * image (which has Python) and so installs nothing. */
+ * image (which has Python) and so installs nothing. `installed`: the
+ * python the slim image ships (its pin's `python`), which pins the set to
+ * its build (src/packages.ts `resolveSet`) -- for the snapshot's and the
+ * stored layer's keys, read before the sandbox is; the install itself
+ * reads the sandbox's own installed list. */
 export function pythonInstallRequest(
   pins: Pick<Pins, "browserImage">,
-): { label: string; set: string[]; image: string } | undefined {
-  return pins.browserImage === undefined ? undefined : {
+):
+  | {
+    label: string;
+    set: string[];
+    image: string;
+    installed?: InstalledRelease[];
+  }
+  | undefined {
+  const slim = pins.browserImage;
+  return slim === undefined ? undefined : {
     label: PYTHON_LABEL,
     set: [...PYTHON_SET],
     // What a stored install is keyed by (src/python_layer.ts).
-    image: pins.browserImage.sha256,
+    image: slim.sha256,
+    ...(slim.python === undefined
+      ? {}
+      : { installed: [{ name: "python", ...slim.python }] }),
   };
 }
 
@@ -75,6 +92,14 @@ export async function fetchSitePins(): Promise<Pins | undefined> {
   }
 }
 
+/** What the live index is asked about a site's Python set: its members,
+ * the slim image, and what the image already has installed of it. */
+type PythonSetQuestion = {
+  set: readonly string[];
+  image?: string;
+  installed?: readonly InstalledRelease[];
+};
+
 /** How long the live index may take to answer which set it offers; past
  * it, the answer is "cannot tell" (a stored layer, or a snapshot, is then
  * used as when offline). */
@@ -98,6 +123,8 @@ export async function liveLayerKey(
   timeoutMs = LIVE_INDEX_TIMEOUT_MS,
   /** The index read; the live repository's, bounded by `signal`. */
   load: (signal: AbortSignal) => Promise<Catalog> = defaultCatalogLoad,
+  /** What pins the set to a build: the python the image ships. */
+  installed?: readonly InstalledRelease[],
 ): Promise<string | undefined> {
   const giveUp = new AbortController();
   const timer = setTimeout(() => giveUp.abort(), timeoutMs);
@@ -119,7 +146,7 @@ export async function liveLayerKey(
   }
   let releases: ReturnType<typeof resolveSet>;
   try {
-    releases = resolveSet(catalog, set);
+    releases = resolveSet(catalog, set, installed);
   } catch (error) {
     // The repository answered: a set it does not offer (yanked, removed,
     // incomplete) is no layer's either.
@@ -137,14 +164,19 @@ export async function liveLayerKey(
  * used, as a stored layer is offline). A crash while resolving the set is
  * thrown, never taken for one of these. */
 export async function livePythonSet(
-  request: { set: readonly string[]; image?: string } | undefined,
+  request: PythonSetQuestion | undefined,
   timeoutMs = LIVE_INDEX_TIMEOUT_MS,
   load?: (signal: AbortSignal) => Promise<Catalog>,
 ): Promise<string | null | undefined> {
   if (request?.image === undefined) return null;
   try {
-    return await liveLayerKey(request.image, request.set, timeoutMs, load) ??
-      NO_COMPLETE_SET;
+    return await liveLayerKey(
+      request.image,
+      request.set,
+      timeoutMs,
+      load,
+      request.installed,
+    ) ?? NO_COMPLETE_SET;
   } catch (error) {
     if (error instanceof IndexUnreadable) {
       console.info("the live package index could not be had:", error);
@@ -163,7 +195,7 @@ export async function livePythonSet(
  * the same sandbox) reads again. Made anew for each boot. The two questions come one after the
  * other: the first one's time bound bounds the shared read. */
 export function liveAnswers(
-  request: { set: readonly string[]; image?: string } | undefined,
+  request: PythonSetQuestion | undefined,
   load: (signal: AbortSignal) => Promise<Catalog> = defaultCatalogLoad,
 ): {
   pythonSet: () => Promise<string | null | undefined>;
@@ -184,7 +216,13 @@ export function liveAnswers(
     layerKey: async () => {
       if (request?.image === undefined) return undefined;
       try {
-        return await liveLayerKey(request.image, request.set, undefined, once);
+        return await liveLayerKey(
+          request.image,
+          request.set,
+          undefined,
+          once,
+          request.installed,
+        );
       } finally {
         finish();
       }

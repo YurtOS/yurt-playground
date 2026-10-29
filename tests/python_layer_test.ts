@@ -357,7 +357,7 @@ async function layerFails(deps: LayerInstallDeps<string>): Promise<string> {
   throw new Error("no LayerFailed");
 }
 
-Deno.test("a layer that leaves no python3 is dropped and fails: no pkg in that sandbox", async () => {
+Deno.test("a layer that leaves no Python set is dropped and fails: no pkg in that sandbox", async () => {
   // pkg would refuse the layer's files as unmanaged, or call the set
   // installed from the layer's records: the retry is a fresh sandbox.
   const { deps, log } = fakeDeps({
@@ -365,7 +365,7 @@ Deno.test("a layer that leaves no python3 is dropped and fails: no pkg in that s
     probe: false,
   });
   const message = await layerFails(deps);
-  assertEquals(message.includes("no python3 after it"), true, message);
+  assertEquals(message.includes("no Python set after it"), true, message);
   assertEquals(log.includes("drop"), true);
   assertEquals(log.includes("pkg install"), false);
   assertEquals(log.some((line) => line.startsWith("put")), false);

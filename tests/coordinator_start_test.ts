@@ -7,6 +7,7 @@ import {
   PYTHON_MISSING_EXIT,
   PYTHON_PROBE_COMMAND,
   PYTHON_PROBE_LINE,
+  PYTHON_SET_MISSING_EXIT,
   restoresSnapshot,
   type StartReport,
   startSandbox,
@@ -58,11 +59,13 @@ const transport: JupyterTransport = {
   close: () => Promise.resolve(),
 };
 
-Deno.test("only the probe's own exit code says python3 is missing", async () => {
+Deno.test("only the probe's own exit codes say the Python set is missing", async () => {
   assertEquals(PYTHON_MISSING_EXIT, 42);
+  assertEquals(PYTHON_SET_MISSING_EXIT, 43);
   assertEquals(await probePython(fakeSpawner(exit(0)).spawn), true);
   assertEquals(await probePython(fakeSpawner(exit(42)).spawn), false);
   assertEquals(await probePython(fakeSpawner(42).spawn), false);
+  assertEquals(await probePython(fakeSpawner(exit(43)).spawn), false);
   // Any other code is not the probe's answer -- a failed redirect (a full
   // /tmp), a shell that could not run it, a SIGKILL folded to 137, even
   // `command -v`'s own 127 -- so the launch goes ahead as before.
@@ -77,9 +80,11 @@ Deno.test("only the probe's own exit code says python3 is missing", async () => 
   const { spawn, lines } = fakeSpawner(0);
   await probePython(spawn);
   assertEquals(lines, [PYTHON_PROBE_LINE]);
-  assertEquals(
-    PYTHON_PROBE_COMMAND,
-    "command -v python3 >/dev/null && exit 0; exit 42",
+  // Builtins only, and no quote that would end the line's own.
+  assert(!PYTHON_PROBE_COMMAND.includes("'"));
+  assert(
+    !/\bpython3 -/.test(PYTHON_PROBE_COMMAND),
+    "the probe runs no python3",
   );
   assertEquals(PYTHON_PROBE_LINE, `exec /bin/sh -c '${PYTHON_PROBE_COMMAND}'`);
 });
@@ -569,4 +574,124 @@ Deno.test("only the in-tab sandbox off a tablet restores a snapshot", () => {
   );
   assertEquals(restoresSnapshot({ snapshot: "capture", native: false }), false);
   assertEquals(restoresSnapshot({ native: false }), false);
+});
+
+/** A guest root for the probe to look at: `python3` on its PATH or not,
+ * and these files under its site-packages. */
+async function guestRoot(
+  python3: boolean,
+  sitePackages: string[],
+): Promise<string> {
+  const root = await Deno.makeTempDir({ prefix: "pyprobe-" });
+  const site = `${root}/usr/local/lib/python3.14/site-packages`;
+  await Deno.mkdir(site, { recursive: true });
+  await Deno.mkdir(`${root}/usr/local/bin`, { recursive: true });
+  // The standard library, which the python package alone already brings.
+  await Deno.writeTextFile(`${root}/usr/local/lib/python3.14/os.py`, "");
+  if (python3) {
+    await Deno.writeTextFile(`${root}/usr/local/bin/python3`, "#!/bin/sh\n");
+    await Deno.chmod(`${root}/usr/local/bin/python3`, 0o755);
+  }
+  for (const file of sitePackages) {
+    const path = `${site}/${file}`;
+    await Deno.mkdir(path.slice(0, path.lastIndexOf("/")), { recursive: true });
+    await Deno.writeTextFile(path, "");
+  }
+  return root;
+}
+
+/** A spawner that runs each line in the host's own /bin/sh against `root`:
+ * the guest's /usr/local is root's, and so is its PATH. */
+function hostSpawner(root: string): Spawner {
+  return async (line) => {
+    const output = await new Deno.Command("/bin/sh", {
+      args: ["-c", line.replaceAll("/usr/local/", `${root}/usr/local/`)],
+      clearEnv: true,
+      env: { PATH: `${root}/usr/local/bin` },
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    return {
+      pid: 7,
+      exited: Promise.resolve(exit(output.code)),
+      takeStdout: () => new Uint8Array(),
+      takeStderr: () => new Uint8Array(),
+    };
+  };
+}
+
+/** What the Jupyter kernel needs beside python3: numpy's, pyzmq's and
+ * jupyter-kernel's packages, as the full image and an installed set have
+ * them. */
+const KERNEL_SET_FILES = [
+  "numpy/__init__.py",
+  "zmq/__init__.py",
+  "ipykernel/__init__.py",
+  "ipykernel_launcher.py",
+];
+
+Deno.test("the probe says the Python set is there only when the kernel's packages are", async () => {
+  const cases: [string, boolean, string[], boolean][] = [
+    // Today's slim image: no python3 at all.
+    ["no python3", false, [], false],
+    // The next slim image: the python package alone, from the base.
+    ["python3 without the kernel's packages", true, [], false],
+    // An install that stopped part way.
+    [
+      "python3, numpy and pyzmq without jupyter-kernel",
+      true,
+      ["numpy/__init__.py", "zmq/__init__.py"],
+      false,
+    ],
+    // The full image, an installed set, a layer or a snapshot.
+    ["the full set", true, KERNEL_SET_FILES, true],
+  ];
+  for (const [name, python3, files, present] of cases) {
+    const root = await guestRoot(python3, files);
+    try {
+      assertEquals(await probePython(hostSpawner(root)), present, name);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("an image with python3 but not the kernel's packages installs the set before the kernel starts", async () => {
+  const root = await guestRoot(true, []);
+  try {
+    const order: string[] = [];
+    const posted: StartReport[] = [];
+    await startSandbox({
+      boot: () => Promise.resolve(fakeSession(hostSpawner(root))),
+      booted: () => {},
+      noJupyter: false,
+      installPython: () => {
+        order.push("install");
+        return Promise.resolve();
+      },
+      startKernel: () => {
+        order.push("kernel");
+        return Promise.resolve(transport);
+      },
+      post: (report) => posted.push(report),
+    });
+    assertEquals(order, ["install", "kernel"]);
+    // Without an install, it is python-missing, and no launch is tried.
+    const missing: StartReport[] = [];
+    let launched = 0;
+    await startSandbox({
+      boot: () => Promise.resolve(fakeSession(hostSpawner(root))),
+      booted: () => {},
+      noJupyter: false,
+      startKernel: () => {
+        launched++;
+        return Promise.resolve(transport);
+      },
+      post: (report) => missing.push(report),
+    });
+    assertEquals(launched, 0);
+    assertEquals(missing.at(-1), { type: "python-missing" });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });

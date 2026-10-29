@@ -225,3 +225,82 @@ Deno.test("a boot with no install's question drops its read when it is over", as
     console.info = info;
   }
 });
+
+/** A catalog with the whole Python set at each of `builds`. */
+function setCatalog(builds: number[]): Catalog {
+  const versions: Record<string, string> = {
+    python: "3.14.7",
+    numpy: "2.5.0",
+    pyzmq: "26.4.0",
+    "jupyter-kernel": "0.0.1",
+  };
+  return {
+    metadata: new Map(
+      Object.entries(versions).map(([name, version]) => [name, {
+        bytes: new Uint8Array(),
+        file: {
+          name,
+          versions: builds.map((n) => ({
+            version,
+            build: `yurt_${n}`,
+            url: `artifacts/${name}/${name}-${version}-yurt_${n}.yurtpkg`,
+            sha256: `${name}${n}`.padEnd(64, "0"),
+            size: 1,
+            depends: [],
+            yanked: false,
+          })),
+        },
+      }]),
+    ),
+  } as unknown as Catalog;
+}
+
+Deno.test("a slim image that ships python names it, and its set is the one at that python's build", async () => {
+  const slim = { ...artifact, sha256: "d".repeat(64) };
+  const pins = parsePins({
+    ...base,
+    browserImage: { ...slim, python: { version: "3.14.7", build: "yurt_0" } },
+  });
+  const request = pythonInstallRequest(pins)!;
+  assertEquals(request.installed, [
+    { name: "python", version: "3.14.7", build: "yurt_0" },
+  ]);
+  // python at yurt_0 with yurt_0's set still live: that set, not yurt_1's
+  // -- for the snapshot and the stored layer as for the install.
+  const both = () => Promise.resolve(setCatalog([0, 1]));
+  const key = await livePythonSet(request, 1000, both);
+  assertEquals(key?.includes("python@3.14.7-yurt_0"), true, key ?? "");
+  assertEquals(key?.includes("yurt_1"), false, key ?? "");
+  // Only yurt_1 live: no set this image can take.
+  assertEquals(
+    await livePythonSet(request, 1000, () => Promise.resolve(setCatalog([1]))),
+    NO_COMPLETE_SET,
+  );
+  // No python in the image: the newest set, as before.
+  const today = pythonInstallRequest(
+    parsePins({ ...base, browserImage: slim }),
+  )!;
+  assertEquals("installed" in today, false);
+  assertEquals(
+    (await livePythonSet(today, 1000, both))?.includes("python@3.14.7-yurt_1"),
+    true,
+  );
+});
+
+Deno.test("a slim image's python entry of another shape is a broken pin", () => {
+  for (
+    const python of [
+      "3.14.7-yurt_0",
+      { version: "3.14.7" },
+      { version: "", build: "yurt_0" },
+      { version: "3.14.7", build: "0" },
+    ]
+  ) {
+    assertThrows(
+      () => parsePins({ ...base, browserImage: { ...artifact, python } }),
+      Error,
+      "browserImage.python",
+      JSON.stringify(python),
+    );
+  }
+});
