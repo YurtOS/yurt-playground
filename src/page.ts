@@ -730,9 +730,9 @@ function wirePackages(): void {
     installedPanel.opened();
     if (catalog !== undefined || loading) return;
     loading = true;
+    const yurt = (globalThis as unknown as { yurt: Yurt }).yurt;
     try {
       // Images before the modular base image have no `pkg` to install with.
-      const yurt = (globalThis as unknown as { yurt: Yurt }).yurt;
       const image = await yurt.exec(
         `command -v pkg >/dev/null && command -v sudo >/dev/null && test -r ${TRUSTED_REPOS_PATH}`,
       );
@@ -741,12 +741,7 @@ function wirePackages(): void {
           "This sandbox's image has no pkg (or no sudo for it), so it cannot install packages.";
         return;
       }
-      const loaded = await loadCatalog();
-      inImage = await packagesInImage(
-        catalogRows(loaded).map((row) => row.name),
-        (cmd) => yurt.exec(cmd),
-      );
-      catalog = loaded;
+      catalog = await loadCatalog();
     } catch (error) {
       state.textContent = `could not load the package list: ${
         error instanceof Error ? error.message : String(error)
@@ -755,8 +750,19 @@ function wirePackages(): void {
     } finally {
       loading = false;
     }
+    const offered = catalogRows(catalog);
+    try {
+      inImage = await packagesInImage(
+        offered.map((row) => row.name),
+        (cmd) => yurt.exec(cmd),
+      );
+    } catch (error) {
+      // Only what is listed depends on it: list everything, and pkg says
+      // why an install over the image's own files is refused.
+      console.warn(`Packages: every package listed: ${error}`);
+    }
     state.hidden = true;
-    for (const row of catalogRows(catalog)) {
+    for (const row of offered) {
       const tr = document.createElement("tr");
       tr.dataset.package = row.name;
       const name = document.createElement("td");

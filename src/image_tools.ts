@@ -5,7 +5,10 @@
  * installed list does not name them, and pkg refuses to install a package
  * over them ("would overwrite unmanaged path bin/zsh"). The image keeps no
  * list of them, so the sandbox is asked whether the command is there: a
- * file or symlink of that name in a command directory.
+ * regular file of that name in a command directory. Not a symlink:
+ * BusyBox's applets are symlinks (/bin/wget), which a package of that name
+ * installed elsewhere would not collide with, while every tool the image
+ * bakes in is a file.
  */
 
 /** Where a command lands, in the image and in the archives pkg installs:
@@ -36,20 +39,23 @@ export function commandPaths(command: string): string[] {
   return COMMAND_DIRS.map((dir) => `${dir}/${command}`);
 }
 
-/** The {@link BASE_TOOLS} a sandbox's files hold; none when the page has
- * no files of its own (the desktop app's session). */
+/** The {@link BASE_TOOLS} whose command `isFile` finds, in their order. */
+export function baseToolsHeld(isFile: (path: string) => boolean): string[] {
+  return BASE_TOOLS.filter((tool) => commandPaths(tool).some(isFile));
+}
+
+/** {@link baseToolsHeld} over a sandbox's files; none when the page has no
+ * files of its own (the desktop app's session). A path whose check fails
+ * counts as not there: the remark is a courtesy, never worth a failed
+ * capture. */
 export async function baseToolsIn(
-  files: { exists(path: string): Promise<boolean> } | undefined,
+  files: { isFile(path: string): Promise<boolean> } | undefined,
 ): Promise<string[]> {
   if (files === undefined) return [];
-  const held: string[] = [];
-  for (const tool of BASE_TOOLS) {
-    for (const path of commandPaths(tool)) {
-      if (await files.exists(path)) {
-        held.push(tool);
-        break;
-      }
-    }
-  }
-  return held;
+  const paths = BASE_TOOLS.flatMap(commandPaths);
+  const found = await Promise.all(
+    paths.map((path) => files.isFile(path).catch(() => false)),
+  );
+  const there = new Set(paths.filter((_, i) => found[i]));
+  return baseToolsHeld((path) => there.has(path));
 }

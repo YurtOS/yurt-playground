@@ -18,6 +18,8 @@ export type SandboxFiles = {
    * on any other failure, or a file too big for one read. */
   readWhole(path: string): Promise<Uint8Array | undefined>;
   exists(path: string): Promise<boolean>;
+  /** A regular file there, not a symlink; rejects as `readWhole` does. */
+  isFile(path: string): Promise<boolean>;
 };
 
 /** What the coordinator tells the Packages panel: every package installed;

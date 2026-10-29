@@ -25,6 +25,7 @@ function files(have: Record<string, string>): SandboxFiles {
         have[path] === undefined ? undefined : encode(have[path]),
       ),
     exists: (path) => Promise.resolve(have[path] !== undefined),
+    isFile: (path) => Promise.resolve(have[path] !== undefined),
   };
 }
 
@@ -108,6 +109,7 @@ Deno.test("installedReport is the list's names, or why they cannot be told", asy
     await installedReport({
       readWhole: () => Promise.reject(new Error("read /x: is a directory")),
       exists: () => Promise.resolve(true),
+      isFile: () => Promise.resolve(true),
     }),
     { type: "pkg-installed", error: "read /x: is a directory" },
   );
@@ -288,7 +290,7 @@ Deno.test("the page reports, asks on open, guesses per install, and renders new 
   // The rows, once built, show the current marks.
   assert(
     /list\.append\(tr\);\s*\}\s*installedPanel\.render\(\);\s*$/.test(
-      body("for (const row of catalogRows(catalog))", "\n  };\n"),
+      body("for (const row of offered)", "\n  };\n"),
     ),
   );
 });
@@ -376,6 +378,7 @@ Deno.test("the sandbox's installed releases, for pinning a set to what pkg alrea
         list === undefined ? undefined : new TextEncoder().encode(list),
       ),
     exists: () => Promise.resolve(false),
+    isFile: () => Promise.resolve(false),
   });
   assertEquals(
     await installedReleases(

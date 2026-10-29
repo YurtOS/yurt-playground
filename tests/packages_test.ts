@@ -39,6 +39,10 @@ import {
   stalledSandboxWhy,
   TABLET_MAX_BYTES,
 } from "../src/packages.ts";
+import {
+  INSTALLED_DB_PATH,
+  INSTALLED_LIST_PATH,
+} from "../src/installed_list.ts";
 
 const SUBJECT =
   "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main";
@@ -1364,46 +1368,94 @@ Deno.test("markInstalled leaves out what the image has outside pkg, and python-s
   for (const why of NOT_LISTED.values()) assert(why.length > 0);
 });
 
-Deno.test("packagesInImage finds each package whose command the sandbox already has", async () => {
+/** Runs a probe with the host's own shell. */
+async function hostExec(cmd: string) {
+  const out = await new Deno.Command("/bin/sh", {
+    args: ["-c", cmd],
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  return { code: out.code, stdout: new TextDecoder().decode(out.stdout) };
+}
+
+Deno.test("packagesInImage finds the packages whose command the image has outside pkg", async () => {
   // The slim image's layout (yurt-ports playground-image): zsh, make and
-  // pkg in /bin, zstd in /usr/bin, and BusyBox's applets as symlinks.
+  // pkg in /bin, zstd in /usr/bin, BusyBox's applets as symlinks; and
+  // pkg's list naming what it installed.
   const root = await Deno.makeTempDir({ prefix: "packages-in-image-" });
   try {
-    for (const dir of ["bin", "usr/bin", "usr/local/bin", "etc"]) {
+    for (
+      const dir of [
+        "bin",
+        "usr/bin",
+        "usr/local/bin",
+        "etc",
+        "var/lib/yurt-pkg",
+      ]
+    ) {
       await Deno.mkdir(`${root}/${dir}`, { recursive: true });
     }
-    for (const path of ["bin/busybox", "bin/zsh", "usr/bin/zstd"]) {
+    for (
+      const path of [
+        "bin/busybox",
+        "bin/make",
+        "bin/zsh",
+        "usr/bin/zstd",
+        "usr/bin/git",
+        "usr/local/bin/rtk",
+        "etc/pkg",
+      ]
+    ) {
       await Deno.writeTextFile(`${root}/${path}`, "");
     }
-    // A symlink counts even when its target is not there (an applet link
-    // read before its target, say): pkg refuses to overwrite either.
-    await Deno.symlink("busybox", `${root}/bin/make`);
-    await Deno.symlink("/nowhere", `${root}/usr/local/bin/pkg`);
-    // Not a command directory.
-    await Deno.writeTextFile(`${root}/etc/rtk`, "");
-    const ran: string[] = [];
-    const exec = async (cmd: string) => {
-      ran.push(cmd);
-      const out = await new Deno.Command("/bin/sh", {
-        args: ["-c", cmd],
-        stdout: "piped",
-        stderr: "piped",
-      }).output();
-      return {
-        code: out.code,
-        stdout: new TextDecoder().decode(out.stdout),
-      };
-    };
-    const found = await packagesInImage(
-      ["busybox", "make", "pkg", "rtk", "zsh", "zstd", "python"],
-      exec,
-      root,
+    // An applet: a package `wget` would install beside it, not over it.
+    await Deno.symlink("busybox", `${root}/bin/wget`);
+    await Deno.symlink("python3", `${root}/usr/local/bin/python`);
+    await Deno.writeTextFile(
+      `${root}${INSTALLED_LIST_PATH}`,
+      "git\t2.55.0\tyurt_0\nrtk\t0.50.0\t1\n",
     );
-    assertEquals([...found].sort(), ["busybox", "make", "pkg", "zsh", "zstd"]);
+    const ran: string[] = [];
+    const exec = (cmd: string) => {
+      ran.push(cmd);
+      return hostExec(cmd);
+    };
+    const names = [
+      "busybox",
+      "git",
+      "make",
+      "pkg",
+      "python",
+      "rtk",
+      "wget",
+      "zsh",
+      "zstd",
+    ];
+    // git and rtk are pkg's; pkg here is in /etc, no command directory.
+    assertEquals(
+      [...await packagesInImage(names, exec, root)].sort(),
+      ["busybox", "make", "zsh", "zstd"],
+    );
     assertEquals(ran.length, 1);
     // No names, no process.
     assertEquals((await packagesInImage([], exec, root)).size, 0);
     assertEquals(ran.length, 1);
+    // No pkg state at all: nothing is pkg's.
+    await Deno.remove(`${root}${INSTALLED_LIST_PATH}`);
+    assertEquals(
+      [...await packagesInImage(names, exec, root)].sort(),
+      ["busybox", "git", "make", "rtk", "zsh", "zstd"],
+    );
+    // pkg's database without its list: what pkg manages is unknown.
+    await Deno.writeTextFile(`${root}${INSTALLED_DB_PATH}`, "");
+    assertEquals((await packagesInImage(names, exec, root)).size, 0);
+    // A list that cannot be read is a failed probe, not an empty list.
+    await Deno.mkdir(`${root}${INSTALLED_LIST_PATH}`);
+    await assertRejects(
+      () => packagesInImage(names, exec, root),
+      Error,
+      "exit 3",
+    );
   } finally {
     await Deno.remove(root, { recursive: true });
   }

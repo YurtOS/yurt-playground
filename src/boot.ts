@@ -13,7 +13,7 @@ import {
   type SandboxFiles,
 } from "./installed_list.ts";
 import { linuxRemark } from "./linux_remark.ts";
-import { BASE_TOOLS, commandPaths } from "./image_tools.ts";
+import { baseToolsHeld } from "./image_tools.ts";
 import {
   drainDirtyPaths,
   type LayerEntry,
@@ -430,6 +430,16 @@ export async function bootPlayground(
   )).kernel;
 }
 
+/** Whether `path` is a regular file (not a symlink to one); a stat that
+ * fails counts as not one, for checks that only shape a message. */
+function isFile(mk: KernelHostInterface, path: string): boolean {
+  try {
+    return vfsStat(mk, path)?.type === "file";
+  } catch {
+    return false;
+  }
+}
+
 /** This Linux's remark (src/linux_remark.ts) from pkg's installed list
  * in the sandbox and the tools its image has outside pkg
  * (src/image_tools.ts); a list that cannot be read counts as none
@@ -443,10 +453,7 @@ function remarkOf(mk: KernelHostInterface): string {
   } catch {
     // No list, or a broken one: the remark names the shell alone.
   }
-  const tools = BASE_TOOLS.filter((tool) =>
-    commandPaths(tool).some((path) => vfsStat(mk, path) !== undefined)
-  );
-  return linuxRemark(releases, tools);
+  return linuxRemark(releases, baseToolsHeld((path) => isFile(mk, path)));
 }
 
 /**
@@ -1012,6 +1019,8 @@ async function startPlayground(
         new Promise((resolve) => resolve(vfsReadWhole(mk, path))),
       exists: (path) =>
         new Promise((resolve) => resolve(vfsStat(mk, path) !== undefined)),
+      isFile: (path) =>
+        new Promise((resolve) => resolve(vfsStat(mk, path)?.type === "file")),
     },
     dialSandboxPort: (port) => mk.dialSandboxPort(port),
     onOutput: output.onOutput,

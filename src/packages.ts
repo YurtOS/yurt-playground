@@ -17,7 +17,11 @@
  * Installed files live in the tab's memory, like every other file in the
  * sandbox, and are gone after a reload (#81).
  */
-import type { InstalledRelease } from "./installed_list.ts";
+import {
+  INSTALLED_DB_PATH,
+  INSTALLED_LIST_PATH,
+  type InstalledRelease,
+} from "./installed_list.ts";
 import { COMMAND_DIRS } from "./image_tools.ts";
 
 /** Where the page fetches the repository from: GitHub's raw file host,
@@ -760,15 +764,17 @@ export function markInstalled(
 
 /**
  * The catalog packages the sandbox already has outside pkg: those whose
- * command (src/image_tools.ts) is there. The slim image bakes busybox,
+ * command is there (src/image_tools.ts) and that pkg's installed list
+ * does not name, both read in the same run. The slim image bakes busybox,
  * make, pkg, zsh and zstd into its base without pkg, so pkg refuses to
  * install them ("would overwrite unmanaged path bin/zsh"). The
  * repository's metadata names no files -- each archive's own
  * `info/files.json` does, and clang's archive alone is 94 MB -- so the
  * sandbox is asked about the command instead; for every package published
  * on 2026-10-29 that finds exactly the archives whose files the slim image
- * has. What pkg itself installed is told apart by its installed list
- * ({@link markInstalled}). `root` is for tests.
+ * has. Read once: pkg cannot install over these, and a fresh sandbox boots
+ * the same image. With pkg's database but no list (a pkg before
+ * yurt-pkg#59), what pkg manages is unknown, so none. `root` is for tests.
  */
 export async function packagesInImage(
   names: readonly string[],
@@ -784,9 +790,16 @@ export async function packagesInImage(
     }
   }
   const dirs = COMMAND_DIRS.map((dir) => `'${root}${dir}'`).join(" ");
+  const list = `'${root}${INSTALLED_LIST_PATH}'`;
+  const db = `'${root}${INSTALLED_DB_PATH}'`;
   const result = await exec(
-    `for n in ${names.join(" ")}; do for d in ${dirs}; do ` +
-      `if [ -e "$d/$n" ] || [ -L "$d/$n" ]; then echo "$n"; break; fi; ` +
+    `if [ -e ${list} ]; then ` +
+      `managed=$(cut -f1 ${list}) || exit 3; managed=" $(echo $managed) "; ` +
+      `elif [ -e ${db} ]; then exit 0; else managed=" "; fi; ` +
+      `for n in ${names.join(" ")}; do ` +
+      `case "$managed" in *" $n "*) continue;; esac; ` +
+      `for d in ${dirs}; do ` +
+      `if [ -f "$d/$n" ] && [ ! -L "$d/$n" ]; then echo "$n"; break; fi; ` +
       `done; done`,
   );
   if (result.code !== 0) {
