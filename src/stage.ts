@@ -39,7 +39,9 @@ export function setPidCredentials(
   }
   const { rc } = mk.syscall(METHOD.KERNEL_SET_PROCESS_CREDENTIALS, req, 0);
   if (Number(rc) !== 0) {
-    throw new Error(`set credentials pid=${pid} uid=${uid}: rc=${rc}`);
+    throw new Error(
+      `set credentials pid=${pid} uid=${uid}: ${errnoText(Number(rc))}`,
+    );
   }
 }
 
@@ -58,7 +60,9 @@ function chownPath(
   req.set(pathBytes, 8);
   const { rc } = mk.syscall(SYS_CHOWN, req, 0);
   if (Number(rc) !== 0) {
-    throw new Error(`chown ${path} ${uid}:${gid} failed: rc=${rc}`);
+    throw new Error(
+      `chown ${path} ${uid}:${gid} failed: ${errnoText(Number(rc))}`,
+    );
   }
 }
 
@@ -103,9 +107,9 @@ function setEntryMetadata(
   const { rc } = mk.syscall(KERNEL_VFS_SET_METADATA, req, 0);
   if (Number(rc) !== 0) {
     throw new Error(
-      `set metadata on ${path} (mode ${
-        entry.mode.toString(8)
-      }) failed: rc=${rc}`,
+      `set metadata on ${path} (mode ${entry.mode.toString(8)}) failed: ${
+        errnoText(Number(rc))
+      }`,
     );
   }
 }
@@ -205,7 +209,7 @@ function registerRamfsDirectory(mk: KernelHostInterface, path: string): void {
   const { rc } = mk.syscall(METHOD.KERNEL_FS_MKDIR, s(path), 0);
   const code = Number(rc);
   if (code !== 0 && code !== NEG_EEXIST) {
-    throw new Error(`kernel mkdir failed for ${path}: rc=${rc}`);
+    throw new Error(`kernel mkdir failed for ${path}: ${errnoText(code)}`);
   }
 }
 
@@ -222,7 +226,9 @@ function registerRamfsSymlink(
   req.set(linkBytes, 4 + targetBytes.byteLength);
   const { rc } = mk.syscall(METHOD.KERNEL_FS_SYMLINK, req, 0);
   if (Number(rc) !== 0) {
-    throw new Error(`kernel symlink failed for ${linkPath}: rc=${rc}`);
+    throw new Error(
+      `kernel symlink failed for ${linkPath}: ${errnoText(Number(rc))}`,
+    );
   }
 }
 
@@ -473,11 +479,14 @@ function missing(rc: number): boolean {
   return rc === -2 || rc === -20;
 }
 
-/** The errnos the kernel's VFS export answers with, in words. */
+/** The errnos the kernel answers these calls with, in words. */
 const ERRNO_WORDS: Record<number, string> = {
+  1: "operation not permitted",
   2: "no such file",
   5: "I/O error",
   9: "bad file descriptor",
+  13: "permission denied",
+  17: "file exists",
   20: "not a directory",
   21: "is a directory",
   22: "invalid argument",
