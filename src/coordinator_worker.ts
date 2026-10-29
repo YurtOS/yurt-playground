@@ -43,12 +43,7 @@ import type {
 } from "./jupyter_transport.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
-import {
-  FRESH_SANDBOX,
-  freshSandboxFailed,
-  type InstalledReport,
-  installedReport,
-} from "./installed_list.ts";
+import { type InstalledReport, installedReporter } from "./installed_list.ts";
 import {
   browserArchiveCache,
   installPackage,
@@ -224,19 +219,17 @@ async function servePackages(msg: ToWorker): Promise<void> {
       error: error instanceof Error ? error.message : String(error),
     });
   } finally {
-    await postInstalled();
+    await installed.read();
   }
 }
 
-/** Tell the page what pkg has installed in the in-tab sandbox, from its
- * installed list (src/installed_list.ts), or why that cannot be told: at
- * boot, after each install, and when the Packages panel opens. */
-async function postInstalled(): Promise<void> {
-  // The in-tab sandbox only: the desktop app's page has no Packages panel
-  // to mark, and no VFS of its own to read.
-  const files = packageSession?.files;
-  if (files !== undefined) post(await installedReport(files));
-}
+/** What pkg has installed in the in-tab sandbox, told to the page
+ * (src/installed_list.ts). The desktop app's session has no `files`: its
+ * page has no Packages panel to mark. */
+const installed = installedReporter(
+  (report) => post(report),
+  () => packageSession?.files,
+);
 
 /** One install at a time, whole: an install is a plan run, the downloads
  * and an install run, every run stages at the same directory, and pkg
@@ -472,7 +465,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
   await serveYurt(msg);
   await servePackages(msg);
-  if (msg.type === "pkg-read-installed") await postInstalled();
+  if (msg.type === "pkg-read-installed") await installed.read();
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });
@@ -664,7 +657,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         throw error;
       } finally {
         // Like a panel install's: what it did install, even if it failed.
-        await postInstalled();
+        await installed.read();
       }
     };
   /** Boot, install, start Jupyter: the start, and what a retry after a
@@ -685,7 +678,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           executions = new ExecutionRegistry(session.process, session.signal);
         }
         packageSession = session;
-        void postInstalled();
+        void installed.read();
       },
       // A restart relaunches on it, whether or not the first launch worked.
       launching: (session) => launchSession = session,
@@ -731,7 +724,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
    * from `startFresh` so no local of that long await holds it. */
   const dropSandbox = () => {
     // What the fresh one has is unknown until it boots.
-    post(FRESH_SANDBOX);
+    installed.dropped();
     const stale = packageSession;
     packageSession = undefined;
     launchSession = undefined;
@@ -771,7 +764,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           type: "python-missing",
           error: `a fresh sandbox did not start: ${bootError ?? "unknown"}`,
         });
-        post(freshSandboxFailed(bootError ?? "unknown"));
+        installed.freshFailed(bootError ?? "unknown");
       }
     };
   }

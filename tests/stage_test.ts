@@ -8,7 +8,7 @@ import {
 } from "@yurt/kernel-host-interface-js";
 import { handlePlaygroundRequest } from "../src/serve.ts";
 import { loadPins, resolveArtifacts } from "../src/pins.ts";
-import { stageYurtimg, vfsReadWhole } from "../src/stage.ts";
+import { stageYurtimg, vfsReadWhole, vfsStat } from "../src/stage.ts";
 
 const STAT_MODE = 12;
 const STAT_UID = 16;
@@ -461,4 +461,35 @@ Deno.test("vfsReadWhole is a file in one VFS read, none when missing, and refuse
   }
   // In words: a directory where the file should be.
   assert(threw.includes("read /dir: is a directory"), threw);
+});
+
+Deno.test("vfsStat and vfsReadWhole tell a missing path (ENOENT, ENOTDIR) from a failure, in words", () => {
+  const kernel = (rc: bigint) =>
+    ({
+      scratchLen: 64 * 1024,
+      syscall: () => ({ rc, response: new Uint8Array(32) }),
+      // deno-lint-ignore no-explicit-any
+    }) as any;
+  for (const missing of [-2n, -20n]) {
+    assertEquals(vfsStat(kernel(missing), "/a/b"), undefined);
+    assertEquals(vfsReadWhole(kernel(missing), "/a/b"), undefined);
+  }
+  for (
+    const [call, words] of [
+      [() => vfsStat(kernel(-5n), "/x"), "stat /x: I/O error"],
+      [
+        () => vfsReadWhole(kernel(-40n), "/x"),
+        "read /x: too many levels of symbolic links",
+      ],
+      [() => vfsStat(kernel(-99n), "/x"), "stat /x: error 99"],
+    ] as const
+  ) {
+    let threw = "";
+    try {
+      call();
+    } catch (error) {
+      threw = String(error);
+    }
+    assert(threw.includes(words), threw);
+  }
 });

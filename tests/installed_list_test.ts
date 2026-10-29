@@ -1,12 +1,13 @@
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
-  applyInstalled,
   FRESH_SANDBOX,
   freshSandboxFailed,
   INSTALLED_DB_PATH,
   INSTALLED_LIST_PATH,
+  installedMarks,
   installedNames,
   installedReport,
+  installedReporter,
   type SandboxFiles,
 } from "../src/installed_list.ts";
 
@@ -87,24 +88,19 @@ Deno.test("installedReport is the list's names, or why they cannot be told", asy
     type: "pkg-installed",
     names: [],
   });
-  // A database without a list (an older pkg, or one whose write of the
-  // list failed): unknown, never nothing installed -- but what the panel
-  // just installed stays marked.
+  // A database without a list: a pkg that keeps none (the images before
+  // yurt-pkg#59), or one whose write of it failed. Unknown, never nothing
+  // installed; and expected, so quiet.
   assertEquals(
     await installedReport(files({ [INSTALLED_DB_PATH]: "db" })),
-    {
-      type: "pkg-installed",
-      error: "pkg's installed list is not there",
-      clear: false,
-    },
+    { type: "pkg-installed", unlisted: true },
   );
-  // A broken list, and a read that fails: unknown, nothing marked.
+  // A broken list, and a read that fails.
   assertEquals(
     await installedReport(files({ [INSTALLED_LIST_PATH]: "broken\n" })),
     {
       type: "pkg-installed",
       error: "pkg's installed list: line 1 is not NAME<TAB>VERSION<TAB>BUILD",
-      clear: true,
     },
   );
   assertEquals(
@@ -112,56 +108,108 @@ Deno.test("installedReport is the list's names, or why they cannot be told", asy
       readWhole: () => Promise.reject(new Error("read /x: is a directory")),
       exists: () => Promise.resolve(true),
     }),
-    { type: "pkg-installed", error: "read /x: is a directory", clear: true },
+    { type: "pkg-installed", error: "read /x: is a directory" },
   );
 });
 
-Deno.test("applyInstalled replaces the marks with a list, and says why when they cannot be told", () => {
+/** The Packages panel's marks, driven as the page drives them; each
+ * render recorded as [names marked, the note]. */
+function panel() {
+  const renders: [string[], string | undefined][] = [];
+  let asks = 0;
+  const marks = installedMarks(
+    () => asks++,
+    (known, note) => renders.push([[...known].sort(), note]),
+  );
+  return { marks, renders, asks: () => asks };
+}
+
+Deno.test("the panel asks for a read every time it opens", () => {
+  const { marks, asks } = panel();
+  marks.opened();
+  marks.opened();
+  assertEquals(asks(), 2);
+});
+
+Deno.test("the panel marks what a list names, and an install's guess until the list says", () => {
+  const { marks, renders } = panel();
+  marks.report({ type: "pkg-installed", names: ["git"] });
+  assertEquals(renders.at(-1), [["git"], undefined]);
+  // An install: its plan's names at once...
+  marks.installed(marks.installStarted(), ["jq", "libonig"]);
+  assertEquals(renders.at(-1), [["git", "jq", "libonig"], undefined]);
+  // ...until the read after it, which wins.
+  marks.report({ type: "pkg-installed", names: ["git", "jq"] });
+  assertEquals(renders.at(-1), [["git", "jq"], undefined]);
+});
+
+Deno.test("the panel keeps its own marks, quietly, when pkg keeps no list", () => {
+  const { marks, renders } = panel();
+  marks.installed(marks.installStarted(), ["rtk"]);
+  marks.report({ type: "pkg-installed", unlisted: true });
+  // No note: on an image before yurt-pkg#59 this is every read.
+  assertEquals(renders.at(-1), [["rtk"], undefined]);
+});
+
+Deno.test("the panel clears its marks and says why when they cannot be told", () => {
   const note = (why: string) =>
     `cannot tell which packages are installed: ${why}`;
-  const known = new Set(["git", "rtk"]);
-  // A panel install's guess (rtk), then the read: the read wins.
-  assertEquals(
-    applyInstalled(known, { type: "pkg-installed", names: ["git", "jq"] }),
-    undefined,
-  );
-  assertEquals([...known], ["git", "jq"]);
-  // No list (an image before pkg wrote one): the panel's own guesses stay.
-  known.add("rtk");
-  assertEquals(
-    applyInstalled(known, {
-      type: "pkg-installed",
-      error: "pkg's installed list is not there",
-      clear: false,
-    }),
-    note("pkg's installed list is not there"),
-  );
-  assertEquals([...known], ["git", "jq", "rtk"]);
-  // A broken list: no name stays Installed beside the note.
-  assertEquals(
-    applyInstalled(known, {
-      type: "pkg-installed",
-      error: "broken",
-      clear: true,
-    }),
-    note("broken"),
-  );
-  assertEquals(known.size, 0);
-  // A fresh sandbox is unknown until it boots, not empty; and if its boot
-  // fails, the panel says that rather than "starting" forever.
-  known.add("git");
-  assertEquals(applyInstalled(known, FRESH_SANDBOX), note(FRESH_SANDBOX.error));
-  assertEquals(known.size, 0);
-  const failed = freshSandboxFailed("not crossOriginIsolated");
-  assertEquals(failed, {
-    type: "pkg-installed",
-    error: "a fresh sandbox did not start: not crossOriginIsolated",
-    clear: true,
-  });
+  const { marks, renders } = panel();
+  marks.report({ type: "pkg-installed", names: ["git"] });
+  marks.report({ type: "pkg-installed", error: "broken" });
+  assertEquals(renders.at(-1), [[], note("broken")]);
+  // The next read that works hides the note.
+  marks.report({ type: "pkg-installed", names: ["git"] });
+  assertEquals(renders.at(-1), [["git"], undefined]);
+  // A fresh sandbox, and one that did not boot.
+  marks.report(FRESH_SANDBOX);
+  assertEquals(renders.at(-1), [[], note("a fresh sandbox is starting")]);
+  marks.report(freshSandboxFailed("not crossOriginIsolated"));
+  assertEquals(renders.at(-1), [
+    [],
+    note("a fresh sandbox did not start: not crossOriginIsolated"),
+  ]);
 });
 
-Deno.test("the coordinator posts what is installed at boot, after every install, on a panel open, and on a fresh sandbox", () => {
-  // The worker cannot run here: where it posts is read from its source.
+Deno.test("an install in a dropped sandbox marks nothing in the fresh one", () => {
+  const { marks, renders } = panel();
+  const started = marks.installStarted();
+  marks.report(FRESH_SANDBOX);
+  marks.installed(started, ["rtk"]);
+  assertEquals(renders.at(-1)?.[0], []);
+  // One started in the fresh sandbox does.
+  marks.installed(marks.installStarted(), ["jq"]);
+  assertEquals(renders.at(-1)?.[0], ["jq"]);
+});
+
+Deno.test("the coordinator reports reads of the in-tab sandbox, a dropped sandbox, and a failed fresh boot", async () => {
+  const posted: unknown[] = [];
+  let current: SandboxFiles | undefined = files({
+    [INSTALLED_LIST_PATH]: LIST,
+  });
+  const reporter = installedReporter(
+    (report) => posted.push(report),
+    () => current,
+  );
+  await reporter.read();
+  assertEquals(posted.at(-1), {
+    type: "pkg-installed",
+    names: ["ca-certificates", "git", "python"],
+  });
+  reporter.dropped();
+  assertEquals(posted.at(-1), FRESH_SANDBOX);
+  reporter.freshFailed("boom");
+  assertEquals(posted.at(-1), freshSandboxFailed("boom"));
+  // No in-tab sandbox (the desktop app's, or none yet): nothing to read.
+  current = undefined;
+  const before = posted.length;
+  await reporter.read();
+  assertEquals(posted.length, before);
+});
+
+Deno.test("the coordinator reports at boot, after every install, on a panel open, and on a fresh sandbox", () => {
+  // Which lifecycle points call the reporter: read from the worker's
+  // source, scoped to each point's own code (the worker cannot run here).
   const worker = Deno.readTextFileSync(
     new URL("../src/coordinator_worker.ts", import.meta.url),
   );
@@ -170,36 +218,35 @@ Deno.test("the coordinator posts what is installed at boot, after every install,
     assert(start >= 0, from);
     return worker.slice(start, worker.indexOf(to, start));
   };
-  // The read itself is installedReport, posted as is.
   assert(
-    /post\(await installedReport\(files\)\)/.test(
-      body("async function postInstalled", "\n}\n"),
-    ),
-  );
-  // At boot, once the session is the package session.
-  assert(
-    /packageSession = session;\s*void postInstalled\(\);/.test(
+    /packageSession = session;\s*void installed\.read\(\);/.test(
       body("booted: (session) =>", "},"),
     ),
   );
-  // After each panel install and the Python install, failed or not.
   assert(
-    /finally \{\s*await postInstalled\(\);/.test(
+    // The function's last statement: after every install, failed or not.
+    /finally \{\s*await installed\.read\(\);\s*\}$/.test(
       body("async function servePackages", "\n}\n"),
     ),
   );
   assert(
-    /finally \{[^}]*await postInstalled\(\);/.test(
-      body("installPython = python === undefined", "const begin"),
+    /finally \{[^}]*await installed\.read\(\);\s*\}\s*\};\s*$/.test(
+      body("installPython = python === undefined", "  /** Boot, install"),
     ),
   );
-  // When the panel opens.
-  assert(/"pkg-read-installed"\) await postInstalled\(\);/.test(worker));
-  // A dropped sandbox is unknown; a fresh one that did not boot says so.
   assert(
-    /post\(FRESH_SANDBOX\)/.test(body("const dropSandbox", "\n  };\n")),
+    /if \(msg\.type === "pkg-read-installed"\) await installed\.read\(\);/
+      .test(worker),
   );
   assert(
-    /post\(freshSandboxFailed\(/.test(body("startFresh = async", "\n    };\n")),
+    /^\s*installed\.dropped\(\);/m.test(body("const dropSandbox", "\n  };\n")),
+  );
+  assert(
+    /installed\.freshFailed\(bootError \?\? "unknown"\);/.test(
+      body(
+        "if (packageSession === undefined) {\n        pythonMissing",
+        "\n      }\n",
+      ),
+    ),
   );
 });

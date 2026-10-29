@@ -1,5 +1,5 @@
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
-import { applyInstalled, type InstalledReport } from "./installed_list.ts";
+import { installedMarks, type InstalledReport } from "./installed_list.ts";
 import {
   hideMemoryRefused,
   MEMORY_REFUSED_RELOAD_ID,
@@ -77,16 +77,19 @@ let packageInstall:
   | ((name: string, progress: (text: string) => void) => Promise<string>)
   | undefined;
 
-/** What pkg has installed in this sandbox, as the coordinator last read it
- * from pkg's installed list (`pkg-installed`): at boot, after each install,
- * and whenever the Packages panel opens. */
-const knownInstalled = new Set<string>();
-/** Marks the Packages panel's buttons by `knownInstalled`, and says on its
- * own line why that cannot be told (or clears that); set once the panel is
- * wired. */
-let markPackages: (note?: string) => void = () => {};
 /** Asks the coordinator to read pkg's installed list again; set at boot. */
 let askInstalled = () => {};
+/** Shows the Packages panel's marks and note; set once the panel is wired. */
+let renderInstalled: (
+  known: ReadonlySet<string>,
+  note: string | undefined,
+) => void = () => {};
+/** What pkg has installed in this sandbox, as the coordinator reports it
+ * (`pkg-installed`), and the panel's own installs (src/installed_list.ts). */
+const installedPanel = installedMarks(
+  () => askInstalled(),
+  (known, note) => renderInstalled(known, note),
+);
 
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
@@ -411,7 +414,7 @@ function boot(
     }
     if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
     if (msg.type === "pkg-installed") {
-      markPackages(applyInstalled(knownInstalled, msg));
+      installedPanel.report(msg);
     }
     // A capture ends in the sealed sandbox, with no Jupyter to wait for.
     if (msg.type === "snapshot-captured") {
@@ -599,10 +602,8 @@ function wirePackages(): void {
   const installedError = byId("packages-installed-error");
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
-  const mark = () =>
-    markInstalled(list.querySelectorAll("button"), knownInstalled, busy);
-  markPackages = (note) => {
-    mark();
+  renderInstalled = (known, note) => {
+    markInstalled(list.querySelectorAll("button"), known, busy);
     installedError.hidden = note === undefined;
     installedError.textContent = note ?? "";
   };
@@ -610,7 +611,8 @@ function wirePackages(): void {
     if (packageInstall === undefined || busy) return;
     busy = true;
     panel.dataset.install = "running";
-    mark();
+    installedPanel.render();
+    const started = installedPanel.installStarted();
     try {
       const output = await packageInstall(
         name,
@@ -621,7 +623,7 @@ function wirePackages(): void {
         : `installed ${name}`;
       // Marked now; the coordinator's read of pkg's installed list, which
       // follows, replaces the guess.
-      for (const n of plannedInstalls(output, name)) knownInstalled.add(n);
+      installedPanel.installed(started, plannedInstalls(output, name));
       panel.dataset.install = "done";
     } catch (error) {
       status.textContent = error instanceof Error
@@ -630,13 +632,12 @@ function wirePackages(): void {
       panel.dataset.install = "failed";
     } finally {
       busy = false;
-      mark();
+      installedPanel.render();
     }
   };
   let loading = false;
   const show = async () => {
-    // Every open: the terminal or an agent may have installed since.
-    askInstalled();
+    installedPanel.opened();
     if (catalog !== undefined || loading) return;
     loading = true;
     try {
@@ -680,7 +681,7 @@ function wirePackages(): void {
       tr.append(name, version, size, action);
       list.append(tr);
     }
-    mark();
+    installedPanel.render();
   };
   toggle.addEventListener("click", () => {
     panel.hidden = !panel.hidden;

@@ -148,7 +148,7 @@
         padding: 1px 8px;
         cursor: pointer;
       }
-      .bar-action:hover,
+      .bar-action:not([disabled]):hover,
       .bar-action:focus-visible {
         color: var(--text);
       }
@@ -766,6 +766,8 @@
           <p
             id="packages-installed-error"
             data-testid="packages-installed-error"
+            role="status"
+            aria-live="polite"
             hidden
           >
           </p>
