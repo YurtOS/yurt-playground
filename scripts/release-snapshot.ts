@@ -222,7 +222,7 @@ export const PIN_REFUSED_EXIT = 3;
 export const PIN_REFUSED_MARKER = "snapshot pin refused: ";
 
 /** The page's answer for the set an install under `pins` would get now. */
-const liveSetOf = (pins: Pins) => () =>
+export const liveSetOf = (pins: Pins) => () =>
   livePythonSet(pythonInstallRequest(pins));
 
 /** Why a capture cannot start on the live index's answer: one it cannot
@@ -251,8 +251,12 @@ export async function checkPin(
   return problem === undefined ? { ok: true } : { ok: false, problem };
 }
 
-/** Step 1: the page captures the snapshot; the file it downloads. */
-async function capture(): Promise<void> {
+/** Step 1: the page captures the snapshot into `out` (the file it
+ * downloads). `query` is the page's query string (scripts/snapshot-local.ts
+ * adds `packages=`). */
+export async function capture(
+  { query = "start&snapshot=capture", out = snapshotPath } = {},
+): Promise<void> {
   // Here, not at the top: the tests import this module's checks.
   const { chromium } = await import("playwright");
   say("bundling the page");
@@ -268,7 +272,7 @@ async function capture(): Promise<void> {
         ? Response.json(pins, { headers: ISOLATION_HEADERS })
         : handlePlaygroundRequest(request),
   );
-  const url = `http://127.0.0.1:${server.addr.port}/?start&snapshot=capture`;
+  const url = `http://127.0.0.1:${server.addr.port}/?${query}`;
   const browser = await chromium.launch();
   let watch: number | undefined;
   try {
@@ -310,9 +314,9 @@ async function capture(): Promise<void> {
     }, 1000);
     await page.goto(url);
     const file = await Promise.race([download, failed]);
-    await Deno.mkdir(dirname(snapshotPath), { recursive: true });
-    await file.saveAs(`${snapshotPath}.tmp`);
-    await Deno.rename(`${snapshotPath}.tmp`, snapshotPath);
+    await Deno.mkdir(dirname(out), { recursive: true });
+    await file.saveAs(`${out}.tmp`);
+    await Deno.rename(`${out}.tmp`, out);
   } finally {
     clearInterval(watch);
     await browser.close();
@@ -320,7 +324,7 @@ async function capture(): Promise<void> {
   }
 }
 
-type PartInfo = { name: string; sha256: string; size: number };
+export type PartInfo = { name: string; sha256: string; size: number };
 
 /** What keeps an existing release from being the one for these parts:
  * every part must be there with this sha256 (GitHub's own digest of the
@@ -345,8 +349,9 @@ export function releaseProblems(
   });
 }
 
-/** Step 3: the parts as the site and the release publish them. */
-async function split(file: Uint8Array, dir: string) {
+/** Step 3: the parts as the site and the release publish them, written
+ * to `dir`. */
+export async function split(file: Uint8Array, dir: string) {
   const manifest = imagePartsManifest(ASSET, file.byteLength);
   const parts: PartInfo[] = [];
   for (const [index, name] of manifest.parts.entries()) {
