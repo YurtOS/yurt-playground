@@ -271,7 +271,11 @@ async function servePackages(msg: ToWorker): Promise<void> {
  * (src/installed_list.ts). The desktop app's session has no `files`: its
  * page has no Packages panel to mark. */
 const installed = installedReporter(
-  (report) => post(report),
+  (report) => {
+    post(report);
+    // What this Linux holds follows what pkg now lists (src/linux_remark.ts).
+    if ("names" in report) packageSession?.refreshRemark?.();
+  },
   () => packageSession?.files,
 );
 

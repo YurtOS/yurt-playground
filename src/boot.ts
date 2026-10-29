@@ -120,6 +120,10 @@ export type PlaygroundSession = {
   /** Guest files read straight from the in-tab kernel's VFS (no process,
    * no credentials): what pkg has installed (src/installed_list.ts). */
   files?: SandboxFiles;
+  /** Read pkg's list again after an install: /etc/motd and the page's
+   * "This Linux" line follow what the sandbox now holds
+   * (src/linux_remark.ts). */
+  refreshRemark?: () => void;
   /** The same, handing the process back: what a driver's `exec` runs
    * (src/executions.ts). */
   process?: Spawner;
@@ -516,6 +520,11 @@ export async function restoreSnapshot(
           env.snapshotCache,
         )).pipeThrough(new TransformStream(), { signal: stop.signal }),
         pin.builtFrom,
+        undefined,
+        // The live index's verdict before the memory is allocated: a
+        // refused snapshot never holds it, so a fallback boot never runs
+        // beside it.
+        () => checked,
       ))().catch(async (error) => {
         // A refused set says so, rather than the aborted download's reason.
         await checked;
@@ -741,11 +750,18 @@ async function startPlayground(
     });
   };
   // What this Linux holds, from pkg's own list: said to the page, kept in
-  // /etc/motd, and printed above the shell's first prompt.
-  const remark = remarkOf(mk);
-  writeRamfsFile(mk, "/etc/motd", new TextEncoder().encode(`${remark}\n`));
-  env.linuxRemark?.(remark);
-  env.term.write(`\x1b[2m${remark}\x1b[0m\r\n`);
+  // /etc/motd, and printed above the shell's first prompt; said and kept
+  // again after each install (refreshRemark).
+  let lastRemark: string | undefined;
+  const sayRemark = () => {
+    const remark = remarkOf(mk);
+    if (remark === lastRemark) return remark;
+    lastRemark = remark;
+    writeRamfsFile(mk, "/etc/motd", new TextEncoder().encode(`${remark}\n`));
+    env.linuxRemark?.(remark);
+    return remark;
+  };
+  env.term.write(`\x1b[2m${sayRemark()}\x1b[0m\r\n`);
   env.show("starting ash");
   // Not a group leader: attaching the terminal makes the login shell a
   // session leader, which the kernel refuses a group leader (EPERM).
@@ -983,6 +999,7 @@ async function startPlayground(
       const bytes = readGuestFile(mk, user.pid, path, 4 * 1024 * 1024);
       return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
     },
+    refreshRemark: () => void sayRemark(),
     files: {
       // In an executor, so a failed read is a rejection, not a throw.
       readWhole: (path) =>

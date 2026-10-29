@@ -271,11 +271,11 @@ which no longer describes its memory.
 <!-- snapshot-table:start (scripts/snapshot-table.ts) -->
 <!-- deno-fmt-ignore-start -->
 
-Train `playground-2026.10.29-3d32068.2`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
+Train `playground-2026.10.29-3d32068`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
 
 | Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
 | --- | --- | --- | --- | --- | --- | --- |
-| desktop | desktop browser (Mac, PC) | `snapshot-playground-2026.10.29-3d32068.2` | 127.5 MB in 7 parts | ? | ? | ? |
+| desktop | desktop browser (Mac, PC) | `snapshot-playground-2026.10.29-3d32068` | 130.2 MB in 7 parts | ? | ? | ? |
 | tablet | tablet (iPad) | not pinned: boots the image | | | | |
 | phone | phone (iPhone), with `?start-anyway` | not pinned: boots the image | | | | |
 

@@ -38,9 +38,10 @@ export const SANDBOX_SNAPSHOT_PATH = `./${SANDBOX_SNAPSHOT_NAME}`;
 
 /**
  * Which snapshot a device restores by default (until a boot of the slim
- * image fits a phone again): a desktop the full one, with the Python set
- * and Jupyter; a tablet the slim image as it boots, its own python3 and no
- * set; a phone the same image with python taken out. Each has its own
+ * image fits a phone again), each made from the slim image: a desktop the
+ * one with the Python set and Jupyter installed; a tablet the one with
+ * python alone installed; a phone the image as it boots, without Python.
+ * Each has its own
  * pins.json entry, file, capture mode and release tag; the checks are the
  * same. A phone's or tablet's page asks for no Python set, so it restores
  * only a snapshot without one (checkPythonSet).
@@ -380,6 +381,10 @@ export async function decodeSandboxSnapshot(
   /** Told what the header says the snapshot was built from, once it is
    * accepted. */
   onHeader?: (builtFrom: BuiltFrom) => void,
+  /** Awaited after the header is accepted and before the memory is
+   * allocated: a check that may still refuse the snapshot (the live
+   * index's) refuses it before the ~250-545 MiB exist. */
+  beforeAllocate?: () => Promise<void>,
 ): Promise<SandboxSealImage> {
   // A reader, not `for await`: WebKit's ReadableStream is not async-iterable.
   const reader = body.pipeThrough(new DecompressionStream("gzip"))
@@ -389,6 +394,7 @@ export async function decodeSandboxSnapshot(
     const why = headerMismatch(header, expected);
     if (why !== undefined) throw new SnapshotMismatch(why);
     onHeader?.(header.builtFrom!);
+    await beforeAllocate?.();
     const {
       format: _format,
       builtFrom: _builtFrom,

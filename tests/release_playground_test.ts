@@ -1334,7 +1334,13 @@ function stepHelpers(source: string): string {
 async function pinsWrite(
   answer: string,
   initialState: unknown = { steps: {} },
-  { pinsOnly = false } = {},
+  {
+    pinsOnly = false,
+    snapshots = { snapshot: { release: "snapshot-playground-old" } } as Record<
+      string,
+      unknown
+    >,
+  } = {},
 ) {
   const dir = await Deno.makeTempDir({ prefix: "release-pins-write-" });
   try {
@@ -1343,10 +1349,7 @@ async function pinsWrite(
     await Deno.mkdir(join(root, "artifacts"));
     await Deno.writeTextFile(
       join(root, "artifacts/pins.json"),
-      JSON.stringify({
-        train: "playground-old",
-        snapshot: { release: "snapshot-playground-old" },
-      }),
+      JSON.stringify({ train: "playground-old", ...snapshots }),
     );
     const source = await Deno.readTextFile(
       join(repoRoot, "scripts/release-playground.sh"),
@@ -1391,8 +1394,14 @@ printf 'DROPPED=%s\\n' "\${snapshot_dropped:-0}"
       join(bin, "deno"),
       // Called as the script calls it, from the project root; any other
       // call is no verdict (exit 9), which stops the train.
+      // \`kind\` is the snapshot asked about (--kind, desktop without it).
       `#!/usr/bin/env bash
-[ "$*" = "run -A scripts/release-snapshot.ts --check-pin" ] || exit 9
+case "$*" in
+  "run -A scripts/release-snapshot.ts --check-pin") kind=desktop ;;
+  "run -A scripts/release-snapshot.ts --check-pin --kind tablet") kind=tablet ;;
+  "run -A scripts/release-snapshot.ts --check-pin --kind phone") kind=phone ;;
+  *) exit 9 ;;
+esac
 [ "$(pwd -P)" = "$(cd ${JSON.stringify(root)} && pwd -P)" ] || exit 9
 ${answer}
 `,
@@ -1426,6 +1435,30 @@ Deno.test("a train carries the snapshot pin --check-pin accepts into its new pin
   assertEquals(run.pins.snapshot, { release: "snapshot-playground-old" });
   assertStringIncludes(run.output, "DROPPED=0");
   assertEquals(run.state.steps.snapshot, { dropped: null });
+});
+
+Deno.test("a train carries every device's snapshot pin, each checked by its own kind", async () => {
+  const run = await pinsWrite(
+    `[ "$kind" = tablet ] || exit 0
+echo 'snapshot pin refused: built from bootSetup 1, not 2' >&2; exit 3`,
+    { steps: {} },
+    {
+      snapshots: {
+        snapshot: { release: "d" },
+        tabletSnapshot: { release: "t" },
+        phoneSnapshot: { release: "p" },
+      },
+    },
+  );
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.pins.snapshot, { release: "d" });
+  assertEquals(run.pins.phoneSnapshot, { release: "p" });
+  assertEquals("tabletSnapshot" in run.pins, false);
+  assertStringIncludes(
+    run.output,
+    "the pinned snapshot is not this train's (tabletSnapshot: built from bootSetup 1, not 2): dropped",
+  );
+  assertStringIncludes(run.output, "DROPPED=1");
 });
 
 Deno.test("a train drops the snapshot pin --check-pin refuses, with its reason", async () => {

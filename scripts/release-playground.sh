@@ -827,7 +827,9 @@ done
 # only if release-snapshot.ts --check-pin says it is this train's (well
 # formed, this page's format, built from these pins, of the Python set the
 # live index offers); otherwise it is dropped (scripts/lib/snapshot-pin.sh).
-snapshot_json=$(jq -c '.snapshot // null' "$root/artifacts/pins.json")
+# Each device's (src/sandbox_snapshot.ts SNAPSHOT_KINDS), checked by kind.
+snapshots_json=$(jq -c '{snapshot, tabletSnapshot, phoneSnapshot}
+  | with_entries(select(.value != null))' "$root/artifacts/pins.json")
 # `repo`/`rev` say where the source is; `releaseRepo`/`release` where the
 # bytes are (a train's in the repository that built them, a hand-cut one in
 # yurt-packages). Every consumer fetches through releaseRepo.
@@ -836,7 +838,7 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
   --arg image_release "$image_release" --arg image_repo "$image_repo" --arg image_sha256 "$image_sha256" --arg ports_sha "$ports_sha" \
   --arg host_release "$host_release" --arg host_repo "$host_repo" --arg cli_release "$cli_release" --arg cli_repo "$cli_repo" \
   --argjson host "$host_json" --argjson cli "$cli_json" --argjson python_seal "$python_seal_json" \
-  --argjson slim "$slim_json" --argjson snapshot "$snapshot_json" '{
+  --argjson slim "$slim_json" --argjson snapshots "$snapshots_json" '{
     train: $train,
     kernelWasm: {repo: "YurtOS/yurtos-kernel", rev: $kernel_sha, releaseRepo: $kernel_repo, release: $kernel_release,
       build: "scripts/build-kernel-wasm.sh", path: "target/kernel-wasm/release/yurt_kernel.wasm", sha256: $kernel_sha256},
@@ -850,8 +852,28 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
       sha256: ($cli | with_entries(.value = .value.sha256))},
     pythonSeal: $python_seal
   } + (if $slim == null then {} else {browserImage: $slim} end)
-    + (if $snapshot == null then {} else {snapshot: $snapshot} end)' > "$root/artifacts/pins.json"
-keep_snapshot_pin "$root" || die "$snapshot_error; fix that and $(resume_command)"
+    + $snapshots' > "$root/artifacts/pins.json"
+# One verdict per kind; the reasons of every dropped one, together.
+dropped_whys=() any_kept=0
+for kind_entry in snapshot:desktop tabletSnapshot:tablet phoneSnapshot:phone; do
+  snapshot_dropped=0 snapshot_kept=0 snapshot_why=
+  keep_snapshot_pin "$root" "${kind_entry%%:*}" "${kind_entry#*:}" ||
+    die "$snapshot_error; fix that and $(resume_command)"
+  if [ "$snapshot_dropped" = 1 ]; then
+    # The desktop's reason as it was; the others name their pin.
+    if [ "${kind_entry%%:*}" = snapshot ]; then
+      dropped_whys+=("$snapshot_why")
+    else
+      dropped_whys+=("${kind_entry%%:*}: $snapshot_why")
+    fi
+  fi
+  [ "$snapshot_kept" = 1 ] && any_kept=1
+done
+snapshot_dropped=0 snapshot_kept=$any_kept snapshot_why=
+if [ ${#dropped_whys[@]} -gt 0 ]; then
+  snapshot_dropped=1
+  snapshot_why=$(IFS=';'; printf '%s' "${dropped_whys[*]}" | sed 's/;/; /g')
+fi
 if [ "${snapshot_dropped:-0}" = 1 ]; then
   say "the pinned snapshot is not this train's ($snapshot_why): dropped"
   # Kept with the train, so a --resume still ends with the reminder below.

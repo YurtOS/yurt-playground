@@ -713,3 +713,29 @@ Deno.test("a snapshot's header records what it holds, read without its memory", 
     image(1 << 12),
   );
 });
+
+Deno.test("a check still pending refuses the snapshot before its memory is allocated", async () => {
+  // More memory than any allocation gets: allocating it would throw a
+  // RangeError, so the gate's own refusal shows it came first.
+  const file = await rawSnapshot({
+    format: FORMAT,
+    builtFrom: BUILT,
+    memoryBytes: 2 ** 52,
+  });
+  let headerSeen = false;
+  await assertRejects(
+    () =>
+      decodeSandboxSnapshot(
+        file.stream(),
+        BUILT,
+        () => headerSeen = true,
+        () =>
+          Promise.reject(
+            new SnapshotMismatch("the live index offers another set"),
+          ),
+      ),
+    SnapshotMismatch,
+    "the live index offers another set",
+  );
+  assertEquals(headerSeen, true, "the header was read and accepted first");
+});
