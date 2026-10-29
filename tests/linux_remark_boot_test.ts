@@ -22,13 +22,20 @@ Deno.test("a boot says what is in this Linux, and says it again after an install
       }`,
     );
     assertStringIncludes(await typeCommand(term, "cat /etc/motd"), first);
-    // What pkg would write after installing one more package.
-    await typeCommand(
+    // What pkg would write after installing one more package (its state
+    // directory made first, should this image have none).
+    const wrote = await typeCommand(
       term,
-      "printf 'jq\\t1.7\\tyurt_0\\n' | sudo tee -a /var/lib/yurt-pkg/installed.list >/dev/null",
+      "sudo mkdir -p /var/lib/yurt-pkg && printf 'jq\\t1.7\\tyurt_0\\n' | sudo tee -a /var/lib/yurt-pkg/installed.list >/dev/null; echo rc=$?; cat /var/lib/yurt-pkg/installed.list",
     );
     session.refreshRemark();
-    assertEquals(remarks.length, 2, "said again once it changed");
+    assertEquals(
+      remarks.length,
+      2,
+      `said again once it changed: remarks ${
+        JSON.stringify(remarks)
+      }; the write said ${JSON.stringify(wrote.slice(-600))}`,
+    );
     assert(remarks[1] !== first, remarks[1]);
     assertStringIncludes(await typeCommand(term, "cat /etc/motd"), remarks[1]);
     // Unchanged: not said again.
