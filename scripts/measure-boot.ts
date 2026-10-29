@@ -123,8 +123,13 @@ if (import.meta.main) {
     : { ...devices[spec.descriptor] };
   // WebKit takes no isMobile; the viewport, UA and touch stay.
   if (engine === "webkit") delete descriptor.isMobile;
-  const context = await (engine === "chromium" ? chromium : webkit)
-    .launchPersistentContext(profile, { ...descriptor, headless: true });
+  // One context for every load: the warm one finds the cold one's Cache
+  // API. The flag names this browser's process tree for `ps`.
+  const browser = await (engine === "chromium" ? chromium : webkit).launch({
+    headless: true,
+    args: engine === "chromium" ? [`--yurt-measure=${profile}`] : [],
+  });
+  const context = await browser.newContext(descriptor);
   if (spec.maxTouchPoints !== undefined) {
     await context.addInitScript((points: number) => {
       Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
@@ -150,27 +155,42 @@ if (import.meta.main) {
         undefined,
         { timeout: 300_000, polling: 50 },
       );
-      await page.locator(".xterm-helper-textarea").first().focus();
-      await page.keyboard.type("echo READY-$((6*7))\n");
-      await page.waitForFunction(
-        () =>
-          /READY-42/.test(document.querySelector("#term")?.textContent ?? ""),
-        undefined,
-        { timeout: 120_000, polling: 50 },
-      );
+      // Typed into the shell: the terminal is focused before each line
+      // (Jupyter's cell may take the focus once it is ready), and a line
+      // that went elsewhere is typed again.
+      const typeAndWait = async (line: string, done: RegExp) => {
+        for (let attempt = 0;; attempt++) {
+          await page.locator(".xterm-helper-textarea").first().focus();
+          await page.keyboard.type(`${line}\n`);
+          const answered = await page.waitForFunction(
+            (pattern) =>
+              new RegExp(pattern).test(
+                document.querySelector("#term")?.textContent ?? "",
+              ),
+            done.source,
+            { timeout: 20_000, polling: 50 },
+          ).then(() => true, () => false);
+          if (answered) return;
+          if (attempt === 5) {
+            const seen = await page.evaluate(() => ({
+              status: document.querySelector("#status")?.textContent,
+              focused: document.activeElement?.outerHTML.slice(0, 120),
+              term: [...document.querySelectorAll(".xterm-rows > div")]
+                .map((row) => row.textContent).join("\n").trimEnd().slice(-800),
+            }));
+            throw new Error(
+              `the shell never answered ${line}: ${JSON.stringify(seen)}`,
+            );
+          }
+        }
+      };
+      await typeAndWait("echo READY-$((6*7))", /READY-42/);
       const seconds = (performance.now() - started) / 1000;
       // Python as the page's kind should have it: none on a phone, python
       // alone on a tablet, the set (and Jupyter) on a desktop.
-      await page.keyboard.type(
-        "command -v python3 >/dev/null && echo PY-$((1+1))-yes || echo PY-$((1+1))-no\n",
-      );
-      await page.waitForFunction(
-        () =>
-          /PY-2-(yes|no)/.test(
-            document.querySelector("#term")?.textContent ?? "",
-          ),
-        undefined,
-        { timeout: 60_000, polling: 50 },
+      await typeAndWait(
+        "command -v python3 >/dev/null && echo PY-$((1+1))-yes || echo PY-$((1+1))-no",
+        /PY-2-(yes|no)/,
       );
       const python3 = /PY-2-yes/.test(
         (await page.locator("#term").textContent()) ?? "",
@@ -209,6 +229,7 @@ if (import.meta.main) {
     }
   } finally {
     await context.close();
+    await browser.close();
     await server.shutdown();
     await Deno.remove(profile, { recursive: true });
   }

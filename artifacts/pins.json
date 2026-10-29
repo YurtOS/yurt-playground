@@ -66,27 +66,146 @@
   },
   "snapshot": {
     "releaseRepo": "YurtOS/yurt-playground",
-    "release": "snapshot-playground-2026.10.29-3d32068",
+    "release": "snapshot-playground-2026.10.29-3d32068-2",
     "format": 3,
-    "sha256": "de40cc1dab43e182c910e1d61bdfb57aeea27b7ba5208b3c1037bd313b32902e",
-    "size": 130201949,
+    "sha256": "3ad05a6612ba9a0565bcd14369b52d858c1ef052251821749907c70e5963a605",
+    "size": 130963084,
     "parts": [
-      "2244350736832833b6e2495c3178680886758d2b696ce0ddfb55f9ca69ed3d62",
-      "70b06a06d0e00b4edf17fa350117db3dc2a79103e59e2aae7e15eb62b8901c26",
-      "907055de18ffd17b8a9d26ebef523707654c80ffc696cdb763efb7fd8833a073",
-      "64091b9562ea088a189ff150d4a833216cb363bdc6494078bc3d88b5d21acba6",
-      "86b7a2198029c4b8f4df051aab8bb173dd7bc709280d077ecfd9d78458b20a90",
-      "1515454cb390ba83f678d9ea91fa276c6eb82c56b9916d3ace021a681e211f52",
-      "babab34ea52b95d2214a08a00f8cb7bcf4cb96369dc8a3fea51a1cc399fa9d4e"
+      "f8ef7f56b4e0129193d918feded623dbec73e1a7261d701c1c88cef24b2289d0",
+      "acbb6e2ca654d5680ea7e9b3ee6d4535966387bb303be54b6b83fff942eaef6a",
+      "49c06d5645ea8ddd4acfec99b54345cca941555756b3670c206a60f624232fde",
+      "5453f8cbc618618d79e00c4bf3447aa4e33a77f78e1dc577336dc5229a06e9e3",
+      "94a72af69b82fab7bef8d0c6cb4db24b066cf5013a6264ee113e85d3aa0ff109",
+      "594a475a542c806ca88d43ae57a719c4da361b4db4cb287ab840b73f5622da8d",
+      "e259f3d93b53d6b3828fd40aa9684ec18207ff247813a22d35b0b544a7bee370"
     ],
     "builtFrom": {
       "kernelSha256": "defa8da648d122fcfd30e6e96360d1b2da1cdf7440d50d82536a825e02fa338c",
       "kernelRev": "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
       "sealVersion": 1,
-      "bootSetup": 1,
+      "bootSetup": 2,
       "imageSha256": "142ee2e089b505538eb87f5c1dad2bb176f5bc591e9858ecb959622164f5fd88",
       "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
       "pythonSet": "142ee2e089b505538eb87f5c1dad2bb176f5bc591e9858ecb959622164f5fd88/jupyter-kernel@0.0.1-yurt_0:c8e575a68c03a8e4+numpy@2.5.0-yurt_0:c3cc1743278a9763+python@3.14.7-yurt_0:ab01e884f08e0619+pyzmq@26.4.0-yurt_0:429b9bb415b7f5a2"
-    }
+    },
+    "memoryBytes": 545849344,
+    "contents": {
+      "packages": [
+        {
+          "name": "ca-certificates",
+          "version": "2026.9.25",
+          "build": "yurt_0"
+        },
+        {
+          "name": "git",
+          "version": "2.55.0",
+          "build": "yurt_0"
+        },
+        {
+          "name": "jupyter-kernel",
+          "version": "0.0.1",
+          "build": "yurt_0"
+        },
+        {
+          "name": "numpy",
+          "version": "2.5.0",
+          "build": "yurt_0"
+        },
+        {
+          "name": "python",
+          "version": "3.14.7",
+          "build": "yurt_0"
+        },
+        {
+          "name": "pyzmq",
+          "version": "26.4.0",
+          "build": "yurt_0"
+        }
+      ],
+      "remark": "BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates"
+    },
+    "restorePeakMiB": 2449
+  },
+  "phoneSnapshot": {
+    "releaseRepo": "YurtOS/yurt-playground",
+    "release": "snapshot-phone-playground-2026.10.29-3d32068",
+    "format": 3,
+    "sha256": "bec4f3f0091937b0f79420a02288f558072ac842222793a75691f344f84643da",
+    "size": 31193050,
+    "parts": [
+      "2c77c1c0fcc3f5964d72f42d7e0e9ea5ff123b3e96848b11e03c10c7968ea3da",
+      "facf3779709ed16e1b666416e3214dd3ac3052b5a22857d99d1e94fb46e32596"
+    ],
+    "builtFrom": {
+      "kernelSha256": "defa8da648d122fcfd30e6e96360d1b2da1cdf7440d50d82536a825e02fa338c",
+      "kernelRev": "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
+      "sealVersion": 1,
+      "bootSetup": 2,
+      "imageSha256": "142ee2e089b505538eb87f5c1dad2bb176f5bc591e9858ecb959622164f5fd88",
+      "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
+      "pythonSet": null
+    },
+    "memoryBytes": 142671872,
+    "contents": {
+      "packages": [
+        {
+          "name": "ca-certificates",
+          "version": "2026.9.25",
+          "build": "yurt_0"
+        },
+        {
+          "name": "git",
+          "version": "2.55.0",
+          "build": "yurt_0"
+        }
+      ],
+      "remark": "BusyBox shell, git 2.55.0, ca-certificates; no Python, no Jupyter"
+    },
+    "restorePeakMiB": 612
+  },
+  "tabletSnapshot": {
+    "releaseRepo": "YurtOS/yurt-playground",
+    "release": "snapshot-tablet-playground-2026.10.29-3d32068",
+    "format": 3,
+    "sha256": "ebb1cf5e889941c825a7942eb06fb0f93db120a4cbb214cc77bc09a14f56b0bf",
+    "size": 94823174,
+    "parts": [
+      "a49dd8a6ce4f6a6213788609e3135c7ab9176a062b15802422e020aa039e7911",
+      "cd9353f9e712fdc524aea63c65cdecdc07078a1f306cdd63ea0e5a65753ab52e",
+      "fa94bae65800ac66691f1c8bc584618b57a4a20b3f8cf42c790937414b7d528f",
+      "a4226dfb676515845b3a9b138393267f0bf4fc73ffe954647d71983fa78b199a",
+      "c979bc3e321486599630c1729ec647001f9a5e20f418991fdaa0ae975632a664"
+    ],
+    "builtFrom": {
+      "kernelSha256": "defa8da648d122fcfd30e6e96360d1b2da1cdf7440d50d82536a825e02fa338c",
+      "kernelRev": "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
+      "sealVersion": 1,
+      "bootSetup": 2,
+      "imageSha256": "142ee2e089b505538eb87f5c1dad2bb176f5bc591e9858ecb959622164f5fd88",
+      "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
+      "pythonSet": "142ee2e089b505538eb87f5c1dad2bb176f5bc591e9858ecb959622164f5fd88/python@3.14.7-yurt_0:ab01e884f08e0619"
+    },
+    "memoryBytes": 399572992,
+    "contents": {
+      "packages": [
+        {
+          "name": "ca-certificates",
+          "version": "2026.9.25",
+          "build": "yurt_0"
+        },
+        {
+          "name": "git",
+          "version": "2.55.0",
+          "build": "yurt_0"
+        },
+        {
+          "name": "python",
+          "version": "3.14.7",
+          "build": "yurt_0"
+        }
+      ],
+      "remark": "BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; no Jupyter"
+    },
+    "restorePeakMiB": 1254
   }
 }

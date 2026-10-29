@@ -275,12 +275,40 @@ Train `playground-2026.10.29-3d32068`. Generated from artifacts/pins.json; `deno
 
 | Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
 | --- | --- | --- | --- | --- | --- | --- |
-| desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.10.29-3d32068` | 130.2 MB in 7 parts | ? | ? | ? |
-| tablet | tablet (iPad): `?platform=tablet` | not pinned: boots the image | | | | |
-| phone | phone (iPhone): `?platform=phone` | not pinned: boots the image | | | | |
+| desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.10.29-3d32068-2` | 131.0 MB in 7 parts | 520.6 MiB | 2449 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates |
+| tablet | tablet (iPad): `?platform=tablet` | `snapshot-tablet-playground-2026.10.29-3d32068` | 94.8 MB in 5 parts | 381.1 MiB | 1254 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; no Jupyter |
+| phone | phone (iPhone): `?platform=phone` | `snapshot-phone-playground-2026.10.29-3d32068` | 31.2 MB in 2 parts | 136.1 MiB | 612 MiB | BusyBox shell, git 2.55.0, ca-certificates; no Python, no Jupyter |
 
 <!-- deno-fmt-ignore-end -->
 <!-- snapshot-table:end -->
+
+The page picks its platform from the device: the bare URL gains
+`?platform=phone`, `tablet` or `desktop` (aliases `iphone`, `ipad`, `mac`)
+before anything loads, and that platform's snapshot is the only one it fetches.
+A hand-written `?platform=` overrides the device as far as the device can run
+it: a desktop may run the phone's page; a phone asked for the desktop's runs its
+own and says so. `?snapshot=0` boots the image instead.
+
+Measured by hand with `scripts/measure-boot.ts` (headless, served by the dev
+server, so the download is local and fast) on 2026-10-29. "RAM to restore" is
+the peak resident memory of Chromium's renderer processes while the page
+restores and starts its shell, in the device's emulation, the page itself
+included (about 110 MiB before Start). WebKit's is not measured.
+
+| Platform                                        | Engine   | Time to a prompt, cold / warm | Jupyter ready |
+| ----------------------------------------------- | -------- | ----------------------------- | ------------- |
+| phone (iPhone 13)                               | Chromium | 0.96 s / 0.63 s               | none          |
+| phone (iPhone 13)                               | WebKit   | 0.74 s / 0.53 s               | none          |
+| tablet (iPad Pro 11, iPadOS landscape and mini) | Chromium | 1.48-1.52 s / 1.06-1.07 s     | none          |
+| tablet (same three)                             | WebKit   | 1.11-1.15 s / 0.83-0.89 s     | none          |
+| desktop                                         | Chromium | 1.88 s / 1.48 s               | 5.2 s / 4.4 s |
+| desktop                                         | WebKit   | 1.78 s / 1.43 s               | 8.2 s / 7.9 s |
+
+For comparison, booting the slim image instead (`?snapshot=0`, Chromium): a
+prompt at about 1.4 s on every platform, with a renderer peak of 620-630 MiB on
+a phone or tablet since the boot keeps one copy of each file for its symlinks
+(#267; 1,830-1,910 MiB before it); a desktop then installs the Python set and
+starts Jupyter, ready at about 88 s, with a peak of about 2,700 MiB.
 
 ## License
 
