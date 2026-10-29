@@ -256,6 +256,56 @@
           Install them together, at the same build.
         </p>
       </article>
+      <article class="pane" id="playground-2026.10.29-3d32068">
+        <h1>playground-2026.10.29-3d32068</h1>
+        <p class="date">
+          2026-10-29 · replaces playground-2026.10.27-3d32068.2
+        </p>
+        <p>
+          A new image only: <code>pkg</code> now keeps a plain list of what is
+          installed. The kernel, the desktop app and the yurt CLI are
+          unchanged.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Version</th>
+            </tr>
+            <tr>
+              <td>Kernel</td>
+              <td>yurtos-kernel 3d32068 (kernel-v0.0.12, unchanged)</td>
+            </tr>
+            <tr>
+              <td>Images</td>
+              <td>yurt-ports c7b5d36: slim (the browser's) 23.5 MB; full
+                (desktop app and CLI) 92.0 MB</td>
+            </tr>
+            <tr>
+              <td>Desktop host and yurt CLI</td>
+              <td>yurt-sandbox edeb8b0 (unchanged)</td>
+            </tr>
+            <tr>
+              <td>Guest SDK</td>
+              <td>0.0.31 (unchanged)</td>
+            </tr>
+          </table>
+        </div>
+
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            <strong>pkg lists what is installed.</strong> Every install and
+            removal now also writes <code>/var/lib/yurt-pkg/installed.list</code>,
+            one line per package (name, version and build, separated by tabs).
+            Anything can read it without running <code>pkg</code>.
+          </li>
+          <li>
+            <strong>The instant-Python snapshot was captured again</strong>
+            for the new image, so reloads still have Python ready in seconds.
+          </li>
+        </ul>
+      </article>
       <article class="pane" id="playground-2026.10.27-3d32068.2">
         <h1>playground-2026.10.27-3d32068.2</h1>
         <p class="date">
