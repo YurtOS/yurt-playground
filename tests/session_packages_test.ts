@@ -1,8 +1,10 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import {
+  type BootedSession,
   HEARTBEAT,
   runStaged,
   withHeartbeat,
+  workerPackageHost,
 } from "../src/session_packages.ts";
 import { STAGING_DIR } from "../src/packages.ts";
 import type { SpawnedProcess } from "../src/executions.ts";
@@ -230,4 +232,40 @@ Deno.test("a run the install gave up on stops being watched", async () => {
   // Deno's leak check fails the test if the poll were still running; and
   // no cleanup is spawned into a sandbox that may not run it.
   assertEquals(lines.length, 1);
+});
+
+Deno.test("a watched run tells the install how many times the guest beat", async () => {
+  const { session } = fakeSession([
+    { stderr: HEARTBEAT },
+    { stdout: "x" },
+    { stderr: HEARTBEAT + HEARTBEAT },
+  ], 10);
+  const counts: (number | undefined)[] = [];
+  await runStaged(session, [], "pkg install greet", {
+    alive: (beats) => counts.push(beats),
+    signal: new AbortController().signal,
+  }, 5);
+  // Output that is not a beat is progress, but no beat.
+  assertEquals(counts.at(-1), 3);
+  assertEquals(counts.every((n) => n !== undefined), true);
+});
+
+Deno.test("the worker's host runs pkg recover as root, watched, staging nothing", async () => {
+  const { session, lines } = fakeSession([
+    { stderr: HEARTBEAT },
+    { stdout: "recovered 0001\n" },
+  ], 10);
+  const host = workerPackageHost(session as unknown as BootedSession);
+  const result = await host.recover!({
+    alive: () => {},
+    signal: new AbortController().signal,
+  });
+  // The beats are not its output; it runs with the heartbeat (watched),
+  // and no clean-up of the staging copy follows it.
+  assertEquals(result, { code: 0, stdout: "recovered 0001\n", stderr: "" });
+  assertEquals(lines, [
+    `exec /bin/sh -c '${
+      withHeartbeat("sudo pkg recover").replaceAll("'", "'\\''")
+    }'`,
+  ]);
 });

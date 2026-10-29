@@ -38,7 +38,7 @@ export const HEARTBEAT_SECONDS = 2;
  * but the shell was never told (a lost child exit), and when the sandbox
  * stops running anything. A `pkg`
  * that is alive but blocked keeps it beating; the install's run ceiling
- * (src/packages.ts `INSTALL_RUN_CEILING_MS`) is the backstop for that. A
+ * (src/packages.ts `INSTALL_RUN_CEILING_BEATS`) is the backstop for that. A
  * shell between two commands has no child for a moment; one missed beat
  * is nothing next to the no-progress window. A zombie child does not
  * count. It ends within one beat of the shell. */
@@ -79,6 +79,13 @@ export function withHeartbeat(
   ].join("\n");
 }
 
+/** How many heartbeats `bytes` holds. */
+function countBeats(bytes: Uint8Array): number {
+  let n = 0;
+  for (const byte of bytes) if (byte === HEARTBEAT_BYTE) n++;
+  return n;
+}
+
 /** `bytes` without the heartbeat's byte. */
 function withoutBeats(bytes: Uint8Array): Uint8Array {
   return bytes.includes(HEARTBEAT_BYTE)
@@ -95,6 +102,9 @@ export async function runStaged(
   script: string,
   watch?: RunWatch,
   pollMs = HEARTBEAT_SECONDS * 1000,
+  /** Remove {@link STAGING_DIR} after the run. Not for `pkg recover`: a
+   * run given up on may still be reading its staged copy. */
+  cleanUp = true,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   if (session.process === undefined || session.writeFiles === undefined) {
     throw new Error("this sandbox does not install packages");
@@ -138,7 +148,9 @@ export async function runStaged(
           const size = now.stdout.byteLength + now.stderr.byteLength;
           if (size > seen) {
             seen = size;
-            watch.alive();
+            // The beats so far: the guest's own time on the run, which the
+            // install's ceiling counts (a throttled tab beats slowly).
+            watch.alive(countBeats(now.stderr));
           }
         } catch {
           // A read that failed is no progress, and no reason to stop.
@@ -173,7 +185,7 @@ export async function runStaged(
     // happened. Before returning: the next run stages at the same path.
     // Best effort. Not for a run given up on: its sandbox may not run
     // anything, and the copy goes with it (the next try is in a fresh one).
-    if (!abandoned) {
+    if (!abandoned && cleanUp) {
       await run(`sudo rm -rf ${quoted(STAGING_DIR)}`).then((p) => p.exited)
         .catch(() => {});
     }
@@ -199,6 +211,12 @@ export function workerPackageHost(session: BootedSession): PackageHost {
     },
     stageAndRun: (files, script, watch) =>
       runStaged(session, files, script, watch),
+    // Nothing staged, and so nothing to remove: `pkg recover` reads only
+    // its own state (the transaction's staging tree under
+    // /var/lib/yurt-pkg). It waits for pkg's lock while a run the install
+    // gave up on still holds it.
+    recover: (watch) =>
+      runStaged(session, [], "sudo pkg recover", watch, undefined, false),
     // The in-tab session's processes can be read while they run.
     observesProgress: session.process !== undefined,
   };

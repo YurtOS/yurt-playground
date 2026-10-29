@@ -48,6 +48,7 @@ import {
   browserArchiveCache,
   installPackage,
   InstallStalled,
+  stalledSandboxWhy,
 } from "./packages.ts";
 import {
   browserLayerStore,
@@ -210,7 +211,7 @@ async function servePackages(msg: ToWorker): Promise<void> {
   } catch (error) {
     if (error instanceof InstallStalled && error.inSandbox) {
       sandboxStalled = true;
-      stalledWhy = "an earlier install stopped making progress";
+      stalledWhy = stalledSandboxWhy(error);
     }
     post({
       type: "pkg-reply",
@@ -291,8 +292,8 @@ let installPython:
   | ((session: BootedSession) => Promise<void>)
   | undefined;
 /** An install stopped making progress in this sandbox's `pkg` run
- * (src/packages.ts `InstallStalled`): it may no longer answer, and its
- * packages are half applied. The Python install's next try is in a fresh
+ * (src/packages.ts `InstallStalled`): it may no longer answer, and, unless
+ * `pkg recover` finished it, its packages may be half applied. The Python install's next try is in a fresh
  * sandbox; the Packages panel installs nothing more into this one. */
 let sandboxStalled = false;
 /** Why the sandbox takes no more installs (set with `sandboxStalled`). */
@@ -649,7 +650,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         // takes no pkg install: the retry is in a fresh one.
         if (error instanceof InstallStalled && error.inSandbox) {
           sandboxStalled = true;
-          stalledWhy = "an earlier install stopped making progress";
+          stalledWhy = stalledSandboxWhy(error);
         } else if (error instanceof LayerFailed) {
           sandboxStalled = true;
           stalledWhy = "a stored Python install did not work";

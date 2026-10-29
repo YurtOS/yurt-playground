@@ -6,7 +6,7 @@
  *
  * The page keeps its own deadline on that answer. The coordinator gives
  * up on an install that stops making progress (src/packages.ts
- * `INSTALL_STALL_MS`, `INSTALL_RUN_CEILING_MS`) and replies, but those
+ * `INSTALL_STALL_MS`, `INSTALL_RUN_CEILING_BEATS`) and replies, but those
  * timers run on its own event loop: a coordinator blocked inside the
  * kernel (a kernel deadlock during a large install) runs none of them and
  * never answers. The page stays responsive, so this deadline lives here.
@@ -17,8 +17,8 @@
  * unresponsive. A working coordinator is never this quiet: a running
  * install reports progress every few seconds and gives up by itself after
  * `INSTALL_STALL_MS` without any, and one queued behind the Python install
- * waits through that install's own status messages. Five minutes, the
- * coordinator's longest single run (`INSTALL_RUN_CEILING_MS`). */
+ * waits through that install's own status messages. Five minutes: a run
+ * still going reports its progress every 5 s, however long it takes. */
 export const INSTALL_SILENCE_MS = 300_000;
 
 /** The way back once the coordinator stopped or failed: it is the
