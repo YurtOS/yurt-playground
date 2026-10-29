@@ -197,11 +197,14 @@ let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 async function servePackages(msg: ToWorker): Promise<void> {
   if (msg.type !== "pkg-install") return;
   const { req } = msg;
+  /** The sandbox this install ran in. */
+  let used: typeof packageSession;
   try {
     // The session as it is when this install's turn comes: one queued
     // behind a stalled install may find a fresh sandbox, or a stalled one.
     const output = await installs(() => {
       const session = packageSession;
+      used = session;
       if (session?.process === undefined || session.writeFiles === undefined) {
         throw new Error("this sandbox does not install packages");
       }
@@ -215,7 +218,12 @@ async function servePackages(msg: ToWorker): Promise<void> {
     });
     post({ type: "pkg-reply", req, ok: true, value: output });
   } catch (error) {
-    if (error instanceof InstallStalled && error.inSandbox) {
+    // Only if it is still the sandbox: a recovery can end after Try again
+    // has dropped it for a fresh one, which this stall says nothing about.
+    if (
+      error instanceof InstallStalled && error.inSandbox &&
+      used === packageSession
+    ) {
       sandboxStalled = true;
       stalledWhy = stalledSandboxWhy(error);
     }
@@ -665,8 +673,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         layerInstalled = from === "layer" ? store : undefined;
       } catch (error) {
         // A sandbox a layer was half written into, like a stalled one,
-        // takes no pkg install: the retry is in a fresh one.
-        if (error instanceof InstallStalled && error.inSandbox) {
+        // takes no pkg install: the retry is in a fresh one. Not if this
+        // sandbox is already gone (a recovery that ended after the switch).
+        if (session !== packageSession) {
+          // Nothing to mark: the sandbox now in use is another one.
+        } else if (error instanceof InstallStalled && error.inSandbox) {
           sandboxStalled = true;
           stalledWhy = stalledSandboxWhy(error);
         } else if (error instanceof LayerFailed) {

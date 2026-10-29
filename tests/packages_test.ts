@@ -434,7 +434,7 @@ Deno.test("an install whose sandbox stops answering fails as stalled, not foreve
   // A host that cannot run pkg recover: the sandbox needs a reload.
   assertEquals(
     error.message,
-    "greet: the install stopped making progress (the sandbox's pkg did nothing for 0 s); pkg recover was not run (this sandbox cannot run it), so this sandbox may hold a half-installed package: reload the page",
+    "greet: the install stopped making progress (the sandbox's pkg did nothing for 0 s); pkg recover was not run (this sandbox cannot run it), so this sandbox may hold a half-installed package and takes no more installs",
   );
   assertEquals(error.recovered, false);
   // In the guest's run: the retry needs a fresh sandbox.
@@ -520,7 +520,7 @@ Deno.test("a run that beats but never finishes ends at the ceiling", async () =>
   assertEquals(error.inSandbox, true);
   assertStringIncludes(
     error.message,
-    "greet: the install stopped making progress (the sandbox did not finish it in 0 s)",
+    "greet: the install ran past its time limit (the sandbox did not finish it in 0 s)",
   );
   assertEquals(aborted, [false, true]);
 });
@@ -1430,13 +1430,40 @@ Deno.test("a run past the ceiling, still beating, runs no recovery: it would wai
   assertStringIncludes(error.message, "pkg recover was not run");
   assertEquals(error.recoveryRan, false);
   assertStringIncludes(stalledSandboxWhy(error), "past its time limit");
-  assertStringIncludes(error.message, "reload the page");
+  assertStringIncludes(error.message, "takes no more installs");
 });
 
 const HUNG_RUN = [
   { beats: 0, everyMs: 5, result: PLAN },
   { beats: Infinity, everyMs: 5, result: INSTALLED },
 ];
+
+Deno.test("a run silent for the stall window when the ceiling also passes is a stall, and recovery runs", async () => {
+  // A late timer can find both limits passed at once (here they are
+  // equal): a silent run is no live pkg holding the lock, so it is
+  // treated as a stall, and pkg recover runs.
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, events } = recoveringHost(HUNG_RUN, {
+    code: 0,
+    stdout: "",
+    stderr: "",
+  });
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+        runCeilingMs: 100,
+      }),
+    InstallStalled,
+  );
+  assertEquals(error.ceiling, false);
+  assertEquals(events.includes("recover"), true);
+  assertEquals(error.recovered, true);
+});
 
 Deno.test("a sandbox thrown away after the install runs no recovery after a stall", async () => {
   // The Suspend/Resume check's sandbox goes when the check ends: there is
@@ -1517,7 +1544,10 @@ Deno.test("after the page gives up on a pkg run, pkg recover runs before the fai
   assertStringIncludes(error.message, "pkg recover");
   // Recovery speaks for pkg's transactions only: the install itself did
   // not complete.
-  assertStringIncludes(error.message, "the install did not complete");
+  assertStringIncludes(
+    error.message,
+    "pkg recover then left none of pkg's transactions unfinished, but the page did not see the install finish",
+  );
   assertStringIncludes(messages.at(-1)!, "pkg recover");
 });
 
@@ -1544,7 +1574,7 @@ Deno.test("a recovery that fails or stops making progress says the sandbox needs
     assertEquals(events.at(-1), "recover", JSON.stringify(recover));
     assertEquals(error.recovered, false);
     assertStringIncludes(error.message, "half-installed");
-    assertStringIncludes(error.message, "reload the page");
+    assertStringIncludes(error.message, "takes no more installs");
   }
 });
 

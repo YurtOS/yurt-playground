@@ -451,10 +451,10 @@ export class InstallStalled extends Error {
    * `pkg` is alive, and holds pkg's lock. */
   readonly ceiling: boolean;
   /** For a stall in the sandbox, once recovery was tried: whether `pkg
-   * recover` then found none of pkg's transactions left unfinished (it
-   * says nothing about the install, which did not complete: the abandoned
-   * run may yet do more). `false`: the sandbox may
-   * hold a half-installed package, and needs a reload. */
+   * recover` then left none of pkg's transactions unfinished, finishing
+   * any it found. It says nothing more about the install: recovery may
+   * have committed it, or the abandoned run may yet do more. `false`: the
+   * sandbox may hold a half-installed package, and needs a fresh one. */
   recovered?: boolean;
   /** Whether `pkg recover` was run at all (set with `recovered`). */
   recoveryRan?: boolean;
@@ -468,7 +468,7 @@ export class InstallStalled extends Error {
     const seconds = Math.round(ms / 1000);
     super(
       ceiling
-        ? `${name}: the install stopped making progress (the sandbox ` +
+        ? `${name}: the install ran past its time limit (the sandbox ` +
           `did not finish it in ${seconds} s)`
         : inSandbox
         ? `${name}: the install stopped making progress (the sandbox's ` +
@@ -486,13 +486,16 @@ export class InstallStalled extends Error {
   withRecovery(recovered: boolean, why = "", ran = true): InstallStalled {
     const error = new InstallStalled("", 0, this.inSandbox, this.ceiling);
     const said = why === "" ? "" : ` (${why})`;
-    const reload =
-      ", so this sandbox may hold a half-installed package: reload the page";
+    // The next try needs a fresh sandbox: the Python install's Try again
+    // starts one, and the Packages panel says to reload for one.
+    const reload = ", so this sandbox may hold a half-installed package " +
+      "and takes no more installs";
     error.message = !ran
       ? `${this.message}; pkg recover was not run${said}${reload}`
       : recovered
-      ? `${this.message}; pkg recover then found none of pkg's ` +
-        `transactions left unfinished, but the install did not complete`
+      ? `${this.message}; pkg recover then left none of pkg's ` +
+        `transactions unfinished, but the page did not see the install ` +
+        `finish`
       : `${this.message}; pkg recover could not finish what it left ` +
         `unfinished${said}${reload}`;
     error.recovered = ran && recovered;
@@ -1028,7 +1031,12 @@ export async function installPackage(
       const now = Date.now();
       const idle = now - last;
       const running = runStarted === undefined ? 0 : now - runStarted;
-      if (runStarted !== undefined && running >= ceilingMs) {
+      // Past the ceiling and still heard from: a live run. A run also
+      // silent for the stall window (a late timer sees both at once) is a
+      // stall like any other, which recovery may help.
+      if (
+        runStarted !== undefined && running >= ceilingMs && idle < stallMs
+      ) {
         giveUp.abort();
         reject(new InstallStalled(name, ceilingMs, true, true));
         return;
