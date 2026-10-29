@@ -8,7 +8,7 @@ import {
 } from "@yurt/kernel-host-interface-js";
 import { handlePlaygroundRequest } from "../src/serve.ts";
 import { loadPins, resolveArtifacts } from "../src/pins.ts";
-import { stageYurtimg, vfsReadAt } from "../src/stage.ts";
+import { stageYurtimg, vfsReadWhole } from "../src/stage.ts";
 
 const STAT_MODE = 12;
 const STAT_UID = 16;
@@ -415,40 +415,47 @@ Deno.test("stageYurtimg applies metadata only to the entries it stages", async (
   assertEquals(metadata.get("/root")?.mode, 0o040_700);
 });
 
-Deno.test("vfsReadAt reads from an offset in scratch-sized pieces, fewer at the end, and tells a missing file from a failed read", () => {
-  const file = new Uint8Array(300).map((_, i) => i % 251);
-  const requests: { offset: number; cap: number }[] = [];
-  /** The kernel's VFS read (29): `rc` for every path but /f. */
-  const kernel = (rc: bigint) => ({
-    scratchLen: 64 + 100,
-    syscall(method: number, request: Uint8Array, cap: number) {
-      assertEquals(method, 29);
-      const offset = Number(
-        new DataView(request.buffer, request.byteOffset).getBigUint64(0, true),
-      );
-      if (new TextDecoder().decode(request.subarray(8)) !== "/f") {
-        return { rc, response: new Uint8Array() };
-      }
-      requests.push({ offset, cap });
-      const bytes = file.subarray(offset, offset + cap);
-      return { rc: BigInt(bytes.byteLength), response: bytes };
-    },
-  });
-  // deno-lint-ignore no-explicit-any
-  const mk = (rc: bigint) => kernel(rc) as any;
-  assertEquals(vfsReadAt(mk(-2n), "/f", 50, 200), file.slice(50, 250));
-  // Each piece fits the scratch buffer beside the request.
-  assert(requests.every(({ cap }) => cap <= 100 - 10));
-  assertEquals(requests[0].offset, 50);
-  // Past the end: what there is.
-  assertEquals(vfsReadAt(mk(-2n), "/f", 280, 100), file.slice(280));
-  assertEquals(vfsReadAt(mk(-2n), "/f", 400, 10), new Uint8Array());
-  // No such file: none.
-  assertEquals(vfsReadAt(mk(-2n), "/gone", 0, 10), undefined);
-  // Anything else (a directory there: EISDIR) is an error, not an absence.
+Deno.test("vfsReadWhole is a file in one VFS read, none when missing, and refuses one that does not fit", () => {
+  const calls: { offset: number; cap: number }[] = [];
+  /** The kernel's VFS read (29): `size` bytes at /f, `rc` for any other
+   * path. */
+  const kernel = (size: number, rc = -2n) =>
+    ({
+      scratchLen: 64 + 100,
+      syscall(method: number, request: Uint8Array, cap: number) {
+        assertEquals(method, 29);
+        const offset = Number(
+          new DataView(request.buffer, request.byteOffset).getBigUint64(
+            0,
+            true,
+          ),
+        );
+        calls.push({ offset, cap });
+        if (new TextDecoder().decode(request.subarray(8)) !== "/f") {
+          return { rc, response: new Uint8Array() };
+        }
+        const bytes = new Uint8Array(size).fill(7).subarray(0, cap);
+        return { rc: BigInt(bytes.byteLength), response: bytes };
+      },
+      // deno-lint-ignore no-explicit-any
+    }) as any;
+  // One read from the start, the whole scratch room beside the request.
+  assertEquals(vfsReadWhole(kernel(5), "/f"), new Uint8Array(5).fill(7));
+  assertEquals(calls, [{ offset: 0, cap: 100 - 10 }]);
+  assertEquals(vfsReadWhole(kernel(0), "/f"), new Uint8Array());
+  assertEquals(vfsReadWhole(kernel(5), "/gone"), undefined);
+  // Filling the read: maybe more after it, and a second read could be of
+  // another version of the file.
   let threw = "";
   try {
-    vfsReadAt(mk(-21n), "/dir", 0, 10);
+    vfsReadWhole(kernel(90), "/f");
+  } catch (error) {
+    threw = String(error);
+  }
+  assert(threw.includes("/f does not fit one read (90 bytes)"), threw);
+  threw = "";
+  try {
+    vfsReadWhole(kernel(0, -21n), "/dir");
   } catch (error) {
     threw = String(error);
   }

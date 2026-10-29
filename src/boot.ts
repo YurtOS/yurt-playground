@@ -7,16 +7,17 @@ import {
   s,
   type SandboxSealImage,
 } from "@yurt/kernel-host-interface-js";
+import type { SandboxFiles } from "./installed_list.ts";
 import {
   drainDirtyPaths,
   type LayerEntry,
   setPidCredentials,
   stageLayer,
   stageYurtimg,
-  vfsReadAt,
   vfsReaddir,
   vfsReadFile,
   vfsReadlink,
+  vfsReadWhole,
   vfsStat,
   writeRamfsFile,
   writeRamfsTree,
@@ -97,14 +98,9 @@ export type PlaygroundSession = {
    * `undefined` when there is no such file (the Jupyter connection file,
    * looked for without typing into the user's shell). */
   readFile?: (path: string) => Promise<Uint8Array | undefined>;
-  /** Part of a guest file, straight from the in-tab kernel's VFS (no
-   * process, no credentials): `length` bytes from `offset`, fewer at its
-   * end, `undefined` when there is no such file; other failures throw. */
-  readAt?: (
-    path: string,
-    offset: number,
-    length: number,
-  ) => Promise<Uint8Array | undefined>;
+  /** Guest files read straight from the in-tab kernel's VFS (no process,
+   * no credentials): what pkg has installed (src/installed_list.ts). */
+  files?: SandboxFiles;
   /** The same, handing the process back: what a driver's `exec` runs
    * (src/executions.ts). */
   process?: Spawner;
@@ -922,8 +918,10 @@ async function startPlayground(
       const bytes = readGuestFile(mk, user.pid, path, 4 * 1024 * 1024);
       return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
     },
-    readAt: (path, offset, length) =>
-      Promise.resolve(vfsReadAt(mk, path, offset, length)),
+    files: {
+      readWhole: (path) => Promise.resolve(vfsReadWhole(mk, path)),
+      exists: (path) => Promise.resolve(vfsStat(mk, path) !== undefined),
+    },
     dialSandboxPort: (port) => mk.dialSandboxPort(port),
     onOutput: output.onOutput,
     hushOutput: output.hushOutput,

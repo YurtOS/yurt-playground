@@ -2,35 +2,52 @@
  * What `pkg` has installed: its installed list (yurt-pkg docs/pkg.md,
  * "Installed package list"), read straight from the sandbox's VFS -- no
  * guest process, so no lock and no wait on an install. pkg replaces the
- * list by a rename after each commit, so a read sees a whole list.
+ * list by a rename after each commit, and it is read in one VFS read, so
+ * what is read is one whole list.
  */
 
 /** pkg's list, one `NAME<TAB>VERSION<TAB>BUILD` line per installed
- * package; and its database, which without the list means a pkg that does
- * not write one (or could not). */
+ * package; and its database, which without the list leaves what is
+ * installed unknown. */
 export const INSTALLED_LIST_PATH = "/var/lib/yurt-pkg/installed.list";
 export const INSTALLED_DB_PATH = "/var/lib/yurt-pkg/installed.sqlite";
 
-/** Far more than every package in the repository needs. */
-export const INSTALLED_LIST_MAX_BYTES = 1024 * 1024;
+/** A sandbox's files, as the coordinator reads them. */
+export type SandboxFiles = {
+  /** The whole file in one read; `undefined` when there is none. Throws
+   * on any other failure, or a file too big for one read. */
+  readWhole(path: string): Promise<Uint8Array | undefined>;
+  exists(path: string): Promise<boolean>;
+};
 
-/** Up to `length` bytes of a sandbox file from `offset`, fewer at its end;
- * `undefined` when there is no such file. Any other failure throws. */
-export type ReadAt = (
-  path: string,
-  offset: number,
-  length: number,
-) => Promise<Uint8Array | undefined>;
+/** What the coordinator tells the Packages panel: every package installed,
+ * or why that cannot be told. */
+export type InstalledReport =
+  | { type: "pkg-installed"; names: string[] }
+  | { type: "pkg-installed"; error: string };
+
+/** While a fresh sandbox boots, what it has installed is unknown. */
+export const FRESH_SANDBOX = {
+  type: "pkg-installed",
+  error: "a fresh sandbox is starting",
+} as const satisfies InstalledReport;
 
 /** The package names in an installed list. A line that is not three
- * non-empty tab-separated fields is a broken list, and throws. */
-export function installedNames(list: string): string[] {
+ * tab-separated fields, or has no name, or a list that is not UTF-8, is a
+ * broken list, and throws. */
+export function installedNames(bytes: Uint8Array): string[] {
+  let list: string;
+  try {
+    list = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("pkg's installed list is broken: not UTF-8");
+  }
   const lines = list.split("\n");
   // The newline that ends the last line.
   if (lines.at(-1) === "") lines.pop();
   return lines.map((line, i) => {
     const fields = line.split("\t");
-    if (fields.length !== 3 || fields.some((field) => field === "")) {
+    if (fields.length !== 3 || fields[0] === "") {
       throw new Error(
         `pkg's installed list: line ${i + 1} is not NAME<TAB>VERSION<TAB>BUILD`,
       );
@@ -39,25 +56,41 @@ export function installedNames(list: string): string[] {
   });
 }
 
-/** What pkg has installed in a sandbox whose files `readAt` reads.
- * `undefined` when that cannot be told: a database without a list. No
- * list and no database is no pkg state, nothing installed. */
-export async function readInstalled(
-  readAt: ReadAt,
-): Promise<string[] | undefined> {
-  // One byte more than is read: a list that fills it is longer.
-  const list = await readAt(
-    INSTALLED_LIST_PATH,
-    0,
-    INSTALLED_LIST_MAX_BYTES + 1,
-  );
-  if (list === undefined) {
-    return await readAt(INSTALLED_DB_PATH, 0, 1) === undefined ? [] : undefined;
+/** What pkg has installed in a sandbox, for the panel. No list and no
+ * database is no pkg state: nothing installed. A database without a list
+ * is unknown, never nothing installed. */
+export async function installedReport(
+  files: SandboxFiles,
+): Promise<InstalledReport> {
+  try {
+    const list = await files.readWhole(INSTALLED_LIST_PATH);
+    if (list !== undefined) {
+      return { type: "pkg-installed", names: installedNames(list) };
+    }
+    if (await files.exists(INSTALLED_DB_PATH)) {
+      return {
+        type: "pkg-installed",
+        error: "pkg's installed list is not there",
+      };
+    }
+    return { type: "pkg-installed", names: [] };
+  } catch (error) {
+    return {
+      type: "pkg-installed",
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
-  if (list.byteLength > INSTALLED_LIST_MAX_BYTES) {
-    throw new Error(
-      `pkg's installed list is longer than the ${INSTALLED_LIST_MAX_BYTES} bytes read`,
-    );
-  }
-  return installedNames(new TextDecoder().decode(list));
+}
+
+/** The panel's marks after `report`: replaced by its names (a panel
+ * install's guess with them), or cleared when they cannot be told, so no
+ * stale name stays Installed beside the note. The note, if any. */
+export function applyInstalled(
+  known: Set<string>,
+  report: InstalledReport,
+): string | undefined {
+  known.clear();
+  if ("error" in report) return report.error;
+  for (const name of report.names) known.add(name);
+  return undefined;
 }

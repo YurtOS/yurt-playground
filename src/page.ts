@@ -1,4 +1,5 @@
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
+import { applyInstalled, type InstalledReport } from "./installed_list.ts";
 import {
   hideMemoryRefused,
   MEMORY_REFUSED_RELOAD_ID,
@@ -54,8 +55,7 @@ type FromWorker =
   // The image has no python3: the shell runs, Jupyter was not launched.
   | { type: "python-missing"; error?: string }
   | { type: "pkg-progress"; req: number; text: string }
-  | { type: "pkg-installed"; names: string[] }
-  | { type: "pkg-installed"; error: string }
+  | InstalledReport
   | { type: "snapshot-captured"; blob: Blob; ms: number }
   | {
     type: "yurt-reply" | "pkg-reply";
@@ -82,8 +82,8 @@ let packageInstall:
  * and whenever the Packages panel opens. */
 const knownInstalled = new Set<string>();
 /** Marks the Packages panel's buttons by `knownInstalled`, and says on its
- * own line why that cannot be told (or clears that); set once
- * the panel is wired. */
+ * own line why that cannot be told (or clears that); set once the panel is
+ * wired. */
 let markPackages: (error?: string) => void = () => {};
 /** Asks the coordinator to read pkg's installed list again; set at boot. */
 let askInstalled = () => {};
@@ -411,11 +411,7 @@ function boot(
     }
     if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
     if (msg.type === "pkg-installed") {
-      if ("names" in msg) {
-        knownInstalled.clear();
-        for (const name of msg.names) knownInstalled.add(name);
-      }
-      markPackages("error" in msg ? msg.error : undefined);
+      markPackages(applyInstalled(knownInstalled, msg));
     }
     // A capture ends in the sealed sandbox, with no Jupyter to wait for.
     if (msg.type === "snapshot-captured") {
@@ -600,15 +596,15 @@ function wirePackages(): void {
   const status = byId("packages-status");
   // Its own line, so it never replaces an install's outcome; gone with the
   // next read that works.
-  const dbError = byId("packages-db");
+  const installedError = byId("packages-installed-error");
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
   let busy = false;
   const mark = () =>
     markInstalled(list.querySelectorAll("button"), knownInstalled, busy);
   markPackages = (error) => {
     mark();
-    dbError.hidden = error === undefined;
-    dbError.textContent = error === undefined
+    installedError.hidden = error === undefined;
+    installedError.textContent = error === undefined
       ? ""
       : `cannot tell which packages are installed: ${error}`;
   };
@@ -625,8 +621,8 @@ function wirePackages(): void {
       status.textContent = /^nothing to install$/m.test(output)
         ? `${name} is already installed`
         : `installed ${name}`;
-      // Marked now; the coordinator's read of pkg's installed list, which follows,
-      // replaces the guess.
+      // Marked now; the coordinator's read of pkg's installed list, which
+      // follows, replaces the guess.
       for (const n of plannedInstalls(output, name)) knownInstalled.add(n);
       panel.dataset.install = "done";
     } catch (error) {

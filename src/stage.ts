@@ -451,17 +451,13 @@ export function vfsStat(
   };
 }
 
-/** Up to `length` bytes of a file from `offset`, fewer at its end;
- * `undefined` when there is no such file (ENOENT, the kernel's only answer
- * for a missing path).
- * Any other failure throws. A `length` of 0 reads, and so tells, nothing. */
-export function vfsReadAt(
+/** A regular file's bytes (`size` of them, as its stat says). */
+export function vfsReadFile(
   mk: KernelHostInterface,
   path: string,
-  offset: number,
-  length: number,
-): Uint8Array | undefined {
-  const out = new Uint8Array(length);
+  size: number,
+): Uint8Array {
+  const out = new Uint8Array(size);
   const pathBytes = s(path);
   const request = new Uint8Array(8 + pathBytes.byteLength);
   request.set(pathBytes, 8);
@@ -469,34 +465,44 @@ export function vfsReadAt(
   // The request and the response share the kernel's scratch buffer.
   const cap = responseCap(mk) - request.byteLength;
   let at = 0;
-  while (at < length) {
-    view.setBigUint64(0, BigInt(offset + at), true);
+  while (at < size) {
+    view.setBigUint64(0, BigInt(at), true);
     const { rc, response } = mk.syscall(
       KERNEL_VFS_READ,
       request,
-      Math.min(cap, length - at),
+      Math.min(cap, size - at),
     );
     const count = Number(rc);
-    if (count === -2) return undefined;
     if (count < 0) throw new Error(`read ${path}: rc=${rc}`);
     if (count === 0) break;
     out.set(response.subarray(0, count), at);
     at += count;
   }
-  return out.subarray(0, at);
+  if (at !== size) {
+    throw new Error(`read ${path}: ${at} of ${size} bytes`);
+  }
+  return out;
 }
 
-/** A regular file's bytes (`size` of them, as its stat says). */
-export function vfsReadFile(
+/** A whole file in one VFS read, so one version of it even if it is
+ * replaced meanwhile; `undefined` when there is none. A file that fills
+ * the read (the kernel's scratch room) may go on past it, and throws. */
+export function vfsReadWhole(
   mk: KernelHostInterface,
   path: string,
-  size: number,
-): Uint8Array {
-  const bytes = vfsReadAt(mk, path, 0, size);
-  if (bytes?.byteLength !== size) {
-    throw new Error(`read ${path}: ${bytes?.byteLength ?? 0} of ${size} bytes`);
+): Uint8Array | undefined {
+  const pathBytes = s(path);
+  const request = new Uint8Array(8 + pathBytes.byteLength);
+  request.set(pathBytes, 8);
+  const cap = responseCap(mk) - request.byteLength;
+  const { rc, response } = mk.syscall(KERNEL_VFS_READ, request, cap);
+  const count = Number(rc);
+  if (count === -2) return undefined;
+  if (count < 0) throw new Error(`read ${path}: rc=${rc}`);
+  if (count >= cap) {
+    throw new Error(`${path} does not fit one read (${cap} bytes)`);
   }
-  return bytes;
+  return response.slice(0, count);
 }
 
 /** A symlink's target. */
