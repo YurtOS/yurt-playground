@@ -61,9 +61,10 @@ jobs:
     steps:
       # Which acceptance scenes this run leaves out, as the matrix's
       # `exclude`: the merge tier on a pull request without `ci:full`,
-      # nothing otherwise. First, so a later step's failure still leaves the
-      # legs a valid matrix. layout_test.ts checks MERGE_TIER against the
-      # scene list.
+      # nothing otherwise. First, so a later step's failure (fmt, lint)
+      # still leaves the legs a valid matrix; if this step fails, `present`
+      # is unset too, the legs are skipped and the gate fails on `checks`.
+      # layout_test.ts checks MERGE_TIER against the scene list.
       #
       # The labels are read now, not from the event: a push's event carries
       # the labels of the moment it was sent, so a push a few seconds after
@@ -80,7 +81,7 @@ jobs:
           FULL=true
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             # An API error fails this job (and so the gate), never picks a tier.
-            labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name')
+            labels=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name')
             grep -qx 'ci:full' <<< "$labels" || FULL=false
           fi
           if [ "$FULL" = true ]; then

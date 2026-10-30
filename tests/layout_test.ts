@@ -211,7 +211,9 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   );
   // Read when the run starts, not from the event (#276).
   assertEquals(
-    workflow.includes('gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels"'),
+    workflow.includes(
+      'gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/labels"',
+    ),
     true,
   );
   assertEquals(workflow.includes("grep -qx 'ci:full' <<< \"$labels\""), true);
