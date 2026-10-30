@@ -627,8 +627,10 @@ dispatch_and_watch() {
     say "dispatch $repo $workflow on $ref ($cid)"
     gh workflow run "$workflow" --repo "$repo" --ref "$ref" "$@" -f "correlation_id=$cid"
     local tries=0
+    # The run takes seconds to appear; the tests' stub gh has it at once and
+    # sets YURT_RELEASE_POLL_SECS=0 (every dispatch here paid 5 s in them).
     while [ -z "$run_id" ]; do
-      sleep 5
+      sleep "${YURT_RELEASE_POLL_SECS:-5}"
       run_id=$(gh run list --repo "$repo" --workflow "$workflow" --limit 20 \
         --json databaseId,displayTitle --jq ".[] | select(.displayTitle | contains(\"$cid\")) | .databaseId" | head -1)
       tries=$((tries + 1))
