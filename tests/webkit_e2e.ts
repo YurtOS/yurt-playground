@@ -8,16 +8,18 @@
  * kernel that honours it (yurtos-kernel#3115), so a regression in either
  * puts the guests back on the relay and turns this red
  * (src/guest_port_policy.ts). The coordinator must also have measured
- * what the tab can reserve before building its kernel (#270). Run: `deno run --allow-all
- * tests/webkit_e2e.ts` (needs the kernel checkout and pinned artifacts like
- * playground_e2e.ts).
+ * what the tab can reserve before building its kernel (#270). On an
+ * emulated iPad, the terminal's touch key bar recalls history and pastes
+ * (#273). Run: `deno run --allow-all tests/webkit_e2e.ts` (needs the
+ * kernel checkout and pinned artifacts like playground_e2e.ts).
  */
-import { webkit } from "playwright";
+import { devices, webkit } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
 import { GUEST_PORT_COUNTS } from "../src/page_worker_bridge.ts";
+import { touchKeysWork } from "./playground_e2e.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const EXECS = 40;
@@ -126,6 +128,22 @@ if (import.meta.main) {
         `the boot probe did not run: ${JSON.stringify(memoryPlans)}`,
       );
     }
+    await page.close();
+    // The engine an iPad runs: the tablet page (the shell only) and its
+    // touch key bar.
+    const ipad = await browser.newContext(devices["iPad Pro 11"]);
+    const tablet = await ipad.newPage();
+    tablet.on("pageerror", (error) => console.error("pageerror:", error));
+    await tablet.goto(`${server.url}/?start`, {
+      waitUntil: "domcontentloaded",
+    });
+    await tablet.waitForFunction(
+      () => document.querySelector("#status")?.textContent === "running",
+      undefined,
+      { timeout: 180_000 },
+    );
+    await touchKeysWork(tablet);
+    await ipad.close();
     console.log("webkit e2e: ok");
   } finally {
     await browser.close();

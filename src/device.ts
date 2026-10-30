@@ -41,6 +41,16 @@ export function deviceClass(): "phone" | "tablet" | "desktop" {
   return "desktop";
 }
 
+/** Whether the page is typed into with an on-screen keyboard: a coarse
+ * pointer, or iOS. iPadOS reports a Mac with touch points (deviceClass), and
+ * an iPad with a trackpad attached reports a fine pointer. */
+export function touchDevice(): boolean {
+  const ua = navigator.userAgent;
+  return matchMedia("(pointer: coarse)").matches ||
+    /iPad|iPhone|iPod/.test(ua) ||
+    (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+}
+
 /** Which kind of page this is: what it starts (the shell only on a phone
  * or tablet, Jupyter on a desktop) and which snapshot it restores
  * (src/sandbox_snapshot.ts SNAPSHOT_KINDS). `?platform=` says it in the

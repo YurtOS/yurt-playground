@@ -158,7 +158,120 @@ async function tabletIsShellOnly(
   if (problems.length > 0) {
     throw new Error(`tablet shell-only: ${problems.join("; ")}`);
   }
+  await touchKeysWork(page);
   await context.close();
+}
+
+/** The terminal's key bar on a touch device (#273): iOS gives xterm's hidden
+ * textarea no paste menu, and the iPad keyboard has no arrow keys. `page`
+ * shows a running shell on an emulated touch device. ↑ and ↓ walk ash's
+ * history, Paste puts the clipboard on the command line, a refused or empty
+ * clipboard is said in the bar, and the terminal keeps the focus (the iOS
+ * keyboard) through every tap. The clipboard is stubbed: neither headless
+ * engine has one a test can fill and read the same way. */
+export async function touchKeysWork(page: Page): Promise<void> {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const bar = page.getByTestId("term-keys");
+  if (!(await bar.isVisible())) throw new Error("touch key bar not shown");
+  const fits = await bar.evaluate((el) => el.scrollWidth <= el.clientWidth);
+  if (!fits) throw new Error("touch key bar overflows its width");
+  /** The terminal's lines, trimmed; the last non-empty one is the prompt. */
+  const lines = () =>
+    page.evaluate(() =>
+      Array.from(
+        document.querySelectorAll("#term .xterm-rows > div"),
+        (row) => (row.textContent ?? "").replace(/ /g, " ").trim(),
+      ).filter((line) => line !== "")
+    );
+  const waitFor = async (what: string, ok: (lines: string[]) => boolean) => {
+    const deadline = Date.now() + 30_000;
+    let seen = await lines();
+    while (!ok(seen)) {
+      if (Date.now() > deadline) {
+        throw new Error(`touch keys: ${what}; terminal: ${seen.join(" | ")}`);
+      }
+      await page.waitForTimeout(100);
+      seen = await lines();
+    }
+  };
+  const count = (seen: string[], line: string) =>
+    seen.filter((l) => l === line).length;
+  const promptShows = (command: string) =>
+    waitFor(
+      `prompt shows "${command}"`,
+      (seen) => seen.at(-1)?.endsWith(command) === true,
+    );
+  const focused = async (after: string) => {
+    const ok = await page.evaluate(() =>
+      document.activeElement?.classList.contains("xterm-helper-textarea")
+    );
+    if (!ok) throw new Error(`terminal lost the focus after ${after}`);
+  };
+  const tap = async (key: string) => {
+    await page.getByTestId(`term-key-${key}`).tap();
+    await focused(`tapping ${key}`);
+  };
+  const clipboard = (text: string | null) =>
+    page.evaluate((text) => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          readText: () =>
+            text === null
+              ? Promise.reject(new DOMException("denied", "NotAllowedError"))
+              : Promise.resolve(text),
+        },
+      });
+    }, text);
+
+  await page.locator("#term").tap();
+  await page.keyboard.type("echo keys-one\n");
+  await waitFor("first command ran", (seen) => count(seen, "keys-one") === 1);
+  await page.keyboard.type("echo keys-two\n");
+  await waitFor("second command ran", (seen) => count(seen, "keys-two") === 1);
+  await tap("up");
+  await promptShows("echo keys-two");
+  await tap("up");
+  await promptShows("echo keys-one");
+  await tap("down");
+  await promptShows("echo keys-two");
+  await page.keyboard.press("Enter");
+  await waitFor(
+    "recalled command ran",
+    (seen) => count(seen, "keys-two") === 2,
+  );
+
+  await clipboard("echo keys-pasted");
+  await tap("paste");
+  await promptShows("echo keys-pasted");
+  await page.keyboard.press("Enter");
+  await waitFor(
+    "pasted command ran",
+    (seen) => count(seen, "keys-pasted") === 1,
+  );
+
+  const note = page.getByTestId("term-key-note");
+  for (const [text, says] of [[null, "clipboard"], ["", "empty"]] as const) {
+    await clipboard(text);
+    await tap("paste");
+    await page.waitForFunction(
+      (says) =>
+        document.querySelector("[data-testid=term-key-note]")?.textContent
+          ?.includes(says),
+      says,
+      { timeout: 5_000 },
+    ).catch(async () => {
+      throw new Error(
+        `touch keys: paste of ${JSON.stringify(text)} said "${await note
+          .textContent()}"`,
+      );
+    });
+  }
+  if (errors.length > 0) {
+    throw new Error(`touch keys: page errors ${errors.join("; ")}`);
+  }
+  console.log("playground e2e: touch keys recall, paste and keep the focus");
 }
 
 /** The agent pane on a phone (#197): a phone boots now (its own small
@@ -1154,6 +1267,10 @@ if (import.meta.main) {
     );
     if (!(await page.locator("#term").isVisible())) {
       throw new Error("ash terminal is not visible");
+    }
+    // The touch key bar is for touch devices only (#273).
+    if (await page.getByTestId("term-keys").count() !== 0) {
+      throw new Error("a desktop page shows the touch key bar");
     }
     await page.locator("#term").click();
     await page.keyboard.type("cat /tmp/from-cell; echo __VFS_DONE__\n");
