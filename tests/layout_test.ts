@@ -724,6 +724,11 @@ Deno.test("the partner section is linked from the masthead and names no email", 
   }
   assertEquals(/mailto:|@[a-z0-9-]+\.[a-z]/i.test(html), false, "an email");
   assertEquals(start < html.indexOf("<footer>"), true, "before the footer");
+  const footer = html.slice(
+    html.indexOf("<footer>"),
+    html.indexOf("</footer>"),
+  );
+  assertEquals(/License:\s*<a[^>]*>Apache-2\.0<\/a>/.test(footer), true);
 });
 
 Deno.test("the home page carries its link-preview tags and their image", async () => {
