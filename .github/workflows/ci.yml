@@ -7,12 +7,14 @@ name: CI
 # and on a workflow_dispatch, and on a pull request only while it carries the
 # `ci:full` label. Adding the label starts a run (the `labeled` type); the
 # label is read on every event, so while it is on every push runs them.
-# Without it a merge-tier break shows up in main's run, after the merge (and
-# after deploy-pages.yml, which does not wait for this workflow, deployed it).
+# Any other label starts a run too, which replaces the one in progress with
+# the same jobs; labels are rare here. Without `ci:full` a merge-tier break
+# shows up in main's run, after the merge (and after deploy-pages.yml, which
+# does not wait for this workflow, deployed it).
 #
-# A push to main runs every acceptance scene and skips the test shards:
-# deploy-pages.yml runs that same deno test suite on the same commit before
-# it deploys. The desktop installers and their GitHub release are cut by
+# A push to main runs everything: every acceptance scene and the test shards
+# (deploy-pages.yml's own deno test does not set PLAYGROUND_REQUIRE_ARTIFACTS,
+# so it cannot stand in for them). The desktop installers and their GitHub release are cut by
 # release-desktop.yml when the release train asks
 # (scripts/release-playground.sh).
 on:
@@ -25,10 +27,12 @@ on:
 # The workflow token can read the repository and nothing else; the
 # cross-repo credentials come from named secrets.
 # A push on top of a push to a pull request runs the newest tree only: the
-# superseded run's test and acceptance legs are cancelled. Main's runs are
-# never cancelled, so every merge's merge-tier result is kept.
+# superseded run's test and acceptance legs are cancelled. Each push to main
+# has a group of its own: a group holds one running and one waiting run, and
+# a newer waiting run replaces the older, so three merges in one run's time
+# would drop the middle one's result.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -132,9 +136,7 @@ jobs:
     # The token step runs first in `checks`, and this gate does not wait for
     # fmt/lint to pass: a formatting nit must not hide the integration result
     # (review). `!cancelled()` overrides the implicit success() on `needs`.
-    # Not on a push to main: deploy-pages.yml runs the same suite (see the
-    # top).
-    if: ${{ !cancelled() && needs.checks.outputs.present == 'true' && github.event_name != 'push' }}
+    if: ${{ !cancelled() && needs.checks.outputs.present == 'true' }}
     runs-on: ubuntu-latest
     # Above the step cap plus setup, so a slow leg fails at the step -- with
     # its log tail and a named timeout -- rather than as a bare cancelled
@@ -314,7 +316,6 @@ jobs:
           CHECKS: ${{ needs.checks.result }}
           TOKEN_PRESENT: ${{ needs.checks.outputs.present }}
           TESTS: ${{ needs.tests.result }}
-          EVENT: ${{ github.event_name }}
           ACCEPTANCE: ${{ needs.acceptance.result }}
         run: |
           set -euo pipefail
@@ -341,6 +342,4 @@ jobs:
               exit 1
               ;;
           esac
-          # A push to main skips the test shards (deploy-pages.yml runs them).
-          if [ "$EVENT" = push ] && [ "$TESTS" = skipped ]; then TESTS=success; fi
           [ "$TESTS" = "success" ] && [ "$ACCEPTANCE" = "success" ]

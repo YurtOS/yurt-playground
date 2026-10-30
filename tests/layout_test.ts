@@ -219,6 +219,14 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
     workflow.includes("types: [opened, synchronize, reopened, labeled]"),
     true,
   );
+  // Each push to main gets its own concurrency group: in a shared one a newer
+  // waiting run replaces the older, and that merge's merge tier never runs.
+  assertEquals(
+    workflow.includes(
+      "group: ci-${{ github.ref }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}",
+    ),
+    true,
+  );
   // Browser acceptance is a required step, not a repository-variable opt-in:
   // it is the only check that proves the deployed pages boot the sandbox.
   assertEquals(workflow.includes("YURT_JUPYTER_E2E"), false);
