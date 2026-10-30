@@ -4,6 +4,11 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
+// The script waits 5 s before each look for a dispatched run; the stub gh
+// below lists it at once. Inherited by every script this file runs
+// (fixtureEnv copies this environment).
+Deno.env.set("YURT_RELEASE_POLL_SECS", "0");
+
 /** This process's environment without git's own variables. Under a git
  * hook (the pre-commit fast suite runs this file) git exports GIT_DIR,
  * GIT_INDEX_FILE and friends, and a child `git -C <fixture>` would then
