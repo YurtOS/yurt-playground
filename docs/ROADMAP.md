@@ -197,3 +197,5 @@ live on the site when it is released.
 Each train's notes, including what is not in it and its known issues, are at
 <https://yurtos.github.io/yurt-playground/>. Bugs and requests are welcome as
 [issues](https://github.com/YurtOS/yurt-playground/issues) in this repository.
+
+<!-- scratch: docs-only CI probe for #278; never merged -->
