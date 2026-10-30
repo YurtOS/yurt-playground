@@ -12,6 +12,9 @@ name: CI
 # shows up in main's run, after the merge (and after deploy-pages.yml, which
 # does not wait for this workflow, deployed it).
 #
+# A Markdown-only pull request runs fmt / lint alone (and the tests that
+# read Markdown): see the `docs` step in `checks`.
+#
 # A push to main runs everything: every acceptance scene and the test shards
 # (deploy-pages.yml's own deno test does not set PLAYGROUND_REQUIRE_ARTIFACTS,
 # so it cannot stand in for them). The desktop installers and their GitHub release are cut by
@@ -58,6 +61,7 @@ jobs:
     outputs:
       present: ${{ steps.token.outputs.present }}
       exclude: ${{ steps.tier.outputs.exclude }}
+      docs_only: ${{ steps.docs.outputs.docs_only }}
     steps:
       # Which acceptance scenes this run leaves out, as the matrix's
       # `exclude`: the merge tier on a pull request without `ci:full`,
@@ -98,6 +102,7 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "exclude=$exclude" >> "$GITHUB_OUTPUT"
+          echo "full=$FULL" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -108,6 +113,31 @@ jobs:
           # (public/index.html reindents), so a floating formatter turns CI red
           # with no code change and disagrees with what developers run locally.
           deno-version: v2.7.14
+      # A Markdown-only pull request (yurt-sandbox#367) runs only this job:
+      # `docs_only=true` skips the test shards and the acceptance scenes, and
+      # the integration gate accepts that skip. Only on the pull request tier:
+      # a push, a dispatch and `ci:full` run everything. The file list is read
+      # through the API now, like the labels (#276); an API error fails this
+      # job, and with it the gate. Skipped, `docs_only` is empty and the legs
+      # run. scripts/ci-docs-only.ts says which paths count, and fails closed.
+      - name: Is this pull request Markdown-only?
+        id: docs
+        if: steps.tier.outputs.full == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/pr-files"
+          deno run scripts/ci-docs-only.ts < "$RUNNER_TEMP/pr-files" | tee -a "$GITHUB_OUTPUT"
+          if grep -qx 'docs_only=true' "$GITHUB_OUTPUT"; then
+            {
+              echo "### Markdown-only pull request: fmt / lint only"
+              echo
+              echo "The test shards and the acceptance scenes are skipped; a push"
+              echo "to main runs them."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
       # yurtos-kernel and yurt-jupyter are PRIVATE, and the default
       # GITHUB_TOKEN cannot read another private repository. Without a PAT stored as
       # KERNEL_CHECKOUT_TOKEN the integration job cannot check them out at all, so
@@ -140,6 +170,16 @@ jobs:
         run: deno fmt --check
       - name: lint
         run: deno lint
+      # The Markdown-only classifier's own test, on every run: in a shard it
+      # would be skipped by the very answer it checks, so a change that broke
+      # the classifier into "Markdown-only" would judge itself and go green.
+      - name: Markdown-only classifier test
+        run: deno test --no-check --allow-read tests/ci_docs_only_test.ts
+      # The tests that read Markdown (scripts/ci-docs-only.ts MARKDOWN_TESTS),
+      # whose shard does not run on a Markdown-only pull request.
+      - name: Tests that read Markdown
+        if: steps.docs.outputs.docs_only == 'true'
+        run: deno test --no-check --allow-read tests/snapshot_table_test.ts
 
   # The cross-repo work, split so a push waits for the longest leg rather
   # than the sum of all of them (#123). Every leg pays the same ~80 s of
@@ -151,7 +191,7 @@ jobs:
     # The token step runs first in `checks`, and this gate does not wait for
     # fmt/lint to pass: a formatting nit must not hide the integration result
     # (review). `!cancelled()` overrides the implicit success() on `needs`.
-    if: ${{ !cancelled() && needs.checks.outputs.present == 'true' }}
+    if: ${{ !cancelled() && needs.checks.outputs.present == 'true' && needs.checks.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     # Above the step cap plus setup, so a slow leg fails at the step -- with
     # its log tail and a named timeout -- rather than as a bare cancelled
@@ -206,7 +246,7 @@ jobs:
   acceptance:
     name: acceptance (${{ matrix.scene }})
     needs: checks
-    if: ${{ !cancelled() && needs.checks.outputs.present == 'true' }}
+    if: ${{ !cancelled() && needs.checks.outputs.present == 'true' && needs.checks.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     # Above the step cap (11) plus both browser installs at their cap (5 + 5)
     # and setup and build (1.6 min typical, 2.1 worst seen), with ~2 min to
@@ -332,9 +372,10 @@ jobs:
           TOKEN_PRESENT: ${{ needs.checks.outputs.present }}
           TESTS: ${{ needs.tests.result }}
           ACCEPTANCE: ${{ needs.acceptance.result }}
+          DOCS_ONLY: ${{ needs.checks.outputs.docs_only }}
         run: |
           set -euo pipefail
-          echo "checks=$CHECKS token=$TOKEN_PRESENT tests=$TESTS acceptance=$ACCEPTANCE"
+          echo "checks=$CHECKS token=$TOKEN_PRESENT docs_only=$DOCS_ONLY tests=$TESTS acceptance=$ACCEPTANCE"
           # `checks` decides whether the legs run at all, so its own failure
           # has to fail here: otherwise a checkout or setup error before the
           # token step leaves `present` empty, the legs skipped, and this
@@ -357,4 +398,10 @@ jobs:
               exit 1
               ;;
           esac
+          # A Markdown-only pull request skips the legs by design (see
+          # `checks`); any other skip is a failure.
+          if [ "$DOCS_ONLY" = true ] && [ "$TESTS" = skipped ] && [ "$ACCEPTANCE" = skipped ]; then
+            echo "Markdown-only pull request: the legs were skipped by design"
+            exit 0
+          fi
           [ "$TESTS" = "success" ] && [ "$ACCEPTANCE" = "success" ]
