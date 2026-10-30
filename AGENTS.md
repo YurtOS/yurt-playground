@@ -76,6 +76,12 @@ checks out `yurtos-kernel` at the pinned rev so `@yurt/*` imports resolve. A
 change is not done until that job is green. Do not claim completion from a local
 pass alone.
 
+A pull request skips the slow acceptance scenes (`MERGE_TIER` in ci.yml:
+playground, jupyterlite, slim); they run on every push to main. Add the
+`ci:full` label to a pull request that changes what they cover (the boot, the
+terminal, the notebook pages, the slim image) so they run before the merge, and
+check main's run after merging one without it.
+
 ## Development procedure (non-trivial work)
 
 Always work in your own worktree. Follow the superpowers loop:
