@@ -1,9 +1,10 @@
 # Yurt playground roadmap
 
 The [Yurt playground](https://yurt-playground.pages.dev) is a Linux sandbox that
-runs inside a browser tab. A WebAssembly kernel (Yurt) runs BusyBox, CPython,
-NumPy, Jupyter, Node.js and Gemini CLI, with nothing running on a server. The
-desktop app runs the same sandbox natively, with network access.
+runs inside a browser tab. Yurt, an original Linux-compatible kernel compiled to
+WebAssembly, runs BusyBox, CPython, NumPy, Jupyter, Node.js and Gemini CLI, with
+nothing running on a server. The desktop app runs the same sandbox natively,
+with network access.
 
 This page says where the playground is going. It is a plan, not a promise: items
 move between sections, and some will change shape or be dropped. What has
@@ -12,8 +13,9 @@ actually shipped is in the
 progress right now is in their
 [Upcoming](https://yurtos.github.io/yurt-playground/#upcoming) section.
 
-_Last updated 2026-10-28, after train
-[playground-2026.10.27-3d32068.2](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068.2)._
+_Last updated 2026-10-30, after train
+[playground-2026.10.29-3d32068](https://yurtos.github.io/yurt-playground/#playground-2026.10.29-3d32068)
+and the page updates that followed it._
 
 ## Now
 
@@ -24,15 +26,24 @@ What you can use today.
   ([first train](https://yurtos.github.io/yurt-playground/#playground-2026.09.21-7eb03a7)).
 - **Python and Jupyter.** CPython 3.14, pip and NumPy, and Jupyter Notebook and
   JupyterLab on a real `ipykernel` running inside the sandbox.
+- **A ready sandbox in about two seconds, on every device.** Since 2026-10-29
+  the page restores a snapshot of a booted sandbox made for its device instead
+  of booting and installing: a desktop browser gets the shell, Python and
+  Jupyter (a prompt in about 2 s, Jupyter in about 5 s once the 131 MB snapshot
+  is downloaded), a tablet the shell and Python, a phone the shell. The first
+  visit downloads the snapshot once; later visits take it from the browser's
+  cache. `?snapshot=0` boots the slim image instead.
+- **Phones and tablets boot.** Each gets a snapshot sized for its memory, and a
+  key bar under the terminal adds Paste, history and cursor keys that the
+  on-screen keyboard lacks.
 - **A slim browser image that installs Python itself.** The tab loads 23.5 MB
   (the shell, the command-line tools, `sudo` and `pkg`) instead of 144 MB, and
   every page that runs Python installs the newest Python set from the signed
   package repository with the sandbox's own `pkg`, the first time it needs it
   ([2026.10.27](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068)).
-- **Instant Python on later visits.** After the first install the browser keeps
-  the installed files as one layer, so a reload has Python ready in about 11
-  seconds instead of about 85 (measured on the live site), with no package
-  downloaded, as long as the repository still offers the same set
+- **Instant Python on later visits without a snapshot.** When the page boots the
+  slim image (`?snapshot=0`), the browser keeps the first install's files as one
+  layer, so a reload has Python ready in about 11 seconds instead of about 85
   ([2026.10.27.2](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068.2)).
 - **A stalled install offers Try again.** When the install stops making
   progress, the cell says so, and Try again starts a fresh sandbox without
@@ -65,8 +76,6 @@ What you can use today.
   whole sandbox in the browser, and Resume carries on with the running cell
   where it stopped, even after a page reload
   ([2026.10.20](https://yurtos.github.io/yurt-playground/#playground-2026.10.20-22366ef)).
-- **Tablets get the Linux shell**
-  ([2026.10.13](https://yurtos.github.io/yurt-playground/#playground-2026.10.13-68259fc)).
 - **"Download home"** saves your home directory from the browser sandbox to your
   device.
 - **Kernel fixes in most trains**; the latest kernel (2026.10.26) adds bind and
@@ -78,20 +87,15 @@ What you can use today.
 
 Planned for the next one or two trains. These are in progress, not finished.
 
-- **Python in Safari.** Why: the first Python install may not finish there. The
-  memory error ("memory allocation of … bytes failed") is fixed in `pkg`, but in
-  automated Safari runs the sandbox stops answering partway through the install,
-  and after five minutes the cell offers Try again. It is tracked with the hang
-  a browser debugger causes in Chrome
-  ([yurtos-kernel#4170](https://github.com/YurtOS/yurtos-kernel/issues/4170)),
-  and it is not yet known whether the automation itself causes it. The shell
-  works in Safari.
-- **Faster file creation in the guest.** Why: most of the first visit's Python
-  install, which takes about a minute, is the sandbox writing the installed
-  files
-  ([yurtos-kernel#4169](https://github.com/YurtOS/yurtos-kernel/issues/4169)); a
-  first step is in review
-  ([yurtos-kernel#4195](https://github.com/YurtOS/yurtos-kernel/pull/4195)).
+- **Installing Python in Safari without a snapshot.** Why: Safari restores the
+  snapshot with Python and Jupyter, but when it boots the slim image
+  (`?snapshot=0`) and installs Python itself, the install may not finish: in
+  automated Safari runs the sandbox stops answering partway through, and after
+  five minutes the cell offers Try again. It is tracked in the kernel with a
+  similar hang that a browser debugger causes in Chrome, and it is not yet known
+  whether the automation itself causes it.
+- **Faster file creation in the guest.** Why: most of an install's time is the
+  sandbox writing the installed files; a first kernel change is in review.
 - **Python native extensions loaded from a `.so` at run time**, rather than
   built into Python as NumPy is today. Why: the kernel and libc sides of
   `dlopen` have shipped; a shared `libc.so` is the remaining piece for ordinary
@@ -136,10 +140,10 @@ Bigger directions. Each needs design work, and the order is not fixed.
   memory limits are a further question, since `go build` starts several compiler
   and linker processes.
 - **More of the playground on tablets.** iPad browsers limit the processes and
-  memory one tab can use, which is why tablets get the shell only today and why
-  a long shell session can still run out of memory
-  ([#200](https://github.com/YurtOS/yurt-playground/issues/200)). The goal is
-  for the shell to keep working, then for Jupyter to fit.
+  memory one tab can use, which is why tablets get no Jupyter today and why a
+  long shell session can still run out of memory
+  ([#200](https://github.com/YurtOS/yurt-playground/issues/200)). Tablets now
+  run the shell and Python; the goal is for Jupyter to fit too.
 - **Ctrl-C for CPU-bound Python.** Ctrl-C and `kill -INT` reaching a Python
   program that is busy computing, so `KeyboardInterrupt` works.
 - **A faster JavaScript engine (experimental).** Node on Yurt runs
@@ -159,9 +163,10 @@ Bigger directions. Each needs design work, and the order is not fixed.
   and other downloads from inside the sandbox work only in the desktop app.
 - **Installed packages in the browser are lost on reload**, like every other
   file there ([#81](https://github.com/YurtOS/yurt-playground/issues/81)),
-  except the Python set, which the browser keeps and writes back on a later
-  visit. A tablet or phone refuses installs whose downloads add up to more than
-  16 MiB, since one tab there has much less memory
+  except the Python set: it comes back with the snapshot, or, when the page
+  boots the slim image, from the layer the browser kept of its first install. A
+  tablet or phone refuses installs whose downloads add up to more than 16 MiB,
+  since one tab there has much less memory
   ([#200](https://github.com/YurtOS/yurt-playground/issues/200)).
 - **Files in the browser are kept in memory only.** A page reload starts a fresh
   sandbox and loses everything you wrote, except sandboxes saved by the
@@ -170,19 +175,17 @@ Bigger directions. Each needs design work, and the order is not fixed.
 - **On the desktop**, the root filesystem is also held in memory, and changes to
   it are written to disk at sync points (an explicit `sync`, or when the sandbox
   stops). Host folders you mount are on disk directly.
-- **Tablets run the shell only**, with no Jupyter or agent pane. **Phones**
-  start no sandbox by default, and the page says why; opened with
-  `?start-anyway`, a phone gets the shell and the agent without Python. The
-  Notebook and JupyterLab pages do not start a sandbox on a phone
-  ([2026.10.27](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068)).
+- **Tablets run the shell and Python**, with no Jupyter or agent pane.
+  **Phones** run the shell only. The Notebook and JupyterLab pages do not start
+  a sandbox on a phone.
 - **Go is a package, not part of the image**, and Go programs cannot run in the
   browser sandbox yet. In a desktop sandbox they run on one thread, and signals
   reach them only between system calls.
 - **Gemini CLI is slow to start the first time in the browser**, after it is
   installed from the _Packages_ panel; it starts faster in the desktop app.
-- **The first visit in the browser is slow**: the tab compiles the kernel and
-  programs, and installs Python, about 85 seconds to Python ready on a laptop. A
-  later visit has Python ready in about 11 seconds.
+- **The first visit downloads a lot**: about 138 MB on a desktop (the kernel and
+  the snapshot with Python and Jupyter), about 102 MB on a tablet and 38 MB on a
+  phone. A later visit takes them from the browser's cache.
 
 ## How it ships
 

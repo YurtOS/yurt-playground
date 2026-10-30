@@ -19,12 +19,15 @@ in this repo. `CLAUDE.md` points here.
 Check these out next to this repo (`../<name>`). Scripts read `YURT_KERNEL_ROOT`
 / `YURT_PORTS_ROOT` with those relative defaults.
 
+Only this repository and `YurtOS/yurt-packages` are public; the others are
+private, so they are named here without links.
+
 | Repo                                                              | What it owns                                                               |
 | ----------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| [`YurtOS/yurtos-kernel`](https://github.com/YurtOS/yurtos-kernel) | Kernel wasm, JS host (`attachHostPty`, `dialSandboxPort`, `pumpPtyMaster`) |
-| [`YurtOS/yurt-ports`](https://github.com/YurtOS/yurt-ports)       | `playground-image` recipe (`playground.yurtimg`)                           |
-| [`YurtOS/yurt-packages`](https://github.com/YurtOS/yurt-packages) | Published BusyBox / later CPython packages                                 |
-| [`YurtOS/yurt-jupyter`](https://github.com/YurtOS/yurt-jupyter)   | Jupyter ipykernel payload (unchanged by this page)                         |
+| `YurtOS/yurtos-kernel` (private)                                  | Kernel wasm, JS host (`attachHostPty`, `dialSandboxPort`, `pumpPtyMaster`) |
+| `YurtOS/yurt-ports` (private)                                     | `playground-image` recipe (`playground.yurtimg`)                           |
+| [`YurtOS/yurt-packages`](https://github.com/YurtOS/yurt-packages) | Published packages (the Python set, Node, ...)                             |
+| `YurtOS/yurt-jupyter` (private)                                   | Jupyter ipykernel payload (unchanged by this page)                         |
 
 Kernel primitives stay in `yurtos-kernel`. Image composition stays in
 `yurt-ports`. Do not vendor `kernel.wasm` source or port scripts here.
