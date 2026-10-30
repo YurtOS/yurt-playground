@@ -163,9 +163,10 @@ Bigger directions. Each needs design work, and the order is not fixed.
   and other downloads from inside the sandbox work only in the desktop app.
 - **Installed packages in the browser are lost on reload**, like every other
   file there ([#81](https://github.com/YurtOS/yurt-playground/issues/81)),
-  except the Python set, which the browser keeps and writes back on a later
-  visit. A tablet or phone refuses installs whose downloads add up to more than
-  16 MiB, since one tab there has much less memory
+  except the Python set: it comes back with the snapshot, or, when the page
+  boots the slim image, from the layer the browser kept of its first install. A
+  tablet or phone refuses installs whose downloads add up to more than 16 MiB,
+  since one tab there has much less memory
   ([#200](https://github.com/YurtOS/yurt-playground/issues/200)).
 - **Files in the browser are kept in memory only.** A page reload starts a fresh
   sandbox and loses everything you wrote, except sandboxes saved by the

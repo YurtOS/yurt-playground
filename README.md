@@ -9,8 +9,9 @@ usual sources, run as they would on Linux. The same sandbox also runs natively
 on your machine as a desktop app.
 
 What a sandbox in a tab is for: coding environments that need no server per
-user, a safe place to run the tools an AI agent calls, notebooks that keep
-working offline, and sandboxes embedded in a product of your own.
+user, a place to run the tools an AI agent calls, away from your machine,
+notebooks that keep working offline, and sandboxes embedded in a product of your
+own.
 
 ## Try it
 
@@ -18,7 +19,7 @@ working offline, and sandboxes embedded in a product of your own.
 
 - **Boot.** The page restores a ready-made snapshot of a booted sandbox: a shell
   prompt in about 2 s and Jupyter ready in about 5 s on a desktop (measured in
-  Chromium; Safari takes about 8 s to Jupyter).
+  Chromium; WebKit, Safari's engine, takes about 8 s to Jupyter).
 - **First visit.** A desktop browser downloads about 138 MB once: the 7.2 MB
   kernel and a 131 MB snapshot with Python and Jupyter. A tablet downloads about
   102 MB, a phone about 38 MB. A repeat visit takes them from the browser's
@@ -39,7 +40,7 @@ going, in [the roadmap](docs/ROADMAP.md).
 | Python 3.14                        | ✓ (not on phones)                                                     | ✓                                                  |
 | NumPy                              | ✓ desktop                                                             | ✓                                                  |
 | Jupyter Notebook and JupyterLab    | ✓ desktop                                                             | ✓                                                  |
-| Node.js 22, Gemini CLI             | as packages                                                           | ✓ in the image                                     |
+| Node.js 22, Gemini CLI             | as packages (Gemini CLI needs the desktop app's network for its API)  | ✓ in the image                                     |
 | Runs in                            | the tab (WebAssembly, no server)                                      | the native Yurt runtime on your machine            |
 | Boots                              | the slim image, or a snapshot of it with Python installed             | the full image                                     |
 | Network from inside the sandbox    | none, by design                                                       | yes (Python verifies TLS; BusyBox `wget` does not) |
@@ -201,7 +202,9 @@ Packages are signed and published in
   terminal fails, since only the page can download.
   - Installed packages live in the tab's memory, like every file there, and a
     reload loses them
-    ([#81](https://github.com/YurtOS/yurt-playground/issues/81)).
+    ([#81](https://github.com/YurtOS/yurt-playground/issues/81)), except the
+    Python set: it comes back with the snapshot, or, when the page boots the
+    slim image, from the layer the browser kept of its first install.
   - A tablet or phone has much less memory for one tab
     ([#200](https://github.com/YurtOS/yurt-playground/issues/200)), so there an
     install whose downloads add up to more than 16 MiB is refused. Elsewhere the
