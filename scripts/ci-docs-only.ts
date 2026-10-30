@@ -15,8 +15,8 @@ export const MAX_LISTED_FILES = 3000;
 
 /** Tests that read a Markdown file. `checks` runs them on a Markdown-only
  * pull request, since the shards that hold them do not run there;
- * `layout_test.ts` asserts that every test reading a `.md` file is named
- * here. */
+ * `ci_docs_only_test.ts` asserts that every test reading a `.md` file is
+ * named here. */
 export const MARKDOWN_TESTS = ["tests/snapshot_table_test.ts"];
 
 /** Markdown outside `public/`. `public/` is the deployed site: a file there

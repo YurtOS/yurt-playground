@@ -170,6 +170,11 @@ jobs:
         run: deno fmt --check
       - name: lint
         run: deno lint
+      # The Markdown-only classifier's own test, on every run: in a shard it
+      # would be skipped by the very answer it checks, so a change that broke
+      # the classifier into "Markdown-only" would judge itself and go green.
+      - name: Markdown-only classifier test
+        run: deno test --no-check --allow-read tests/ci_docs_only_test.ts
       # The tests that read Markdown (scripts/ci-docs-only.ts MARKDOWN_TESTS),
       # whose shard does not run on a Markdown-only pull request.
       - name: Tests that read Markdown
