@@ -225,11 +225,19 @@ export async function touchKeysWork(page: Page): Promise<void> {
       });
     }, text);
 
+  // Input sent before ash reads its next line is echoed raw (^[[A), so
+  // each step waits for the bare prompt.
+  const prompt = () =>
+    waitFor("prompt", (seen) => /^\S*[$#]$/.test(seen.at(-1) ?? ""));
+
   await page.locator("#term").tap();
+  await prompt();
   await page.keyboard.type("echo keys-one\n");
   await waitFor("first command ran", (seen) => count(seen, "keys-one") === 1);
+  await prompt();
   await page.keyboard.type("echo keys-two\n");
   await waitFor("second command ran", (seen) => count(seen, "keys-two") === 1);
+  await prompt();
   await tap("up");
   await promptShows("echo keys-two");
   await tap("up");
@@ -242,6 +250,7 @@ export async function touchKeysWork(page: Page): Promise<void> {
     (seen) => count(seen, "keys-two") === 2,
   );
 
+  await prompt();
   await clipboard("echo keys-pasted");
   await tap("paste");
   await promptShows("echo keys-pasted");

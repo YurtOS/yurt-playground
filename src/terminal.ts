@@ -120,10 +120,12 @@ function withTouchKeys(host: HTMLElement, term: Terminal): HTMLElement {
     });
     // The focus, and with it the iOS keyboard, stays in the terminal: the
     // press does not move it, and the tap (a user gesture, which iOS needs
-    // to keep its keyboard up) puts it back.
-    button.addEventListener("pointerdown", (event) => event.preventDefault());
+    // to keep its keyboard up) puts it back. Not pointerdown: canceling it
+    // also cancels a tap's compatibility mouse events, and on iOS those
+    // and the click are dispatched as one.
     button.addEventListener("mousedown", (event) => event.preventDefault());
     button.addEventListener("click", () => {
+      note.textContent = "";
       term.focus();
       action();
     });
