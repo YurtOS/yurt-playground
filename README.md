@@ -251,7 +251,7 @@ Maintainers: releasing, previews and snapshot tooling are in
 
 ## License
 
-This repository (the page, launcher and tooling) is Apache-2.0; see
-[LICENSE](LICENSE). The Yurt kernel, runtime and images it runs are developed in
-repositories that are not public yet; this site and the releases ship them as
-binaries.
+Yurt's own code (this repository, the kernel, runtime and tooling) is licensed
+under Apache-2.0; see [LICENSE](LICENSE). Most of those repositories are not
+public yet, and this site and the releases ship them as binaries. Third-party
+software in the images keeps its own license.
