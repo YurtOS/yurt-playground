@@ -37,6 +37,8 @@ concurrency:
 
 permissions:
   contents: read
+  # Read only: the tier step reads the pull request's labels.
+  pull-requests: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -62,13 +64,25 @@ jobs:
       # nothing otherwise. First, so a later step's failure still leaves the
       # legs a valid matrix. layout_test.ts checks MERGE_TIER against the
       # scene list.
+      #
+      # The labels are read now, not from the event: a push's event carries
+      # the labels of the moment it was sent, so a push a few seconds after
+      # the label was added ran the pull request tier, and cancelled the
+      # `labeled` run that would have run the full one (#276).
       - name: Choose the tier
         id: tier
         env:
           MERGE_TIER: playground jupyterlite slim
-          FULL: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          FULL=true
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            # An API error fails this job (and so the gate), never picks a tier.
+            labels=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name')
+            grep -qx 'ci:full' <<< "$labels" || FULL=false
+          fi
           if [ "$FULL" = true ]; then
             exclude='[]'
             echo "### Tier: full (every acceptance scene)" >> "$GITHUB_STEP_SUMMARY"
