@@ -703,3 +703,68 @@ Deno.test("every workflow restricts its token to reading the repository", async 
     );
   }
 });
+
+Deno.test("a Markdown-only pull request runs only fmt / lint (yurt-sandbox#367)", async () => {
+  const { isDocsOnly, MARKDOWN_TESTS, MAX_LISTED_FILES } = await import(
+    "../scripts/ci-docs-only.ts"
+  );
+  assertEquals(isDocsOnly(["README.md", "docs/ROADMAP.md"]), true);
+  // Both names of a rename are listed: a .ts moved to .md is code.
+  assertEquals(isDocsOnly(["docs/x.md", "src/x.ts"]), false);
+  // public/ is the deployed site, so Markdown there ships.
+  assertEquals(isDocsOnly(["public/demo/README.md"]), false);
+  // Fail closed: no list, or one the API may have cut short.
+  assertEquals(isDocsOnly([]), false);
+  assertEquals(isDocsOnly([""]), false);
+  assertEquals(
+    isDocsOnly(Array.from({ length: MAX_LISTED_FILES }, (_, i) => `${i}.md`)),
+    false,
+  );
+
+  const workflow = await workflowSource("ci.yml");
+  // The file list is read through the API when the run starts, never from
+  // the event, and only on a pull request without ci:full.
+  assertEquals(
+    workflow.includes(
+      `gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)'`,
+    ),
+    true,
+  );
+  assertEquals(workflow.includes("deno run scripts/ci-docs-only.ts"), true);
+  // Never on a push, a dispatch or with ci:full: those run everything.
+  assertMatch(
+    workflow,
+    /id: docs\n\s+if: steps\.tier\.outputs\.full == 'false'\n/,
+  );
+  assertEquals(
+    workflow.includes('echo "full=$FULL" >> "$GITHUB_OUTPUT"'),
+    true,
+  );
+  assertEquals(
+    workflow.includes("docs_only: ${{ steps.docs.outputs.docs_only }}"),
+    true,
+  );
+  // The test shards and every acceptance scene skip; fmt / lint does not.
+  const legGate =
+    "if: ${{ !cancelled() && needs.checks.outputs.present == 'true' && needs.checks.outputs.docs_only != 'true' }}";
+  assertEquals(workflow.split(legGate).length - 1, 2, "tests + acceptance");
+  // The required gate passes on the skip only when docs_only said so.
+  assertEquals(
+    workflow.includes("DOCS_ONLY: ${{ needs.checks.outputs.docs_only }}"),
+    true,
+  );
+  assertMatch(
+    workflow,
+    /"\$DOCS_ONLY" = true \] && \[ "\$TESTS" = skipped \] && \[ "\$ACCEPTANCE" = skipped \]/,
+  );
+  // Tests that read Markdown run in `checks` when the shards do not.
+  for (const file of MARKDOWN_TESTS) {
+    assertEquals(workflow.includes(file), true, `${file} not run in checks`);
+  }
+  const readsMarkdown: string[] = [];
+  for (const file of await allTestFiles()) {
+    const text = await Deno.readTextFile(`${REPO_ROOT}/${file}`);
+    if (/["'`]\.\.\/[\w./-]*\.md["'`]/.test(text)) readsMarkdown.push(file);
+  }
+  assertEquals(readsMarkdown.sort(), [...MARKDOWN_TESTS].sort());
+});
