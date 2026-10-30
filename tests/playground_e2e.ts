@@ -163,11 +163,12 @@ async function tabletIsShellOnly(
 }
 
 /** The terminal's key bar on a touch device (#273): iOS gives xterm's hidden
- * textarea no paste menu, and the iPad keyboard has no arrow keys. `page`
- * shows a running shell on an emulated touch device. ↑ and ↓ walk ash's
- * history, Paste puts the clipboard on the command line, a refused or empty
- * clipboard is said in the bar, and the terminal keeps the focus (the iOS
- * keyboard) through every tap. The clipboard is stubbed: neither headless
+ * textarea no paste menu, and the iPhone and iPad keyboards have no arrow
+ * keys. `page` shows a running shell on an emulated touch device. ↑ and ↓
+ * walk ash's history, ← and → move the cursor along the line, Paste puts
+ * the clipboard on the command line, a refused or empty clipboard is said in
+ * the bar, and the terminal keeps the focus (the iOS keyboard) through every
+ * tap. The clipboard is stubbed: neither headless
  * engine has one a test can fill and read the same way. */
 export async function touchKeysWork(page: Page): Promise<void> {
   const errors: string[] = [];
@@ -250,6 +251,20 @@ export async function touchKeysWork(page: Page): Promise<void> {
     (seen) => count(seen, "keys-two") === 2,
   );
 
+  // ← then a letter inserts before the line's last character, → moves back
+  // past it: "keys-a" becomes "keys-bac".
+  await prompt();
+  await page.keyboard.type("echo keys-a");
+  await promptShows("echo keys-a");
+  await tap("left");
+  await page.keyboard.type("b");
+  await promptShows("echo keys-ba");
+  await tap("right");
+  await page.keyboard.type("c");
+  await promptShows("echo keys-bac");
+  await page.keyboard.press("Enter");
+  await waitFor("edited command ran", (seen) => count(seen, "keys-bac") === 1);
+
   await prompt();
   await clipboard("echo keys-pasted");
   await tap("paste");
@@ -280,7 +295,9 @@ export async function touchKeysWork(page: Page): Promise<void> {
   if (errors.length > 0) {
     throw new Error(`touch keys: page errors ${errors.join("; ")}`);
   }
-  console.log("playground e2e: touch keys recall, paste and keep the focus");
+  console.log(
+    "playground e2e: touch keys recall, move, paste and keep the focus",
+  );
 }
 
 /** The agent pane on a phone (#197): a phone boots now (its own small

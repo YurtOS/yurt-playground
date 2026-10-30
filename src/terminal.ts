@@ -46,9 +46,10 @@ export function createPlaygroundTerminal(host: unknown): PlaygroundTerm {
 }
 
 /** A bar under the terminal with the keys a touch device lacks (#273): iOS
- * offers no paste menu on xterm's hidden textarea, and the iPad keyboard
- * has no arrow keys for the shell's history. Returns the element the
- * terminal opens in, above the bar. */
+ * offers no paste menu on xterm's hidden textarea, and the iPhone and iPad
+ * keyboards have no arrow keys for the shell's history or for moving along
+ * the command line. Returns the element the terminal opens in, above the
+ * bar. */
 function withTouchKeys(host: HTMLElement, term: Terminal): HTMLElement {
   const pane = document.createElement("div");
   Object.assign(pane.style, { flex: "1 1 0", minHeight: "0" });
@@ -91,7 +92,7 @@ function withTouchKeys(host: HTMLElement, term: Terminal): HTMLElement {
     else term.paste(text);
   };
   // What xterm sends for the arrow keys: ESC O in application cursor mode.
-  const arrow = (final: "A" | "B") =>
+  const arrow = (final: "A" | "B" | "C" | "D") =>
     term.input(
       (term.modes.applicationCursorKeysMode ? "\x1bO" : "\x1b[") + final,
     );
@@ -135,6 +136,8 @@ function withTouchKeys(host: HTMLElement, term: Terminal): HTMLElement {
     key("Paste", "Paste", "paste", () => void paste()),
     key("↑", "Previous command", "up", () => arrow("A")),
     key("↓", "Next command", "down", () => arrow("B")),
+    key("←", "Cursor left", "left", () => arrow("D")),
+    key("→", "Cursor right", "right", () => arrow("C")),
     note,
   );
   Object.assign(host.style, { display: "flex", flexDirection: "column" });
