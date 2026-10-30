@@ -1,10 +1,16 @@
 # Security policy
 
-The playground runs untrusted code on purpose: a Linux kernel compiled to
-WebAssembly, a BusyBox shell and CPython, inside a browser tab or — in the
-desktop app and the `yurt` CLI — on your machine. What holds that in place is
-the boundary between the guest and its host, so reports about that boundary are
-the ones we most want to hear about.
+The playground runs untrusted code on purpose: Yurt (an original
+Linux-compatible kernel compiled to WebAssembly, not Linux itself), a BusyBox
+shell and CPython, inside a browser tab or — in the desktop app and the `yurt`
+CLI — on your machine. What holds that in place is the boundary between the
+guest and its host, so reports about that boundary are the ones we most want to
+hear about.
+
+## Who we are
+
+"We" are the Yurt maintainers, [Ofer](https://github.com/ofersa) and
+[Sunny](https://github.com/smarcd). Reports reach us through GitHub, as below.
 
 ## Reporting a vulnerability
 
@@ -39,7 +45,8 @@ you in the advisory unless you would rather we did not.
   or cross-origin isolation, or that lets another site read or drive the sandbox
   in a visitor's tab.
 - **Supply chain:** the released artifacts (installers, the CLI packages, the
-  kernel wasm and image) not matching what this repository builds.
+  kernel wasm, the images and the snapshots) not matching what this repository
+  pins in `artifacts/pins.json`, or the page running anything else.
 
 ## What is not
 

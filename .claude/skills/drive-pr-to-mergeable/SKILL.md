@@ -52,10 +52,9 @@ signal.
 
 Decide every round, measured on the whole PR diff against `<base>` (PRs grow
 during review), and by production lines (new or changed logic outside tests, see
-the PR-size rule in the canonical
-[organization rules](https://github.com/YurtOS/yurtos-kernel/blob/main/docs/agents/org.md)),
-not total lines. Above roughly 1,500 production lines, or when the change spans
-several subsystems, review it by **aspect**, not by file slice:
+the PR-size rule in the organization rules, `docs/agents/org.md` in the kernel
+repository), not total lines. Above roughly 1,500 production lines, or when the
+change spans several subsystems, review it by **aspect**, not by file slice:
 
 - Pick 3-6 aspects: the concerns that cut across the whole change, for example
   publication and rollback, path scope and error ordering, device and metadata

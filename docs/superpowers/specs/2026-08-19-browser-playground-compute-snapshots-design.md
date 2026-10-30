@@ -5,10 +5,8 @@
 - **Related issues:**
   - [yurt-playground#4](https://github.com/YurtOS/yurt-playground/issues/4)
   - [yurt-playground#8](https://github.com/YurtOS/yurt-playground/issues/8)
-  - [yurt-ports#56](https://github.com/YurtOS/yurt-ports/issues/56)
-  - [yurtos-kernel#2289](https://github.com/YurtOS/yurtos-kernel/issues/2289)
-  - [yurtos-kernel#2269](https://github.com/YurtOS/yurtos-kernel/issues/2269)
-  - [yurtos-kernel#2304](https://github.com/YurtOS/yurtos-kernel/issues/2304)
+  - the image recipe's issue for the playground image (private repository)
+  - three kernel issues on sealing and restoring a sandbox (private repository)
 
 ## Goal
 
