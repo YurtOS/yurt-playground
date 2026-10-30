@@ -66,6 +66,9 @@ const STATIC_FILES = [
   // The local agent's inference worker (#140); its runtime is /llm/.
   "llm_worker.bundle.js",
   "agent.css",
+  // How much shared wasm memory this browser lets a tab reserve (#270).
+  "memory-probe.html",
+  "memory-probe.js",
 ];
 /** The JupyterLite site (jupyterlite/build.sh); served under /jupyter/. */
 const JUPYTER_DIR = "jupyter";

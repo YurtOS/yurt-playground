@@ -7,7 +7,8 @@
  * that needs both the playground's per-process reservation (#179) and a
  * kernel that honours it (yurtos-kernel#3115), so a regression in either
  * puts the guests back on the relay and turns this red
- * (src/guest_port_policy.ts). Run: `deno run --allow-all
+ * (src/guest_port_policy.ts). The coordinator must also have measured
+ * what the tab can reserve before building its kernel (#270). Run: `deno run --allow-all
  * tests/webkit_e2e.ts` (needs the kernel checkout and pinned artifacts like
  * playground_e2e.ts).
  */
@@ -38,6 +39,14 @@ if (import.meta.main) {
   try {
     const page = await browser.newPage();
     page.on("pageerror", (error) => console.error("pageerror:", error));
+    // The coordinator logs the per-process reservation it picked; a boot
+    // whose probe failed says "(no probe)" (src/guest_memory_reservation.ts).
+    const memoryPlans: string[] = [];
+    page.on("console", (message) => {
+      if (message.text().startsWith("[memory]")) {
+        memoryPlans.push(message.text());
+      }
+    });
     await page.goto(`${server.url}/?start`, { waitUntil: "domcontentloaded" });
     const engine = await page.evaluate(() => ({
       userAgent: navigator.userAgent,
@@ -102,6 +111,19 @@ if (import.meta.main) {
     if (marks.relay !== 0 || marks.direct < EXECS) {
       throw new Error(
         `expected every guest on the direct port, got ${JSON.stringify(marks)}`,
+      );
+    }
+    console.log("memory plans:", JSON.stringify(memoryPlans));
+    if (
+      memoryPlans.length === 0 ||
+      !memoryPlans.every((plan) =>
+        // Desktop WebKit has room for the quarter GiB (#270).
+        plan.startsWith("[memory] 256 MiB per process") &&
+        plan.includes("free to reserve")
+      )
+    ) {
+      throw new Error(
+        `the boot probe did not run: ${JSON.stringify(memoryPlans)}`,
       );
     }
     console.log("webkit e2e: ok");

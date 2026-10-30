@@ -70,7 +70,7 @@ Deno.test("every in-browser kernel load and restore goes through the playground'
   // restore included: a worker that loads or restores with the default
   // state puts its guests back on the whole sandbox budget. So only
   // loadPlaygroundKernel and restorePlaygroundKernel in boot.ts may build
-  // a kernel, and each passes playgroundHostState().
+  // a kernel, and each passes plannedPlaygroundHostState().
   const outside: string[] = [];
   let boot = "";
   for (const [path, text] of sourceFiles()) {
@@ -86,12 +86,14 @@ Deno.test("every in-browser kernel load and restore goes through the playground'
     "load",
     "restore",
   ]);
-  assert(
-    boot.includes("KernelHostInterface.load(kernel, playgroundHostState())"),
-  );
+  // Both size the reservation from what the tab can reserve (#270).
   assert(
     boot.includes(
-      "KernelHostInterface.restore(kernel, image, playgroundHostState())",
+      "KernelHostInterface.load(kernel, await plannedPlaygroundHostState())",
     ),
+  );
+  assert(
+    /KernelHostInterface\.restore\(\s*kernel,\s*image,\s*await plannedPlaygroundHostState\(\),\s*\)/
+      .test(boot),
   );
 });
