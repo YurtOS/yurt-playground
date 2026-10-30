@@ -136,12 +136,12 @@
   <body>
     <main data-testid="releases">
       <a class="wordmark" href="https://yurt-playground.pages.dev/">Yurt</a>
+      <p class="work-with-us"><a href="#partner">Work with us</a></p>
       <article class="pane upcoming" id="upcoming">
         <h1>Upcoming</h1>
         <p class="date">Not released yet · directions, not promises</p>
         <p>Some of what we are working on:</p>
         <ul>
-          <li>A faster first boot, with Python ready sooner on a first visit.</li>
           <li>Files that survive a page reload.</li>
           <li>More of the playground on tablets.</li>
           <li>Python native extensions loaded at run time.</li>
@@ -198,7 +198,7 @@
         <p class="date">
           2026-10-29 · replaces playground-2026.10.27-3d32068.2
         </p>
-        <p class="summary"><code>pkg</code> now keeps a plain list of what is installed, and reloads still have Python ready in seconds. On iPhone and iPad, a key bar under the terminal adds Paste, shell history and cursor keys.</p>
+        <p class="summary">The page now restores a ready-made sandbox made for each device: a shell in about two seconds, and on a desktop Python and Jupyter in about five. <code>pkg</code> keeps a plain list of what is installed, and on iPhone and iPad a key bar under the terminal adds Paste, shell history and cursor keys.</p>
         <p>
           A new image only: <code>pkg</code> now keeps a plain list of what is
           installed. The kernel, the desktop app and the yurt CLI are
@@ -247,6 +247,22 @@
         <h2>Page updates</h2>
         <p>Shipped to the live page after the train, on the same artifacts.</p>
         <ul>
+          <li>
+            2026-10-29: <strong>a ready-made sandbox for each device.</strong>
+            Instead of booting the slim image and installing Python, the page
+            restores a snapshot made for its device: on a desktop the shell,
+            Python and Jupyter (a prompt in about 2 s, Jupyter in about 5 s,
+            after a one-time download of about 131 MB); on a tablet the shell
+            and Python; on a phone the shell. Phones now start the sandbox
+            without <code>?start-anyway</code>.
+          </li>
+          <li>
+            2026-10-29: <code>?platform=desktop</code>, <code>tablet</code> or
+            <code>phone</code> picks another device's sandbox as far as this
+            device can run it, and <code>?snapshot=0</code> boots the slim
+            image as before. The shell prints what is in that Linux when it
+            starts.
+          </li>
           <li>
             2026-10-30: <strong>a key bar under the terminal on iPhone and
               iPad</strong>, with Paste and ↑ ↓ for the shell's history, which
@@ -482,8 +498,8 @@
             shell and the agent without the Python install, and says so. You
             can still install <code>python</code> from <em>Packages</em>, but
             the tab may run out of memory. The Notebook and JupyterLab pages
-            do not start a sandbox on a phone. Tablets keep the shell-only
-            page they had. A desktop browser, or the desktop app, runs all of
+            do not start a sandbox on a phone. Tablets kept the shell-only
+            page they had then. A desktop browser, or the desktop app, runs all of
             it.
           </li>
         </ul>
@@ -863,7 +879,7 @@
         <p class="date">
           2026-10-21 · replaces playground-2026.10.15-230cfe2.2
         </p>
-        <p class="summary">Notebook cells can be suspended and resumed where they stopped, Node.js gets many fixes, and installed programs no longer wait to compile on their first run. Old programs that start threads now get a clear error instead of corrupting memory.</p>
+        <p class="summary">Notebook cells can be suspended and resumed where they stopped, Node.js gets many fixes, and installed programs in the desktop app and CLI no longer wait to compile on their first run. Old programs that start threads now get a clear error instead of corrupting memory.</p>
         <p>
           This train moves everything to Guest SDK 0.0.29, brings a new Node.js
           build with many fixes, brings back checkpoint sealing, and ships the
@@ -1687,7 +1703,7 @@
       <article class="pane" id="playground-2026.10.12-5ddc591">
         <h1>playground-2026.10.12-5ddc591</h1>
         <p class="date">2026-10-12 · replaces playground-2026.09.27-a3198c7</p>
-        <p class="summary">The image gains git, Perl, Go, jq, gh and Datasette, and CPython moves to 3.14.7. File syncs now reach storage, and the page offers a reload when the browser runs out of memory.</p>
+        <p class="summary">New packages: git, Perl, Go, jq and gh; the image gains Datasette, and CPython moves to 3.14.7. File syncs now reach storage, and the page offers a reload when the browser runs out of memory.</p>
         <p>
           Two weeks of kernel work (filesystem sync, HostFS xattrs,
           capabilities, signals, CPU accounting and browser-host memory) on
