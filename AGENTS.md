@@ -156,3 +156,5 @@ say why in the PR description. Beyond that, ask the user before opening it.
 
 Read the skill before acting. If a skill applies, invoking it is mandatory — see
 `superpowers:using-superpowers`.
+
+<!-- scratch probe for #278 -->
