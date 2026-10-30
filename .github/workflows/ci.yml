@@ -1,26 +1,44 @@
 name: CI
 
-# Pull requests only. A merge to main runs deploy-pages.yml, which builds
-# the same site from the same inputs and verifies it before deploying;
-# running this again on the merge commit repeated that work (~15 runner
-# minutes, two of them macOS) for a tree the pull request had just tested.
-# The desktop installers and their GitHub release, which used to be built
-# here on every merge, are cut by release-desktop.yml when the release
-# train asks (scripts/release-playground.sh).
+# Two tiers (YurtOS/yurt-sandbox#367: every pull request's CI under 5
+# minutes). A pull request runs the quick tier: fmt / lint, the test shards
+# and the short acceptance scenes. The scenes that take over 5 minutes
+# (MERGE_TIER in `checks`) are the merge tier: they run on a push to main
+# and on a workflow_dispatch, and on a pull request only while it carries the
+# `ci:full` label. Adding the label starts a run (the `labeled` type); the
+# label is read on every event, so while it is on every push runs them.
+# Any other label starts a run too, which replaces the one in progress with
+# the same jobs; labels are rare here. Without `ci:full` a merge-tier break
+# shows up in main's run, after the merge (and after deploy-pages.yml, which
+# does not wait for this workflow, deployed it).
+#
+# A push to main runs everything: every acceptance scene and the test shards
+# (deploy-pages.yml's own deno test does not set PLAYGROUND_REQUIRE_ARTIFACTS,
+# so it cannot stand in for them). The desktop installers and their GitHub release are cut by
+# release-desktop.yml when the release train asks
+# (scripts/release-playground.sh).
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 # The workflow token can read the repository and nothing else; the
 # cross-repo credentials come from named secrets.
-# A push on top of a push runs the newest tree only: the superseded run's
-# test and acceptance legs are cancelled.
+# A push on top of a push to a pull request runs the newest tree only: the
+# superseded run's test and acceptance legs are cancelled. Each push to main
+# has a group of its own: a group holds one running and one waiting run, and
+# a newer waiting run replaces the older, so three merges in one run's time
+# would drop the middle one's result.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.ref }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
+  # Read only: the tier step reads the pull request's labels.
+  pull-requests: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -39,7 +57,48 @@ jobs:
     # than on a runner of its own.
     outputs:
       present: ${{ steps.token.outputs.present }}
+      exclude: ${{ steps.tier.outputs.exclude }}
     steps:
+      # Which acceptance scenes this run leaves out, as the matrix's
+      # `exclude`: the merge tier on a pull request without `ci:full`,
+      # nothing otherwise. First, so a later step's failure (fmt, lint)
+      # still leaves the legs a valid matrix; if this step fails, `present`
+      # is unset too, the legs are skipped and the gate fails on `checks`.
+      # layout_test.ts checks MERGE_TIER against the scene list.
+      #
+      # The labels are read now, not from the event: a push's event carries
+      # the labels of the moment it was sent, so a push a few seconds after
+      # the label was added ran the pull request tier, and cancelled the
+      # `labeled` run that would have run the full one (#276).
+      - name: Choose the tier
+        id: tier
+        env:
+          MERGE_TIER: playground jupyterlite slim
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          FULL=true
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            # An API error fails this job (and so the gate), never picks a tier.
+            labels=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name')
+            grep -qx 'ci:full' <<< "$labels" || FULL=false
+          fi
+          if [ "$FULL" = true ]; then
+            exclude='[]'
+            echo "### Tier: full (every acceptance scene)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            read -ra scenes <<< "$MERGE_TIER"
+            exclude=$(printf '%s\n' "${scenes[@]}" | jq -Rnc '[inputs | {scene: .}]')
+            {
+              echo "### Tier: pull request"
+              echo
+              echo "Not run here (the merge tier): $MERGE_TIER. Add the"
+              echo "\`ci:full\` label to run them on this pull request."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "exclude=$exclude" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -166,6 +225,7 @@ jobs:
           webkit,
           slim,
         ]
+        exclude: ${{ fromJSON(needs.checks.outputs.exclude) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

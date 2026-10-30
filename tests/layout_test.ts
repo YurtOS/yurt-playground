@@ -189,6 +189,46 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   );
   // The notebook interface is accepted too -- its own job since #123.
   assertEquals(scenes.includes("jupyterlite"), true);
+  // The merge tier (yurt-sandbox#367) names scenes from that list: a typo or
+  // a renamed scene would make the exclude match nothing, and the slow leg
+  // would run on every pull request again. It leaves some scene on a pull
+  // request, and the label and the trigger that bring the rest back exist.
+  const mergeTier =
+    workflow.match(/MERGE_TIER: (.+)/)?.[1].trim().split(/\s+/) ??
+      [];
+  assertEquals(mergeTier.length > 0, true, "no MERGE_TIER in ci.yml");
+  assertEquals(
+    mergeTier.filter((s) => !scenes.includes(s)),
+    [],
+    `MERGE_TIER names scenes the matrix lacks: ${mergeTier}`,
+  );
+  assertEquals(scenes.some((s) => !mergeTier.includes(s)), true);
+  assertEquals(
+    workflow.includes(
+      "exclude: ${{ fromJSON(needs.checks.outputs.exclude) }}",
+    ),
+    true,
+  );
+  // Read when the run starts, not from the event (#276).
+  assertEquals(
+    workflow.includes(
+      'gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/labels"',
+    ),
+    true,
+  );
+  assertEquals(workflow.includes("grep -qx 'ci:full' <<< \"$labels\""), true);
+  assertEquals(
+    workflow.includes("types: [opened, synchronize, reopened, labeled]"),
+    true,
+  );
+  // Each push to main gets its own concurrency group: in a shared one a newer
+  // waiting run replaces the older, and that merge's merge tier never runs.
+  assertEquals(
+    workflow.includes(
+      "group: ci-${{ github.ref }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}",
+    ),
+    true,
+  );
   // Browser acceptance is a required step, not a repository-variable opt-in:
   // it is the only check that proves the deployed pages boot the sandbox.
   assertEquals(workflow.includes("YURT_JUPYTER_E2E"), false);
