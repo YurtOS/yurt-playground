@@ -3,7 +3,33 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Yurt playground</title>
+    <title>Yurt: a Linux-compatible kernel in your browser tab</title>
+    <meta
+      name="description"
+      content="A Linux sandbox that runs entirely in your browser tab: a shell, Python and Jupyter on Yurt, an original Linux-compatible kernel compiled to WebAssembly. No server runs your code. Also a native desktop app."
+    />
+    <link rel="canonical" href="https://yurt-playground.pages.dev/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://yurt-playground.pages.dev/" />
+    <meta
+      property="og:title"
+      content="Yurt: a Linux-compatible kernel in your browser tab"
+    />
+    <meta
+      property="og:description"
+      content="A shell, Python and Jupyter running entirely in your browser tab, on Yurt, an original Linux-compatible kernel compiled to WebAssembly."
+    />
+    <meta
+      property="og:image"
+      content="https://yurt-playground.pages.dev/og-image.jpg"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="The Yurt playground: a shell and a Python cell running in a browser tab"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./xterm.css" />
     <style>
@@ -629,9 +655,12 @@
       <header class="mast">
         <h1>Yurt</h1>
         <p class="lead" id="lead">
-          A Linux sandbox that runs inside this browser tab: a shell, and
-          Python, which a desktop browser installs on its own. Nothing leaves
-          the page.
+          Yurt is an original Linux-compatible kernel compiled to WebAssembly.
+          This page runs a Linux sandbox on it inside this browser tab: a shell,
+          and on a desktop Python and Jupyter, with no server running your code.
+          It is built for in-browser coding environments, safe execution of
+          AI-agent tools, offline notebooks, and sandboxes embedded in your own
+          product.
         </p>
         <nav aria-label="interfaces">
           <a
@@ -649,6 +678,7 @@
             href="https://github.com/YurtOS/yurt-playground"
             data-testid="repo-link"
           >Source</a>
+          <a href="#partner" data-testid="partner-link">Work with us</a>
         </nav>
       </header>
 
@@ -796,9 +826,11 @@
             </button>
             <p>
               BusyBox <code>ash</code> on a real PTY, on the Yurt kernel
-              compiled to WebAssembly. Loads the sandbox's image once, then
-              boots here in the tab; when the image has Python, the cell below
-              starts a Jupyter kernel on the same machine.
+              compiled to WebAssembly: a shell in about 2&nbsp;s, Jupyter in
+              about 5&nbsp;s.
+              <span id="first-visit-note" data-testid="first-visit-note"
+              >The first visit downloads about 140 MB once (40 MB on a phone);
+                later visits load it from the browser's cache.</span>
               <span id="offline-note"
               >The sandbox has no network:
                 <code>pip install</code> and <code>wget</code> fail by design
@@ -1015,13 +1047,14 @@ yurt stop web</pre>
             <h3>Go offline, keep computing</h3>
             <p>
               Start the sandbox and wait for the cell to say <code>ready</code>.
-              Then turn off Wi-Fi (or, in Chrome, Edge and Firefox, pick
+              After the sandbox is up, turn off Wi-Fi (or, in Chrome, Edge and
+              Firefox, pick
               <kbd>Offline</kbd> in the developer tools' <kbd>Network</kbd>
               panel). Run another cell.
             </p>
             <p>
-              It still answers. The terminal's bar shows <code>offline</code>
-              while you do it.
+              It still answers, and so does a new command in the terminal. The
+              terminal's bar shows <code>offline</code> while you do it.
             </p>
           </article>
           <article class="check">
@@ -1049,17 +1082,22 @@ yurt stop web</pre>
             </p>
             <p>
               In the developer tools' <kbd>Network</kbd> panel, nothing moves
-              while a cell runs. The page's security policy forbids talking to
-              any other origin.
+              while a cell runs. The page's security policy lets it fetch only
+              from this site and a few named sources: the package repository on
+              GitHub, Hugging Face for the agent's model, and GitHub for shared
+              snapshots. The sandbox itself has no network.
             </p>
           </article>
           <article class="check">
             <h3>Check the bytes</h3>
             <p>
-              The site publishes the SHA-256 of every file the sandbox runs on,
-              the 87 MB guest filesystem included. This fetches them again and
-              hashes them here, in your browser; the kernel and the image are
-              also checked against the hash their release was published with.
+              The site publishes the SHA-256 of the page's scripts, the kernel
+              and both guest images (the slim one and the 92 MB full one). This
+              fetches them again and hashes them here, in your browser, and also
+              compares the kernel's and the images' hashes with the ones this
+              repository pins in <code>artifacts/pins.json</code>. The snapshot
+              the page restores is not in this list: the page checks each of its
+              parts against its pinned SHA-256 as it loads them.
             </p>
             <button id="verify-files" type="button" data-testid="verify-files">
               Verify downloaded files
@@ -1145,38 +1183,38 @@ yurt stop web</pre>
             </p>
           </article>
           <article class="check">
-            <h3>Use it from code</h3>
+            <h3>Embedding API for partners</h3>
             <p>
-              On the JS host, <code>KernelHostInterface.sealSandbox()</code>
-              returns the image and lets the sandbox continue;
-              <code>KernelHostInterface.restore(kernelWasm, image)</code>
-              brings it back in a fresh host with the processes ready to run. A
-              program opts in by being built with Asyncify on
-              <code>yurt.syscall</code> (it exports
-              <code>yurt_asyncify_syscall</code>); a seal of anything else is
-              refused rather than guessed at.
-            </p>
-            <p>
-              Today: one thread per program, terminals and timers carried;
-              sockets, in-flight host I/O and the stock image's shell are not
-              yet. See <code>src/snapshot_worker.ts</code> for the whole loop in
-              a page, and <code>src/notebook_kernel_worker.ts</code> for the
-              notebook kernel around a sealable CPython (<code
-              >scripts/build-python-seal.sh</code> builds it).
+              The same sandbox can be embedded in a product of your own, with
+              suspend and resume. That API is available to partners; see
+              <a href="#partner">Help bring Yurt to customers</a> below.
             </p>
           </article>
         </div>
       </details>
 
+      <section class="strip" id="partner" aria-labelledby="partner-title">
+        <h2 id="partner-title">Help bring Yurt to customers</h2>
+        <p>
+          We're looking for a business partner to help identify customer
+          opportunities, build relationships, and bring Yurt to market.
+        </p>
+        <p>
+          Contact <a href="https://github.com/ofersa">Ofer</a> or
+          <a href="https://github.com/smarcd">Sunny</a>.
+        </p>
+      </section>
+
       <footer>
-        Yurt is a Linux kernel for WebAssembly. Source, issues and releases:
+        Yurt is an original Linux-compatible kernel compiled to WebAssembly, not
+        Linux itself. Source, issues and releases:
         <a href="https://github.com/YurtOS/yurt-playground"
         >github.com/YurtOS/yurt-playground</a>. What changed in each release:
         <a
           href="https://yurtos.github.io/yurt-playground/"
           id="footer-release-notes"
           data-testid="footer-release-notes"
-        >release notes</a><span id="release-train" hidden></span>.
+        >release notes</a>.<span id="release-train" hidden></span>
       </footer>
     </main>
     <script type="module" src="./verify.js"></script>

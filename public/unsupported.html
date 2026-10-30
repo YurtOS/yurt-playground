@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Yurt playground: this page cannot boot the sandbox</title>
+    <meta name="robots" content="noindex" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <style>
       :root {
@@ -65,7 +66,13 @@
       a {
         color: var(--sky);
       }
-      a:focus-visible {
+      summary {
+        cursor: pointer;
+        color: var(--text);
+        margin-bottom: 8px;
+      }
+      a:focus-visible,
+      summary:focus-visible {
         outline: 2px solid var(--ochre);
         outline-offset: 2px;
       }
@@ -77,22 +84,27 @@
       <section class="pane">
         <h1>This page cannot boot the sandbox</h1>
         <p>
-          The playground runs a whole Linux sandbox inside the tab, on
-          <code>SharedArrayBuffer</code>-backed Web Workers. Browsers only allow
-          that on a cross-origin isolated page, and this one is not: the server
-          did not send <code>Cross-Origin-Opener-Policy: same-origin</code> and
-          <code>Cross-Origin-Embedder-Policy: require-corp</code>, or the page
-          is embedded somewhere that strips them.
-        </p>
-        <p>
-          Every current browser supports this, phones included (Safari since iOS
-          15.2). Open the playground from
-          <a href="https://yurt-playground.pages.dev/">its own address</a>, or
-          any server that sends those headers; the static build ships them in
-          <code>_headers</code>. The
+          Open the playground at
+          <a href="https://yurt-playground.pages.dev/"
+          >yurt-playground.pages.dev</a> in a current browser (Chrome, Edge,
+          Firefox or Safari, phones included). Or run it on your machine: the
           <a href="https://github.com/YurtOS/yurt-playground/releases/latest"
           >desktop app and the command line</a> need none of this.
         </p>
+        <details>
+          <summary>Why this happened</summary>
+          <p>
+            The playground runs a whole Linux sandbox inside the tab, on
+            <code>SharedArrayBuffer</code>-backed Web Workers. Browsers only
+            allow that on a cross-origin isolated page, and this one is not: the
+            server did not send
+            <code>Cross-Origin-Opener-Policy: same-origin</code> and
+            <code>Cross-Origin-Embedder-Policy: require-corp</code>, or the page
+            is embedded somewhere that strips them. Every current browser
+            supports isolation (Safari since iOS 15.2); the static build ships
+            the headers in <code>_headers</code>.
+          </p>
+        </details>
       </section>
     </main>
   </body>

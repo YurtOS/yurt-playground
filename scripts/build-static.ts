@@ -60,13 +60,16 @@ const STATIC_FILES = [
   // answer is no, said in JSON rather than as a 404 on every boot (#86).
   "desktop.json",
   "favicon.svg",
+  // The link preview's picture (og:image), 1200x630.
+  "og-image.jpg",
   // For pages that name no icon -- JupyterLite's Notebook page -- the
   // browser asks for /favicon.ico; without it, a console 404 (#247).
   "favicon.ico",
   // The local agent's inference worker (#140); its runtime is /llm/.
   "llm_worker.bundle.js",
   "agent.css",
-  // How much shared wasm memory this browser lets a tab reserve (#270).
+  // How much shared wasm memory this browser lets a tab reserve: the boot's
+  // probe Worker, and its page (noindex) for measuring a device by hand.
   "memory-probe.html",
   "memory-probe.js",
 ];

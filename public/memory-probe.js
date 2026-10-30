@@ -1,4 +1,4 @@
-// Measures how much shared WebAssembly memory one tab may reserve (#270).
+// Measures how much shared WebAssembly memory one tab may reserve.
 // The same file runs as the page and as each probe's Worker: a Worker
 // holds what it reserved until it is terminated, so each measurement gets
 // a fresh one.

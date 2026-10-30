@@ -163,7 +163,7 @@ Deno.test("release-notes links point at the train named in pins.json", async () 
   }
   assertEquals(
     elements.get("release-train")?.textContent,
-    ` (this page is pinned to train ${train})`,
+    " Version 2026-10-26.",
   );
 });
 

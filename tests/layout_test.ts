@@ -387,6 +387,7 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
     "JupyterLab",
     "Release notes",
     "Source",
+    "Work with us",
   ]);
   const navNotes = navLinks[2][1];
   assertEquals(navNotes.includes(`href="${notes}"`), true);
@@ -702,4 +703,51 @@ Deno.test("every workflow restricts its token to reading the repository", async 
       `${entry.name} does not restrict the workflow token to contents: read`,
     );
   }
+});
+
+Deno.test("the partner section is linked from the masthead and names no email", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const nav = html.slice(
+    html.indexOf('<nav aria-label="interfaces">'),
+    html.indexOf("</nav>"),
+  );
+  assertEquals(nav.includes('href="#partner"'), true);
+  assertEquals(/>Work with us</.test(nav), true);
+  const start = html.indexOf('id="partner"');
+  assertEquals(start > html.indexOf("</details>"), true, "below the strips");
+  const partner = html.slice(start, html.indexOf("</section>", start));
+  assertEquals(partner.includes("Help bring Yurt to customers"), true);
+  for (const login of ["ofersa", "smarcd"]) {
+    assertEquals(partner.includes(`https://github.com/${login}"`), true, login);
+  }
+  assertEquals(/mailto:|@[a-z0-9-]+\.[a-z]/i.test(html), false, "an email");
+  assertEquals(start < html.indexOf("<footer>"), true, "before the footer");
+});
+
+Deno.test("the home page carries its link-preview tags and their image", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  for (
+    const tag of [
+      'name="description"',
+      'rel="canonical"',
+      'property="og:title"',
+      'property="og:description"',
+      'property="og:image"',
+      'name="twitter:card"',
+    ]
+  ) {
+    assertEquals(html.includes(tag), true, tag);
+  }
+  const image = await Deno.stat(
+    new URL("../public/og-image.jpg", import.meta.url),
+  );
+  assertEquals(image.size < 200_000, true, `og-image.jpg is ${image.size} B`);
+  const build = await Deno.readTextFile(
+    new URL("../scripts/build-static.ts", import.meta.url),
+  );
+  assertEquals(build.includes('"og-image.jpg"'), true);
 });
