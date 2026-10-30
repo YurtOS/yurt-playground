@@ -658,9 +658,9 @@
           Yurt is an original Linux-compatible kernel compiled to WebAssembly.
           This page runs a Linux sandbox on it inside this browser tab: a shell,
           and on a desktop Python and Jupyter, with no server running your code.
-          It is built for in-browser coding environments, safe execution of
-          AI-agent tools, offline notebooks, and sandboxes embedded in your own
-          product.
+          It is meant for in-browser coding environments, running AI-agent tools
+          away from your machine, offline notebooks, and sandboxes embedded in
+          your own product.
         </p>
         <nav aria-label="interfaces">
           <a
@@ -689,7 +689,7 @@
       </p>
 
       <p id="mobile-note" data-testid="mobile-note" hidden>
-        This looks like a tablet, so this page runs the Linux shell only, with a
+        This looks like a tablet, so this page runs the shell and Python, with a
         snapshot made for tablets: Jupyter and the agent need more memory than a
         tablet browser gives one tab. A desktop browser, or the desktop app,
         runs all of it.
@@ -826,11 +826,12 @@
             </button>
             <p>
               BusyBox <code>ash</code> on a real PTY, on the Yurt kernel
-              compiled to WebAssembly: a shell in about 2&nbsp;s, Jupyter in
-              about 5&nbsp;s.
+              compiled to WebAssembly: a shell in about 2&nbsp;s (Jupyter in
+              about 5&nbsp;s on a desktop).
               <span id="first-visit-note" data-testid="first-visit-note"
-              >The first visit downloads about 140 MB once (40 MB on a phone);
-                later visits load it from the browser's cache.</span>
+              >The first visit downloads it once, about 140 MB on a desktop, 100
+                MB on a tablet, 40 MB on a phone; later visits load it from the
+                browser's cache.</span>
               <span id="offline-note"
               >The sandbox has no network:
                 <code>pip install</code> and <code>wget</code> fail by design
@@ -848,9 +849,9 @@
               <a href="./?start-anyway">this page with ?start-anyway</a>.
             </p>
             <p data-why="tablet" hidden>
-              This is a tablet, and mobile browsers rarely give a tab the memory
-              and background workers the sandbox needs. Open this page in a
-              desktop browser.
+              This is a tablet, and the sandbox did not start here: tablet
+              browsers give one tab little memory and few background workers.
+              Reload to try again, or open this page in a desktop browser.
             </p>
             <p data-why="reloaded" hidden>
               The browser reloaded this tab while the sandbox was starting. That
@@ -1091,13 +1092,14 @@ yurt stop web</pre>
           <article class="check">
             <h3>Check the bytes</h3>
             <p>
-              The site publishes the SHA-256 of the page's scripts, the kernel
-              and both guest images (the slim one and the 92 MB full one). This
-              fetches them again and hashes them here, in your browser, and also
-              compares the kernel's and the images' hashes with the ones this
-              repository pins in <code>artifacts/pins.json</code>. The snapshot
-              the page restores is not in this list: the page checks each of its
-              parts against its pinned SHA-256 as it loads them.
+              The site publishes the SHA-256 of the page's main scripts, the
+              kernel and both guest images (the slim one and the 92 MB full
+              one). This fetches them again and hashes them here, in your
+              browser, and also compares the kernel's and the images' hashes
+              with the ones this repository pins in <code
+              >artifacts/pins.json</code>. The snapshot the page restores is not
+              in this list: the page checks each of its parts against its pinned
+              SHA-256 as it loads them.
             </p>
             <button id="verify-files" type="button" data-testid="verify-files">
               Verify downloaded files
@@ -1183,11 +1185,20 @@ yurt stop web</pre>
             </p>
           </article>
           <article class="check">
-            <h3>Embedding API for partners</h3>
+            <h3>Building on it</h3>
             <p>
-              The same sandbox can be embedded in a product of your own, with
-              suspend and resume. That API is available to partners; see
+              The kernel's JavaScript host can seal and restore a running
+              sandbox (today: programs built for it, one thread each, no open
+              sockets). It is not public yet; if you want to build on it, see
               <a href="#partner">Help bring Yurt to customers</a> below.
+            </p>
+            <p>
+              To drive this page's sandbox from a program now, use
+              <code>window.yurt</code> (commands, files, status), described in
+              the
+              <a
+                href="https://github.com/YurtOS/yurt-playground#driving-the-sandbox-from-a-program"
+              >README</a>.
             </p>
           </article>
         </div>

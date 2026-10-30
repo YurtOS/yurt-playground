@@ -719,6 +719,18 @@ Deno.test("the partner section is linked from the masthead and names no email", 
   assertEquals(start > html.indexOf("</details>"), true, "below the strips");
   const partner = html.slice(start, html.indexOf("</section>", start));
   assertEquals(partner.includes("Help bring Yurt to customers"), true);
+  const prose = partner.replace(/\s+/g, " ");
+  assertEquals(
+    prose.includes(
+      "We're looking for a business partner to help identify customer opportunities, build relationships, and bring Yurt to market.",
+    ),
+    true,
+  );
+  assertEquals(
+    /Contact <a href="https:\/\/github\.com\/ofersa">Ofer<\/a> or <a href="https:\/\/github\.com\/smarcd">Sunny<\/a>\./
+      .test(prose),
+    true,
+  );
   for (const login of ["ofersa", "smarcd"]) {
     assertEquals(partner.includes(`https://github.com/${login}"`), true, login);
   }
