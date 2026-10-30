@@ -148,9 +148,7 @@ export async function mountAgentPane(
       el("code", { textContent: "window.yurt" }),
       " and can run any command there, change or delete files and stop " +
         "processes, the same as typing in the terminal above. Every step is " +
-        "shown as it runs, and Stop ends it. Running commands still needs " +
-        "this page's server: offline, the model answers but the sandbox " +
-        "cannot start new processes.",
+        "shown as it runs, and Stop ends it.",
     ),
     el("div", { className: "row" }, choice, startButton),
     cost,

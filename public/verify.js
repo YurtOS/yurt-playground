@@ -211,9 +211,20 @@ async function showTrain() {
   }
   const label = document.getElementById("release-train");
   if (label) {
-    label.textContent = ` (this page is pinned to train ${train})`;
+    label.textContent = ` Version ${trainVersion(train)}.`;
     label.hidden = false;
   }
+}
+
+// What a visitor reads as the version: the train's date, with its `.N`
+// suffix when the day had several (`playground-2026.10.27-3d32068.2` is
+// 2026-10-27.2). A name of another shape is shown as it is.
+function trainVersion(train) {
+  const match = /^playground-(\d{4})\.(\d{2})\.(\d{2})-[0-9a-f]+(?:\.(\d+))?$/
+    .exec(train);
+  if (!match) return train;
+  const [, year, month, day, n] = match;
+  return `${year}-${month}-${day}${n ? `.${n}` : ""}`;
 }
 
 showTrain();
