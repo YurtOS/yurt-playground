@@ -253,5 +253,6 @@ Maintainers: releasing, previews and snapshot tooling are in
 
 Yurt's own code (this repository, the kernel, runtime and tooling) is licensed
 under Apache-2.0; see [LICENSE](LICENSE). Most of those repositories are not
-public yet, and this site and the releases ship them as binaries. Third-party
-software in the images keeps its own license.
+public yet, and this site and the releases ship them as binaries. The guest SDK
+and its runtime libraries, which are linked into programs built for Yurt, are
+MIT-licensed. Third-party software in the images keeps its own license.
