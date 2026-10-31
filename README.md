@@ -22,7 +22,7 @@ own.
   Chromium; WebKit, Safari's engine, takes about 8 s to Jupyter).
 - **First visit.** A desktop browser downloads about 138 MB once: the 7.2 MB
   kernel and a 131 MB snapshot with Python and Jupyter. A tablet downloads about
-  102 MB, a phone about 38 MB. A repeat visit takes them from the browser's
+  101 MB, a phone about 38 MB. A repeat visit takes them from the browser's
   cache.
 - **Phones and tablets boot too**: a phone gets the shell, a tablet the shell
   and Python. Jupyter needs a desktop browser.
@@ -41,17 +41,17 @@ going, in [the roadmap](docs/ROADMAP.md).
 | NumPy                              | ✓ desktop                                                             | ✓                                                  |
 | Jupyter Notebook and JupyterLab    | ✓ desktop                                                             | ✓                                                  |
 | Node.js 22, Gemini CLI             | as packages (Gemini CLI needs the desktop app's network for its API)  | ✓ in the image                                     |
+| Go, `gh`, clang (C and C++)        | as packages, desktop (`gh` needs the desktop app's network)           | as packages                                        |
 | Runs in                            | the tab (WebAssembly, no server)                                      | the native Yurt runtime on your machine            |
 | Boots                              | the slim image, or a snapshot of it with Python installed             | the full image                                     |
-| Network from inside the sandbox    | none, by design                                                       | yes (Python verifies TLS; BusyBox `wget` does not) |
+| Network from inside the sandbox    | none, by design; `pkg` reaches its repository through the page        | yes (Python verifies TLS; BusyBox `wget` does not) |
 | Works offline                      | yes, after the sandbox is up                                          | yes                                                |
 | Needs                              | a browser with cross-origin isolation (Chrome, Edge, Firefox, Safari) | macOS (Apple Silicon) or Debian/Ubuntu             |
 
 In the browser, files live in the tab's memory: a reload starts a fresh sandbox
 (_Download home_ saves your home directory first). Planned, not done yet: files
-that survive a reload, Python native extensions loaded at run time, Go programs
-in the browser, and Jupyter on tablets. The [roadmap](docs/ROADMAP.md) has the
-rest.
+that survive a reload, Python native extensions loaded at run time, and Jupyter
+on tablets. The [roadmap](docs/ROADMAP.md) has the rest.
 
 ### What is in the sandbox
 
@@ -194,12 +194,14 @@ Packages are signed and published in
   command needs root (it writes its cache and state under system directories),
   which is what the passwordless `sudo` is for. `pip install` of pure-Python
   packages and matching wheels works there too.
-- **Browser:** the sandbox has no network, so the page fetches for it. Press
-  _Packages_ in the terminal's bar, then _Install_ next to a package. The page
-  downloads the signed index, the package and its Sigstore bundle, and the
-  sandbox's own `pkg` checks every signature, sha256 and size before it
-  installs, exactly as on the desktop. `sudo pkg install` typed in the browser
-  terminal fails, since only the page can download.
+- **Browser:** the sandbox has no network, so the page fetches for it.
+  `sudo pkg update`, then `sudo pkg install NAME`, works in the terminal as on
+  the desktop: the page answers `pkg` on the sandbox's loopback and downloads
+  only files of the package repository. Or press _Packages_ in the terminal's
+  bar, then _Install_ next to a package. Either way the sandbox's own `pkg`
+  checks every signature, sha256 and size before it installs, and the terminal
+  and the panel share one cache. `pip install` and `wget` still fail: programs
+  in the sandbox have no network of their own.
   - Installed packages live in the tab's memory, like every file there, and a
     reload loses them
     ([#81](https://github.com/YurtOS/yurt-playground/issues/81)), except the

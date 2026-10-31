@@ -13,16 +13,16 @@ actually shipped is in the
 progress right now is in their
 [Upcoming](https://yurtos.github.io/yurt-playground/#upcoming) section.
 
-_Last updated 2026-10-30, after train
-[playground-2026.10.29-3d32068](https://yurtos.github.io/yurt-playground/#playground-2026.10.29-3d32068)
+_Last updated 2026-10-31, after train
+[playground-2026.10.31-3d32068](https://yurtos.github.io/yurt-playground/#playground-2026.10.31-3d32068)
 and the page updates that followed it._
 
 ## Now
 
 What you can use today.
 
-- **A Linux shell in the tab.** BusyBox `ash` and 151 applets, with no server
-  and no network; the page keeps working offline
+- **A Linux shell in the tab.** BusyBox `ash` and 151 applets, and `zsh`, with
+  no server and no network; the page keeps working offline
   ([first train](https://yurtos.github.io/yurt-playground/#playground-2026.09.21-7eb03a7)).
 - **Python and Jupyter.** CPython 3.14, pip and NumPy, and Jupyter Notebook and
   JupyterLab on a real `ipykernel` running inside the sandbox.
@@ -50,14 +50,21 @@ What you can use today.
   reloading the page
   ([2026.10.27.2](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068.2)).
 - **Packages, released on their own schedule.** Python, Node, Gemini CLI, Go,
-  `gh`, Perl and more are published in
-  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) independently
-  of trains ([Packages](https://yurtos.github.io/yurt-playground/#packages)). In
-  the browser tab the _Packages_ panel installs them, and the sandbox's own
-  `pkg` checks every signature first; a new Python set reaches the page with no
-  train
+  `gh`, clang, OpenSSL, Perl, an x86-64 emulator (`yurtos-x86`) and more are
+  published in [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages)
+  independently of trains
+  ([Packages](https://yurtos.github.io/yurt-playground/#packages)). In the
+  browser tab `sudo pkg install NAME` works in the terminal, since the page
+  fetches the package repository's files for `pkg`, and the _Packages_ panel
+  installs them too; the sandbox's own `pkg` checks every signature first. A new
+  Python set reaches the page with no train
   ([2026.10.26](https://yurtos.github.io/yurt-playground/#playground-2026.10.26-3d32068),
   [2026.10.27](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068)).
+- **Go, `gh` and clang in a desktop browser.** The `go` toolchain builds and
+  runs programs in the tab (the first `go build` compiles the standard library,
+  which takes about 17 minutes there), `gh` starts (it needs the desktop app's
+  network to reach GitHub), and `clang` compiles C and C++ inside the sandbox
+  ([Packages](https://yurtos.github.io/yurt-playground/#packages)).
 - **Upload files** from your device into the browser sandbox
   ([2026.10.26](https://yurtos.github.io/yurt-playground/#playground-2026.10.26-3d32068)).
 - **Desktop app** for macOS (Apple Silicon) and Debian/Ubuntu. The sandbox runs
@@ -110,10 +117,6 @@ Planned for the next one or two trains. These are in progress, not finished.
 
 Bigger directions. Each needs design work, and the order is not fixed.
 
-- **A current clang as a package.** Go (1.28.0-devel), `gh` (2.102.0) and Perl
-  (5.44.0) are now published in
-  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) (see Now); the
-  clang build there dates from May 2026 and predates the current package format.
 - **Files that survive a reload.** Durable storage for the browser sandbox, so a
   reload does not lose your work
   ([#81](https://github.com/YurtOS/yurt-playground/issues/81)). Saving the whole
@@ -125,20 +128,15 @@ Bigger directions. Each needs design work, and the order is not fixed.
 - **Open files from your device.** Beyond a one-off upload: opening a file or
   folder from your device in the sandbox and saving changes back. Being
   explored.
-- **Go in the browser and on iPad.** Go runs on Yurt as an ordinary Linux
-  program, using a port that builds on upstream Go's
+- **Go on iPad, and faster Go in the browser.** Go runs on Yurt as an ordinary
+  Linux program, using a port that builds on upstream Go's
   [wasm32 work](https://github.com/golang/go/issues/63131), which is not merged
-  upstream yet. The Go toolchain (`go`, `gofmt`) is now a package, `go`, and
-  builds and tests programs in a desktop sandbox; it is not in the image. Go
-  programs cannot run in the browser sandbox yet: the browser sandbox runs only
-  programs that share the one memory it provides, as C, Rust and Python programs
-  already do, while Go's linker gives each program a memory of its own, so
-  `go version` in the tab fails with "Exec format error". A change to Go's
-  linker is in progress. The toolchain is also large: the `go` package is a 59.4
-  MB download, unpacked and held entirely in the tab's memory, so it stays an
-  opt-in install rather than part of the image. On iPad the per-tab process and
-  memory limits are a further question, since `go build` starts several compiler
-  and linker processes.
+  upstream yet. The `go` package runs in the browser tab and in a desktop
+  sandbox, on one thread. It is large (a 59.4 MB download, held entirely in the
+  tab's memory), so it stays an opt-in install rather than part of the image,
+  and the first `go build` in the tab is slow. On iPad it is over the 16 MiB
+  install limit today, and the per-tab process and memory limits are a further
+  question, since `go build` starts several compiler and linker processes.
 - **More of the playground on tablets.** iPad browsers limit the processes and
   memory one tab can use, which is why tablets get no Jupyter today and why a
   long shell session can still run out of memory
@@ -159,8 +157,9 @@ Bigger directions. Each needs design work, and the order is not fixed.
 ## Known limits today
 
 - **No network inside the browser sandbox**, by design. The page fetches
-  packages for it, but `pip install` (pure-Python packages and matching wheels)
-  and other downloads from inside the sandbox work only in the desktop app.
+  packages for `pkg`, from the package repository only, but `pip install`
+  (pure-Python packages and matching wheels) and other downloads from inside the
+  sandbox work only in the desktop app.
 - **Installed packages in the browser are lost on reload**, like every other
   file there ([#81](https://github.com/YurtOS/yurt-playground/issues/81)),
   except the Python set: it comes back with the snapshot, or, when the page
@@ -178,13 +177,13 @@ Bigger directions. Each needs design work, and the order is not fixed.
 - **Tablets run the shell and Python**, with no Jupyter or agent pane.
   **Phones** run the shell only. The Notebook and JupyterLab pages do not start
   a sandbox on a phone.
-- **Go is a package, not part of the image**, and Go programs cannot run in the
-  browser sandbox yet. In a desktop sandbox they run on one thread, and signals
-  reach them only between system calls.
+- **Go is a package, not part of the image.** Go programs run on one thread, and
+  signals reach them only between system calls; in the browser the first
+  `go build` takes about 17 minutes.
 - **Gemini CLI is slow to start the first time in the browser**, after it is
-  installed from the _Packages_ panel; it starts faster in the desktop app.
+  installed; it starts faster in the desktop app.
 - **The first visit downloads a lot**: about 138 MB on a desktop (the kernel and
-  the snapshot with Python and Jupyter), about 102 MB on a tablet and 38 MB on a
+  the snapshot with Python and Jupyter), about 101 MB on a tablet and 38 MB on a
   phone. A later visit takes them from the browser's cache.
 
 ## How it ships

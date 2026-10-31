@@ -6,13 +6,18 @@ in this repo. `CLAUDE.md` points here.
 ## Project shape
 
 - **Purpose:** the in-browser Yurt playground. A static page boots a real Yurt
-  sandbox: first BusyBox/`ash`, then preinstalled CPython, then the existing
-  `yurt-jupyter` stack. This repo owns the page, the local COOP/COEP server,
-  artifact pins, and Playwright acceptance. It does **not** own the kernel,
-  guest toolchain, image recipes, or Jupyter payload.
+  sandbox in the tab (BusyBox `ash`, CPython and the `yurt-jupyter` stack); by
+  default it restores a snapshot made for the device. The same page is the
+  desktop app's front end, over a native host. This repo owns the page, the
+  local COOP/COEP server, the desktop launcher, artifact pins, and Playwright
+  acceptance. It does **not** own the kernel, guest toolchain, image recipes, or
+  Jupyter payload.
 - **Languages:** TypeScript on Deno (`deno.json`).
-- **Plan:**
-  [`docs/superpowers/plans/2026-08-17-browser-yurt-playground.md`](./docs/superpowers/plans/2026-08-17-browser-yurt-playground.md).
+- **Docs:** [`README.md`](./README.md) for what the playground is today,
+  [`docs/MAINTAINING.md`](./docs/MAINTAINING.md) for releasing and snapshots.
+  The original plan,
+  [`docs/superpowers/plans/2026-08-17-browser-yurt-playground.md`](./docs/superpowers/plans/2026-08-17-browser-yurt-playground.md),
+  is history.
 
 ## Sibling repos (do not reimplement here)
 
@@ -34,7 +39,9 @@ Kernel primitives stay in `yurtos-kernel`. Image composition stays in
 
 ## Locked decisions
 
-- In-browser. Not a websocket to a native `yurt-runtime-wasmtime`.
+- The hosted page runs the sandbox in the tab, not over a websocket to a native
+  runtime. Only the desktop app's page reaches a native host, through WebSockets
+  on its launcher's origin.
 - One sandbox, one VFS. xterm talks to a host-owned PTY.
 - Jupyter JS dials a port the guest is already listening on (`dialSandboxPort`).
   No `Deno.connect`, no host OS TCP, no guest egress, with one exception.
