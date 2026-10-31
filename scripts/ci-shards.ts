@@ -21,6 +21,7 @@ export const NAMED_SHARDS: Record<string, string[]> = {
     // Boots the in-tab sandbox, like the others here.
     "tests/linux_remark_boot_test.ts",
     "tests/notebook_kernel_test.ts",
+    "tests/pkg_relay_boot_test.ts",
     "tests/stage_test.ts",
     "tests/vi_test.ts",
     "tests/zsh_test.ts",

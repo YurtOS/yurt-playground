@@ -35,6 +35,12 @@ export const PACKAGE_SOURCES = [
   "https://raw.githubusercontent.com/YurtOS/yurt-packages/",
 ];
 
+/** Where the guest's own `pkg` reaches {@link PACKAGE_REPO_URL} in the
+ * tab: the page's package relay on the sandbox's loopback
+ * (src/pkg_relay.ts), which fetches each file for it. */
+export const PKG_RELAY_PORT = 7417;
+export const PKG_RELAY_URL = `http://127.0.0.1:${PKG_RELAY_PORT}/`;
+
 /** The repository the image's trust configuration must name: the one entry
  * of `trusted-repos.toml` whose signing identity the browser copy reuses,
  * found by these two consecutive path segments of its URL. */
@@ -103,7 +109,7 @@ export function isPackageName(name: string): boolean {
  * `%` (an encoded `..` resolves as one), `?` and `#` (a query or fragment
  * pkg drops), `:` (a scheme, which pkg takes as an absolute URL), and
  * spaces and control characters (URL parsers strip tabs and newlines). */
-function checkRelative(path: string, what: string): string {
+export function checkRelative(path: string, what: string): string {
   if (
     path === "" || path.startsWith("/") ||
     // deno-lint-ignore no-control-regex
@@ -258,12 +264,7 @@ export function browserTrustedRepos(
   toml: string,
   mirrorUrl: string,
 ): { toml: string; id: string } {
-  const repo = repoTables(toml).find((table) => {
-    const segments = (table.values.url ?? "").split("/");
-    return segments.some((segment, i) =>
-      segment === TRUSTED_REPO[0] && segments[i + 1] === TRUSTED_REPO[1]
-    );
-  });
+  const repo = repoTables(toml).find(isPackageRepo);
   if (repo === undefined) {
     throw new Error(
       `${TRUSTED_REPOS_PATH} does not trust ${TRUSTED_REPO.join("/")}`,
@@ -282,6 +283,43 @@ export function browserTrustedRepos(
     line.startsWith("url ") ? `url = ${JSON.stringify(mirrorUrl)}` : line
   );
   return { toml: ["[[repo]]", ...lines, ""].join("\n"), id: repo.values.id };
+}
+
+/** The table for YurtOS/yurt-packages: by its URL's path segments, or at
+ * the relay, where the page's boot points it ({@link relayTrustedRepos}). */
+function isPackageRepo(table: TomlRepo): boolean {
+  const url = table.values.url ?? "";
+  if (url === PKG_RELAY_URL) return true;
+  const segments = url.split("/");
+  return segments.some((segment, i) =>
+    segment === TRUSTED_REPO[0] && segments[i + 1] === TRUSTED_REPO[1]
+  );
+}
+
+/**
+ * The image's `trusted-repos.toml` with the YurtOS/yurt-packages entry's
+ * `url` pointed at the relay, and nothing else changed: the other tables,
+ * comments, and the entry's id and signing identity stay as they are.
+ * `undefined` when it already points there (a restored sandbox), or when
+ * no entry names the repository: there is nothing to relay for.
+ */
+export function relayTrustedRepos(toml: string): string | undefined {
+  const tables = repoTables(toml);
+  const target = tables.findIndex(isPackageRepo);
+  if (target < 0 || tables[target].values.url === PKG_RELAY_URL) {
+    return undefined;
+  }
+  let table = -1;
+  return toml.split("\n").flatMap((raw) => {
+    const line = raw.trim();
+    if (line === "[[repo]]") table++;
+    if (table !== target || !/^url\s*=/.test(line)) return [raw];
+    return [
+      "# In the browser playground the page fetches this repository for pkg",
+      `# (${PACKAGE_REPO_URL}), through its relay on the sandbox's loopback.`,
+      `url = ${JSON.stringify(PKG_RELAY_URL)}`,
+    ];
+  }).join("\n");
 }
 
 function q(word: string): string {
@@ -624,7 +662,7 @@ const INDEX_GRACE_MS = 30 * 24 * 3600 * 1000;
 
 /** The most an index, a signature or a package's metadata may be: they are
  * a few KiB. */
-const METADATA_MAX_BYTES = 4 * 1024 * 1024;
+export const METADATA_MAX_BYTES = 4 * 1024 * 1024;
 
 /** `fetch` with progress, failing unless the response is OK, and as soon as
  * the response passes `limit` bytes, so a response larger than the index

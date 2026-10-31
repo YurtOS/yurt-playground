@@ -680,6 +680,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     term,
     memoryRefused: () => post(memoryRefusedMessage()),
     linuxRemark: (remark: string) => post({ type: "linux-remark", remark }),
+    // The terminal's `pkg` fetches through the page (src/pkg_relay.ts);
+    // the desktop app's guest has the network itself.
+    pkgRelay: kernelPorts === undefined
+      ? { tablet: msg.tablet === true }
+      : undefined,
   };
   // The slim image's Python: the coordinator installs the set itself, so
   // every page that boots a sandbox gets the same install.

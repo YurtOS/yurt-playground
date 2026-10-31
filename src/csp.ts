@@ -10,7 +10,8 @@
  * every page: the packages the sandbox installs come from the one
  * repository path YurtOS/yurt-packages ({@link PACKAGE_SOURCES},
  * src/packages.ts) -- on the slim image the Notebook and Lab pages install
- * Python from there before their kernel starts. Outside JupyterLite only:
+ * Python from there before their kernel starts, and the terminal's own
+ * `pkg` fetches through the page's relay (src/pkg_relay.ts). Outside JupyterLite only:
  * uploaded sandbox snapshots (`?snapshot=<id>`) come from the one
  * repository path YurtOS/yurt-playground ({@link SNAPSHOT_SOURCE}), once
  * the GitHub API's list of its snapshot refs ({@link SNAPSHOT_REFS_API})
