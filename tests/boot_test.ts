@@ -355,6 +355,48 @@ Deno.test({
 });
 
 Deno.test({
+  name:
+    "a timed-out pipeline is reported once no member is left, zombies included (yurt-sandbox#357)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const session = await bootAshSession();
+    if (!session) return;
+    const registry = new ExecutionRegistry(session.process, session.signal);
+    const exec = async (cmd: string, timeoutMs?: number) => {
+      const id = await registry.spawn(cmd, { timeoutMs });
+      return { id, result: await registry.wait(id) };
+    };
+    try {
+      // Spinning members die after their leader, every time: the case the
+      // kernel's lazy orphan release (yurtos-kernel#3002) left listed as
+      // zombies until some later command's reap.
+      for (let i = 0; i < 3; i++) {
+        const { id, result } = await exec(
+          "while :; do :; done | while :; do :; done",
+          500,
+        );
+        assertEquals("signal" in result && result.signal, "SIGKILL");
+        assertEquals(result.timedOut, true);
+        const leader = id.split("-")[1];
+        // Every process in the leader's group, by /proc: state, ppid,
+        // pgrp follow the command name.
+        const { result: left } = await exec(
+          `for d in /proc/[0-9]*; do read -r s < "$d/stat" 2>/dev/null || continue; r=\${s##*) }; set -- $r; [ "$3" = ${leader} ] && echo "$s"; done; true`,
+        );
+        assertEquals(
+          left.stdout,
+          "",
+          `round ${i}: the group outlived its kill`,
+        );
+      }
+    } finally {
+      session.stop();
+    }
+  },
+});
+
+Deno.test({
   name: "a failing reap does not change an exec's exit status (#148)",
   sanitizeOps: false,
   sanitizeResources: false,

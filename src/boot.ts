@@ -65,7 +65,7 @@ import {
   type SnapshotKind,
 } from "./sandbox_snapshot.ts";
 import { uploadedSnapshot } from "./snapshot_source.ts";
-import type { Spawner, WaitStatus } from "./executions.ts";
+import { KILL_GRACE_MS, type Spawner, type WaitStatus } from "./executions.ts";
 import {
   decodeWaitRecord,
   WAIT_RECORD_LEN,
@@ -765,6 +765,9 @@ async function startShell(
   /** Spawns that have begun and not yet returned: a seal waits for them,
    * so no process it has not seen can start under it. */
   let spawning = 0;
+  /** Per group leader the page SIGKILLed, the wait for the rest of its
+   * group to die (`signal` below): the leader's reap waits for it. */
+  const groupKills = new Map<number, Promise<void>>();
 
   /** `/bin/sh` with `argv`, as the login user in the login home, leading
    * its own process group unless `ownGroup` is false. */
@@ -831,7 +834,15 @@ async function startShell(
     };
     const start = process.runStartAsync.bind(process);
     process.runStartAsync = () =>
-      start().finally(() => {
+      start().finally(async () => {
+        // A killed pipeline's members die after their leader, and each
+        // is an orphan the kernel releases only when the host reaps a
+        // root (yurtos-kernel#3002) -- one already dead when this reap
+        // runs, or the next reap of any other command's, which may be
+        // the one that lists it. Reaped once the group is dead, the
+        // leader takes its members with it (yurt-sandbox#357).
+        await groupKills.get(process.pid);
+        groupKills.delete(process.pid);
         try {
           reap();
         } catch (error) {
@@ -1090,15 +1101,31 @@ async function startShell(
       const request = new Uint8Array(8);
       const view = new DataView(request.buffer);
       view.setUint32(0, pid, true);
-      view.setUint32(4, signal, true);
-      const { rc } = mk.kernelSyscall(METHOD.SYS_KILLPG, user.pid, request, 0);
+      const killpg = (signal: number) => {
+        view.setUint32(4, signal, true);
+        return Number(
+          mk.kernelSyscall(METHOD.SYS_KILLPG, user.pid, request, 0).rc,
+        );
+      };
+      const rc = killpg(signal);
       // An empty group: the execution is already gone.
-      if (Number(rc) !== 0 && Number(rc) !== -ESRCH) {
+      if (rc !== 0 && rc !== -ESRCH) {
         return Promise.reject(
           new Error(`killpg pgid=${pid} sig=${signal} failed: rc=${rc}`),
         );
       }
-      return Promise.resolve();
+      if (signal !== SIGKILL) return Promise.resolve();
+      // Resolved once no member is alive (signal 0 counts only the live
+      // ones), or after KILL_GRACE_MS: the leader's reap above then
+      // releases the dead members, so "killed" means no survivors.
+      const gone = (async () => {
+        const deadline = Date.now() + KILL_GRACE_MS;
+        while (killpg(0) === 0 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      })();
+      groupKills.set(pid, gone);
+      return gone;
     },
     // The Jupyter connection file, looked for by the page itself: nothing is
     // typed into the user's shell for it (yurtos-kernel#2824). Read as the
