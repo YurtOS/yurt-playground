@@ -276,6 +276,11 @@ Deno.test("the relayed install keeps beating through its last command", async ()
   const { beats } = await hostHeartbeat(script, [1000, 1600, 2200]);
   assert(beats[0] >= 3, `beats ${beats}`);
   assert(beats[2] - beats[1] >= 2, `beats ${beats}`);
+  // The guest's BusyBox ash execs a script's last simple command in the
+  // shell's place: the `exit` builtin must come after pkg.
+  assert(
+    relayedInstallScript("greet").endsWith("sudo pkg install 'greet'; exit $?"),
+  );
   // What an `exec` of the last command would do: nothing beats after it.
   const execed = await hostHeartbeat(
     "sleep 1.2; : update || exit 1\nexec sleep 1.2",
