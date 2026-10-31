@@ -219,6 +219,8 @@ Packages are signed and published in
 
 Train `playground-2026.10.31-3d32068.2`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
 
+Largest first: the desktop's holds the Python set and starts the Notebook, the tablet's the interpreter alone, the phone's no Python. A snapshot is sealed with no process in it, so nothing runs or is imported until a restore starts the shell (and, on a desktop, Jupyter). `deno run -A scripts/verify-snapshots.ts [--files] [--live]` checks each against its kind.
+
 | Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
 | --- | --- | --- | --- | --- | --- | --- |
 | desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.10.31-3d32068.2` | 130.8 MB in 7 parts | 521.4 MiB | 2459 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |

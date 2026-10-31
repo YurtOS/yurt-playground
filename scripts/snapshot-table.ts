@@ -65,6 +65,8 @@ export function snapshotTable(pins: Record<string, unknown>): string {
     "",
     `Train \`${pins.train}\`. Generated from artifacts/pins.json; \`deno run -A scripts/snapshot-table.ts\` rewrites it.`,
     "",
+    "Largest first: the desktop's holds the Python set and starts the Notebook, the tablet's the interpreter alone, the phone's no Python. A snapshot is sealed with no process in it, so nothing runs or is imported until a restore starts the shell (and, on a desktop, Jupyter). `deno run -A scripts/verify-snapshots.ts [--files] [--live]` checks each against its kind.",
+    "",
     "| Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |",
     "| --- | --- | --- | --- | --- | --- | --- |",
     ...rows,
