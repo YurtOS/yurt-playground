@@ -124,5 +124,49 @@
       ],
       "remark": "BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz"
     }
+  },
+  "tabletSnapshot": {
+    "releaseRepo": "YurtOS/yurt-playground",
+    "release": "snapshot-tablet-playground-2026.10.31-3d32068",
+    "format": 3,
+    "sha256": "024014d87d6a758c7099fa61f5fc8c30aebabdf7063ff29c834d9a205ed61bad",
+    "size": 94019071,
+    "parts": [
+      "422646bc51a15dee1117a0e3d7dde874a74b3b483d9316bdf67d997f8c14c890",
+      "8205b7ed970f50847c305cb916cdfd1a5593830bd92127f4a21acf34c5155df2",
+      "906ef6eb54bb64f14bdb4b12a72de09f6e0cf945908dbf91e249e9b7e67b8d24",
+      "a5e62d2fc4a697cc942671aee3b468b87f4e481a797c0b11cb110bfcf29fab7e",
+      "3d8820189a7ad8b4cb2a3101ec0b6baaffe9e20e3485e64f96bde6c2013d62c8"
+    ],
+    "builtFrom": {
+      "kernelSha256": "defa8da648d122fcfd30e6e96360d1b2da1cdf7440d50d82536a825e02fa338c",
+      "kernelRev": "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
+      "sealVersion": 1,
+      "bootSetup": 2,
+      "imageSha256": "0822c5c20f6ae15d42dbc4ef2cb49ea5a16e1923cc1100f486d7d8004bb57f7c",
+      "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
+      "pythonSet": "0822c5c20f6ae15d42dbc4ef2cb49ea5a16e1923cc1100f486d7d8004bb57f7c/python@3.14.7-yurt_0:ab01e884f08e0619"
+    },
+    "memoryBytes": 398917632,
+    "contents": {
+      "packages": [
+        {
+          "name": "ca-certificates",
+          "version": "2026.9.25",
+          "build": "yurt_0"
+        },
+        {
+          "name": "git",
+          "version": "2.55.0",
+          "build": "yurt_0"
+        },
+        {
+          "name": "python",
+          "version": "3.14.7",
+          "build": "yurt_0"
+        }
+      ],
+      "remark": "BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter"
+    }
   }
 }
