@@ -123,7 +123,8 @@
         }
       ],
       "remark": "BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz"
-    }
+    },
+    "restorePeakMiB": 2450
   },
   "tabletSnapshot": {
     "releaseRepo": "YurtOS/yurt-playground",
@@ -167,7 +168,8 @@
         }
       ],
       "remark": "BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter"
-    }
+    },
+    "restorePeakMiB": 1138
   },
   "phoneSnapshot": {
     "releaseRepo": "YurtOS/yurt-playground",
@@ -203,6 +205,7 @@
         }
       ],
       "remark": "BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter"
-    }
+    },
+    "restorePeakMiB": 641
   }
 }
