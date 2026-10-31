@@ -122,6 +122,10 @@ export type PlaygroundSession = {
   /** Stop, and free the kernel with every guest in it: for a session that
    * is done for good (a short-lived one, say), not one a page shows. */
   dispose?: () => void;
+  /** The guest's `pkg` reaches the repository through the page's relay
+   * (src/pkg_relay.ts): an install by name can run it as the terminal
+   * would. */
+  pkgRelay?: boolean;
   controller: SessionController;
   terminal: PtyTransport;
   /** Run a shell line as a process of the page's own (`sh -c`), as the
@@ -911,6 +915,7 @@ async function startShell(
   env.show("");
   return {
     stop,
+    pkgRelay: relay !== undefined,
     dispose() {
       stop();
       try {

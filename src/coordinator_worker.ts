@@ -243,6 +243,8 @@ async function servePackages(msg: ToWorker): Promise<void> {
         host: workerPackageHost(session),
         tablet: msg.tablet,
         progress: (text) => post({ type: "pkg-progress", req, text }),
+        // As the terminal installs: one repository cache for both.
+        relayed: session.pkgRelay === true,
       });
     });
     post({ type: "pkg-reply", req, ok: true, value: output });
