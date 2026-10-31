@@ -239,19 +239,43 @@ export function nativeSpawner(
   return { spawn, signal };
 }
 
+/** How long, in the guest's centiseconds (/proc/uptime), a SIGKILL's tree
+ * kill looks for the killed descendants before it gives up on them: the
+ * registry's KILL_GRACE_MS, well over init's pace (below). */
+export const TREE_KILL_WAIT_CS = 200;
+
 /** One shell line that signals `pid` and every process descended from
  * it, collected first so a parent's death cannot orphan a child out of
- * the set. Shell builtins only (`read`, `kill`); no process per entry. */
+ * the set. Shell builtins only (`read`, `kill`); no process per entry.
+ *
+ * A SIGKILL also waits, bounded, until the descendants are gone from
+ * /proc, zombies included (yurt-sandbox#357). Killing `pid` orphans them:
+ * they die as zombies of init, and the guest's init (BusyBox) reaps at
+ * its own pace -- after each round of reaping it sleeps a second, so a
+ * zombie can stay listed for up to that long after the kill. The root
+ * itself is the host's child, and its exit is the session's. */
 export function buildTreeKill(pid: number, signal: number): string {
-  return [
+  const kill = [
     `t='${pid}'; n="$t"`,
     'while [ -n "$n" ]; do c=""',
     'for d in /proc/[0-9]*; do read -r s < "$d/stat" 2>/dev/null || continue',
     "r=${s##*) }; set -- $r",
     'for q in $n; do [ "$2" = "$q" ] && c="$c ${d#/proc/}"; done; done',
     'n="$c"; t="$t$c"; done',
-    `kill -${signal} $t 2>/dev/null; true`,
-  ].join("; ");
+    `kill -${signal} $t 2>/dev/null`,
+  ];
+  if (signal === 9) {
+    kill.push(
+      // Centiseconds since boot: "12.34 ..." read as 1234 (the fraction
+      // is two digits; a 1 in front keeps "08" from reading as octal).
+      'cs() { read -r u _ < /proc/uptime; echo "$((${u%.*} * 100 + 1${u#*.} - 100))"; }',
+      `e=$(($(cs) + ${TREE_KILL_WAIT_CS})); set -- $t; shift`,
+      'while [ $# -gt 0 ] && [ "$(cs)" -lt "$e" ]; do l=""',
+      'for q; do [ -e "/proc/$q" ] && l="$l $q"; done',
+      "set -- $l; [ $# -gt 0 ] && sleep 0.05; done",
+    );
+  }
+  return [...kill, "true"].join("; ");
 }
 
 /** An error code a driver can act on, from the message. */

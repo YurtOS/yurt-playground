@@ -286,6 +286,12 @@ type Execution = {
    * from here, and only from here -- a caller's TERM is the process's to
    * handle. */
   killedAt?: number;
+  /** Every signal's delivery so far, settled when the signaller has: for
+   * a SIGKILL, once the process's group is gone (see the signaller). */
+  killing?: Promise<unknown>;
+  /** The leader has exited: what is left is the kills' wait for its
+   * group, and no further signal goes out (its pid may be reused). */
+  leaderExited?: true;
   timedOut: boolean;
   /** When the result may be dropped from the registry. */
   expiresAt?: number;
@@ -304,7 +310,12 @@ export class ExecutionRegistry {
   constructor(
     private readonly spawner: Spawner,
     /** How to deliver a signal to a pid: a process of its own, so a
-     * kill needs no shell of the user's. */
+     * kill needs no shell of the user's. For SIGKILL it resolves once
+     * every process it signalled is dead and reaped (or, on the in-tab
+     * host, dead and reaped with the leader, whose exit waits for it), or
+     * a bound of its own has passed. A killed execution is reported only
+     * after that, so "killed" means no survivors, zombies included
+     * (yurt-sandbox#357). */
     private readonly signaller: (pid: number, signal: number) => Promise<void>,
     options: { pollMs?: number } = {},
   ) {
@@ -397,6 +408,10 @@ export class ExecutionRegistry {
       if (!execution.timedOut && now >= deadline) {
         execution.timedOut = true;
         await this.kill(execution.record.id, "SIGKILL");
+        // The kill waits out the group, up to the grace period itself: a
+        // leader that died meanwhile is an exit, not a moment of Stuck
+        // (and a peek) before the exit replaces it.
+        continue;
       }
       if (
         execution.killedAt !== undefined &&
@@ -432,6 +447,14 @@ export class ExecutionRegistry {
       await Promise.race([exit, tick.wait(this.#pollMs)]);
     }
     tick.cancel();
+    // The leader's exit is not the group's: a caller's kill may still be
+    // seeing the rest of it out.
+    execution.leaderExited = true;
+    let seen: Promise<unknown> | undefined;
+    while (seen !== execution.killing) {
+      seen = execution.killing;
+      await seen;
+    }
     stdout.push(process.takeStdout());
     stderr.push(process.takeStderr());
     this.#finish(execution);
@@ -531,13 +554,19 @@ export class ExecutionRegistry {
 
   async kill(id: string, signal = "SIGKILL"): Promise<void> {
     const execution = this.#get(id);
-    if (execution.record.state === "exited") return;
+    if (execution.record.state === "exited" || execution.leaderExited) {
+      return;
+    }
     const number = signalNumber(signal);
     execution.killed = signal.toUpperCase().startsWith("SIG")
       ? signal.toUpperCase()
       : `SIG${signal.toUpperCase()}`;
     if (number === SIGNALS.SIGKILL) execution.killedAt ??= Date.now();
-    await this.signaller(execution.process.pid, number);
+    const sent = this.signaller(execution.process.pid, number);
+    // The run waits for every kill sent, but a failure is the caller's to
+    // see.
+    execution.killing = Promise.all([execution.killing, sent.catch(() => {})]);
+    await sent;
   }
 
   #expire(): void {

@@ -6,6 +6,7 @@ import {
   HostRequestError,
   nativeSpawner,
   parseExecRequest,
+  TREE_KILL_WAIT_CS,
 } from "../src/desktop_api.ts";
 import { PathError } from "../src/agent_api.ts";
 
@@ -178,6 +179,17 @@ Deno.test("the native spawner's peek reads the files while the command runs", as
     buildTreeKill(7, 15).endsWith("kill -15 $t 2>/dev/null; true"),
     true,
   );
+  // A SIGKILL waits, bounded, for the killed descendants' /proc entries
+  // (zombies included) to go: init reaps them at its own pace
+  // (yurt-sandbox#357). Another signal is the process's to handle.
+  const sigkill = buildTreeKill(7, 9);
+  assertEquals(
+    sigkill.includes("kill -9 $t 2>/dev/null; cs() "),
+    true,
+  );
+  assertEquals(sigkill.includes(`+ ${TREE_KILL_WAIT_CS}))`), true);
+  assertEquals(sigkill.includes('[ -e "/proc/$q" ]'), true);
+  assertEquals(buildTreeKill(7, 15).includes("/proc/$q"), false);
   // The fake never completes this session; the exit stays pending and the
   // test does not wait on it.
   fake.sessions.get("session-1")!.polls = 0;

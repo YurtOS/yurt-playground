@@ -130,7 +130,14 @@ async function driveApi(
     throw new Error(`exec: ${JSON.stringify(result)}`);
   }
   const started = Date.now();
-  const killed = await exec({ cmd: "sleep 60 | sleep 60", timeoutMs: 1500 });
+  // The orphan `sleep 1` makes the guest's init (BusyBox) reap it at 1 s
+  // and then sleep a second, so the pipeline the deadline kills at 1.5 s
+  // dies into zombies init leaves listed until about 2 s: the reply has
+  // to wait them out, every run (yurt-sandbox#357).
+  const killed = await exec({
+    cmd: "(sleep 1 &); sleep 60 | sleep 60",
+    timeoutMs: 1500,
+  });
   if (killed.signal !== "SIGKILL" || killed.timedOut !== true) {
     throw new Error(`timeout: ${JSON.stringify(killed)}`);
   }
