@@ -63,5 +63,66 @@
     "build": "scripts/build-playground-image.sh",
     "path": "ports/playground-image/build/dist/playground-slim.yurtimg",
     "sha256": "0822c5c20f6ae15d42dbc4ef2cb49ea5a16e1923cc1100f486d7d8004bb57f7c"
+  },
+  "snapshot": {
+    "releaseRepo": "YurtOS/yurt-playground",
+    "release": "snapshot-playground-2026.10.31-3d32068",
+    "format": 3,
+    "sha256": "e8e03d83adbe5a23d952ad3ba6d15c58d94ca3138ca742bd35683a99faa5bb81",
+    "size": 130605645,
+    "parts": [
+      "67db3d63215c9da9c980d508dc9e9400ff9e6486923b37eae8466fb3c2edc0b2",
+      "19d9429c6a6ee503b1b324db01c6b5e5fe1fbeac9445ec0adf39568f8233e715",
+      "fd565c025d3f565bef16e55c57d142fe560657dafe49d538e0d8a72bb2feebad",
+      "9dac5bef4293f9c4f3dcedf60ef7da716cdbd5745e9b6187ca61b20466c7a51c",
+      "d7e962198959c8c490fa642171dd834b8de5c2f1e3372721c82db5569b6728fb",
+      "54c5cf8468c4cb2d2bdd06e21c64cbb9198a855cb2a3adb26bf202fa2de799d6",
+      "debcd7a3188c347612fef97886bc4403cd6042bc3d6633fdbcbdff045ac23e59"
+    ],
+    "builtFrom": {
+      "kernelSha256": "defa8da648d122fcfd30e6e96360d1b2da1cdf7440d50d82536a825e02fa338c",
+      "kernelRev": "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
+      "sealVersion": 1,
+      "bootSetup": 2,
+      "imageSha256": "0822c5c20f6ae15d42dbc4ef2cb49ea5a16e1923cc1100f486d7d8004bb57f7c",
+      "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
+      "pythonSet": "0822c5c20f6ae15d42dbc4ef2cb49ea5a16e1923cc1100f486d7d8004bb57f7c/jupyter-kernel@0.0.1-yurt_0:c8e575a68c03a8e4+numpy@2.5.0-yurt_0:c3cc1743278a9763+python@3.14.7-yurt_0:ab01e884f08e0619+pyzmq@26.4.0-yurt_0:429b9bb415b7f5a2"
+    },
+    "memoryBytes": 545849344,
+    "contents": {
+      "packages": [
+        {
+          "name": "ca-certificates",
+          "version": "2026.9.25",
+          "build": "yurt_0"
+        },
+        {
+          "name": "git",
+          "version": "2.55.0",
+          "build": "yurt_0"
+        },
+        {
+          "name": "jupyter-kernel",
+          "version": "0.0.1",
+          "build": "yurt_0"
+        },
+        {
+          "name": "numpy",
+          "version": "2.5.0",
+          "build": "yurt_0"
+        },
+        {
+          "name": "python",
+          "version": "3.14.7",
+          "build": "yurt_0"
+        },
+        {
+          "name": "pyzmq",
+          "version": "26.4.0",
+          "build": "yurt_0"
+        }
+      ],
+      "remark": "BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz"
+    }
   }
 }

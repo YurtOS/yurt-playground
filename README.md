@@ -219,7 +219,7 @@ Train `playground-2026.10.31-3d32068`. Generated from artifacts/pins.json; `deno
 
 | Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
 | --- | --- | --- | --- | --- | --- | --- |
-| desktop | desktop browser (Mac, PC): `?platform=desktop` | not pinned: boots the image | | | | |
+| desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.10.31-3d32068` | 130.6 MB in 7 parts | 520.6 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
 | tablet | tablet (iPad): `?platform=tablet` | not pinned: boots the image | | | | |
 | phone | phone (iPhone): `?platform=phone` | not pinned: boots the image | | | | |
 
