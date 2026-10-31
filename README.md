@@ -217,13 +217,15 @@ Packages are signed and published in
 <!-- snapshot-table:start (scripts/snapshot-table.ts) -->
 <!-- deno-fmt-ignore-start -->
 
-Train `playground-2026.10.31-3d32068`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
+Train `playground-2026.10.31-3d32068.2`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
+
+Largest first: the desktop's holds the Python set and starts the Notebook, the tablet's the interpreter alone, the phone's no Python. A snapshot is sealed with no process in it, so nothing runs or is imported until a restore starts the shell (and, on a desktop, Jupyter). `deno run -A scripts/verify-snapshots.ts [--files] [--live]` checks each against its kind.
 
 | Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
 | --- | --- | --- | --- | --- | --- | --- |
-| desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.10.31-3d32068` | 130.6 MB in 7 parts | 520.6 MiB | 2450 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
-| tablet | tablet (iPad): `?platform=tablet` | `snapshot-tablet-playground-2026.10.31-3d32068` | 94.0 MB in 5 parts | 380.4 MiB | 1138 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
-| phone | phone (iPhone): `?platform=phone` | `snapshot-phone-playground-2026.10.31-3d32068` | 31.2 MB in 2 parts | 136.1 MiB | 641 MiB | BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
+| desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.10.31-3d32068.2` | 130.8 MB in 7 parts | 521.4 MiB | 2459 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
+| tablet | tablet (iPad): `?platform=tablet` | `snapshot-tablet-playground-2026.10.31-3d32068.2` | 94.7 MB in 5 parts | 380.8 MiB | 1267 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
+| phone | phone (iPhone): `?platform=phone` | `snapshot-phone-playground-2026.10.31-3d32068.2` | 31.2 MB in 2 parts | 136.1 MiB | 630 MiB | BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
 
 <!-- deno-fmt-ignore-end -->
 <!-- snapshot-table:end -->
