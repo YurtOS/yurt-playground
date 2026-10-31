@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   type BootedSession,
   HEARTBEAT,
@@ -7,7 +7,7 @@ import {
   withHeartbeat,
   workerPackageHost,
 } from "../src/session_packages.ts";
-import { STAGING_DIR } from "../src/packages.ts";
+import { relayedInstallScript, STAGING_DIR } from "../src/packages.ts";
 import type { SpawnedProcess } from "../src/executions.ts";
 
 const enc = new TextEncoder();
@@ -267,4 +267,19 @@ Deno.test("pkg recover alone gives the heartbeat no child to see; in a shell tha
   const kept = await hostHeartbeat(recoverScript("sleep 1.2"), [1000]);
   assertEquals(kept.beats[0] >= 3, true, `beats ${kept.beats}`);
   assertEquals(recoverScript(), "sudo pkg recover; exit $?");
+});
+
+Deno.test("the relayed install keeps beating through its last command", async () => {
+  // `pkg` replaced by a sleep: both of its commands take 1.2 s. Beats are
+  // counted at 1.0 s (the update) and in the install, from 1.6 s to 2.2 s.
+  const script = relayedInstallScript("greet", "sleep 1.2; :");
+  const { beats } = await hostHeartbeat(script, [1000, 1600, 2200]);
+  assert(beats[0] >= 3, `beats ${beats}`);
+  assert(beats[2] - beats[1] >= 2, `beats ${beats}`);
+  // What an `exec` of the last command would do: nothing beats after it.
+  const execed = await hostHeartbeat(
+    "sleep 1.2; : update || exit 1\nexec sleep 1.2",
+    [1000, 1600, 2200],
+  );
+  assertEquals(execed.beats[2] - execed.beats[1], 0, `beats ${execed.beats}`);
 });

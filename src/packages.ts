@@ -334,6 +334,17 @@ export function relayTrustedRepos(toml: string): string | undefined {
   }).join("\n");
 }
 
+/** Whether `toml` points the YurtOS/yurt-packages entry at the relay. */
+export function trustsRelay(toml: string): boolean {
+  try {
+    return repoTables(toml).some((table) =>
+      isPackageRepo(table) && table.values.url === PKG_RELAY_URL
+    );
+  } catch {
+    return false;
+  }
+}
+
 function q(word: string): string {
   return `'${word.replace(/'/g, "'\\''")}'`;
 }
@@ -1597,40 +1608,50 @@ function runWatched(
   );
 }
 
-/** What installing `name` would download, from the catalog: its latest
- * release and, transitively, its dependencies' latest releases, less
- * what is installed already. An estimate of pkg's plan, for the size
- * refusal before the install starts; the relay caps each download too. */
-export function relayedInstallBytes(
+/** What installing `name` would download, by the catalog: its latest
+ * release and, transitively, its dependencies' latest releases, less what
+ * `installed.list` names (by name: an installed dependency pkg would
+ * upgrade is not counted). An estimate of pkg's plan, for the size refusal
+ * before the install starts. It leaves out the index and metadata, and
+ * counts packages the image has outside pkg; the relay caps each download,
+ * but nothing bounds the total across them. */
+export function relayedInstallPlan(
   catalog: Catalog,
   name: string,
   installed: ReadonlySet<string>,
-): number {
+): Release[] {
   const seen = new Set<string>();
-  let total = 0;
+  const plan: Release[] = [];
   const visit = (wanted: string) => {
     if (seen.has(wanted) || installed.has(wanted)) return;
     seen.add(wanted);
     const file = catalog.metadata.get(wanted)?.file;
     const release = file === undefined ? undefined : latestRelease(file);
     if (release === undefined) return;
-    total += release.size;
+    plan.push(release);
     for (const dep of release.depends ?? []) visit(dep.name);
   };
   visit(name);
-  return total;
+  return plan;
 }
 
 /** The guest script for an install by name through the relay: what the
- * user would type, as the login user, `pkg` under `sudo`. */
-export function relayedInstallScript(name: string): string {
+ * user would type, as the login user, `pkg` under `sudo` (`pkg` stands in
+ * for it in tests). The last command is not `exec`ed: the guest's
+ * heartbeat (src/session_packages.ts) beats only while this shell has a
+ * child, and a silent install of a large package is no stall. */
+export function relayedInstallScript(name: string, pkg = "sudo pkg"): string {
   return [
-    "for tool in pkg sudo; do command -v $tool >/dev/null 2>&1 || " +
-    '{ echo "this image has no $tool" >&2; exit 127; }; done',
-    '[ "$(sudo id -u)" = 0 ] || ' +
-    "{ echo 'sudo does not give root here' >&2; exit 126; }",
-    "sudo pkg update || exit 1",
-    `exec sudo pkg install ${q(name)}`,
+    ...(pkg === "sudo pkg"
+      ? [
+        "for tool in pkg sudo; do command -v $tool >/dev/null 2>&1 || " +
+        '{ echo "this image has no $tool" >&2; exit 127; }; done',
+        '[ "$(sudo id -u)" = 0 ] || ' +
+        "{ echo 'sudo does not give root here' >&2; exit 126; }",
+      ]
+      : []),
+    `${pkg} update || exit 1`,
+    `${pkg} install ${q(name)}; exit $?`,
   ].join("\n");
 }
 
@@ -1641,18 +1662,27 @@ async function installRelayed(
   options: InstallOptions,
   watcher: InstallWatcher,
 ): Promise<string> {
+  // No list, or one the page cannot read: counted as nothing installed,
+  // which only makes the estimate larger.
   const installed = await watcher.watched(() =>
     options.host.readFile(INSTALLED_LIST_PATH)
   ).then(
     (bytes) => new Set(parseInstalledList(bytes).map((r) => r.name)),
-    // No list yet: nothing is installed by pkg.
-    () => new Set<string>(),
-  );
+  ).catch(() => new Set<string>());
+  const plan = relayedInstallPlan(catalog, name, installed);
   const refusal = sizeRefusal(
-    relayedInstallBytes(catalog, name, installed),
+    plan.reduce((sum, release) => sum + release.size, 0),
     options.tablet,
   );
   if (refusal !== undefined) throw new Error(`${name}: ${refusal}`);
+  const extra = plan.filter((release) => release.name !== name);
+  if (extra.length > 0) {
+    options.progress(
+      `${name}: also installs ${
+        extra.map((r) => `${r.name} (${formatBytes(r.size)})`).join(", ")
+      }`,
+    );
+  }
   const result = await runWatched(
     [],
     relayedInstallScript(name),
