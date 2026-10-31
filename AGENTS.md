@@ -6,8 +6,8 @@ in this repo. `CLAUDE.md` points here.
 ## Project shape
 
 - **Purpose:** the in-browser Yurt playground. A static page boots a real Yurt
-  sandbox in the tab (BusyBox `ash`, CPython and the `yurt-jupyter` stack), by
-  default by restoring a snapshot made for the device. The same page is the
+  sandbox in the tab (BusyBox `ash`, CPython and the `yurt-jupyter` stack); by
+  default it restores a snapshot made for the device. The same page is the
   desktop app's front end, over a native host. This repo owns the page, the
   local COOP/COEP server, the desktop launcher, artifact pins, and Playwright
   acceptance. It does **not** own the kernel, guest toolchain, image recipes, or
@@ -40,8 +40,8 @@ Kernel primitives stay in `yurtos-kernel`. Image composition stays in
 ## Locked decisions
 
 - The hosted page runs the sandbox in the tab, not over a websocket to a native
-  runtime. Only the desktop app's page relays to a native host, on its own
-  launcher's origin.
+  runtime. Only the desktop app's page reaches a native host, through WebSockets
+  on its launcher's origin.
 - One sandbox, one VFS. xterm talks to a host-owned PTY.
 - Jupyter JS dials a port the guest is already listening on (`dialSandboxPort`).
   No `Deno.connect`, no host OS TCP, no guest egress, with one exception.

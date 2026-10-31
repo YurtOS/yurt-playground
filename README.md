@@ -41,7 +41,7 @@ going, in [the roadmap](docs/ROADMAP.md).
 | NumPy                              | ✓ desktop                                                             | ✓                                                  |
 | Jupyter Notebook and JupyterLab    | ✓ desktop                                                             | ✓                                                  |
 | Node.js 22, Gemini CLI             | as packages (Gemini CLI needs the desktop app's network for its API)  | ✓ in the image                                     |
-| Go, `gh`, clang (C and C++)        | as packages                                                           | as packages                                        |
+| Go, `gh`, clang (C and C++)        | as packages, desktop (`gh` needs the desktop app's network)           | as packages                                        |
 | Runs in                            | the tab (WebAssembly, no server)                                      | the native Yurt runtime on your machine            |
 | Boots                              | the slim image, or a snapshot of it with Python installed             | the full image                                     |
 | Network from inside the sandbox    | none, by design; `pkg` reaches its repository through the page        | yes (Python verifies TLS; BusyBox `wget` does not) |
@@ -197,11 +197,11 @@ Packages are signed and published in
 - **Browser:** the sandbox has no network, so the page fetches for it.
   `sudo pkg update`, then `sudo pkg install NAME`, works in the terminal as on
   the desktop: the page answers `pkg` on the sandbox's loopback and downloads
-  only files of the package repository, nothing else. Or press _Packages_ in the
-  terminal's bar, then _Install_ next to a package. Either way the sandbox's own
-  `pkg` checks every signature, sha256 and size before it installs, and the
-  terminal and the panel share one cache. `pip install` and `wget` still fail:
-  programs in the sandbox have no network of their own.
+  only files of the package repository. Or press _Packages_ in the terminal's
+  bar, then _Install_ next to a package. Either way the sandbox's own `pkg`
+  checks every signature, sha256 and size before it installs, and the terminal
+  and the panel share one cache. `pip install` and `wget` still fail: programs
+  in the sandbox have no network of their own.
   - Installed packages live in the tab's memory, like every file there, and a
     reload loses them
     ([#81](https://github.com/YurtOS/yurt-playground/issues/81)), except the

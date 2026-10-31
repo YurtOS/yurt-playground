@@ -60,10 +60,10 @@ What you can use today.
   Python set reaches the page with no train
   ([2026.10.26](https://yurtos.github.io/yurt-playground/#playground-2026.10.26-3d32068),
   [2026.10.27](https://yurtos.github.io/yurt-playground/#playground-2026.10.27-3d32068)).
-- **Go, `gh` and clang in the browser.** The `go` toolchain builds and runs
-  programs in the tab (the first `go build` compiles the standard library, which
-  takes about 17 minutes there), `gh` runs, and `clang` compiles C and C++
-  inside the sandbox
+- **Go, `gh` and clang in a desktop browser.** The `go` toolchain builds and
+  runs programs in the tab (the first `go build` compiles the standard library,
+  which takes about 17 minutes there), `gh` starts (it needs the desktop app's
+  network to reach GitHub), and `clang` compiles C and C++ inside the sandbox
   ([Packages](https://yurtos.github.io/yurt-playground/#packages)).
 - **Upload files** from your device into the browser sandbox
   ([2026.10.26](https://yurtos.github.io/yurt-playground/#playground-2026.10.26-3d32068)).
@@ -134,9 +134,9 @@ Bigger directions. Each needs design work, and the order is not fixed.
   upstream yet. The `go` package runs in the browser tab and in a desktop
   sandbox, on one thread. It is large (a 59.4 MB download, held entirely in the
   tab's memory), so it stays an opt-in install rather than part of the image,
-  and the first `go build` in the tab is slow. On iPad the per-tab process and
-  memory limits are a further question, since `go build` starts several compiler
-  and linker processes.
+  and the first `go build` in the tab is slow. On iPad it is over the 16 MiB
+  install limit today, and the per-tab process and memory limits are a further
+  question, since `go build` starts several compiler and linker processes.
 - **More of the playground on tablets.** iPad browsers limit the processes and
   memory one tab can use, which is why tablets get no Jupyter today and why a
   long shell session can still run out of memory
@@ -181,7 +181,7 @@ Bigger directions. Each needs design work, and the order is not fixed.
   signals reach them only between system calls; in the browser the first
   `go build` takes about 17 minutes.
 - **Gemini CLI is slow to start the first time in the browser**, after it is
-  installed from the _Packages_ panel; it starts faster in the desktop app.
+  installed; it starts faster in the desktop app.
 - **The first visit downloads a lot**: about 138 MB on a desktop (the kernel and
   the snapshot with Python and Jupyter), about 101 MB on a tablet and 38 MB on a
   phone. A later visit takes them from the browser's cache.
