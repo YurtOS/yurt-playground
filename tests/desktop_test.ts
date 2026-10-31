@@ -1,5 +1,6 @@
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   handleDistRequest,
   launcherVersion,
@@ -593,3 +594,28 @@ Deno.test("the desktop launch hooks start the kernel as a host session and poll 
     "POST /api/sessions",
   ]);
 });
+
+// The desktop release job (.github/workflows/release-desktop.yml) checks out
+// this repository alone: `deno compile scripts/desktop.ts` type-checks its
+// whole graph and the app acceptance runs tests/desktop_e2e.ts, so neither
+// may reach into ../yurtos-kernel, even for a type (run 41202812144 failed
+// both jobs with TS2307 on the kernel host's mod.ts).
+for (const entry of ["scripts/desktop.ts", "tests/desktop_e2e.ts"]) {
+  Deno.test(`${entry} imports nothing outside this repository`, async () => {
+    const repo = dirname(dirname(fileURLToPath(import.meta.url)));
+    const { success, stdout, stderr } = await new Deno.Command(
+      Deno.execPath(),
+      { args: ["info", "--json", entry], cwd: repo },
+    ).output();
+    assertEquals(success, true, new TextDecoder().decode(stderr));
+    const graph = JSON.parse(new TextDecoder().decode(stdout)) as {
+      modules: { specifier: string }[];
+    };
+    const outside = graph.modules
+      .map((module) => module.specifier)
+      .filter((specifier) => specifier.startsWith("file:"))
+      .map((specifier) => fileURLToPath(specifier))
+      .filter((path) => !path.startsWith(repo + "/"));
+    assertEquals(outside, []);
+  });
+}

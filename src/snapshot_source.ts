@@ -38,7 +38,7 @@ import {
   acceptedSnapshot,
   SnapshotMismatch,
   type SnapshotPin,
-} from "./sandbox_snapshot.ts";
+} from "./snapshot_pin.ts";
 import type { Pins } from "./pins.ts";
 import { isPackageName } from "./packages.ts";
 

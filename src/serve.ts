@@ -11,7 +11,7 @@ import {
   imagePartsManifest,
   PYTHON_SEAL_NAME,
 } from "./image_parts.ts";
-import { SNAPSHOT_KINDS } from "./sandbox_snapshot.ts";
+import { SNAPSHOT_KINDS } from "./snapshot_pin.ts";
 import {
   IMAGE_NAME,
   INTEGRITY_FILES,
@@ -119,7 +119,7 @@ const PARTED_FILES: Record<string, string> = {
   [IMAGE_NAME]: join(artifactsDir, IMAGE_NAME),
   [SLIM_IMAGE_NAME]: join(artifactsDir, SLIM_IMAGE_NAME),
   [PYTHON_SEAL_NAME]: join(publicDir, PYTHON_SEAL_NAME),
-  // Each device's sealed sandbox (src/sandbox_snapshot.ts SNAPSHOT_KINDS).
+  // Each device's sealed sandbox (src/snapshot_pin.ts SNAPSHOT_KINDS).
   ...Object.fromEntries(
     Object.values(SNAPSHOT_KINDS).map((
       { name },

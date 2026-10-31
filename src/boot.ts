@@ -13,6 +13,7 @@ import {
   type SandboxFiles,
 } from "./installed_list.ts";
 import { linuxRemark } from "./linux_remark.ts";
+import { isJavaScriptCore } from "./browser_engine.ts";
 import { baseToolsHeld } from "./image_tools.ts";
 import {
   GUEST_MEMORY_RESERVATION_BYTES,
@@ -328,19 +329,6 @@ function readGuestFile(
 /** The desktop per-process reservation on JavaScriptCore; a smaller one
  *  is picked where the tab cannot fit it (src/guest_memory_reservation.ts). */
 export { GUEST_MEMORY_RESERVATION_BYTES };
-
-/**
- * Whether this engine is JavaScriptCore (Safari, and every iOS browser).
- * Chromium and Edge also say `AppleWebKit/`, always with a `Chrome/`
- * token; Firefox and Deno say neither. The same test as the kernel's
- * `workerTeardownWaitsOnCompiles`.
- */
-export function isJavaScriptCore(
-  userAgent: string | undefined = globalThis.navigator?.userAgent,
-): boolean {
-  if (userAgent === undefined) return false;
-  return /AppleWebKit\//.test(userAgent) && !/Chrome\//.test(userAgent);
-}
 
 /**
  * The host state every in-browser kernel is built with. Only on

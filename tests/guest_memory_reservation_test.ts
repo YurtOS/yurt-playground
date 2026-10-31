@@ -1,9 +1,9 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   GUEST_MEMORY_RESERVATION_BYTES,
-  isJavaScriptCore,
   playgroundHostState,
 } from "../src/boot.ts";
+import { isJavaScriptCore } from "../src/browser_engine.ts";
 
 const MIB = 1024 * 1024;
 
