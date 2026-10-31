@@ -190,9 +190,10 @@
             <tr><td>zstd</td><td>1.5.7</td><td>0.55 MB</td><td>also in the base image</td></tr>
             <tr><td>ncurses</td><td>6.5.0</td><td>0.28 MB</td><td>library and headers</td></tr>
             <tr><td>zsh</td><td>5.9.0 (yurt_3)</td><td>0.80 MB</td><td>also in the base image; needs ncurses. yurt_3 (2026-10-31) no longer dies with "Illegal instruction" on the first key; <code>sudo pkg upgrade</code> picks it up</td></tr>
-            <tr><td>go</td><td>1.28.0-devel</td><td>59.4 MB</td><td><code>go build</code> runs inside the sandbox; one thread. Desktop only for now: in the browser this build does not start (it reports "Segmentation fault"); a rebuild is coming</td></tr>
+            <tr><td>go</td><td>1.28.0-devel (yurt_1)</td><td>59.4 MB</td><td><code>go build</code> runs inside the sandbox; one thread. yurt_1 (2026-10-31) runs in the browser too (the previous build died with "Segmentation fault" there); in the browser the first <code>go build</code> compiles the standard library and takes about 17 minutes</td></tr>
             <tr><td>clang</td><td>23.1.3</td><td>51.7 MB</td><td>new 2026-10-31: C and C++ compiler and linker with the sandbox's headers and libraries (<code>cc hello.c -o hello</code>); works in the browser. Use <code>llvm-ar</code> for static libraries</td></tr>
-            <tr><td>gh</td><td>2.102.0</td><td>15.8 MB</td><td>needs git and ca-certificates (in the base image)</td></tr>
+            <tr><td>gh</td><td>2.102.0 (yurt_1)</td><td>15.8 MB</td><td>needs git and ca-certificates (in the base image). yurt_1 (2026-10-31) runs in the browser too</td></tr>
+            <tr><td>openssl</td><td>3.5.8</td><td>2.97 MB</td><td>new 2026-10-31: static <code>libssl.a</code>/<code>libcrypto.a</code> and headers, for building with clang (Python, curl and git already have it built in); replaces the unusable 4.0.0, which is yanked</td></tr>
             <tr><td>zlib</td><td>1.3.1</td><td>0.07 MB</td><td>library and headers</td></tr>
             <tr><td>yurtos-x86</td><td>0.1.0</td><td>4.0 MB</td><td>new 2026-10-31: runs x86-64 Linux programs by emulating the CPU (<code>yurtos-x86 hello</code>, <code>yurtos-x86 busybox uname -a</code>); includes an x86-64 BusyBox and its source</td></tr>
           </table>
