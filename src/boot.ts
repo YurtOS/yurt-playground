@@ -1116,10 +1116,11 @@ async function startShell(
       }
       if (signal !== SIGKILL) return Promise.resolve();
       // Resolved once no member is alive (signal 0 counts only the live
-      // ones), or after KILL_GRACE_MS: the leader's reap above then
+      // ones), or after half of KILL_GRACE_MS, so a dead leader's reap is
+      // never late enough to be reported Stuck: the reap above then
       // releases the dead members, so "killed" means no survivors.
       const gone = (async () => {
-        const deadline = Date.now() + KILL_GRACE_MS;
+        const deadline = Date.now() + KILL_GRACE_MS / 2;
         while (killpg(0) === 0 && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 10));
         }

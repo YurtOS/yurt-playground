@@ -289,6 +289,9 @@ type Execution = {
   /** Every signal's delivery so far, settled when the signaller has: for
    * a SIGKILL, once the process's group is gone (see the signaller). */
   killing?: Promise<unknown>;
+  /** The leader has exited: what is left is the kills' wait for its
+   * group, and no further signal goes out (its pid may be reused). */
+  leaderExited?: true;
   timedOut: boolean;
   /** When the result may be dropped from the registry. */
   expiresAt?: number;
@@ -446,6 +449,7 @@ export class ExecutionRegistry {
     tick.cancel();
     // The leader's exit is not the group's: a caller's kill may still be
     // seeing the rest of it out.
+    execution.leaderExited = true;
     let seen: Promise<unknown> | undefined;
     while (seen !== execution.killing) {
       seen = execution.killing;
@@ -550,7 +554,9 @@ export class ExecutionRegistry {
 
   async kill(id: string, signal = "SIGKILL"): Promise<void> {
     const execution = this.#get(id);
-    if (execution.record.state === "exited") return;
+    if (execution.record.state === "exited" || execution.leaderExited) {
+      return;
+    }
     const number = signalNumber(signal);
     execution.killed = signal.toUpperCase().startsWith("SIG")
       ? signal.toUpperCase()
