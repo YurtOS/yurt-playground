@@ -193,6 +193,61 @@
           Install them together, at the same build.
         </p>
       </article>
+      <article class="pane" id="playground-2026.10.31-3d32068">
+        <h1>playground-2026.10.31-3d32068</h1>
+        <p class="date">
+          2026-10-31 · replaces playground-2026.10.29-3d32068
+        </p>
+        <p class="summary">zsh works in the browser again: it no longer dies with "Illegal instruction" on the first key you type.</p>
+        <p>
+          A new image only, with the zsh fix. The kernel, the desktop host
+          and the yurt CLI are unchanged.
+        </p>
+        <div class="scroll">
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Version</th>
+            </tr>
+            <tr>
+              <td>Kernel</td>
+              <td>0.0.12, build 3d32068 (unchanged)</td>
+            </tr>
+            <tr>
+              <td>Playground images</td>
+              <td>slim (the browser's) 23.5 MB; full
+                (desktop app and CLI) 92.0 MB</td>
+            </tr>
+            <tr>
+              <td>Desktop host and yurt CLI</td>
+              <td>build edeb8b0 (unchanged)</td>
+            </tr>
+            <tr>
+              <td>Guest SDK</td>
+              <td>0.0.31 (unchanged)</td>
+            </tr>
+          </table>
+        </div>
+
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            <strong>zsh survives the first key.</strong> Typing anything at
+            a <code>zsh</code> prompt in the browser killed the shell with
+            <code>Illegal instruction</code> (Chrome, Safari) or
+            <code>Segmentation fault</code> and dropped back to the BusyBox
+            shell. zsh's line editor called its hooks with the wrong
+            function signature, which WebAssembly refuses. The image's zsh
+            is now built with the fix, and a test types into zsh, runs a
+            command and exits on every change.
+          </li>
+          <li>
+            <strong>The ready-made sandboxes were captured again</strong>
+            for the new image, on desktop, tablet and phone, so a reload is
+            still a prompt in seconds.
+          </li>
+        </ul>
+      </article>
       <article class="pane" id="playground-2026.10.29-3d32068">
         <h1>playground-2026.10.29-3d32068</h1>
         <p class="date">
