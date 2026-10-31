@@ -221,7 +221,7 @@ Train `playground-2026.10.31-3d32068`. Generated from artifacts/pins.json; `deno
 | --- | --- | --- | --- | --- | --- | --- |
 | desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.10.31-3d32068` | 130.6 MB in 7 parts | 520.6 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
 | tablet | tablet (iPad): `?platform=tablet` | `snapshot-tablet-playground-2026.10.31-3d32068` | 94.0 MB in 5 parts | 380.4 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
-| phone | phone (iPhone): `?platform=phone` | not pinned: boots the image | | | | |
+| phone | phone (iPhone): `?platform=phone` | `snapshot-phone-playground-2026.10.31-3d32068` | 31.2 MB in 2 parts | 136.1 MiB | ? | BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
 
 <!-- deno-fmt-ignore-end -->
 <!-- snapshot-table:end -->

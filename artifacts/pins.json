@@ -168,5 +168,41 @@
       ],
       "remark": "BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter"
     }
+  },
+  "phoneSnapshot": {
+    "releaseRepo": "YurtOS/yurt-playground",
+    "release": "snapshot-phone-playground-2026.10.31-3d32068",
+    "format": 3,
+    "sha256": "2c9cf991d9a45c277a05d66254e6b90121922b5e670c8a642329a1bba6e8a8c5",
+    "size": 31192893,
+    "parts": [
+      "cd709bb1298a2f53814db274629ea5c3951c01c27e8542bd69f908f3b28f6402",
+      "28ffff9e14b0aa566f0708fe128e3ba08e44a5d7342762a6bed1d34b87857d08"
+    ],
+    "builtFrom": {
+      "kernelSha256": "defa8da648d122fcfd30e6e96360d1b2da1cdf7440d50d82536a825e02fa338c",
+      "kernelRev": "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
+      "sealVersion": 1,
+      "bootSetup": 2,
+      "imageSha256": "0822c5c20f6ae15d42dbc4ef2cb49ea5a16e1923cc1100f486d7d8004bb57f7c",
+      "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
+      "pythonSet": null
+    },
+    "memoryBytes": 142671872,
+    "contents": {
+      "packages": [
+        {
+          "name": "ca-certificates",
+          "version": "2026.9.25",
+          "build": "yurt_0"
+        },
+        {
+          "name": "git",
+          "version": "2.55.0",
+          "build": "yurt_0"
+        }
+      ],
+      "remark": "BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter"
+    }
   }
 }
