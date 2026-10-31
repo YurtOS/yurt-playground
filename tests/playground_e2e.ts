@@ -875,8 +875,9 @@ async function typeInTerminal(
  * Against the repository snapshot (the default) `sudo pkg update` must get
  * the index through the relay and then refuse its placeholder signature:
  * before the relay it failed earlier, with no network ("HTTP request
- * failed"). With PLAYGROUND_PKG_LIVE=1 it must update from the live
- * repository, find the same index current a second time, and install
+ * failed"). With PLAYGROUND_PKG_LIVE=1 it must find the index the panel's
+ * install just fetched current (one cache for both), again a second time,
+ * and install
  * PLAYGROUND_PKG_TERMINAL_NAME (default pkgconf), which must then run.
  */
 async function terminalPkg(page: Page): Promise<void> {
@@ -894,8 +895,12 @@ async function terminalPkg(page: Page): Promise<void> {
     );
     return;
   }
-  if (!/updated official|official already current/.test(update)) {
-    throw new Error(`terminal pkg update: ${update}`);
+  // The Packages panel installed through the same relay into the same
+  // cache just before: the terminal's first update finds it current.
+  if (!update.includes("official already current")) {
+    throw new Error(
+      `terminal pkg update did not share the panel's cache: ${update}`,
+    );
   }
   const again = await typeInTerminal(page, "sudo pkg update", 180_000);
   if (!again.includes("official already current")) {

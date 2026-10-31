@@ -21,6 +21,7 @@ import {
   INSTALLED_DB_PATH,
   INSTALLED_LIST_PATH,
   type InstalledRelease,
+  parseInstalledList,
 } from "./installed_list.ts";
 import { COMMAND_DIRS } from "./image_tools.ts";
 
@@ -331,6 +332,17 @@ export function relayTrustedRepos(toml: string): string | undefined {
       `url = ${JSON.stringify(PKG_RELAY_URL)}`,
     ];
   }).join("\n");
+}
+
+/** Whether `toml` points the YurtOS/yurt-packages entry at the relay. */
+export function trustsRelay(toml: string): boolean {
+  try {
+    return repoTables(toml).some((table) =>
+      isPackageRepo(table) && table.values.url === PKG_RELAY_URL
+    );
+  } catch {
+    return false;
+  }
 }
 
 function q(word: string): string {
@@ -1294,6 +1306,12 @@ type InstallOptions = {
    * Suspend/Resume check): a stall then runs no `pkg recover`, and its
    * error is the stall alone. */
   recoverAfterStall?: boolean;
+  /** Install a name the way the user would in the terminal: `sudo pkg
+   * update && sudo pkg install NAME` against the image's configuration,
+   * which the boot pointed at the page's relay (src/pkg_relay.ts), so the
+   * panel and the terminal share one repository cache. Names only; a set
+   * or a pinned list always goes through the staged copy. */
+  relayed?: boolean;
 };
 
 type InstallWatcher = {
@@ -1337,6 +1355,9 @@ async function installWatched(
     if (catalog.index.packages[wanted] === undefined) {
       throw new Error(`no package named ${wanted}`);
     }
+  }
+  if (typeof request === "string" && options.relayed === true) {
+    return await installRelayed(request, catalog, options, watcher);
   }
   // The exact releases, for a set or a pinned list: pkg installs exactly
   // those (`name@version-build`). A pinned list's plan may hold nothing
@@ -1405,27 +1426,12 @@ async function installWatched(
     for (const [path, bytes] of archives) {
       files.push({ path: `${mirror}/${path}`, bytes });
     }
-    const script = installScript(specs, config.id);
-    watcher.check();
-    progress(status);
-    if (host.observesProgress !== true) {
-      return watcher.unwatched(() => host.stageAndRun(files, script));
-    }
-    const started = Date.now();
-    let shown = started;
-    const progressEveryMs = options.progressEveryMs ?? PROGRESS_EVERY_MS;
-    return watcher.watched(() =>
-      host.stageAndRun(files, script, {
-        alive: () => {
-          watcher.touch();
-          const now = Date.now();
-          if (now - shown >= progressEveryMs) {
-            shown = now;
-            progress(`${status} (${Math.round((now - started) / 1000)} s)`);
-          }
-        },
-        signal: watcher.signal,
-      })
+    return runWatched(
+      files,
+      installScript(specs, config.id),
+      status,
+      options,
+      watcher,
     );
   };
   const planned = await run(new Map(), `${name}: resolving (${command})`);
@@ -1565,6 +1571,126 @@ async function installWatched(
   ) {
     await cache?.keepOnly?.(used);
   }
+  return `${result.stdout}${result.stderr}`.trim();
+}
+
+/** Run `script` in the guest after staging `files`, watched for stalls
+ * when the host can say the guest is alive; `status` is what the page
+ * shows meanwhile, with a count of seconds. */
+function runWatched(
+  files: StagedFile[],
+  script: string,
+  status: string,
+  options: InstallOptions,
+  watcher: InstallWatcher,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const { host, progress } = options;
+  watcher.check();
+  progress(status);
+  if (host.observesProgress !== true) {
+    return watcher.unwatched(() => host.stageAndRun(files, script));
+  }
+  const started = Date.now();
+  let shown = started;
+  const progressEveryMs = options.progressEveryMs ?? PROGRESS_EVERY_MS;
+  return watcher.watched(() =>
+    host.stageAndRun(files, script, {
+      alive: () => {
+        watcher.touch();
+        const now = Date.now();
+        if (now - shown >= progressEveryMs) {
+          shown = now;
+          progress(`${status} (${Math.round((now - started) / 1000)} s)`);
+        }
+      },
+      signal: watcher.signal,
+    })
+  );
+}
+
+/** What installing `name` would download, by the catalog: its latest
+ * release and, transitively, its dependencies' latest releases, less what
+ * `installed.list` names (by name: an installed dependency pkg would
+ * upgrade is not counted). An estimate of pkg's plan, for the size refusal
+ * before the install starts. It leaves out the index and metadata, and
+ * counts packages the image has outside pkg; the relay caps each download,
+ * but nothing bounds the total across them. */
+export function relayedInstallPlan(
+  catalog: Catalog,
+  name: string,
+  installed: ReadonlySet<string>,
+): Release[] {
+  const seen = new Set<string>();
+  const plan: Release[] = [];
+  const visit = (wanted: string) => {
+    if (seen.has(wanted) || installed.has(wanted)) return;
+    seen.add(wanted);
+    const file = catalog.metadata.get(wanted)?.file;
+    const release = file === undefined ? undefined : latestRelease(file);
+    if (release === undefined) return;
+    plan.push(release);
+    for (const dep of release.depends ?? []) visit(dep.name);
+  };
+  visit(name);
+  return plan;
+}
+
+/** The guest script for an install by name through the relay: what the
+ * user would type, as the login user, `pkg` under `sudo` (`pkg` stands in
+ * for it in tests). The last command is not `exec`ed: the guest's
+ * heartbeat (src/session_packages.ts) beats only while this shell has a
+ * child, and a silent install of a large package is no stall. */
+export function relayedInstallScript(name: string, pkg = "sudo pkg"): string {
+  return [
+    ...(pkg === "sudo pkg"
+      ? [
+        "for tool in pkg sudo; do command -v $tool >/dev/null 2>&1 || " +
+        '{ echo "this image has no $tool" >&2; exit 127; }; done',
+        '[ "$(sudo id -u)" = 0 ] || ' +
+        "{ echo 'sudo does not give root here' >&2; exit 126; }",
+      ]
+      : []),
+    `${pkg} update || exit 1`,
+    `${pkg} install ${q(name)}; exit $?`,
+  ].join("\n");
+}
+
+/** {@link installWatched} for a name, through the relay. */
+async function installRelayed(
+  name: string,
+  catalog: Catalog,
+  options: InstallOptions,
+  watcher: InstallWatcher,
+): Promise<string> {
+  // No list, or one the page cannot read: counted as nothing installed,
+  // which only makes the estimate larger.
+  const installed = await watcher.watched(() =>
+    options.host.readFile(INSTALLED_LIST_PATH)
+  ).then(
+    (bytes) => new Set(parseInstalledList(bytes).map((r) => r.name)),
+  ).catch(() => new Set<string>());
+  const plan = relayedInstallPlan(catalog, name, installed);
+  const refusal = sizeRefusal(
+    plan.reduce((sum, release) => sum + release.size, 0),
+    options.tablet,
+  );
+  if (refusal !== undefined) throw new Error(`${name}: ${refusal}`);
+  const extra = plan.filter((release) => release.name !== name);
+  if (extra.length > 0) {
+    options.progress(
+      `${name}: also installs ${
+        extra.map((r) => `${r.name} (${formatBytes(r.size)})`).join(", ")
+      }`,
+    );
+  }
+  const result = await runWatched(
+    [],
+    relayedInstallScript(name),
+    `${name}: installing (sudo pkg update && sudo pkg install ${name})`,
+    options,
+    watcher,
+  );
+  if (result.code !== 0) throw failure(name, result);
   return `${result.stdout}${result.stderr}`.trim();
 }
 

@@ -30,6 +30,8 @@ import {
   parseIndex,
   parsePackageFile,
   plannedInstalls,
+  relayedInstallPlan,
+  relayedInstallScript,
   resolveSet,
   SetNotOffered,
   sha256Hex,
@@ -366,6 +368,180 @@ Deno.test("pkg plans the install; the page stages exactly what it names", async 
     messages.at(-1),
     "greet: verifying and installing (pkg install greet)",
   );
+});
+
+Deno.test("a relayed install by name runs the user's own pkg commands and stages nothing", async () => {
+  const archive = new Uint8Array([1, 2, 3, 4, 5]);
+  const fetcher = await fakeRepo(archive);
+  const runs: { files: StagedFile[]; script: string }[] = [];
+  const read: string[] = [];
+  const host: PackageHost = {
+    readFile: (path) => {
+      read.push(path);
+      return Promise.reject(new Error("no such file"));
+    },
+    stageAndRun: (files, script) => {
+      runs.push({ files, script });
+      return Promise.resolve(INSTALLED);
+    },
+  };
+  const messages: string[] = [];
+  const output = await installPackage("greet", {
+    host,
+    tablet: false,
+    fetcher,
+    progress: (m) => messages.push(m),
+    relayed: true,
+  });
+  assertEquals(output, "install greet 0.1.0-yurt_0");
+  assertEquals(runs, [{ files: [], script: relayedInstallScript("greet") }]);
+  // Its installed list, for the size estimate; not the trust config.
+  assertEquals(read, [INSTALLED_LIST_PATH]);
+  const script = relayedInstallScript("greet");
+  assertStringIncludes(script, "sudo pkg update || exit 1");
+  assertStringIncludes(script, "sudo pkg install 'greet'; exit $?");
+  assert(!script.includes("exec "), script);
+  assert(!script.includes("--etc-root") && !script.includes("--cache-root"));
+  assertEquals(
+    messages.at(-1),
+    "greet: installing (sudo pkg update && sudo pkg install greet)",
+  );
+});
+
+Deno.test("a relayed install names pkg's cause when it fails", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1]));
+  const host: PackageHost = {
+    readFile: () => Promise.resolve(new Uint8Array()),
+    stageAndRun: () =>
+      Promise.resolve({
+        code: 1,
+        stdout: "",
+        stderr:
+          "failed to update official: fetch failed: HTTP fetch returned status 502\nError: one or more repository updates failed\n",
+      }),
+  };
+  await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        relayed: true,
+      }),
+    Error,
+    "pkg install greet failed: failed to update official",
+  );
+});
+
+Deno.test("a relayed install on a tablet refuses what its estimate says is too big", async () => {
+  const fetcher = await fakeRepo(new Uint8Array(TABLET_MAX_BYTES + 1));
+  let ran = false;
+  const host: PackageHost = {
+    readFile: () => Promise.resolve(new Uint8Array()),
+    stageAndRun: () => {
+      ran = true;
+      return Promise.resolve(INSTALLED);
+    },
+  };
+  await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: true,
+        fetcher,
+        progress: () => {},
+        relayed: true,
+      }),
+    Error,
+    "tablet",
+  );
+  assertEquals(ran, false);
+});
+
+Deno.test("relayedInstallPlan adds the dependencies not installed yet, once each", () => {
+  const meta = (name: string, size: number, depends: string[] = []) => ({
+    bytes: new Uint8Array(),
+    file: {
+      name,
+      versions: [
+        version("1.0.0", "yurt_0", {
+          size,
+          depends: depends.map((dep) => ({ name: dep, req: "*" })),
+        }),
+      ],
+    },
+  });
+  const catalog = {
+    metadata: new Map([
+      ["app", meta("app", 1, ["lib", "python"])],
+      ["lib", meta("lib", 10, ["python", "app"])],
+      ["python", meta("python", 100)],
+    ]),
+  } as unknown as Catalog;
+  const names = (installed: string[]) =>
+    relayedInstallPlan(catalog, "app", new Set(installed)).map((r) =>
+      `${r.name}:${r.size}`
+    );
+  assertEquals(names([]), ["app:1", "lib:10", "python:100"]);
+  assertEquals(names(["python"]), ["app:1", "lib:10"]);
+  assertEquals(names(["app"]), []);
+});
+
+Deno.test("a relayed install with a broken installed list still runs, estimating high", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1]));
+  let ran = false;
+  const host: PackageHost = {
+    readFile: () => Promise.resolve(new TextEncoder().encode("not a list")),
+    stageAndRun: () => {
+      ran = true;
+      return Promise.resolve(INSTALLED);
+    },
+  };
+  await installPackage("greet", {
+    host,
+    tablet: false,
+    fetcher,
+    progress: () => {},
+    relayed: true,
+  });
+  assertEquals(ran, true);
+});
+
+Deno.test("a relayed install that goes silent is a stall, and runs pkg recover", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1]));
+  const recovered: string[] = [];
+  const host: PackageHost = {
+    observesProgress: true,
+    readFile: () => Promise.resolve(new Uint8Array()),
+    // Never beats and never answers until given up on.
+    stageAndRun: (_files, _script, watch) =>
+      new Promise((_, reject) =>
+        watch!.signal.addEventListener(
+          "abort",
+          () => reject(new Error("stopped watching")),
+        )
+      ),
+    recover: () => {
+      recovered.push("recover");
+      return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+    },
+  };
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        relayed: true,
+        stallMs: 100,
+        progressEveryMs: 10,
+      }),
+    InstallStalled,
+  );
+  assert(error.inSandbox);
+  assertEquals(recovered, ["recover"]);
 });
 
 /** A host whose guest is watched (src/session_packages.ts): each run

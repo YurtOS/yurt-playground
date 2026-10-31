@@ -46,7 +46,11 @@ import {
 import { partsFetch } from "./image_parts.ts";
 import { captureLayer } from "./python_layer.ts";
 import { watchGuestMemoryRefusals } from "./memory_refused.ts";
-import { relayTrustedRepos, TRUSTED_REPOS_PATH } from "./packages.ts";
+import {
+  relayTrustedRepos,
+  TRUSTED_REPOS_PATH,
+  trustsRelay,
+} from "./packages.ts";
 import {
   type PkgRelay,
   type RelayOptions,
@@ -122,6 +126,10 @@ export type PlaygroundSession = {
   /** Stop, and free the kernel with every guest in it: for a session that
    * is done for good (a short-lived one, say), not one a page shows. */
   dispose?: () => void;
+  /** The guest's `pkg` reaches the repository through the page's relay
+   * (src/pkg_relay.ts): an install by name can run it as the terminal
+   * would. */
+  pkgRelay?: boolean;
   controller: SessionController;
   terminal: PtyTransport;
   /** Run a shell line as a process of the page's own (`sh -c`), as the
@@ -713,8 +721,8 @@ async function startPlayground(
     ? undefined
     : startPkgRelay(mk, env.pkgRelay);
   try {
-    if (relay !== undefined) pointPkgAtRelay(mk);
-    return await startShell(env, mk, stopWatchingRefusals, sh, relay);
+    const relayed = relay !== undefined && pointPkgAtRelay(mk);
+    return await startShell(env, mk, stopWatchingRefusals, sh, relay, relayed);
   } catch (error) {
     relay?.stop();
     throw error;
@@ -724,7 +732,7 @@ async function startPlayground(
 /** Point the image's `pkg` at the relay (src/pkg_relay.ts): its
  * YurtOS/yurt-packages entry, nothing else. A file already pointing there
  * (a restored sandbox) is left as it is. */
-function pointPkgAtRelay(mk: KernelHostInterface): void {
+function pointPkgAtRelay(mk: KernelHostInterface): boolean {
   const toml = new TextDecoder().decode(
     readGuestFile(mk, KERNEL_PID, TRUSTED_REPOS_PATH, 1024 * 1024),
   );
@@ -732,6 +740,8 @@ function pointPkgAtRelay(mk: KernelHostInterface): void {
   if (relayed !== undefined) {
     writeRamfsFile(mk, TRUSTED_REPOS_PATH, new TextEncoder().encode(relayed));
   }
+  // Whether the image's pkg now reaches the repository through it.
+  return trustsRelay(relayed ?? toml);
 }
 
 /** The session on a staged or restored sandbox: its login shell on the
@@ -742,7 +752,11 @@ async function startShell(
   stopWatchingRefusals: () => void,
   shell: Uint8Array,
   relay: PkgRelay | undefined,
+  relayed: boolean,
 ): Promise<PlaygroundSession> {
+  /** The relay serves the image's pkg: it listens, and the configuration
+   * points there. Not once a seal or dispose has stopped it. */
+  let relayServes = relayed;
   /** Each exec's sweep of its files, waiting out its delay (below). */
   const sweepTimers = new Set<number>();
   /** A seal has begun: the page starts nothing more of its own -- an exec,
@@ -911,8 +925,12 @@ async function startShell(
   env.show("");
   return {
     stop,
+    get pkgRelay() {
+      return relayServes;
+    },
     dispose() {
       stop();
+      relayServes = false;
       try {
         relay?.stop();
       } finally {
@@ -1047,6 +1065,7 @@ async function startShell(
       // No host-owned socket in the snapshot: its restore listens anew. A
       // seal that fails after this leaves the relay stopped, which ends the
       // capture anyway.
+      relayServes = false;
       relay?.stop();
       return await mk.sealSandbox();
     },
