@@ -147,7 +147,11 @@ export function upstreamUrl(target: string): string | { refused: string } {
 function stallGuard(stallMs: number, stopped?: AbortSignal) {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const done = () => clearTimeout(timer);
+  let stop = () => {};
+  const done = () => {
+    clearTimeout(timer);
+    stopped?.removeEventListener("abort", stop);
+  };
   const alive = () => {
     clearTimeout(timer);
     if (controller.signal.aborted) return;
@@ -156,7 +160,7 @@ function stallGuard(stallMs: number, stopped?: AbortSignal) {
       stallMs,
     );
   };
-  const stop = () => {
+  stop = () => {
     done();
     controller.abort(new Error("the relay stopped"));
   };
