@@ -133,9 +133,9 @@ does as `KERNEL_PID`.
      response header. The relay counts what it forwards. If the body runs past
      that length, or ends short of it, the relay closes the connection without
      finishing the body, and pkg reports a short or failed body. An archive with
-     no `Content-Length` is buffered under the size cap. Streaming keeps pkg's
-     60 s ureq budget close to the desktop's, and keeps only one chunk in the
-     page's memory.
+     no `Content-Length` gets a 502 rather than being held whole. Streaming
+     keeps pkg's 60 s ureq budget close to the desktop's, and keeps only one
+     chunk in the page's memory.
    - **Size caps.** Each response is capped at `INSTALL_MAX_BYTES`, and at
      `TABLET_MAX_BYTES` on a tablet; a 502 says which limit it hit. On a tablet,
      the total across one terminal install is not capped. The panel keeps its
@@ -145,15 +145,16 @@ does as `KERNEL_PID`.
 4. **Progress.** `onFetch(path, received, total)` posts to the page. PR 3's
    panel uses it.
 5. **Stop.** The relay lives exactly as long as the session's `mk`. `stop()`
-   closes every connection and the listener, and clears the relay's timers. It
-   is called:
+   closes every connection and the listener, clears the relay's timers, and
+   aborts every fetch in flight. A kernel call that throws in the accept loop
+   stops the relay. It is called:
    - in `seal()`, after `prepareSeal` has ended the guest processes and just
      before `sealSandbox`, so a `prepareSeal` that throws leaves the relay up (a
      `sealSandbox` that throws leaves it stopped, which is harmless, because a
      capture ends there);
-   - wherever the session's kernel is disposed (`startFresh` after a stalled
-     install, through a new `session.close()` that stops the relay and disposes
-     `mk`);
+   - wherever the session's kernel is disposed: `session.dispose()` (which
+     `startFresh` calls after a stalled install) stops the relay, then disposes
+     `mk` even if that throws;
    - in `startPlayground`'s failure path, once the relay has started.
 
    A test checks that no relay timer fires after dispose. A sealed snapshot
@@ -259,30 +260,43 @@ The relay does not depend on it.
 
 ## Tests
 
-All run red before the change.
-
-- **Fast tests** (`tests/pkg_relay_test.ts`, with an injected fetcher) cover the
-  request rules: method, body, path and length refusals; the `PACKAGE_REPO_URL`
-  guard; the error mapping; ETag/304 only for the two index files; buffering of
-  every non-archive file when the fetcher's `Content-Length` differs from its
-  body (the gzip case); the archive length check, for a body both short and
-  long; the per-response caps; stop clearing every timer; and the idempotent
-  `trusted-repos.toml` rewrite. They also cover `browserTrustedRepos` on a
-  rewritten file.
-- **A kernel-backed test** uses the pinned kernel wasm with the relay listening.
-  It dials 7417 with `dialSandboxPort` and runs GETs, eight at a time, against a
-  fake fetcher. It asserts that no relay call returns `WAIT_PARKED`, and that
-  the relay is closed after `seal()`.
-- **Acceptance** (Playwright, built site):
-  - Against the real upstream, in the terminal,
-    `sudo pkg update && sudo pkg install <a small package>`, a second
-    `sudo pkg update` (expect `already current`), then `pkg list`. This is PR
-    2's first step, and it proves the one primitive that no test covers yet: a
-    guest connecting to a listener the host owns.
-  - Restore from a snapshot, then `pkg update` again.
-  - PR 3: a panel install, then `pkg search` in the terminal.
-  - Measured against main: idle CPU, and loopback throughput for a 10 MiB
-    archive, which must reach at least 5 MB/s or the test fails.
+- **Fast tests** (`tests/pkg_relay_test.ts`, with an injected fetcher and a fake
+  kernel) cover:
+  - the request rules (method, body, path and length refusals) and the
+    `PACKAGE_REPO_URL` guard;
+  - the error mapping; ETag/304 only for the two index files;
+  - buffering of every non-archive file when the fetcher's `Content-Length`
+    differs from its body (the gzip case);
+  - the archive length check, for a body both short and long; an archive with no
+    length; the per-response caps;
+  - `stop()` on an idle relay and in the middle of a connection (its fetch is
+    aborted, and no kernel call follows); a kernel that throws;
+  - the idempotent `trusted-repos.toml` rewrite, a file it cannot read, and
+    `browserTrustedRepos` on a rewritten file.
+- **Kernel-backed tests** (`tests/pkg_relay_boot_test.ts`, CI's guest shard)
+  boot the pinned kernel and image with the relay and a fake upstream:
+  - the guest's `wget` reaches the page's listener, eight at a time; a path
+    outside the repository is refused without a fetch; the index gets the
+    relay's ETag, and a conditional GET with it a 304; the rewritten
+    configuration is root's, 0644;
+  - a 10 MiB archive passes at no less than half the rate of the same bytes
+    through a guest pipe on the same machine (an absolute rate is only asserted
+    with `PLAYGROUND_PKG_PERF=1`: CI runners measured 2 MB/s where a developer
+    machine does 10);
+  - the guest's own `sudo pkg update` gets the repository fixture through the
+    relay and refuses its placeholder signature (without the relay it fails with
+    "HTTP request failed");
+  - with `PLAYGROUND_PKG_LIVE=1`, by hand: update, update again
+    (`already
+    current`), install, list, against the live repository.
+- **Acceptance** (`tests/playground_e2e.ts`, Playwright): the terminal's
+  `sudo pkg update` against the fixture; with `PLAYGROUND_PKG_LIVE=1`, update,
+  update again and an install that then runs. PR 3: after a panel install the
+  terminal's first update is `already current` (one cache).
+- Not automated: a snapshot restore followed by `pkg update`. The restore path
+  runs the same start (step 1), and the seal stops the relay first.
+- Neither image ships a repository cache (checked in both `.yurtimg`s), so a
+  first update in a tab always starts from an empty default cache.
 
 ## PR plan
 

@@ -300,11 +300,22 @@ function isPackageRepo(table: TomlRepo): boolean {
  * The image's `trusted-repos.toml` with the YurtOS/yurt-packages entry's
  * `url` pointed at the relay, and nothing else changed: the other tables,
  * comments, and the entry's id and signing identity stay as they are.
- * `undefined` when it already points there (a restored sandbox), or when
- * no entry names the repository: there is nothing to relay for.
+ * `undefined` when it already points there (a restored sandbox), when no
+ * entry names the repository, or when the file is not one the page can
+ * read: then it is left as it is.
  */
 export function relayTrustedRepos(toml: string): string | undefined {
-  const tables = repoTables(toml);
+  let tables: TomlRepo[];
+  try {
+    tables = repoTables(toml);
+  } catch (error) {
+    // A file the page cannot read is left as it is: the terminal's pkg
+    // then has no network, and the sandbox still boots.
+    console.warn(
+      `[pkg relay] ${error instanceof Error ? error.message : error}`,
+    );
+    return undefined;
+  }
   const target = tables.findIndex(isPackageRepo);
   if (target < 0 || tables[target].values.url === PKG_RELAY_URL) {
     return undefined;

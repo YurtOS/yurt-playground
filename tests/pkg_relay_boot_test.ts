@@ -7,7 +7,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "node:path";
 import { bootAshSession, repoRoot, typeCommand } from "./ash_harness.ts";
-import { PACKAGE_REPO_URL, PKG_RELAY_URL } from "../src/packages.ts";
+import { PACKAGE_REPO_URL, PKG_RELAY_URL, sha256Hex } from "../src/packages.ts";
 import type { RelayFetch } from "../src/pkg_relay.ts";
 
 const FIXTURE = join(repoRoot, "tests/fixtures/yurt-packages");
@@ -88,6 +88,21 @@ Deno.test({
         `${PACKAGE_REPO_URL}nothing.json`,
       ]);
 
+      // pkg's conditional GET of the index: the relay's ETag, then a 304.
+      const etag = `"sha256-${await sha256Hex(
+        new TextEncoder().encode("index-bytes\n"),
+      )}"`;
+      const head = clean(
+        await typeCommand(
+          session.term,
+          `wget -S -O /dev/null ${PKG_RELAY_URL}index.json 2>&1; ` +
+            `wget -S -O /dev/null --header 'If-None-Match: ${etag}' ${PKG_RELAY_URL}index.json 2>&1`,
+          30_000,
+        ),
+      );
+      assertStringIncludes(head, `ETag: ${etag}`);
+      assertStringIncludes(head, "304 Not Modified");
+
       // The configuration pkg reads names the relay, root's and 0644.
       const conf = clean(
         await typeCommand(
@@ -104,8 +119,25 @@ Deno.test({
   },
 });
 
+/** MB/s for `command`, which moves `size` bytes and prints its count:
+ * the prompt's own round trip is taken off. */
+async function rate(
+  term: Parameters<typeof typeCommand>[0],
+  command: string,
+  size: number,
+): Promise<number> {
+  const t0 = performance.now();
+  await typeCommand(term, "true", 30_000);
+  const roundTrip = performance.now() - t0;
+  const t1 = performance.now();
+  const out = await typeCommand(term, command, 120_000);
+  const seconds = (performance.now() - t1 - roundTrip) / 1000;
+  assertStringIncludes(clean(out), `\n${size}\n`);
+  return size / seconds / 1e6;
+}
+
 Deno.test({
-  name: "pkg relay: an archive passes at 5 MB/s or more",
+  name: "pkg relay: an archive passes at a pipe's pace, not a timer's",
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
@@ -117,21 +149,31 @@ Deno.test({
     });
     if (!session) return;
     try {
-      // The prompt's own round trip, taken off the transfer's.
-      const t0 = performance.now();
-      await typeCommand(session.term, "true", 30_000);
-      const roundTrip = performance.now() - t0;
-      const t1 = performance.now();
-      const out = await typeCommand(
+      // The same bytes through a guest pipe alone: what this machine can
+      // do at all. A relay that waits on timers between its 64 KiB
+      // loopback buffers falls well behind it; a slow runner slows both.
+      const pipe = await rate(
+        session.term,
+        `dd if=/dev/zero bs=65536 count=160 2>/dev/null | wc -c`,
+        size,
+      );
+      const relay = await rate(
         session.term,
         `wget -q -O - ${PKG_RELAY_URL}artifacts/big.yurtpkg | wc -c`,
-        120_000,
+        size,
       );
-      const seconds = (performance.now() - t1 - roundTrip) / 1000;
-      assertStringIncludes(clean(out), `\n${size}\n`);
-      const rate = size / seconds / 1e6;
-      console.log(`pkg relay: ${rate.toFixed(1)} MB/s for a 10 MiB archive`);
-      assert(rate >= 5, `${rate.toFixed(1)} MB/s is under 5 MB/s`);
+      console.log(
+        `pkg relay: ${relay.toFixed(1)} MB/s for a 10 MiB archive ` +
+          `(a guest pipe: ${pipe.toFixed(1)} MB/s)`,
+      );
+      assert(
+        relay >= pipe / 2,
+        `${relay.toFixed(1)} MB/s is under half the pipe's ${pipe.toFixed(1)}`,
+      );
+      // The absolute bar, on a developer machine (CI runners are slower).
+      if (Deno.env.get("PLAYGROUND_PKG_PERF") === "1") {
+        assert(relay >= 5, `${relay.toFixed(1)} MB/s is under 5 MB/s`);
+      }
     } finally {
       session.dispose();
     }

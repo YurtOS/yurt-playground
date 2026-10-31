@@ -397,3 +397,103 @@ Deno.test("startPkgRelay throws when the port cannot be bound", () => {
   assert(error instanceof Error);
   assertStringIncludes(error.message, "bind 127.0.0.1:7417: rc=-98");
 });
+
+Deno.test("relayTrustedRepos leaves a file it cannot read as it is", () => {
+  assertEquals(relayTrustedRepos("[[repo]]\nenabled = true\n"), undefined);
+  assertEquals(relayTrustedRepos("[repo.extra]\nx = 1\n"), undefined);
+});
+
+Deno.test("relayReply refuses an archive with no Content-Length", async () => {
+  const { fetch } = upstream(new Uint8Array(10));
+  const reply = await relayReply(get("/artifacts/a.yurtpkg"), {
+    tablet: false,
+    fetch,
+  });
+  assertEquals(reply.status, 502);
+  assertStringIncludes(await textOf(reply), "no Content-Length");
+});
+
+/** A fetch that answers only when aborted, with the abort's reason. */
+const hanging: RelayFetch = (_, init) =>
+  new Promise((_, reject) =>
+    init.signal!.addEventListener("abort", () => reject(init.signal!.reason))
+  );
+
+/** A kernel with one connection to accept, whose request head arrives
+ * after one EAGAIN, and which records every call. */
+function busyKernel(head: string) {
+  const calls: number[] = [];
+  let accepted = false;
+  let recvs = 0;
+  return {
+    calls,
+    kernel: {
+      scratchLen: 1 << 20,
+      syscall(method: number, _request: Uint8Array, cap: number) {
+        calls.push(method);
+        const none = new Uint8Array();
+        switch (method) {
+          case METHOD.SYS_SOCKET_OPEN:
+            return { rc: 7n, response: none };
+          case METHOD.SYS_SOCKET_ACCEPT:
+            if (accepted) return { rc: -11n, response: none };
+            accepted = true;
+            return { rc: 9n, response: none };
+          case METHOD.SYS_SOCKET_RECV: {
+            if (recvs++ === 0) return { rc: -11n, response: none };
+            const bytes = new TextEncoder().encode(head).slice(0, cap);
+            return { rc: BigInt(bytes.byteLength), response: bytes };
+          }
+          default:
+            return { rc: 0n, response: none };
+        }
+      },
+    },
+  };
+}
+
+Deno.test("stop ends a connection mid-fetch: its fetch is aborted, and nothing calls the kernel after", async () => {
+  const { calls, kernel } = busyKernel("GET /index.json HTTP/1.1\r\n\r\n");
+  let fetched: AbortSignal | undefined;
+  const relay = startPkgRelay(kernel, {
+    tablet: false,
+    fetch: (url, init) => {
+      fetched = init.signal!;
+      return hanging(url, init);
+    },
+  });
+  for (let i = 0; i < 100 && fetched === undefined; i++) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert(fetched !== undefined, "the request never reached the fetch");
+  relay.stop();
+  const stopped = calls.length;
+  assert(fetched.aborted);
+  await new Promise((r) => setTimeout(r, 300));
+  assertEquals(calls.slice(stopped), []);
+  // The connection and the listener were closed, once each.
+  assertEquals(
+    calls.filter((m) => m === METHOD.SYS_SOCKET_CLOSE).length,
+    2,
+  );
+});
+
+Deno.test("a kernel that throws stops the relay instead of killing its loop", async () => {
+  const { kernel } = idleKernel();
+  let throwing = false;
+  const calls: number[] = [];
+  const relay = startPkgRelay({
+    ...kernel,
+    syscall(method: number) {
+      calls.push(method);
+      if (throwing) throw new Error("kernel trapped");
+      return kernel.syscall(method);
+    },
+  }, { tablet: false });
+  throwing = true;
+  await new Promise((r) => setTimeout(r, 250));
+  const after = calls.length;
+  await new Promise((r) => setTimeout(r, 250));
+  assertEquals(calls.length, after);
+  relay.stop();
+});

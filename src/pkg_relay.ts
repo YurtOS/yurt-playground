@@ -54,6 +54,12 @@ export type RelayOptions = {
   stallMs?: number;
 };
 
+/** {@link relayReply}'s options: the relay's own, and its end. */
+type ReplyOptions = RelayOptions & {
+  /** Aborts every fetch at once: the relay has stopped. */
+  stopped?: AbortSignal;
+};
+
 /** One request's head, as the relay reads it. */
 export type RelayRequest = {
   method: string;
@@ -136,19 +142,28 @@ export function upstreamUrl(target: string): string | { refused: string } {
 }
 
 /** A fetch whose body may not stall: `signal` aborts once `stallMs` pass
- * with no byte, and `alive` puts that off. */
-function stallGuard(stallMs: number) {
+ * with no byte (`alive` puts that off), or once `stopped` aborts, which
+ * also ends the stall timer. */
+function stallGuard(stallMs: number, stopped?: AbortSignal) {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const done = () => clearTimeout(timer);
   const alive = () => {
     clearTimeout(timer);
+    if (controller.signal.aborted) return;
     timer = setTimeout(
       () => controller.abort(new Error(`no data for ${stallMs} ms`)),
       stallMs,
     );
   };
+  const stop = () => {
+    done();
+    controller.abort(new Error("the relay stopped"));
+  };
+  if (stopped?.aborted) stop();
+  else stopped?.addEventListener("abort", stop, { once: true });
   alive();
-  return { signal: controller.signal, alive, done: () => clearTimeout(timer) };
+  return { signal: controller.signal, alive, done };
 }
 
 /**
@@ -158,7 +173,7 @@ function stallGuard(stallMs: number) {
  */
 export async function relayReply(
   request: RelayRequest,
-  options: RelayOptions,
+  options: ReplyOptions,
 ): Promise<RelayReply> {
   if (request.method !== "GET") return text(405, "the relay only GETs");
   const length = request.headers.get("content-length");
@@ -173,7 +188,7 @@ export async function relayReply(
   const path = request.target.slice(1);
   const cap = options.tablet ? TABLET_MAX_BYTES : INSTALL_MAX_BYTES;
   const capName = options.tablet ? "the tablet limit" : "the install limit";
-  const guard = stallGuard(options.stallMs ?? STALL_MS);
+  const guard = stallGuard(options.stallMs ?? STALL_MS, options.stopped);
   let response: Response;
   try {
     // None of the guest's headers: a CORS simple request (GitHub refuses
@@ -202,10 +217,14 @@ export async function relayReply(
   // Archives stream; GitHub serves them as they are. Everything else it
   // gzips, so the Content-Length the browser exposes is not the length of
   // the bytes fetch() hands over: those are read whole, and counted.
-  if (
-    path.endsWith(".yurtpkg") && Number.isSafeInteger(upstreamLength) &&
-    upstreamLength > 0
-  ) {
+  if (path.endsWith(".yurtpkg")) {
+    // GitHub always says how long an archive is; one that does not is not
+    // held whole in the page instead.
+    if (!Number.isSafeInteger(upstreamLength) || upstreamLength <= 0) {
+      guard.done();
+      await reader.cancel();
+      return text(502, `${url}: no Content-Length for an archive`);
+    }
     if (upstreamLength > cap) {
       guard.done();
       await reader.cancel();
@@ -227,12 +246,11 @@ export async function relayReply(
       },
     };
   }
-  const limit = path.endsWith(".yurtpkg") ? cap : METADATA_MAX_BYTES;
   let body: Uint8Array;
   try {
     body = await readAll(
       reader,
-      limit,
+      METADATA_MAX_BYTES,
       guard,
       (received) => options.onFetch?.(path, received),
     );
@@ -352,8 +370,8 @@ function fdRequest(fd: number, extra = 0): Uint8Array {
   return req;
 }
 
-/** A backoff for I/O that would block: 4 ms doubling to 50 ms, back to
- * 4 ms after any progress. */
+/** A backoff for I/O that would block: 1 ms doubling to 50 ms, back to
+ * 1 ms after any progress. */
 function backoff() {
   let delay = BACKOFF_MIN_MS;
   return {
@@ -416,6 +434,8 @@ export function startPkgRelay(
   }
 
   let stopped = false;
+  /** Every fetch in flight ends with the relay. */
+  const ended = new AbortController();
   const connections = new Set<number>();
   const chunkCap = Math.max(
     4096,
@@ -483,7 +503,7 @@ export function startPkgRelay(
       const request = parseRequestHead(head);
       reply = request === undefined
         ? text(400, "not an HTTP/1.1 request")
-        : await relayReply(request, options);
+        : await relayReply(request, { ...options, stopped: ended.signal });
       await send(fd, replyHead(reply));
       if ("body" in reply) {
         await send(fd, reply.body);
@@ -505,6 +525,18 @@ export function startPkgRelay(
   const accept = () => {
     timer = undefined;
     if (stopped) return;
+    try {
+      acceptAll();
+    } catch (error) {
+      // A kernel that trapped or went away: pkg's connects then fail at
+      // once rather than wait on a listener nothing serves.
+      console.warn(`[pkg relay] stopped: ${message(error)}`);
+      stop();
+      return;
+    }
+    timer = setTimeout(accept, ACCEPT_EVERY_MS);
+  };
+  const acceptAll = () => {
     for (;;) {
       const { rc } = call(METHOD.SYS_SOCKET_ACCEPT, fdRequest(listener, 4), 16);
       if (rc === -EAGAIN) break;
@@ -519,18 +551,22 @@ export function startPkgRelay(
       connections.add(rc);
       void serve(rc);
     }
-    timer = setTimeout(accept, ACCEPT_EVERY_MS);
+  };
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearTimeout(timer);
+    ended.abort();
+    const fds = [...connections, listener];
+    connections.clear();
+    for (const fd of fds) {
+      try {
+        close(fd);
+      } catch {
+        // The kernel is already gone.
+      }
+    }
   };
   accept();
-
-  return {
-    stop() {
-      if (stopped) return;
-      stopped = true;
-      clearTimeout(timer);
-      for (const fd of connections) close(fd);
-      connections.clear();
-      close(listener);
-    },
-  };
+  return { stop };
 }

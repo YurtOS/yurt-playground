@@ -913,8 +913,11 @@ async function startShell(
     stop,
     dispose() {
       stop();
-      relay?.stop();
-      mk.dispose();
+      try {
+        relay?.stop();
+      } finally {
+        mk.dispose();
+      }
     },
     controller,
     terminal,
