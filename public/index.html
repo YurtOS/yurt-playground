@@ -782,8 +782,9 @@
             <em>Install</em>, wait for <code>installed</code> below the list,
             then run the package's command in the terminal. The sandbox has no
             network, so this page downloads the package, and the sandbox's own
-            <code>pkg</code> checks its signature and installs it, as
-            <code>sudo pkg install NAME</code> does in a sandbox with a network.
+            <code>pkg</code> checks its signature and installs it.
+            <code>sudo pkg install NAME</code> in the terminal does the same,
+            through this page.
           </p>
           <p>
             Installed packages live in this tab's memory, like every file here:
@@ -833,9 +834,10 @@
                 MB on a tablet, 40 MB on a phone; later visits load it from the
                 browser's cache.</span>
               <span id="offline-note"
-              >The sandbox has no network:
+              >Programs in the sandbox have no network:
                 <code>pip install</code> and <code>wget</code> fail by design
-                (the desktop app below has both).</span>
+                (the desktop app below has both). <code>sudo pkg install</code>
+                works: this page fetches signed packages for it.</span>
             </p>
           </div>
           <div id="failed" data-testid="boot-failed" hidden>
@@ -1086,7 +1088,9 @@ yurt stop web</pre>
               while a cell runs. The page's security policy lets it fetch only
               from this site and a few named sources: the package repository on
               GitHub, Hugging Face for the agent's model, and GitHub for shared
-              snapshots. The sandbox itself has no network.
+              snapshots. The sandbox itself has no network: when
+              <code>pkg</code> installs a package, this page fetches the package
+              repository's files for it, and nothing else.
             </p>
           </article>
           <article class="check">

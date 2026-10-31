@@ -45,15 +45,18 @@ you in the advisory unless you would rather we did not.
 - **The hosted page:** anything that escapes the page's Content-Security-Policy
   or cross-origin isolation, or that lets another site read or drive the sandbox
   in a visitor's tab.
+- **The page's package relay:** the page fetches package-repository files for
+  the guest's `pkg`. A guest that gets anything else through it (another host,
+  another method, a file outside the repository) is in scope.
 - **Supply chain:** the released artifacts (installers, the CLI packages, the
   kernel wasm, the images and the snapshots) not matching what this repository
   pins in `artifacts/pins.json`, or the page running anything else.
 
 ## What is not
 
-- The guest having no network in the tab, `pip install` failing there, and the
-  sandbox being resettable by a reload: those are the design, described on the
-  page.
+- The guest having no network in the tab apart from that relay, `pip install`
+  failing there, and the sandbox being resettable by a reload: those are the
+  design, described on the page.
 - Denial of service _inside_ a guest — a guest that spins its own CPU or fills
   its own memory is doing what a sandbox is for. A guest that takes down the
   host is in scope.
