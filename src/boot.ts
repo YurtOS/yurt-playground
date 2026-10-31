@@ -1124,7 +1124,10 @@ async function startShell(
         while (killpg(0) === 0 && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
-      })();
+      })().catch((error) => {
+        // Best effort, like the reap: a failed look must not skip it.
+        console.warn(`waiting out group ${pid} failed: ${error}`);
+      });
       groupKills.set(pid, gone);
       // A kill after the leader's reap leaves no entry behind.
       gone.then(() => {
