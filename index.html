@@ -163,6 +163,14 @@
           Packages panel does the same. <code>pkg</code> verifies every
           signature before it installs anything.
         </p>
+        <p>
+          New on 2026-10-31: in the browser, <code>sudo pkg update</code> and
+          <code>sudo pkg install NAME</code> now work in the terminal too. The
+          page fetches the signed files from the package repository for
+          <code>pkg</code>, and only from there; programs in the sandbox still
+          have no network of their own. The terminal and the Packages panel
+          share one cache, so a package installed in one shows up in the other.
+        </p>
         <div class="scroll">
           <table>
             <tr><th>Package</th><th>Version</th><th>Download</th><th>Notes</th></tr>
