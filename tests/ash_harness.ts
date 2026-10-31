@@ -7,6 +7,7 @@ import {
 } from "../src/boot.ts";
 import { handlePlaygroundRequest } from "../src/serve.ts";
 import { loadPins, resolveArtifacts } from "../src/pins.ts";
+import type { RelayOptions } from "../src/pkg_relay.ts";
 
 export const repoRoot = join(fileURLToPath(import.meta.url), "../..");
 
@@ -117,6 +118,8 @@ export type AshSession = {
   term: MemoryTerm;
   shown: () => string;
   stop: () => void;
+  /** Stop and free the sandbox, its relay with it. */
+  dispose: () => void;
   /** What the page's `window.yurt.exec` runs over: an ExecutionRegistry
    * (src/executions.ts) takes these two. */
   process: NonNullable<PlaygroundSession["process"]>;
@@ -129,6 +132,8 @@ export type AshSession = {
 
 export type AshSessionOptions = {
   requireArtifacts?: boolean;
+  /** Serve the guest's `pkg` from the host (src/pkg_relay.ts). */
+  pkgRelay?: RelayOptions;
 };
 
 export async function bootAshSession(
@@ -148,6 +153,7 @@ export async function bootAshSession(
     },
     term,
     linuxRemark: (remark) => remarks.push(remark),
+    pkgRelay: options.pkgRelay,
   });
   await waitFor(
     () => /[$#]/.test(term.output()) || term.output().length > 0,
@@ -165,6 +171,7 @@ export async function bootAshSession(
     term,
     shown: () => shown,
     stop: () => session.stop(),
+    dispose: () => session.dispose!(),
     process: session.process,
     signal: session.signal,
     seal: session.seal,
