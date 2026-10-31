@@ -23,6 +23,7 @@ export const NAMED_SHARDS: Record<string, string[]> = {
     "tests/notebook_kernel_test.ts",
     "tests/stage_test.ts",
     "tests/vi_test.ts",
+    "tests/zsh_test.ts",
   ],
 };
 
