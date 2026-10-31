@@ -215,13 +215,13 @@ Packages are signed and published in
 <!-- snapshot-table:start (scripts/snapshot-table.ts) -->
 <!-- deno-fmt-ignore-start -->
 
-Train `playground-2026.10.29-3d32068`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
+Train `playground-2026.10.31-3d32068`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
 
 | Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
 | --- | --- | --- | --- | --- | --- | --- |
-| desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.10.29-3d32068-2` | 131.0 MB in 7 parts | 520.6 MiB | 2449 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates |
-| tablet | tablet (iPad): `?platform=tablet` | `snapshot-tablet-playground-2026.10.29-3d32068` | 94.8 MB in 5 parts | 381.1 MiB | 1254 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; no Jupyter |
-| phone | phone (iPhone): `?platform=phone` | `snapshot-phone-playground-2026.10.29-3d32068` | 31.2 MB in 2 parts | 136.1 MiB | 612 MiB | BusyBox shell, git 2.55.0, ca-certificates; no Python, no Jupyter |
+| desktop | desktop browser (Mac, PC): `?platform=desktop` | not pinned: boots the image | | | | |
+| tablet | tablet (iPad): `?platform=tablet` | not pinned: boots the image | | | | |
+| phone | phone (iPhone): `?platform=phone` | not pinned: boots the image | | | | |
 
 <!-- deno-fmt-ignore-end -->
 <!-- snapshot-table:end -->
