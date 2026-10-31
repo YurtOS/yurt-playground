@@ -1,7 +1,7 @@
 #!/usr/bin/env -S deno run --allow-read --allow-write
 /**
  * snapshot-table.ts -- the README's table of the sandbox snapshots in use
- * (src/sandbox_snapshot.ts SNAPSHOT_KINDS), made from artifacts/pins.json
+ * (src/snapshot_pin.ts SNAPSHOT_KINDS), made from artifacts/pins.json
  * so it cannot go stale: kind, the device that restores it, release, file
  * size, kernel memory, the renderer's measured peak while restoring it
  * (the RAM it needs; scripts/measure-boot.ts), and what is in that Linux.

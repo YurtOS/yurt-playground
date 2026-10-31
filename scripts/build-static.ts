@@ -188,7 +188,7 @@ export async function buildStaticSite(): Promise<void> {
       `${PYTHON_SEAL_NAME} missing; the yurt-snapshot kernel will not boot (scripts/install-pinned-artifacts.sh)`,
     );
   }
-  // Each device's sealed sandbox (src/sandbox_snapshot.ts SNAPSHOT_KINDS):
+  // Each device's sealed sandbox (src/snapshot_pin.ts SNAPSHOT_KINDS):
   // the pinned ones, which scripts/install-pinned-artifacts.sh fetched.
   // Optional; a page without its own boots the image.
   const pins = await loadPins(join(artifactsDir, "pins.json"));

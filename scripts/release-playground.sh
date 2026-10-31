@@ -829,7 +829,7 @@ done
 # only if release-snapshot.ts --check-pin says it is this train's (well
 # formed, this page's format, built from these pins, of the Python set the
 # live index offers); otherwise it is dropped (scripts/lib/snapshot-pin.sh).
-# Each device's (src/sandbox_snapshot.ts SNAPSHOT_KINDS), checked by kind.
+# Each device's (src/snapshot_pin.ts SNAPSHOT_KINDS), checked by kind.
 snapshots_json=$(jq -c '{snapshot, tabletSnapshot, phoneSnapshot}
   | with_entries(select(.value != null))' "$root/artifacts/pins.json")
 # `repo`/`rev` say where the source is; `releaseRepo`/`release` where the

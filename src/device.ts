@@ -53,7 +53,7 @@ export function touchDevice(): boolean {
 
 /** Which kind of page this is: what it starts (the shell only on a phone
  * or tablet, Jupyter on a desktop) and which snapshot it restores
- * (src/sandbox_snapshot.ts SNAPSHOT_KINDS). `?platform=` says it in the
+ * (src/snapshot_pin.ts SNAPSHOT_KINDS). `?platform=` says it in the
  * URL: the page writes its device's there when there is none, and a hand
  * written one overrides the device -- as far as the device can run it. */
 export type Platform = "phone" | "tablet" | "desktop";

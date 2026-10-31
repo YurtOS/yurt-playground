@@ -69,7 +69,7 @@ Deno.test("only the deploy fetches the snapshot, with the other blobs' retry", a
     true,
     "through download(), the other blobs' retry",
   );
-  // Every kind the page restores (src/sandbox_snapshot.ts SNAPSHOT_KINDS).
+  // Every kind the page restores (src/snapshot_pin.ts SNAPSHOT_KINDS).
   const { SNAPSHOT_KINDS } = await import("../src/sandbox_snapshot.ts");
   for (const { pinKey, asset } of Object.values(SNAPSHOT_KINDS)) {
     assertEquals(script.includes(`${pinKey}:${asset}`), true, pinKey);

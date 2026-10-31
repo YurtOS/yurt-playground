@@ -82,7 +82,7 @@ else
   rm -f "$root/artifacts/playground-slim.yurtimg"
 fi
 fetch pythonSeal python3-seal.wasm public/demo/python3-seal.wasm
-# Each device's sealed sandbox (src/sandbox_snapshot.ts SNAPSHOT_KINDS:
+# Each device's sealed sandbox (src/snapshot_pin.ts SNAPSHOT_KINDS:
 # `snapshot` the desktop's, `tabletSnapshot`, `phoneSnapshot`), when the
 # train pins it and the caller asks for it (YURT_INSTALL_SNAPSHOT=1: the
 # deploy, which publishes them): up to 132 MB each that no test reads. A

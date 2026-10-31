@@ -124,7 +124,7 @@ type ToWorker =
     // `?snapshot=capture&packages=a,b`: packages a capture installs after
     // the Python set, before it seals (scripts/snapshot-local.ts).
     capturePackages?: string[];
-    // Which snapshot (src/sandbox_snapshot.ts SNAPSHOT_KINDS): the one a
+    // Which snapshot (src/snapshot_pin.ts SNAPSHOT_KINDS): the one a
     // restore takes (the device's), or the one a capture makes. The
     // phone's capture comes with no `python` request (the image as it
     // boots); the tablet's with python alone; the desktop's with the set.

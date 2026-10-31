@@ -89,7 +89,7 @@ export type PlaygroundEnv = {
    * (src/snapshot_source.ts) instead of the pinned one. */
   snapshotId?: string;
   /** Which pinned snapshot a restore takes (the device's,
-   * src/sandbox_snapshot.ts SNAPSHOT_KINDS); the desktop's when absent. */
+   * src/snapshot_pin.ts SNAPSHOT_KINDS); the desktop's when absent. */
   snapshotKind?: SnapshotKind;
   /** Where a restore keeps the snapshot's checked parts between visits
    * (the browser's Cache API); none, every visit downloads them. */

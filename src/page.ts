@@ -540,7 +540,7 @@ function boot(
 }
 
 /** The page restores its device's sealed sandbox by default
- * (src/sandbox_snapshot.ts SNAPSHOT_KINDS), booting the image when it
+ * (src/snapshot_pin.ts SNAPSHOT_KINDS), booting the image when it
  * cannot; `?snapshot=0` boots the image. `?snapshot=<id>` restores an
  * uploaded one (src/snapshot_source.ts); `?snapshot=capture`,
  * `capture-tablet` and `capture-phone` make one of each kind. */

@@ -81,9 +81,9 @@ its kernel memory and what it holds. `--dry-run` stops before the release and
 the pin; `--tag` names a second snapshot of one train (a published one is never
 replaced). A train keeps the pin only while `release-snapshot.ts --check-pin`
 accepts it, and otherwise drops it and says to run the script again; so does a
-change to the page's boot setup (`BOOT_SETUP` in `src/sandbox_snapshot.ts`).
-Only the deploy fetches the snapshot (`YURT_INSTALL_SNAPSHOT=1`), and a problem
-with it never fails the deploy.
+change to the page's boot setup (`BOOT_SETUP` in `src/snapshot_pin.ts`). Only
+the deploy fetches the snapshot (`YURT_INSTALL_SNAPSHOT=1`), and a problem with
+it never fails the deploy.
 
 To try another snapshot without a pin or a deploy, capture and upload it
 locally:

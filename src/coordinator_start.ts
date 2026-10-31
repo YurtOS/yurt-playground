@@ -332,7 +332,7 @@ export function kernelLifecycle() {
 
 /** Whether a start restores a sealed sandbox (by default, `?snapshot=1`
  * or an uploaded one): only the in-tab sandbox (the desktop app's runs
- * natively). A phone or tablet too, its own kind (src/sandbox_snapshot.ts
+ * natively). A phone or tablet too, its own kind (src/snapshot_pin.ts
  * SNAPSHOT_KINDS): the restore takes only a snapshot of the Python the
  * page asks the live index about (checkPythonSet, before the restore) --
  * none on a phone, python alone on a tablet -- so the desktop's 130 MB,

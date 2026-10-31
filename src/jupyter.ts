@@ -5,6 +5,7 @@ import {
   type JupyterTransport,
 } from "./jupyter_transport.ts";
 import { isJavaScriptCore } from "./boot.ts";
+import { EXECUTE_TIMEOUT_MS } from "./jupyter_protocol.ts";
 import { asWaitStatus, signalName, type WaitStatus } from "./executions.ts";
 
 export const JUPYTER_CONNECTION_FILE = "/tmp/yurt-kernel.json";
@@ -587,11 +588,6 @@ async function readConnectionFile(
     remove();
   }
 }
-
-/** Bound on one cell of the terminal page's demo notebook. The first
- * execute after boot is JIT-bound like the boot itself: ~2 s on a laptop,
- * tens of seconds on a 2-vCPU CI runner. */
-export const EXECUTE_TIMEOUT_MS = 120_000;
 
 export async function executeCell(
   transport: JupyterTransport,
