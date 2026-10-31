@@ -13,8 +13,7 @@
  * `playgroundHostState`). Anything else on JavaScriptCore keeps the relay.
  */
 import * as kernelHostInterface from "@yurt/kernel-host-interface-js";
-import { playgroundHostState } from "./boot.ts";
-import { isJavaScriptCore } from "./browser_engine.ts";
+import { isJavaScriptCore, playgroundHostState } from "./boot.ts";
 
 export function directGuestPort(options: {
   userAgent?: string;

@@ -4,7 +4,7 @@ import {
   type JupyterConfig,
   type JupyterTransport,
 } from "./jupyter_transport.ts";
-import { isJavaScriptCore } from "./browser_engine.ts";
+import { isJavaScriptCore } from "./boot.ts";
 import { EXECUTE_TIMEOUT_MS } from "./jupyter_protocol.ts";
 import { asWaitStatus, signalName, type WaitStatus } from "./executions.ts";
 

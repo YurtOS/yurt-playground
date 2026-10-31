@@ -3,7 +3,7 @@
 #
 # keep_snapshot_pin ROOT [KEY KIND]: ROOT/artifacts/pins.json keeps its KEY
 # entry (default `snapshot`, the desktop's; `tabletSnapshot` tablet,
-# `phoneSnapshot` phone: src/sandbox_snapshot.ts SNAPSHOT_KINDS) unless
+# `phoneSnapshot` phone: src/snapshot_pin.ts SNAPSHOT_KINDS) unless
 # `scripts/release-snapshot.ts --check-pin --kind KIND` refuses it (exit 3,
 # with a "snapshot pin refused: <reason>" line): well formed, this page's
 # format, built from these pins, of the Python set the live index offers --

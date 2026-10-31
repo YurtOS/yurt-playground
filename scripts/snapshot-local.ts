@@ -26,7 +26,7 @@
  *   --packages  packages to install after the Python set, before the seal
  *               (`?snapshot=capture&packages=`); the restore's checks are
  *               the Python set's alone, so these ride in its memory
- *   --kind      which snapshot (src/sandbox_snapshot.ts SNAPSHOT_KINDS):
+ *   --kind      which snapshot (src/snapshot_pin.ts SNAPSHOT_KINDS):
  *               the desktop's (default: the Python set and Jupyter), the
  *               tablet's (`?snapshot=capture-tablet`: python alone) or the
  *               phone's (`?snapshot=capture-phone`: the image as it boots,
