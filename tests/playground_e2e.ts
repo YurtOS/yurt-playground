@@ -766,7 +766,7 @@ async function packagesInstall(page: Page): Promise<void> {
     });
     if (
       seen.zsh !== false || seen.pythonSeal === true ||
-      seen.yurtGreet !== true || !/; also zsh\b/.test(seen.remark)
+      (!live && seen.yurtGreet !== true) || !/; also zsh\b/.test(seen.remark)
     ) {
       throw new Error(
         `packages: want zsh left out of the list and named in the remark, python-seal left out, got ${
@@ -845,6 +845,72 @@ async function packagesInstall(page: Page): Promise<void> {
       JSON.stringify(ran.stdout.trim().split("\n")[0])
     }`,
   );
+}
+
+/** Type `line` into the terminal and wait for `marker` at the end of its
+ * output; what the screen then shows. */
+async function typeInTerminal(
+  page: Page,
+  line: string,
+  timeout: number,
+): Promise<string> {
+  const marker = `__PKG_${crypto.randomUUID().slice(0, 8)}__`;
+  await page.locator("#term").click();
+  await page.keyboard.type(`clear; ${line}; echo ${marker}\n`);
+  await page.waitForFunction(
+    (marker) => {
+      const rows = [
+        ...document.querySelectorAll("#term .xterm-rows > div"),
+      ].map((row) => row.textContent?.trim());
+      return rows.includes(marker);
+    },
+    marker,
+    { timeout },
+  );
+  return await page.locator("#term .xterm-rows").innerText();
+}
+
+/**
+ * The terminal's own `pkg`, through the page's relay (src/pkg_relay.ts).
+ * Against the repository snapshot (the default) `sudo pkg update` must get
+ * the index through the relay and then refuse its placeholder signature:
+ * before the relay it failed earlier, with no network ("HTTP request
+ * failed"). With PLAYGROUND_PKG_LIVE=1 it must update from the live
+ * repository, find the same index current a second time, and install
+ * PLAYGROUND_PKG_TERMINAL_NAME (default pkgconf), which must then run.
+ */
+async function terminalPkg(page: Page): Promise<void> {
+  const live = Deno.env.get("PLAYGROUND_PKG_LIVE") === "1";
+  const update = await typeInTerminal(page, "sudo pkg update", 180_000);
+  if (update.includes("HTTP request failed")) {
+    throw new Error(`terminal pkg update had no network: ${update}`);
+  }
+  if (!live) {
+    if (!/failed to update official/.test(update)) {
+      throw new Error(`terminal pkg update: ${update}`);
+    }
+    console.log(
+      "playground e2e: terminal pkg update reached the repository and refused its placeholder signature",
+    );
+    return;
+  }
+  if (!/updated official|official already current/.test(update)) {
+    throw new Error(`terminal pkg update: ${update}`);
+  }
+  const again = await typeInTerminal(page, "sudo pkg update", 180_000);
+  if (!again.includes("official already current")) {
+    throw new Error(`terminal pkg update again: ${again}`);
+  }
+  const name = Deno.env.get("PLAYGROUND_PKG_TERMINAL_NAME") ?? "pkgconf";
+  const install = await typeInTerminal(
+    page,
+    `sudo pkg install ${name} && ${name} --version && echo installed-ok`,
+    300_000,
+  );
+  if (!install.includes("installed-ok")) {
+    throw new Error(`terminal pkg install ${name}: ${install}`);
+  }
+  console.log(`playground e2e: terminal sudo pkg install ${name} worked`);
 }
 
 if (import.meta.main) {
@@ -1281,6 +1347,7 @@ if (import.meta.main) {
     }
     console.log(`playground e2e: Upload wrote 3 files (${big.length} bytes)`);
     await packagesInstall(page);
+    await terminalPkg(page);
     // The cell and the ash terminal share one VFS: a file written by Python
     // is read back by the shell in the xterm (#4).
     await page.getByTestId("notebook-input").fill(

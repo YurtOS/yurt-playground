@@ -46,6 +46,12 @@ import {
 import { partsFetch } from "./image_parts.ts";
 import { captureLayer } from "./python_layer.ts";
 import { watchGuestMemoryRefusals } from "./memory_refused.ts";
+import { relayTrustedRepos, TRUSTED_REPOS_PATH } from "./packages.ts";
+import {
+  type PkgRelay,
+  type RelayOptions,
+  startPkgRelay,
+} from "./pkg_relay.ts";
 import { parsePins, type Pins } from "./pins.ts";
 import {
   checkPythonSet,
@@ -106,6 +112,9 @@ export type PlaygroundEnv = {
   term: PlaygroundTerm;
   /** The browser refused a new process its memory; only a reload helps. */
   memoryRefused?: () => void;
+  /** Serve the guest's `pkg` from the page (src/pkg_relay.ts): the
+   * terminal sandbox's, not a short-lived one's. */
+  pkgRelay?: RelayOptions;
 };
 
 export type PlaygroundSession = {
@@ -698,8 +707,42 @@ async function startPlayground(
   if (sh === undefined) {
     throw new Error("playground image is missing /bin/sh");
   }
-  const shell = sh;
+  // Before any guest process: the relay's port is free, and the first
+  // `pkg` already finds the configuration pointing at it.
+  const relay = env.pkgRelay === undefined
+    ? undefined
+    : startPkgRelay(mk, env.pkgRelay);
+  try {
+    if (relay !== undefined) pointPkgAtRelay(mk);
+    return await startShell(env, mk, stopWatchingRefusals, sh, relay);
+  } catch (error) {
+    relay?.stop();
+    throw error;
+  }
+}
 
+/** Point the image's `pkg` at the relay (src/pkg_relay.ts): its
+ * YurtOS/yurt-packages entry, nothing else. A file already pointing there
+ * (a restored sandbox) is left as it is. */
+function pointPkgAtRelay(mk: KernelHostInterface): void {
+  const toml = new TextDecoder().decode(
+    readGuestFile(mk, KERNEL_PID, TRUSTED_REPOS_PATH, 1024 * 1024),
+  );
+  const relayed = relayTrustedRepos(toml);
+  if (relayed !== undefined) {
+    writeRamfsFile(mk, TRUSTED_REPOS_PATH, new TextEncoder().encode(relayed));
+  }
+}
+
+/** The session on a staged or restored sandbox: its login shell on the
+ * terminal, and what the page runs beside it. */
+async function startShell(
+  env: PlaygroundEnv,
+  mk: Awaited<ReturnType<typeof loadPlaygroundKernel>>,
+  stopWatchingRefusals: () => void,
+  shell: Uint8Array,
+  relay: PkgRelay | undefined,
+): Promise<PlaygroundSession> {
   /** Each exec's sweep of its files, waiting out its delay (below). */
   const sweepTimers = new Set<number>();
   /** A seal has begun: the page starts nothing more of its own -- an exec,
@@ -870,7 +913,11 @@ async function startPlayground(
     stop,
     dispose() {
       stop();
-      mk.dispose();
+      try {
+        relay?.stop();
+      } finally {
+        mk.dispose();
+      }
     },
     controller,
     terminal,
@@ -997,6 +1044,10 @@ async function startPlayground(
         },
         afterSettled: () => userExited,
       });
+      // No host-owned socket in the snapshot: its restore listens anew. A
+      // seal that fails after this leaves the relay stopped, which ends the
+      // capture anyway.
+      relay?.stop();
       return await mk.sealSandbox();
     },
     writeFiles(files) {

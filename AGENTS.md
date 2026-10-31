@@ -37,7 +37,14 @@ Kernel primitives stay in `yurtos-kernel`. Image composition stays in
 - In-browser. Not a websocket to a native `yurt-runtime-wasmtime`.
 - One sandbox, one VFS. xterm talks to a host-owned PTY.
 - Jupyter JS dials a port the guest is already listening on (`dialSandboxPort`).
-  No `Deno.connect`, no host OS TCP, no guest egress.
+  No `Deno.connect`, no host OS TCP, no guest egress, with one exception.
+- The exception: the page's package relay (`src/pkg_relay.ts`) listens on the
+  sandbox's loopback (`127.0.0.1:7417`) so the guest's own `pkg` can reach
+  YurtOS/yurt-packages. It answers only `GET`s of files under
+  `PACKAGE_REPO_URL`, which the page fetches with the browser's `fetch`, under
+  the CSP's `connect-src`, with bounded sizes and timeouts. `pkg` verifies every
+  byte as on the desktop. Guests get no other route out of the sandbox: no other
+  host, no DNS.
 - The Notebook/Lab interface is JupyterLite's frontend and server shim with one
   kernel, `yurt`, relaying to the guest `ipykernel`. JupyterLite's own kernels
   (Pyodide, xeus) never ship: the kernel is not replaced, only fronted.
