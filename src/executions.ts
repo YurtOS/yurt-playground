@@ -405,6 +405,10 @@ export class ExecutionRegistry {
       if (!execution.timedOut && now >= deadline) {
         execution.timedOut = true;
         await this.kill(execution.record.id, "SIGKILL");
+        // The kill waits out the group, up to the grace period itself: a
+        // leader that died meanwhile is an exit, not a moment of Stuck
+        // (and a peek) before the exit replaces it.
+        continue;
       }
       if (
         execution.killedAt !== undefined &&
@@ -442,7 +446,11 @@ export class ExecutionRegistry {
     tick.cancel();
     // The leader's exit is not the group's: a caller's kill may still be
     // seeing the rest of it out.
-    await execution.killing;
+    let seen: Promise<unknown> | undefined;
+    while (seen !== execution.killing) {
+      seen = execution.killing;
+      await seen;
+    }
     stdout.push(process.takeStdout());
     stderr.push(process.takeStderr());
     this.#finish(execution);

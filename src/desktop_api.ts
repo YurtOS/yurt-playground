@@ -239,10 +239,10 @@ export function nativeSpawner(
   return { spawn, signal };
 }
 
-/** How many times a SIGKILL's tree kill looks for the killed descendants
- * before it gives up on them, 50 ms apart: about 2 s (the registry's
- * KILL_GRACE_MS), well over init's pace (below). */
-export const TREE_KILL_LOOKS = 40;
+/** How long, in the guest's centiseconds (/proc/uptime), a SIGKILL's tree
+ * kill looks for the killed descendants before it gives up on them: the
+ * registry's KILL_GRACE_MS, well over init's pace (below). */
+export const TREE_KILL_WAIT_CS = 200;
 
 /** One shell line that signals `pid` and every process descended from
  * it, collected first so a parent's death cannot orphan a child out of
@@ -266,10 +266,13 @@ export function buildTreeKill(pid: number, signal: number): string {
   ];
   if (signal === 9) {
     kill.push(
-      "set -- $t; shift; i=0",
-      `while [ $# -gt 0 ] && [ $i -lt ${TREE_KILL_LOOKS} ]; do l=""`,
+      // Centiseconds since boot: "12.34 ..." read as 1234 (the fraction
+      // is two digits; a 1 in front keeps "08" from reading as octal).
+      'cs() { read -r u _ < /proc/uptime; echo "$((${u%.*} * 100 + 1${u#*.} - 100))"; }',
+      `e=$(($(cs) + ${TREE_KILL_WAIT_CS})); set -- $t; shift`,
+      'while [ $# -gt 0 ] && [ "$(cs)" -lt "$e" ]; do l=""',
       'for q; do [ -e "/proc/$q" ] && l="$l $q"; done',
-      "set -- $l; [ $# -gt 0 ] && sleep 0.05; i=$((i+1)); done",
+      "set -- $l; [ $# -gt 0 ] && sleep 0.05; done",
     );
   }
   return [...kill, "true"].join("; ");

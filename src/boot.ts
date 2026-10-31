@@ -1125,6 +1125,10 @@ async function startShell(
         }
       })();
       groupKills.set(pid, gone);
+      // A kill after the leader's reap leaves no entry behind.
+      gone.then(() => {
+        if (groupKills.get(pid) === gone) groupKills.delete(pid);
+      });
       return gone;
     },
     // The Jupyter connection file, looked for by the page itself: nothing is
