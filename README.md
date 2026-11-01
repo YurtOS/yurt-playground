@@ -26,6 +26,12 @@ own.
   cache.
 - **Phones and tablets boot too**: a phone gets the shell, a tablet the shell
   and Python. Jupyter needs a desktop browser.
+- **Go, on a desktop.** Choose _Go_ on the start screen, or open `?env=go`: the
+  sandbox comes with `go` and its standard library already compiled, so the
+  first `go run` of a small program (one that imports `fmt`, `bufio`, `os`,
+  `strings`) takes about 10 s instead of about 10 minutes (measured in headless
+  Chromium). It holds no Python or Jupyter, downloads about 254 MB once, and is
+  never offered on a phone or tablet.
 
 The Notebook and JupyterLab links at the top of the page open the full Jupyter
 interfaces. What changed in each release is in
@@ -59,8 +65,9 @@ The browser boots the **slim image** (23.5 MB): BusyBox 1.37.0 (151 applets,
 `ash` among them), `git`, `curl`, `jq`, `sqlite3`, `zsh`, `make`, `zstd`, `xz`,
 CA certificates, the `pkg` package client and a passwordless `sudo` for the
 default user. By default it restores a snapshot of that image instead of booting
-it: on a desktop with the Python set installed, on a tablet with Python alone,
-on a phone as it is.
+it: on a desktop with the Python set installed (or, when Go is chosen, with `go`
+and a warm build cache instead), on a tablet with Python alone, on a phone as it
+is.
 
 The desktop app and `yurt run playground` boot the **full image** (92 MB): the
 slim image plus the Python set, Node.js, Gemini CLI and Datasette.
@@ -232,9 +239,10 @@ The desktop's holds the Python set and starts the Notebook, the tablet's the int
 <!-- snapshot-table:end -->
 
 The page picks its platform from the device; `?platform=phone`, `tablet` or
-`desktop` overrides it as far as the device can run it, and `?snapshot=0` boots
-the slim image instead of restoring a snapshot. Each download comes with the 7.2
-MB kernel.
+`desktop` overrides it as far as the device can run it, `?env=go` restores Go's
+snapshot on a desktop browser (and is ignored, with a note, anywhere else), and
+`?snapshot=0` boots the slim image instead of restoring a snapshot. Each
+download comes with the 7.2 MB kernel.
 
 Measured with `scripts/measure-boot.ts` (headless, served locally, so the
 download is fast) on 2026-10-29. "RAM to restore" is the peak resident memory of
