@@ -233,7 +233,7 @@ The desktop's holds the Python set and starts the Notebook, the tablet's the int
 | desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.10.31-3d32068.2` | 130.8 MB in 7 parts | 521.4 MiB | 2459 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
 | tablet | tablet (iPad): `?platform=tablet` | `snapshot-tablet-playground-2026.10.31-3d32068.2` | 94.7 MB in 5 parts | 380.8 MiB | 1267 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
 | phone | phone (iPhone): `?platform=phone` | `snapshot-phone-playground-2026.10.31-3d32068.2` | 31.2 MB in 2 parts | 136.1 MiB | 630 MiB | BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
-| go | desktop browser that chose Go: `?platform=desktop&env=go` | not pinned: boots the image | | | | |
+| go | desktop browser that chose Go: `?platform=desktop&env=go` | `snapshot-go-playground-2026.10.31-3d32068.2` | 246.4 MB in 12 parts | 866.9 MiB | 2193 MiB | BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
 
 <!-- deno-fmt-ignore-end -->
 <!-- snapshot-table:end -->
