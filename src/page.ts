@@ -548,6 +548,12 @@ function boot(
         : kind === "go"
         ? goSetRequest(pins)
         : undefined,
+      // Go's page installs go itself when Go's snapshot cannot be restored
+      // (src/go_fallback.ts).
+      goFallback: kind === "go" && !capturing && desktop === undefined &&
+          pins !== undefined
+        ? goSetRequest(pins)
+        : undefined,
       snapshotKind: kind,
       tablet: smallDevice,
       snapshot: snapshotMode(),
@@ -856,12 +862,15 @@ async function runPage(): Promise<void> {
     byId("offline-note").hidden = true;
   }
   // Go or Python (`?env=`), once it is known whether this is the desktop
-  // app: a desktop browser's choice only.
-  const chosenEnv = chooseEnv(
-    platform,
-    new URL(location.href).searchParams.get("env"),
-    desktop !== undefined,
-  );
+  // app: a desktop browser's choice only, on a site that pins Go's
+  // snapshot, and never a capture's (each makes its own kind).
+  const askedEnv = new URL(location.href).searchParams.get("env");
+  const chosenEnv = chooseEnv(platform, askedEnv, {
+    nativeApp: desktop !== undefined,
+    goPinned: askedEnv?.toLowerCase() !== "go" ||
+      (await fetchSitePins())?.goSnapshot !== undefined,
+    capturing: snapshotMode() === "capture",
+  });
   env = chosenEnv.env;
   if (chosenEnv.note !== undefined) {
     notes.push(chosenEnv.note);
@@ -967,7 +976,7 @@ async function runPage(): Promise<void> {
   // pins Go's snapshot (without it Go's page boots the image, with no go
   // in it); the choice is written into the URL (`?env=go`), so a reload
   // keeps it.
-  if (desktop === undefined && device === "desktop") {
+  if (desktop === undefined && platform === "desktop") {
     const choice = byId("env-choice");
     void fetchSitePins().then((pins) => {
       choice.hidden = pins?.goSnapshot === undefined;

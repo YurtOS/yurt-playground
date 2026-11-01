@@ -132,13 +132,21 @@ export type Env = "python" | "go";
  * Go is a desktop browser's only: its snapshot needs more memory than a
  * phone or tablet tab has, so there (and in the desktop app, whose
  * sandbox is native and installs what it likes) `?env=go` is Python's,
- * with a `note` saying so. */
+ * with a `note` saying so. So is it on a site that pins no Go snapshot
+ * (`goPinned` false: a bookmark or a shared link from elsewhere), which
+ * would otherwise boot an image with neither Go nor Python; and in a
+ * capture (`capturing`), which makes its kind's snapshot whatever the
+ * env (`?snapshot=capture-go` is Go's). */
 export function chooseEnv(
   platform: Platform,
   asked: string | null,
-  nativeApp = false,
+  { nativeApp = false, goPinned = true, capturing = false }: {
+    nativeApp?: boolean;
+    goPinned?: boolean;
+    capturing?: boolean;
+  } = {},
 ): { env: Env; note?: string } {
-  if (asked === null || asked.toLowerCase() === "python") {
+  if (asked === null || asked.toLowerCase() === "python" || capturing) {
     return { env: "python" };
   }
   if (asked.toLowerCase() !== "go") {
@@ -159,6 +167,13 @@ export function chooseEnv(
       env: "python",
       note:
         `Go is for desktop browsers only: a ${platform} tab has too little memory for it`,
+    };
+  }
+  if (!goPinned) {
+    return {
+      env: "python",
+      note:
+        "This site has no Go sandbox yet, so it sets up Python; sudo pkg install go works in its terminal",
     };
   }
   return { env: "go" };

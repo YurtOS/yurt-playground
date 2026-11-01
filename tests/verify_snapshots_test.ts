@@ -114,6 +114,20 @@ Deno.test("the committed snapshot pins hold what their kinds are for, largest fi
   assertEquals(verifySnapshotPins(pins, { complete: false }), []);
 });
 
+Deno.test("a complete train without a Go snapshot passes: Go's is optional", () => {
+  const pins = fixture();
+  delete pins.goSnapshot;
+  assertEquals(verifySnapshotPins(pins), []);
+});
+
+Deno.test("a pinned but unmeasured Go snapshot is still refused when the train is complete", () => {
+  const pins = fixture();
+  delete (pins.goSnapshot as unknown as Pinned).restorePeakMiB;
+  assertEquals(verifySnapshotPins(pins), [
+    "go: the pin records no restorePeakMiB (scripts/measure-boot.ts)",
+  ]);
+});
+
 Deno.test("a train's four snapshots pass", () => {
   assertEquals(verifySnapshotPins(fixture()), []);
 });
@@ -238,11 +252,9 @@ Deno.test("a missing or unmeasured snapshot is refused only when the train is co
   const pins = fixture();
   delete pins.tabletSnapshot;
   delete (pins.phoneSnapshot as unknown as Pinned).restorePeakMiB;
-  delete pins.goSnapshot;
   assertEquals(verifySnapshotPins(pins), [
     "tablet: no tabletSnapshot pin",
     "phone: the pin records no restorePeakMiB (scripts/measure-boot.ts)",
-    "go: no goSnapshot pin",
   ]);
   assertEquals(verifySnapshotPins(pins, { complete: false }), []);
 });

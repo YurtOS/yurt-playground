@@ -122,10 +122,16 @@ export const SNAPSHOT_SIZE_ORDERS: readonly (readonly SnapshotKind[])[] = [
   ["go", "phone"],
 ];
 
+/** Kinds a train may leave unpinned even when complete: Go's is an
+ * opt-in a desktop page offers only once it is pinned (src/page.ts), so
+ * a train without one is whole. Pinned, it is checked like the rest. */
+export const OPTIONAL_KINDS: readonly SnapshotKind[] = ["go"];
+
 /** Every problem with `pins`' snapshot entries; none is a pass. With
  * `complete: false` a kind that is not pinned, or not measured yet (no
  * restorePeakMiB), is no problem -- a train between its image and its
- * captures -- and the order is checked among the kinds present. */
+ * captures -- and the order is checked among the kinds present. An
+ * {@link OPTIONAL_KINDS} kind that is not pinned is never a problem. */
 export function verifySnapshotPins(
   pins: Record<string, unknown>,
   { complete = true }: { complete?: boolean } = {},
@@ -136,7 +142,9 @@ export function verifySnapshotPins(
     const { pinKey } = SNAPSHOT_KINDS[kind];
     const entry = pins[pinKey];
     if (entry === undefined) {
-      if (complete) problems.push(`${kind}: no ${pinKey} pin`);
+      if (complete && !OPTIONAL_KINDS.includes(kind)) {
+        problems.push(`${kind}: no ${pinKey} pin`);
+      }
       continue;
     }
     let pin: SnapshotPin;

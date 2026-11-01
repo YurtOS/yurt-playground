@@ -64,10 +64,24 @@ Deno.test("?env=go is a desktop browser's only", () => {
     assertStringIncludes(chosen.note!, "desktop browsers only");
   }
   // The desktop app's native sandbox installs what it likes.
-  assertEquals(chooseEnv("desktop", "go", true).env, "python");
+  assertEquals(chooseEnv("desktop", "go", { nativeApp: true }).env, "python");
   const unknown = chooseEnv("desktop", "rust");
   assertEquals(unknown.env, "python");
   assertStringIncludes(unknown.note!, "?env=rust is not python or go");
+});
+
+Deno.test("?env=go on a site without a Go snapshot sets up Python, and says so", () => {
+  // A bookmark or a shared link: booting the image would give neither Go
+  // nor Python.
+  const chosen = chooseEnv("desktop", "go", { goPinned: false });
+  assertEquals(chosen.env, "python");
+  assertStringIncludes(chosen.note!, "no Go sandbox yet");
+});
+
+Deno.test("a capture ignores ?env=: ?snapshot=capture-go makes Go's itself", () => {
+  assertEquals(chooseEnv("desktop", "go", { capturing: true }), {
+    env: "python",
+  });
 });
 
 Deno.test("withEnv writes Go into the URL and Python out of it", () => {

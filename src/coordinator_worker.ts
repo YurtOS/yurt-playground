@@ -72,6 +72,7 @@ import {
   precompileLine,
 } from "./capture_outcome.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
+import { ensureGo, GO_PROBE_LINE } from "./go_fallback.ts";
 import {
   encodeSandboxSnapshot,
   SNAPSHOT_KINDS,
@@ -135,6 +136,10 @@ type ToWorker =
     // live index is asked about for the snapshot's check (a tablet's
     // python alone). `python` takes its place when there is one.
     snapshotPython?: PythonRequest;
+    // Go's page (src/go_fallback.ts): the go package to install when the
+    // sandbox has no go -- Go's snapshot could not be restored and the
+    // slim image was booted instead.
+    goFallback?: PythonRequest;
   }
   // Install Python again after a failed install (the cell's Install), then
   // start the kernel. Answered like a boot: status, then notebook-ready or
@@ -884,6 +889,44 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     // The boot is over: its read of the live index goes with it (a later
     // install on this sandbox asks again).
     live.finish();
+    // Go's page on a sandbox without go (a fallback boot): install it.
+    const goSession = packageSession;
+    if (
+      msg.goFallback !== undefined && kernelPorts === undefined &&
+      goSession?.process !== undefined
+    ) {
+      const goSet = msg.goFallback;
+      const spawn = goSession.process;
+      await ensureGo({
+        probe: async () => {
+          try {
+            const probe = await spawn(GO_PROBE_LINE, { maxOutputBytes: 1024 });
+            const status = await probe.exited;
+            return (typeof status === "number" ? status : status.code) === 0;
+          } catch {
+            return undefined;
+          }
+        },
+        install: async () => {
+          const cache = await browserArchiveCache();
+          await installs(() => {
+            pkgTouched.add(goSession);
+            return installPackage(goSet, {
+              host: workerPackageHost(goSession),
+              tablet: false,
+              progress: (text) => post({ type: "status", text }),
+              cache,
+            });
+          });
+          await installed.read();
+          post({ type: "status", text: "" });
+        },
+        say: (text) => {
+          term.write(`\r\n${text}\r\n`);
+          post({ type: "status", text });
+        },
+      });
+    }
     if (started !== undefined) {
       jupyter = started;
       subscribeJupyter(jupyter);

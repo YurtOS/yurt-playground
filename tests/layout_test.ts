@@ -493,7 +493,7 @@ Deno.test("the start screen offers Python or Go, hidden until the page shows it"
   const page = await Deno.readTextFile(
     new URL("../src/page.ts", import.meta.url),
   );
-  assertEquals(page.includes('device === "desktop"'), true);
+  assertEquals(page.includes('platform === "desktop"'), true);
   assertEquals(page.includes("pins?.goSnapshot === undefined"), true);
 });
 
