@@ -7,16 +7,20 @@
  *            numpy, pyzmq, jupyter-kernel); the Notebook starts on it
  *   tablet   the interpreter alone (TABLET_PYTHON_SET); no Jupyter
  *   phone    no Python at all ("Python not on phones")
+ *   go       the go package (GO_SET) and a warm build cache, no Python: a
+ *            desktop page's with `?env=go`; a first build compiles no
+ *            standard library package
  *
- * and they are ordered by what they hold: desktop > tablet > phone in
- * download size, kernel memory and the RAM a restore takes. A snapshot is
+ * and they are ordered by what they hold: desktop > tablet > phone, and
+ * go > phone, in download size, kernel memory and the RAM a restore
+ * takes. A snapshot is
  * a seal with no process in it (src/sandbox_snapshot.ts refuses one with
  * any), so nothing is running or imported at capture: what differs is what
  * is installed (and precompiled) in its Linux, and what a restore starts.
  *
  * Usage: deno run -A scripts/verify-snapshots.ts [--files] [--live [--kind K]]
  *
- *   (none)   check artifacts/pins.json's three snapshot pins: present,
+ *   (none)   check artifacts/pins.json's four snapshot pins: present,
  *            each kind's packages (the capture's pkg list), its Python set
  *            key, the sizes and their order. Exit 1 with one line per
  *            problem. Run it once a train's snapshots are pinned and
@@ -30,14 +34,18 @@
  *   --live   also restore each one in headless Chromium in its device's
  *            emulation (`?start&platform=<kind>`), and probe the restored
  *            Linux through window.yurt: `ps`, `command -v python3`, the
- *            imports, /proc/meminfo, `df`, and on the desktop the
- *            Notebook's start. Prints one JSON line per kind
+ *            imports, /proc/meminfo, `df`, on the desktop the
+ *            Notebook's start, and on Go's a first `go build -x` (which
+ *            must compile only its own package). Prints one JSON line per
+ *            kind
  *   --kind   only this kind, for --live
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSnapshotPin, type SnapshotPin } from "../src/pins.ts";
 import {
+  GO_SET,
+  kindQuery,
   SNAPSHOT_KIND_NAMES,
   SNAPSHOT_KINDS,
   type SnapshotKind,
@@ -51,8 +59,15 @@ export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
   has: readonly string[];
   /** Packages it must not have. */
   lacks: readonly string[];
+  /** The packages its set key (`builtFrom.pythonSet`) names, or null:
+   * built with none. */
+  set: readonly string[] | null;
   /** python3 is on the PATH after a restore. */
   python: boolean;
+  /** go is on the PATH after a restore, and a first build of a program
+   * importing GO_WARMUP_IMPORTS compiles no package of the standard
+   * library (the build cache holds them). */
+  go: boolean;
   /** Python modules that import after a restore. */
   imports: readonly string[];
   /** The Notebook (Jupyter) starts after a restore. */
@@ -60,32 +75,51 @@ export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
 }> = {
   desktop: {
     has: PYTHON_SET,
-    lacks: [],
+    lacks: GO_SET,
+    set: PYTHON_SET,
     python: true,
+    go: false,
     imports: ["numpy", "zmq"],
     notebook: true,
   },
   tablet: {
     has: TABLET_PYTHON_SET,
-    lacks: PYTHON_SET.filter((name) => !TABLET_PYTHON_SET.includes(name)),
+    lacks: [
+      ...PYTHON_SET.filter((name) => !TABLET_PYTHON_SET.includes(name)),
+      ...GO_SET,
+    ],
+    set: TABLET_PYTHON_SET,
     python: true,
+    go: false,
     imports: [],
     notebook: false,
   },
   phone: {
     has: [],
-    lacks: PYTHON_SET,
+    lacks: [...PYTHON_SET, ...GO_SET],
+    set: null,
     python: false,
+    go: false,
+    imports: [],
+    notebook: false,
+  },
+  go: {
+    has: GO_SET,
+    lacks: PYTHON_SET,
+    set: GO_SET,
+    python: false,
+    go: true,
     imports: [],
     notebook: false,
   },
 };
 
-/** Largest first: each holds less than the one before it. */
-export const SNAPSHOT_SIZE_ORDER: readonly SnapshotKind[] = [
-  "desktop",
-  "tablet",
-  "phone",
+/** Largest first: each kind of a chain holds less than the one before
+ * it. Go's is beside the desktop's Python one, not below it: both are the
+ * phone's image with more installed. */
+export const SNAPSHOT_SIZE_ORDERS: readonly (readonly SnapshotKind[])[] = [
+  ["desktop", "tablet", "phone"],
+  ["go", "phone"],
 ];
 
 /** Every problem with `pins`' snapshot entries; none is a pass. With
@@ -126,9 +160,9 @@ export function verifySnapshotPins(
       }
     }
     const set = pin.builtFrom.pythonSet;
-    if (expected.python && set === null) {
+    if (expected.set !== null && set === null) {
       problems.push(`${kind}: built with no Python set`);
-    } else if (!expected.python && set !== null) {
+    } else if (expected.set === null && set !== null) {
       problems.push(`${kind}: built with a Python set (${set})`);
     } else if (set !== null) {
       const inSet = new Set(
@@ -136,7 +170,7 @@ export function verifySnapshotPins(
           part.slice(0, part.indexOf("@"))
         ),
       );
-      for (const name of expected.has) {
+      for (const name of expected.set!) {
         if (!inSet.has(name)) {
           problems.push(`${kind}: its Python set key lacks ${name}`);
         }
@@ -162,20 +196,22 @@ export function verifySnapshotPins(
     ["restorePeakMiB", (pin) => pin.restorePeakMiB],
   ];
   for (const [name, of] of measures) {
-    // Each measured kind against the next measured one: a kind missing
-    // in between does not hide the order of the two around it.
-    const measured = SNAPSHOT_SIZE_ORDER.filter((kind) =>
-      parsed[kind] !== undefined && of(parsed[kind]!) !== undefined
-    );
-    for (let i = 1; i < measured.length; i++) {
-      const bigger = measured[i - 1];
-      const smaller = measured[i];
-      const a = of(parsed[bigger]!)!;
-      const b = of(parsed[smaller]!)!;
-      if (!(a > b)) {
-        problems.push(
-          `${name}: ${bigger} (${a}) is not larger than ${smaller} (${b})`,
-        );
+    for (const order of SNAPSHOT_SIZE_ORDERS) {
+      // Each measured kind against the next measured one: a kind missing
+      // in between does not hide the order of the two around it.
+      const measured = order.filter((kind) =>
+        parsed[kind] !== undefined && of(parsed[kind]!) !== undefined
+      );
+      for (let i = 1; i < measured.length; i++) {
+        const bigger = measured[i - 1];
+        const smaller = measured[i];
+        const a = of(parsed[bigger]!)!;
+        const b = of(parsed[smaller]!)!;
+        if (!(a > b)) {
+          problems.push(
+            `${name}: ${bigger} (${a}) is not larger than ${smaller} (${b})`,
+          );
+        }
       }
     }
   }
@@ -191,6 +227,13 @@ export type SnapshotProbe = {
   restoredBytes: number | null;
   processes: string[];
   python: boolean;
+  /** go is on the PATH. */
+  go: boolean;
+  /** The standard library packages a first `go build` of the warm-up's
+   * imports compiled (none on a warm cache); null when go is absent. */
+  goCompiled: string[] | null;
+  /** That build's seconds. */
+  goBuildSeconds: number | null;
   /** Each probed module: whether it imported. */
   imports: Record<string, boolean>;
   notebook: boolean;
@@ -223,6 +266,16 @@ export function verifySnapshotProbe(
       `${kind}: python3 is ${probe.python ? "" : "not "}on the PATH`,
     );
   }
+  if (probe.go !== expected.go) {
+    problems.push(`${kind}: go is ${probe.go ? "" : "not "}on the PATH`);
+  }
+  if (expected.go && probe.goCompiled !== null && probe.goCompiled.length > 0) {
+    problems.push(
+      `${kind}: a first go build compiled the standard library's ${
+        probe.goCompiled.join(", ")
+      } (the build cache is cold)`,
+    );
+  }
   for (const [module, imported] of Object.entries(probe.imports)) {
     const should = expected.imports.includes(module);
     if (imported !== should) {
@@ -243,12 +296,38 @@ const DESCRIPTOR: Record<SnapshotKind, string | undefined> = {
   desktop: undefined,
   tablet: "iPad Pro 11",
   phone: "iPhone 13",
+  go: undefined,
 };
+
+/** A program unlike the warm-up's own (src/capture_outcome.ts
+ * GO_WARMUP_PROGRAM), importing only its packages: its first build must
+ * compile its own package and nothing of the standard library. */
+export const GO_PROBE_PROGRAM = [
+  "package main",
+  "",
+  'import ("bufio"; "fmt"; "os"; "strings")',
+  "",
+  "func main() {",
+  "\tr := bufio.NewReader(os.Stdin)",
+  "\tname, _ := r.ReadString(10)",
+  '\tfmt.Printf("hello, %s\\n", strings.ToUpper(strings.TrimSpace(name)))',
+  "}",
+  "",
+].join("\n");
+
+/** The packages `go build -x`'s output (`-x` echoes each compile with its
+ * `-p <import path>`) compiled, the program's own `main` aside. */
+export function compiledPackages(buildLog: string): string[] {
+  return [
+    ...buildLog.matchAll(/\/compile\b[^\n]* -p ([^\s]+)/g),
+  ].map((match) => match[1]).filter((path) => path !== "main");
+}
 
 type PageYurt = {
   ready: Promise<unknown>;
   exec(
     command: string,
+    opts?: { timeoutMs?: number },
   ): Promise<{ code: number | null; stdout: string; stderr: string }>;
 };
 
@@ -266,7 +345,7 @@ async function probeKind(
     const page = await context.newPage();
     const logs: string[] = [];
     page.on("console", (message) => logs.push(message.text()));
-    await page.goto(`${url}/?start&platform=${kind}`);
+    await page.goto(`${url}/?start&${kindQuery(kind)}`);
     await page.waitForFunction(
       () => (globalThis as { yurt?: unknown }).yurt !== undefined,
       undefined,
@@ -275,16 +354,41 @@ async function probeKind(
     await page.evaluate(() =>
       (globalThis as unknown as { yurt: PageYurt }).yurt.ready
     );
-    const exec = (command: string) =>
+    const exec = (command: string, timeoutMs = 120_000) =>
       page.evaluate(
-        (line) => (globalThis as unknown as { yurt: PageYurt }).yurt.exec(line),
-        command,
+        ([line, timeout]) =>
+          (globalThis as unknown as { yurt: PageYurt }).yurt.exec(line, {
+            timeoutMs: timeout,
+          }),
+        [command, timeoutMs] as const,
       );
     const python = (await exec("command -v python3")).code === 0;
     const imports: Record<string, boolean> = {};
     for (const module of PROBED_IMPORTS) {
       imports[module] = python &&
         (await exec(`python3 -c 'import ${module}'`)).code === 0;
+    }
+    const go = (await exec("command -v go")).code === 0;
+    let goCompiled: string[] | null = null;
+    let goBuildSeconds: number | null = null;
+    if (go) {
+      await page.evaluate(
+        (text) =>
+          (globalThis as unknown as {
+            yurt: { fs: { write(p: string, d: string): Promise<void> } };
+          }).yurt.fs.write("/tmp/go-probe.go", text),
+        GO_PROBE_PROGRAM,
+      );
+      const started = Date.now();
+      // Bounded well past a warm build (seconds), short of a cold one.
+      const build = await exec(
+        "cd /tmp && go build -x -o /tmp/go-probe go-probe.go 2>&1",
+        10 * 60_000,
+      );
+      goBuildSeconds = Math.round((Date.now() - started) / 1000);
+      goCompiled = build.code === 0
+        ? compiledPackages(build.stdout)
+        : [`(go build exited ${build.code}: ${build.stdout.slice(-300)})`];
     }
     let notebook = false;
     if (kind === "desktop") {
@@ -320,6 +424,9 @@ async function probeKind(
       restoredBytes: bytes === undefined ? null : Number(bytes),
       processes: ps.stdout.trim().split("\n").slice(1).map((row) => row.trim()),
       python,
+      go,
+      goCompiled,
+      goBuildSeconds,
       imports,
       notebook,
       memTotalKiB: memTotal === undefined ? null : Number(memTotal),

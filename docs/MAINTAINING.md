@@ -57,33 +57,47 @@ The page restores a sealed sandbox made for its device by default, instead of
 booting the slim image and installing into it: a desktop browser the one with
 the Python set and Jupyter (`snapshot` in the pins), a tablet one with python
 alone (`tabletSnapshot`), a phone the slim image as it boots, without Python
-(`phoneSnapshot`). Whenever its snapshot cannot be had or is refused, the page
-boots the image as before, with a console note; `?snapshot=0` always boots the
-image. Each snapshot records what is in that Linux, which the page shows above
-the terminal and the shell prints when it starts (it is also `/etc/motd`). A
-repeat visit takes the checked parts from the browser's cache (Cache API, keyed
-by each part's sha256) instead of downloading them again. See
+(`phoneSnapshot`). A desktop browser that chooses Go on the start screen
+(`?env=go`) restores the Go one instead (`goSnapshot`): the slim image with the
+`go` package installed and its build cache already holding the standard library
+a small program imports (`GO_WARMUP_IMPORTS` in `src/capture_outcome.ts`), and
+no Python or Jupyter. Phones and tablets never get it: `?env=go` there runs the
+device's own page, with a note, and the choice is shown only once the site pins
+a Go snapshot. Whenever its snapshot cannot be had or is refused, the page boots
+the image as before, with a console note; `?snapshot=0` always boots the image.
+Each snapshot records what is in that Linux, which the page shows above the
+terminal and the shell prints when it starts (it is also `/etc/motd`). A repeat
+visit takes the checked parts from the browser's cache (Cache API, keyed by each
+part's sha256) instead of downloading them again. See
 [Downloads, memory and boot times](../README.md#downloads-memory-and-boot-times)
 for each one's size and the memory it needs.
 
 A snapshot is the kernel's memory after an install in the browser, so it is
 captured locally rather than by the train:
 `deno run -A
-scripts/release-snapshot.ts --kind desktop|tablet|phone`, from a
+scripts/release-snapshot.ts --kind desktop|tablet|phone|go`, from a
 clean checkout at its pushed head whose `artifacts/pins.json` names the train
 (with the pinned blobs installed, the sibling kernel checkout clean at the
 pinned rev, and Playwright's Chromium). It serves the page, runs
 `?snapshot=capture` in headless Chromium, checks that the file decodes in full
 and was built from the pinned kernel and image and the Python the live index
 offers, publishes it as the prerelease `snapshot-<train>`
-(`snapshot-tablet-<train>`, `snapshot-phone-<train>`) and writes its pin, with
-its kernel memory and what it holds. `--dry-run` stops before the release and
-the pin; `--tag` names a second snapshot of one train (a published one is never
-replaced). A train keeps the pin only while `release-snapshot.ts --check-pin`
-accepts it, and otherwise drops it and says to run the script again; so does a
-change to the page's boot setup (`BOOT_SETUP` in `src/snapshot_pin.ts`). Only
-the deploy fetches the snapshot (`YURT_INSTALL_SNAPSHOT=1`), and a problem with
-it never fails the deploy.
+(`snapshot-tablet-<train>`, `snapshot-phone-<train>`, `snapshot-go-<train>`) and
+writes its pin, with its kernel memory and what it holds. Go's capture installs
+`go` with pkg and then builds a warm-up program as the login user, so
+`~/.cache/go-build` holds the compiled standard library when it is sealed: a
+user's first `go run` then compiles only their own package. That build is the
+slow part of the capture (about 10 min in headless Chromium), so Go's capture
+waits up to an hour. Run `scripts/measure-boot.ts` with
+`--query 'start&platform=desktop&env=go'` for its `restorePeakMiB`, and
+`scripts/verify-snapshots.ts --live --kind go` checks that a first build
+compiles nothing of the standard library. `--dry-run` stops before the release
+and the pin; `--tag` names a second snapshot of one train (a published one is
+never replaced). A train keeps the pin only while
+`release-snapshot.ts --check-pin` accepts it, and otherwise drops it and says to
+run the script again; so does a change to the page's boot setup (`BOOT_SETUP` in
+`src/snapshot_pin.ts`). Only the deploy fetches the snapshot
+(`YURT_INSTALL_SNAPSHOT=1`), and a problem with it never fails the deploy.
 
 To try another snapshot without a pin or a deploy, capture and upload it
 locally:
@@ -94,30 +108,32 @@ deno run -A scripts/snapshot-local.ts [--packages pandas,scipy] [--name NAME]
 
 It captures the way `release-snapshot.ts` does (same prerequisites, same checks;
 the page checkout need not be a pushed head, which it only notes), and
-`--packages` installs those packages after the Python set, before the seal. It
-then pushes the parts and a `manifest.json` (the pin's fields) as one parentless
-commit to `refs/snapshots/<name>` in YurtOS/yurt-playground (not a branch, so a
-clone does not fetch it), reads the manifest back from raw.githubusercontent.com
-and prints `https://yurt-playground.pages.dev/?snapshot=<commit sha>`. It first
-checks that the live site runs this checkout's build (its `/pins.json`), since
-the site restores only its own. The page takes only a 40-digit commit sha, and
-restores it only when a `refs/snapshots/*` ref of the repository points at it:
+`--packages` installs those packages after the Python set (or Go's go), before
+the seal. It then pushes the parts and a `manifest.json` (the pin's fields) as
+one parentless commit to `refs/snapshots/<name>` in YurtOS/yurt-playground (not
+a branch, so a clone does not fetch it), reads the manifest back from
+raw.githubusercontent.com and prints
+`https://yurt-playground.pages.dev/?snapshot=<commit sha>`. It first checks that
+the live site runs this checkout's build (its `/pins.json`), since the site
+restores only its own. The page takes only a 40-digit commit sha, and restores
+it only when a `refs/snapshots/*` ref of the repository points at it:
 raw.githubusercontent.com also serves fork and pull-request commits under the
 repository's path, so the page asks the GitHub API's list of those refs first
 (60 unauthenticated requests an hour per address; without an answer it boots the
 image). The manifest takes every check the pin does, each part is checked
 against it, and anything else boots the image as without the flag. `--file PATH`
 uploads an existing capture, `--dry-run` stops before the push. `--kind` picks
-the snapshot as above (`?snapshot=capture`, `capture-tablet`, `capture-phone`);
-each restores only on a page of its kind, since a page refuses a snapshot whose
-Python is not the one it asks the live index about (none on a phone, python
-alone on a tablet), and the printed URL names its platform. `--before-deploy`
-turns the site check into a note, for a snapshot of pins that a pending deploy
-brings. List the uploads with `git ls-remote origin 'refs/snapshots/*'`; delete
-one with `git push origin :refs/snapshots/<name>`, after which the page refuses
-its URL. Two things the script does not check. First, a capture from page code
-that changed `SEAL_VERSION`, `BOOT_SETUP` or the header format against the
-deployed page: only the pins are compared, and the site then boots the image
-(keep the page checkout at the pushed main). Second, `--packages` extras whose
-install moves a member of the Python set: the snapshot keeps the set's label,
-which no longer describes its memory.
+the snapshot as above (`?snapshot=capture`, `capture-tablet`, `capture-phone`,
+`capture-go`); each restores only on a page of its kind, since a page refuses a
+snapshot whose Python is not the one it asks the live index about (none on a
+phone, python alone on a tablet, the go package for Go), and the printed URL
+names its platform (and Go's `env=go`). `--before-deploy` turns the site check
+into a note, for a snapshot of pins that a pending deploy brings. List the
+uploads with `git ls-remote origin 'refs/snapshots/*'`; delete one with
+`git push origin :refs/snapshots/<name>`, after which the page refuses its URL.
+Two things the script does not check. First, a capture from page code that
+changed `SEAL_VERSION`, `BOOT_SETUP` or the header format against the deployed
+page: only the pins are compared, and the site then boots the image (keep the
+page checkout at the pushed main). Second, `--packages` extras whose install
+moves a member of the Python set: the snapshot keeps the set's label, which no
+longer describes its memory.

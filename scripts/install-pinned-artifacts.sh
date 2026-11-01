@@ -83,7 +83,8 @@ else
 fi
 fetch pythonSeal python3-seal.wasm public/demo/python3-seal.wasm
 # Each device's sealed sandbox (src/snapshot_pin.ts SNAPSHOT_KINDS:
-# `snapshot` the desktop's, `tabletSnapshot`, `phoneSnapshot`), when the
+# `snapshot` the desktop's, `tabletSnapshot`, `phoneSnapshot`,
+# `goSnapshot`), when the
 # train pins it and the caller asks for it (YURT_INSTALL_SNAPSHOT=1: the
 # deploy, which publishes them): up to 132 MB each that no test reads. A
 # yurt-playground release of its parts, joined here and checked against
@@ -114,7 +115,7 @@ install_snapshot() (
   echo "installed $tag/$asset as public/snapshot/$asset" >&2
 )
 
-for kind in snapshot:sandbox.seal.gz tabletSnapshot:tablet.seal.gz phoneSnapshot:phone.seal.gz; do
+for kind in snapshot:sandbox.seal.gz tabletSnapshot:tablet.seal.gz phoneSnapshot:phone.seal.gz goSnapshot:go.seal.gz; do
   key=${kind%%:*} asset=${kind#*:}
   if [[ "$(jq -r ".$key // empty" "$pins")" == "" ]]; then
     # One from earlier pins would be checked and left out by the static

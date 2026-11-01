@@ -830,7 +830,7 @@ done
 # formed, this page's format, built from these pins, of the Python set the
 # live index offers); otherwise it is dropped (scripts/lib/snapshot-pin.sh).
 # Each device's (src/snapshot_pin.ts SNAPSHOT_KINDS), checked by kind.
-snapshots_json=$(jq -c '{snapshot, tabletSnapshot, phoneSnapshot}
+snapshots_json=$(jq -c '{snapshot, tabletSnapshot, phoneSnapshot, goSnapshot}
   | with_entries(select(.value != null))' "$root/artifacts/pins.json")
 # `repo`/`rev` say where the source is; `releaseRepo`/`release` where the
 # bytes are (a train's in the repository that built them, a hand-cut one in
@@ -861,7 +861,7 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
 # that pin is still absent: a resumed train rebuilds its pins from this
 # run's, which no longer have it, so nothing else would say so again.
 dropped_parts=() dropped_keys=" "
-for kind_entry in snapshot:desktop tabletSnapshot:tablet phoneSnapshot:phone; do
+for kind_entry in snapshot:desktop tabletSnapshot:tablet phoneSnapshot:phone goSnapshot:go; do
   snapshot_dropped=0 snapshot_kept=0 snapshot_why=
   keep_snapshot_pin "$root" "${kind_entry%%:*}" "${kind_entry#*:}" ||
     die "$snapshot_error; fix that and $(resume_command)"
@@ -882,6 +882,7 @@ if [ "$pins_only" = 0 ]; then
     case "$part" in
       tabletSnapshot:*) key=tabletSnapshot ;;
       phoneSnapshot:*) key=phoneSnapshot ;;
+      goSnapshot:*) key=goSnapshot ;;
       *) key=snapshot ;;
     esac
     case "$dropped_keys" in *" $key "*) continue ;; esac

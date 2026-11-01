@@ -1,5 +1,11 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { choosePlatform, parsePlatform, withPlatform } from "../src/device.ts";
+import {
+  chooseEnv,
+  choosePlatform,
+  parsePlatform,
+  withEnv,
+  withPlatform,
+} from "../src/device.ts";
 
 Deno.test("a page with no ?platform= runs as its device and writes it into the URL", () => {
   for (const device of ["phone", "tablet", "desktop"] as const) {
@@ -44,4 +50,33 @@ Deno.test("?platform= overrides the device as far as it can run it, and is never
   assertStringIncludes(unknown.note!, "?platform=watch is not");
   assertEquals(parsePlatform("IPHONE"), "phone");
   assertEquals(parsePlatform(""), undefined);
+});
+
+Deno.test("?env=go is a desktop browser's only", () => {
+  assertEquals(chooseEnv("desktop", null), { env: "python" });
+  assertEquals(chooseEnv("desktop", "python"), { env: "python" });
+  assertEquals(chooseEnv("desktop", "go"), { env: "go" });
+  assertEquals(chooseEnv("desktop", "Go"), { env: "go" });
+  // Never on a phone or tablet: their snapshots are never enlarged.
+  for (const platform of ["phone", "tablet"] as const) {
+    const chosen = chooseEnv(platform, "go");
+    assertEquals(chosen.env, "python");
+    assertStringIncludes(chosen.note!, "desktop browsers only");
+  }
+  // The desktop app's native sandbox installs what it likes.
+  assertEquals(chooseEnv("desktop", "go", true).env, "python");
+  const unknown = chooseEnv("desktop", "rust");
+  assertEquals(unknown.env, "python");
+  assertStringIncludes(unknown.note!, "?env=rust is not python or go");
+});
+
+Deno.test("withEnv writes Go into the URL and Python out of it", () => {
+  assertEquals(
+    withEnv("https://pg.example/?platform=desktop#x", "go"),
+    "https://pg.example/?platform=desktop&env=go#x",
+  );
+  assertEquals(
+    withEnv("https://pg.example/?platform=desktop&env=go", "python"),
+    "https://pg.example/?platform=desktop",
+  );
 });

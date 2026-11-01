@@ -1405,6 +1405,7 @@ case "$*" in
   "run -A scripts/release-snapshot.ts --check-pin") kind=desktop ;;
   "run -A scripts/release-snapshot.ts --check-pin --kind tablet") kind=tablet ;;
   "run -A scripts/release-snapshot.ts --check-pin --kind phone") kind=phone ;;
+  "run -A scripts/release-snapshot.ts --check-pin --kind go") kind=go ;;
   *) exit 9 ;;
 esac
 [ "$(pwd -P)" = "$(cd ${JSON.stringify(root)} && pwd -P)" ] || exit 9
@@ -1452,18 +1453,41 @@ echo 'snapshot pin refused: built from bootSetup 1, not 2' >&2; exit 3`,
         snapshot: { release: "d" },
         tabletSnapshot: { release: "t" },
         phoneSnapshot: { release: "p" },
+        goSnapshot: { release: "g" },
       },
     },
   );
   assertEquals(run.code, 0, run.output);
   assertEquals(run.pins.snapshot, { release: "d" });
   assertEquals(run.pins.phoneSnapshot, { release: "p" });
+  assertEquals(run.pins.goSnapshot, { release: "g" });
   assertEquals("tabletSnapshot" in run.pins, false);
   assertStringIncludes(
     run.output,
     "the pinned snapshot is not this train's (tabletSnapshot: built from bootSetup 1, not 2): dropped",
   );
   assertStringIncludes(run.output, "DROPPED=1");
+});
+
+Deno.test("a train drops a Go snapshot pin its own kind's check refuses", async () => {
+  const run = await pinsWrite(
+    `[ "$kind" = go ] || exit 0
+echo 'snapshot pin refused: the snapshot holds go@1, the live index offers go@2' >&2; exit 3`,
+    { steps: {} },
+    {
+      snapshots: {
+        snapshot: { release: "d" },
+        goSnapshot: { release: "g" },
+      },
+    },
+  );
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.pins.snapshot, { release: "d" });
+  assertEquals("goSnapshot" in run.pins, false);
+  assertStringIncludes(
+    run.output,
+    "the pinned snapshot is not this train's (goSnapshot: the snapshot holds go@1, the live index offers go@2): dropped",
+  );
 });
 
 Deno.test("a resumed train keeps an earlier run's dropped tablet or phone pin until it is back", async () => {

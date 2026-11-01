@@ -15,6 +15,7 @@ const NAMED: [string, string][] = [
   ["numpy", "numpy"],
   ["pyzmq", "pyzmq"],
   ["jupyter-kernel", "Jupyter kernel"],
+  ["go", "Go"],
 ];
 
 /** E.g. "BusyBox shell, git 2.55.0, Python 3.14.7; also zsh, make; no

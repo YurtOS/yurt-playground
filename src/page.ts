@@ -37,13 +37,17 @@ import {
 } from "./install_request.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
 import {
+  chooseEnv,
   choosePlatform,
   deviceClass,
+  type Env,
   type Platform,
+  withEnv,
   withPlatform,
 } from "./device.ts";
 import {
   captureKindOf,
+  goSetRequest,
   type SnapshotKind,
   tabletPythonRequest,
 } from "./sandbox_snapshot.ts";
@@ -115,6 +119,10 @@ let stopAnnouncing: () => void = () => {};
 /** What this page runs as (src/device.ts choosePlatform): its device's,
  * or the one `?platform=` asks for. Set first thing by runPage. */
 let platform: Platform = "desktop";
+/** What a desktop browser's sandbox is set up for (src/device.ts
+ * chooseEnv): `?env=go`, or the start screen's choice, restores the Go
+ * snapshot instead of the Python one. Python's on every other page. */
+let env: Env = "python";
 
 /**
  * window.yurt (src/agent_api.ts): a driver's view of the sandbox, present
@@ -285,9 +293,12 @@ function boot(
   // `?snapshot=capture`: each end of the boot marks its outcome on <html>,
   // where scripts/release-snapshot.ts waits (src/capture_outcome.ts).
   const capturing = snapshotMode() === "capture";
-  // The snapshot this start restores (the device's own) or captures.
+  // The snapshot this start restores (the device's own, or Go's on a
+  // desktop that chose it) or captures.
   const kind: SnapshotKind = capturing
     ? captureKindOf(snapshotParam())!
+    : platform === "desktop" && env === "go"
+    ? "go"
     : platform;
   const endBoot = (why?: string) => {
     booting = false;
@@ -501,7 +512,7 @@ function boot(
     const asked = new URL(location.href).searchParams.get("snapshot");
     if (asked !== null && asked !== "0" && snapshotMode() === undefined) {
       console.warn(
-        `[snapshot] ?snapshot=${asked} is not 0, 1, capture, capture-tablet, capture-phone or an uploaded snapshot's 40-digit commit sha; booting the image`,
+        `[snapshot] ?snapshot=${asked} is not 0, 1, capture, capture-tablet, capture-phone, capture-go or an uploaded snapshot's 40-digit commit sha; booting the image`,
       );
     }
     worker.postMessage({
@@ -513,7 +524,7 @@ function boot(
       apiToken: desktop?.apiToken,
       noJupyter: noPython,
       // A capture installs its kind's Python: the set (desktop), python
-      // alone (tablet), none (phone).
+      // alone (tablet), none (phone) -- or Go's go package (go).
       python: desktop !== undefined || pins === undefined
         ? undefined
         : capturing
@@ -521,14 +532,21 @@ function boot(
           ? pythonInstallRequest(pins)
           : kind === "tablet"
           ? tabletPythonRequest(pins)
+          : kind === "go"
+          ? goSetRequest(pins)
           : undefined
         : noPython
         ? undefined
         : pythonInstallRequest(pins),
       // A tablet installs no Python, but its snapshot holds python: the
-      // live index is asked about that for the snapshot's check.
-      snapshotPython: !capturing && kind === "tablet" && pins !== undefined
+      // live index is asked about that for the snapshot's check; Go's
+      // snapshot likewise holds the go package.
+      snapshotPython: capturing || pins === undefined
+        ? undefined
+        : kind === "tablet"
         ? tabletPythonRequest(pins)
+        : kind === "go"
+        ? goSetRequest(pins)
         : undefined,
       snapshotKind: kind,
       tablet: smallDevice,
@@ -811,10 +829,14 @@ async function runPage(): Promise<void> {
       withPlatform(location.href, platform),
     );
   }
-  if (chosen.note !== undefined) {
-    byId("platform-note-text").textContent = chosen.note;
+  const notes: string[] = [];
+  if (chosen.note !== undefined) notes.push(chosen.note);
+  const showNotes = () => {
+    if (notes.length === 0) return;
+    byId("platform-note-text").textContent = notes.join(". ");
     byId("platform-note").hidden = false;
-  }
+  };
+  showNotes();
   watchNetwork(byId("net"));
   // One writer for #status: the boot's progress must not bury the outcome
   // of a Download home or an Upload (src/status_line.ts).
@@ -832,6 +854,18 @@ async function runPage(): Promise<void> {
       "A Linux sandbox running natively on this machine, shown in this tab, " +
       "with network access.";
     byId("offline-note").hidden = true;
+  }
+  // Go or Python (`?env=`), once it is known whether this is the desktop
+  // app: a desktop browser's choice only.
+  const chosenEnv = chooseEnv(
+    platform,
+    new URL(location.href).searchParams.get("env"),
+    desktop !== undefined,
+  );
+  env = chosenEnv.env;
+  if (chosenEnv.note !== undefined) {
+    notes.push(chosenEnv.note);
+    showNotes();
   }
   if (desktop === undefined && globalThis.crossOriginIsolated !== true) {
     status.failure("need COOP/COEP");
@@ -871,6 +905,18 @@ async function runPage(): Promise<void> {
   // Python or Jupyter: the automatic Python install ran an iPhone tab out
   // of memory for new processes. The phone note and the cell say so.
   const noPython = shellOnly || (desktop === undefined && phone);
+  // Go's sandbox holds no Python: no Notebook or JupyterLab there.
+  const applyEnv = () => {
+    if (shellOnly) return;
+    byId("notebook").hidden = env === "go";
+    for (const testid of ["choose-notebook", "choose-lab"]) {
+      const link = document.querySelector<HTMLElement>(
+        `[data-testid=${testid}]`,
+      );
+      if (link) link.hidden = env === "go";
+    }
+  };
+  applyEnv();
   if (shellOnly) {
     for (const id of ["notebook", "agent"]) byId(id).hidden = true;
     for (const testid of ["choose-notebook", "choose-lab"]) {
@@ -912,11 +958,38 @@ async function runPage(): Promise<void> {
       interruptCell,
       desktop,
       stopWatchingForAnotherSandbox,
-      noPython,
+      noPython || env === "go",
       status,
       device !== "desktop",
     );
   };
+  // A desktop browser's start screen offers Python or Go, once the site
+  // pins Go's snapshot (without it Go's page boots the image, with no go
+  // in it); the choice is written into the URL (`?env=go`), so a reload
+  // keeps it.
+  if (desktop === undefined && device === "desktop") {
+    const choice = byId("env-choice");
+    void fetchSitePins().then((pins) => {
+      choice.hidden = pins?.goSnapshot === undefined;
+    });
+    for (
+      const radio of choice.querySelectorAll<HTMLInputElement>(
+        "input[name=env]",
+      )
+    ) {
+      radio.checked = radio.value === env;
+      radio.addEventListener("change", () => {
+        if (!radio.checked) return;
+        env = radio.value === "go" ? "go" : "python";
+        history.replaceState(
+          history.state,
+          "",
+          withEnv(location.href, env),
+        );
+        applyEnv();
+      });
+    }
+  }
   if (desktop === undefined) {
     if (device === "tablet") byId("mobile-note").hidden = false;
     if (refused) {

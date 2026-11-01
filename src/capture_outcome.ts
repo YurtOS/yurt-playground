@@ -129,11 +129,90 @@ sys.exit(0 if all(compiled) else 1)
 /** Whether a capture precompiles before the seal: one that installed
  * Python (the desktop's set, the tablet's interpreter), whose modules ship
  * as source. Not the phone's (`?snapshot=capture-phone`): it seals the
- * image as it boots, with no Python to compile. */
+ * image as it boots, with no Python to compile; nor Go's, which warms
+ * its build cache instead ({@link captureWarmsGo}). */
 export function capturePrecompiles(
-  kind: "desktop" | "tablet" | "phone",
+  kind: "desktop" | "tablet" | "phone" | "go",
 ): boolean {
-  return kind !== "phone";
+  return kind === "desktop" || kind === "tablet";
+}
+
+/** Whether a capture builds Go's warm-up program before the seal: the Go
+ * snapshot's (`?snapshot=capture-go`). */
+export function captureWarmsGo(
+  kind: "desktop" | "tablet" | "phone" | "go",
+): boolean {
+  return kind === "go";
+}
+
+/** The packages Go's warm-up program imports: what a first program
+ * reads and writes with (fmt, bufio, os, strings) and a few more a small
+ * one reaches for. Each is compiled into the build cache with everything
+ * it imports, so a user's first `go run` of a program that imports only
+ * these compiles that program's own package and links it. Kept small:
+ * every package's objects are kernel memory in the snapshot. */
+export const GO_WARMUP_IMPORTS = [
+  "bufio",
+  "fmt",
+  "os",
+  "strings",
+  "strconv",
+  "sort",
+  "math",
+  "time",
+  "errors",
+];
+
+/** The Go program the warm-up builds: it uses every package of
+ * {@link GO_WARMUP_IMPORTS} (blank imports beside the four it calls). No
+ * single quote or `$` in it: it rides in a shell heredoc inside one. */
+export const GO_WARMUP_PROGRAM = [
+  "package main",
+  "",
+  "import (",
+  ...GO_WARMUP_IMPORTS.map((name) =>
+    ["bufio", "fmt", "os", "strings"].includes(name)
+      ? `\t"${name}"`
+      : `\t_ "${name}"`
+  ),
+  ")",
+  "",
+  "func main() {",
+  "\tline, _ := bufio.NewReader(os.Stdin).ReadString(10)",
+  "\tfmt.Println(strings.TrimSpace(line))",
+  "}",
+  "",
+].join("\n");
+
+/** Where the login user's `go` keeps its build cache: `go env GOCACHE`
+ * with HOME=/home/user (src/boot.ts LOGIN_HOME), which every shell the
+ * page starts has. The warm-up runs as that user, so the files it
+ * writes are the user's own to reuse. */
+export const GO_BUILD_CACHE = "/home/user/.cache/go-build";
+
+/** The shell script a Go capture runs as the login user: build the
+ * warm-up program as a file argument (`go build main.go`, as a first
+ * `go run main.go` does, outside any module) in a scratch directory,
+ * then remove the directory; the build cache (`cache`) is what stays. It
+ * fails when `go` does, or when the cache is not where the user's go
+ * looks. */
+export function goWarmupScript(cache = GO_BUILD_CACHE): string {
+  return [
+    "set -e",
+    `[ "$(go env GOCACHE)" = ${cache} ]`,
+    "dir=$(mktemp -d /tmp/go-warmup.XXXXXX)",
+    'cd "$dir"',
+    `cat > main.go <<EOF\n${GO_WARMUP_PROGRAM}EOF`,
+    "go build -o warmup main.go",
+    "cd /",
+    'rm -rf "$dir"',
+    `[ -d ${cache} ]`,
+  ].join("\n");
+}
+
+/** The shell line that runs {@link goWarmupScript}. */
+export function goWarmupLine(cache = GO_BUILD_CACHE): string {
+  return `exec /bin/sh -c '${goWarmupScript(cache).replace(/'/g, "'\\''")}'`;
 }
 
 /** The shell line that runs {@link PRECOMPILE_PROGRAM}. */

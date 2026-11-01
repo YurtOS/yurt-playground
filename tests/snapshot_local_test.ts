@@ -23,6 +23,11 @@ Deno.test("snapshot-local prints a URL the page restores, and only for an id", (
     restoreUrl("https://yurt-playground.pages.dev/", ID, "phone"),
     `https://yurt-playground.pages.dev/?snapshot=${ID}&platform=phone`,
   );
+  // Go's restores on a desktop page that asks for Go.
+  assertEquals(
+    restoreUrl("https://yurt-playground.pages.dev/", ID, "go"),
+    `https://yurt-playground.pages.dev/?snapshot=${ID}&platform=desktop&env=go`,
+  );
   assertThrows(() => restoreUrl("https://x", "1", "desktop"));
 });
 
@@ -34,6 +39,7 @@ Deno.test("snapshot-local captures with the page's own capture query", () => {
   );
   assertEquals(captureQuery([], "phone"), "start&snapshot=capture-phone");
   assertEquals(captureQuery([], "tablet"), "start&snapshot=capture-tablet");
+  assertEquals(captureQuery([], "go"), "start&snapshot=capture-go");
 });
 
 Deno.test("snapshot-local names a ref with one safe path segment", () => {
@@ -122,4 +128,24 @@ Deno.test("snapshot-local expects each kind's own Python: the set, python alone,
   const full = { ...pins, browserImage: undefined };
   assertEquals(captureBuild(full, "phone", null).ok, false);
   assertEquals(captureBuild(full, "tablet", set).ok, false);
+});
+
+Deno.test("snapshot-local expects Go's snapshot to hold the go package the live index offers", async () => {
+  const raw = JSON.parse(
+    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
+  );
+  const pins = parsePins({ ...raw, snapshot: undefined });
+  const go = "img/go@1.28.0-devel-yurt_1:0123456789abcdef";
+  assertEquals(captureBuild(pins, "go", go), {
+    ok: true,
+    builtFrom: { ...snapshotIdentity(pins), pythonSet: go },
+  });
+  for (const live of [undefined, NO_COMPLETE_SET]) {
+    assertEquals(captureBuild(pins, "go", live).ok, false, String(live));
+  }
+  // The slim image's, like the tablet's.
+  assertEquals(
+    captureBuild({ ...pins, browserImage: undefined }, "go", go).ok,
+    false,
+  );
 });
