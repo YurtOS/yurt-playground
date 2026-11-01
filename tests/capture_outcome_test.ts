@@ -259,6 +259,7 @@ async function warmUp(
 case "$1" in
   env) echo ${goenvCache ?? cache} ;;
   build) echo "$*" > ${dir}/build.args; cp main.go ${dir}/main.go; pwd > ${dir}/build.cwd
+    echo "$GOTMPDIR" > ${dir}/build.tmp; mkdir "$GOTMPDIR/go-build1"
     mkdir -p ${cache}; exit ${buildExit} ;;
 esac
 `,
@@ -273,10 +274,12 @@ esac
     const read = (name: string) =>
       Deno.readTextFile(`${dir}/${name}`).catch(() => undefined);
     const cwd = (await read("build.cwd"))?.trim();
+    const tmp = (await read("build.tmp"))?.trim();
     return {
       code: out.code,
       args: (await read("build.args"))?.trim(),
       program: await read("main.go"),
+      goTmpInScratch: tmp !== undefined && tmp === cwd,
       scratchLeft: cwd === undefined
         ? undefined
         : await Deno.stat(cwd).then(() => true, () => false),
@@ -293,6 +296,8 @@ Deno.test("Go's warm-up builds a program of every warm-up import as a file argum
   for (const name of GO_WARMUP_IMPORTS) {
     assertEquals(run.program?.includes(`"${name}"`), true, name);
   }
+  // go's own work directory goes with the scratch one.
+  assertEquals(run.goTmpInScratch, true);
   assertEquals(run.scratchLeft, false);
 });
 

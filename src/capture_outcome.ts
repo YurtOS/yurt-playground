@@ -193,7 +193,8 @@ export const GO_BUILD_CACHE = "/home/user/.cache/go-build";
 /** The shell script a Go capture runs as the login user: build the
  * warm-up program as a file argument (`go build main.go`, as a first
  * `go run main.go` does, outside any module) in a scratch directory,
- * then remove the directory; the build cache (`cache`) is what stays. It
+ * then remove the directory, go's work directory (GOTMPDIR) with it; the
+ * build cache (`cache`) is what stays. It
  * fails when `go` does, or when the cache is not where the user's go
  * looks. */
 export function goWarmupScript(cache = GO_BUILD_CACHE): string {
@@ -203,7 +204,9 @@ export function goWarmupScript(cache = GO_BUILD_CACHE): string {
     "dir=$(mktemp -d /tmp/go-warmup.XXXXXX)",
     'cd "$dir"',
     `cat > main.go <<EOF\n${GO_WARMUP_PROGRAM}EOF`,
-    "go build -o warmup main.go",
+    // Its work directory too: this go leaves its $WORK (46 MiB of
+    // objects) behind in /tmp, which the snapshot would carry.
+    'GOTMPDIR="$dir" go build -o warmup main.go',
     "cd /",
     'rm -rf "$dir"',
     `[ -d ${cache} ]`,
