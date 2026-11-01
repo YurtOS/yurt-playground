@@ -267,6 +267,23 @@
         color: var(--muted);
         max-width: 60ch;
       }
+      /* A desktop browser's choice: Python (the default) or Go. */
+      #env-choice {
+        border: 0;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 18px;
+        color: var(--muted);
+      }
+      #env-choice[hidden] {
+        display: none;
+      }
+      #env-choice legend {
+        padding: 0;
+        margin-bottom: 6px;
+      }
       #failed {
         position: absolute;
         inset: 0;
@@ -818,6 +835,22 @@
           <div id="term"></div>
           <div id="start">
             <div class="prompt">$</div>
+            <fieldset id="env-choice" data-testid="env-choice" hidden>
+              <legend>Set the sandbox up for</legend>
+              <label><input
+                  type="radio"
+                  name="env"
+                  value="python"
+                  data-testid="env-python"
+                  checked
+                > Python and the Notebook</label>
+              <label><input
+                  type="radio"
+                  name="env"
+                  value="go"
+                  data-testid="env-go"
+                > Go, its standard library already compiled (no Python)</label>
+            </fieldset>
             <button
               type="button"
               id="start-sandbox"

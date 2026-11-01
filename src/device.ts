@@ -120,3 +120,70 @@ export function withPlatform(href: string, platform: Platform): string {
   url.searchParams.set("platform", platform);
   return url.href;
 }
+
+/** What a desktop page's sandbox is set up for: the Python set and the
+ * Notebook (the default), or Go -- the go package with its standard
+ * library already compiled, and no Python (src/snapshot_pin.ts, kind
+ * `go`). `?env=go` says it in the URL; the start screen's choice writes
+ * it there. */
+export type Env = "python" | "go";
+
+/** The env a page running as `platform` takes, given `?env=` (`asked`).
+ * Go is a desktop browser's only: its snapshot needs more memory than a
+ * phone or tablet tab has, so there (and in the desktop app, whose
+ * sandbox is native and installs what it likes) `?env=go` is Python's,
+ * with a `note` saying so. So is it on a site that pins no Go snapshot
+ * (`goPinned` false: a bookmark or a shared link from elsewhere), which
+ * would otherwise boot an image with neither Go nor Python; and in a
+ * capture (`capturing`), which makes its kind's snapshot whatever the
+ * env (`?snapshot=capture-go` is Go's). */
+export function chooseEnv(
+  platform: Platform,
+  asked: string | null,
+  { nativeApp = false, goPinned = true, capturing = false }: {
+    nativeApp?: boolean;
+    goPinned?: boolean;
+    capturing?: boolean;
+  } = {},
+): { env: Env; note?: string } {
+  if (asked === null || asked.toLowerCase() === "python" || capturing) {
+    return { env: "python" };
+  }
+  if (asked.toLowerCase() !== "go") {
+    return {
+      env: "python",
+      note: `?env=${asked} is not python or go: this page sets up Python`,
+    };
+  }
+  if (nativeApp) {
+    return {
+      env: "python",
+      note:
+        "The desktop app's sandbox installs Go itself (sudo pkg install go)",
+    };
+  }
+  if (platform !== "desktop") {
+    return {
+      env: "python",
+      note:
+        `Go is for desktop browsers only: a ${platform} tab has too little memory for it`,
+    };
+  }
+  if (!goPinned) {
+    return {
+      env: "python",
+      note:
+        "This site has no Go sandbox yet, so it sets up Python; sudo pkg install go works in its terminal",
+    };
+  }
+  return { env: "go" };
+}
+
+/** `href` with `?env=<env>` set (Python's is the default: no parameter),
+ * every other parameter and the fragment kept. */
+export function withEnv(href: string, env: Env): string {
+  const url = new URL(href);
+  if (env === "python") url.searchParams.delete("env");
+  else url.searchParams.set("env", env);
+  return url.href;
+}

@@ -66,10 +66,13 @@ import {
 import { liveAnswers } from "./python_install.ts";
 import {
   capturePrecompiles,
+  captureWarmsGo,
+  goWarmupLine,
   postCaptured,
   precompileLine,
 } from "./capture_outcome.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
+import { ensureGo, GO_PROBE_LINE } from "./go_fallback.ts";
 import {
   encodeSandboxSnapshot,
   SNAPSHOT_KINDS,
@@ -133,6 +136,10 @@ type ToWorker =
     // live index is asked about for the snapshot's check (a tablet's
     // python alone). `python` takes its place when there is one.
     snapshotPython?: PythonRequest;
+    // Go's page (src/go_fallback.ts): the go package to install when the
+    // sandbox has no go -- Go's snapshot could not be restored and the
+    // slim image was booted instead.
+    goFallback?: PythonRequest;
   }
   // Install Python again after a failed install (the cell's Install), then
   // start the kernel. Answered like a boot: status, then notebook-ready or
@@ -403,36 +410,33 @@ async function captureSnapshot(
     });
   }
   if (packages.length > 0) await installed.read();
-  // The phone's snapshot holds no Python to compile (capturePrecompiles).
+  // The phone's snapshot holds no Python to compile, nor Go's
+  // (capturePrecompiles).
   if (capturePrecompiles(kind)) {
     // Bytecode for every module the packages ship as source only
     // (PRECOMPILE_PROGRAM): each start compiled them again, slow on Safari,
     // where compiling one of wcwidth's modules also overflowed the Worker's
     // stack and killed ipykernel with SIGSEGV. Its failure is refused, with
     // its own words.
-    post({ type: "status", text: "precompiling Python modules" });
-    const compiled = performance.now();
-    const compile = await session.process(precompileLine(), {
-      maxOutputBytes: 64 * 1024,
-    });
-    const compileStatus = await compile.exited;
-    const code = typeof compileStatus === "number"
-      ? compileStatus
-      : compileStatus.code;
-    if (code !== 0) {
-      const decoder = new TextDecoder();
-      const said = decoder.decode(compile.takeStdout()) +
-        decoder.decode(compile.takeStderr());
-      throw new Error(
-        `precompiling the Python set exited ${JSON.stringify(compileStatus)}: ${
-          said.slice(-2000)
-        }`,
-      );
-    }
-    console.log(
-      `[snapshot] precompiled in ${
-        Math.round(performance.now() - compiled)
-      } ms`,
+    await captureStep(
+      session.process,
+      precompileLine(),
+      "precompiling Python modules",
+      "precompiling the Python set",
+      "precompiled",
+    );
+  }
+  // Go's standard library compiled into the login user's build cache
+  // (goWarmupScript): a cold first `go run` compiles it, ~17 min in a
+  // tab, and the snapshot's restore then only compiles the user's own
+  // package. Refused like the precompile when it fails.
+  if (captureWarmsGo(kind)) {
+    await captureStep(
+      session.process,
+      goWarmupLine(),
+      "compiling Go's standard library into the build cache (minutes)",
+      "warming Go's build cache",
+      "warmed Go's build cache",
     );
   }
   // What it holds, for its pin and for people: pkg's list as the seal
@@ -452,6 +456,36 @@ async function captureSnapshot(
     contents,
   );
   postCaptured(post, blob, Math.round(performance.now() - started));
+}
+
+/** One of a capture's steps before the seal: run `line` (as the login
+ * user, or root through sudo), say `status` meanwhile, and refuse the
+ * capture with the step's own words unless it exits 0. */
+async function captureStep(
+  spawn: NonNullable<
+    Awaited<ReturnType<typeof bootPlayground>>["process"]
+  >,
+  line: string,
+  status: string,
+  what: string,
+  done: string,
+): Promise<void> {
+  post({ type: "status", text: status });
+  const started = performance.now();
+  const step = await spawn(line, { maxOutputBytes: 64 * 1024 });
+  const exited = await step.exited;
+  const code = typeof exited === "number" ? exited : exited.code;
+  if (code !== 0) {
+    const decoder = new TextDecoder();
+    const said = decoder.decode(step.takeStdout()) +
+      decoder.decode(step.takeStderr());
+    throw new Error(
+      `${what} exited ${JSON.stringify(exited)}: ${said.slice(-2000)}`,
+    );
+  }
+  console.log(
+    `[snapshot] ${done} in ${Math.round(performance.now() - started)} ms`,
+  );
 }
 
 /** Drop the in-tab sandbox and start a fresh one the way the page's start
@@ -702,7 +736,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   installPython = python === undefined || kernelPorts !== undefined
     ? undefined
     : async (session) => {
-      post({ type: "status", text: "installing Python" });
+      // "installing Go" for the Go snapshot's capture.
+      post({ type: "status", text: `installing ${python.label}` });
       const cache = await browserArchiveCache();
       const progress = (text: string) => post({ type: "status", text });
       layerInstalled = undefined;
@@ -826,8 +861,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           }
           if (!phone && capturedSet === undefined) {
             throw new Error(
-              "this capture installed no Python (the phone's capture, " +
-                "without any, is ?snapshot=capture-phone)",
+              `this capture installed no ${
+                captureKind === "go" ? "Go" : "Python"
+              } (the phone's capture, without any, is ?snapshot=capture-phone)`,
             );
           }
           return captureSnapshot(
@@ -853,6 +889,44 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     // The boot is over: its read of the live index goes with it (a later
     // install on this sandbox asks again).
     live.finish();
+    // Go's page on a sandbox without go (a fallback boot): install it.
+    const goSession = packageSession;
+    if (
+      msg.goFallback !== undefined && kernelPorts === undefined &&
+      goSession?.process !== undefined
+    ) {
+      const goSet = msg.goFallback;
+      const spawn = goSession.process;
+      await ensureGo({
+        probe: async () => {
+          try {
+            const probe = await spawn(GO_PROBE_LINE, { maxOutputBytes: 1024 });
+            const status = await probe.exited;
+            return (typeof status === "number" ? status : status.code) === 0;
+          } catch {
+            return undefined;
+          }
+        },
+        install: async () => {
+          const cache = await browserArchiveCache();
+          await installs(() => {
+            pkgTouched.add(goSession);
+            return installPackage(goSet, {
+              host: workerPackageHost(goSession),
+              tablet: false,
+              progress: (text) => post({ type: "status", text }),
+              cache,
+            });
+          });
+          await installed.read();
+          post({ type: "status", text: "" });
+        },
+        say: (text) => {
+          term.write(`\r\n${text}\r\n`);
+          post({ type: "status", text });
+        },
+      });
+    }
     if (started !== undefined) {
       jupyter = started;
       subscribeJupyter(jupyter);

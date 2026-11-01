@@ -23,8 +23,13 @@
  *      there with the same file (a no-op);
  *   5. write the `snapshot` entry into artifacts/pins.json.
  *
- * Usage: deno run -A scripts/release-snapshot.ts [--dry-run] [--resume] [--tag TAG]
- *        deno run -A scripts/release-snapshot.ts --check-pin [--pins PATH]
+ * Usage: deno run -A scripts/release-snapshot.ts [--kind K] [--dry-run] [--resume] [--tag TAG]
+ *        deno run -A scripts/release-snapshot.ts --check-pin [--kind K] [--pins PATH]
+ *
+ *   --kind     desktop (default), tablet, phone or go (src/snapshot_pin.ts
+ *              SNAPSHOT_KINDS); go's capture installs the go package and
+ *              compiles its standard library into the build cache, the
+ *              slow part (captureTimeoutMs)
  *
  *   --dry-run  everything but the release and the pins write
  *   --resume   reuse public/snapshot/sandbox.seal.gz when it is a capture
@@ -74,6 +79,7 @@ import {
 import {
   checkPythonSet,
   FORMAT,
+  goSetRequest,
   pinnedSnapshot,
   SANDBOX_SNAPSHOT_NAME,
   SNAPSHOT_KIND_NAMES,
@@ -87,8 +93,13 @@ import {
 
 const REPO = "YurtOS/yurt-playground";
 const ASSET = "sandbox.seal.gz";
-/** A capture is a boot, a Python install and a seal: ~2 min on a laptop. */
-const CAPTURE_TIMEOUT_MS = 15 * 60_000;
+/** A capture is a boot, a Python install and a seal: ~2 min on a laptop.
+ * Go's also compiles its standard library into the build cache (Go's
+ * warm-up, src/capture_outcome.ts): about 10 min in headless
+ * Chromium, so it gets an hour. */
+export function captureTimeoutMs(kind: SnapshotKind): number {
+  return (kind === "go" ? 60 : 15) * 60_000;
+}
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const pinsPath = join(root, "artifacts/pins.json");
@@ -228,10 +239,15 @@ export const PIN_REFUSED_EXIT = 3;
 export const PIN_REFUSED_MARKER = "snapshot pin refused: ";
 
 /** The page's answer for the Python a snapshot of `kind` under `pins`
- * holds now: the set (desktop), python alone (tablet), none (phone). */
+ * holds now: the set (desktop), python alone (tablet), none (phone), or
+ * Go's go package (go). */
 export const liveSetOf = (pins: Pins, kind: SnapshotKind = "desktop") => () =>
   kind === "phone" ? Promise.resolve(null) : livePythonSet(
-    kind === "tablet" ? tabletPythonRequest(pins) : pythonInstallRequest(pins),
+    kind === "tablet"
+      ? tabletPythonRequest(pins)
+      : kind === "go"
+      ? goSetRequest(pins)
+      : pythonInstallRequest(pins),
   );
 
 /** Why a capture cannot start on the live index's answer: one it cannot
@@ -243,11 +259,12 @@ export function captureSetProblem(
 ): string | undefined {
   // The phone's holds no Python: nothing to ask the index about.
   if (kind === "phone") return undefined;
+  const what = kind === "go" ? "go package" : "Python set";
   if (live === undefined) {
-    return "cannot read the live package index (20 s): which Python set is this?";
+    return `cannot read the live package index (20 s): which ${what} is this?`;
   }
   if (live === NO_COMPLETE_SET) {
-    return "the live package index offers no complete Python set to capture";
+    return `the live package index offers no complete ${what} to capture`;
   }
   return undefined;
 }
@@ -270,7 +287,11 @@ export async function checkPin(
  * downloads). `query` is the page's query string (scripts/snapshot-local.ts
  * adds `packages=`). */
 export async function capture(
-  { query = "start&snapshot=capture", out = snapshotPath } = {},
+  {
+    query = "start&snapshot=capture",
+    out = snapshotPath,
+    timeoutMs = captureTimeoutMs("desktop"),
+  } = {},
 ): Promise<void> {
   // Here, not at the top: the tests import this module's checks.
   const { chromium } = await import("playwright");
@@ -282,6 +303,7 @@ export async function capture(
   delete pins.snapshot;
   delete pins.tabletSnapshot;
   delete pins.phoneSnapshot;
+  delete pins.goSnapshot;
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
     (request) =>
@@ -301,9 +323,7 @@ export async function capture(
       }
     });
     say(`capturing at ${url}`);
-    const download = page.waitForEvent("download", {
-      timeout: CAPTURE_TIMEOUT_MS,
-    });
+    const download = page.waitForEvent("download", { timeout: timeoutMs });
     // Handled from the start: if the navigation below throws, closing the
     // browser rejects this too, and that must not hide the real error.
     download.catch(() => {});
@@ -314,7 +334,7 @@ export async function capture(
     const failed = page.waitForFunction(
       () => document.documentElement.dataset.snapshotCapture === "failed",
       undefined,
-      { timeout: CAPTURE_TIMEOUT_MS, polling: 500 },
+      { timeout: timeoutMs, polling: 500 },
     ).then(async () => {
       throw new Error(
         `the capture failed: ${await page.evaluate(() =>
@@ -404,9 +424,13 @@ export function releaseNotes(
     ? "the Python set was installed and precompiled"
     : kind === "tablet"
     ? "python alone was installed and precompiled"
+    : kind === "go"
+    ? "the go package was installed and its standard library compiled into the build cache"
     : "nothing was installed";
   return [
-    `The sealed sandbox a ${kind} page restores by default for ${train}: the`,
+    kind === "go"
+      ? `The sealed sandbox a desktop page restores for Go (\`?env=go\`) for ${train}: the`
+      : `The sealed sandbox a ${kind} page restores by default for ${train}: the`,
     `in-tab Yurt kernel's memory after the slim image booted and ${what},`,
     "with no process left in it.",
     "",
@@ -435,7 +459,8 @@ export function releaseNotes(
   ].join("\n");
 }
 
-/** `--kind desktop|tablet|phone` (default desktop), taken out of `args`. */
+/** `--kind desktop|tablet|phone|go` (default desktop), taken out of
+ * `args`. */
 function kindOption(args: string[]): SnapshotKind {
   const at = args.indexOf("--kind");
   if (at < 0) return "desktop";
@@ -534,6 +559,7 @@ async function main(): Promise<void> {
     await capture({
       query: `start&snapshot=${captureMode}`,
       out: snapshotPath,
+      timeoutMs: captureTimeoutMs(kind),
     });
     // Step 2.
     check = await thisTrains();

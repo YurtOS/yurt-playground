@@ -29,10 +29,12 @@ export type Pins = {
    * script read it, through parseSnapshotPin, so an entry of another shape
    * never breaks a default boot or a deploy. */
   snapshot?: unknown;
-  /** The tablet's and the phone's snapshots (src/sandbox_snapshot.ts
-   * SNAPSHOT_KINDS), kept as written like `snapshot`. */
+  /** The tablet's, the phone's and the desktop's Go snapshots
+   * (src/sandbox_snapshot.ts SNAPSHOT_KINDS), kept as written like
+   * `snapshot`. */
   tabletSnapshot?: unknown;
   phoneSnapshot?: unknown;
+  goSnapshot?: unknown;
 };
 
 /** What a sandbox snapshot was built from: a restore needs the same of
@@ -154,6 +156,7 @@ export function parsePins(raw: unknown): Pins {
     snapshot?: unknown;
     tabletSnapshot?: unknown;
     phoneSnapshot?: unknown;
+    goSnapshot?: unknown;
   };
   const pins: Pins = {
     kernelWasm: parsePin(value.kernelWasm, "kernelWasm"),
@@ -190,6 +193,7 @@ export function parsePins(raw: unknown): Pins {
   if (value.phoneSnapshot !== undefined) {
     pins.phoneSnapshot = value.phoneSnapshot;
   }
+  if (value.goSnapshot !== undefined) pins.goSnapshot = value.goSnapshot;
   return pins;
 }
 

@@ -2,8 +2,11 @@ import { assertEquals } from "@std/assert";
 import {
   type CaptureMark,
   capturePrecompiles,
+  captureWarmsGo,
   DOWNLOAD_URL_KEEP_MS,
   finishCapture,
+  GO_WARMUP_IMPORTS,
+  goWarmupLine,
   markBootEnded,
   NO_SNAPSHOT,
   postCaptured,
@@ -231,4 +234,76 @@ Deno.test("a capture precompiles the Python it installed; the phone's has none",
   assertEquals(capturePrecompiles("desktop"), true);
   assertEquals(capturePrecompiles("tablet"), true);
   assertEquals(capturePrecompiles("phone"), false);
+  // Go's warms its build cache instead: it holds no Python.
+  assertEquals(capturePrecompiles("go"), false);
+  assertEquals(captureWarmsGo("go"), true);
+  for (const kind of ["desktop", "tablet", "phone"] as const) {
+    assertEquals(captureWarmsGo(kind), false);
+  }
+});
+
+/** goWarmupLine run by this machine's sh, with a fake `go` first on the
+ * PATH: it records the build it is asked for and the program it is
+ * given, and makes the cache a real build would. */
+async function warmUp(
+  { goenvCache, buildExit = 0 }: { goenvCache?: string; buildExit?: number } =
+    {},
+) {
+  const dir = await Deno.makeTempDir();
+  try {
+    const cache = `${dir}/cache`;
+    await Deno.mkdir(`${dir}/bin`);
+    await Deno.writeTextFile(
+      `${dir}/bin/go`,
+      `#!/bin/sh
+case "$1" in
+  env) echo ${goenvCache ?? cache} ;;
+  build) echo "$*" > ${dir}/build.args; cp main.go ${dir}/main.go; pwd > ${dir}/build.cwd
+    echo "$GOTMPDIR" > ${dir}/build.tmp; mkdir "$GOTMPDIR/go-build1"
+    mkdir -p ${cache}; exit ${buildExit} ;;
+esac
+`,
+    );
+    await Deno.chmod(`${dir}/bin/go`, 0o755);
+    const out = await new Deno.Command("/bin/sh", {
+      args: ["-c", goWarmupLine(cache)],
+      env: { PATH: `${dir}/bin:${Deno.env.get("PATH")}` },
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    const read = (name: string) =>
+      Deno.readTextFile(`${dir}/${name}`).catch(() => undefined);
+    const cwd = (await read("build.cwd"))?.trim();
+    const tmp = (await read("build.tmp"))?.trim();
+    return {
+      code: out.code,
+      args: (await read("build.args"))?.trim(),
+      program: await read("main.go"),
+      goTmpInScratch: tmp !== undefined && tmp === cwd,
+      scratchLeft: cwd === undefined
+        ? undefined
+        : await Deno.stat(cwd).then(() => true, () => false),
+    };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("Go's warm-up builds a program of every warm-up import as a file argument, and leaves only the cache", async () => {
+  const run = await warmUp();
+  assertEquals(run.code, 0);
+  assertEquals(run.args, "build -o warmup main.go");
+  for (const name of GO_WARMUP_IMPORTS) {
+    assertEquals(run.program?.includes(`"${name}"`), true, name);
+  }
+  // go's own work directory goes with the scratch one.
+  assertEquals(run.goTmpInScratch, true);
+  assertEquals(run.scratchLeft, false);
+});
+
+Deno.test("Go's warm-up fails when go does, or when go keeps its cache elsewhere", async () => {
+  assertEquals((await warmUp({ buildExit: 2 })).code !== 0, true);
+  const elsewhere = await warmUp({ goenvCache: "/root/.cache/go-build" });
+  assertEquals(elsewhere.code !== 0, true);
+  assertEquals(elsewhere.args, undefined, "nothing was built");
 });

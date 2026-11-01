@@ -20,7 +20,8 @@
  *             with 5 touch points), desktop
  *   --query   the page's query (default `start`: Start pressed at load, no
  *             platform, so the page picks it; add `&snapshot=0` for the
- *             plain boot, `&platform=...` to force one)
+ *             plain boot, `&platform=...` to force one, `&env=go` for
+ *             Go's snapshot on a desktop)
  *   --pins    serve these pins.json instead of artifacts/pins.json (with
  *             the blobs and snapshots they name installed)
  *   --warm    repeat loads after the cold one (default 1)
@@ -196,7 +197,9 @@ if (import.meta.main) {
         (await page.locator("#term").textContent()) ?? "",
       );
       let jupyterSeconds: number | undefined;
-      if (new URL(page.url()).searchParams.get("platform") === "desktop") {
+      // Go's page (`env=go`) starts no Jupyter.
+      const params = new URL(page.url()).searchParams;
+      if (params.get("platform") === "desktop" && params.get("env") !== "go") {
         await page.waitForFunction(
           () =>
             document.querySelector("[data-testid=notebook-status]")

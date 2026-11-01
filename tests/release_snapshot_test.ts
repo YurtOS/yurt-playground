@@ -1,6 +1,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import {
   captureSetProblem,
+  captureTimeoutMs,
   checkoutProblem,
   checkPin,
   PIN_REFUSED_EXIT,
@@ -678,6 +679,21 @@ Deno.test("a capture does not start on an index it cannot read or without a comp
     captureSetProblem(NO_COMPLETE_SET)?.includes("no complete Python set"),
     true,
   );
+});
+
+Deno.test("Go's capture asks about the go package, and gets an hour for its warm-up", () => {
+  assertEquals(
+    captureSetProblem(NO_COMPLETE_SET, "go")?.includes(
+      "no complete go package",
+    ),
+    true,
+  );
+  assertEquals(
+    captureSetProblem("img/go@1.28.0-devel-yurt_1:0123", "go"),
+    undefined,
+  );
+  assertEquals(captureTimeoutMs("desktop"), 15 * 60_000);
+  assertEquals(captureTimeoutMs("go"), 60 * 60_000);
 });
 
 Deno.test("a full check of a snapshot file reads it once", async () => {

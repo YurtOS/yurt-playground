@@ -471,6 +471,32 @@ Deno.test("the page's instructions hold outside Chrome and without a token", asy
   }
 });
 
+Deno.test("the start screen offers Python or Go, hidden until the page shows it", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const start = html.match(/<div id="start">[\s\S]*?<\/fieldset>/)?.[0] ?? "";
+  const fieldset = start.match(/<fieldset\b[\s\S]*?>/)?.[0] ?? "";
+  assertEquals(fieldset.includes('id="env-choice"'), true, fieldset);
+  // Shown only by a desktop browser's page (src/page.ts), once Go's
+  // snapshot is pinned: never on a phone or tablet.
+  assertEquals(/\bhidden\b/.test(fieldset), true, fieldset);
+  const radios = [...start.matchAll(/<input\b[\s\S]*?>/g)]
+    .map((m) => m[0])
+    .filter((tag) => tag.includes('type="radio"'));
+  assertEquals(radios.length, 2, `expected two choices: ${radios.length}`);
+  const value = (tag: string) => tag.match(/\bvalue="([^"]*)"/)?.[1];
+  assertEquals(radios.map(value), ["python", "go"]);
+  // Python is the default.
+  assertEquals(/\bchecked\b/.test(radios[0]), true);
+  assertEquals(/\bchecked\b/.test(radios[1]), false);
+  const page = await Deno.readTextFile(
+    new URL("../src/page.ts", import.meta.url),
+  );
+  assertEquals(page.includes('platform === "desktop"'), true);
+  assertEquals(page.includes("pins?.goSnapshot === undefined"), true);
+});
+
 Deno.test("every install choice has an accessible name of its own", async () => {
   // Each radio gets its name from the visible group heading and platform label.
   const html = await Deno.readTextFile(

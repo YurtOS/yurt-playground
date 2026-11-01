@@ -33,6 +33,11 @@ Deno.test("the remark names the shell, git and Python, and says what is missing"
     ]),
     "BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates",
   );
+  // Go's: the go package, no Python.
+  assertEquals(
+    linuxRemark([...base, release("go", "1.28.0-devel")]),
+    "BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; no Python, no Jupyter",
+  );
   // Nothing installed, or a list that could not be read.
   assertEquals(linuxRemark([]), "BusyBox shell; no Python, no Jupyter");
   // More than one other package is counted, not listed.

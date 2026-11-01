@@ -25,22 +25,26 @@ export const SANDBOX_SNAPSHOT_PATH = `./${SANDBOX_SNAPSHOT_NAME}`;
  * image fits a phone again), each made from the slim image: a desktop the
  * one with the Python set and Jupyter installed; a tablet the one with
  * python alone installed; a phone the image as it boots, without Python.
- * Each has its own
+ * A desktop that asks for Go (`?env=go`, or Go on the start screen:
+ * src/device.ts chooseEnv) restores the Go one instead: the go package and
+ * a build cache that already holds the standard library it compiled, no
+ * Python. Each has its own
  * pins.json entry, file, capture mode and release tag; the checks are the
  * same. A phone's or tablet's page asks for no Python set, so it restores
- * only a snapshot without one (checkPythonSet).
+ * only a snapshot without one (checkPythonSet); a Go page asks about the
+ * go package (`builtFrom.pythonSet` then holds that package's layer key).
  */
-export type SnapshotKind = "desktop" | "tablet" | "phone";
+export type SnapshotKind = "desktop" | "tablet" | "phone" | "go";
 
 export const SNAPSHOT_KINDS: Record<SnapshotKind, {
   /** Its artifacts/pins.json entry. */
-  pinKey: "snapshot" | "tabletSnapshot" | "phoneSnapshot";
+  pinKey: "snapshot" | "tabletSnapshot" | "phoneSnapshot" | "goSnapshot";
   /** Its file in the site, published in parts. */
   name: string;
   /** The release asset (the name's last part). */
   asset: string;
   /** `?snapshot=<capture>` makes it. */
-  capture: "capture" | "capture-tablet" | "capture-phone";
+  capture: "capture" | "capture-tablet" | "capture-phone" | "capture-go";
   /** Its release tag, before the train. */
   tagPrefix: string;
 }> = {
@@ -65,7 +69,20 @@ export const SNAPSHOT_KINDS: Record<SnapshotKind, {
     capture: "capture-phone",
     tagPrefix: "snapshot-phone-",
   },
+  go: {
+    pinKey: "goSnapshot",
+    name: "snapshot/go.seal.gz",
+    asset: "go.seal.gz",
+    capture: "capture-go",
+    tagPrefix: "snapshot-go-",
+  },
 };
+
+/** The page query that restores `kind` (the platform it is made for, and
+ * Go's `env`): what a printed restore URL and a live check open. */
+export function kindQuery(kind: SnapshotKind): string {
+  return kind === "go" ? "platform=desktop&env=go" : `platform=${kind}`;
+}
 
 export const SNAPSHOT_KIND_NAMES = Object.keys(
   SNAPSHOT_KINDS,
@@ -92,6 +109,22 @@ export function tabletPythonRequest(
   return pins.browserImage === undefined ? undefined : {
     label: "Python",
     set: [...TABLET_PYTHON_SET],
+    image: pins.browserImage.sha256,
+  };
+}
+
+/** The Go snapshot's set: the go package alone, installed with pkg on the
+ * slim image. Its capture installs it and warms its build cache
+ * (src/capture_outcome.ts goWarmupScript), and its restore asks the
+ * live index about it, keyed like a Python set (a layer key). */
+export const GO_SET: readonly string[] = ["go"];
+
+export function goSetRequest(
+  pins: Pick<Pins, "browserImage">,
+): { label: string; set: string[]; image: string } | undefined {
+  return pins.browserImage === undefined ? undefined : {
+    label: "Go",
+    set: [...GO_SET],
     image: pins.browserImage.sha256,
   };
 }

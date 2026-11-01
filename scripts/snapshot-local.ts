@@ -20,7 +20,7 @@
  *   4. print `<site>/?snapshot=<commit sha>`.
  *
  * Usage: deno run -A scripts/snapshot-local.ts [--packages a,b]
- *          [--kind desktop|tablet|phone]
+ *          [--kind desktop|tablet|phone|go]
  *          [--name NAME] [--file PATH] [--dry-run] [--site URL]
  *
  *   --packages  packages to install after the Python set, before the seal
@@ -30,7 +30,9 @@
  *               the desktop's (default: the Python set and Jupyter), the
  *               tablet's (`?snapshot=capture-tablet`: python alone) or the
  *               phone's (`?snapshot=capture-phone`: the image as it boots,
- *               no Python); the URL names its platform, and each restores
+ *               no Python) or Go's (`?snapshot=capture-go`: the go package
+ *               and its standard library compiled, no Python); the URL
+ *               names its platform (and Go's `env=go`), and each restores
  *               only on a page of its kind
  *   --name      the ref's name (default <train>-<UTC time>); an existing
  *               one is never replaced
@@ -60,6 +62,7 @@ import { checkSnapshotFile } from "./lib/snapshot_file.ts";
 import {
   capture,
   captureSetProblem,
+  captureTimeoutMs,
   checkoutProblem,
   liveSetOf,
   split,
@@ -70,6 +73,7 @@ import { parsePins, type Pins, type SnapshotPin } from "../src/pins.ts";
 import {
   type BuiltFrom,
   FORMAT,
+  kindQuery,
   SNAPSHOT_KIND_NAMES,
   SNAPSHOT_KINDS,
   snapshotHeaderFacts,
@@ -134,7 +138,7 @@ export function restoreUrl(
 ): string {
   uploadedSnapshotBase(id); // only an id
   const url = new URL(site);
-  url.search = `?snapshot=${id}&platform=${kind}`;
+  url.search = `?snapshot=${id}&${kindQuery(kind)}`;
   return url.href;
 }
 
@@ -396,7 +400,11 @@ async function main(): Promise<void> {
       const pageProblem = await checkoutProblem(root, "upstream");
       if (pageProblem !== undefined) say(`note: ${pageProblem}`);
       file = join(work, "capture", SNAPSHOT_FILE);
-      await capture({ query: captureQuery(packages, kind), out: file });
+      await capture({
+        query: captureQuery(packages, kind),
+        out: file,
+        timeoutMs: captureTimeoutMs(kind),
+      });
     }
     const check = await checkSnapshotFile(
       file,
