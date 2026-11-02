@@ -80,7 +80,8 @@ kernel (`ipykernel` 7.2.0, IPython 9.13.0, pyzmq 26.4.0).
 We're looking for a business partner to help identify customer opportunities,
 build relationships, and bring Yurt to market.
 
-Contact [Ofer](https://github.com/ofersa) or [Sunny](https://github.com/smarcd).
+Contact Ofer at [ofersa@gmail.com](mailto:ofersa@gmail.com), or
+[Sunny](https://github.com/smarcd) on GitHub.
 
 ## Driving the sandbox from a program
 
