@@ -4,7 +4,7 @@ import {
   sha256Hex,
   SLIM_IMAGE_NAME,
 } from "../src/integrity.ts";
-import { inlineScriptHashes } from "../src/csp.ts";
+import { cspSources, inlineScriptHashes } from "../src/csp.ts";
 
 Deno.test("static build emits isolated playground deployment", async () => {
   const script = await Deno.readTextFile(
@@ -130,13 +130,36 @@ Deno.test("static build writes every file the pages need", async () => {
       "Cross-Origin-Opener-Policy: same-origin",
       "Cross-Origin-Embedder-Policy: require-corp",
       "Cross-Origin-Resource-Policy: same-origin",
-      "connect-src 'self' https://huggingface.co https://*.hf.co https://raw.githubusercontent.com/YurtOS/yurt-packages/ https://raw.githubusercontent.com/YurtOS/yurt-playground/ https://api.github.com/repos/YurtOS/yurt-playground/git/matching-refs/snapshots/;",
       "/jupyter/*\n  ! Content-Security-Policy\n  Content-Security-Policy: ",
     ]
   ) {
     assertStringIncludes(headers, value);
   }
   const [siteRule, jupyterRule] = headers.split("/jupyter/*");
+  const siteConnect = cspSources(
+    siteRule.split("Content-Security-Policy: ")[1],
+    "connect-src",
+  );
+  for (
+    const source of [
+      "'self'",
+      "https://huggingface.co",
+      "https://*.hf.co",
+      "https://raw.githubusercontent.com/YurtOS/yurt-packages/",
+      "https://raw.githubusercontent.com/YurtOS/yurt-playground/",
+      "https://api.github.com/repos/YurtOS/yurt-playground/git/matching-refs/snapshots/",
+    ]
+  ) {
+    assertEquals(siteConnect.includes(source), true, source);
+  }
+  // A build that did not ask for analytics (`--web-analytics`, production
+  // only) has no beacon and no beacon origins: the desktop app and the
+  // previews ship this build.
+  assertEquals(headers.includes("cloudflareinsights"), false);
+  for (const page of ["index.html", "snapshot.html", "unsupported.html"]) {
+    const html = await Deno.readTextFile(new URL(`dist/${page}`, repoRoot));
+    assertEquals(html.includes("cloudflareinsights"), false, page);
+  }
   assertEquals(siteRule.includes("'unsafe-eval'"), false);
   assertEquals(jupyterRule.includes("'unsafe-eval'"), true);
   // The model download is the home page's; JupyterLite stays on the origin.

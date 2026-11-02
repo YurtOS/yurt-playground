@@ -23,6 +23,11 @@ import {
 import { loadPins, type Pins } from "../src/pins.ts";
 import { checkSnapshotFile } from "./lib/snapshot_file.ts";
 import {
+  BEACON_PAGES,
+  WEB_ANALYTICS_TOKEN,
+  withBeacon,
+} from "../src/web_analytics.ts";
+import {
   pinnedSnapshot,
   SNAPSHOT_KIND_NAMES,
   SNAPSHOT_KINDS,
@@ -148,7 +153,31 @@ export async function snapshotMatchesPins(
   return check.ok || leftOut(check.problem);
 }
 
-export async function buildStaticSite(): Promise<void> {
+export type BuildOptions = {
+  /** Add the Cloudflare Web Analytics beacon (`--web-analytics`). Only the
+   * production Pages deploy asks for it: previews, CI and the desktop app
+   * (whose own CSP, src/desktop.ts, would refuse the beacon) build without. */
+  webAnalytics?: boolean;
+};
+
+/** The beacon token a build uses: the committed one when the build asked
+ * for analytics, otherwise none. */
+export function beaconToken(
+  webAnalytics: boolean,
+  token = WEB_ANALYTICS_TOKEN,
+): string {
+  if (!webAnalytics) return "";
+  if (token === "") {
+    console.warn(
+      "--web-analytics: WEB_ANALYTICS_TOKEN (src/web_analytics.ts) is empty; no beacon",
+    );
+  }
+  return token;
+}
+
+export async function buildStaticSite(
+  options: BuildOptions = {},
+): Promise<void> {
   await ensureBundle(kernelRoot());
   await Deno.remove(distDir, { recursive: true }).catch(() => {});
   await Deno.mkdir(join(distDir, "demo"), { recursive: true });
@@ -233,7 +262,37 @@ export async function buildStaticSite(): Promise<void> {
     ) + "\n",
   );
   await writeLlmRuntime();
-  await Deno.writeTextFile(join(distDir, "_headers"), await siteHeaders());
+  await writeSiteDocuments(distDir, beaconToken(options.webAnalytics ?? false));
+}
+
+/** The last step of the build: the beacon in the pages that carry it and
+ * the `_headers` whose CSP admits it, always together. */
+export async function writeSiteDocuments(
+  dir: string,
+  token: string,
+): Promise<void> {
+  await injectBeacon(dir, token);
+  await Deno.writeTextFile(
+    join(dir, "_headers"),
+    await siteHeaders(dir, token),
+  );
+}
+
+/** Add the Cloudflare Web Analytics beacon (src/web_analytics.ts) to the
+ * built pages that carry it; nothing when `token` is empty. Only the
+ * production site counts visitors (see {@link BuildOptions}). */
+export async function injectBeacon(
+  dir: string,
+  token: string,
+): Promise<void> {
+  if (token === "") return;
+  for (const page of BEACON_PAGES) {
+    const path = join(dir, page);
+    await Deno.writeTextFile(
+      path,
+      withBeacon(await Deno.readTextFile(path), token),
+    );
+  }
 }
 
 /** The local agent's runtime (#140), as the dev server answers it: the
@@ -285,14 +344,17 @@ async function scriptHashesUnder(dir: string): Promise<string[]> {
 
 /** The `_headers` file: isolation plus the CSP, with the inline scripts the
  * built pages actually carry allowed by hash. */
-export async function siteHeaders(): Promise<string> {
+export async function siteHeaders(
+  dir = distDir,
+  token = "",
+): Promise<string> {
   const { "Content-Security-Policy": _csp, ...isolation } = ISOLATION_HEADERS;
   const site = new Set<string>();
-  for await (const entry of Deno.readDir(distDir)) {
+  for await (const entry of Deno.readDir(dir)) {
     if (entry.isFile && entry.name.endsWith(".html")) {
       for (
         const hash of await inlineScriptHashes(
-          await Deno.readTextFile(join(distDir, entry.name)),
+          await Deno.readTextFile(join(dir, entry.name)),
         )
       ) {
         site.add(hash);
@@ -302,8 +364,17 @@ export async function siteHeaders(): Promise<string> {
   return headersFile(
     isolation,
     [...site].sort(),
-    await scriptHashesUnder(join(distDir, JUPYTER_DIR)),
+    await scriptHashesUnder(join(dir, JUPYTER_DIR)),
+    token !== "",
   );
 }
 
-if (import.meta.main) await buildStaticSite();
+if (import.meta.main) {
+  const unknown = Deno.args.filter((arg) => arg !== "--web-analytics");
+  if (unknown.length > 0) {
+    throw new Error(`build-static: unknown arguments ${unknown.join(" ")}`);
+  }
+  await buildStaticSite({
+    webAnalytics: Deno.args.includes("--web-analytics"),
+  });
+}
