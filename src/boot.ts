@@ -572,14 +572,19 @@ export async function restoreSnapshot(
   // The store goes into a fresh copy, and a refused restore removes it.
   // Its lower comes from the image, fetched beside the snapshot.
   const target = await rootStore?.freshStore();
-  const lowerImage = target === undefined
+  let lowerImage = target === undefined
     ? undefined
     : env.fetchBytes(env.imagePath ?? FULL_IMAGE_PATH);
   lowerImage?.catch(() => {});
   const store = target === undefined ? undefined : {
     target,
     expect: pin.store!.identity,
-    image: () => lowerImage!,
+    // Taken once: the image is not held while the memory is allocated.
+    image: () => {
+      const image = lowerImage!;
+      lowerImage = undefined;
+      return image;
+    },
   };
   // Only this frame holds the decoded memory (~250-545 MiB), and only
   // until the restore copied it: a fallback boot must not run beside it.

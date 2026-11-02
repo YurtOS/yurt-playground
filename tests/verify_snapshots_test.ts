@@ -110,7 +110,14 @@ Deno.test("the committed snapshot pins hold what their kinds are for, largest fi
   const pins = JSON.parse(
     await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
   );
-  assertEquals(verifySnapshotPins(pins, { complete: false }), []);
+  // Apart from their format: the train that merges the zip format
+  // recaptures every kind (format 3 is the gzip of before it).
+  assertEquals(
+    verifySnapshotPins(pins, { complete: false }).filter((problem) =>
+      !problem.includes("is format 3, not 4: a gzip of the kernel memory")
+    ),
+    [],
+  );
 });
 
 Deno.test("a complete train without a Go snapshot passes: Go's is optional", () => {
@@ -141,8 +148,10 @@ Deno.test("on a kernel whose root is a YurtFS store, a pin of a zip without the 
   for (const key of ["snapshot", "tabletSnapshot", "goSnapshot"]) {
     pins[key].store = { identity };
   }
+  // Undefined (a kernel not asked) takes either, as acceptedSnapshot.
+  assertEquals(verifySnapshotPins(pins), []);
   // Today's kernel restores none of the three that carry one.
-  assertEquals(verifySnapshotPins(pins), [
+  assertEquals(verifySnapshotPins(pins, { rootStore: false }), [
     "desktop: the zip carries a YurtFS root store, and the kernel keeps its root in its memory",
     "tablet: the zip carries a YurtFS root store, and the kernel keeps its root in its memory",
     "go: the zip carries a YurtFS root store, and the kernel keeps its root in its memory",
@@ -365,4 +374,12 @@ Deno.test("compiledPackages reads the packages go build -x compiled", () => {
     ),
     ["strings", "fmt"],
   );
+});
+
+Deno.test("a pin of another format than the page's is refused", () => {
+  const pins = fixture();
+  (pins.phoneSnapshot as Record<string, unknown>).format = 3;
+  assertEquals(verifySnapshotPins(pins), [
+    "phone: the pinned snapshot is format 3, not 4: a gzip of the kernel memory, from before the zip; capture it again",
+  ]);
 });

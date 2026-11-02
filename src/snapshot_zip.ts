@@ -7,9 +7,11 @@
  * and CRC-32 in its local header (no data descriptor, so a reader knows
  * where an entry ends before reading it), no zip64 (an entry or the file
  * past 4 GiB is refused), no encryption, fixed timestamps. Any unzip tool
- * reads it. The reader does not check CRC-32s: the whole file's sha256,
- * which the pin records, is checked as it downloads (fetchVerifiedSnapshot),
- * and a CRC over the ~550 MB of kernel memory would only cost the restore.
+ * reads it. The reader checks CRC-32s only when asked (the release
+ * tools, whose file has no other check): a restore checks the whole
+ * file's sha256, which the pin records, as it downloads
+ * (fetchVerifiedSnapshot), and a CRC over the ~550 MB of kernel memory
+ * would only cost it.
  */
 
 const LOCAL = 0x04034b50;
@@ -156,6 +158,7 @@ function header(
 
 export type ZipEntry = {
   name: string;
+  crc: number;
   /** Uncompressed. */
   size: number;
   compressed: number;
@@ -168,9 +171,14 @@ export class ZipStreamReader {
   #reader: ReadableStreamDefaultReader<Uint8Array>;
   #pending: Uint8Array = new Uint8Array(0);
   #entries = 0;
+  #checkCrc: boolean;
 
-  constructor(reader: ReadableStreamDefaultReader<Uint8Array>) {
+  constructor(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    { checkCrc = false } = {},
+  ) {
     this.#reader = reader;
+    this.#checkCrc = checkCrc;
   }
 
   /** At least `bytes` bytes buffered, or fewer at the end of the stream. */
@@ -229,14 +237,35 @@ export class ZipStreamReader {
     this.#entries++;
     return {
       name,
+      crc: view.getUint32(14, true),
       method,
       compressed: view.getUint32(18, true),
       size: view.getUint32(22, true),
     };
   }
 
-  /** `entry`'s contents, in order, to `take`; exactly its size. */
+  /** `entry`'s contents, in order, to `take`; exactly its size, and its
+   * CRC-32 when the reader checks them. */
   async read(
+    entry: ZipEntry,
+    give: (chunk: Uint8Array, offset: number) => void | Promise<void>,
+  ): Promise<void> {
+    let crc = 0;
+    const take = this.#checkCrc
+      ? (chunk: Uint8Array, offset: number) => {
+        crc = crc32(chunk, crc);
+        return give(chunk, offset);
+      }
+      : give;
+    await this.#readEntry(entry, take);
+    if (this.#checkCrc && crc !== entry.crc) {
+      throw new Error(
+        `zip entry ${entry.name} fails its CRC-32: ${crc}, not ${entry.crc}`,
+      );
+    }
+  }
+
+  async #readEntry(
     entry: ZipEntry,
     take: (chunk: Uint8Array, offset: number) => void | Promise<void>,
   ): Promise<void> {

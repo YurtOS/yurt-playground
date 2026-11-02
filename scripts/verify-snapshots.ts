@@ -44,6 +44,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSnapshotPin, type SnapshotPin } from "../src/pins.ts";
 import {
+  formatRefusal,
   GO_SET,
   kindQuery,
   SNAPSHOT_KIND_NAMES,
@@ -134,10 +135,11 @@ export const OPTIONAL_KINDS: readonly SnapshotKind[] = ["go"];
  * {@link OPTIONAL_KINDS} kind that is not pinned is never a problem. */
 export function verifySnapshotPins(
   pins: Record<string, unknown>,
-  { complete = true, rootStore = false }: {
+  { complete = true, rootStore }: {
     complete?: boolean;
     /** Whether the pinned kernel's root is a YurtFS store: every pin must
-     * then be of a zip that carries it, and otherwise of one without. */
+     * then be of a zip that carries it, and otherwise of one without;
+     * undefined, either (as src/snapshot_pin.ts acceptedSnapshot). */
     rootStore?: boolean;
   } = {},
 ): string[] {
@@ -160,11 +162,15 @@ export function verifySnapshotPins(
       continue;
     }
     parsed[kind] = pin;
-    if (rootStore && pin.store === undefined) {
+    const format = formatRefusal(pin.format);
+    if (format !== undefined) {
+      problems.push(`${kind}: the pinned snapshot ${format}`);
+    }
+    if (rootStore === true && pin.store === undefined) {
       problems.push(
         `${kind}: the zip holds the kernel memory alone, and the kernel's root is a YurtFS store`,
       );
-    } else if (!rootStore && pin.store !== undefined) {
+    } else if (rootStore === false && pin.store !== undefined) {
       problems.push(
         `${kind}: the zip carries a YurtFS root store, and the kernel keeps its root in its memory`,
       );

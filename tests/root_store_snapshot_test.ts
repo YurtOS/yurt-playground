@@ -35,7 +35,6 @@ import {
   SnapshotMismatch,
   type SnapshotPin,
 } from "../src/sandbox_snapshot.ts";
-import { writeZip } from "../src/snapshot_zip.ts";
 
 const BUILT: BuiltFrom = {
   kernelSha256: "ab".repeat(32),
@@ -128,21 +127,6 @@ function fakeTarget(
   };
 }
 
-/** A snapshot zip of `manifest` as written and `entries` after it. */
-function rawZip(
-  manifest: Record<string, unknown>,
-  ...entries: { name: string; bytes: Uint8Array | Uint8Array[] }[]
-): Promise<Blob> {
-  return writeZip([
-    {
-      name: "snapshot.json",
-      bytes: new TextEncoder().encode(JSON.stringify(manifest)),
-      deflate: false,
-    },
-    ...entries.map((entry) => ({ ...entry, deflate: true })),
-  ]);
-}
-
 /** The entry names of a zip, from its central directory (as an unzip
  * tool lists them, not as this page's reader walks them). */
 async function zipNames(file: Blob): Promise<string[]> {
@@ -216,37 +200,32 @@ Deno.test("a snapshot is a zip of its manifest, the store files in export order,
   assertEquals(await zipNames(plain), ["snapshot.json", "kernel-memory"]);
 });
 
-Deno.test("a store that replays to another identity is refused before the memory is allocated", async () => {
-  const seal = sealed();
-  // 4 PiB: allocating it first would throw a RangeError, not the mismatch.
-  const file = await rawZip(
-    {
-      format: FORMAT,
-      builtFrom: BUILT,
-      memoryBytes: 2 ** 52,
-      store: {
-        identity: IDENTITY,
-        lower: LOWER,
-        files: seal.rootStore!.files.map(({ name }) => name),
-      },
-    },
-    ...seal.rootStore!.files.map(({ name, bytes }) => ({
-      name: `store/${name}`,
-      bytes,
-    })),
-  );
+Deno.test("a store that replays to another identity is refused, and only once the whole zip was read", async () => {
+  const file = await encodeSandboxSnapshot(sealed(), BUILT);
   const log: string[] = [];
+  let ended = false;
+  const target = fakeTarget(log, OTHER);
+  const complete = target.complete;
+  // The replay parses the store: never before the stream (and so its
+  // hash, when it is a download) has ended.
+  target.complete = () => {
+    log.push(ended ? "after the end" : "before the end");
+    return complete();
+  };
+  const body = file.stream().pipeThrough(
+    new TransformStream({ flush: () => void (ended = true) }),
+  );
   await assertRejects(
     () =>
-      decodeSandboxSnapshot(file.stream(), BUILT, undefined, undefined, {
-        target: fakeTarget(log, OTHER),
+      decodeSandboxSnapshot(body, BUILT, undefined, undefined, {
+        target,
         expect: IDENTITY,
         image,
       }),
     SnapshotMismatch,
     "the store is lineage 1111",
   );
-  assertEquals(log.at(-1), "complete");
+  assertEquals(log.slice(-2), ["after the end", "complete"]);
 });
 
 Deno.test("a snapshot whose manifest binds another store than the pin's is refused before anything is written", async () => {
@@ -716,6 +695,8 @@ Deno.test("a zip whose bytes are not the pinned ones is never restored, even wit
     );
     assert(!log.includes("restore"), log.join(", "));
     assertEquals(log.at(-1), "discard");
+    // Its store was written but never replayed: the hash failed first.
+    assert(!log.includes("complete"), log.join(", "));
   } finally {
     globalThis.fetch = realFetch;
   }

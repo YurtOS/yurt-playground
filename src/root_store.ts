@@ -44,6 +44,10 @@ export interface StoreRestoreTarget {
 }
 
 export interface RootStoreApi {
+  /** A fresh, empty store, replacing the one any earlier restore of this
+   * page left (the page keeps one: the live root of its last restore).
+   * Neither a later visit nor a boot that fell back after a restore leaves
+   * a store behind. */
   freshStore(): Promise<StoreRestoreTarget>;
   /** `host.sealSandbox` with the root store checkpointed under the
    * kernel's barrier: commit and quiesce, then export `data`, the active

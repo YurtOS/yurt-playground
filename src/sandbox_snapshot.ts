@@ -229,8 +229,8 @@ async function expectEntry(
 
 /** Write the zip's store into `target`, from the entry after the
  * manifest: the lower from the image first, then each exported file in
- * order, then the copy completed and the identity it replays to checked
- * against the manifest's. */
+ * order. Nothing parses them yet: the copy is completed and replayed only
+ * once the whole zip passed its hash ({@link decodeSandboxSnapshot}). */
 async function restoreStore(
   zip: ZipStreamReader,
   store: ManifestStore,
@@ -249,10 +249,6 @@ async function restoreStore(
   for (const name of store.files) {
     const entry = await expectEntry(zip, `${STORE_DIR}${name}`);
     await zip.read(entry, (chunk, offset) => target.write(name, offset, chunk));
-  }
-  const why = identityMismatch(await target.complete(), store.identity);
-  if (why !== undefined) {
-    throw new SnapshotMismatch(`restoring the snapshot's store: ${why}`);
   }
 }
 
@@ -339,8 +335,9 @@ export type StoreRestore = {
  * whether the kernel's root is a YurtFS store, and so which zips are
  * taken: false (the default), only one without a store; a
  * {@link StoreRestore}, only one with a store, written into its target
- * first -- a store that is not the pin's, in the manifest or as the
- * written copy replays, is refused before the memory is allocated; true,
+ * first -- a manifest that names another store than the pin's is refused
+ * before anything is written, and a written copy that replays to another
+ * is refused once the stream ended (so its hash was checked first); true,
  * only one with a store, read but not written (the release tools mount
  * nothing); "either", any. */
 export async function decodeSandboxSnapshot(
@@ -354,11 +351,14 @@ export async function decodeSandboxSnapshot(
    * live index's) refuses it before the ~250-545 MiB exist. */
   beforeAllocate?: () => Promise<void>,
   root: StoreRestore | boolean | "either" = false,
+  /** Check every entry's CRC-32 too: the release tools' full check, whose
+   * file no pinned hash covers yet. */
+  checkCrc = false,
 ): Promise<SandboxSealImage> {
   const store = typeof root === "object" ? root : undefined;
   // A reader, not `for await`: WebKit's ReadableStream is not async-iterable.
   const reader = body.getReader();
-  const zip = new ZipStreamReader(reader);
+  const zip = new ZipStreamReader(reader, { checkCrc });
   try {
     const manifest = await readManifest(zip);
     const why = manifestMismatch(
@@ -397,6 +397,15 @@ export async function decodeSandboxSnapshot(
       throw new Error("sandbox snapshot holds an entry after the memory");
     }
     await zip.finish();
+    if (store !== undefined) {
+      const why = identityMismatch(
+        await store.target.complete(),
+        manifest.store!.identity,
+      );
+      if (why !== undefined) {
+        throw new SnapshotMismatch(`restoring the snapshot's store: ${why}`);
+      }
+    }
     return { ...seal, kernelMemory: memory, processes: [] };
   } catch (error) {
     // Whatever is still downloading stops: the source is cancelled.
@@ -424,8 +433,9 @@ export const SNAPSHOT_PARTS_IN_FLIGHT = 3;
  * survives. Up to {@link SNAPSHOT_PARTS_IN_FLIGHT} parts download at once,
  * and the stream gives them in order. With `cache`, each part is kept
  * there under the zip's sha256, and taken from there on a later visit
- * once a whole visit passed the hash; a visit that ends otherwise drops
- * them, and once one passes, parts of any other snapshot are dropped. */
+ * once a whole visit passed the hash; a visit that stops drops the parts
+ * it fetched, one that fails the hash drops them all, and once one
+ * passes, parts of any other snapshot are dropped. */
 export async function fetchVerifiedSnapshot(
   path: string,
   pin: Pick<SnapshotPin, "sha256" | "size">,
@@ -459,8 +469,9 @@ export async function fetchVerifiedSnapshot(
   const prefix = `${PART_KEY_ORIGIN}${pin.sha256}/`;
   const keyOf = (at: number) => `${prefix}${at}`;
   /** Written once the whole zip passed its hash: only then are its cached
-   * parts taken. A visit that ends any other way -- a failed hash, a
-   * decode that stops, a closed tab -- leaves none trusted. */
+   * parts taken. A visit that ends any other way -- a decode that stops, a
+   * closed tab -- leaves the parts it fetched untrusted (and drops them
+   * when it can); a failed hash drops them all. */
   const verifiedKey = `${prefix}verified`;
   const trusted = await store?.match(verifiedKey).catch(() => undefined) !==
     undefined;
@@ -471,8 +482,13 @@ export async function fetchVerifiedSnapshot(
       if (drop(request.url)) await store.delete(request).catch(() => {});
     }
   };
-  /** The visit ended before the whole zip passed its hash. */
-  const forget = () => dropCached((url) => url.startsWith(prefix));
+  /** The parts this visit put: a visit that stops may have fetched a bad
+   * one, while those a verified visit left are as good as they were. */
+  const putHere = new Set<string>();
+  /** The visit ended before the whole zip passed its hash; `all`: it
+   * failed the hash, so none of its parts is to be trusted. */
+  const forget = (all: boolean) =>
+    dropCached((url) => all ? url.startsWith(prefix) : putHere.has(url));
   /** Part `at`: from the cache when a verified zip left it there, else
    * fetched (and kept, untrusted until the whole passes). */
   const part = async (at: number): Promise<Uint8Array<ArrayBuffer>> => {
@@ -488,6 +504,7 @@ export async function fetchVerifiedSnapshot(
       throw new Error(`fetch ${name} failed: ${response.status}`);
     }
     const bytes = new Uint8Array(await response.arrayBuffer());
+    putHere.add(keyOf(at));
     await store?.put(keyOf(at), new Response(bytes)).catch(() => {});
     return bytes;
   };
@@ -515,7 +532,7 @@ export async function fetchVerifiedSnapshot(
         const actual = [...hash.digest()]
           .map((b) => b.toString(16).padStart(2, "0")).join("");
         if (loaded !== pin.size || actual !== pin.sha256) {
-          await forget();
+          await forget(true);
           controller.error(
             new Error(
               `sandbox snapshot ${path} is ${loaded} bytes with sha256 ${actual}, ` +
@@ -535,7 +552,7 @@ export async function fetchVerifiedSnapshot(
         bytes = await next;
       } catch (error) {
         giveUp.abort(error);
-        await forget();
+        await forget(false);
         throw error;
       }
       askMore();
@@ -546,7 +563,7 @@ export async function fetchVerifiedSnapshot(
     },
     async cancel(reason) {
       giveUp.abort(reason);
-      await forget();
+      await forget(false);
     },
   });
 }

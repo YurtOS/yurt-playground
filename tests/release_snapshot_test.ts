@@ -12,7 +12,10 @@ import {
 } from "../scripts/release-snapshot.ts";
 import { sha256Hex } from "../src/integrity.ts";
 import { livePythonSet, NO_COMPLETE_SET } from "../src/python_install.ts";
-import { checkSnapshotFile } from "../scripts/lib/snapshot_file.ts";
+import {
+  checkSnapshotFile,
+  kernelRootIsStore,
+} from "../scripts/lib/snapshot_file.ts";
 import { encodeSandboxSnapshot } from "../src/sandbox_snapshot.ts";
 
 const part = (i: number, sha: string, size = 10) => ({
@@ -842,4 +845,74 @@ Deno.test("a snapshot release's notes name everything a restore checks", () => {
   assertEquals(notes.includes("Python set installed"), true);
   assertEquals(notes.includes("Zip format 4, the kernel memory alone"), true);
   assertEquals(notes.includes("transport only"), true);
+});
+
+Deno.test("the store rule asks the kernel checkout the page is bundled from (YURT_KERNEL_ROOT)", async () => {
+  const kernel = await Deno.makeTempDir();
+  const was = Deno.env.get("YURT_KERNEL_ROOT");
+  try {
+    const dir = `${kernel}/packages/kernel-host-interface-js`;
+    await Deno.mkdir(dir, { recursive: true });
+    const fn = "() => Promise.reject(new Error('fake'))";
+    await Deno.writeTextFile(
+      `${dir}/mod.ts`,
+      `export class KernelHostInterface {
+  static rootStore = { freshStore: ${fn}, sealSandbox: ${fn}, restore: ${fn} };
+}
+`,
+    );
+    Deno.env.set("YURT_KERNEL_ROOT", kernel);
+    assertEquals(await kernelRootIsStore(), true);
+  } finally {
+    if (was === undefined) Deno.env.delete("YURT_KERNEL_ROOT");
+    else Deno.env.set("YURT_KERNEL_ROOT", was);
+    await Deno.remove(kernel, { recursive: true });
+  }
+});
+
+Deno.test("a full check of a snapshot file refuses bytes its zip CRC-32 does not match", async () => {
+  const built = {
+    kernelSha256: "a".repeat(64),
+    kernelRev: "r",
+    sealVersion: 1,
+    bootSetup: 1,
+    imageSha256: "b".repeat(64),
+    pythonSealSha256: null,
+    pythonSet: null,
+  };
+  const seal = {
+    version: 1 as const,
+    kernelToken: 1n,
+    kernelMemory: new Uint8Array(1 << 16).fill(7),
+    processes: [],
+    hostWaits: [],
+    monotonicNs: 0n,
+    realtimeOffsetNs: 0n,
+  };
+  const file = new Uint8Array(
+    await (await encodeSandboxSnapshot(seal, built)).arrayBuffer(),
+  );
+  // One digit off in the stored manifest: still JSON, still this build,
+  // and still a zip every entry of which reads; only its CRC differs.
+  const text = new TextDecoder().decode(file.subarray(0, 2000));
+  const at = text.indexOf('"realtimeOffsetNs":{"$bigint":"0"}') +
+    '"realtimeOffsetNs":{"$bigint":"'.length;
+  const damaged = file.slice();
+  damaged[at] = "1".charCodeAt(0);
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeFile(`${dir}/s.zip`, damaged);
+    const check = await checkSnapshotFile(`${dir}/s.zip`, built, {
+      decode: true,
+    });
+    assertEquals(check.ok, false);
+    assertStringIncludes((check as { problem: string }).problem, "CRC-32");
+    await Deno.writeFile(`${dir}/s.zip`, file);
+    assertEquals(
+      (await checkSnapshotFile(`${dir}/s.zip`, built, { decode: true })).ok,
+      true,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

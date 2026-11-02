@@ -623,6 +623,36 @@ Deno.test("parts of a zip never verified whole are never taken from the cache", 
   assertEquals(await restore(file, left), sealed, "after a visit left");
 });
 
+Deno.test("a verified cache outlives a visit that stops for another reason than its bytes", async () => {
+  const sealed = image(1 << 10);
+  const file = new Uint8Array(
+    await (await encodeSandboxSnapshot(sealed, BUILT)).arrayBuffer(),
+  );
+  const name = "snapshot/tablet.seal.zip";
+  const path = `http://pg/${name}`;
+  const pin = await pinFor(file);
+  const served = site(name, file);
+  let partFetches = 0;
+  const counting: typeof fetch = (input, init) => {
+    if (!String(input).endsWith(".parts.json")) partFetches++;
+    return served(input, init);
+  };
+  const cache = memoryCaches();
+  const restore = (beforeAllocate?: () => Promise<void>) =>
+    fetchVerifiedSnapshot(path, pin, counting, undefined, cache).then((
+      body,
+    ) => decodeSandboxSnapshot(body, BUILT, undefined, beforeAllocate));
+  assertEquals(await restore(), sealed);
+  // The live index refuses its Python set: the download is cancelled.
+  await assertRejects(
+    () => restore(() => Promise.reject(new SnapshotMismatch("another set"))),
+    SnapshotMismatch,
+  );
+  partFetches = 0;
+  assertEquals(await restore(), sealed);
+  assertEquals(partFetches, 0, "the verified parts were kept");
+});
+
 Deno.test("a restore drops the gzip snapshot's part cache", async () => {
   const sealed = image(16);
   const file = new Uint8Array(

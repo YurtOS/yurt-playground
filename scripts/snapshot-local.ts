@@ -58,7 +58,7 @@ import { join } from "node:path";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { kernelRoot } from "./serve.ts";
-import { checkSnapshotFile } from "./lib/snapshot_file.ts";
+import { checkSnapshotFile, kernelRootIsStore } from "./lib/snapshot_file.ts";
 import {
   capture,
   captureSetProblem,
@@ -408,7 +408,7 @@ async function main(): Promise<void> {
     const check = await checkSnapshotFile(
       file,
       expected,
-      { decode: true },
+      { decode: true, rootStore: await kernelRootIsStore() },
     );
     if (!check.ok) {
       return die(`the capture is not this site's: ${check.problem}`);

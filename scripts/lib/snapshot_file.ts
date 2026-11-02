@@ -4,6 +4,7 @@
  * file to publish or pin?
  */
 import { createHash } from "node:crypto";
+import { pathToFileURL as toFileUrl } from "node:url";
 import { rootStoreOf } from "../../src/root_store.ts";
 import {
   type BuiltFrom,
@@ -63,6 +64,8 @@ export async function checkSnapshotFile(
           (header) => builtFrom = header,
           undefined,
           options.rootStore ?? "either",
+          // The bytes too: the sha256 a release records is the file's own.
+          true,
         );
       } else {
         builtFrom = await checkSandboxSnapshot(
@@ -111,12 +114,15 @@ async function streamSha256(
   }
 }
 
-/** Whether the kernel checkout's JS host (the pinned rev's) has a YurtFS
- * root store (src/root_store.ts): every snapshot of it must then carry
- * the store, and none of today's kernel may. */
+/** Whether the kernel checkout the page is bundled from (YURT_KERNEL_ROOT,
+ * scripts/serve.ts kernelImportMap) has a JS host with a YurtFS root
+ * store (src/root_store.ts): every snapshot of it must then carry the
+ * store, and none of a kernel without one may. */
 export async function kernelRootIsStore(): Promise<boolean> {
-  const { KernelHostInterface } = await import(
+  const { kernelImportMap, kernelRoot } = await import("../serve.ts");
+  const host = kernelImportMap(kernelRoot()).imports[
     "@yurt/kernel-host-interface-js"
-  );
+  ];
+  const { KernelHostInterface } = await import(toFileUrl(host).href);
   return rootStoreOf(KernelHostInterface) !== undefined;
 }
