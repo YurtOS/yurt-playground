@@ -114,6 +114,14 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
   ].join("; ");
 }
 
+/** The sources of directive `name` in `policy` (one CSP header value). */
+export function cspSources(policy: string, name: string): string[] {
+  const found = policy.split(";").map((part) => part.trim().split(/\s+/))
+    .find(([directive]) => directive === name);
+  if (found === undefined) throw new Error(`no ${name} in ${policy}`);
+  return found.slice(1);
+}
+
 /** The path prefix whose documents get the JupyterLab allowances. */
 export const JUPYTER_PREFIX = "/jupyter/";
 

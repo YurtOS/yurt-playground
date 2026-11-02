@@ -1,5 +1,9 @@
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
-import { contentSecurityPolicy, headersFile } from "../src/csp.ts";
+import {
+  contentSecurityPolicy,
+  cspSources as directive,
+  headersFile,
+} from "../src/csp.ts";
 import {
   BEACON_PAGES,
   BEACON_REPORT_ORIGIN,
@@ -11,14 +15,6 @@ import {
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
 const BEACON = "static.cloudflareinsights.com/beacon.min.js";
-
-/** A directive's sources in a CSP line. */
-function directive(policy: string, name: string): string[] {
-  const found = policy.split(";").map((part) => part.trim().split(/\s+/))
-    .find(([directiveName]) => directiveName === name);
-  if (found === undefined) throw new Error(`no ${name} in ${policy}`);
-  return found.slice(1);
-}
 
 /** A temp copy of the built pages the beacon touches, plus a JupyterLite
  * page with an inline bootstrap. */
@@ -51,6 +47,40 @@ async function readPages(dir: string): Promise<Record<string, string>> {
 
 Deno.test("the committed beacon token is empty or well formed", () => {
   if (WEB_ANALYTICS_TOKEN !== "") beaconSnippet(WEB_ANALYTICS_TOKEN);
+});
+
+Deno.test("a build carries the committed token only when it asks for analytics", async () => {
+  const { beaconToken } = await import("../scripts/build-static.ts");
+  assertEquals(beaconToken(false), "");
+  assertEquals(beaconToken(false, TOKEN), "");
+  assertEquals(beaconToken(true, TOKEN), TOKEN);
+  assertEquals(beaconToken(true), WEB_ANALYTICS_TOKEN);
+});
+
+Deno.test("the build writes the beacon and the CSP that admits it together, or neither", async () => {
+  const { writeSiteDocuments } = await import("../scripts/build-static.ts");
+  for (const token of ["", TOKEN]) {
+    const dir = await fakeDist();
+    try {
+      await writeSiteDocuments(dir, token);
+      const index = await Deno.readTextFile(`${dir}/index.html`);
+      const headers = await Deno.readTextFile(`${dir}/_headers`);
+      const sitePolicy = headers.split("/jupyter/*")[0]
+        .split("Content-Security-Policy: ")[1];
+      const on = token !== "";
+      assertEquals(index.includes(BEACON), on, `beacon, token "${token}"`);
+      assertEquals(
+        directive(sitePolicy, "script-src").includes(BEACON_SCRIPT_ORIGIN),
+        on,
+      );
+      assertEquals(
+        directive(sitePolicy, "connect-src").includes(BEACON_REPORT_ORIGIN),
+        on,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });
 
 Deno.test("with no token the policy and the pages are untouched", async () => {

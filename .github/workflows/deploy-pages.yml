@@ -130,11 +130,17 @@ jobs:
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
+          MODE: ${{ needs.target.outputs.mode }}
         # integrity.json names GITHUB_SHA as the commit the site was built
         # from; a preview dispatched from main builds another branch, so
         # name the commit actually checked out (the same one in production).
+        # Only production counts visitors (src/web_analytics.ts): a preview
+        # builds without the beacon.
         run: |
-          GITHUB_SHA=$(git rev-parse HEAD) deno task build-static
+          set -euo pipefail
+          analytics=()
+          if [ "$MODE" = production ]; then analytics=(--web-analytics); fi
+          GITHUB_SHA=$(git rev-parse HEAD) deno task build-static ${analytics[@]+"${analytics[@]}"}
           test -f dist/_headers
       # Wrangler itself, not an action: `cloudflare/pages-action` (which
       # wrapped it) was removed from GitHub on 2026-09-18 and every deploy

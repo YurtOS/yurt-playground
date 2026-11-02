@@ -2,10 +2,15 @@
  * Cloudflare Web Analytics (cookieless page views) for the deployed site.
  *
  * The site is static, so Pages Functions metrics see nothing; the beacon is
- * the only visitor count. It is inert while {@link WEB_ANALYTICS_TOKEN} is
- * empty: no snippet and no extra CSP sources. Only the static build
- * (scripts/build-static.ts) injects it, so local serving and CI e2e report
- * nothing. The beacon script answers with `cross-origin-resource-policy:
+ * the only visitor count. Only `scripts/build-static.ts --web-analytics`
+ * injects it, and only the production deploy (deploy-pages.yml) passes
+ * that, so previews, local serving, CI e2e and the desktop app report
+ * nothing. It is inert while {@link WEB_ANALYTICS_TOKEN} is empty: no
+ * snippet and no extra CSP sources.
+ *
+ * Do not also turn on the Pages project's automatic Web Analytics in the
+ * Cloudflare dashboard: it would count every view twice, and the snippet
+ * Cloudflare injects at the edge is not in the CSP. The beacon script answers with `cross-origin-resource-policy:
  * cross-origin` and its report endpoint answers CORS, so it loads under the
  * site's COEP `require-corp`.
  */
