@@ -23,6 +23,11 @@ import {
 import { loadPins, type Pins } from "../src/pins.ts";
 import { checkSnapshotFile } from "./lib/snapshot_file.ts";
 import {
+  BEACON_PAGES,
+  WEB_ANALYTICS_TOKEN,
+  withBeacon,
+} from "../src/web_analytics.ts";
+import {
   pinnedSnapshot,
   SNAPSHOT_KIND_NAMES,
   SNAPSHOT_KINDS,
@@ -233,7 +238,25 @@ export async function buildStaticSite(): Promise<void> {
     ) + "\n",
   );
   await writeLlmRuntime();
+  await injectBeacon();
   await Deno.writeTextFile(join(distDir, "_headers"), await siteHeaders());
+}
+
+/** Add the Cloudflare Web Analytics beacon (src/web_analytics.ts) to the
+ * built pages that carry it; nothing when `token` is empty. Only the
+ * deployed site counts visitors: the dev server never runs this. */
+export async function injectBeacon(
+  dir = distDir,
+  token = WEB_ANALYTICS_TOKEN,
+): Promise<void> {
+  if (token === "") return;
+  for (const page of BEACON_PAGES) {
+    const path = join(dir, page);
+    await Deno.writeTextFile(
+      path,
+      withBeacon(await Deno.readTextFile(path), token),
+    );
+  }
 }
 
 /** The local agent's runtime (#140), as the dev server answers it: the
@@ -285,14 +308,17 @@ async function scriptHashesUnder(dir: string): Promise<string[]> {
 
 /** The `_headers` file: isolation plus the CSP, with the inline scripts the
  * built pages actually carry allowed by hash. */
-export async function siteHeaders(): Promise<string> {
+export async function siteHeaders(
+  dir = distDir,
+  token = WEB_ANALYTICS_TOKEN,
+): Promise<string> {
   const { "Content-Security-Policy": _csp, ...isolation } = ISOLATION_HEADERS;
   const site = new Set<string>();
-  for await (const entry of Deno.readDir(distDir)) {
+  for await (const entry of Deno.readDir(dir)) {
     if (entry.isFile && entry.name.endsWith(".html")) {
       for (
         const hash of await inlineScriptHashes(
-          await Deno.readTextFile(join(distDir, entry.name)),
+          await Deno.readTextFile(join(dir, entry.name)),
         )
       ) {
         site.add(hash);
@@ -302,7 +328,8 @@ export async function siteHeaders(): Promise<string> {
   return headersFile(
     isolation,
     [...site].sort(),
-    await scriptHashesUnder(join(distDir, JUPYTER_DIR)),
+    await scriptHashesUnder(join(dir, JUPYTER_DIR)),
+    token !== "",
   );
 }
 

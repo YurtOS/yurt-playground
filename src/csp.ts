@@ -15,7 +15,9 @@
  * uploaded sandbox snapshots (`?snapshot=<id>`) come from the one
  * repository path YurtOS/yurt-playground ({@link SNAPSHOT_SOURCE}), once
  * the GitHub API's list of its snapshot refs ({@link SNAPSHOT_REFS_API})
- * says the repository published them (src/snapshot_source.ts). Scripts come from the origin
+ * says the repository published them (src/snapshot_source.ts). On the
+ * deployed site only, once its token is set: the Cloudflare Web Analytics
+ * beacon's script and report endpoint (src/web_analytics.ts). Scripts come from the origin
  * plus the inline bootstraps JupyterLite emits in its index pages, allowed
  * by hash; the WebAssembly kernel needs `'wasm-unsafe-eval'`. Styles allow
  * inline because JupyterLab sets them everywhere.
@@ -23,6 +25,7 @@
 
 import { PACKAGE_SOURCES } from "./packages.ts";
 import { SNAPSHOT_REFS_API, SNAPSHOT_SOURCE } from "./snapshot_source.ts";
+import { BEACON_REPORT_ORIGIN, BEACON_SCRIPT_ORIGIN } from "./web_analytics.ts";
 
 const INLINE_SCRIPT = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
 
@@ -75,6 +78,9 @@ export type CspOptions = {
   /** No model download and no uploaded snapshot: `connect-src` is the
    * origin and the packages repository's path only. */
   sameOriginOnly?: boolean;
+  /** The deployed site's Cloudflare Web Analytics beacon
+   * (src/web_analytics.ts): its script and its report endpoint. */
+  webAnalytics?: boolean;
 };
 
 export function contentSecurityPolicy(options: CspOptions = {}): string {
@@ -82,6 +88,7 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
     "'self'",
     "'wasm-unsafe-eval'",
     ...(options.allowEval ? ["'unsafe-eval'"] : []),
+    ...(options.webAnalytics ? [BEACON_SCRIPT_ORIGIN] : []),
     ...(options.scriptHashes ?? []),
   ].join(" ");
   return [
@@ -96,6 +103,7 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
       ...(options.sameOriginOnly ? [] : MODEL_ORIGINS),
       ...PACKAGE_SOURCES,
       ...(options.sameOriginOnly ? [] : [SNAPSHOT_SOURCE, SNAPSHOT_REFS_API]),
+      ...(options.webAnalytics ? [BEACON_REPORT_ORIGIN] : []),
     ].join(" "),
     "worker-src 'self'",
     "frame-src 'none'",
@@ -126,12 +134,14 @@ export function documentPolicy(
  * Cloudflare Pages `_headers`: a site-wide isolation + strict CSP rule, and a
  * JupyterLite rule that detaches the strict policy before adding its own
  * (Pages joins repeated headers with a comma, which would stack both
- * policies and keep the eval refusal).
+ * policies and keep the eval refusal). `webAnalytics` admits the beacon
+ * in the site rule only; the JupyterLite pages do not carry it.
  */
 export function headersFile(
   isolation: Record<string, string>,
   siteScriptHashes: string[],
   jupyterScriptHashes: string[],
+  webAnalytics = false,
 ): string {
   const lines = ["/*"];
   for (const [name, value] of Object.entries(isolation)) {
@@ -139,7 +149,7 @@ export function headersFile(
   }
   lines.push(
     `  Content-Security-Policy: ${
-      contentSecurityPolicy({ scriptHashes: siteScriptHashes })
+      contentSecurityPolicy({ scriptHashes: siteScriptHashes, webAnalytics })
     }`,
   );
   lines.push(`${JUPYTER_PREFIX}*`);
