@@ -731,7 +731,7 @@ Deno.test("every workflow restricts its token to reading the repository", async 
   }
 });
 
-Deno.test("the partner section is linked from the masthead and names no email", async () => {
+Deno.test("the partner section is linked from the masthead and gives an email to write to", async () => {
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
   );
@@ -745,22 +745,28 @@ Deno.test("the partner section is linked from the masthead and names no email", 
   assertEquals(start > html.indexOf("</details>"), true, "below the strips");
   const partner = html.slice(start, html.indexOf("</section>", start));
   assertEquals(partner.includes("Help bring Yurt to customers"), true);
-  const prose = partner.replace(/\s+/g, " ");
+  // deno fmt wraps long anchors as `<a href="…"\n>text</a>`.
+  const prose = partner.replace(/\s+/g, " ").replaceAll(" >", ">");
   assertEquals(
     prose.includes(
       "We're looking for a business partner to help identify customer opportunities, build relationships, and bring Yurt to market.",
     ),
     true,
   );
+  // A stranger can write to Ofer directly (GitHub has no private messages).
   assertEquals(
-    /Contact <a href="https:\/\/github\.com\/ofersa">Ofer<\/a> or <a href="https:\/\/github\.com\/smarcd">Sunny<\/a>\./
-      .test(prose),
+    prose.includes(
+      'Contact Ofer at <a href="mailto:ofersa@gmail.com">ofersa@gmail.com</a>, or <a href="https://github.com/smarcd">Sunny</a> on GitHub.',
+    ),
     true,
   );
-  for (const login of ["ofersa", "smarcd"]) {
-    assertEquals(partner.includes(`https://github.com/${login}"`), true, login);
-  }
-  assertEquals(/mailto:|@[a-z0-9-]+\.[a-z]/i.test(html), false, "an email");
+  // That is the page's only email address.
+  assertEquals(html.match(/mailto:/g)?.length, 1, "one mailto link");
+  assertEquals(
+    html.match(/[a-z0-9._%+-]+@[a-z0-9-]+\.[a-z]{2,}/gi),
+    ["ofersa@gmail.com", "ofersa@gmail.com"],
+    "the only email address",
+  );
   assertEquals(start < html.indexOf("<footer>"), true, "before the footer");
   const footer = html.slice(
     html.indexOf("<footer>"),
