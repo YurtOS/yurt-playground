@@ -1,7 +1,8 @@
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
 import { restoreSnapshot, snapshotOrBoot } from "../src/boot.ts";
 import { sha256Hex } from "../src/integrity.ts";
+import { writeZip } from "../src/snapshot_zip.ts";
 import { parsePins } from "../src/pins.ts";
 import {
   BOOT_SETUP,
@@ -56,20 +57,20 @@ const BUILT: BuiltFrom = {
   pythonSet: "cd/python@3.14.7-yurt_0:0123456789abcdef",
 };
 
-/** A gzipped snapshot file made of `header` as written, with `memory`
- * after it: for headers the encoder does not write. */
-async function rawSnapshot(
-  header: Record<string, unknown>,
+/** A snapshot zip made of `manifest` as written, with `memory` after it:
+ * for manifests the encoder does not write. */
+function rawSnapshot(
+  manifest: Record<string, unknown>,
   memory = new Uint8Array(0),
 ): Promise<Blob> {
-  const json = new TextEncoder().encode(JSON.stringify(header));
-  const length = new Uint8Array(4);
-  new DataView(length.buffer).setUint32(0, json.byteLength, true);
-  return await new Response(
-    new Blob([length, json, memory]).stream().pipeThrough(
-      new CompressionStream("gzip"),
-    ),
-  ).blob();
+  return writeZip([
+    {
+      name: "snapshot.json",
+      bytes: new TextEncoder().encode(JSON.stringify(manifest)),
+      deflate: false,
+    },
+    { name: "kernel-memory", bytes: memory, deflate: true },
+  ]);
 }
 
 Deno.test("a sandbox snapshot round-trips its seal image under the build it was made from", async () => {
@@ -108,8 +109,8 @@ Deno.test("a sandbox snapshot built from anything else is refused, by name", asy
 });
 
 Deno.test("a sandbox snapshot that does not say what it was built from is refused", async () => {
-  // The first format: the kernel's hash alone.
   const file = await rawSnapshot({
+    format: FORMAT,
     kernelSha256: BUILT.kernelSha256,
     memoryBytes: 16,
   }, new Uint8Array(16));
@@ -123,7 +124,7 @@ Deno.test("a sandbox snapshot that does not say what it was built from is refuse
 Deno.test("a mismatched sandbox snapshot is refused before its memory is allocated", async () => {
   // 4 PiB: allocating it first would throw a RangeError, not the mismatch.
   const file = await rawSnapshot({
-    format: 3,
+    format: FORMAT,
     builtFrom: { ...BUILT, kernelSha256: "00".repeat(32) },
     memoryBytes: 2 ** 52,
   });
@@ -135,22 +136,18 @@ Deno.test("a mismatched sandbox snapshot is refused before its memory is allocat
 });
 
 Deno.test("a truncated sandbox snapshot is refused", async () => {
-  const file = await encodeSandboxSnapshot(image(1 << 20), BUILT);
   const raw = new Uint8Array(
-    await new Response(
-      file.stream().pipeThrough(new DecompressionStream("gzip")),
-    ).arrayBuffer(),
+    await (await encodeSandboxSnapshot(image(1 << 20), BUILT)).arrayBuffer(),
   );
-  const cut = await new Response(
-    new Blob([raw.subarray(0, raw.byteLength - 10)]).stream().pipeThrough(
-      new CompressionStream("gzip"),
-    ),
-  ).blob();
-  await assertRejects(
-    () => decodeSandboxSnapshot(cut.stream(), BUILT),
-    Error,
-    "truncated",
-  );
+  // In its memory, and in its trailer after the memory.
+  for (const end of [raw.byteLength / 2, raw.byteLength - 10]) {
+    await assertRejects(
+      () =>
+        decodeSandboxSnapshot(new Blob([raw.subarray(0, end)]).stream(), BUILT),
+      Error,
+      "truncated",
+    );
+  }
 });
 
 Deno.test("a seal with a process in it is no sandbox snapshot", async () => {
@@ -226,29 +223,28 @@ function site(name: string, file: Uint8Array<ArrayBuffer>): typeof fetch {
   };
 }
 
-/** The pin for `file` split in 3-byte parts. */
+/** The pin for `file`: its one sha256 (the site serves it in 3-byte
+ * parts, transport only). */
 async function pinFor(file: Uint8Array): Promise<SnapshotPin> {
-  const parts: string[] = [];
-  for (let i = 0; i < file.byteLength; i += 3) {
-    parts.push(await sha256Hex(file.slice(i, i + 3)));
-  }
   return {
     releaseRepo: "YurtOS/yurt-playground",
-    format: 3,
+    format: FORMAT,
     release: "snapshot-test",
     sha256: await sha256Hex(file),
     size: file.byteLength,
-    parts,
     builtFrom: BUILT,
   };
 }
 
-Deno.test("the downloaded snapshot is checked part by part against the pin", async () => {
+/** How many 3-byte parts {@link site} serves `file` in. */
+const partsOf = (file: Uint8Array) => Math.ceil(file.byteLength / 3);
+
+Deno.test("the downloaded snapshot is hashed whole, part by part as it arrives, against the pin", async () => {
   const sealed = image(1 << 10);
   const file = new Uint8Array(
     await (await encodeSandboxSnapshot(sealed, BUILT)).arrayBuffer(),
   );
-  const name = "snapshot/sandbox.seal.gz";
+  const name = "snapshot/sandbox.seal.zip";
   const path = `http://pg/${name}`;
   const pin = await pinFor(file);
   const progress: number[] = [];
@@ -267,8 +263,9 @@ Deno.test("the downloaded snapshot is checked part by part against the pin", asy
     ),
     sealed,
   );
-  assertEquals(progress.length, pin.parts.length, "one report per part");
+  assertEquals(progress.length, partsOf(file), "one report per part");
   assertEquals(progress.at(-1), file.byteLength);
+  // One byte off in the zip's trailer: every entry reads; the hash fails.
   const damaged = file.slice();
   damaged[damaged.byteLength - 20] ^= 0xff;
   await assertRejects(
@@ -278,7 +275,7 @@ Deno.test("the downloaded snapshot is checked part by part against the pin", asy
         BUILT,
       ),
     Error,
-    "sha256 mismatch",
+    `not the pinned ${file.byteLength} bytes with ${pin.sha256}`,
   );
   await assertRejects(
     () => fetchVerifiedSnapshot(path, pin, site(name, file.slice(0, -3))),
@@ -303,11 +300,10 @@ Deno.test("only a snapshot pinned for the site's own kernel, image and Python se
   };
   const snapshot: SnapshotPin = {
     releaseRepo: "r",
-    format: 3,
+    format: FORMAT,
     release: "t",
     sha256: "00".repeat(32),
     size: 1,
-    parts: ["00".repeat(32)],
     builtFrom: BUILT,
   };
   assertEquals(pinnedSnapshot({ ...pins, snapshot }), snapshot);
@@ -333,17 +329,16 @@ Deno.test("a malformed snapshot entry never breaks the pins, and is refused wher
   const pins = parsePins({ ...raw, snapshot: undefined });
   const snapshot = {
     releaseRepo: "YurtOS/yurt-playground",
-    format: 3,
+    format: FORMAT,
     release: "snapshot-x",
     sha256: "aa".repeat(32),
     size: 10,
-    parts: ["bb".repeat(32)],
     builtFrom: { ...snapshotIdentity(pins), pythonSet: null },
   };
   assertEquals(pinnedSnapshot({ ...pins, snapshot }), snapshot);
   for (
     const bad of [
-      { ...snapshot, parts: [] },
+      { ...snapshot, store: { identity: {} } },
       { ...snapshot, sha256: "AA".repeat(32) },
       { ...snapshot, size: 0 },
       { ...snapshot, builtFrom: { kernelSha256: BUILT.kernelSha256 } },
@@ -387,41 +382,30 @@ Deno.test("a snapshot of another Python set than the live index offers is not re
 
 Deno.test("a snapshot header of another format is refused", async () => {
   const file = await rawSnapshot({
-    format: 4,
+    format: 5,
     builtFrom: BUILT,
     memoryBytes: 16,
   }, new Uint8Array(16));
   await assertRejects(
     () => decodeSandboxSnapshot(file.stream(), BUILT),
     SnapshotMismatch,
-    "format 4, not 3",
+    "format 5, not 4",
   );
   await assertRejects(
     () => checkSandboxSnapshot(file.stream(), BUILT),
     SnapshotMismatch,
-    "format 4",
+    "format 5",
   );
 });
 
 Deno.test("?snapshot=1 boots the image when the snapshot cannot be had, whatever the reason", async () => {
-  const name = "snapshot/sandbox.seal.gz";
+  const name = "snapshot/sandbox.seal.zip";
   const path = `http://pg/${name}`;
   const good = new Uint8Array(
     await (await encodeSandboxSnapshot(image(1 << 10), BUILT)).arrayBuffer(),
   );
-  const raw = new Uint8Array(
-    await new Response(
-      new Blob([good]).stream().pipeThrough(new DecompressionStream("gzip")),
-    ).arrayBuffer(),
-  );
-  const truncated = new Uint8Array(
-    await new Response(
-      new Blob([raw.subarray(0, raw.byteLength - 10)]).stream().pipeThrough(
-        new CompressionStream("gzip"),
-      ),
-    ).arrayBuffer(),
-  );
-  const notGzip = new TextEncoder().encode("<html>not a snapshot</html>");
+  const truncated = good.slice(0, good.byteLength - 10);
+  const notZip = new TextEncoder().encode("<html>not a snapshot</html>");
   const damaged = good.slice();
   damaged[damaged.byteLength - 20] ^= 0xff;
   const pin = await pinFor(good);
@@ -450,11 +434,11 @@ Deno.test("?snapshot=1 boots the image when the snapshot cannot be had, whatever
     ],
     ["a different size", restoreFrom(site(name, good.slice(0, -3)), pin)],
     [
-      "a part that is not the pinned one",
+      "bytes that are not the pinned ones",
       restoreFrom(site(name, damaged), pin),
     ],
     ["truncated", restoreFrom(site(name, truncated), await pinFor(truncated))],
-    ["not gzip", restoreFrom(site(name, notGzip), await pinFor(notGzip))],
+    ["not a zip", restoreFrom(site(name, notZip), await pinFor(notZip))],
     ["another build", restoreFrom(site(name, other), await pinFor(other))],
   ];
   const warn = console.warn;
@@ -501,13 +485,12 @@ Deno.test("a pin of another snapshot format is not used", () => {
     format: 2,
     sha256: "00".repeat(32),
     size: 1,
-    parts: ["00".repeat(32)],
     builtFrom: BUILT,
   };
   assertThrows(
     () => pinnedSnapshot({ ...pins, snapshot }),
     SnapshotMismatch,
-    "format 2, not 3",
+    "format 2, not 4",
   );
 });
 
@@ -523,7 +506,7 @@ Deno.test("a snapshot of another Python set is refused, with the download beside
     await (await encodeSandboxSnapshot(image(1 << 10), built)).arrayBuffer(),
   );
   const pin = { ...await pinFor(file), builtFrom: built };
-  const name = "snapshot/sandbox.seal.gz";
+  const name = "snapshot/sandbox.seal.zip";
   const served = site(name, file);
   const pinsText = JSON.stringify({ ...raw, snapshot: pin });
   const fetched: string[] = [];
@@ -597,12 +580,12 @@ function memoryCaches(): CacheStorage & { store: Map<string, Uint8Array> } {
   } as unknown as CacheStorage & { store: Map<string, Uint8Array> };
 }
 
-Deno.test("a repeat restore takes the checked parts from the cache, and drops other snapshots' parts", async () => {
+Deno.test("a repeat restore takes the parts from the cache, drops them when the zip fails its hash, and drops other snapshots' parts", async () => {
   const sealed = image(1 << 10);
   const file = new Uint8Array(
     await (await encodeSandboxSnapshot(sealed, BUILT)).arrayBuffer(),
   );
-  const name = "snapshot/tablet.seal.gz";
+  const name = "snapshot/tablet.seal.zip";
   const path = `http://pg/${name}`;
   const pin = await pinFor(file);
   const served = site(name, file);
@@ -612,30 +595,29 @@ Deno.test("a repeat restore takes the checked parts from the cache, and drops ot
     return served(input, init);
   };
   const cache = memoryCaches();
-  const foreign = `https://yurt-snapshot-parts.invalid/${"0".repeat(64)}`;
+  const origin = "https://yurt-snapshot-parts.invalid/";
+  const foreign = `${origin}${"0".repeat(64)}/0`;
   cache.store.set(foreign, new Uint8Array([1]));
   const restore = () =>
     fetchVerifiedSnapshot(path, pin, counting, undefined, cache).then((
       body,
     ) => decodeSandboxSnapshot(body, BUILT));
   assertEquals(await restore(), sealed);
-  // Each part with a sha256 not yet held (this test's 3-byte parts
-  // repeat; a real snapshot's do not).
-  assert(
-    partFetches >= new Set(pin.parts).size && partFetches <= pin.parts.length,
-    `the first visit downloads: ${partFetches}`,
-  );
+  assertEquals(partFetches, partsOf(file), "the first visit downloads");
   assertEquals(cache.store.has(foreign), false, "another snapshot's part");
-  assertEquals(cache.store.size, new Set(pin.parts).size);
+  assertEquals(cache.store.size, partsOf(file));
   partFetches = 0;
   assertEquals(await restore(), sealed);
   assertEquals(partFetches, 0, "a repeat visit downloads no part");
-  // A damaged cached part is fetched again, never used.
-  const first = `https://yurt-snapshot-parts.invalid/${pin.parts[0]}`;
-  cache.store.set(first, new Uint8Array([9, 9, 9]));
+  // A damaged cached part fails the whole zip's hash: that restore is
+  // refused (the page boots instead), and its parts are fetched afresh.
+  const last = `${origin}${pin.sha256}/${partsOf(file) - 1}`;
+  cache.store.set(last, new Uint8Array([9]));
+  await assertRejects(() => restore(), Error, "not the pinned");
+  assertEquals(cache.store.size, 0, "this zip's parts are dropped");
   partFetches = 0;
   assertEquals(await restore(), sealed);
-  assertEquals(partFetches > 0, true);
+  assertEquals(partFetches, partsOf(file));
 });
 
 Deno.test("each device's snapshot is its own pins.json entry", async () => {
@@ -654,7 +636,6 @@ Deno.test("each device's snapshot is its own pins.json entry", async () => {
     format: FORMAT,
     sha256: "a".repeat(64),
     size: 1,
-    parts: ["b".repeat(64)],
     builtFrom: { ...snapshotIdentity(pins), pythonSet },
     memoryBytes: 4096,
     contents: {

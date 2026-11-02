@@ -24,7 +24,6 @@ Deno.test("the snapshot table names each kind, and says when one is not pinned",
       format: 3,
       sha256: "a".repeat(64),
       size: 31_192_802,
-      parts: ["b".repeat(64), "c".repeat(64)],
       builtFrom: {
         kernelSha256: "d".repeat(64),
         kernelRev: "r",

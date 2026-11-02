@@ -97,10 +97,11 @@ install_snapshot() (
   key=$1 asset=$2
   repo=$(jq -er ".$key.releaseRepo | strings" "$pins") || exit 1
   tag=$(jq -er ".$key.release | strings" "$pins") || exit 1
-  count=$(jq -er ".$key.parts | arrays | length" "$pins") || exit 1
   expected=$(jq -er ".$key.sha256 | strings" "$pins") || exit 1
-  echo "fetching $asset ($count parts) from $repo $tag" >&2
+  echo "fetching $asset from $repo $tag" >&2
   download "$tag" "$repo" "$asset.[0-9]*" "$cache/$key" || exit 1
+  # The parts are transport only: joined in order, and the whole checked.
+  count=$(find "$cache/$key" -name "$asset.[0-9]*" | wc -l | tr -d ' ')
   : > "$cache/$asset" || exit 1
   for ((i = 0; i < count; i++)); do
     cat "$cache/$key/$asset.$i" >> "$cache/$asset" || exit 1
@@ -115,7 +116,7 @@ install_snapshot() (
   echo "installed $tag/$asset as public/snapshot/$asset" >&2
 )
 
-for kind in snapshot:sandbox.seal.gz tabletSnapshot:tablet.seal.gz phoneSnapshot:phone.seal.gz goSnapshot:go.seal.gz; do
+for kind in snapshot:sandbox.seal.zip tabletSnapshot:tablet.seal.zip phoneSnapshot:phone.seal.zip goSnapshot:go.seal.zip; do
   key=${kind%%:*} asset=${kind#*:}
   if [[ "$(jq -r ".$key // empty" "$pins")" == "" ]]; then
     # One from earlier pins would be checked and left out by the static

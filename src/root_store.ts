@@ -2,16 +2,15 @@
  * A sealed snapshot of a sandbox whose root filesystem is a YurtFS store
  * (yurtos-kernel#4089) rather than the kernel's ramfs: the store's files
  * then hold the sandbox's files, the kernel's memory only a cache of
- * them, so a snapshot carries both (format 4, src/sandbox_snapshot.ts)
- * and a restore puts the store back before the memory.
+ * them, so the snapshot zip carries both (src/sandbox_snapshot.ts) and a
+ * restore puts the store back before the memory.
  *
  * {@link RootStoreApi} is what the page needs from the kernel's JS host
  * for that. It does not exist yet -- it is YurtFS's Task 5.4b (the
  * checkpoint binding) and Slice 7 (OPFS) -- so it is written here as the
  * page expects it, and {@link rootStoreOf} finds it on
  * `KernelHostInterface.rootStore` once a kernel has it. Until then it is
- * undefined: every snapshot is the kernel memory alone (format 3), as
- * before.
+ * undefined: a snapshot zip is the kernel memory alone.
  */
 import type {
   KernelHostInterface,

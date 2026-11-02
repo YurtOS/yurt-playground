@@ -262,11 +262,10 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
     pythonSeal: { sha256: built.pythonSealSha256 },
     snapshot: {
       releaseRepo: "YurtOS/yurt-playground",
-      format: 3,
+      format: 4,
       release: "snapshot-t",
       sha256: await sha256Hex(file),
       size: file.byteLength,
-      parts: [await sha256Hex(file)],
       builtFrom: built,
     },
   };
@@ -275,7 +274,7 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
   const warn = console.warn;
   console.warn = (...args: unknown[]) => warned.push(args);
   try {
-    const path = `${dir}/sandbox.seal.gz`;
+    const path = `${dir}/sandbox.seal.zip`;
     await Deno.writeFile(path, file);
     assertEquals(await snapshotMatchesPins(path, pins), true);
     assertEquals(warned.length, 0);

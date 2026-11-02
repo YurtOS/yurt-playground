@@ -52,6 +52,7 @@ import {
   TABLET_PYTHON_SET,
 } from "../src/snapshot_pin.ts";
 import { PYTHON_SET } from "../src/python_install.ts";
+import { rootStoreOf } from "../src/root_store.ts";
 
 /** What each kind holds and what a restore of it can do. */
 export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
@@ -134,7 +135,12 @@ export const OPTIONAL_KINDS: readonly SnapshotKind[] = ["go"];
  * {@link OPTIONAL_KINDS} kind that is not pinned is never a problem. */
 export function verifySnapshotPins(
   pins: Record<string, unknown>,
-  { complete = true }: { complete?: boolean } = {},
+  { complete = true, rootStore = false }: {
+    complete?: boolean;
+    /** Whether the pinned kernel's root is a YurtFS store: every pin must
+     * then be of a zip that carries it. */
+    rootStore?: boolean;
+  } = {},
 ): string[] {
   const problems: string[] = [];
   const parsed: Partial<Record<SnapshotKind, SnapshotPin>> = {};
@@ -155,6 +161,11 @@ export function verifySnapshotPins(
       continue;
     }
     parsed[kind] = pin;
+    if (rootStore && pin.store === undefined) {
+      problems.push(
+        `${kind}: the zip holds the kernel memory alone, and the kernel's root is a YurtFS store`,
+      );
+    }
     const expected = SNAPSHOT_EXPECTED[kind];
     if (pin.contents === undefined) {
       problems.push(`${kind}: the pin records no contents`);
@@ -450,7 +461,12 @@ if (import.meta.main) {
   const pins = JSON.parse(
     await Deno.readTextFile(join(root, "artifacts/pins.json")),
   );
-  const problems = verifySnapshotPins(pins);
+  const { KernelHostInterface } = await import(
+    "@yurt/kernel-host-interface-js"
+  );
+  const problems = verifySnapshotPins(pins, {
+    rootStore: rootStoreOf(KernelHostInterface) !== undefined,
+  });
   const pinOf = (kind: SnapshotKind): SnapshotPin | undefined => {
     try {
       return parseSnapshotPin(pins[SNAPSHOT_KINDS[kind].pinKey]);
@@ -481,15 +497,6 @@ if (import.meta.main) {
       }
       if (JSON.stringify(facts.contents) !== JSON.stringify(pin.contents)) {
         problems.push(`${kind}: the file's contents are not the pin's`);
-      }
-      if (facts.format !== pin.format) {
-        problems.push(
-          `${kind}: the file is format ${facts.format}, the pin says ${pin.format}`,
-        );
-      }
-      // The store's files and identity, sizes and sha256s included.
-      if (JSON.stringify(facts.store) !== JSON.stringify(pin.store)) {
-        problems.push(`${kind}: the file's store is not the pin's`);
       }
     }
   }

@@ -17,10 +17,12 @@ export type SnapshotFileCheck =
 
 /**
  * Whether the file at `path` is a snapshot built from `expected` (every
- * field it has): its header, and -- with `sha256` -- its bytes, or -- with
- * `decode` -- that it inflates to the whole memory its header names. Any
- * failure of the file, a missing one or one that does not inflate
- * included, is a `problem`, never a throw.
+ * field it has): its manifest, and -- with `sha256` -- its bytes, or --
+ * with `decode` -- that it inflates to the whole memory its manifest
+ * names. With `rootStore`, it must also carry a YurtFS root store (true)
+ * or not (false): a zip without one is no snapshot of a kernel whose root
+ * is a store. Any failure of the file, a missing one or one that does not
+ * inflate included, is a `problem`, never a throw.
  */
 export async function checkSnapshotFile(
   path: string,
@@ -28,8 +30,11 @@ export async function checkSnapshotFile(
   // One or the other: the hash and a full decode on one read would queue
   // most of the file between them, and inflate a file of the wrong bytes.
   options:
-    | { sha256?: string; decode?: never }
-    | { decode?: boolean; sha256?: never } = {},
+    & ({ sha256?: string; decode?: never } | {
+      decode?: boolean;
+      sha256?: never;
+    })
+    & { rootStore?: boolean } = {},
 ): Promise<SnapshotFileCheck> {
   if (options.sha256 !== undefined && options.decode === true) {
     throw new Error("checkSnapshotFile: a sha256 check or a decode, not both");
@@ -55,9 +60,23 @@ export async function checkSnapshotFile(
           body,
           expected,
           (header) => builtFrom = header,
+          undefined,
+          "check",
         );
+        // The store rule on the manifest alone (a second, short read).
+        if (options.rootStore !== undefined) {
+          await checkSandboxSnapshot(
+            (await Deno.open(path)).readable,
+            expected,
+            options.rootStore,
+          );
+        }
       } else {
-        builtFrom = await checkSandboxSnapshot(body, expected);
+        builtFrom = await checkSandboxSnapshot(
+          body,
+          expected,
+          options.rootStore,
+        );
       }
     } catch (error) {
       checked = error;

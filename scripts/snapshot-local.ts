@@ -430,7 +430,6 @@ async function main(): Promise<void> {
       release: ref,
       sha256,
       size: bytes.byteLength,
-      parts: parts.map((part) => part.sha256),
       builtFrom: check.builtFrom,
       ...await snapshotHeaderFacts((await Deno.open(file)).readable),
     };

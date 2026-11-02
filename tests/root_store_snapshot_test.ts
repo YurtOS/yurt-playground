@@ -1,5 +1,5 @@
-// A snapshot of a sandbox whose root is a YurtFS store (format 4,
-// src/root_store.ts), against a fake of the kernel host's root store API:
+// A snapshot zip of a sandbox whose root is a YurtFS store
+// (src/root_store.ts), against a fake of the kernel host's root store API:
 // the kernel side does not exist yet (yurtos-kernel#4089 Task 5.4b, Slice 7).
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
@@ -34,8 +34,8 @@ import {
   snapshotIdentity,
   SnapshotMismatch,
   type SnapshotPin,
-  STORE_FORMAT,
 } from "../src/sandbox_snapshot.ts";
+import { writeZip } from "../src/snapshot_zip.ts";
 
 const BUILT: BuiltFrom = {
   kernelSha256: "ab".repeat(32),
@@ -55,8 +55,13 @@ const IDENTITY: StoreIdentity = {
 const OTHER: StoreIdentity = { ...IDENTITY, sequence: "43" };
 const LOWER = { bytes: 10_240, sha256: "33".repeat(32) };
 
+/** Not compressible much (a deflated entry keeps its size order). */
 function bytes(length: number, seed: number): Uint8Array {
-  return Uint8Array.from({ length }, (_, i) => (i * 31 + seed) % 251);
+  let x = seed * 2654435761 >>> 0;
+  return Uint8Array.from({ length }, () => {
+    x = (x * 1664525 + 1013904223) >>> 0;
+    return x >>> 24;
+  });
 }
 
 function memory(length: number): SandboxSealImage {
@@ -121,26 +126,40 @@ function fakeTarget(
   };
 }
 
-/** A gzipped snapshot file of `header` as written and `body` after it. */
-async function rawSnapshot(
-  header: Record<string, unknown>,
-  ...body: Uint8Array[]
+/** A snapshot zip of `manifest` as written and `entries` after it. */
+function rawZip(
+  manifest: Record<string, unknown>,
+  ...entries: { name: string; bytes: Uint8Array }[]
 ): Promise<Blob> {
-  const json = new TextEncoder().encode(JSON.stringify(header));
-  const length = new Uint8Array(4);
-  new DataView(length.buffer).setUint32(0, json.byteLength, true);
-  return await new Response(
-    new Blob([length, json, ...body as Uint8Array<ArrayBuffer>[]]).stream()
-      .pipeThrough(new CompressionStream("gzip")),
-  ).blob();
+  return writeZip([
+    {
+      name: "snapshot.json",
+      bytes: new TextEncoder().encode(JSON.stringify(manifest)),
+      deflate: false,
+    },
+    ...entries.map((entry) => ({ ...entry, deflate: true })),
+  ]);
 }
 
-async function inflate(file: Blob): Promise<Uint8Array<ArrayBuffer>> {
-  return new Uint8Array(
-    await new Response(
-      file.stream().pipeThrough(new DecompressionStream("gzip")),
-    ).arrayBuffer(),
-  );
+/** The entry names of a zip, from its central directory (as an unzip
+ * tool lists them, not as this page's reader walks them). */
+async function zipNames(file: Blob): Promise<string[]> {
+  const raw = new Uint8Array(await file.arrayBuffer());
+  const view = new DataView(raw.buffer);
+  const end = raw.byteLength - 22;
+  assertEquals(view.getUint32(end, true), 0x06054b50, "end of central dir");
+  const names: string[] = [];
+  let at = view.getUint32(end + 16, true);
+  for (let i = 0; i < view.getUint16(end + 10, true); i++) {
+    assertEquals(view.getUint32(at, true), 0x02014b50);
+    const length = view.getUint16(at + 28, true);
+    names.push(
+      new TextDecoder().decode(raw.subarray(at + 46, at + 46 + length)),
+    );
+    at += 46 + length + view.getUint16(at + 30, true) +
+      view.getUint16(at + 32, true);
+  }
+  return names;
 }
 
 const image = () => Promise.resolve(new Uint8Array(100));
@@ -171,44 +190,42 @@ Deno.test("a store snapshot restores its store into a fresh one in export order,
   assertEquals(restored, memoryOnly);
 });
 
-Deno.test("a store snapshot's header names its format, each store file's size and sha256, and the store's identity", async () => {
-  const seal = sealed();
-  const facts = await snapshotHeaderFacts(
-    (await encodeSandboxSnapshot(seal, BUILT)).stream(),
-  );
-  assertEquals(facts.format, STORE_FORMAT);
-  assertEquals(facts.store, {
-    identity: IDENTITY,
-    files: await Promise.all(
-      seal.rootStore!.files.map(async ({ name, bytes }) => ({
-        name,
-        bytes: bytes.byteLength,
-        sha256: await sha256Hex(bytes),
-      })),
-    ),
-    lower: LOWER,
-  });
-  // A memory-only seal stays format 3, with no store.
-  const plain = await snapshotHeaderFacts(
-    (await encodeSandboxSnapshot(memory(16), BUILT)).stream(),
-  );
-  assertEquals([plain.format, plain.store], [FORMAT, undefined]);
+Deno.test("a snapshot is a zip of its manifest, the store files in export order, then the memory", async () => {
+  const file = await encodeSandboxSnapshot(sealed(), BUILT);
+  const facts = await snapshotHeaderFacts(file.stream());
+  assertEquals([facts.format, facts.store], [FORMAT, { identity: IDENTITY }]);
+  assertEquals(await zipNames(file), [
+    "snapshot.json",
+    "store/data",
+    "store/journal-b",
+    "store/meta",
+    "kernel-memory",
+  ]);
+  // A memory-only seal is the same format, without the store.
+  const plain = await encodeSandboxSnapshot(memory(16), BUILT);
+  const plainFacts = await snapshotHeaderFacts(plain.stream());
+  assertEquals([plainFacts.format, plainFacts.store], [FORMAT, undefined]);
+  assertEquals(await zipNames(plain), ["snapshot.json", "kernel-memory"]);
 });
 
 Deno.test("a store that replays to another identity is refused before the memory is allocated", async () => {
   const seal = sealed();
-  const facts = await snapshotHeaderFacts(
-    (await encodeSandboxSnapshot(seal, BUILT)).stream(),
-  );
   // 4 PiB: allocating it first would throw a RangeError, not the mismatch.
-  const file = await rawSnapshot(
+  const file = await rawZip(
     {
-      format: STORE_FORMAT,
+      format: FORMAT,
       builtFrom: BUILT,
       memoryBytes: 2 ** 52,
-      store: facts.store,
+      store: {
+        identity: IDENTITY,
+        lower: LOWER,
+        files: seal.rootStore!.files.map(({ name }) => name),
+      },
     },
-    ...seal.rootStore!.files.map(({ bytes }) => bytes),
+    ...seal.rootStore!.files.map(({ name, bytes }) => ({
+      name: `store/${name}`,
+      bytes,
+    })),
   );
   const log: string[] = [];
   await assertRejects(
@@ -224,7 +241,7 @@ Deno.test("a store that replays to another identity is refused before the memory
   assertEquals(log.at(-1), "complete");
 });
 
-Deno.test("a snapshot whose header binds another store than the pin's is refused before anything is written", async () => {
+Deno.test("a snapshot whose manifest binds another store than the pin's is refused before anything is written", async () => {
   const file = await encodeSandboxSnapshot(sealed(), BUILT);
   const log: string[] = [];
   await assertRejects(
@@ -235,7 +252,7 @@ Deno.test("a snapshot whose header binds another store than the pin's is refused
         image,
       }),
     SnapshotMismatch,
-    "header says the store is",
+    "manifest says the store is",
   );
   assertEquals(log, []);
 });
@@ -260,13 +277,11 @@ Deno.test("a store made over another lower than the image materializes is refuse
 });
 
 Deno.test("a store snapshot cut inside a store file is refused as truncated", async () => {
-  const raw = await inflate(await encodeSandboxSnapshot(sealed(0), BUILT));
-  // Into the data file: the journal, meta and memory never come.
-  const cut = await new Response(
-    new Blob([raw.subarray(0, raw.byteLength - 4_000)]).stream().pipeThrough(
-      new CompressionStream("gzip"),
-    ),
-  ).blob();
+  const raw = new Uint8Array(
+    await (await encodeSandboxSnapshot(sealed(0), BUILT)).arrayBuffer(),
+  );
+  // Into the data entry: the journal, meta and memory never come.
+  const cut = new Blob([raw.subarray(0, 20_000)]);
   const log: string[] = [];
   await assertRejects(
     () =>
@@ -276,12 +291,12 @@ Deno.test("a store snapshot cut inside a store file is refused as truncated", as
         image,
       }),
     Error,
-    "of the store's data",
+    "truncated (",
   );
-  assert(!log.includes("complete"));
+  assertEquals(log, ["lower from 100 bytes", "data"]);
 });
 
-Deno.test("each kernel restores only its own snapshot format, and says why it refuses the other", async () => {
+Deno.test("each kernel restores only its own kind of zip, and says why it refuses the other", async () => {
   const memoryOnly = await encodeSandboxSnapshot(memory(16), BUILT);
   await assertRejects(
     () =>
@@ -291,14 +306,23 @@ Deno.test("each kernel restores only its own snapshot format, and says why it re
         image,
       }),
     SnapshotMismatch,
-    "format 3, not 4: the kernel's memory alone, and this kernel's root filesystem is a YurtFS store",
+    "holds the kernel memory alone, and this kernel's root filesystem is a YurtFS store",
   );
   const withStore = await encodeSandboxSnapshot(sealed(), BUILT);
   await assertRejects(
     () => decodeSandboxSnapshot(withStore.stream(), BUILT),
     SnapshotMismatch,
-    "format 4, not 3: it carries a YurtFS root store",
+    "carries a YurtFS root store, and this kernel keeps its root filesystem in its memory",
   );
+  // The release tools' full check takes either, writing no store.
+  const checked = await decodeSandboxSnapshot(
+    withStore.stream(),
+    BUILT,
+    undefined,
+    undefined,
+    "check",
+  );
+  assertEquals(checked.kernelMemory, sealed().kernelMemory);
 });
 
 /** Pins naming BUILT's kernel, image and Python seal, with `snapshot`. */
@@ -326,60 +350,62 @@ async function storePin(): Promise<SnapshotPin> {
   return {
     releaseRepo: "r",
     release: "t",
-    format: STORE_FORMAT,
+    format: facts.format,
     sha256: "00".repeat(32),
     size: 1,
-    parts: ["00".repeat(32)],
     builtFrom: BUILT,
     store: facts.store,
   };
 }
 
-Deno.test("a pin is taken only by the kernel its format is for; the release tools take either", async () => {
+Deno.test("a pin is taken only by the kernel its zip is for; the release tools take either", async () => {
   const withStore = await storePin();
-  const { store: _store, ...memoryOnly } = { ...withStore, format: FORMAT };
+  const { store: _store, ...memoryOnly } = withStore;
   for (const entry of [withStore, memoryOnly]) {
     const pins = pinsWith(entry);
-    assertEquals(pinnedSnapshot(pins).format, entry.format, "either");
-    const own = entry.format === STORE_FORMAT;
-    assertEquals(pinnedSnapshot(pins, "desktop", own).format, entry.format);
+    const own = entry === withStore;
+    const want = (entry as SnapshotPin).store;
+    assertEquals(pinnedSnapshot(pins).store, want, "either");
+    assertEquals(pinnedSnapshot(pins, "desktop", own).store, want);
     assertThrows(
       () => pinnedSnapshot(pins, "desktop", !own),
       SnapshotMismatch,
-      own ? "format 4, not 3" : "format 3, not 4: the kernel's memory alone",
+      own ? "carries a YurtFS root store" : "holds the kernel memory alone",
     );
   }
-  assertThrows(
-    () => pinnedSnapshot(pinsWith({ ...memoryOnly, format: 5 })),
-    SnapshotMismatch,
-    "format 5, not 3 or 4",
-  );
+  // A gzip of before the zip is refused by every kernel, saying so.
+  for (const rootStore of [undefined, false, true]) {
+    assertThrows(
+      () =>
+        pinnedSnapshot(
+          pinsWith({ ...memoryOnly, format: 3 }),
+          "desktop",
+          rootStore,
+        ),
+      SnapshotMismatch,
+      "format 3, not 4: a gzip of the kernel memory, from before the zip",
+    );
+  }
 });
 
-Deno.test("a format-4 pin must carry its store, in export order, and no other format carries one", async () => {
+Deno.test("a pin carries one sha256 for the whole zip and, with a store, only its identity", async () => {
   const pin = await storePin();
-  assertEquals(parseSnapshotPin(pin).store, pin.store);
-  const { store, ...bare } = pin;
-  const files = store!.files;
-  const wrong: [Record<string, unknown>, string][] = [
-    [bare, "store is required in format 4"],
-    [{ ...pin, format: FORMAT }, "store is only in format 4"],
-    [
-      { ...pin, store: { ...store, files: [files[2], files[1], files[0]] } },
-      "not data, the active journal, then meta",
-    ],
-    [
-      { ...pin, store: { ...store, files: [files[0], files[2]] } },
-      "not data, the active journal, then meta",
-    ],
-    [
-      { ...pin, store: { ...store, identity: { ...IDENTITY, sequence: 42 } } },
+  assertEquals(parseSnapshotPin(pin), pin);
+  assertEquals(Object.keys(pin.store!), ["identity"]);
+  assertEquals("parts" in parseSnapshotPin({ ...pin, parts: ["00"] }), false);
+  for (
+    const identity of [
+      { ...IDENTITY, sequence: 42 },
+      { ...IDENTITY, sequence: "042" },
+      { ...IDENTITY, lineage: "11" },
+      { ...IDENTITY, hash: undefined },
+    ]
+  ) {
+    assertThrows(
+      () => parseSnapshotPin({ ...pin, store: { identity } }),
+      PinResolutionError,
       "store.identity",
-    ],
-    [{ ...pin, store: { ...store, lower: { bytes: 0 } } }, "store.lower"],
-  ];
-  for (const [entry, why] of wrong) {
-    assertThrows(() => parseSnapshotPin(entry), PinResolutionError, why);
+    );
   }
 });
 
@@ -454,7 +480,7 @@ Deno.test("a seal with its store collects each exported file whole and in order,
   );
 });
 
-Deno.test("the pinned kernel has no root store: every snapshot stays the kernel memory alone", () => {
+Deno.test("the pinned kernel has no root store: every snapshot zip is the kernel memory alone", () => {
   assertEquals(rootStoreOf(KernelHostInterface), undefined);
   assertEquals(rootStoreOf(undefined), undefined);
   assertEquals(rootStoreOf({ rootStore: { freshStore() {} } }), undefined);
@@ -464,7 +490,7 @@ Deno.test("the pinned kernel has no root store: every snapshot stays the kernel 
 async function served(
   name: string,
   file: Uint8Array<ArrayBuffer>,
-  pin: Omit<SnapshotPin, "sha256" | "size" | "parts">,
+  pin: Omit<SnapshotPin, "sha256" | "size">,
 ): Promise<{ fetch: typeof fetch; pin: SnapshotPin }> {
   const PART = 64;
   const base = name.slice(name.lastIndexOf("/") + 1);
@@ -474,12 +500,7 @@ async function served(
   );
   const names = parts.map((_, i) => `${base}.${i}`);
   return {
-    pin: {
-      ...pin,
-      sha256: await sha256Hex(file),
-      size: file.byteLength,
-      parts: await Promise.all(parts.map((part) => sha256Hex(part))),
-    },
+    pin: { ...pin, sha256: await sha256Hex(file), size: file.byteLength },
     fetch: (input) => {
       const path = new URL(String(input), "http://pg/").pathname;
       if (path === `/${name}.parts.json`) {
@@ -512,7 +533,7 @@ Deno.test("?snapshot=1 on a kernel with a root store restores the store, then th
     await (await encodeSandboxSnapshot(seal, built)).arrayBuffer(),
   );
   const facts = await snapshotHeaderFacts(new Blob([file]).stream());
-  const name = "snapshot/sandbox.seal.gz";
+  const name = "snapshot/sandbox.seal.zip";
   const site = await served(name, file, {
     releaseRepo: "r",
     release: "t",
@@ -555,13 +576,9 @@ Deno.test("?snapshot=1 on a kernel with a root store restores the store, then th
     show: () => {},
     term: {} as never,
   };
+  const url = `http://pg/${name}`;
   try {
-    await restoreSnapshot(
-      env,
-      new Uint8Array(),
-      `http://pg/${name}`,
-      api(IDENTITY),
-    );
+    await restoreSnapshot(env, new Uint8Array(), url, api(IDENTITY));
     assertEquals(log, [
       "fresh store",
       "fetch ./playground-slim.yurtimg",
@@ -574,8 +591,7 @@ Deno.test("?snapshot=1 on a kernel with a root store restores the store, then th
     ]);
     log.length = 0;
     await assertRejects(
-      () =>
-        restoreSnapshot(env, new Uint8Array(), `http://pg/${name}`, api(OTHER)),
+      () => restoreSnapshot(env, new Uint8Array(), url, api(OTHER)),
       SnapshotMismatch,
       "restoring the snapshot's store",
     );
@@ -583,12 +599,76 @@ Deno.test("?snapshot=1 on a kernel with a root store restores the store, then th
     // The same pin on a kernel without a root store is refused unread.
     log.length = 0;
     await assertRejects(
-      () =>
-        restoreSnapshot(env, new Uint8Array(), `http://pg/${name}`, undefined),
+      () => restoreSnapshot(env, new Uint8Array(), url, undefined),
       SnapshotMismatch,
-      "format 4, not 3",
+      "carries a YurtFS root store",
     );
     assertEquals(log, []);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+Deno.test("a zip whose bytes are not the pinned ones is never restored, even with every entry well formed", async () => {
+  const raw = JSON.parse(
+    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
+  );
+  const built = {
+    ...snapshotIdentity(parsePins({ ...raw, snapshot: undefined })),
+    pythonSet: null,
+  };
+  const file = new Uint8Array(
+    await (await encodeSandboxSnapshot(sealed(4_000), built)).arrayBuffer(),
+  );
+  const facts = await snapshotHeaderFacts(new Blob([file]).stream());
+  const name = "snapshot/sandbox.seal.zip";
+  const pinned = await served(name, file, {
+    releaseRepo: "r",
+    release: "t",
+    format: facts.format,
+    builtFrom: built,
+    memoryBytes: facts.memoryBytes,
+    store: facts.store,
+  });
+  // One byte off in the central directory, which the page never parses:
+  // every entry still reads, and only the whole zip's hash differs.
+  const tampered = file.slice();
+  tampered[tampered.byteLength - 30] ^= 0xff;
+  const site = await served(name, tampered, pinned.pin);
+  const pinsText = JSON.stringify({ ...raw, snapshot: pinned.pin });
+  const realFetch = globalThis.fetch;
+  globalThis.fetch =
+    ((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).endsWith("pins.json")
+        ? Promise.resolve(new Response(pinsText))
+        : site.fetch(input, init)) as typeof fetch;
+  const log: string[] = [];
+  try {
+    await assertRejects(
+      () =>
+        restoreSnapshot(
+          {
+            isolated: true,
+            fetchBytes: () => Promise.resolve(new Uint8Array(100)),
+            show: () => {},
+            term: {} as never,
+          },
+          new Uint8Array(),
+          `http://pg/${name}`,
+          {
+            freshStore: () => Promise.resolve(fakeTarget(log)),
+            sealSandbox: () => Promise.reject(new Error("not in this test")),
+            restore: () => {
+              log.push("restore");
+              return Promise.reject(new Error("restored unverified bytes"));
+            },
+          },
+        ),
+      Error,
+      "not the pinned",
+    );
+    assert(!log.includes("restore"), log.join(", "));
+    assertEquals(log.at(-1), "discard");
   } finally {
     globalThis.fetch = realFetch;
   }

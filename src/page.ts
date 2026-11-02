@@ -606,7 +606,7 @@ function saveSnapshot(blob: Blob, ms: number): void {
       later: (run, ms) => setTimeout(run, ms),
     },
     blob,
-    "sandbox.seal.gz",
+    "sandbox.seal.zip",
   );
 }
 

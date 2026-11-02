@@ -17,7 +17,7 @@
  * - `manifest.json`: the pin's shape (src/pins.ts `SnapshotPin`: format,
  *   the whole file's sha256 and size, each part's sha256, builtFrom), plus
  *   what the script adds for people (`packages`, `name`);
- * - `sandbox.seal.gz.parts.json` and the parts, as the site publishes the
+ * - `sandbox.seal.zip.parts.json` and the parts, as the site publishes the
  *   pinned one (src/image_parts.ts).
  *
  * Who may publish one: raw.githubusercontent.com serves, under this
@@ -56,7 +56,7 @@ export const SNAPSHOT_REFS_API =
   `https://api.github.com/repos/${SNAPSHOT_REPO}/git/matching-refs/snapshots/`;
 /** The commit's files. */
 export const SNAPSHOT_MANIFEST = "manifest.json";
-export const SNAPSHOT_FILE = "sandbox.seal.gz";
+export const SNAPSHOT_FILE = "sandbox.seal.zip";
 
 /** A commit sha, the only form `?snapshot=<id>` takes. */
 const ID = /^[0-9a-f]{40}$/;

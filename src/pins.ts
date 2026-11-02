@@ -72,17 +72,14 @@ export type BuiltFrom = SnapshotIdentity & {
 export type SnapshotPin = {
   releaseRepo: string;
   release: string;
-  /** The file's header format (src/sandbox_snapshot.ts): a page restores
-   * only its own. */
+  /** The snapshot zip's format (its manifest's, src/sandbox_snapshot.ts):
+   * a page restores only its own. */
   format: number;
-  /** The whole gzipped file. */
+  /** The whole zip: the one hash a restore checks, incrementally as the
+   * parts the site publishes it in (src/image_parts.ts, transport only)
+   * arrive. */
   sha256: string;
   size: number;
-  /** Each part's sha256, in order: the file in IMAGE_PART_BYTES slices
-   * (src/image_parts.ts), as the release and the site publish it. The
-   * page checks each part as it arrives -- a whole-file hash would hold
-   * all 125 MB at once, which a Safari tab does not survive. */
-  parts: string[];
   builtFrom: BuiltFrom;
   /** The kernel memory a restore allocates (the header's memoryBytes). */
   memoryBytes?: number;
@@ -94,8 +91,9 @@ export type SnapshotPin = {
   /** The renderer's peak memory while restoring it, in MiB, as
    * scripts/measure-boot.ts measured it in the device's emulation. */
   restorePeakMiB?: number;
-  /** Format 4 only: the YurtFS root store the snapshot carries beside the
-   * kernel memory (src/root_store.ts), as its header records it. */
+  /** The YurtFS root store the zip carries beside the kernel memory
+   * (src/root_store.ts), as its manifest names it; absent, the zip is
+   * the kernel memory alone. */
   store?: StorePin;
 };
 
@@ -123,13 +121,9 @@ export type StoreFileName = "data" | "journal-a" | "journal-b" | "meta";
  * (`builtFrom.imageSha256`) inflated, so a snapshot never ships it. */
 export type StoreLower = { bytes: number; sha256: string };
 
-export type StorePin = {
-  identity: StoreIdentity;
-  /** Each exported file, in export order, as it lies in the snapshot
-   * file between the header and the kernel memory. */
-  files: { name: StoreFileName; bytes: number; sha256: string }[];
-  lower: StoreLower;
-};
+/** A snapshot's store, as its pin names it: which one. The files' sizes
+ * are the zip's own; the zip's sha256 covers their bytes. */
+export type StorePin = { identity: StoreIdentity };
 
 /** Why `names` is not a store export's order (data, one journal, meta),
  * or undefined. */
@@ -146,56 +140,29 @@ export function storeExportOrderProblem(
     }, not data, the active journal, then meta`;
 }
 
-/** A `store` entry (a pin's, or a snapshot header's), checked; `fail`
+/** A store identity (a pin's, or a snapshot manifest's), checked; `fail`
  * is called with what is wrong. */
-export function parseStorePin(
+export function parseStoreIdentity(
   raw: unknown,
   fail: (what: string) => never,
-): StorePin {
+): StoreIdentity {
   const isHex = (value: unknown, bytes: number): value is string =>
     typeof value === "string" &&
     new RegExp(`^[0-9a-f]{${bytes * 2}}$`).test(value);
-  const size = (value: unknown, min: number): value is number =>
-    Number.isInteger(value) && (value as number) >= min;
   const value = (raw ?? {}) as Record<string, unknown>;
-  const identity = (value.identity ?? {}) as Record<string, unknown>;
   if (
-    !isHex(identity.lineage, 16) || !isHex(identity.hash, 32) ||
-    typeof identity.sequence !== "string" ||
-    !/^(0|[1-9][0-9]*)$/.test(identity.sequence)
+    !isHex(value.lineage, 16) || !isHex(value.hash, 32) ||
+    typeof value.sequence !== "string" ||
+    !/^(0|[1-9][0-9]*)$/.test(value.sequence)
   ) {
     fail(
       "store.identity must be {lineage: 16 bytes hex, sequence: decimal, hash: sha256}",
     );
   }
-  const files = value.files;
-  if (
-    !Array.isArray(files) ||
-    !files.every((file) =>
-      file !== null && typeof file === "object" && size(file.bytes, 0) &&
-      isHex(file.sha256, 32)
-    )
-  ) fail("store.files must list {name, bytes, sha256}");
-  const order = storeExportOrderProblem(
-    (files as { name: unknown }[]).map((file) => String(file.name)),
-  );
-  if (order !== undefined) fail(order);
-  const lower = (value.lower ?? {}) as Record<string, unknown>;
-  if (!size(lower.bytes, 1) || !isHex(lower.sha256, 32)) {
-    fail("store.lower must be {bytes, sha256}");
-  }
   return {
-    identity: {
-      lineage: identity.lineage as string,
-      sequence: identity.sequence as string,
-      hash: identity.hash as string,
-    },
-    files: (files as StorePin["files"]).map(({ name, bytes, sha256 }) => ({
-      name,
-      bytes,
-      sha256,
-    })),
-    lower: { bytes: lower.bytes as number, sha256: lower.sha256 as string },
+    lineage: value.lineage as string,
+    sequence: value.sequence as string,
+    hash: value.hash as string,
   };
 }
 
@@ -318,10 +285,6 @@ export function parseSnapshotPin(raw: unknown): SnapshotPin {
   if (!Number.isInteger(value.size) || (value.size as number) <= 0) {
     fail("size must be a positive integer");
   }
-  if (
-    !Array.isArray(value.parts) || value.parts.length === 0 ||
-    !value.parts.every(isHex)
-  ) fail("parts must list each part's sha256");
   const built = (value.builtFrom ?? {}) as Record<string, unknown>;
   if (!isHex(built.kernelSha256) || !isHex(built.imageSha256)) {
     fail("builtFrom must name the kernel and image sha256");
@@ -364,24 +327,18 @@ export function parseSnapshotPin(raw: unknown): SnapshotPin {
         )
       ))
   ) fail("contents must be {packages: [{name, version, build}], remark}");
-  // The format says whether a store is there: 4 carries one, no other does.
-  if ((value.format === STORE_FORMAT) !== (value.store !== undefined)) {
-    fail(
-      value.store === undefined
-        ? `store is required in format ${STORE_FORMAT}`
-        : `store is only in format ${STORE_FORMAT}`,
-    );
-  }
-  const store = value.store === undefined
-    ? undefined
-    : parseStorePin(value.store, fail);
+  const store = value.store === undefined ? undefined : {
+    identity: parseStoreIdentity(
+      (value.store as { identity?: unknown } | null)?.identity,
+      fail,
+    ),
+  };
   return {
     releaseRepo: value.releaseRepo as string,
     release: value.release as string,
     format: value.format as number,
     sha256: value.sha256 as string,
     size: value.size as number,
-    parts: value.parts as string[],
     builtFrom: {
       kernelSha256: built.kernelSha256 as string,
       kernelRev: built.kernelRev as string,
@@ -403,11 +360,6 @@ export function parseSnapshotPin(raw: unknown): SnapshotPin {
     ...(store === undefined ? {} : { store }),
   };
 }
-
-/** The snapshot format that carries a YurtFS root store (the memory-only
- * one is src/snapshot_pin.ts FORMAT). Here, not there, because the pin's
- * shape depends on it and src/snapshot_pin.ts imports this module. */
-export const STORE_FORMAT = 4;
 
 export async function loadPins(path: string): Promise<Pins> {
   return parsePins(JSON.parse(await Deno.readTextFile(path)));

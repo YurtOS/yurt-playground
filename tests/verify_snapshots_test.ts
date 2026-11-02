@@ -32,10 +32,9 @@ function pin(
   return {
     releaseRepo: "YurtOS/yurt-playground",
     release: tag,
-    format: 3,
+    format: 4,
     sha256: "a".repeat(64),
     size,
-    parts: ["b".repeat(64)],
     builtFrom: {
       kernelSha256: "d".repeat(64),
       kernelRev: "r",
@@ -130,6 +129,22 @@ Deno.test("a pinned but unmeasured Go snapshot is still refused when the train i
 
 Deno.test("a train's four snapshots pass", () => {
   assertEquals(verifySnapshotPins(fixture()), []);
+});
+
+Deno.test("on a kernel whose root is a YurtFS store, a pin of a zip without the store is refused", () => {
+  const pins = fixture();
+  const identity = {
+    lineage: "1".repeat(32),
+    sequence: "7",
+    hash: "2".repeat(64),
+  };
+  for (const key of ["snapshot", "tabletSnapshot", "goSnapshot"]) {
+    pins[key].store = { identity };
+  }
+  assertEquals(verifySnapshotPins(pins), [], "today's kernel takes either");
+  assertEquals(verifySnapshotPins(pins, { rootStore: true }), [
+    "phone: the zip holds the kernel memory alone, and the kernel's root is a YurtFS store",
+  ]);
 });
 
 Deno.test("a phone snapshot with Python in it is refused", () => {

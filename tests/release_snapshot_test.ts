@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   captureSetProblem,
   captureTimeoutMs,
@@ -16,7 +16,7 @@ import { checkSnapshotFile } from "../scripts/lib/snapshot_file.ts";
 import { encodeSandboxSnapshot } from "../src/sandbox_snapshot.ts";
 
 const part = (i: number, sha: string, size = 10) => ({
-  name: `sandbox.seal.gz.${i}`,
+  name: `sandbox.seal.zip.${i}`,
   sha256: sha.repeat(64),
   size,
 });
@@ -28,10 +28,10 @@ const asset = (p: ReturnType<typeof part>) => ({
 
 Deno.test("an existing snapshot release counts only when it holds every part, by sha256 and size", () => {
   const parts = [part(0, "a"), part(1, "b"), part(2, "c", 4)];
-  const sidecar = { name: "sandbox.seal.gz.sha256", size: 83, digest: null };
+  const sidecar = { name: "sandbox.seal.zip.sha256", size: 83, digest: null };
   assertEquals(releaseProblems([...parts.map(asset), sidecar], parts), []);
   assertEquals(releaseProblems([asset(parts[0]), asset(parts[2])], parts), [
-    "sandbox.seal.gz.1 is missing",
+    "sandbox.seal.zip.1 is missing",
   ]);
   assertEquals(
     releaseProblems([
@@ -40,8 +40,8 @@ Deno.test("an existing snapshot release counts only when it holds every part, by
       { ...asset(parts[2]), size: 5 },
     ], parts),
     [
-      `sandbox.seal.gz.1 has sha256 ${"f".repeat(64)}, not ${"b".repeat(64)}`,
-      "sandbox.seal.gz.2 is 5 bytes, not 4",
+      `sandbox.seal.zip.1 has sha256 ${"f".repeat(64)}, not ${"b".repeat(64)}`,
+      "sandbox.seal.zip.2 is 5 bytes, not 4",
     ],
   );
   // An asset GitHub reports no digest for proves nothing.
@@ -50,7 +50,7 @@ Deno.test("an existing snapshot release counts only when it holds every part, by
       ...asset(parts[2]),
       digest: null,
     }], parts),
-    [`sandbox.seal.gz.2 has sha256 (none), not ${"c".repeat(64)}`],
+    [`sandbox.seal.zip.2 has sha256 (none), not ${"c".repeat(64)}`],
   );
 });
 
@@ -108,7 +108,6 @@ Deno.test("a train keeps the snapshot pin only when --check-pin's checks pass", 
     format: FORMAT,
     sha256: "a".repeat(64),
     size: 1,
-    parts: ["b".repeat(64)],
     builtFrom: { ...snapshotIdentity(pins), pythonSet: set },
   };
   const check = (snapshot: unknown, answer: string | null | undefined) =>
@@ -138,6 +137,24 @@ Deno.test("a train keeps the snapshot pin only when --check-pin's checks pass", 
     true,
   );
   assertEquals((await check("old shape", set))?.includes("malformed"), true);
+  // On a kernel whose root is a store, a pin of a zip without it goes.
+  const onStoreRoot = (snapshot: unknown) =>
+    snapshotPinProblem(
+      { ...pins, snapshot },
+      () => Promise.resolve(set),
+      "desktop",
+      true,
+    );
+  assertEquals(
+    (await onStoreRoot(entry))?.includes("holds the kernel memory alone"),
+    true,
+  );
+  const identity = {
+    lineage: "1".repeat(32),
+    sequence: "7",
+    hash: "2".repeat(64),
+  };
+  assertEquals(await onStoreRoot({ ...entry, store: { identity } }), undefined);
   // A crash is no verdict: it is thrown, never a refusal.
   await assertRejects(
     () =>
@@ -261,11 +278,29 @@ Deno.test("a damaged or missing snapshot file is a problem to report, never a th
     await (await encodeSandboxSnapshot(seal, built)).arrayBuffer(),
   );
   const dir = await Deno.makeTempDir();
-  const path = `${dir}/sandbox.seal.gz`;
+  const path = `${dir}/sandbox.seal.zip`;
   try {
     await Deno.writeFile(path, file);
     const good = await checkSnapshotFile(path, built, { decode: true });
     assertEquals(good, { ok: true, builtFrom: built });
+    // A zip of the memory alone is no capture of a kernel whose root is a
+    // store, by its manifest or in full.
+    for (const decode of [false, true]) {
+      const check = await checkSnapshotFile(path, built, {
+        decode,
+        rootStore: true,
+      });
+      assertEquals(check.ok, false);
+      assertStringIncludes(
+        (check as { problem: string }).problem,
+        "holds the kernel memory alone",
+      );
+      assertEquals(
+        (await checkSnapshotFile(path, built, { decode, rootStore: false }))
+          .ok,
+        true,
+      );
+    }
     // Cut after the header: the header check alone passes, a decode not.
     await Deno.writeFile(path, file.subarray(0, file.byteLength - 8));
     assertEquals((await checkSnapshotFile(path, built)).ok, true);
@@ -329,10 +364,10 @@ async function installWith(
       `#!/usr/bin/env bash
 pattern=$7; dir=$9; mkdir -p "$dir"
 case $pattern in
-  sandbox.seal.gz.*) ${
+  sandbox.seal.zip.*) ${
         failSnapshot ? 'echo "HTTP 404: Not Found" >&2; exit 1' : ""
       }
-    printf 'snap' > "$dir/sandbox.seal.gz.0" ;;
+    printf 'sn' > "$dir/sandbox.seal.zip.0"; printf 'ap' > "$dir/sandbox.seal.zip.1" ;;
   *) printf '%s' "$pattern" > "$dir/$pattern" ;;
 esac
 `,
@@ -348,7 +383,7 @@ esac
       stderr: "piped",
     }).output();
     const installed = await Deno.stat(
-      `${root}/public/snapshot/sandbox.seal.gz`,
+      `${root}/public/snapshot/sandbox.seal.zip`,
     ).then(() => true, () => false);
     return {
       code: out.code,
@@ -366,7 +401,6 @@ Deno.test("a deploy never fails on the optional snapshot: any problem is a warni
     releaseRepo: "YurtOS/yurt-playground",
     release: "snapshot-t",
     sha256,
-    parts: ["x"],
   });
   const ok = await installWith(good((await installWith(undefined)).snapSha));
   assertEquals([ok.code, ok.installed], [0, true], ok.stderr);
@@ -400,7 +434,6 @@ Deno.test("--check-pin reads the pins file and answers for its snapshot entry", 
     format: FORMAT,
     sha256: "a".repeat(64),
     size: 1,
-    parts: ["b".repeat(64)],
     builtFrom: {
       ...snapshotIdentity(parsePins({ ...raw, snapshot: undefined })),
       pythonSet: set,
@@ -797,10 +830,9 @@ Deno.test("a snapshot release's notes name everything a restore checks", () => {
   const notes = releaseNotes("playground-t", {
     releaseRepo: "YurtOS/yurt-playground",
     release: "snapshot-playground-t",
-    format: 3,
+    format: 4,
     sha256: "s".repeat(64),
     size: 10,
-    parts: ["a".repeat(64)],
     builtFrom,
   });
   for (const value of Object.values(builtFrom)) {
@@ -808,5 +840,6 @@ Deno.test("a snapshot release's notes name everything a restore checks", () => {
   }
   assertEquals(notes.includes("sealable CPython (pythonSeal) sha256"), true);
   assertEquals(notes.includes("Python set installed"), true);
-  assertEquals(notes.includes("Header format 3"), true);
+  assertEquals(notes.includes("Zip format 4, the kernel memory alone"), true);
+  assertEquals(notes.includes("transport only"), true);
 });
