@@ -53,7 +53,7 @@ jobs:
   # integration job.
   checks:
     name: fmt / lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     # Also decides whether the integration job can run: a job is billed by
     # the minute rounded up, so the ten-second token check rides here rather
@@ -192,7 +192,7 @@ jobs:
     # fmt/lint to pass: a formatting nit must not hide the integration result
     # (review). `!cancelled()` overrides the implicit success() on `needs`.
     if: ${{ !cancelled() && needs.checks.outputs.present == 'true' && needs.checks.outputs.docs_only != 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Above the step cap plus setup, so a slow leg fails at the step -- with
     # its log tail and a named timeout -- rather than as a bare cancelled
     # job (#123 review round 2). The slowest leg seen took 5.0 min in all.
@@ -247,7 +247,7 @@ jobs:
     name: acceptance (${{ matrix.scene }})
     needs: checks
     if: ${{ !cancelled() && needs.checks.outputs.present == 'true' && needs.checks.outputs.docs_only != 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Above the step cap (11) plus both browser installs at their cap (5 + 5)
     # and setup and build (1.6 min typical, 2.1 worst seen), with ~2 min to
     # spare, for the same reason. A cap costs nothing unless something
@@ -363,7 +363,7 @@ jobs:
     name: integration (cross-repo)
     needs: [checks, tests, acceptance]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Every leg passed, or said why it did not run

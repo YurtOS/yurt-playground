@@ -35,7 +35,7 @@ jobs:
   # it says so instead of failing at "Repository not found" or at the upload.
   secrets-present:
     name: deploy secrets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       present: ${{ steps.check.outputs.present }}
@@ -71,7 +71,7 @@ jobs:
 
   target:
     name: deploy target
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       mode: ${{ steps.target.outputs.mode }}
@@ -99,7 +99,7 @@ jobs:
     needs: [target, secrets-present]
     # A target with no ref (an output GitHub dropped) builds nothing.
     if: needs.secrets-present.outputs.present == 'true' && needs.target.outputs.ref != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       # The site publishes the pinned sandbox snapshot (?snapshot=1); no
