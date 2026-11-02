@@ -52,6 +52,9 @@ runs:
         # artifacts/jupyter-requirements.lock is only reproducible from the
         # interpreter that produced it — pip writes interpreter-dependent
         # dist-info — and a floating patch silently breaks it.
+        # 3.14.0 has no Ubuntu 26.04 build, so every job that uses this
+        # action runs on ubuntu-24.04, not ubuntu-latest (moved to 26.04 on
+        # 2026-11-02).
         python-version: "3.14.0"
         architecture: x64
     # The staged payload is not reproducible — pip resolves build backends
