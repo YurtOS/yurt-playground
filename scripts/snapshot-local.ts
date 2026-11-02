@@ -72,7 +72,6 @@ import { imagePartsManifest } from "../src/image_parts.ts";
 import { parsePins, type Pins, type SnapshotPin } from "../src/pins.ts";
 import {
   type BuiltFrom,
-  FORMAT,
   kindQuery,
   SNAPSHOT_KIND_NAMES,
   SNAPSHOT_KINDS,
@@ -429,7 +428,6 @@ async function main(): Promise<void> {
     const pin: SnapshotPin = {
       releaseRepo: SNAPSHOT_REPO,
       release: ref,
-      format: FORMAT,
       sha256,
       size: bytes.byteLength,
       parts: parts.map((part) => part.sha256),

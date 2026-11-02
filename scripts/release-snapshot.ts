@@ -78,7 +78,6 @@ import {
 } from "../src/pins.ts";
 import {
   checkPythonSet,
-  FORMAT,
   goSetRequest,
   pinnedSnapshot,
   SANDBOX_SNAPSHOT_NAME,
@@ -579,13 +578,15 @@ async function main(): Promise<void> {
     const pin: SnapshotPin = {
       releaseRepo: REPO,
       release: tag,
-      format: FORMAT,
+      // The capture's own format: 4 when it carries a root store.
+      format: facts.format,
       sha256,
       size: file.byteLength,
       parts: parts.map((part) => part.sha256),
       builtFrom,
       memoryBytes: facts.memoryBytes,
       ...(facts.contents === undefined ? {} : { contents: facts.contents }),
+      ...(facts.store === undefined ? {} : { store: facts.store }),
     };
     say(
       `${ASSET}: ${pin.size} bytes, ${parts.length} parts, ${facts.memoryBytes} bytes of kernel memory, sha256 ${sha256}; this Linux: ${

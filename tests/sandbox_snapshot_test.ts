@@ -702,7 +702,7 @@ Deno.test("a snapshot's header records what it holds, read without its memory", 
     await snapshotHeaderFacts(
       blob.stream() as ReadableStream<Uint8Array<ArrayBuffer>>,
     ),
-    { memoryBytes: 1 << 12, contents },
+    { format: FORMAT, memoryBytes: 1 << 12, contents },
   );
   // And the decode is the same seal as without them.
   assertEquals(

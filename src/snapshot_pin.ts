@@ -12,9 +12,11 @@ import {
   type Pins,
   type SnapshotIdentity,
   type SnapshotPin,
+  STORE_FORMAT,
 } from "./pins.ts";
 
 export type { BuiltFrom, SnapshotIdentity, SnapshotPin };
+export { STORE_FORMAT };
 
 /** Where the page fetches the snapshot (in parts, src/image_parts.ts). */
 export const SANDBOX_SNAPSHOT_NAME = "snapshot/sandbox.seal.gz";
@@ -170,6 +172,8 @@ export class SnapshotMismatch extends Error {}
 export function pinnedSnapshot(
   pins: Pins,
   kind: SnapshotKind = "desktop",
+  /** Whether the kernel's root is a YurtFS store ({@link snapshotFormat}). */
+  rootStore?: boolean,
 ): SnapshotPin {
   const entry = pins[SNAPSHOT_KINDS[kind].pinKey];
   if (entry === undefined) {
@@ -179,7 +183,7 @@ export function pinnedSnapshot(
         : `the site pins no ${kind} snapshot (${SNAPSHOT_KINDS[kind].pinKey})`,
     );
   }
-  return acceptedSnapshot(entry, pins);
+  return acceptedSnapshot(entry, pins, undefined, rootStore);
 }
 
 /** A snapshot entry (the pin's shape: `?snapshot=1`'s pin, or an uploaded
@@ -190,6 +194,10 @@ export function acceptedSnapshot(
   entry: unknown,
   pins: Pins,
   what = "pinned snapshot",
+  /** Whether the kernel's root is a YurtFS store: the page knows, and
+   * takes only {@link snapshotFormat}'s; undefined (the release tools,
+   * which check a file against the pins and mount nothing) takes either. */
+  rootStore?: boolean,
 ): SnapshotPin {
   let pin: SnapshotPin;
   try {
@@ -201,10 +209,9 @@ export function acceptedSnapshot(
       }`,
     );
   }
-  if (pin.format !== FORMAT) {
-    throw new SnapshotMismatch(
-      `the ${what} is format ${pin.format}, not ${FORMAT}`,
-    );
+  const refused = formatRefusal(pin.format, rootStore);
+  if (refused !== undefined) {
+    throw new SnapshotMismatch(`the ${what} is ${refused}`);
   }
   const why = buildMismatch(pin.builtFrom, snapshotIdentity(pins));
   if (why !== undefined) {
@@ -236,8 +243,38 @@ export function checkPythonSet(
   );
 }
 
-/** The header's format: 2 added `builtFrom`, 3 its `pythonSet`. */
+/** The header's format: 2 added `builtFrom`, 3 its `pythonSet`. 3 is
+ * the kernel memory alone, its ramfs holding every file; 4
+ * ({@link STORE_FORMAT}) adds the YurtFS root store's files. */
 export const FORMAT = 3;
+
+/** The format a page writes and restores: 4 once the kernel's root is a
+ * YurtFS store (src/root_store.ts rootStoreOf), else 3. */
+export function snapshotFormat(rootStore: boolean): number {
+  return rootStore ? STORE_FORMAT : FORMAT;
+}
+
+/** Why a snapshot of `format` is not restored on a kernel whose root is
+ * (`rootStore`) or is not a YurtFS store -- "format N, not M: why" -- or
+ * undefined. `rootStore` undefined takes either known format. */
+export function formatRefusal(
+  format: unknown,
+  rootStore: boolean | undefined,
+): string | undefined {
+  if (rootStore === undefined) {
+    return format === FORMAT || format === STORE_FORMAT
+      ? undefined
+      : `format ${format}, not ${FORMAT} or ${STORE_FORMAT}`;
+  }
+  const want = snapshotFormat(rootStore);
+  if (format === want) return undefined;
+  const why = format === FORMAT
+    ? ": the kernel's memory alone, and this kernel's root filesystem is a YurtFS store that a memory-only snapshot does not hold; capture the snapshot again"
+    : format === STORE_FORMAT
+    ? ": it carries a YurtFS root store, and this kernel keeps its root filesystem in its memory"
+    : "";
+  return `format ${format}, not ${want}${why}`;
+}
 
 /** Why a snapshot's `builtFrom` is not `expected` (every field `expected`
  * has), or undefined when it is the same build. */

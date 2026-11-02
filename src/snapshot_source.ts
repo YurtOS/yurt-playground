@@ -146,6 +146,9 @@ export async function uploadedSnapshot(
   id: string,
   pins: Pins,
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  /** Whether the kernel's root is a YurtFS store (src/snapshot_pin.ts
+   * acceptedSnapshot). */
+  rootStore?: boolean,
 ): Promise<{ pin: SnapshotPin; path: string; fetch: typeof fetch }> {
   const base = uploadedSnapshotBase(id);
   // Published by the repository's writers, before any byte of it is read.
@@ -168,7 +171,12 @@ export async function uploadedSnapshot(
     );
   }
   return {
-    pin: acceptedSnapshot(manifest, pins, `uploaded snapshot ${id}`),
+    pin: acceptedSnapshot(
+      manifest,
+      pins,
+      `uploaded snapshot ${id}`,
+      rootStore,
+    ),
     path: `${base}${SNAPSHOT_FILE}`,
     fetch,
   };

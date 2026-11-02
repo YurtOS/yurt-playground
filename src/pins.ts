@@ -94,7 +94,110 @@ export type SnapshotPin = {
   /** The renderer's peak memory while restoring it, in MiB, as
    * scripts/measure-boot.ts measured it in the device's emulation. */
   restorePeakMiB?: number;
+  /** Format 4 only: the YurtFS root store the snapshot carries beside the
+   * kernel memory (src/root_store.ts), as its header records it. */
+  store?: StorePin;
 };
+
+/** A YurtFS store's identity (yurtos-kernel#4089, the kernel's
+ * `Identity`): its lineage UUID, its last batch's sequence and the
+ * history hash `H` up to it. Two stores that diverged never share it, so
+ * a checkpoint binds it and a restore refuses any other. */
+export type StoreIdentity = {
+  /** 16 bytes, hex. */
+  lineage: string;
+  /** A u64 in decimal: exact, where a JSON number is not past 2^53. */
+  sequence: string;
+  /** SHA-256, hex. */
+  hash: string;
+};
+
+/** The store files a checkpoint exports, in the kernel barrier's order:
+ * `data`, the active journal (`journal-a` or `journal-b`), `meta` last,
+ * so an interrupted copy never holds a valid `meta`. `lock`, the empty
+ * journal and `lower.tar` are not exported: the copy is completed and
+ * its lower materialized where it is restored. */
+export type StoreFileName = "data" | "journal-a" | "journal-b" | "meta";
+
+/** `lower.tar` as the store's `meta` records it: the pinned image
+ * (`builtFrom.imageSha256`) inflated, so a snapshot never ships it. */
+export type StoreLower = { bytes: number; sha256: string };
+
+export type StorePin = {
+  identity: StoreIdentity;
+  /** Each exported file, in export order, as it lies in the snapshot
+   * file between the header and the kernel memory. */
+  files: { name: StoreFileName; bytes: number; sha256: string }[];
+  lower: StoreLower;
+};
+
+/** Why `names` is not a store export's order (data, one journal, meta),
+ * or undefined. */
+export function storeExportOrderProblem(
+  names: readonly string[],
+): string | undefined {
+  const ok = names.length === 3 && names[0] === "data" &&
+    (names[1] === "journal-a" || names[1] === "journal-b") &&
+    names[2] === "meta";
+  return ok
+    ? undefined
+    : `store files are ${
+      JSON.stringify(names)
+    }, not data, the active journal, then meta`;
+}
+
+/** A `store` entry (a pin's, or a snapshot header's), checked; `fail`
+ * is called with what is wrong. */
+export function parseStorePin(
+  raw: unknown,
+  fail: (what: string) => never,
+): StorePin {
+  const isHex = (value: unknown, bytes: number): value is string =>
+    typeof value === "string" &&
+    new RegExp(`^[0-9a-f]{${bytes * 2}}$`).test(value);
+  const size = (value: unknown, min: number): value is number =>
+    Number.isInteger(value) && (value as number) >= min;
+  const value = (raw ?? {}) as Record<string, unknown>;
+  const identity = (value.identity ?? {}) as Record<string, unknown>;
+  if (
+    !isHex(identity.lineage, 16) || !isHex(identity.hash, 32) ||
+    typeof identity.sequence !== "string" ||
+    !/^(0|[1-9][0-9]*)$/.test(identity.sequence)
+  ) {
+    fail(
+      "store.identity must be {lineage: 16 bytes hex, sequence: decimal, hash: sha256}",
+    );
+  }
+  const files = value.files;
+  if (
+    !Array.isArray(files) ||
+    !files.every((file) =>
+      file !== null && typeof file === "object" && size(file.bytes, 0) &&
+      isHex(file.sha256, 32)
+    )
+  ) fail("store.files must list {name, bytes, sha256}");
+  const order = storeExportOrderProblem(
+    (files as { name: unknown }[]).map((file) => String(file.name)),
+  );
+  if (order !== undefined) fail(order);
+  const lower = (value.lower ?? {}) as Record<string, unknown>;
+  if (!size(lower.bytes, 1) || !isHex(lower.sha256, 32)) {
+    fail("store.lower must be {bytes, sha256}");
+  }
+  return {
+    identity: {
+      lineage: identity.lineage as string,
+      sequence: identity.sequence as string,
+      hash: identity.hash as string,
+    },
+    files: (files as StorePin["files"]).map(({ name, bytes, sha256 }) => ({
+      name,
+      bytes,
+      sha256,
+    })),
+    lower: { bytes: lower.bytes as number, sha256: lower.sha256 as string },
+  };
+}
 
 export type ArtifactSource = "artifacts" | "siblings" | "urls";
 
@@ -261,6 +364,17 @@ export function parseSnapshotPin(raw: unknown): SnapshotPin {
         )
       ))
   ) fail("contents must be {packages: [{name, version, build}], remark}");
+  // The format says whether a store is there: 4 carries one, no other does.
+  if ((value.format === STORE_FORMAT) !== (value.store !== undefined)) {
+    fail(
+      value.store === undefined
+        ? `store is required in format ${STORE_FORMAT}`
+        : `store is only in format ${STORE_FORMAT}`,
+    );
+  }
+  const store = value.store === undefined
+    ? undefined
+    : parseStorePin(value.store, fail);
   return {
     releaseRepo: value.releaseRepo as string,
     release: value.release as string,
@@ -286,8 +400,14 @@ export function parseSnapshotPin(raw: unknown): SnapshotPin {
     ...(value.restorePeakMiB === undefined
       ? {}
       : { restorePeakMiB: value.restorePeakMiB as number }),
+    ...(store === undefined ? {} : { store }),
   };
 }
+
+/** The snapshot format that carries a YurtFS root store (the memory-only
+ * one is src/snapshot_pin.ts FORMAT). Here, not there, because the pin's
+ * shape depends on it and src/snapshot_pin.ts imports this module. */
+export const STORE_FORMAT = 4;
 
 export async function loadPins(path: string): Promise<Pins> {
   return parsePins(JSON.parse(await Deno.readTextFile(path)));

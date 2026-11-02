@@ -14,6 +14,14 @@
  * header says what the sandbox was built from ({@link SnapshotIdentity});
  * a restore under anything else is refused before the memory is read.
  *
+ * Once the kernel's root is a YurtFS store, the memory alone no longer
+ * holds the files: format 4 puts the store's exported files between the
+ * header and the memory, in export order (`data`, the active journal,
+ * `meta`), and the header names each one's size and sha256 and the
+ * store's identity (src/root_store.ts). A restore writes them into a
+ * fresh store, checks the identity it replays to, and only then reads the
+ * memory.
+ *
  * The file is published as a yurt-playground release by
  * scripts/release-snapshot.ts, pinned in artifacts/pins.json (`snapshot`:
  * its parts' sha256s and what it was built from), fetched into the site by
@@ -22,12 +30,26 @@
  */
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
 import { sha256Hex } from "./integrity.ts";
-import type { BuiltFrom, SnapshotIdentity, SnapshotPin } from "./pins.ts";
+import {
+  type BuiltFrom,
+  parseStorePin,
+  type SnapshotIdentity,
+  type SnapshotPin,
+  STORE_FORMAT,
+  type StoreIdentity,
+  type StorePin,
+} from "./pins.ts";
+import {
+  identityMismatch,
+  type PageSeal,
+  type StoreRestoreTarget,
+} from "./root_store.ts";
 import {
   buildMismatch,
-  FORMAT,
+  formatRefusal,
   SEAL_VERSION,
   type SnapshotContents,
+  snapshotFormat,
   SnapshotMismatch,
 } from "./snapshot_pin.ts";
 
@@ -47,6 +69,8 @@ type Header = Omit<SandboxSealImage, "kernelMemory" | "processes"> & {
   memoryBytes: number;
   /** What it holds; absent in a capture made before it was recorded. */
   contents?: SnapshotContents;
+  /** Format 4: the root store's files, which come before the memory. */
+  store?: StorePin;
 };
 
 function replacer(_key: string, value: unknown): unknown {
@@ -63,9 +87,10 @@ function reviver(_key: string, value: unknown): unknown {
   return value;
 }
 
-/** The snapshot file for `image`, a seal with no process in it. */
+/** The snapshot file for `image`, a seal with no process in it: format 4
+ * when it was taken with its root store, else 3. */
 export async function encodeSandboxSnapshot(
-  image: SandboxSealImage,
+  image: PageSeal,
   builtFrom: BuiltFrom,
   contents?: SnapshotContents,
 ): Promise<Blob> {
@@ -74,19 +99,42 @@ export async function encodeSandboxSnapshot(
       `a sandbox snapshot holds no process; this seal has ${image.processes.length}`,
     );
   }
-  const { kernelMemory, processes: _processes, ...rest } = image;
+  const { kernelMemory, processes: _processes, rootStore, ...rest } = image;
+  const files = rootStore?.files ?? [];
   const header: Header = {
     ...rest,
-    format: FORMAT,
+    format: snapshotFormat(rootStore !== undefined),
     builtFrom,
     memoryBytes: kernelMemory.byteLength,
     ...(contents === undefined ? {} : { contents }),
+    ...(rootStore === undefined ? {} : {
+      store: {
+        identity: rootStore.identity,
+        files: await Promise.all(files.map(async ({ name, bytes }) => ({
+          name,
+          bytes: bytes.byteLength,
+          sha256: await sha256Hex(bytes),
+        }))),
+        lower: rootStore.lower,
+      },
+    }),
   };
+  // A store the kernel exported out of order is not written at all.
+  if (header.store !== undefined) {
+    parseStorePin(header.store, (what) => {
+      throw new Error(`cannot write the snapshot: ${what}`);
+    });
+  }
   const json = new TextEncoder().encode(JSON.stringify(header, replacer));
   const length = new Uint8Array(4);
   new DataView(length.buffer).setUint32(0, json.byteLength, true);
   // The seal copied the memory out (`slice`), so its buffer is plain.
-  const raw = new Blob([length, json, kernelMemory as Uint8Array<ArrayBuffer>]);
+  const raw = new Blob([
+    length,
+    json,
+    ...files.map(({ bytes }) => bytes as Uint8Array<ArrayBuffer>),
+    kernelMemory as Uint8Array<ArrayBuffer>,
+  ]);
   return await new Response(
     raw.stream().pipeThrough(new CompressionStream("gzip")),
   ).blob();
@@ -119,15 +167,102 @@ async function readHeader(
 }
 
 /** Why a file's header is not one this page restores under `expected`:
- * another format, or another build. */
+ * another format (for a kernel whose root is, or is not, a store;
+ * `rootStore` undefined takes either), another build, or a store entry
+ * that is malformed. */
 function headerMismatch(
   header: Partial<Header>,
   expected: SnapshotIdentity | BuiltFrom,
+  rootStore: boolean | undefined,
 ): string | undefined {
-  if (header.builtFrom !== undefined && header.format !== FORMAT) {
-    return `sandbox snapshot header is format ${header.format}, not ${FORMAT}`;
+  if (header.builtFrom !== undefined) {
+    const refused = formatRefusal(header.format, rootStore);
+    if (refused !== undefined) {
+      return `sandbox snapshot header is ${refused}`;
+    }
+    if ((header.format === STORE_FORMAT) !== (header.store !== undefined)) {
+      return `sandbox snapshot header is format ${header.format}, ${
+        header.store === undefined ? "without" : "with"
+      } a store`;
+    }
+    if (header.store !== undefined) {
+      try {
+        parseStorePin(header.store, (what) => {
+          throw new Error(what);
+        });
+      } catch (error) {
+        return `sandbox snapshot header's ${(error as Error).message}`;
+      }
+    }
   }
   return buildMismatch(header.builtFrom, expected);
+}
+
+/** Hand the next `bytes` bytes of the body -- `rest` first, then from
+ * `reader` -- to `take`, in order; what was read past them comes back. */
+async function readSection(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  rest: Uint8Array,
+  bytes: number,
+  what: string,
+  take: (chunk: Uint8Array, offset: number) => void | Promise<void>,
+): Promise<Uint8Array> {
+  let had = 0;
+  for (let chunk = rest;;) {
+    const wanted = bytes - had;
+    if (chunk.byteLength >= wanted) {
+      if (wanted > 0) await take(chunk.subarray(0, wanted), had);
+      return chunk.subarray(wanted);
+    }
+    if (chunk.byteLength > 0) await take(chunk, had);
+    had += chunk.byteLength;
+    const { done, value } = await reader.read();
+    if (done) {
+      throw new Error(
+        `sandbox snapshot is truncated (${had} of ${bytes} bytes${what})`,
+      );
+    }
+    chunk = value;
+  }
+}
+
+/** Write a format-4 file's store into `target`, from the body after its
+ * header: the lower from the image first, then each exported file in
+ * order, then the copy completed and the identity it replays to checked.
+ * Their bytes were checked part by part as they downloaded
+ * (fetchVerifiedSnapshot); each file's sha256 is not hashed again here,
+ * which would hold the whole file at once, and the kernel's replay checks
+ * the files themselves. Returns what was read past the store. */
+async function restoreStore(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  rest: Uint8Array,
+  store: StorePin,
+  target: StoreRestoreTarget,
+  image: () => Promise<Uint8Array>,
+): Promise<Uint8Array> {
+  const lower = await target.materializeLower(await image());
+  if (
+    lower.bytes !== store.lower.bytes || lower.sha256 !== store.lower.sha256
+  ) {
+    throw new SnapshotMismatch(
+      `the image materializes to a lower.tar of ${lower.bytes} bytes, sha256 ${lower.sha256}; ` +
+        `the snapshot's store was made over ${store.lower.bytes} bytes, sha256 ${store.lower.sha256}`,
+    );
+  }
+  for (const file of store.files) {
+    rest = await readSection(
+      reader,
+      rest,
+      file.bytes,
+      ` of the store's ${file.name}`,
+      (chunk, offset) => target.write(file.name, offset, chunk),
+    );
+  }
+  const why = identityMismatch(await target.complete(), store.identity);
+  if (why !== undefined) {
+    throw new SnapshotMismatch(`restoring the snapshot's store: ${why}`);
+  }
+  return rest;
 }
 
 /** A snapshot file's (gzipped) header: what it was built from, read
@@ -136,12 +271,14 @@ function headerMismatch(
 export async function checkSandboxSnapshot(
   body: ReadableStream<Uint8Array<ArrayBuffer>>,
   expected: SnapshotIdentity | BuiltFrom,
+  /** As for {@link headerMismatch}: undefined takes either format. */
+  rootStore?: boolean,
 ): Promise<BuiltFrom> {
   const reader = body.pipeThrough(new DecompressionStream("gzip"))
     .getReader();
   try {
     const { header } = await readHeader(reader);
-    const why = headerMismatch(header, expected);
+    const why = headerMismatch(header, expected, rootStore);
     if (why !== undefined) {
       throw new SnapshotMismatch(why);
     }
@@ -151,11 +288,17 @@ export async function checkSandboxSnapshot(
   }
 }
 
-/** A snapshot file's header facts for its pin: its kernel memory and
- * what it holds (undefined in an older capture). Reads no memory. */
+/** A snapshot file's header facts for its pin: its format, its kernel
+ * memory, what it holds (undefined in an older capture) and its store (in
+ * format 4). Reads no memory. */
 export async function snapshotHeaderFacts(
   body: ReadableStream<Uint8Array<ArrayBuffer>>,
-): Promise<{ memoryBytes: number; contents?: SnapshotContents }> {
+): Promise<{
+  format: number;
+  memoryBytes: number;
+  contents?: SnapshotContents;
+  store?: StorePin;
+}> {
   const reader = body.pipeThrough(new DecompressionStream("gzip"))
     .getReader();
   try {
@@ -163,9 +306,19 @@ export async function snapshotHeaderFacts(
     if (!Number.isInteger(header.memoryBytes)) {
       throw new Error("sandbox snapshot header names no memoryBytes");
     }
+    if (!Number.isInteger(header.format)) {
+      throw new Error("sandbox snapshot header names no format");
+    }
     return {
+      format: header.format!,
       memoryBytes: header.memoryBytes!,
       ...(header.contents === undefined ? {} : { contents: header.contents }),
+      ...(header.store === undefined ? {} : {
+        // As a pin holds it, so the two compare as written.
+        store: parseStorePin(header.store, (what) => {
+          throw new Error(`sandbox snapshot header's ${what}`);
+        }),
+      }),
     };
   } finally {
     await reader.cancel().catch(() => {});
@@ -174,7 +327,11 @@ export async function snapshotHeaderFacts(
 
 /** Read a snapshot file's (gzipped) body back into a seal image. A
  * snapshot not built from `expected` is refused as soon as its header is
- * read, before its memory (over 500 MiB) is allocated. */
+ * read, before its memory (over 500 MiB) is allocated. With `store` (the
+ * kernel's root is a YurtFS store) only format 4 is taken: its store goes
+ * into `store.target` first, and a store that is not `store.expect` --
+ * in the header, or as the written copy replays -- is refused before the
+ * memory is allocated. Without it only format 3 is taken. */
 export async function decodeSandboxSnapshot(
   body: ReadableStream<Uint8Array<ArrayBuffer>>,
   expected: SnapshotIdentity | BuiltFrom,
@@ -185,39 +342,62 @@ export async function decodeSandboxSnapshot(
    * allocated: a check that may still refuse the snapshot (the live
    * index's) refuses it before the ~250-545 MiB exist. */
   beforeAllocate?: () => Promise<void>,
+  store?: {
+    /** The fresh store to write; the caller discards it on a throw. */
+    target: StoreRestoreTarget;
+    /** The pin's store identity. */
+    expect: StoreIdentity;
+    /** The image the store's lower is materialized from. */
+    image: () => Promise<Uint8Array>;
+  },
 ): Promise<SandboxSealImage> {
   // A reader, not `for await`: WebKit's ReadableStream is not async-iterable.
   const reader = body.pipeThrough(new DecompressionStream("gzip"))
     .getReader();
   try {
-    const { header, rest } = await readHeader(reader);
-    const why = headerMismatch(header, expected);
+    let { header, rest } = await readHeader(reader);
+    const why = headerMismatch(header, expected, store !== undefined);
     if (why !== undefined) throw new SnapshotMismatch(why);
+    if (store !== undefined) {
+      const pinned = identityMismatch(header.store!.identity, store.expect);
+      if (pinned !== undefined) {
+        throw new SnapshotMismatch(`the snapshot's header says ${pinned}`);
+      }
+    }
     onHeader?.(header.builtFrom!);
     await beforeAllocate?.();
+    if (store !== undefined) {
+      rest = await restoreStore(
+        reader,
+        rest,
+        header.store!,
+        store.target,
+        store.image,
+      );
+    }
     const {
       format: _format,
       builtFrom: _builtFrom,
       memoryBytes,
       contents: _contents,
+      store: _store,
       ...seal
     } = header as Header;
     const memory = new Uint8Array(memoryBytes);
-    let filled = 0;
-    for (let chunk = rest;;) {
-      if (filled + chunk.byteLength > memory.byteLength) {
+    rest = await readSection(
+      reader,
+      rest,
+      memoryBytes,
+      "",
+      (chunk, offset) => memory.set(chunk, offset),
+    );
+    for (;;) {
+      if (rest.byteLength > 0) {
         throw new Error("sandbox snapshot is longer than its header says");
       }
-      memory.set(chunk, filled);
-      filled += chunk.byteLength;
       const { done, value } = await reader.read();
       if (done) break;
-      chunk = value;
-    }
-    if (filled !== memoryBytes) {
-      throw new Error(
-        `sandbox snapshot is truncated (${filled} of ${memoryBytes} bytes)`,
-      );
+      rest = value;
     }
     return { ...seal, kernelMemory: memory, processes: [] };
   } catch (error) {

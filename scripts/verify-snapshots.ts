@@ -482,6 +482,15 @@ if (import.meta.main) {
       if (JSON.stringify(facts.contents) !== JSON.stringify(pin.contents)) {
         problems.push(`${kind}: the file's contents are not the pin's`);
       }
+      if (facts.format !== pin.format) {
+        problems.push(
+          `${kind}: the file is format ${facts.format}, the pin says ${pin.format}`,
+        );
+      }
+      // The store's files and identity, sizes and sha256s included.
+      if (JSON.stringify(facts.store) !== JSON.stringify(pin.store)) {
+        problems.push(`${kind}: the file's store is not the pin's`);
+      }
     }
   }
   if (Deno.args.includes("--live")) {
