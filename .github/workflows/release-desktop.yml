@@ -51,7 +51,7 @@ jobs:
   # The site the installers ship, from the same inputs deploy-pages.yml
   # builds from.
   site:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Inputs are well-formed
@@ -88,7 +88,7 @@ jobs:
           - os: macos-latest
             targets: aarch64-apple-darwin
             browsers: ~/Library/Caches/ms-playwright
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             targets: x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
             browsers: ~/.cache/ms-playwright
     runs-on: ${{ matrix.os }}
@@ -164,7 +164,7 @@ jobs:
   release:
     needs: desktop
     if: inputs.publish && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
