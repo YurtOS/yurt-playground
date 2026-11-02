@@ -63,6 +63,7 @@ import {
   fetchVerifiedSnapshot,
   pinnedSnapshot,
   type SnapshotKind,
+  SnapshotMismatch,
 } from "./sandbox_snapshot.ts";
 import { uploadedSnapshot } from "./snapshot_source.ts";
 import {
@@ -70,6 +71,8 @@ import {
   type RootStoreApi,
   rootStoreOf,
   sealWithStore,
+  type StoreIdentity,
+  type StoreRestoreTarget,
 } from "./root_store.ts";
 import { KILL_GRACE_MS, type Spawner, type WaitStatus } from "./executions.ts";
 import {
@@ -428,7 +431,22 @@ export async function loadPlaygroundKernel(
 export async function restorePlaygroundKernel(
   kernel: Uint8Array,
   image: Parameters<typeof KernelHostInterface.restore>[1],
+  /** On a kernel whose root is a YurtFS store: its API and the written
+   * store to mount as the root. */
+  store?: {
+    api: RootStoreApi;
+    target: StoreRestoreTarget;
+    expect: StoreIdentity;
+  },
 ): Promise<Awaited<ReturnType<typeof KernelHostInterface.restore>>> {
+  if (store !== undefined) {
+    return store.api.restore(
+      kernel,
+      image,
+      store,
+      await plannedPlaygroundHostState(),
+    );
+  }
   return KernelHostInterface.restore(
     kernel,
     image,
@@ -629,7 +647,18 @@ export async function restoreSnapshot(
         // The live index's verdict before the memory is allocated: a
         // refused snapshot never holds it, so a fallback boot never runs
         // beside it.
-        () => checked,
+        async (memoryBytes) => {
+          await checked;
+          // The pin's own record of what a restore allocates, before the
+          // manifest's (unhashed yet) number is believed.
+          if (
+            pin.memoryBytes !== undefined && memoryBytes !== pin.memoryBytes
+          ) {
+            throw new SnapshotMismatch(
+              `the snapshot's manifest names memoryBytes ${memoryBytes}, not the pinned ${pin.memoryBytes}`,
+            );
+          }
+        },
         store ?? false,
       ))().catch(async (error) => {
         // A refused set says so, rather than the aborted download's reason.
@@ -640,14 +669,11 @@ export async function restoreSnapshot(
     fetched = performance.now();
     memoryBytes = image.kernelMemory.byteLength;
     env.show("restoring snapshot");
-    restored = store === undefined
-      ? await restorePlaygroundKernel(kernel, image)
-      : await rootStore!.restore(
-        kernel,
-        image,
-        store,
-        await plannedPlaygroundHostState(),
-      );
+    restored = await restorePlaygroundKernel(
+      kernel,
+      image,
+      store === undefined ? undefined : { ...store, api: rootStore! },
+    );
     if (restored.processes.length !== 0) {
       restored.host.dispose();
       throw new Error("a sandbox snapshot must hold no process");

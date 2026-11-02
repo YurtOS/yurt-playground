@@ -135,7 +135,6 @@ export async function snapshotMatchesPins(
    * zip with the store then, and only one without otherwise. */
   rootStore?: boolean,
 ): Promise<boolean> {
-  rootStore ??= await kernelRootIsStore();
   const leftOut = (why: string) => {
     console.warn(
       `!!! ${SNAPSHOT_KINDS[kind].name} is NOT published: ${why}. ` +
@@ -144,6 +143,12 @@ export async function snapshotMatchesPins(
     );
     return false;
   };
+  try {
+    rootStore ??= await kernelRootIsStore(pins.kernelWasm.rev);
+  } catch (error) {
+    // Optional: a kernel checkout off the pinned rev leaves it out.
+    return leftOut(error instanceof Error ? error.message : String(error));
+  }
   let pin;
   try {
     pin = pinnedSnapshot(pins, kind, rootStore);

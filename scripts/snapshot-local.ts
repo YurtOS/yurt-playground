@@ -408,7 +408,10 @@ async function main(): Promise<void> {
     const check = await checkSnapshotFile(
       file,
       expected,
-      { decode: true, rootStore: await kernelRootIsStore() },
+      {
+        decode: true,
+        rootStore: await kernelRootIsStore(pins.kernelWasm.rev),
+      },
     );
     if (!check.ok) {
       return die(`the capture is not this site's: ${check.problem}`);

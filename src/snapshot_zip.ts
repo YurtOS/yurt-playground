@@ -51,15 +51,23 @@ export type ZipEntryInput = {
   deflate: boolean;
 };
 
+/** The `[start, end)` ranges of `byteLength` bytes in 1 MiB steps:
+ * multiplied, never shifted, so offsets past 2 GiB stay positive. */
+export function chunkRanges(byteLength: number): [number, number][] {
+  const step = 2 ** 20;
+  return Array.from(
+    { length: Math.ceil(byteLength / step) },
+    (_, i) => [i * step, Math.min((i + 1) * step, byteLength)],
+  );
+}
+
 /** `chunks` as a stream, in 1 MiB views: no copy of a chunk is made. */
 function streamOf(
   chunks: Uint8Array[],
 ): ReadableStream<Uint8Array<ArrayBuffer>> {
   const views = chunks.flatMap((chunk) =>
-    Array.from(
-      { length: Math.ceil(chunk.byteLength / (1 << 20)) },
-      (_, i) =>
-        chunk.subarray(i << 20, (i + 1) << 20) as Uint8Array<ArrayBuffer>,
+    chunkRanges(chunk.byteLength).map(([start, end]) =>
+      chunk.subarray(start, end) as Uint8Array<ArrayBuffer>
     )
   );
   let next = 0;
@@ -216,7 +224,11 @@ export class ZipStreamReader {
       return undefined;
     }
     if (signature !== LOCAL) {
-      throw new Error("sandbox snapshot is not a zip (no entry header)");
+      throw new Error(
+        (signature & 0xffff) === 0x8b1f
+          ? "sandbox snapshot is a gzip, not a zip"
+          : "sandbox snapshot is not a zip (no entry header)",
+      );
     }
     const flags = view.getUint16(6, true);
     const method = view.getUint16(8, true);

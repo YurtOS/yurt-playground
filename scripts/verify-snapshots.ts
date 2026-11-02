@@ -468,7 +468,7 @@ if (import.meta.main) {
   );
   const { kernelRootIsStore } = await import("./lib/snapshot_file.ts");
   const problems = verifySnapshotPins(pins, {
-    rootStore: await kernelRootIsStore(),
+    rootStore: await kernelRootIsStore(pins.kernelWasm?.rev),
   });
   const pinOf = (kind: SnapshotKind): SnapshotPin | undefined => {
     try {

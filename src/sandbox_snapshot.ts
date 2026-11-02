@@ -29,6 +29,7 @@
  */
 import { sha256 } from "@noble/hashes/sha2";
 import { sha256Hex } from "./integrity.ts";
+import { IMAGE_PART_BYTES } from "./image_parts.ts";
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
 import {
   type BuiltFrom,
@@ -153,7 +154,13 @@ export async function encodeSandboxSnapshot(
 /** Read up to the end of the manifest; the zip's next entries stay in
  * `zip`. */
 async function readManifest(zip: ZipStreamReader): Promise<Partial<Manifest>> {
-  const entry = await zip.next();
+  const entry = await zip.next().catch((error) => {
+    // The format of before the zip, refused with its own advice.
+    if (error instanceof Error && error.message.endsWith("a gzip, not a zip")) {
+      throw new SnapshotMismatch(`sandbox snapshot ${formatRefusal(3)}`);
+    }
+    throw error;
+  });
   if (entry?.name !== MANIFEST) {
     throw new Error(`sandbox snapshot does not begin with ${MANIFEST}`);
   }
@@ -357,7 +364,7 @@ export async function decodeSandboxSnapshot(
   /** Awaited after the manifest is accepted and before the store or the
    * memory is written: a check that may still refuse the snapshot (the
    * live index's) refuses it before the ~250-545 MiB exist. */
-  beforeAllocate?: () => Promise<void>,
+  beforeAllocate?: (memoryBytes: number) => Promise<void>,
   root: StoreRestore | boolean | "either" = false,
   /** Check every entry's CRC-32 too: the release tools' full check, whose
    * file no pinned hash covers yet. */
@@ -382,7 +389,7 @@ export async function decodeSandboxSnapshot(
       }
     }
     onHeader?.(manifest.builtFrom!);
-    await beforeAllocate?.();
+    await beforeAllocate?.(manifest.memoryBytes!);
     if (manifest.store !== undefined) {
       if (store !== undefined) {
         await restoreStore(zip, manifest.store, store.target, store.image);
@@ -477,8 +484,9 @@ export async function fetchVerifiedSnapshot(
     : await cache.open(SNAPSHOT_PARTS_CACHE).catch(() => undefined);
   const giveUp = new AbortController();
   const prefix = `${PART_KEY_ORIGIN}${pin.sha256}/`;
-  // The layout too: parts of another size are other bytes at an index.
-  const keyOf = (at: number) => `${prefix}${manifest.parts.length}/${at}`;
+  // The page's own part size too: the site is sliced with it, so parts of
+  // another deploy's size are other bytes at an index.
+  const keyOf = (at: number) => `${prefix}${IMAGE_PART_BYTES}/${at}`;
   /** Written once the whole zip passed its hash: only then are its cached
    * parts taken. A visit that ends any other way -- a decode that stops, a
    * closed tab -- leaves the parts it fetched untrusted (and drops them
@@ -496,10 +504,14 @@ export async function fetchVerifiedSnapshot(
   /** The parts this visit put: a visit that stops may have fetched a bad
    * one, while those a verified visit left are as good as they were. */
   const putHere = new Set<string>();
+  /** Set once the visit stopped: a part still on its way is not kept. */
+  let stopped = false;
   /** The visit ended before the whole zip passed its hash; `all`: it
    * failed the hash, so none of its parts is to be trusted. */
-  const forget = (all: boolean) =>
-    dropCached((url) => all ? url.startsWith(prefix) : putHere.has(url));
+  const forget = (all: boolean) => {
+    stopped = true;
+    return dropCached((url) => all ? url.startsWith(prefix) : putHere.has(url));
+  };
   /** Part `at`: from the cache when a verified zip left it there and it
    * is still the bytes it put (the sha256 it recorded beside them: local
    * integrity, not trust), else fetched (and kept, untrusted until the
@@ -524,10 +536,12 @@ export async function fetchVerifiedSnapshot(
     }
     const bytes = new Uint8Array(await response.arrayBuffer());
     putHere.add(keyOf(at));
-    if (store !== undefined) {
+    if (store !== undefined && !stopped) {
       const headers = { [PART_SHA256_HEADER]: await sha256Hex(bytes) };
       await store.put(keyOf(at), new Response(bytes, { headers }))
         .catch(() => {});
+      // The visit stopped meanwhile: its forget() ran before this put.
+      if (stopped) await store.delete(keyOf(at)).catch(() => {});
     }
     return bytes;
   };
@@ -566,7 +580,13 @@ export async function fetchVerifiedSnapshot(
         }
         // Before the end is seen, so the cache is settled when it is.
         await store?.put(verifiedKey, new Response("")).catch(() => {});
-        await dropCached((url) => !url.startsWith(prefix));
+        // Every other snapshot's parts go, and this one's in another
+        // layout (an earlier deploy's part size).
+        const keep = new Set([
+          verifiedKey,
+          ...manifest.parts.map((_, at) => keyOf(at)),
+        ]);
+        await dropCached((url) => !keep.has(url));
         controller.close();
         return;
       }

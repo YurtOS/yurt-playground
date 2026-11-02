@@ -916,3 +916,20 @@ Deno.test("a full check of a snapshot file refuses bytes its zip CRC-32 does not
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("the store rule refuses to answer for a kernel checkout that is not at the pinned rev", async () => {
+  const pinned = (await new Deno.Command("git", {
+    args: ["-C", "../yurtos-kernel", "rev-parse", "HEAD"],
+    cwd: new URL("..", import.meta.url),
+    env: withoutGitVariables(),
+    clearEnv: true,
+    stdout: "piped",
+  }).output()).stdout;
+  const rev = new TextDecoder().decode(pinned).trim();
+  assertEquals(await kernelRootIsStore(rev), false);
+  await assertRejects(
+    () => kernelRootIsStore("0".repeat(40)),
+    Error,
+    `not the pinned ${"0".repeat(40)}`,
+  );
+});

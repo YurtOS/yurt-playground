@@ -506,7 +506,7 @@ async function main(): Promise<void> {
       path,
       liveSetOf,
       checkKind,
-      await kernelRootIsStore(),
+      await kernelRootIsStore((await loadPins(path)).kernelWasm.rev),
     );
     if (!verdict.ok) {
       // The verdict "not this train's", apart from any other failure
@@ -566,7 +566,7 @@ async function main(): Promise<void> {
   if (setProblem !== undefined) die(setProblem);
   // A kernel whose root is a store makes zips with it: one without is
   // not this train's.
-  const rootStore = await kernelRootIsStore();
+  const rootStore = await kernelRootIsStore(pins.kernelWasm.rev);
   const thisTrains = () =>
     checkSnapshotFile(
       snapshotPath,

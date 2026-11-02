@@ -276,8 +276,12 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
   try {
     const path = `${dir}/sandbox.seal.zip`;
     await Deno.writeFile(path, file);
-    assertEquals(await snapshotMatchesPins(path, pins), true);
+    assertEquals(await snapshotMatchesPins(path, pins, "desktop", false), true);
     assertEquals(warned.length, 0);
+    // The kernel is asked only at the pinned rev ("v" is none).
+    assertEquals(await snapshotMatchesPins(path, pins), false);
+    assertStringIncludes(String(warned.at(-1)), "not the pinned v");
+    warned.length = 0;
     // A zip of the memory alone is not published for a store-root kernel.
     assertEquals(await snapshotMatchesPins(path, pins, "desktop", true), false);
     assertStringIncludes(
@@ -288,21 +292,32 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
     // Not the pinned file (a local capture, an older download).
     const other = await encode({ ...built, imageSha256: hex("d") });
     await Deno.writeFile(path, other);
-    assertEquals(await snapshotMatchesPins(path, pins), false);
+    assertEquals(
+      await snapshotMatchesPins(path, pins, "desktop", false),
+      false,
+    );
     assertStringIncludes(String(warned.at(-1)), "not the pinned");
     // The pin itself is of another train's image.
     await Deno.writeFile(path, file);
     assertEquals(
-      await snapshotMatchesPins(path, {
-        ...pins,
-        browserImage: pin(hex("e")),
-      }),
+      await snapshotMatchesPins(
+        path,
+        {
+          ...pins,
+          browserImage: pin(hex("e")),
+        },
+        "desktop",
+        false,
+      ),
       false,
     );
     assertStringIncludes(String(warned.at(-1)), `imageSha256 ${hex("b")}`);
     // No snapshot pinned at all.
     const { snapshot: _snapshot, ...unpinned } = pins;
-    assertEquals(await snapshotMatchesPins(path, unpinned), false);
+    assertEquals(
+      await snapshotMatchesPins(path, unpinned, "desktop", false),
+      false,
+    );
   } finally {
     console.warn = warn;
     await Deno.remove(dir, { recursive: true });

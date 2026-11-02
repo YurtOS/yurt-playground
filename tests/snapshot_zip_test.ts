@@ -1,5 +1,6 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import {
+  chunkRanges,
   crc32,
   writeZip,
   type ZipEntry,
@@ -187,4 +188,17 @@ Deno.test("a read whose taker fails, or whose entry inflates past its size, sett
   } finally {
     [globalThis.CompressionStream, globalThis.DecompressionStream] = engines;
   }
+});
+
+Deno.test("an entry is streamed in 1 MiB views up to 4 GiB, past int32 offsets", () => {
+  const length = 2.5 * 2 ** 30 + 7;
+  const ranges = chunkRanges(length);
+  assertEquals(ranges.length, Math.ceil(length / 2 ** 20));
+  let at = 0;
+  for (const [start, end] of ranges) {
+    assertEquals(start, at);
+    assertEquals(end > start && end - start <= 2 ** 20, true);
+    at = end;
+  }
+  assertEquals(at, length);
 });
