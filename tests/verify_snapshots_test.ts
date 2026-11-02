@@ -152,12 +152,12 @@ Deno.test("on a kernel whose root is a YurtFS store, a pin of a zip without the 
   assertEquals(verifySnapshotPins(pins), []);
   // Today's kernel restores none of the three that carry one.
   assertEquals(verifySnapshotPins(pins, { rootStore: false }), [
-    "desktop: the zip carries a YurtFS root store, and the kernel keeps its root in its memory",
-    "tablet: the zip carries a YurtFS root store, and the kernel keeps its root in its memory",
-    "go: the zip carries a YurtFS root store, and the kernel keeps its root in its memory",
+    "desktop: the pinned snapshot carries a YurtFS root store, and this kernel keeps its root filesystem in its memory",
+    "tablet: the pinned snapshot carries a YurtFS root store, and this kernel keeps its root filesystem in its memory",
+    "go: the pinned snapshot carries a YurtFS root store, and this kernel keeps its root filesystem in its memory",
   ]);
   assertEquals(verifySnapshotPins(pins, { rootStore: true }), [
-    "phone: the zip holds the kernel memory alone, and the kernel's root is a YurtFS store",
+    "phone: the pinned snapshot holds the kernel memory alone, and this kernel's root filesystem is a YurtFS store that it does not hold; capture it again",
   ]);
 });
 

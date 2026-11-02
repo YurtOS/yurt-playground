@@ -180,6 +180,29 @@ Deno.test("a store snapshot restores its store into a fresh one in export order,
   }
   const { rootStore: _store, ...memoryOnly } = seal;
   assertEquals(restored, memoryOnly);
+  // A store with no file data yet: its empty data file still reaches the
+  // target, which so knows it exists.
+  const pristine = {
+    ...memory(16),
+    rootStore: {
+      ...store(),
+      files: [
+        { name: "data" as const, bytes: [] },
+        ...store().files.slice(1),
+      ],
+    },
+  };
+  const pristineLog: string[] = [];
+  const pristineTarget = fakeTarget(pristineLog);
+  await decodeSandboxSnapshot(
+    (await encodeSandboxSnapshot(pristine, BUILT)).stream(),
+    BUILT,
+    undefined,
+    undefined,
+    { target: pristineTarget, expect: IDENTITY, image },
+  );
+  assertEquals(pristineLog.slice(1, 4), ["data", "journal-b", "meta"]);
+  assertEquals(pristineTarget.files.get("data")?.byteLength, 0);
 });
 
 Deno.test("a snapshot is a zip of its manifest, the store files in export order, then the memory", async () => {
@@ -596,7 +619,17 @@ Deno.test("?snapshot=1 on a kernel with a root store restores the store, then th
   };
   const url = `http://pg/${name}`;
   try {
-    await restoreSnapshot(env, new Uint8Array(), url, api(IDENTITY));
+    const restored = await restoreSnapshot(
+      env,
+      new Uint8Array(),
+      url,
+      api(IDENTITY),
+    );
+    // A boot that falls back after the restore (its shell would not
+    // start) discards the store too.
+    await restored.discard();
+    assertEquals(log.at(-1), "discard");
+    log.pop();
     assertEquals(log, [
       "fresh store",
       "fetch ./playground-slim.yurtimg",

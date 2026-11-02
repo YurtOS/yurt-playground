@@ -15,7 +15,7 @@
  *
  * The commit holds:
  * - `manifest.json`: the pin's shape (src/pins.ts `SnapshotPin`: format,
- *   the whole file's sha256 and size, each part's sha256, builtFrom), plus
+ *   the whole zip's one sha256 and size, builtFrom, a store's identity), plus
  *   what the script adds for people (`packages`, `name`);
  * - `sandbox.seal.zip.parts.json` and the parts, as the site publishes the
  *   pinned one (src/image_parts.ts).

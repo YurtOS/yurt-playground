@@ -28,6 +28,7 @@
  * it.
  */
 import { sha256 } from "@noble/hashes/sha2";
+import { sha256Hex } from "./integrity.ts";
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
 import {
   type BuiltFrom,
@@ -195,6 +196,11 @@ function manifestMismatch(
   const refused = formatRefusal(manifest.format) ??
     storeRefusal(manifest.store !== undefined, rootStore);
   if (refused !== undefined) return `sandbox snapshot ${refused}`;
+  if (
+    !Number.isInteger(manifest.memoryBytes) || manifest.memoryBytes! < 0
+  ) {
+    return "sandbox snapshot manifest names no memoryBytes";
+  }
   if (manifest.store !== undefined) {
     try {
       manifest.store = manifestStore(manifest.store);
@@ -248,6 +254,8 @@ async function restoreStore(
   }
   for (const name of store.files) {
     const entry = await expectEntry(zip, `${STORE_DIR}${name}`);
+    // An empty file gives no chunk: written once anyway, so it exists.
+    if (entry.size === 0) await target.write(name, 0, new Uint8Array(0));
     await zip.read(entry, (chunk, offset) => target.write(name, offset, chunk));
   }
 }
@@ -420,6 +428,8 @@ export const SNAPSHOT_PARTS_CACHE = "yurt-playground-snapshot-parts-v2";
 /** The gzip snapshot's cache, which nothing reads any more. */
 const OLD_PARTS_CACHE = "yurt-playground-snapshot-parts-v1";
 const PART_KEY_ORIGIN = "https://yurt-snapshot-parts.invalid/";
+/** A cached part's own sha256, as the visit that fetched it computed. */
+const PART_SHA256_HEADER = "x-yurt-part-sha256";
 
 /** How many parts are downloaded at once (20 MiB each), so a few, not all
  * of them. */
@@ -467,7 +477,8 @@ export async function fetchVerifiedSnapshot(
     : await cache.open(SNAPSHOT_PARTS_CACHE).catch(() => undefined);
   const giveUp = new AbortController();
   const prefix = `${PART_KEY_ORIGIN}${pin.sha256}/`;
-  const keyOf = (at: number) => `${prefix}${at}`;
+  // The layout too: parts of another size are other bytes at an index.
+  const keyOf = (at: number) => `${prefix}${manifest.parts.length}/${at}`;
   /** Written once the whole zip passed its hash: only then are its cached
    * parts taken. A visit that ends any other way -- a decode that stops, a
    * closed tab -- leaves the parts it fetched untrusted (and drops them
@@ -489,13 +500,21 @@ export async function fetchVerifiedSnapshot(
    * failed the hash, so none of its parts is to be trusted. */
   const forget = (all: boolean) =>
     dropCached((url) => all ? url.startsWith(prefix) : putHere.has(url));
-  /** Part `at`: from the cache when a verified zip left it there, else
-   * fetched (and kept, untrusted until the whole passes). */
+  /** Part `at`: from the cache when a verified zip left it there and it
+   * is still the bytes it put (the sha256 it recorded beside them: local
+   * integrity, not trust), else fetched (and kept, untrusted until the
+   * whole passes). */
   const part = async (at: number): Promise<Uint8Array<ArrayBuffer>> => {
     const cached = trusted
       ? await store?.match(keyOf(at)).catch(() => undefined)
       : undefined;
-    if (cached !== undefined) return new Uint8Array(await cached.arrayBuffer());
+    if (cached !== undefined) {
+      const bytes = new Uint8Array(await cached.arrayBuffer());
+      const recorded = cached.headers.get(PART_SHA256_HEADER);
+      if (recorded !== null && await sha256Hex(bytes) === recorded) {
+        return bytes;
+      }
+    }
     const name = manifest.parts[at];
     const response = await fetchImpl(new URL(name, manifestUrl), {
       signal: giveUp.signal,
@@ -505,7 +524,11 @@ export async function fetchVerifiedSnapshot(
     }
     const bytes = new Uint8Array(await response.arrayBuffer());
     putHere.add(keyOf(at));
-    await store?.put(keyOf(at), new Response(bytes)).catch(() => {});
+    if (store !== undefined) {
+      const headers = { [PART_SHA256_HEADER]: await sha256Hex(bytes) };
+      await store.put(keyOf(at), new Response(bytes, { headers }))
+        .catch(() => {});
+    }
     return bytes;
   };
   const hash = sha256.create();

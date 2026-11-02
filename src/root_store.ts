@@ -44,10 +44,12 @@ export interface StoreRestoreTarget {
 }
 
 export interface RootStoreApi {
-  /** A fresh, empty store, replacing the one any earlier restore of this
-   * page left (the page keeps one: the live root of its last restore).
-   * Neither a later visit nor a boot that fell back after a restore leaves
-   * a store behind. */
+  /** A fresh, empty store, with its fixed file set present and empty.
+   * First it removes every store an earlier restore of this page (this
+   * origin) left that no live kernel holds: another tab's root, claimed
+   * by its kernel, is kept. So stores never outnumber the open tabs plus
+   * one; the page also discards a store it restored into when its boot
+   * falls back afterwards. */
   freshStore(): Promise<StoreRestoreTarget>;
   /** `host.sealSandbox` with the root store checkpointed under the
    * kernel's barrier: commit and quiesce, then export `data`, the active

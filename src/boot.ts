@@ -474,7 +474,16 @@ export async function bootPlayground(
   if (snapshotPath === undefined) return await bootImage();
   // A restored kernel that then fails to start its shell falls back too.
   return (await snapshotOrBoot(
-    async () => start(await restoreSnapshot(env, kernel, snapshotPath), true),
+    async () => {
+      const restored = await restoreSnapshot(env, kernel, snapshotPath);
+      try {
+        return await start(restored.host, true);
+      } catch (error) {
+        // The image boots instead: no store of this restore stays.
+        await restored.discard();
+        throw error;
+      }
+    },
     bootImage,
   )).kernel;
 }
@@ -538,7 +547,12 @@ export async function restoreSnapshot(
   kernel: Uint8Array,
   path: string,
   rootStore: RootStoreApi | undefined = rootStoreOf(KernelHostInterface),
-): Promise<KernelHostInterface> {
+): Promise<{
+  host: KernelHostInterface;
+  /** Remove the store it restored into (none without a root store), for
+   * a boot that falls back after it. */
+  discard: () => Promise<void>;
+}> {
   const started = performance.now();
   env.show("loading snapshot");
   // A pin of another build is refused before anything is downloaded, a
@@ -650,7 +664,10 @@ export async function restoreSnapshot(
       `(parts had at ${Math.round(downloaded - started)} ms), ` +
       `restored in ${Math.round(performance.now() - fetched)} ms`,
   );
-  return restored.host;
+  return {
+    host: restored.host,
+    discard: async () => await target?.discard(),
+  };
 }
 
 /**

@@ -50,6 +50,7 @@ import {
   SNAPSHOT_KIND_NAMES,
   SNAPSHOT_KINDS,
   type SnapshotKind,
+  storeRefusal,
   TABLET_PYTHON_SET,
 } from "../src/snapshot_pin.ts";
 import { PYTHON_SET } from "../src/python_install.ts";
@@ -166,14 +167,9 @@ export function verifySnapshotPins(
     if (format !== undefined) {
       problems.push(`${kind}: the pinned snapshot ${format}`);
     }
-    if (rootStore === true && pin.store === undefined) {
-      problems.push(
-        `${kind}: the zip holds the kernel memory alone, and the kernel's root is a YurtFS store`,
-      );
-    } else if (rootStore === false && pin.store !== undefined) {
-      problems.push(
-        `${kind}: the zip carries a YurtFS root store, and the kernel keeps its root in its memory`,
-      );
+    const store = storeRefusal(pin.store !== undefined, rootStore);
+    if (store !== undefined) {
+      problems.push(`${kind}: the pinned snapshot ${store}`);
     }
     const expected = SNAPSHOT_EXPECTED[kind];
     if (pin.contents === undefined) {

@@ -564,13 +564,18 @@ function memoryCaches(): CacheStorage & {
   deleted: string[];
 } {
   const store = new Map<string, Uint8Array>();
+  // Kept beside the bodies, as the Cache API keeps a response's headers.
+  const headers = new Map<string, Headers>();
   const deleted: string[] = [];
   const cache = {
     match: (key: string) =>
       Promise.resolve(
-        store.has(key) ? new Response(store.get(key)!.slice()) : undefined,
+        store.has(key)
+          ? new Response(store.get(key)!.slice(), { headers: headers.get(key) })
+          : undefined,
       ),
     put: async (key: string, response: Response) => {
+      headers.set(key, response.headers);
       store.set(key, new Uint8Array(await response.arrayBuffer()));
     },
     delete: (key: string | Request) =>
@@ -653,6 +658,26 @@ Deno.test("a verified cache outlives a visit that stops for another reason than 
   assertEquals(partFetches, 0, "the verified parts were kept");
 });
 
+Deno.test("a damaged part in a verified cache is fetched again, not used", async () => {
+  const sealed = image(1 << 10);
+  const file = new Uint8Array(
+    await (await encodeSandboxSnapshot(sealed, BUILT)).arrayBuffer(),
+  );
+  const name = "snapshot/tablet.seal.zip";
+  const path = `http://pg/${name}`;
+  const pin = await pinFor(file);
+  const cache = memoryCaches();
+  const restore = () =>
+    fetchVerifiedSnapshot(path, pin, site(name, file), undefined, cache)
+      .then((body) => decodeSandboxSnapshot(body, BUILT));
+  assertEquals(await restore(), sealed);
+  // The cached part holding the manifest's name goes bad: the decode would stop on it
+  // long before the stream's end and its hash.
+  const key = [...cache.store.keys()].find((url) => url.endsWith("/14"))!;
+  cache.store.set(key, new TextEncoder().encode("<ht"));
+  assertEquals(await restore(), sealed);
+});
+
 Deno.test("a restore drops the gzip snapshot's part cache", async () => {
   const sealed = image(16);
   const file = new Uint8Array(
@@ -701,10 +726,22 @@ Deno.test("a repeat restore takes the parts from the cache, drops them when the 
   partFetches = 0;
   assertEquals(await restore(), sealed);
   assertEquals(partFetches, 0, "a repeat visit downloads no part");
-  // A damaged cached part fails the whole zip's hash: that restore is
-  // refused (the page boots instead), and its parts are fetched afresh.
-  const last = `${origin}${pin.sha256}/${partsOf(file) - 1}`;
+  // A cached part that is not the bytes it was put as is fetched again.
+  const last = `${origin}${pin.sha256}/${partsOf(file)}/${partsOf(file) - 1}`;
   cache.store.set(last, new Uint8Array([9]));
+  partFetches = 0;
+  assertEquals(await restore(), sealed);
+  assertEquals(partFetches, 1, "only the damaged part");
+  // One that still matches its own record but not the zip fails the whole
+  // zip's hash: that restore is refused (the page boots instead), and all
+  // of its parts are fetched afresh.
+  const nine = new Uint8Array([9]);
+  await (await cache.open("")).put(
+    last,
+    new Response(nine, {
+      headers: { "x-yurt-part-sha256": await sha256Hex(nine) },
+    }),
+  );
   await assertRejects(() => restore(), Error, "not the pinned");
   assertEquals(cache.store.size, 0, "this zip's parts are dropped");
   partFetches = 0;
@@ -785,6 +822,20 @@ Deno.test("a snapshot's header records what it holds, read without its memory", 
     ),
     image(1 << 12),
   );
+});
+
+Deno.test("a manifest that names no memory size is refused as such", async () => {
+  for (const memoryBytes of [undefined, -1, 1.5, "16"]) {
+    const file = await rawSnapshot(
+      { format: FORMAT, builtFrom: BUILT, memoryBytes },
+      new Uint8Array(16),
+    );
+    await assertRejects(
+      () => decodeSandboxSnapshot(file.stream(), BUILT),
+      SnapshotMismatch,
+      "names no memoryBytes",
+    );
+  }
 });
 
 Deno.test("a check still pending refuses the snapshot before its memory is allocated", async () => {
