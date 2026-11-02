@@ -45,8 +45,8 @@ async function readPages(dir: string): Promise<Record<string, string>> {
   return pages;
 }
 
-Deno.test("the committed beacon token is empty or well formed", () => {
-  if (WEB_ANALYTICS_TOKEN !== "") beaconSnippet(WEB_ANALYTICS_TOKEN);
+Deno.test("the committed beacon token is well formed", () => {
+  assertStringIncludes(beaconSnippet(WEB_ANALYTICS_TOKEN), WEB_ANALYTICS_TOKEN);
 });
 
 Deno.test("a build carries the committed token only when it asks for analytics", async () => {
@@ -166,7 +166,9 @@ Deno.test("with a token the deployed pages carry the beacon once and the site po
 });
 
 Deno.test("a malformed token is refused rather than breaking the tag", () => {
-  for (const token of [`a'b`, `a"b`, "a b", "a<b"]) {
+  for (
+    const token of [`a'b`, `a"b`, "a b", "a<b", TOKEN.toUpperCase(), "abc"]
+  ) {
     assertThrows(() => beaconSnippet(token));
   }
   assertThrows(() => withBeacon("<body></body>", TOKEN));

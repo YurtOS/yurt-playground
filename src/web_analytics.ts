@@ -16,7 +16,7 @@
  */
 
 /** The site's public beacon token (not a secret); empty disables the beacon. */
-export const WEB_ANALYTICS_TOKEN = "";
+export const WEB_ANALYTICS_TOKEN = "5b1868f39da9412c8965fee39e20f566";
 
 /** Where the beacon script loads from (`script-src`). */
 export const BEACON_SCRIPT_ORIGIN = "https://static.cloudflareinsights.com";
@@ -31,7 +31,7 @@ export const BEACON_PAGES = ["index.html", "snapshot.html", "unsupported.html"];
 
 /** The beacon's `<script>` tag for `token`. */
 export function beaconSnippet(token: string): string {
-  if (!/^[A-Za-z0-9]+$/.test(token)) {
+  if (!/^[0-9a-f]{32}$/.test(token)) {
     throw new Error(
       `web analytics token ${JSON.stringify(token)} is malformed`,
     );
