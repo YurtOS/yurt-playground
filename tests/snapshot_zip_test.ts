@@ -99,3 +99,92 @@ Deno.test("a zip the page did not write that way is refused", async () => {
     "no end of central directory",
   );
 });
+
+Deno.test("a read whose taker fails, or whose entry inflates past its size, settles with that failure and never hangs", async () => {
+  let x = 1;
+  const bytes = Uint8Array.from(
+    { length: 4 << 20 },
+    () => (x = (x * 1103515245 + 12345) >>> 0) >>> 24,
+  );
+  const file = new Uint8Array(
+    await (await writeZip([{ name: "m", bytes, deflate: true }]))
+      .arrayBuffer(),
+  );
+  /** `read` of the zip's one entry, or "hung" after 5 s. */
+  const outcome = async (
+    zipBytes: Uint8Array,
+    take: (chunk: Uint8Array) => void,
+  ) => {
+    // In 64 KiB chunks, as a download arrives.
+    let at = 0;
+    const zip = new ZipStreamReader(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (at >= zipBytes.byteLength) return controller.close();
+          controller.enqueue(zipBytes.slice(at, at += 65536));
+        },
+      }).getReader(),
+    );
+    const entry = (await zip.next())!;
+    let timer: number | undefined;
+    const hung = new Promise<string>((resolve) => {
+      timer = setTimeout(() => resolve("hung"), 5000);
+    });
+    try {
+      return await Promise.race([
+        zip.read(entry, take).then(
+          () => "read",
+          (error: Error) => error.message,
+        ),
+        hung,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const cases = async (zipBytes: Uint8Array) => {
+    // A store write that fails partway (an OPFS quota error).
+    assertEquals(
+      await outcome(zipBytes, () => {
+        throw new Error("quota exceeded");
+      }),
+      "quota exceeded",
+    );
+    // A header that claims fewer bytes than the entry inflates to.
+    const short = zipBytes.slice();
+    new DataView(short.buffer).setUint32(22, 1000, true);
+    assertEquals(
+      await outcome(short, () => {}),
+      "zip entry m inflates past its 1000 bytes",
+    );
+  };
+  await cases(file);
+  // Again with compression streams as the Streams spec shapes them: a
+  // TransformStream holds back writes nobody reads. Deno's, Chromium's
+  // and WebKit's own (de)compression streams do not, so only this shows
+  // a reader that waits on its pump after it stopped reading. Identity
+  // streams: "deflated" bytes are the bytes.
+  const engines = [
+    globalThis.CompressionStream,
+    globalThis.DecompressionStream,
+  ];
+  const specShaped = class {
+    constructor() {
+      return new TransformStream<Uint8Array, Uint8Array>();
+    }
+  };
+  globalThis.CompressionStream =
+    specShaped as unknown as typeof CompressionStream;
+  globalThis.DecompressionStream =
+    specShaped as unknown as typeof DecompressionStream;
+  try {
+    await cases(
+      new Uint8Array(
+        await (await writeZip([{ name: "m", bytes, deflate: true }]))
+          .arrayBuffer(),
+      ),
+    );
+  } finally {
+    [globalThis.CompressionStream, globalThis.DecompressionStream] = engines;
+  }
+});

@@ -278,6 +278,13 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
     await Deno.writeFile(path, file);
     assertEquals(await snapshotMatchesPins(path, pins), true);
     assertEquals(warned.length, 0);
+    // A zip of the memory alone is not published for a store-root kernel.
+    assertEquals(await snapshotMatchesPins(path, pins, "desktop", true), false);
+    assertStringIncludes(
+      String(warned.at(-1)),
+      "holds the kernel memory alone",
+    );
+    warned.length = 0;
     // Not the pinned file (a local capture, an older download).
     const other = await encode({ ...built, imageSha256: hex("d") });
     await Deno.writeFile(path, other);

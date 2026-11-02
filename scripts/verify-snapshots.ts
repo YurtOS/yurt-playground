@@ -52,7 +52,6 @@ import {
   TABLET_PYTHON_SET,
 } from "../src/snapshot_pin.ts";
 import { PYTHON_SET } from "../src/python_install.ts";
-import { rootStoreOf } from "../src/root_store.ts";
 
 /** What each kind holds and what a restore of it can do. */
 export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
@@ -138,7 +137,7 @@ export function verifySnapshotPins(
   { complete = true, rootStore = false }: {
     complete?: boolean;
     /** Whether the pinned kernel's root is a YurtFS store: every pin must
-     * then be of a zip that carries it. */
+     * then be of a zip that carries it, and otherwise of one without. */
     rootStore?: boolean;
   } = {},
 ): string[] {
@@ -164,6 +163,10 @@ export function verifySnapshotPins(
     if (rootStore && pin.store === undefined) {
       problems.push(
         `${kind}: the zip holds the kernel memory alone, and the kernel's root is a YurtFS store`,
+      );
+    } else if (!rootStore && pin.store !== undefined) {
+      problems.push(
+        `${kind}: the zip carries a YurtFS root store, and the kernel keeps its root in its memory`,
       );
     }
     const expected = SNAPSHOT_EXPECTED[kind];
@@ -461,11 +464,9 @@ if (import.meta.main) {
   const pins = JSON.parse(
     await Deno.readTextFile(join(root, "artifacts/pins.json")),
   );
-  const { KernelHostInterface } = await import(
-    "@yurt/kernel-host-interface-js"
-  );
+  const { kernelRootIsStore } = await import("./lib/snapshot_file.ts");
   const problems = verifySnapshotPins(pins, {
-    rootStore: rootStoreOf(KernelHostInterface) !== undefined,
+    rootStore: await kernelRootIsStore(),
   });
   const pinOf = (kind: SnapshotKind): SnapshotPin | undefined => {
     try {

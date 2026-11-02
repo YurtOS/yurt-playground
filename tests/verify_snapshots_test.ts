@@ -141,7 +141,12 @@ Deno.test("on a kernel whose root is a YurtFS store, a pin of a zip without the 
   for (const key of ["snapshot", "tabletSnapshot", "goSnapshot"]) {
     pins[key].store = { identity };
   }
-  assertEquals(verifySnapshotPins(pins), [], "today's kernel takes either");
+  // Today's kernel restores none of the three that carry one.
+  assertEquals(verifySnapshotPins(pins), [
+    "desktop: the zip carries a YurtFS root store, and the kernel keeps its root in its memory",
+    "tablet: the zip carries a YurtFS root store, and the kernel keeps its root in its memory",
+    "go: the zip carries a YurtFS root store, and the kernel keeps its root in its memory",
+  ]);
   assertEquals(verifySnapshotPins(pins, { rootStore: true }), [
     "phone: the zip holds the kernel memory alone, and the kernel's root is a YurtFS store",
   ]);

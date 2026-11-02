@@ -25,18 +25,9 @@ import {
 
 export type { StoreFileName, StoreIdentity, StoreLower };
 
-/** Receives an exported store file's bytes at `offset` (the kernel's
- * `PackedStore::export` sink). Synchronous, as the kernel's export is;
- * `bytes` may be reused once it returns. */
-export type StoreExportSink = (
-  name: StoreFileName,
-  offset: number,
-  bytes: Uint8Array,
-) => void;
-
 /** A fresh, empty store the host made for one restore: an OPFS directory
  * in the browser, host files on the desktop. The page fills it from the
- * snapshot file, in this order, and then has the kernel mount it. */
+ * snapshot zip, in this order, and then has the kernel mount it. */
 export interface StoreRestoreTarget {
   /** Stream `image` (a .yurtimg) into `lower.tar`, as the kernel's
    * create mode materializes a lower; its size and sha256, which the
@@ -45,26 +36,25 @@ export interface StoreRestoreTarget {
   /** Write `bytes` at `offset` of `name`: durable in call order, so
    * `meta`, written last, is durable only after the rest. */
   write(name: StoreFileName, offset: number, bytes: Uint8Array): Promise<void>;
-  /** Make the copy a complete store (the kernel's `complete_copy`: the
-   * other journal an empty header, `lock` the lineage stamp) and read its
-   * identity by replay, without mounting it. */
+  /** Make the copy a complete store (the kernel's `complete_copy`) and
+   * read its identity by replay, without mounting it. */
   complete(): Promise<StoreIdentity>;
   /** Remove the copy: a refused restore leaves no store behind. */
   discard(): Promise<void>;
 }
 
-type HostState = Parameters<typeof KernelHostInterface.restore>[2];
-
 export interface RootStoreApi {
-  /** A fresh, empty store to restore into. */
   freshStore(): Promise<StoreRestoreTarget>;
   /** `host.sealSandbox` with the root store checkpointed under the
    * kernel's barrier: commit and quiesce, then export `data`, the active
-   * journal and `meta` (last) through `sink`. The identity is the one the
-   * exported files replay to, the lower the one their `meta` records. */
+   * journal and `meta` (last) through `sink`, each from offset 0 (`bytes`
+   * may be reused once it returns). The identity is the one the exported
+   * files replay to, the lower the one their `meta` records. */
   sealSandbox(
     host: KernelHostInterface,
-    options: { deadlineMs?: number; sink: StoreExportSink },
+    options: {
+      sink: (name: StoreFileName, offset: number, bytes: Uint8Array) => void;
+    },
   ): Promise<{
     image: SandboxSealImage;
     identity: StoreIdentity;
@@ -77,7 +67,7 @@ export interface RootStoreApi {
     kernelWasm: Uint8Array,
     image: SandboxSealImage,
     store: { target: StoreRestoreTarget; expect: StoreIdentity },
-    hostState?: HostState,
+    hostState: Parameters<typeof KernelHostInterface.restore>[2],
   ): ReturnType<typeof KernelHostInterface.restore>;
 }
 
@@ -92,11 +82,12 @@ export function rootStoreOf(hostClass: unknown): RootStoreApi | undefined {
     : undefined;
 }
 
-/** The store files a seal exported, whole, in export order. */
+/** The store files a seal exported, in export order: each as the chunks
+ * the export handed over, never joined (the zip streams them). */
 export type SealedStore = {
   identity: StoreIdentity;
   lower: StoreLower;
-  files: { name: StoreFileName; bytes: Uint8Array }[];
+  files: { name: StoreFileName; bytes: Uint8Array | Uint8Array[] }[];
 };
 
 /** A seal the page took: with its root store when the kernel has one. */
@@ -121,28 +112,33 @@ export function identityMismatch(
 export async function sealWithStore(
   api: RootStoreApi,
   host: KernelHostInterface,
-  options: { deadlineMs?: number } = {},
 ): Promise<PageSeal> {
-  const files: { name: StoreFileName; chunks: Uint8Array[]; size: number }[] =
+  const files: { name: StoreFileName; bytes: Uint8Array[]; size: number }[] =
     [];
-  const sink: StoreExportSink = (name, offset, bytes) => {
-    let file = files.at(-1);
-    if (file?.name !== name) {
-      if (files.some((other) => other.name === name)) {
-        throw new Error(`the store export went back to ${name}`);
+  const sealed = await api.sealSandbox(host, {
+    sink: (name, offset, bytes) => {
+      let file = files.at(-1);
+      if (file?.name !== name) {
+        if (files.some((other) => other.name === name)) {
+          throw new Error(`the store export went back to ${name}`);
+        }
+        file = { name, bytes: [], size: 0 };
+        files.push(file);
       }
-      file = { name, chunks: [], size: 0 };
-      files.push(file);
-    }
-    if (offset !== file.size) {
-      throw new Error(
-        `the store export wrote ${name} at ${offset}, not at its end ${file.size}`,
-      );
-    }
-    file.chunks.push(bytes.slice());
-    file.size += bytes.byteLength;
-  };
-  const sealed = await api.sealSandbox(host, { ...options, sink });
+      if (offset !== file.size) {
+        throw new Error(
+          `the store export wrote ${name} at ${offset}, not at its end ${file.size}`,
+        );
+      }
+      file.bytes.push(bytes.slice());
+      file.size += bytes.byteLength;
+    },
+  });
+  // A store with no file data yet has an empty `data`, which an export
+  // may never hand the sink at all.
+  if (files[0]?.name !== "data") {
+    files.unshift({ name: "data", bytes: [], size: 0 });
+  }
   const order = storeExportOrderProblem(files.map((file) => file.name));
   if (order !== undefined) throw new Error(`the store export's ${order}`);
   return {
@@ -150,15 +146,7 @@ export async function sealWithStore(
     rootStore: {
       identity: sealed.identity,
       lower: sealed.lower,
-      files: files.map(({ name, chunks, size }) => {
-        const bytes = new Uint8Array(size);
-        let at = 0;
-        for (const chunk of chunks) {
-          bytes.set(chunk, at);
-          at += chunk.byteLength;
-        }
-        return { name, bytes };
-      }),
+      files: files.map(({ name, bytes }) => ({ name, bytes })),
     },
   };
 }

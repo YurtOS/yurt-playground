@@ -4,6 +4,7 @@
  * file to publish or pin?
  */
 import { createHash } from "node:crypto";
+import { rootStoreOf } from "../../src/root_store.ts";
 import {
   type BuiltFrom,
   checkSandboxSnapshot,
@@ -61,16 +62,8 @@ export async function checkSnapshotFile(
           expected,
           (header) => builtFrom = header,
           undefined,
-          "check",
+          options.rootStore ?? "either",
         );
-        // The store rule on the manifest alone (a second, short read).
-        if (options.rootStore !== undefined) {
-          await checkSandboxSnapshot(
-            (await Deno.open(path)).readable,
-            expected,
-            options.rootStore,
-          );
-        }
       } else {
         builtFrom = await checkSandboxSnapshot(
           body,
@@ -116,4 +109,14 @@ async function streamSha256(
     if (done) return hash.digest("hex");
     hash.update(value);
   }
+}
+
+/** Whether the kernel checkout's JS host (the pinned rev's) has a YurtFS
+ * root store (src/root_store.ts): every snapshot of it must then carry
+ * the store, and none of today's kernel may. */
+export async function kernelRootIsStore(): Promise<boolean> {
+  const { KernelHostInterface } = await import(
+    "@yurt/kernel-host-interface-js"
+  );
+  return rootStoreOf(KernelHostInterface) !== undefined;
 }

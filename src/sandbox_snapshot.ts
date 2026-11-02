@@ -321,9 +321,8 @@ export async function snapshotHeaderFacts(
   }
 }
 
-/** What a restore does with a zip's store: write it into `target` (the
- * kernel's root is a store), or -- "check", the release tools' full
- * decode, which mounts nothing -- inflate and drop it. */
+/** Where a restore on a kernel whose root is a store writes the zip's
+ * store. */
 export type StoreRestore = {
   /** The fresh store to write; the caller discards it on a throw. */
   target: StoreRestoreTarget;
@@ -336,12 +335,14 @@ export type StoreRestore = {
 /** Read a snapshot zip back into a seal image, to the end of the stream
  * (whose own check, the whole file's hash, may still refuse it there). A
  * snapshot not built from `expected` is refused as soon as its manifest
- * is read, before its memory (over 500 MiB) is allocated. With a
- * {@link StoreRestore} (the kernel's root is a YurtFS store) only a zip
- * with a store is taken: the store goes into its target first, and a
- * store that is not the pin's -- in the manifest, or as the written copy
- * replays -- is refused before the memory is allocated. Without one only
- * a zip without a store is taken; with "check", either. */
+ * is read, before its memory (over 500 MiB) is allocated. `root` says
+ * whether the kernel's root is a YurtFS store, and so which zips are
+ * taken: false (the default), only one without a store; a
+ * {@link StoreRestore}, only one with a store, written into its target
+ * first -- a store that is not the pin's, in the manifest or as the
+ * written copy replays, is refused before the memory is allocated; true,
+ * only one with a store, read but not written (the release tools mount
+ * nothing); "either", any. */
 export async function decodeSandboxSnapshot(
   body: ReadableStream<Uint8Array<ArrayBuffer>>,
   expected: SnapshotIdentity | BuiltFrom,
@@ -352,8 +353,9 @@ export async function decodeSandboxSnapshot(
    * memory is written: a check that may still refuse the snapshot (the
    * live index's) refuses it before the ~250-545 MiB exist. */
   beforeAllocate?: () => Promise<void>,
-  store?: StoreRestore | "check",
+  root: StoreRestore | boolean | "either" = false,
 ): Promise<SandboxSealImage> {
+  const store = typeof root === "object" ? root : undefined;
   // A reader, not `for await`: WebKit's ReadableStream is not async-iterable.
   const reader = body.getReader();
   const zip = new ZipStreamReader(reader);
@@ -362,10 +364,10 @@ export async function decodeSandboxSnapshot(
     const why = manifestMismatch(
       manifest,
       expected,
-      store === "check" ? undefined : store !== undefined,
+      root === "either" ? undefined : root !== false,
     );
     if (why !== undefined) throw new SnapshotMismatch(why);
-    if (typeof store === "object") {
+    if (store !== undefined) {
       const pinned = identityMismatch(manifest.store!.identity, store.expect);
       if (pinned !== undefined) {
         throw new SnapshotMismatch(`the snapshot's manifest says ${pinned}`);
@@ -374,7 +376,7 @@ export async function decodeSandboxSnapshot(
     onHeader?.(manifest.builtFrom!);
     await beforeAllocate?.();
     if (manifest.store !== undefined) {
-      if (typeof store === "object") {
+      if (store !== undefined) {
         await restoreStore(zip, manifest.store, store.target, store.image);
       } else {
         await skipStore(zip, manifest.store);
@@ -406,6 +408,8 @@ export async function decodeSandboxSnapshot(
 /** The Cache API store that keeps a snapshot's parts between visits,
  * under the whole zip's sha256: a repeat visit downloads nothing. */
 export const SNAPSHOT_PARTS_CACHE = "yurt-playground-snapshot-parts-v2";
+/** The gzip snapshot's cache, which nothing reads any more. */
+const OLD_PARTS_CACHE = "yurt-playground-snapshot-parts-v1";
 const PART_KEY_ORIGIN = "https://yurt-snapshot-parts.invalid/";
 
 /** How many parts are downloaded at once (20 MiB each), so a few, not all
@@ -419,9 +423,9 @@ export const SNAPSHOT_PARTS_IN_FLIGHT = 3;
  * whole: holding the file to hash it at once was more than a Safari tab
  * survives. Up to {@link SNAPSHOT_PARTS_IN_FLIGHT} parts download at once,
  * and the stream gives them in order. With `cache`, each part is kept
- * there under the zip's sha256 and taken from there next time; a zip that
- * fails its hash drops them, and once one passes, parts of any other
- * snapshot are dropped. */
+ * there under the zip's sha256, and taken from there on a later visit
+ * once a whole visit passed the hash; a visit that ends otherwise drops
+ * them, and once one passes, parts of any other snapshot are dropped. */
 export async function fetchVerifiedSnapshot(
   path: string,
   pin: Pick<SnapshotPin, "sha256" | "size">,
@@ -447,12 +451,19 @@ export async function fetchVerifiedSnapshot(
       `${path} is published as ${manifest.size} bytes, not the pinned ${pin.size}`,
     );
   }
+  cache?.delete(OLD_PARTS_CACHE).catch(() => {});
   const store = cache === undefined
     ? undefined
     : await cache.open(SNAPSHOT_PARTS_CACHE).catch(() => undefined);
   const giveUp = new AbortController();
   const prefix = `${PART_KEY_ORIGIN}${pin.sha256}/`;
   const keyOf = (at: number) => `${prefix}${at}`;
+  /** Written once the whole zip passed its hash: only then are its cached
+   * parts taken. A visit that ends any other way -- a failed hash, a
+   * decode that stops, a closed tab -- leaves none trusted. */
+  const verifiedKey = `${prefix}verified`;
+  const trusted = await store?.match(verifiedKey).catch(() => undefined) !==
+    undefined;
   /** Drop every cached part for which `drop` holds. */
   const dropCached = async (drop: (url: string) => boolean) => {
     if (store === undefined) return;
@@ -460,10 +471,14 @@ export async function fetchVerifiedSnapshot(
       if (drop(request.url)) await store.delete(request).catch(() => {});
     }
   };
-  /** Part `at`: from the cache when it holds it, else fetched (and then
-   * kept). Checked only as part of the whole. */
+  /** The visit ended before the whole zip passed its hash. */
+  const forget = () => dropCached((url) => url.startsWith(prefix));
+  /** Part `at`: from the cache when a verified zip left it there, else
+   * fetched (and kept, untrusted until the whole passes). */
   const part = async (at: number): Promise<Uint8Array<ArrayBuffer>> => {
-    const cached = await store?.match(keyOf(at)).catch(() => undefined);
+    const cached = trusted
+      ? await store?.match(keyOf(at)).catch(() => undefined)
+      : undefined;
     if (cached !== undefined) return new Uint8Array(await cached.arrayBuffer());
     const name = manifest.parts[at];
     const response = await fetchImpl(new URL(name, manifestUrl), {
@@ -500,8 +515,7 @@ export async function fetchVerifiedSnapshot(
         const actual = [...hash.digest()]
           .map((b) => b.toString(16).padStart(2, "0")).join("");
         if (loaded !== pin.size || actual !== pin.sha256) {
-          // Whatever the cache gave is suspect: fetched afresh next time.
-          await dropCached((url) => url.startsWith(prefix));
+          await forget();
           controller.error(
             new Error(
               `sandbox snapshot ${path} is ${loaded} bytes with sha256 ${actual}, ` +
@@ -510,8 +524,10 @@ export async function fetchVerifiedSnapshot(
           );
           return;
         }
-        controller.close();
+        // Before the end is seen, so the cache is settled when it is.
+        await store?.put(verifiedKey, new Response("")).catch(() => {});
         await dropCached((url) => !url.startsWith(prefix));
+        controller.close();
         return;
       }
       let bytes: Uint8Array<ArrayBuffer>;
@@ -519,6 +535,7 @@ export async function fetchVerifiedSnapshot(
         bytes = await next;
       } catch (error) {
         giveUp.abort(error);
+        await forget();
         throw error;
       }
       askMore();
@@ -527,8 +544,9 @@ export async function fetchVerifiedSnapshot(
       onProgress?.(loaded, pin.size);
       controller.enqueue(bytes);
     },
-    cancel(reason) {
+    async cancel(reason) {
       giveUp.abort(reason);
+      await forget();
     },
   });
 }

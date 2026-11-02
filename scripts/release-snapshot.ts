@@ -61,7 +61,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle, kernelRoot } from "./serve.ts";
-import { checkSnapshotFile } from "./lib/snapshot_file.ts";
+import { checkSnapshotFile, kernelRootIsStore } from "./lib/snapshot_file.ts";
 import {
   livePythonSet,
   NO_COMPLETE_SET,
@@ -69,7 +69,6 @@ import {
 } from "../src/python_install.ts";
 import { handlePlaygroundRequest, ISOLATION_HEADERS } from "../src/serve.ts";
 import { imagePartRange, imagePartsManifest } from "../src/image_parts.ts";
-import { rootStoreOf } from "../src/root_store.ts";
 import { sha256Hex } from "../src/integrity.ts";
 import {
   loadPins,
@@ -233,15 +232,6 @@ export async function snapshotPinProblem(
     if (error instanceof SnapshotMismatch) return error.message;
     throw error;
   }
-}
-
-/** Whether the kernel checkout's JS host (the pinned rev's) has a root
- * store (src/root_store.ts): a snapshot of it must then carry the store. */
-export async function kernelRootIsStore(): Promise<boolean> {
-  const { KernelHostInterface } = await import(
-    "@yurt/kernel-host-interface-js"
-  );
-  return rootStoreOf(KernelHostInterface) !== undefined;
 }
 
 /** `--check-pin`'s exit for a refused pin, and the stderr line that

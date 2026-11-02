@@ -559,8 +559,12 @@ Deno.test("a snapshot of another Python set is refused, with the download beside
 });
 
 /** A CacheStorage that keeps everything in memory. */
-function memoryCaches(): CacheStorage & { store: Map<string, Uint8Array> } {
+function memoryCaches(): CacheStorage & {
+  store: Map<string, Uint8Array>;
+  deleted: string[];
+} {
   const store = new Map<string, Uint8Array>();
+  const deleted: string[] = [];
   const cache = {
     match: (key: string) =>
       Promise.resolve(
@@ -576,9 +580,65 @@ function memoryCaches(): CacheStorage & { store: Map<string, Uint8Array> } {
   };
   return {
     store,
+    deleted,
     open: () => Promise.resolve(cache as unknown as Cache),
-  } as unknown as CacheStorage & { store: Map<string, Uint8Array> };
+    delete: (name: string) => {
+      deleted.push(name);
+      return Promise.resolve(false);
+    },
+  } as unknown as CacheStorage & {
+    store: Map<string, Uint8Array>;
+    deleted: string[];
+  };
 }
+
+Deno.test("parts of a zip never verified whole are never taken from the cache", async () => {
+  const sealed = image(1 << 10);
+  const file = new Uint8Array(
+    await (await encodeSandboxSnapshot(sealed, BUILT)).arrayBuffer(),
+  );
+  const name = "snapshot/tablet.seal.zip";
+  const path = `http://pg/${name}`;
+  const pin = await pinFor(file);
+  // An HTML fallback where a part of the manifest belongs: the decode
+  // fails on it long before the stream's end and its hash.
+  const bad = file.slice();
+  bad.set(new TextEncoder().encode("<ht"), 45);
+  const restore = (served: Uint8Array<ArrayBuffer>, cache: CacheStorage) =>
+    fetchVerifiedSnapshot(path, pin, site(name, served), undefined, cache)
+      .then((body) => decodeSandboxSnapshot(body, BUILT));
+  const failed = memoryCaches();
+  await assertRejects(() => restore(bad, failed));
+  assertEquals(await restore(file, failed), sealed, "after a failed decode");
+  // A visit left before its end (a closed tab: nothing cancels it).
+  const left = memoryCaches();
+  const reader = (await fetchVerifiedSnapshot(
+    path,
+    pin,
+    site(name, bad),
+    undefined,
+    left,
+  )).getReader();
+  for (let i = 0; i < 20; i++) await reader.read();
+  assertEquals(await restore(file, left), sealed, "after a visit left");
+});
+
+Deno.test("a restore drops the gzip snapshot's part cache", async () => {
+  const sealed = image(16);
+  const file = new Uint8Array(
+    await (await encodeSandboxSnapshot(sealed, BUILT)).arrayBuffer(),
+  );
+  const name = "snapshot/sandbox.seal.zip";
+  const caches = memoryCaches();
+  await fetchVerifiedSnapshot(
+    `http://pg/${name}`,
+    await pinFor(file),
+    site(name, file),
+    undefined,
+    caches,
+  ).then((body) => decodeSandboxSnapshot(body, BUILT));
+  assertEquals(caches.deleted, ["yurt-playground-snapshot-parts-v1"]);
+});
 
 Deno.test("a repeat restore takes the parts from the cache, drops them when the zip fails its hash, and drops other snapshots' parts", async () => {
   const sealed = image(1 << 10);
@@ -605,7 +665,9 @@ Deno.test("a repeat restore takes the parts from the cache, drops them when the 
   assertEquals(await restore(), sealed);
   assertEquals(partFetches, partsOf(file), "the first visit downloads");
   assertEquals(cache.store.has(foreign), false, "another snapshot's part");
-  assertEquals(cache.store.size, partsOf(file));
+  // Every part, and the mark that the whole passed its hash.
+  assertEquals(cache.store.size, partsOf(file) + 1);
+  assertEquals(cache.store.has(`${origin}${pin.sha256}/verified`), true);
   partFetches = 0;
   assertEquals(await restore(), sealed);
   assertEquals(partFetches, 0, "a repeat visit downloads no part");

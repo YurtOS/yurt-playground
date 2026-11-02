@@ -570,11 +570,16 @@ export async function restoreSnapshot(
   );
   checked.catch((error) => stop.abort(error));
   // The store goes into a fresh copy, and a refused restore removes it.
+  // Its lower comes from the image, fetched beside the snapshot.
   const target = await rootStore?.freshStore();
+  const lowerImage = target === undefined
+    ? undefined
+    : env.fetchBytes(env.imagePath ?? FULL_IMAGE_PATH);
+  lowerImage?.catch(() => {});
   const store = target === undefined ? undefined : {
     target,
     expect: pin.store!.identity,
-    image: () => env.fetchBytes(env.imagePath ?? FULL_IMAGE_PATH),
+    image: () => lowerImage!,
   };
   // Only this frame holds the decoded memory (~250-545 MiB), and only
   // until the restore copied it: a fallback boot must not run beside it.
@@ -606,7 +611,7 @@ export async function restoreSnapshot(
         // refused snapshot never holds it, so a fallback boot never runs
         // beside it.
         () => checked,
-        store,
+        store ?? false,
       ))().catch(async (error) => {
         // A refused set says so, rather than the aborted download's reason.
         await checked;
@@ -624,15 +629,15 @@ export async function restoreSnapshot(
         store,
         await plannedPlaygroundHostState(),
       );
+    if (restored.processes.length !== 0) {
+      restored.host.dispose();
+      throw new Error("a sandbox snapshot must hold no process");
+    }
   } catch (error) {
     await target?.discard();
     throw error;
   } finally {
     image = undefined;
-  }
-  if (restored.processes.length !== 0) {
-    restored.host.dispose();
-    throw new Error("a sandbox snapshot must hold no process");
   }
   console.log(
     `[snapshot] ${memoryBytes} bytes of kernel memory: ` +

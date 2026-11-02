@@ -76,7 +76,9 @@ function memory(length: number): SandboxSealImage {
   };
 }
 
-function store(): SealedStore {
+function store(): SealedStore & {
+  files: { name: StoreFileName; bytes: Uint8Array }[];
+} {
   return {
     identity: IDENTITY,
     lower: LOWER,
@@ -129,7 +131,7 @@ function fakeTarget(
 /** A snapshot zip of `manifest` as written and `entries` after it. */
 function rawZip(
   manifest: Record<string, unknown>,
-  ...entries: { name: string; bytes: Uint8Array }[]
+  ...entries: { name: string; bytes: Uint8Array | Uint8Array[] }[]
 ): Promise<Blob> {
   return writeZip([
     {
@@ -163,6 +165,12 @@ async function zipNames(file: Blob): Promise<string[]> {
 }
 
 const image = () => Promise.resolve(new Uint8Array(100));
+
+/** Whether `a` and `b` hold the same bytes (a boolean, not a diff: an
+ * assertEquals diff of large byte arrays crashes Deno 2.7). */
+function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.byteLength === b.byteLength && a.every((byte, i) => byte === b[i]);
+}
 
 Deno.test("a store snapshot restores its store into a fresh one in export order, then its memory", async () => {
   const seal = sealed();
@@ -320,7 +328,7 @@ Deno.test("each kernel restores only its own kind of zip, and says why it refuse
     BUILT,
     undefined,
     undefined,
-    "check",
+    "either",
   );
   assertEquals(checked.kernelMemory, sealed().kernelMemory);
 });
@@ -441,8 +449,37 @@ Deno.test("a seal with its store collects each exported file whole and in order,
     }),
     host,
   );
-  assertEquals(seal.rootStore, want);
+  // Kept as the chunks the export handed over, never joined.
+  const { files, ...rest } = seal.rootStore!;
+  assertEquals(rest, { identity: IDENTITY, lower: LOWER });
+  assertEquals(
+    files.map(({ name }) => name),
+    want.files.map(({ name }) => name),
+  );
+  for (const [i, { bytes }] of files.entries()) {
+    assert(Array.isArray(bytes), files[i].name);
+    assert(
+      equalBytes(
+        new Uint8Array(bytes.flatMap((chunk) => [...chunk])),
+        want.files[i].bytes,
+      ),
+      files[i].name,
+    );
+  }
   assertEquals(seal.kernelMemory, memory(16).kernelMemory);
+  // An empty data file the export never hands the sink is still there.
+  const pristine = await sealWithStore(
+    api((sink) => {
+      sink("journal-a", 0, new Uint8Array(4));
+      sink("meta", 0, new Uint8Array(4));
+    }),
+    host,
+  );
+  assertEquals(
+    pristine.rootStore!.files.map(({ name }) => name),
+    ["data", "journal-a", "meta"],
+  );
+  await encodeSandboxSnapshot(pristine, BUILT);
   await assertRejects(
     () =>
       sealWithStore(
@@ -550,7 +587,7 @@ Deno.test("?snapshot=1 on a kernel with a root store restores the store, then th
         ? Promise.resolve(new Response(pinsText))
         : site.fetch(input, init)) as typeof fetch;
   const log: string[] = [];
-  const api = (replaysTo: StoreIdentity): RootStoreApi => ({
+  const api = (replaysTo: StoreIdentity, processes = 0): RootStoreApi => ({
     freshStore: () => {
       log.push("fresh store");
       return Promise.resolve(fakeTarget(log, replaysTo));
@@ -561,8 +598,10 @@ Deno.test("?snapshot=1 on a kernel with a root store restores the store, then th
       assertEquals(store.expect, IDENTITY);
       assertEquals(image.kernelMemory, seal.kernelMemory);
       return Promise.resolve({
-        host: { dispose() {} } as unknown as KernelHostInterface,
-        processes: [],
+        host: {
+          dispose: () => log.push("dispose"),
+        } as unknown as KernelHostInterface,
+        processes: Array.from({ length: processes }, () => ({}) as never),
       });
     },
   });
@@ -596,6 +635,14 @@ Deno.test("?snapshot=1 on a kernel with a root store restores the store, then th
       "restoring the snapshot's store",
     );
     assertEquals(log.slice(-2), ["complete", "discard"]);
+    // A restore that brings a process back is refused, its store too.
+    log.length = 0;
+    await assertRejects(
+      () => restoreSnapshot(env, new Uint8Array(), url, api(IDENTITY, 1)),
+      Error,
+      "must hold no process",
+    );
+    assertEquals(log.slice(-2), ["dispose", "discard"]);
     // The same pin on a kernel without a root store is refused unread.
     log.length = 0;
     await assertRejects(

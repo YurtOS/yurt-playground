@@ -42,10 +42,32 @@ export function crc32(bytes: Uint8Array, crc = 0): number {
 
 export type ZipEntryInput = {
   name: string;
-  bytes: Uint8Array;
+  /** Its contents, whole or as the chunks they were handed over in:
+   * streamed into the zip, never joined. */
+  bytes: Uint8Array | Uint8Array[];
   /** Deflated, else stored. */
   deflate: boolean;
 };
+
+/** `chunks` as a stream, in 1 MiB views: no copy of a chunk is made. */
+function streamOf(
+  chunks: Uint8Array[],
+): ReadableStream<Uint8Array<ArrayBuffer>> {
+  const views = chunks.flatMap((chunk) =>
+    Array.from(
+      { length: Math.ceil(chunk.byteLength / (1 << 20)) },
+      (_, i) =>
+        chunk.subarray(i << 20, (i + 1) << 20) as Uint8Array<ArrayBuffer>,
+    )
+  );
+  let next = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (next < views.length) controller.enqueue(views[next++]);
+      else controller.close();
+    },
+  });
+}
 
 /** A zip of `entries`, in their order. */
 export async function writeZip(entries: ZipEntryInput[]): Promise<Blob> {
@@ -53,21 +75,21 @@ export async function writeZip(entries: ZipEntryInput[]): Promise<Blob> {
   const central: Uint8Array[] = [];
   let offset = 0;
   for (const { name, bytes, deflate } of entries) {
+    const chunks = bytes instanceof Uint8Array ? [bytes] : bytes;
+    const size = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
     const data = deflate
       ? await new Response(
-        new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(
-          new CompressionStream("deflate-raw"),
-        ),
+        streamOf(chunks).pipeThrough(new CompressionStream("deflate-raw")),
       ).blob()
-      : new Blob([bytes as Uint8Array<ArrayBuffer>]);
-    if (bytes.byteLength >= LIMIT || data.size >= LIMIT) {
+      : new Blob(chunks as Uint8Array<ArrayBuffer>[]);
+    if (size >= LIMIT || data.size >= LIMIT) {
       throw new Error(`zip entry ${name} is too large without zip64`);
     }
     const fields = {
       method: deflate ? DEFLATED : STORED,
-      crc: crc32(bytes),
+      crc: chunks.reduce((crc, chunk) => crc32(chunk, crc), 0),
       compressed: data.size,
-      size: bytes.byteLength,
+      size,
       name: new TextEncoder().encode(name),
     };
     const local = header(LOCAL, fields, offset);
@@ -227,6 +249,8 @@ export class ZipStreamReader {
     }
     const inflater = new DecompressionStream("deflate-raw");
     const writer = inflater.writable.getWriter();
+    /** Why the pump failed (a truncated file), when it failed first. */
+    let pumpError: unknown;
     const pumped = (async () => {
       try {
         await this.#copy(
@@ -236,6 +260,7 @@ export class ZipStreamReader {
         );
         await writer.close();
       } catch (error) {
+        pumpError ??= error;
         await writer.abort(error).catch(() => {});
         throw error;
       }
@@ -256,8 +281,15 @@ export class ZipStreamReader {
         at += value.byteLength;
       }
     } catch (error) {
-      // The pump's own reason (a truncated file) over the inflater's.
-      await pumped;
+      // The pump failed first (a truncated file): its reason, not the
+      // inflater's.
+      if (pumpError !== undefined) throw pumpError;
+      // Nothing reads the inflater now: cancel it, or a pump held back by
+      // its backpressure (a TransformStream's, per the Streams spec) would
+      // wait forever.
+      pumpError = error;
+      await reader.cancel(error).catch(() => {});
+      await pumped.catch(() => {});
       throw error;
     }
     await pumped;
