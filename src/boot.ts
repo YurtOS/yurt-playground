@@ -226,6 +226,10 @@ const DEFAULT_ENV: Record<string, string> = {
   USER: LOGIN_USER,
   LOGNAME: LOGIN_USER,
   TERM: "xterm-256color",
+  // A UTF-8 locale, as Alpine's /etc/profile.d/locale.sh sets. Nothing in the
+  // image does (the page runs /bin/sh directly, not as a login shell), and
+  // terminal programs check for one: btop refuses to start without it.
+  LANG: "C.UTF-8",
 };
 
 let pinsPromise: Promise<Pins> | undefined;
