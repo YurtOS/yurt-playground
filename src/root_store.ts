@@ -55,15 +55,19 @@ export interface StoreRestoreTarget {
    * store's `meta` records. */
   materializeLower(image: Uint8Array): Promise<StoreLower>;
   /** Write `bytes` at `offset` of `name`, creating the file (and
-   * `content/`) at its first call. Not a flush per call. */
+   * `content/`) at its first call. Not a flush per call. `meta` comes
+   * last, and only once the snapshot zip passed its hash, so a copy cut
+   * short or refused before then holds none. */
   write(name: StoreFileName, offset: number, bytes: Uint8Array): Promise<void>;
   /** Set `name`'s length, creating it when no piece did (an empty or
-   * all-zero file): a gap no piece wrote stays a hole. */
+   * all-zero file). A gap no piece wrote is the host's to keep sparse
+   * (the amendment: APFS and ext4 do; OPFS is unmeasured). */
   setLength(name: StoreFileName, length: number): Promise<void>;
   /** Flush every file, `meta` after the rest, make the copy a complete
    * store (the kernel's `complete_copy`: the inactive journal, `lock`,
    * and `content/` if missing), and read its identity by replay, without
-   * mounting it. A copy cut short before this holds no `meta`, so it is
+   * mounting it. `meta` is written just before this, once the zip passed
+   * its hash: a copy cut short or refused earlier holds none, so it is
    * never a store. */
   complete(): Promise<StoreIdentity>;
   /** Remove the copy: a refused restore leaves no store behind. */

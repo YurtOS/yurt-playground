@@ -188,7 +188,10 @@ Deno.test("a train keeps the snapshot pin only when --check-pin's checks pass", 
     hash: "2".repeat(64),
   };
   assertEquals(
-    await onStoreRoot({ ...entry, store: { identity, files: 2, bytes: 640 } }),
+    await onStoreRoot({
+      ...entry,
+      store: { identity, files: 2, bytes: 640, pieceBytes: 600 },
+    }),
     undefined,
   );
   // A crash is no verdict: it is thrown, never a refusal.

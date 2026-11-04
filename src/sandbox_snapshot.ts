@@ -124,6 +124,7 @@ export async function encodeSandboxSnapshot(
         identity: rootStore.identity,
         files: rootStore.files,
         bytes: rootStore.bytes,
+        pieceBytes: rootStore.pieceBytes,
         lower: rootStore.lower,
       },
     }),
@@ -237,7 +238,7 @@ async function restoreStore(
   store: ManifestStore,
   target: StoreRestoreTarget,
   image: () => Promise<Uint8Array>,
-): Promise<void> {
+): Promise<StoreLogReader> {
   const lower = await target.materializeLower(await image());
   if (
     lower.bytes !== store.lower.bytes || lower.sha256 !== store.lower.sha256
@@ -250,6 +251,7 @@ async function restoreStore(
   const log = new StoreLogReader(target, store);
   await zip.read(await expectEntry(zip, STORE), (chunk) => log.push(chunk));
   log.finish();
+  return log;
 }
 
 /** Skip the zip's store (a check that mounts nothing), checking its log
@@ -381,19 +383,27 @@ export async function decodeSandboxSnapshot(
         throw new SnapshotMismatch(`the snapshot's manifest says ${pinned}`);
       }
       if (
-        named.files !== store.expect.files || named.bytes !== store.expect.bytes
+        named.files !== store.expect.files ||
+        named.bytes !== store.expect.bytes ||
+        named.pieceBytes !== store.expect.pieceBytes
       ) {
         throw new SnapshotMismatch(
-          `the snapshot's manifest names a store of ${named.files} files of ${named.bytes} bytes, ` +
-            `not the pinned ${store.expect.files} of ${store.expect.bytes}`,
+          `the snapshot's manifest names a store of ${named.files} files of ${named.bytes} bytes (${named.pieceBytes} in pieces), ` +
+            `not the pinned ${store.expect.files} of ${store.expect.bytes} (${store.expect.pieceBytes})`,
         );
       }
     }
     onHeader?.(manifest.builtFrom!);
     await beforeAllocate?.(manifest.memoryBytes!);
+    let log: StoreLogReader | undefined;
     if (manifest.store !== undefined) {
       if (store !== undefined) {
-        await restoreStore(zip, manifest.store, store.target, store.image);
+        log = await restoreStore(
+          zip,
+          manifest.store,
+          store.target,
+          store.image,
+        );
       } else {
         await skipStore(zip, manifest.store);
       }
@@ -414,6 +424,8 @@ export async function decodeSandboxSnapshot(
     }
     await zip.finish();
     if (store !== undefined) {
+      // Past the hash: only now does the copy get its meta.
+      await log!.writeMeta();
       const why = identityMismatch(
         await store.target.complete(),
         manifest.store!.identity,
@@ -436,8 +448,6 @@ export const SNAPSHOT_PARTS_CACHE = "yurt-playground-snapshot-parts-v2";
 /** The gzip snapshot's cache, which nothing reads any more. */
 const OLD_PARTS_CACHE = "yurt-playground-snapshot-parts-v1";
 const PART_KEY_ORIGIN = "https://yurt-snapshot-parts.invalid/";
-/** A cached part's own sha256, as the visit that fetched it computed. */
-const PART_SHA256_HEADER = "x-yurt-part-sha256";
 
 /** How many parts are downloaded at once (20 MiB each), so a few, not all
  * of them. */
@@ -504,13 +514,23 @@ export async function fetchVerifiedSnapshot(
   // The layout's part size too: parts of another layout are other bytes
   // at an index.
   const keyOf = (at: number) => `${prefix}${partBytes}/${at}`;
-  /** Written once the whole zip passed its hash: only then are its cached
-   * parts taken. A visit that ends any other way -- a decode that stops, a
-   * closed tab -- leaves the parts it fetched untrusted (and drops them
-   * when it can); a failed hash drops them all. */
+  /** Written once the whole zip passed its hash, holding each part's
+   * sha256 as that visit had it: a cached part is taken only when it is
+   * still those bytes. A part any other visit put -- one that stopped, a
+   * closed tab, another tab's, before or after this marker -- is so never
+   * trusted unless it is the verified bytes; a failed hash drops them all. */
   const verifiedKey = `${prefix}verified`;
-  const trusted = await store?.match(verifiedKey).catch(() => undefined) !==
-    undefined;
+  const verified = await store?.match(verifiedKey)
+    .then((response) => response?.json())
+    .then((digests) =>
+      Array.isArray(digests) && digests.length === names.length &&
+        digests.every((digest) => typeof digest === "string")
+        ? digests as string[]
+        : undefined
+    )
+    .catch(() => undefined);
+  /** Each part's sha256 as this visit has it, for the marker. */
+  const digests: string[] = [];
   /** Drop every cached part for which `drop` holds. */
   const dropCached = async (drop: (url: string) => boolean) => {
     if (store === undefined) return;
@@ -523,32 +543,27 @@ export async function fetchVerifiedSnapshot(
   const putHere = new Set<string>();
   /** Set once the visit stopped: a part still on its way is not kept. */
   let stopped = false;
-  /** Taken off before this visit puts its first part, and put back once
-   * the whole passed: a part a visit that never finished put is never
-   * trusted, whether or not that visit could drop it (a closed tab). */
-  let untrusted: Promise<void> | undefined;
   /** The visit ended before the whole zip passed its hash; `all`: it
    * failed the hash, so none of its parts is to be trusted. */
   const forget = (all: boolean) => {
     stopped = true;
     return dropCached((url) => all ? url.startsWith(prefix) : putHere.has(url));
   };
-  /** Part `at`: from the cache when a verified zip left it there and it
-   * is still the bytes it put (the sha256 it recorded beside them: local
-   * integrity, not trust), else fetched (and kept, untrusted until the
-   * whole passes). */
+  /** Part `at`: from the cache when it is the bytes a verified visit had
+   * there (its length, and the sha256 the marker holds), else fetched
+   * (and kept, trusted only once a whole visit passes with it). */
   const part = async (at: number): Promise<Uint8Array<ArrayBuffer>> => {
-    const cached = trusted
-      ? await store?.match(keyOf(at)).catch(() => undefined)
-      : undefined;
+    const cached = verified === undefined
+      ? undefined
+      : await store?.match(keyOf(at)).catch(() => undefined);
     if (cached !== undefined) {
       const bytes = new Uint8Array(await cached.arrayBuffer());
-      const recorded = cached.headers.get(PART_SHA256_HEADER);
-      if (
-        bytes.byteLength === lengthOf(at) && recorded !== null &&
-        await sha256Hex(bytes) === recorded
-      ) {
-        return bytes;
+      if (bytes.byteLength === lengthOf(at)) {
+        const digest = await sha256Hex(bytes);
+        if (digest === verified![at]) {
+          digests[at] = digest;
+          return bytes;
+        }
       }
     }
     const name = names[at];
@@ -564,12 +579,10 @@ export async function fetchVerifiedSnapshot(
         `${name} is ${bytes.byteLength} bytes, not its ${lengthOf(at)}`,
       );
     }
+    digests[at] = await sha256Hex(bytes);
     putHere.add(keyOf(at));
     if (store !== undefined && !stopped) {
-      await (untrusted ??= store.delete(verifiedKey).then(() => {}, () => {}));
-      const headers = { [PART_SHA256_HEADER]: await sha256Hex(bytes) };
-      await store.put(keyOf(at), new Response(bytes, { headers }))
-        .catch(() => {});
+      await store.put(keyOf(at), new Response(bytes)).catch(() => {});
       // The visit stopped meanwhile: its forget() ran before this put.
       if (stopped) await store.delete(keyOf(at)).catch(() => {});
     }
@@ -609,7 +622,8 @@ export async function fetchVerifiedSnapshot(
           return;
         }
         // Before the end is seen, so the cache is settled when it is.
-        await store?.put(verifiedKey, new Response("")).catch(() => {});
+        await store?.put(verifiedKey, new Response(JSON.stringify(digests)))
+          .catch(() => {});
         // Every other snapshot's parts go, and this one's in another
         // layout (an earlier deploy's part size).
         const keep = new Set([

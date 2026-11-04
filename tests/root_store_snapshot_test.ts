@@ -139,8 +139,21 @@ function sealed(memoryBytes = 50_000, files?: StoreFiles): PageSeal {
 
 /** The pin a restore checks the manifest's store against. */
 function expectOf(seal: PageSeal) {
-  const { identity, files, bytes } = seal.rootStore!;
-  return { identity, files, bytes };
+  const { identity, files, bytes, pieceBytes } = seal.rootStore!;
+  return { identity, files, bytes, pieceBytes };
+}
+
+/** The bytes the export's pieces hold: every 64 KiB piece that is not
+ * all zeros. */
+function pieceBytesOf(files: StoreFiles): number {
+  let sum = 0;
+  for (const { bytes } of files) {
+    for (let at = 0; at < bytes.byteLength; at += PIECE) {
+      const piece = bytes.subarray(at, at + PIECE);
+      if (piece.some((byte) => byte !== 0)) sum += piece.byteLength;
+    }
+  }
+  return sum;
 }
 
 /** A fresh store that records what the restore does to it: each file's
@@ -269,7 +282,10 @@ Deno.test("a snapshot is a zip of its manifest, the store's export log, then the
     identity: IDENTITY,
     files: FILES.length,
     bytes: FILES.reduce((sum, { bytes }) => sum + bytes.byteLength, 0),
+    // The sparse and the all-zero files' holes hold no piece.
+    pieceBytes: 70_000 + PIECE + 3_000 + 512,
   });
+  assertEquals(facts.store!.pieceBytes, pieceBytesOf(FILES));
   assertEquals(await zipNames(file), [
     "snapshot.json",
     "store",
@@ -295,6 +311,13 @@ Deno.test("a store that replays to another identity is refused, and only once th
     log.push(ended ? "after the end" : "before the end");
     return complete();
   };
+  // Nor does the copy get its meta before then: a copy cut short or
+  // refused earlier holds none.
+  const write = target.write;
+  target.write = (name, offset, chunk) => {
+    if (name === "meta") log.push(`meta ${ended ? "after" : "before"} the end`);
+    return write(name, offset, chunk);
+  };
   const body = file.stream().pipeThrough(
     new TransformStream({ flush: () => void (ended = true) }),
   );
@@ -308,7 +331,12 @@ Deno.test("a store that replays to another identity is refused, and only once th
     SnapshotMismatch,
     "the store is lineage 1111",
   );
-  assertEquals(log.slice(-2), ["after the end", "complete"]);
+  assertEquals(log.slice(-4), [
+    "meta after the end",
+    "meta",
+    "after the end",
+    "complete",
+  ]);
 });
 
 Deno.test("a snapshot whose manifest names another store than the pin's is refused before anything is written", async () => {
@@ -320,6 +348,7 @@ Deno.test("a snapshot whose manifest names another store than the pin's is refus
       [{ ...pinned, identity: OTHER }, "manifest says the store is"],
       [{ ...pinned, files: pinned.files + 1 }, "not the pinned"],
       [{ ...pinned, bytes: pinned.bytes - 1 }, "not the pinned"],
+      [{ ...pinned, pieceBytes: pinned.pieceBytes + 1 }, "not the pinned"],
     ] as const
   ) {
     const log: string[] = [];
@@ -369,6 +398,43 @@ Deno.test("a store log never writes past the pinned store, even before the zip's
   // the bound) is refused before it is written, not after.
   assertEquals(target.files.get("content/7")?.pieces.length ?? 0, 0);
   assertEquals(log.includes("complete"), false);
+  // A sparse file's holes are no licence to write: a log that fills the
+  // pinned store's holes with pieces (its lengths still the pin's) is
+  // refused at the first piece past the pinned piece bytes.
+  const sparseFiles: StoreFiles = [
+    { name: "content/3", bytes: new Uint8Array(8 * PIECE) },
+    { name: "journal-a", bytes: bytes(300, 5) },
+    { name: "meta", bytes: bytes(76, 6) },
+  ];
+  const honest = store(sparseFiles);
+  assertEquals(honest.pieceBytes, 376);
+  const filled = store([
+    { name: "content/3", bytes: bytes(8 * PIECE, 8) },
+    ...sparseFiles.slice(1),
+  ]);
+  const forged = { ...filled, pieceBytes: honest.pieceBytes };
+  const sparseTarget = fakeTarget([]);
+  await assertRejects(
+    async () =>
+      decodeSandboxSnapshot(
+        (await encodeSandboxSnapshot(
+          { ...memory(16), rootStore: forged },
+          BUILT,
+        ))
+          .stream(),
+        BUILT,
+        undefined,
+        undefined,
+        {
+          target: sparseTarget,
+          expect: expectOf({ ...memory(16), rootStore: honest }),
+          image,
+        },
+      ),
+    Error,
+    "goes past the pinned store",
+  );
+  assertEquals(sparseTarget.files.get("content/3")?.pieces.length ?? 0, 0);
   // One that holds less than its pin is refused at its end.
   const short = { ...big, files: big.files + 1 };
   const shortFile = await encodeSandboxSnapshot(
@@ -449,6 +515,7 @@ Deno.test("a store log replays the same however its bytes are split", async () =
       await reader.push(whole.subarray(at, at + step));
     }
     reader.finish();
+    await reader.writeMeta();
     assertEquals(log, FILES.map(({ name }) => name), `${step}-byte chunks`);
     for (const { name, bytes } of FILES) {
       assert(equalBytes(target.read(name), bytes), `${name}, ${step}`);
@@ -575,7 +642,12 @@ Deno.test("a pin is taken only by the kernel its zip is for; the release tools t
 Deno.test("a pin carries one sha256 for the whole zip and, with a store, its identity and totals", async () => {
   const pin = await storePin();
   assertEquals(parseSnapshotPin(pin), pin);
-  assertEquals(Object.keys(pin.store!), ["identity", "files", "bytes"]);
+  assertEquals(Object.keys(pin.store!), [
+    "identity",
+    "files",
+    "bytes",
+    "pieceBytes",
+  ]);
   for (
     const bad of [
       { ...pin.store, files: 1 },
@@ -638,6 +710,7 @@ Deno.test("a seal with its store writes down the export as the kernel hands it, 
     lower: LOWER,
     files: FILES.length,
     bytes: FILES.reduce((sum, { bytes }) => sum + bytes.byteLength, 0),
+    pieceBytes: pieceBytesOf(FILES),
   });
   assert(Array.isArray(log) && log.length > 1, "kept as chunks");
   assertEquals(seal.kernelMemory, memory(16).kernelMemory);
@@ -647,6 +720,7 @@ Deno.test("a seal with its store writes down the export as the kernel hands it, 
   const reader = new StoreLogReader(target, rest);
   for (const chunk of log) await reader.push(chunk);
   reader.finish();
+  await reader.writeMeta();
   for (const { name, bytes } of FILES) {
     assert(equalBytes(target.read(name), bytes), name);
   }
@@ -731,16 +805,30 @@ Deno.test("a seal with its store writes down the export as the kernel hands it, 
   await sealWithStore(api(end), host);
 });
 
-Deno.test("the pinned kernel has no root store, as the pins record: every snapshot zip is the kernel memory alone", async () => {
-  assertEquals(rootStoreOf(KernelHostInterface), undefined);
-  // The scripts take the store rule from the pins (kernelWasm.rootStore):
-  // it must be the pinned JS host's own.
-  const pins = JSON.parse(
-    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
+Deno.test("the pins' store-root record is the pinned JS host's own, and a root store API of another shape is not taken for none", async () => {
+  // The scripts take the store rule from the pins (kernelWasm.rootStore),
+  // parsed as every script parses them: it must be the pinned JS host's.
+  const pins = parsePins(
+    JSON.parse(
+      await Deno.readTextFile(
+        new URL("../artifacts/pins.json", import.meta.url),
+      ),
+    ),
+  );
+  // A host with any `rootStore` this page does not recognise (the real
+  // API differs from ProposedRootStoreApi) fails here, rather than
+  // passing as a kernel without one: src/root_store.ts is then adapted to
+  // it before the pin moves.
+  const host = KernelHostInterface as unknown as { rootStore?: unknown };
+  assert(
+    host.rootStore === undefined ||
+      rootStoreOf(KernelHostInterface) !== undefined,
+    "the pinned JS host has a rootStore that is not ProposedRootStoreApi",
   );
   assertEquals(
     kernelRootIsStore(pins),
     rootStoreOf(KernelHostInterface) !== undefined,
+    "pins.json kernelWasm.rootStore",
   );
   assertEquals(rootStoreOf(undefined), undefined);
   assertEquals(rootStoreOf({ rootStore: { freshStore() {} } }), undefined);
@@ -954,8 +1042,10 @@ Deno.test("a zip whose bytes are not the pinned ones is never restored, even wit
     );
     assert(!log.includes("restore"), log.join(", "));
     assertEquals(log.at(-1), "discard");
-    // Its store was written but never replayed: the hash failed first.
+    // Its store was written but never replayed, and never given its meta:
+    // the hash failed first.
     assert(!log.includes("complete"), log.join(", "));
+    assert(!log.includes("meta"), log.join(", "));
   } finally {
     globalThis.fetch = realFetch;
   }

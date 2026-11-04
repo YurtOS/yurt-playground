@@ -41,8 +41,10 @@ export function isStoreFileName(name: string): name is StoreFileName {
     (INO.test(name) && BigInt(name.slice("content/".length)) <= U64_MAX);
 }
 
-/** How many files an export named, and their lengths' sum. */
-export type StoreTotals = { files: number; bytes: number };
+/** How many files an export named, their lengths' sum (`bytes`, holes
+ * included), and the bytes its pieces hold (`pieceBytes`, what is written:
+ * a sparse file's holes are not). */
+export type StoreTotals = { files: number; bytes: number; pieceBytes: number };
 
 /**
  * The order an export's calls must keep, checked call by call (a seal's
@@ -62,7 +64,7 @@ export class StoreExportOrder {
    * `meta` is next; 3: `meta` is open; 4: `meta` is closed, the end. */
   #phase = 0;
   #open?: { name: StoreFileName; end: number; short: boolean };
-  #totals: StoreTotals = { files: 0, bytes: 0 };
+  #totals: StoreTotals = { files: 0, bytes: 0, pieceBytes: 0 };
 
   #begin(name: string): { name: StoreFileName; end: number; short: boolean } {
     if (this.#open?.name === name) return this.#open;
@@ -113,6 +115,7 @@ export class StoreExportOrder {
     }
     open.end = offset + size;
     open.short = size < STORE_PIECE_BYTES;
+    this.#totals.pieceBytes += size;
     return open.name;
   }
 
@@ -209,16 +212,24 @@ export type StoreLogTarget = {
  * Replays a log, fed in chunks of any size, into `target`, in the order
  * the export made its calls, after checking each against
  * {@link StoreExportOrder} and against `bound` (the pin's record of the
- * whole export): no call ever names more files or more bytes than it
- * says, so a log that has not passed its hash yet writes no more than the
- * pinned store would. {@link finish} requires the whole export, exactly
- * `bound`.
+ * whole export): no call ever names more files, longer lengths or more
+ * piece bytes than it says, so a log that has not passed its hash yet
+ * writes no more than the pinned store would. {@link finish} requires the
+ * whole export, exactly `bound`; `meta` reaches the target only from
+ * {@link writeMeta}.
  */
 export class StoreLogReader {
   #order = new StoreExportOrder();
   #target: StoreLogTarget;
   #bound: StoreTotals;
   #pending: Uint8Array = new Uint8Array(0);
+  /** `meta`'s calls, held: the target sees `meta` only from
+   * {@link writeMeta}, once the zip passed its hash, so a copy cut short
+   * or refused (a tab that dies before its discard) never holds one.
+   * `meta` is one small file (76 bytes in the kernel's format v2), held
+   * up to one piece. */
+  #meta: (() => unknown)[] = [];
+  #metaBytes = 0;
 
   constructor(target: StoreLogTarget, bound: StoreTotals) {
     this.#target = target;
@@ -266,7 +277,9 @@ export class StoreLogReader {
     if (tag === LENGTH_TAG) {
       const file = this.#order.setLength(name, number);
       this.#within(name);
-      await this.#target.setLength(file, number);
+      if (file === "meta") {
+        this.#hold(0, () => this.#target.setLength(file, number));
+      } else await this.#target.setLength(file, number);
       return headEnd;
     }
     const size = view.getUint32(nameEnd + 8, true);
@@ -279,26 +292,44 @@ export class StoreLogReader {
     if (bytes.byteLength < headEnd + size) return 0;
     const file = this.#order.write(name, number, size);
     this.#within(name);
-    await this.#target.write(
-      file,
-      number,
-      bytes.subarray(headEnd, headEnd + size),
-    );
+    const piece = bytes.subarray(headEnd, headEnd + size);
+    if (file === "meta") {
+      const held = piece.slice();
+      this.#hold(size, () => this.#target.write(file, number, held));
+    } else await this.#target.write(file, number, piece);
     return headEnd + size;
   }
 
-  /** The files and bytes so far, the open file's included, within the
-   * bound. */
-  #within(name: string): void {
-    const { files, bytes, open } = this.#order.extent;
-    if (
-      files + (open === undefined ? 0 : 1) > this.#bound.files ||
-      bytes + (open ?? 0) > this.#bound.bytes
-    ) {
+  #hold(size: number, call: () => unknown): void {
+    this.#metaBytes += size;
+    if (this.#metaBytes > STORE_PIECE_BYTES) {
       throw new Error(
-        `the store log's ${name} goes past the pinned store's ${this.#bound.files} files of ${this.#bound.bytes} bytes`,
+        `the store log's meta is past ${STORE_PIECE_BYTES} bytes`,
       );
     }
+    this.#meta.push(call);
+  }
+
+  /** The files, lengths and piece bytes so far, the open file's included,
+   * within the bound. */
+  #within(name: string): void {
+    const { files, bytes, pieceBytes, open } = this.#order.extent;
+    if (
+      files + (open === undefined ? 0 : 1) > this.#bound.files ||
+      bytes + (open ?? 0) > this.#bound.bytes ||
+      pieceBytes > this.#bound.pieceBytes
+    ) {
+      throw new Error(
+        `the store log's ${name} goes past the pinned store's ${this.#bound.files} files of ` +
+          `${this.#bound.bytes} bytes (${this.#bound.pieceBytes} in pieces)`,
+      );
+    }
+  }
+
+  /** Give the target the held `meta`: only once the zip passed its hash,
+   * after {@link finish}. */
+  async writeMeta(): Promise<void> {
+    for (const call of this.#meta.splice(0)) await call();
   }
 
   /** The end of the log: the whole export, exactly the bound. */
@@ -308,11 +339,13 @@ export class StoreLogReader {
     }
     const totals = this.#order.finish();
     if (
-      totals.files !== this.#bound.files || totals.bytes !== this.#bound.bytes
+      totals.files !== this.#bound.files ||
+      totals.bytes !== this.#bound.bytes ||
+      totals.pieceBytes !== this.#bound.pieceBytes
     ) {
       throw new Error(
-        `the store log holds ${totals.files} files of ${totals.bytes} bytes, ` +
-          `not the pinned ${this.#bound.files} of ${this.#bound.bytes}`,
+        `the store log holds ${totals.files} files of ${totals.bytes} bytes (${totals.pieceBytes} in pieces), ` +
+          `not the pinned ${this.#bound.files} of ${this.#bound.bytes} (${this.#bound.pieceBytes})`,
       );
     }
   }

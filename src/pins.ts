@@ -122,14 +122,16 @@ export type StoreIdentity = {
 export type StoreLower = { bytes: number; sha256: string };
 
 /** A snapshot's store, as its pin names it: which one, and how much its
- * export holds (src/store_log.ts: the files it names and their lengths'
- * sum). A restore checks the manifest's against these before it writes
+ * export holds (src/store_log.ts: the files it names, their lengths' sum
+ * and the bytes its pieces hold, which a sparse file's holes are not). A
+ * restore checks the manifest's against these before it writes
  * anything, and never writes past them before the zip's hash is checked,
  * as it never allocates more memory than `memoryBytes`. */
 export type StorePin = {
   identity: StoreIdentity;
   files: number;
   bytes: number;
+  pieceBytes: number;
 };
 
 /** A store identity (a pin's, or a snapshot manifest's), checked; `fail`
@@ -173,10 +175,18 @@ export function parseStorePin(
   if (!Number.isSafeInteger(value.bytes) || (value.bytes as number) <= 0) {
     fail("store.bytes must be a positive integer");
   }
+  if (
+    !Number.isSafeInteger(value.pieceBytes) ||
+    (value.pieceBytes as number) <= 0 ||
+    (value.pieceBytes as number) > (value.bytes as number)
+  ) {
+    fail("store.pieceBytes must be a positive integer, at most store.bytes");
+  }
   return {
     identity,
     files: value.files as number,
     bytes: value.bytes as number,
+    pieceBytes: value.pieceBytes as number,
   };
 }
 

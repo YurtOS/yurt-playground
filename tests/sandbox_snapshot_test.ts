@@ -828,20 +828,27 @@ Deno.test("a repeat restore takes the parts from the cache, drops them when the 
   partFetches = 0;
   assertEquals(await restore(), sealed);
   assertEquals(partFetches, 1, "only the damaged part");
-  // One that still matches its own record and its length but not the zip
-  // fails the whole zip's hash: that restore is refused (the page boots
-  // instead), and all of its parts are fetched afresh. Its length is the
-  // real last part's, which depends on the platform's deflate (685 bytes
-  // on macOS, 680 on Linux).
+  // One of the right length but other bytes is fetched again too: the
+  // marker holds each verified part's sha256. The length is the real last
+  // part's, which depends on the platform's deflate (685 bytes on macOS,
+  // 680 on Linux).
   const wrong = file.slice((partsOf(file) - 1) * 3);
   wrong[0] ^= 0xff;
-  await (await cache.open("")).put(
-    last,
-    new Response(wrong, {
-      headers: { "x-yurt-part-sha256": await sha256Hex(wrong) },
-    }),
-  );
-  await assertRejects(() => restore(), Error, "not the pinned");
+  cache.store.set(last, wrong);
+  partFetches = 0;
+  assertEquals(await restore(), sealed);
+  assertEquals(partFetches, 1, "only the part that is not the verified one");
+  // A download that fails the whole zip's hash (the site serves a bad
+  // last part, which this visit fetches) is refused, the page boots
+  // instead, and all of this zip's parts are fetched afresh after.
+  cache.store.delete(last);
+  const bad = file.slice();
+  bad[bad.byteLength - 1] ^= 0xff;
+  const badSite = site(name, bad);
+  const fromBad = () =>
+    fetchVerifiedSnapshot(path, pin, badSite, undefined, cache)
+      .then((body) => decodeSandboxSnapshot(body, BUILT));
+  await assertRejects(fromBad, Error, "not the pinned");
   assertEquals(cache.store.size, 0, "this zip's parts are dropped");
   partFetches = 0;
   assertEquals(await restore(), sealed);
@@ -1014,7 +1021,7 @@ Deno.test("a download is the pin's: a parts list of another layout is refused be
   );
 });
 
-Deno.test("a part a later visit put is untrusted until that visit passes, however it ends", async () => {
+Deno.test("a part another visit put is never taken unless it is the verified bytes, whenever and by whom it was put", async () => {
   const sealed = image(1 << 10);
   const file = new Uint8Array(
     await (await encodeSandboxSnapshot(sealed, BUILT)).arrayBuffer(),
@@ -1023,21 +1030,27 @@ Deno.test("a part a later visit put is untrusted until that visit passes, howeve
   const path = `http://pg/${name}`;
   const pin = await pinFor(file);
   const cache = memoryCaches();
-  const restore = (fetchImpl: typeof fetch) =>
-    fetchVerifiedSnapshot(path, pin, fetchImpl, undefined, cache)
+  let partFetches = 0;
+  const served = site(name, file);
+  const counting: typeof fetch = (input, init) => {
+    if (!String(input).endsWith(".parts.json")) partFetches++;
+    return served(input, init);
+  };
+  const restore = () =>
+    fetchVerifiedSnapshot(path, pin, counting, undefined, cache)
       .then((body) => decodeSandboxSnapshot(body, BUILT));
-  assertEquals(await restore(site(name, file)), sealed);
+  assertEquals(await restore(), sealed);
   const verified = [...cache.store.keys()].find((url) =>
     url.endsWith("/verified")
   )!;
-  assert(verified !== undefined);
-  // Part 30 goes missing, and a visit fetches it from another deploy
-  // (the same name, other bytes), then is left (a closed tab: nothing
-  // cancels it, nothing drops what it put).
-  const key = [...cache.store.keys()].find((url) => url.endsWith("/30"))!;
+  // Part 14 (inside the manifest) goes missing. Another visit -- another
+  // tab, while this cache is verified -- fetches it from another deploy
+  // (the same name, the same length, other bytes) and is left (a closed
+  // tab: nothing cancels it, nothing drops what it put).
+  const key = [...cache.store.keys()].find((url) => url.endsWith("/14"))!;
   cache.store.delete(key);
   const other = file.slice();
-  other.set([0xff, 0xff, 0xff], 90);
+  other[43] = "X".charCodeAt(0);
   const reader = (await fetchVerifiedSnapshot(
     path,
     pin,
@@ -1045,21 +1058,17 @@ Deno.test("a part a later visit put is untrusted until that visit passes, howeve
     undefined,
     cache,
   )).getReader();
-  for (let i = 0; i < 40; i++) await reader.read();
+  for (let i = 0; i < 20; i++) await reader.read();
   assert(cache.store.has(key), "the other deploy's part was put");
-  assertEquals(cache.store.has(verified), false, "and the cache untrusted");
-  // So the next visit fetches every part again, and restores.
-  let partFetches = 0;
-  const served = site(name, file);
-  assertEquals(
-    await restore((input, init) => {
-      if (!String(input).endsWith(".parts.json")) partFetches++;
-      return served(input, init);
-    }),
-    sealed,
-  );
-  assertEquals(partFetches, Math.ceil(file.byteLength / 3));
-  assert(cache.store.has(verified), "trusted again once it passed");
+  assert(cache.store.has(verified), "under a verified marker");
+  // It is not the bytes the marker verified: the next visit fetches it
+  // again (that one part) and restores, as does every visit after.
+  for (const visit of [1, 2]) {
+    partFetches = 0;
+    assertEquals(await restore(), sealed, `visit ${visit}`);
+    assertEquals(partFetches, visit === 1 ? 1 : 0, `visit ${visit}`);
+  }
+  await reader.cancel();
 });
 
 Deno.test("a cached part of another length than its place is fetched again, not used", async () => {
@@ -1076,16 +1085,8 @@ Deno.test("a cached part of another length than its place is fetched again, not 
       .then((body) => decodeSandboxSnapshot(body, BUILT));
   assertEquals(await restore(), sealed);
   // Under part 14's key, the bytes of another slicing of this very zip
-  // (4 bytes from its offset), with their own sha256 recorded beside
-  // them: locally intact, but not this layout's part.
+  // (4 bytes from its offset): not this layout's part.
   const key = [...cache.store.keys()].find((url) => url.endsWith("/14"))!;
-  const store = await cache.open("");
-  const wrong = file.slice(14 * 3, 14 * 3 + 4);
-  await store.put(
-    key,
-    new Response(wrong, {
-      headers: { "x-yurt-part-sha256": await sha256Hex(wrong) },
-    }),
-  );
+  cache.store.set(key, file.slice(14 * 3, 14 * 3 + 4));
   assertEquals(await restore(), sealed);
 });

@@ -5,6 +5,7 @@ import {
   SLIM_IMAGE_NAME,
 } from "../src/integrity.ts";
 import { cspSources, inlineScriptHashes } from "../src/csp.ts";
+import { StoreLogWriter } from "../src/store_log.ts";
 
 Deno.test("static build emits isolated playground deployment", async () => {
   const script = await Deno.readTextFile(
@@ -318,6 +319,54 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
       await snapshotMatchesPins(path, unpinned, "desktop", false),
       false,
     );
+    warned.length = 0;
+    // Unasked, a store-root record in the pins is the rule too: the
+    // memory-only zip is left out.
+    const storeRoot = {
+      ...pins,
+      kernelWasm: { ...pins.kernelWasm, rootStore: true as const },
+    };
+    assertEquals(await snapshotMatchesPins(path, storeRoot), false);
+    assertStringIncludes(
+      String(warned.at(-1)),
+      "holds the kernel memory alone",
+    );
+    warned.length = 0;
+    // A file that carries a store its pin does not name is caught by the
+    // file's own check, on a kernel without one.
+    const log = new StoreLogWriter();
+    log.write("journal-a", 0, new Uint8Array(8).fill(1));
+    log.setLength("journal-a", 8);
+    log.write("meta", 0, new Uint8Array(76).fill(2));
+    log.setLength("meta", 76);
+    const withStore = new Uint8Array(
+      await (await encodeSandboxSnapshot({
+        ...seal,
+        rootStore: {
+          identity: {
+            lineage: "11".repeat(16),
+            sequence: "1",
+            hash: "22".repeat(32),
+          },
+          lower: { bytes: 1024, sha256: hex("f") },
+          ...log.finish(),
+          log: log.chunks,
+        },
+      }, built)).arrayBuffer(),
+    );
+    await Deno.writeFile(path, withStore);
+    assertEquals(
+      await snapshotMatchesPins(path, {
+        ...pins,
+        snapshot: {
+          ...pins.snapshot,
+          sha256: await sha256Hex(withStore),
+          size: withStore.byteLength,
+        },
+      }),
+      false,
+    );
+    assertStringIncludes(String(warned.at(-1)), "carries a YurtFS root store");
   } finally {
     console.warn = warn;
     await Deno.remove(dir, { recursive: true });
