@@ -18,7 +18,11 @@ import {
 const STAT_MODE = 12;
 const STAT_UID = 16;
 const STAT_GID = 20;
-const STAT_LEN = 48;
+// The kernel's whole StatRecord. Since yurtos-kernel#3989 it is 88 bytes
+// and a shorter response buffer is -EINVAL; fields are only ever appended,
+// so the offsets above are the same in the older 48-byte record, and a
+// kernel that writes fewer bytes still fills them.
+const STAT_LEN = 88;
 
 const repoRoot = join(fileURLToPath(import.meta.url), "../..");
 
