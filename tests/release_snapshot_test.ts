@@ -31,17 +31,27 @@ const asset = (p: ReturnType<typeof part>) => ({
 
 Deno.test("an existing snapshot release counts only when it holds every part, by sha256 and size", () => {
   const parts = [part(0, "a"), part(1, "b"), part(2, "c", 4)];
-  const sidecar = { name: "sandbox.seal.zip.sha256", size: 83, digest: null };
-  assertEquals(releaseProblems([...parts.map(asset), sidecar], parts), []);
-  assertEquals(releaseProblems([asset(parts[0]), asset(parts[2])], parts), [
-    "sandbox.seal.zip.1 is missing",
-  ]);
+  const name = "sandbox.seal.zip.sha256";
+  const sidecar = { name, size: 83, digest: null };
   assertEquals(
-    releaseProblems([
-      asset(parts[0]),
-      { ...asset(parts[1]), digest: `sha256:${"f".repeat(64)}` },
-      { ...asset(parts[2]), size: 5 },
-    ], parts),
+    releaseProblems([...parts.map(asset), sidecar], parts, name),
+    [],
+  );
+  assertEquals(
+    releaseProblems([asset(parts[0]), asset(parts[2]), sidecar], parts, name),
+    ["sandbox.seal.zip.1 is missing"],
+  );
+  assertEquals(
+    releaseProblems(
+      [
+        asset(parts[0]),
+        { ...asset(parts[1]), digest: `sha256:${"f".repeat(64)}` },
+        { ...asset(parts[2]), size: 5 },
+        sidecar,
+      ],
+      parts,
+      name,
+    ),
     [
       `sandbox.seal.zip.1 has sha256 ${"f".repeat(64)}, not ${"b".repeat(64)}`,
       "sandbox.seal.zip.2 is 5 bytes, not 4",
@@ -49,12 +59,25 @@ Deno.test("an existing snapshot release counts only when it holds every part, by
   );
   // An asset GitHub reports no digest for proves nothing.
   assertEquals(
-    releaseProblems([asset(parts[0]), asset(parts[1]), {
-      ...asset(parts[2]),
-      digest: null,
-    }], parts),
+    releaseProblems(
+      [asset(parts[0]), asset(parts[1]), {
+        ...asset(parts[2]),
+        digest: null,
+      }, sidecar],
+      parts,
+      name,
+    ),
     [`sandbox.seal.zip.2 has sha256 (none), not ${"c".repeat(64)}`],
   );
+  // A train's release of the earlier format (sandbox.seal.gz.*) holds no
+  // zip sidecar: a refusal to report, not a `gh release download` to run.
+  const gz = { name: "sandbox.seal.gz.sha256", size: 82, digest: null };
+  assertEquals(releaseProblems([gz], parts, name), [
+    "sandbox.seal.zip.sha256 is missing",
+    "sandbox.seal.zip.0 is missing",
+    "sandbox.seal.zip.1 is missing",
+    "sandbox.seal.zip.2 is missing",
+  ]);
 });
 
 Deno.test("only the deploy fetches the snapshot, with the other blobs' retry", async () => {

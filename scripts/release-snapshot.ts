@@ -373,25 +373,31 @@ export type PartInfo = { name: string; sha256: string; size: number };
 
 /** What keeps an existing release from being the one for these parts:
  * every part must be there with this sha256 (GitHub's own digest of the
- * upload) and size. Empty when it holds them. */
+ * upload) and size, and so must the `sidecar` (the whole file's .sha256,
+ * which the caller then reads). Empty when it holds them. */
 export function releaseProblems(
   assets: { name: string; size: number; digest: string | null }[],
   parts: PartInfo[],
+  sidecar: string,
 ): string[] {
   const byName = new Map(assets.map((asset) => [asset.name, asset]));
-  return parts.flatMap((part) => {
-    const asset = byName.get(part.name);
-    if (asset === undefined) return [`${part.name} is missing`];
-    const sha256 = asset.digest?.replace(/^sha256:/, "") ?? "(none)";
-    return [
-      ...(sha256 === part.sha256
-        ? []
-        : [`${part.name} has sha256 ${sha256}, not ${part.sha256}`]),
-      ...(asset.size === part.size
-        ? []
-        : [`${part.name} is ${asset.size} bytes, not ${part.size}`]),
-    ];
-  });
+  const missingSidecar = byName.has(sidecar) ? [] : [`${sidecar} is missing`];
+  return [
+    ...missingSidecar,
+    ...parts.flatMap((part) => {
+      const asset = byName.get(part.name);
+      if (asset === undefined) return [`${part.name} is missing`];
+      const sha256 = asset.digest?.replace(/^sha256:/, "") ?? "(none)";
+      return [
+        ...(sha256 === part.sha256
+          ? []
+          : [`${part.name} has sha256 ${sha256}, not ${part.sha256}`]),
+        ...(asset.size === part.size
+          ? []
+          : [`${part.name} is ${asset.size} bytes, not ${part.size}`]),
+      ];
+    }),
+  ];
 }
 
 /** Step 3: the parts as the site and the release publish them, written
@@ -624,23 +630,27 @@ async function main(): Promise<void> {
       { allowFailure: true },
     );
     if (existing.ok) {
-      const published = (await gh([
-        "release",
-        "download",
-        tag,
-        "--repo",
-        REPO,
-        "--pattern",
-        `${ASSET}.sha256`,
-        "--output",
-        "-",
-      ])).stdout.split(/\s+/)[0];
-      const problems = [
-        ...(published === sha256
-          ? []
-          : [`${ASSET}.sha256 says ${published}, not ${sha256}`]),
-        ...releaseProblems(JSON.parse(existing.stdout).assets, parts),
-      ];
+      const sidecar = `${ASSET}.sha256`;
+      const assets = JSON.parse(existing.stdout).assets;
+      const problems = releaseProblems(assets, parts, sidecar);
+      // A release of another file name (a train's earlier format) has no
+      // such asset, and `gh release download` would die on it.
+      if (assets.some((asset: { name: string }) => asset.name === sidecar)) {
+        const published = (await gh([
+          "release",
+          "download",
+          tag,
+          "--repo",
+          REPO,
+          "--pattern",
+          sidecar,
+          "--output",
+          "-",
+        ])).stdout.split(/\s+/)[0];
+        if (published !== sha256) {
+          problems.unshift(`${sidecar} says ${published}, not ${sha256}`);
+        }
+      }
       if (problems.length > 0) {
         die(
           `${REPO} ${tag} already exists and does not hold this snapshot: ` +
