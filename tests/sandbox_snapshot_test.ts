@@ -828,14 +828,17 @@ Deno.test("a repeat restore takes the parts from the cache, drops them when the 
   partFetches = 0;
   assertEquals(await restore(), sealed);
   assertEquals(partFetches, 1, "only the damaged part");
-  // One that still matches its own record but not the zip fails the whole
-  // zip's hash: that restore is refused (the page boots instead), and all
-  // of its parts are fetched afresh.
-  const nine = new Uint8Array([9]);
+  // One that still matches its own record and its length but not the zip
+  // fails the whole zip's hash: that restore is refused (the page boots
+  // instead), and all of its parts are fetched afresh. Its length is the
+  // real last part's, which depends on the platform's deflate (685 bytes
+  // on macOS, 680 on Linux).
+  const wrong = file.slice((partsOf(file) - 1) * 3);
+  wrong[0] ^= 0xff;
   await (await cache.open("")).put(
     last,
-    new Response(nine, {
-      headers: { "x-yurt-part-sha256": await sha256Hex(nine) },
+    new Response(wrong, {
+      headers: { "x-yurt-part-sha256": await sha256Hex(wrong) },
     }),
   );
   await assertRejects(() => restore(), Error, "not the pinned");
