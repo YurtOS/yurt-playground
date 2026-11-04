@@ -32,10 +32,9 @@ function pin(
   return {
     releaseRepo: "YurtOS/yurt-playground",
     release: tag,
-    format: 3,
+    format: 4,
     sha256: "a".repeat(64),
     size,
-    parts: ["b".repeat(64)],
     builtFrom: {
       kernelSha256: "d".repeat(64),
       kernelRev: "r",
@@ -111,7 +110,14 @@ Deno.test("the committed snapshot pins hold what their kinds are for, largest fi
   const pins = JSON.parse(
     await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
   );
-  assertEquals(verifySnapshotPins(pins, { complete: false }), []);
+  // Apart from their format: the train that merges the zip format
+  // recaptures every kind (format 3 is the gzip of before it).
+  assertEquals(
+    verifySnapshotPins(pins, { complete: false }).filter((problem) =>
+      !problem.includes("is format 3, not 4: a gzip of the kernel memory")
+    ),
+    [],
+  );
 });
 
 Deno.test("a complete train without a Go snapshot passes: Go's is optional", () => {
@@ -130,6 +136,29 @@ Deno.test("a pinned but unmeasured Go snapshot is still refused when the train i
 
 Deno.test("a train's four snapshots pass", () => {
   assertEquals(verifySnapshotPins(fixture()), []);
+});
+
+Deno.test("on a kernel whose root is a YurtFS store, a pin of a zip without the store is refused", () => {
+  const pins = fixture();
+  const identity = {
+    lineage: "1".repeat(32),
+    sequence: "7",
+    hash: "2".repeat(64),
+  };
+  for (const key of ["snapshot", "tabletSnapshot", "goSnapshot"]) {
+    pins[key].store = { identity, files: 2, bytes: 640, pieceBytes: 600 };
+  }
+  // Undefined (a kernel not asked) takes either, as acceptedSnapshot.
+  assertEquals(verifySnapshotPins(pins), []);
+  // Today's kernel restores none of the three that carry one.
+  assertEquals(verifySnapshotPins(pins, { rootStore: false }), [
+    "desktop: the pinned snapshot carries a YurtFS root store, and this kernel keeps its root filesystem in its memory",
+    "tablet: the pinned snapshot carries a YurtFS root store, and this kernel keeps its root filesystem in its memory",
+    "go: the pinned snapshot carries a YurtFS root store, and this kernel keeps its root filesystem in its memory",
+  ]);
+  assertEquals(verifySnapshotPins(pins, { rootStore: true }), [
+    "phone: the pinned snapshot holds the kernel memory alone, and this kernel's root filesystem is a YurtFS store that it does not hold; capture it again",
+  ]);
 });
 
 Deno.test("a phone snapshot with Python in it is refused", () => {
@@ -345,4 +374,12 @@ Deno.test("compiledPackages reads the packages go build -x compiled", () => {
     ),
     ["strings", "fmt"],
   );
+});
+
+Deno.test("a pin of another format than the page's is refused", () => {
+  const pins = fixture();
+  (pins.phoneSnapshot as Record<string, unknown>).format = 3;
+  assertEquals(verifySnapshotPins(pins), [
+    "phone: the pinned snapshot is format 3, not 4: a gzip of the kernel memory, from before the zip; capture it again",
+  ]);
 });

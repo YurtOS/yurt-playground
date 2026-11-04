@@ -63,8 +63,17 @@ import {
   fetchVerifiedSnapshot,
   pinnedSnapshot,
   type SnapshotKind,
+  SnapshotMismatch,
 } from "./sandbox_snapshot.ts";
 import { uploadedSnapshot } from "./snapshot_source.ts";
+import {
+  type PageSeal,
+  type ProposedRootStoreApi,
+  rootStoreOf,
+  sealWithStore,
+  type StoreIdentity,
+  type StoreRestoreTarget,
+} from "./root_store.ts";
 import { KILL_GRACE_MS, type Spawner, type WaitStatus } from "./executions.ts";
 import {
   decodeWaitRecord,
@@ -166,7 +175,7 @@ export type PlaygroundSession = {
   /** Kill the shell, wait for every guest process to be gone, and seal the
    * sandbox: what `?snapshot=capture` ships (src/sandbox_snapshot.ts). The
    * session is over afterwards. */
-  seal?: () => Promise<SandboxSealImage>;
+  seal?: () => Promise<PageSeal>;
   /** Deliver a signal to a process this page started. */
   signal?: (pid: number, signal: number) => Promise<void>;
   dialSandboxPort: (
@@ -422,7 +431,22 @@ export async function loadPlaygroundKernel(
 export async function restorePlaygroundKernel(
   kernel: Uint8Array,
   image: Parameters<typeof KernelHostInterface.restore>[1],
+  /** On a kernel whose root is a YurtFS store: its API and the written
+   * store to mount as the root. */
+  store?: {
+    api: ProposedRootStoreApi;
+    target: StoreRestoreTarget;
+    expect: StoreIdentity;
+  },
 ): Promise<Awaited<ReturnType<typeof KernelHostInterface.restore>>> {
+  if (store !== undefined) {
+    return store.api.restore(
+      kernel,
+      image,
+      store,
+      await plannedPlaygroundHostState(),
+    );
+  }
   return KernelHostInterface.restore(
     kernel,
     image,
@@ -468,7 +492,16 @@ export async function bootPlayground(
   if (snapshotPath === undefined) return await bootImage();
   // A restored kernel that then fails to start its shell falls back too.
   return (await snapshotOrBoot(
-    async () => start(await restoreSnapshot(env, kernel, snapshotPath), true),
+    async () => {
+      const restored = await restoreSnapshot(env, kernel, snapshotPath);
+      try {
+        return await start(restored.host, true);
+      } catch (error) {
+        // The image boots instead: no store of this restore stays.
+        await restored.discard();
+        throw error;
+      }
+    },
     bootImage,
   )).kernel;
 }
@@ -524,12 +557,22 @@ export async function snapshotOrBoot<K>(
 }
 
 /** A kernel over a sealed sandbox with no process in it: its filesystem is
- * all in the kernel's memory, so nothing is staged. */
+ * all in the kernel's memory, or -- once the kernel's root is a YurtFS
+ * store (`rootStore`) -- in the store the snapshot carries, restored into
+ * a fresh one before the memory. Nothing is staged. */
 export async function restoreSnapshot(
   env: PlaygroundEnv,
   kernel: Uint8Array,
   path: string,
-): Promise<KernelHostInterface> {
+  rootStore: ProposedRootStoreApi | undefined = rootStoreOf(
+    KernelHostInterface,
+  ),
+): Promise<{
+  host: KernelHostInterface;
+  /** Remove the store it restored into (none without a root store), for
+   * a boot that falls back after it. */
+  discard: () => Promise<void>;
+}> {
   const started = performance.now();
   env.show("loading snapshot");
   // A pin of another build is refused before anything is downloaded, a
@@ -540,11 +583,16 @@ export async function restoreSnapshot(
   // commit; only its manifest (a few hundred bytes) is read before them.
   const source = env.snapshotId === undefined
     ? {
-      pin: pinnedSnapshot(pins, env.snapshotKind),
+      pin: pinnedSnapshot(pins, env.snapshotKind, rootStore !== undefined),
       path,
       fetch: undefined,
     }
-    : await uploadedSnapshot(env.snapshotId, pins);
+    : await uploadedSnapshot(
+      env.snapshotId,
+      pins,
+      undefined,
+      rootStore !== undefined,
+    );
   const pin = source.pin;
   // The Python the capture installed must be what an install would get
   // now, as for a stored layer (src/python_layer.ts). Asked beside the
@@ -555,11 +603,32 @@ export async function restoreSnapshot(
     checkPythonSet(pin.builtFrom, live)
   );
   checked.catch((error) => stop.abort(error));
+  // The store goes into a fresh copy, and a refused restore removes it.
+  // Its lower comes from the image, fetched beside the snapshot.
+  const target = await rootStore?.freshStore();
+  let lowerImage = target === undefined
+    ? undefined
+    : env.fetchBytes(env.imagePath ?? FULL_IMAGE_PATH);
+  lowerImage?.catch(() => {});
+  const store = target === undefined ? undefined : {
+    target,
+    expect: pin.store!,
+    // Taken once: the image is not held while the memory is allocated.
+    image: () => {
+      const image = lowerImage!;
+      lowerImage = undefined;
+      return image;
+    },
+  };
   // Only this frame holds the decoded memory (~250-545 MiB), and only
   // until the restore copied it: a fallback boot must not run beside it.
   let downloaded = started;
-  let image: SandboxSealImage | undefined =
-    await (async () =>
+  let fetched = started;
+  let memoryBytes = 0;
+  let image: SandboxSealImage | undefined;
+  let restored: Awaited<ReturnType<typeof restorePlaygroundKernel>>;
+  try {
+    image = await (async () =>
       decodeSandboxSnapshot(
         (await fetchVerifiedSnapshot(
           source.path,
@@ -580,25 +649,44 @@ export async function restoreSnapshot(
         // The live index's verdict before the memory is allocated: a
         // refused snapshot never holds it, so a fallback boot never runs
         // beside it.
-        () => checked,
+        async (memoryBytes) => {
+          await checked;
+          // The pin's own record of what a restore allocates, before the
+          // manifest's (unhashed yet) number is believed.
+          if (memoryBytes !== pin.memoryBytes) {
+            throw new SnapshotMismatch(
+              `the snapshot's manifest names memoryBytes ${memoryBytes}, not the pinned ${pin.memoryBytes}`,
+            );
+          }
+        },
+        store ?? false,
       ))().catch(async (error) => {
         // A refused set says so, rather than the aborted download's reason.
         await checked;
         throw error;
       });
-  await checked;
-  const fetched = performance.now();
-  const memoryBytes = image.kernelMemory.byteLength;
-  env.show("restoring snapshot");
-  let restored: Awaited<ReturnType<typeof restorePlaygroundKernel>>;
-  try {
-    restored = await restorePlaygroundKernel(kernel, image);
+    await checked;
+    fetched = performance.now();
+    memoryBytes = image.kernelMemory.byteLength;
+    env.show("restoring snapshot");
+    restored = await restorePlaygroundKernel(
+      kernel,
+      image,
+      store === undefined ? undefined : {
+        api: rootStore!,
+        target: store.target,
+        expect: store.expect.identity,
+      },
+    );
+    if (restored.processes.length !== 0) {
+      restored.host.dispose();
+      throw new Error("a sandbox snapshot must hold no process");
+    }
+  } catch (error) {
+    await target?.discard();
+    throw error;
   } finally {
     image = undefined;
-  }
-  if (restored.processes.length !== 0) {
-    restored.host.dispose();
-    throw new Error("a sandbox snapshot must hold no process");
   }
   console.log(
     `[snapshot] ${memoryBytes} bytes of kernel memory: ` +
@@ -606,7 +694,10 @@ export async function restoreSnapshot(
       `(parts had at ${Math.round(downloaded - started)} ms), ` +
       `restored in ${Math.round(performance.now() - fetched)} ms`,
   );
-  return restored.host;
+  return {
+    host: restored.host,
+    discard: async () => await target?.discard(),
+  };
 }
 
 /**
@@ -1078,7 +1169,11 @@ async function startShell(
       // capture anyway.
       relayServes = false;
       relay?.stop();
-      return await mk.sealSandbox();
+      // A kernel whose root is a YurtFS store exports it with the seal.
+      const rootStore = rootStoreOf(KernelHostInterface);
+      return rootStore === undefined
+        ? await mk.sealSandbox()
+        : await sealWithStore(rootStore, mk);
     },
     writeFiles(files) {
       for (const { path, bytes } of files) writeRamfsTree(mk, path, bytes);

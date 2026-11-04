@@ -13,7 +13,7 @@
  *   1. serve this checkout (the dev server) and open `/?start&snapshot=capture`:
  *      the page boots the pinned slim image, installs the Python set from
  *      the live repository, precompiles it, seals the sandbox and downloads
- *      the file (public/snapshot/sandbox.seal.gz);
+ *      the file (public/snapshot/sandbox.seal.zip);
  *   2. check that the file decodes in full and was built from the pins and
  *      from the Python set the live index offers (a capture starts only
  *      when the index answers with a complete set);
@@ -32,7 +32,7 @@
  *              slow part (captureTimeoutMs)
  *
  *   --dry-run  everything but the release and the pins write
- *   --resume   reuse public/snapshot/sandbox.seal.gz when it is a capture
+ *   --resume   reuse public/snapshot/sandbox.seal.zip when it is a capture
  *              of this train and of the live Python set (a capture is never
  *              the same bytes twice, so a release cut by an earlier run
  *              matches only its own file)
@@ -61,7 +61,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle, kernelRoot } from "./serve.ts";
-import { checkSnapshotFile } from "./lib/snapshot_file.ts";
+import { checkSnapshotFile, kernelRootIsStore } from "./lib/snapshot_file.ts";
 import {
   livePythonSet,
   NO_COMPLETE_SET,
@@ -78,7 +78,6 @@ import {
 } from "../src/pins.ts";
 import {
   checkPythonSet,
-  FORMAT,
   goSetRequest,
   pinnedSnapshot,
   SANDBOX_SNAPSHOT_NAME,
@@ -92,7 +91,7 @@ import {
 } from "../src/sandbox_snapshot.ts";
 
 const REPO = "YurtOS/yurt-playground";
-const ASSET = "sandbox.seal.gz";
+const ASSET = "sandbox.seal.zip";
 /** A capture is a boot, a Python install and a seal: ~2 min on a laptop.
  * Go's also compiles its standard library into the build cache (Go's
  * warm-up, src/capture_outcome.ts): about 10 min in headless
@@ -215,9 +214,12 @@ export async function snapshotPinProblem(
   pins: Pins,
   live: () => Promise<string | null | undefined>,
   kind: SnapshotKind = "desktop",
+  /** Whether the pinned kernel's root is a YurtFS store: a pin of a zip
+   * without one is then refused ({@link kernelRootIsStore}). */
+  rootStore?: boolean,
 ): Promise<string | undefined> {
   try {
-    const pin = pinnedSnapshot(pins, kind);
+    const pin = pinnedSnapshot(pins, kind, rootStore);
     const set = await live();
     if (set === undefined) {
       say("the live package index could not be read; the pin is kept");
@@ -277,9 +279,15 @@ export async function checkPin(
     string | null | undefined
   > = liveSetOf,
   kind: SnapshotKind = "desktop",
+  rootStore?: boolean,
 ): Promise<{ ok: true } | { ok: false; problem: string }> {
   const pins = await loadPins(path);
-  const problem = await snapshotPinProblem(pins, live(pins, kind), kind);
+  const problem = await snapshotPinProblem(
+    pins,
+    live(pins, kind),
+    kind,
+    rootStore,
+  );
   return problem === undefined ? { ok: true } : { ok: false, problem };
 }
 
@@ -365,25 +373,31 @@ export type PartInfo = { name: string; sha256: string; size: number };
 
 /** What keeps an existing release from being the one for these parts:
  * every part must be there with this sha256 (GitHub's own digest of the
- * upload) and size. Empty when it holds them. */
+ * upload) and size, and so must the `sidecar` (the whole file's .sha256,
+ * which the caller then reads). Empty when it holds them. */
 export function releaseProblems(
   assets: { name: string; size: number; digest: string | null }[],
   parts: PartInfo[],
+  sidecar: string,
 ): string[] {
   const byName = new Map(assets.map((asset) => [asset.name, asset]));
-  return parts.flatMap((part) => {
-    const asset = byName.get(part.name);
-    if (asset === undefined) return [`${part.name} is missing`];
-    const sha256 = asset.digest?.replace(/^sha256:/, "") ?? "(none)";
-    return [
-      ...(sha256 === part.sha256
-        ? []
-        : [`${part.name} has sha256 ${sha256}, not ${part.sha256}`]),
-      ...(asset.size === part.size
-        ? []
-        : [`${part.name} is ${asset.size} bytes, not ${part.size}`]),
-    ];
-  });
+  const missingSidecar = byName.has(sidecar) ? [] : [`${sidecar} is missing`];
+  return [
+    ...missingSidecar,
+    ...parts.flatMap((part) => {
+      const asset = byName.get(part.name);
+      if (asset === undefined) return [`${part.name} is missing`];
+      const sha256 = asset.digest?.replace(/^sha256:/, "") ?? "(none)";
+      return [
+        ...(sha256 === part.sha256
+          ? []
+          : [`${part.name} has sha256 ${sha256}, not ${part.sha256}`]),
+        ...(asset.size === part.size
+          ? []
+          : [`${part.name} is ${asset.size} bytes, not ${part.size}`]),
+      ];
+    }),
+  ];
 }
 
 /** Step 3: the parts as the site and the release publish them, written
@@ -447,8 +461,14 @@ export function releaseNotes(
     `- the train's sealable CPython (pythonSeal) sha256 \`${built.pythonSealSha256}\``,
     `- the Python set installed, as the live index offers it \`${built.pythonSet}\``,
     "",
-    `Header format ${pin.format}. \`${ASSET}\` is published in ${pin.parts.length} parts`,
-    `(\`${ASSET}.0\`...), ${pin.size} bytes in all, sha256 \`${pin.sha256}\``,
+    `Zip format ${pin.format}, ${
+      pin.store === undefined
+        ? "the kernel memory alone"
+        : `with its YurtFS root store (lineage ${pin.store.identity.lineage}, sequence ${pin.store.identity.sequence})`
+    }. \`${ASSET}\` is published in ${
+      imagePartsManifest(ASSET, pin.size).parts.length
+    } parts`,
+    `(\`${ASSET}.0\`...; transport only, joined they are the zip), ${pin.size} bytes in all, sha256 \`${pin.sha256}\``,
     `(\`${ASSET}.sha256\`).`,
     "",
     "Captured locally by `scripts/release-snapshot.ts`: the page served by the",
@@ -488,7 +508,12 @@ async function main(): Promise<void> {
     }
     const checkKind = kindOption(args);
     if (args.length > 0) die(`unknown arguments: ${args.join(" ")}`);
-    const verdict = await checkPin(path, liveSetOf, checkKind);
+    const verdict = await checkPin(
+      path,
+      liveSetOf,
+      checkKind,
+      kernelRootIsStore(await loadPins(path)),
+    );
     if (!verdict.ok) {
       // The verdict "not this train's", apart from any other failure
       // (exit 1): only this one drops the pin (scripts/lib/snapshot-pin.sh).
@@ -545,11 +570,14 @@ async function main(): Promise<void> {
   const live = await liveSetOf(pins, kind)();
   const setProblem = captureSetProblem(live, kind);
   if (setProblem !== undefined) die(setProblem);
+  // A kernel whose root is a store makes zips with it: one without is
+  // not this train's.
+  const rootStore = kernelRootIsStore(pins);
   const thisTrains = () =>
     checkSnapshotFile(
       snapshotPath,
       { ...snapshotIdentity(pins), pythonSet: live! },
-      { decode: true },
+      { decode: true, rootStore },
     );
   let check = resume ? await thisTrains() : undefined;
   if (check?.ok) {
@@ -579,16 +607,19 @@ async function main(): Promise<void> {
     const pin: SnapshotPin = {
       releaseRepo: REPO,
       release: tag,
-      format: FORMAT,
+      // The capture's own format: 4 when it carries a root store.
+      format: facts.format,
       sha256,
       size: file.byteLength,
-      parts: parts.map((part) => part.sha256),
       builtFrom,
       memoryBytes: facts.memoryBytes,
       ...(facts.contents === undefined ? {} : { contents: facts.contents }),
+      ...(facts.store === undefined ? {} : { store: facts.store }),
     };
     say(
-      `${ASSET}: ${pin.size} bytes, ${parts.length} parts, ${facts.memoryBytes} bytes of kernel memory, sha256 ${sha256}; this Linux: ${
+      `${ASSET}: ${pin.size} bytes, ${parts.length} parts, ${facts.memoryBytes} bytes of kernel memory, ${
+        facts.store === undefined ? "no root store" : "its root store"
+      }, sha256 ${sha256}; this Linux: ${
         facts.contents?.remark ?? "(not recorded)"
       }`,
     );
@@ -599,23 +630,27 @@ async function main(): Promise<void> {
       { allowFailure: true },
     );
     if (existing.ok) {
-      const published = (await gh([
-        "release",
-        "download",
-        tag,
-        "--repo",
-        REPO,
-        "--pattern",
-        `${ASSET}.sha256`,
-        "--output",
-        "-",
-      ])).stdout.split(/\s+/)[0];
-      const problems = [
-        ...(published === sha256
-          ? []
-          : [`${ASSET}.sha256 says ${published}, not ${sha256}`]),
-        ...releaseProblems(JSON.parse(existing.stdout).assets, parts),
-      ];
+      const sidecar = `${ASSET}.sha256`;
+      const assets = JSON.parse(existing.stdout).assets;
+      const problems = releaseProblems(assets, parts, sidecar);
+      // A release of another file name (a train's earlier format) has no
+      // such asset, and `gh release download` would die on it.
+      if (assets.some((asset: { name: string }) => asset.name === sidecar)) {
+        const published = (await gh([
+          "release",
+          "download",
+          tag,
+          "--repo",
+          REPO,
+          "--pattern",
+          sidecar,
+          "--output",
+          "-",
+        ])).stdout.split(/\s+/)[0];
+        if (published !== sha256) {
+          problems.unshift(`${sidecar} says ${published}, not ${sha256}`);
+        }
+      }
       if (problems.length > 0) {
         die(
           `${REPO} ${tag} already exists and does not hold this snapshot: ` +

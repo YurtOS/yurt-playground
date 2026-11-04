@@ -11,6 +11,7 @@
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { imagePartsManifest } from "../src/image_parts.ts";
 import { parseSnapshotPin, type SnapshotPin } from "../src/pins.ts";
 import {
   SNAPSHOT_KIND_NAMES,
@@ -53,11 +54,9 @@ export function snapshotTable(pins: Record<string, unknown>): string {
     const peak = pin.restorePeakMiB === undefined
       ? "?"
       : `${pin.restorePeakMiB} MiB`;
-    return `| ${kind} | ${
-      DEVICE[kind]
-    } | \`${pin.release}\` | ${mb} MB in ${pin.parts.length} parts | ${memory} | ${peak} | ${
-      pin.contents?.remark ?? "?"
-    } |`;
+    return `| ${kind} | ${DEVICE[kind]} | \`${pin.release}\` | ${mb} MB in ${
+      imagePartsManifest(SNAPSHOT_KINDS[kind].asset, pin.size).parts.length
+    } parts | ${memory} | ${peak} | ${pin.contents?.remark ?? "?"} |`;
   });
   return [
     TABLE_START,

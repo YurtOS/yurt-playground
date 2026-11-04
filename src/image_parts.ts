@@ -10,7 +10,13 @@ export const IMAGE_PART_BYTES = 20 * 1024 * 1024;
  * built by scripts/build-python-seal.sh into public/. */
 export const PYTHON_SEAL_NAME = "demo/python3-seal.wasm";
 
-export type ImagePartsManifest = { size: number; parts: string[] };
+/** `partBytes`: the size every part but the last has (the publisher's
+ * {@link IMAGE_PART_BYTES}), so a reader knows the layout it reads. */
+export type ImagePartsManifest = {
+  size: number;
+  partBytes: number;
+  parts: string[];
+};
 
 /** Manifest for an image of `size` bytes published as `name` parts. The
  * parts are named relative to the manifest, which sits beside them, so a
@@ -23,6 +29,7 @@ export function imagePartsManifest(
   const base = name.slice(name.lastIndexOf("/") + 1);
   return {
     size,
+    partBytes: IMAGE_PART_BYTES,
     parts: Array.from({ length: count }, (_, i) => `${base}.${i}`),
   };
 }

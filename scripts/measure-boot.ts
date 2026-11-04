@@ -156,6 +156,19 @@ if (import.meta.main) {
         undefined,
         { timeout: 300_000, polling: 50 },
       );
+      // "running" comes before the shell's first prompt. A line typed in
+      // between can arrive split around the shell's switch to raw input:
+      // its tail runs alone (`syntax error: unexpected ")"`), its head
+      // comes later and leaves `$((` open, and every retry then lands at
+      // the `> ` continuation prompt. So type only at a bare prompt.
+      await page.waitForFunction(
+        () =>
+          [...document.querySelectorAll(".xterm-rows > div")].some((row) =>
+            /^\$[\s ]*$/.test(row.textContent ?? "")
+          ),
+        undefined,
+        { timeout: 300_000, polling: 50 },
+      );
       // Typed into the shell: the terminal is focused before each line
       // (Jupyter's cell may take the focus once it is ready), and a line
       // that went elsewhere is typed again.

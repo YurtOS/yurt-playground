@@ -5,6 +5,7 @@ import {
   SLIM_IMAGE_NAME,
 } from "../src/integrity.ts";
 import { cspSources, inlineScriptHashes } from "../src/csp.ts";
+import { StoreLogWriter } from "../src/store_log.ts";
 
 Deno.test("static build emits isolated playground deployment", async () => {
   const script = await Deno.readTextFile(
@@ -262,12 +263,12 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
     pythonSeal: { sha256: built.pythonSealSha256 },
     snapshot: {
       releaseRepo: "YurtOS/yurt-playground",
-      format: 3,
+      format: 4,
       release: "snapshot-t",
       sha256: await sha256Hex(file),
       size: file.byteLength,
-      parts: [await sha256Hex(file)],
       builtFrom: built,
+      memoryBytes: 64,
     },
   };
   const dir = await Deno.makeTempDir();
@@ -275,28 +276,97 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
   const warn = console.warn;
   console.warn = (...args: unknown[]) => warned.push(args);
   try {
-    const path = `${dir}/sandbox.seal.gz`;
+    const path = `${dir}/sandbox.seal.zip`;
     await Deno.writeFile(path, file);
+    assertEquals(await snapshotMatchesPins(path, pins, "desktop", false), true);
+    assertEquals(warned.length, 0);
+    // Unasked, the pins' own record decides: today's kernel.
     assertEquals(await snapshotMatchesPins(path, pins), true);
     assertEquals(warned.length, 0);
+    // A zip of the memory alone is not published for a store-root kernel.
+    assertEquals(await snapshotMatchesPins(path, pins, "desktop", true), false);
+    assertStringIncludes(
+      String(warned.at(-1)),
+      "holds the kernel memory alone",
+    );
+    warned.length = 0;
     // Not the pinned file (a local capture, an older download).
     const other = await encode({ ...built, imageSha256: hex("d") });
     await Deno.writeFile(path, other);
-    assertEquals(await snapshotMatchesPins(path, pins), false);
+    assertEquals(
+      await snapshotMatchesPins(path, pins, "desktop", false),
+      false,
+    );
     assertStringIncludes(String(warned.at(-1)), "not the pinned");
     // The pin itself is of another train's image.
     await Deno.writeFile(path, file);
     assertEquals(
-      await snapshotMatchesPins(path, {
-        ...pins,
-        browserImage: pin(hex("e")),
-      }),
+      await snapshotMatchesPins(
+        path,
+        {
+          ...pins,
+          browserImage: pin(hex("e")),
+        },
+        "desktop",
+        false,
+      ),
       false,
     );
     assertStringIncludes(String(warned.at(-1)), `imageSha256 ${hex("b")}`);
     // No snapshot pinned at all.
     const { snapshot: _snapshot, ...unpinned } = pins;
-    assertEquals(await snapshotMatchesPins(path, unpinned), false);
+    assertEquals(
+      await snapshotMatchesPins(path, unpinned, "desktop", false),
+      false,
+    );
+    warned.length = 0;
+    // Unasked, a store-root record in the pins is the rule too: the
+    // memory-only zip is left out.
+    const storeRoot = {
+      ...pins,
+      kernelWasm: { ...pins.kernelWasm, rootStore: true as const },
+    };
+    assertEquals(await snapshotMatchesPins(path, storeRoot), false);
+    assertStringIncludes(
+      String(warned.at(-1)),
+      "holds the kernel memory alone",
+    );
+    warned.length = 0;
+    // A file that carries a store its pin does not name is caught by the
+    // file's own check, on a kernel without one.
+    const log = new StoreLogWriter();
+    log.write("journal-a", 0, new Uint8Array(8).fill(1));
+    log.setLength("journal-a", 8);
+    log.write("meta", 0, new Uint8Array(76).fill(2));
+    log.setLength("meta", 76);
+    const withStore = new Uint8Array(
+      await (await encodeSandboxSnapshot({
+        ...seal,
+        rootStore: {
+          identity: {
+            lineage: "11".repeat(16),
+            sequence: "1",
+            hash: "22".repeat(32),
+          },
+          lower: { bytes: 1024, sha256: hex("f") },
+          ...log.finish(),
+          log: log.chunks,
+        },
+      }, built)).arrayBuffer(),
+    );
+    await Deno.writeFile(path, withStore);
+    assertEquals(
+      await snapshotMatchesPins(path, {
+        ...pins,
+        snapshot: {
+          ...pins.snapshot,
+          sha256: await sha256Hex(withStore),
+          size: withStore.byteLength,
+        },
+      }),
+      false,
+    );
+    assertStringIncludes(String(warned.at(-1)), "carries a YurtFS root store");
   } finally {
     console.warn = warn;
     await Deno.remove(dir, { recursive: true });

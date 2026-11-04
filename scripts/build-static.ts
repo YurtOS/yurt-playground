@@ -21,7 +21,7 @@ import {
   SLIM_IMAGE_NAME,
 } from "../src/integrity.ts";
 import { loadPins, type Pins } from "../src/pins.ts";
-import { checkSnapshotFile } from "./lib/snapshot_file.ts";
+import { checkSnapshotFile, kernelRootIsStore } from "./lib/snapshot_file.ts";
 import {
   BEACON_PAGES,
   WEB_ANALYTICS_TOKEN,
@@ -131,6 +131,9 @@ export async function snapshotMatchesPins(
   path: string,
   pins: Pins,
   kind: SnapshotKind = "desktop",
+  /** Whether the kernel's root is a YurtFS store: a page restores only a
+   * zip with the store then, and only one without otherwise. */
+  rootStore?: boolean,
 ): Promise<boolean> {
   const leftOut = (why: string) => {
     console.warn(
@@ -140,15 +143,17 @@ export async function snapshotMatchesPins(
     );
     return false;
   };
+  rootStore ??= kernelRootIsStore(pins);
   let pin;
   try {
-    pin = pinnedSnapshot(pins, kind);
+    pin = pinnedSnapshot(pins, kind, rootStore);
   } catch (error) {
     if (!(error instanceof SnapshotMismatch)) throw error;
     return leftOut(error.message);
   }
   const check = await checkSnapshotFile(path, pin.builtFrom, {
     sha256: pin.sha256,
+    rootStore,
   });
   return check.ok || leftOut(check.problem);
 }

@@ -58,7 +58,7 @@ import { join } from "node:path";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { kernelRoot } from "./serve.ts";
-import { checkSnapshotFile } from "./lib/snapshot_file.ts";
+import { checkSnapshotFile, kernelRootIsStore } from "./lib/snapshot_file.ts";
 import {
   capture,
   captureSetProblem,
@@ -72,7 +72,6 @@ import { imagePartsManifest } from "../src/image_parts.ts";
 import { parsePins, type Pins, type SnapshotPin } from "../src/pins.ts";
 import {
   type BuiltFrom,
-  FORMAT,
   kindQuery,
   SNAPSHOT_KIND_NAMES,
   SNAPSHOT_KINDS,
@@ -409,7 +408,10 @@ async function main(): Promise<void> {
     const check = await checkSnapshotFile(
       file,
       expected,
-      { decode: true },
+      {
+        decode: true,
+        rootStore: kernelRootIsStore(pins),
+      },
     );
     if (!check.ok) {
       return die(`the capture is not this site's: ${check.problem}`);
@@ -429,10 +431,8 @@ async function main(): Promise<void> {
     const pin: SnapshotPin = {
       releaseRepo: SNAPSHOT_REPO,
       release: ref,
-      format: FORMAT,
       sha256,
       size: bytes.byteLength,
-      parts: parts.map((part) => part.sha256),
       builtFrom: check.builtFrom,
       ...await snapshotHeaderFacts((await Deno.open(file)).readable),
     };

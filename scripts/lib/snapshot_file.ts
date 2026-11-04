@@ -17,10 +17,12 @@ export type SnapshotFileCheck =
 
 /**
  * Whether the file at `path` is a snapshot built from `expected` (every
- * field it has): its header, and -- with `sha256` -- its bytes, or -- with
- * `decode` -- that it inflates to the whole memory its header names. Any
- * failure of the file, a missing one or one that does not inflate
- * included, is a `problem`, never a throw.
+ * field it has): its manifest, and -- with `sha256` -- its bytes, or --
+ * with `decode` -- that it inflates to the whole memory its manifest
+ * names. With `rootStore`, it must also carry a YurtFS root store (true)
+ * or not (false): a zip without one is no snapshot of a kernel whose root
+ * is a store. Any failure of the file, a missing one or one that does not
+ * inflate included, is a `problem`, never a throw.
  */
 export async function checkSnapshotFile(
   path: string,
@@ -28,8 +30,11 @@ export async function checkSnapshotFile(
   // One or the other: the hash and a full decode on one read would queue
   // most of the file between them, and inflate a file of the wrong bytes.
   options:
-    | { sha256?: string; decode?: never }
-    | { decode?: boolean; sha256?: never } = {},
+    & ({ sha256?: string; decode?: never } | {
+      decode?: boolean;
+      sha256?: never;
+    })
+    & { rootStore?: boolean } = {},
 ): Promise<SnapshotFileCheck> {
   if (options.sha256 !== undefined && options.decode === true) {
     throw new Error("checkSnapshotFile: a sha256 check or a decode, not both");
@@ -55,9 +60,17 @@ export async function checkSnapshotFile(
           body,
           expected,
           (header) => builtFrom = header,
+          undefined,
+          options.rootStore ?? "either",
+          // The bytes too: the sha256 a release records is the file's own.
+          true,
         );
       } else {
-        builtFrom = await checkSandboxSnapshot(body, expected);
+        builtFrom = await checkSandboxSnapshot(
+          body,
+          expected,
+          options.rootStore,
+        );
       }
     } catch (error) {
       checked = error;
@@ -97,4 +110,15 @@ async function streamSha256(
     if (done) return hash.digest("hex");
     hash.update(value);
   }
+}
+
+/** Whether the pinned kernel's root is a YurtFS store, as `pins` (a
+ * pins.json, parsed or not) records it (`kernelWasm.rootStore`): every
+ * snapshot of it must then carry the store, and none of a kernel without
+ * one may. A record, not a kernel checkout: the answer is the pinned
+ * kernel's wherever the checkout is (tests/root_store_snapshot_test.ts
+ * holds the record to the pinned JS host). */
+export function kernelRootIsStore(pins: unknown): boolean {
+  return (pins as { kernelWasm?: { rootStore?: unknown } } | null)?.kernelWasm
+    ?.rootStore === true;
 }

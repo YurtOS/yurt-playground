@@ -15,10 +15,11 @@
  *
  * The commit holds:
  * - `manifest.json`: the pin's shape (src/pins.ts `SnapshotPin`: format,
- *   the whole file's sha256 and size, each part's sha256, builtFrom), plus
- *   what the script adds for people (`packages`, `name`);
- * - `sandbox.seal.gz.parts.json` and the parts, as the site publishes the
- *   pinned one (src/image_parts.ts).
+ *   the whole zip's one sha256 and size, builtFrom, memoryBytes, a store's
+ *   identity and totals), plus what the script adds for people
+ *   (`packages`, `name`);
+ * - `sandbox.seal.zip.parts.json` (with the layout's `partBytes`) and the
+ *   parts, as the site publishes the pinned one (src/image_parts.ts).
  *
  * Who may publish one: raw.githubusercontent.com serves, under this
  * repository's path, any commit of its fork network -- a fork's, a pull
@@ -56,7 +57,7 @@ export const SNAPSHOT_REFS_API =
   `https://api.github.com/repos/${SNAPSHOT_REPO}/git/matching-refs/snapshots/`;
 /** The commit's files. */
 export const SNAPSHOT_MANIFEST = "manifest.json";
-export const SNAPSHOT_FILE = "sandbox.seal.gz";
+export const SNAPSHOT_FILE = "sandbox.seal.zip";
 
 /** A commit sha, the only form `?snapshot=<id>` takes. */
 const ID = /^[0-9a-f]{40}$/;
@@ -146,6 +147,9 @@ export async function uploadedSnapshot(
   id: string,
   pins: Pins,
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  /** Whether the kernel's root is a YurtFS store (src/snapshot_pin.ts
+   * acceptedSnapshot). */
+  rootStore?: boolean,
 ): Promise<{ pin: SnapshotPin; path: string; fetch: typeof fetch }> {
   const base = uploadedSnapshotBase(id);
   // Published by the repository's writers, before any byte of it is read.
@@ -168,7 +172,12 @@ export async function uploadedSnapshot(
     );
   }
   return {
-    pin: acceptedSnapshot(manifest, pins, `uploaded snapshot ${id}`),
+    pin: acceptedSnapshot(
+      manifest,
+      pins,
+      `uploaded snapshot ${id}`,
+      rootStore,
+    ),
     path: `${base}${SNAPSHOT_FILE}`,
     fetch,
   };

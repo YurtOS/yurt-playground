@@ -17,7 +17,7 @@ import {
 export type { BuiltFrom, SnapshotIdentity, SnapshotPin };
 
 /** Where the page fetches the snapshot (in parts, src/image_parts.ts). */
-export const SANDBOX_SNAPSHOT_NAME = "snapshot/sandbox.seal.gz";
+export const SANDBOX_SNAPSHOT_NAME = "snapshot/sandbox.seal.zip";
 export const SANDBOX_SNAPSHOT_PATH = `./${SANDBOX_SNAPSHOT_NAME}`;
 
 /**
@@ -51,28 +51,28 @@ export const SNAPSHOT_KINDS: Record<SnapshotKind, {
   desktop: {
     pinKey: "snapshot",
     name: SANDBOX_SNAPSHOT_NAME,
-    asset: "sandbox.seal.gz",
+    asset: "sandbox.seal.zip",
     capture: "capture",
     tagPrefix: "snapshot-",
   },
   tablet: {
     pinKey: "tabletSnapshot",
-    name: "snapshot/tablet.seal.gz",
-    asset: "tablet.seal.gz",
+    name: "snapshot/tablet.seal.zip",
+    asset: "tablet.seal.zip",
     capture: "capture-tablet",
     tagPrefix: "snapshot-tablet-",
   },
   phone: {
     pinKey: "phoneSnapshot",
-    name: "snapshot/phone.seal.gz",
-    asset: "phone.seal.gz",
+    name: "snapshot/phone.seal.zip",
+    asset: "phone.seal.zip",
     capture: "capture-phone",
     tagPrefix: "snapshot-phone-",
   },
   go: {
     pinKey: "goSnapshot",
-    name: "snapshot/go.seal.gz",
-    asset: "go.seal.gz",
+    name: "snapshot/go.seal.zip",
+    asset: "go.seal.zip",
     capture: "capture-go",
     tagPrefix: "snapshot-go-",
   },
@@ -170,6 +170,8 @@ export class SnapshotMismatch extends Error {}
 export function pinnedSnapshot(
   pins: Pins,
   kind: SnapshotKind = "desktop",
+  /** Whether the kernel's root is a YurtFS store ({@link storeRefusal}). */
+  rootStore?: boolean,
 ): SnapshotPin {
   const entry = pins[SNAPSHOT_KINDS[kind].pinKey];
   if (entry === undefined) {
@@ -179,7 +181,7 @@ export function pinnedSnapshot(
         : `the site pins no ${kind} snapshot (${SNAPSHOT_KINDS[kind].pinKey})`,
     );
   }
-  return acceptedSnapshot(entry, pins);
+  return acceptedSnapshot(entry, pins, undefined, rootStore);
 }
 
 /** A snapshot entry (the pin's shape: `?snapshot=1`'s pin, or an uploaded
@@ -190,6 +192,11 @@ export function acceptedSnapshot(
   entry: unknown,
   pins: Pins,
   what = "pinned snapshot",
+  /** Whether the kernel's root is a YurtFS store: the page knows, and
+   * takes only a snapshot with ({@link storeRefusal}) or without one;
+   * undefined (the release tools, which check a file against the pins and
+   * mount nothing) takes either. */
+  rootStore?: boolean,
 ): SnapshotPin {
   let pin: SnapshotPin;
   try {
@@ -201,10 +208,10 @@ export function acceptedSnapshot(
       }`,
     );
   }
-  if (pin.format !== FORMAT) {
-    throw new SnapshotMismatch(
-      `the ${what} is format ${pin.format}, not ${FORMAT}`,
-    );
+  const refused = formatRefusal(pin.format) ??
+    storeRefusal(pin.store !== undefined, rootStore);
+  if (refused !== undefined) {
+    throw new SnapshotMismatch(`the ${what} ${refused}`);
   }
   const why = buildMismatch(pin.builtFrom, snapshotIdentity(pins));
   if (why !== undefined) {
@@ -236,8 +243,34 @@ export function checkPythonSet(
   );
 }
 
-/** The header's format: 2 added `builtFrom`, 3 its `pythonSet`. */
-export const FORMAT = 3;
+/** The snapshot's format: 2 added `builtFrom`, 3 its `pythonSet` (each
+ * a gzip of header and memory); 4 is a zip, which also carries the
+ * YurtFS root store once the kernel has one. */
+export const FORMAT = 4;
+
+/** Why a snapshot of `format` is not one this page reads -- "is format
+ * N, not 4..." -- or undefined. */
+export function formatRefusal(format: unknown): string | undefined {
+  if (format === FORMAT) return undefined;
+  return `is format ${format}, not ${FORMAT}${
+    format === 3
+      ? ": a gzip of the kernel memory, from before the zip; capture it again"
+      : ""
+  }`;
+}
+
+/** Why a snapshot with (`hasStore`) or without a YurtFS root store is not
+ * restored on a kernel whose root is (`rootStore`) or is not a store, or
+ * undefined. `rootStore` undefined takes either. */
+export function storeRefusal(
+  hasStore: boolean,
+  rootStore: boolean | undefined,
+): string | undefined {
+  if (rootStore === undefined || hasStore === rootStore) return undefined;
+  return hasStore
+    ? "carries a YurtFS root store, and this kernel keeps its root filesystem in its memory"
+    : "holds the kernel memory alone, and this kernel's root filesystem is a YurtFS store that it does not hold; capture it again";
+}
 
 /** Why a snapshot's `builtFrom` is not `expected` (every field `expected`
  * has), or undefined when it is the same build. */

@@ -832,6 +832,12 @@ done
 # Each device's (src/snapshot_pin.ts SNAPSHOT_KINDS), checked by kind.
 snapshots_json=$(jq -c '{snapshot, tabletSnapshot, phoneSnapshot, goSnapshot}
   | with_entries(select(.value != null))' "$root/artifacts/pins.json")
+# Whether the pinned kernel's root is a YurtFS store (src/pins.ts
+# kernelWasm.rootStore), carried over: the snapshot tools read the rule
+# from it. The kernel bump that brings a store root sets it in pins.json
+# by hand; tests/root_store_snapshot_test.ts fails until it matches the
+# pinned JS host.
+kernel_root_store=$(jq -c '.kernelWasm.rootStore // false' "$root/artifacts/pins.json")
 # `repo`/`rev` say where the source is; `releaseRepo`/`release` where the
 # bytes are (a train's in the repository that built them, a hand-cut one in
 # yurt-packages). Every consumer fetches through releaseRepo.
@@ -840,10 +846,12 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
   --arg image_release "$image_release" --arg image_repo "$image_repo" --arg image_sha256 "$image_sha256" --arg ports_sha "$ports_sha" \
   --arg host_release "$host_release" --arg host_repo "$host_repo" --arg cli_release "$cli_release" --arg cli_repo "$cli_repo" \
   --argjson host "$host_json" --argjson cli "$cli_json" --argjson python_seal "$python_seal_json" \
-  --argjson slim "$slim_json" --argjson snapshots "$snapshots_json" '{
+  --argjson slim "$slim_json" --argjson snapshots "$snapshots_json" \
+  --argjson kernel_root_store "$kernel_root_store" '{
     train: $train,
-    kernelWasm: {repo: "YurtOS/yurtos-kernel", rev: $kernel_sha, releaseRepo: $kernel_repo, release: $kernel_release,
-      build: "scripts/build-kernel-wasm.sh", path: "target/kernel-wasm/release/yurt_kernel.wasm", sha256: $kernel_sha256},
+    kernelWasm: ({repo: "YurtOS/yurtos-kernel", rev: $kernel_sha, releaseRepo: $kernel_repo, release: $kernel_release,
+      build: "scripts/build-kernel-wasm.sh", path: "target/kernel-wasm/release/yurt_kernel.wasm", sha256: $kernel_sha256}
+      + (if $kernel_root_store == true then {rootStore: true} else {} end)),
     image: {repo: "YurtOS/yurt-ports", rev: $ports_sha, releaseRepo: $image_repo, release: $image_release,
       build: "scripts/build-playground-image.sh", path: "ports/playground-image/build/dist/playground.yurtimg", sha256: $image_sha256},
     desktopHost: {repo: "YurtOS/yurt-sandbox", rev: $sandbox_sha, releaseRepo: $host_repo, release: $host_release,

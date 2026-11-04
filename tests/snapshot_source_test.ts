@@ -56,7 +56,7 @@ const PYTHON_SET = "cd/python@3.14.7-yurt_0:0123456789abcdef";
 const BUILT: BuiltFrom = { ...snapshotIdentity(pins), pythonSet: PYTHON_SET };
 
 function image(memoryBytes: number): SandboxSealImage {
-  // Random, so the gzipped file is as large as the memory: parts.
+  // Random, so the deflated zip is as large as the memory: parts.
   const kernelMemory = new Uint8Array(memoryBytes);
   for (let at = 0; at < memoryBytes; at += 65536) {
     crypto.getRandomValues(kernelMemory.subarray(at, at + 65536));
@@ -85,12 +85,9 @@ async function upload(
   );
   const parts = imagePartsManifest(SNAPSHOT_FILE, file.byteLength);
   const files = new Map<string, Uint8Array>();
-  const sums: string[] = [];
   for (const [index, name] of parts.parts.entries()) {
     const [start, end] = imagePartRange(index, file.byteLength)!;
-    const bytes = file.slice(start, end);
-    files.set(`${BASE}${name}`, bytes);
-    sums.push(await sha256Hex(bytes));
+    files.set(`${BASE}${name}`, file.slice(start, end));
   }
   files.set(
     `${BASE}${SNAPSHOT_FILE}.parts.json`,
@@ -102,8 +99,8 @@ async function upload(
     format: FORMAT,
     sha256: await sha256Hex(file),
     size: file.byteLength,
-    parts: sums,
     builtFrom,
+    memoryBytes,
   };
   files.set(SNAPSHOT_REFS_API, refsAnswer());
   files.set(
@@ -180,7 +177,7 @@ Deno.test("an uploaded snapshot is read from the one repository path, at its com
     "https://raw.githubusercontent.com/YurtOS/yurt-playground/",
   );
   assertEquals(uploadedSnapshotBase(ID), BASE);
-  assertEquals(uploadedSnapshotPath(ID), `${BASE}sandbox.seal.gz`);
+  assertEquals(uploadedSnapshotPath(ID), `${BASE}sandbox.seal.zip`);
   for (const bad of ["1", "https://example.com/", "../x"]) {
     assertThrows(() => uploadedSnapshotBase(bad), Error, "not an uploaded");
   }
@@ -194,19 +191,19 @@ Deno.test("a confined fetch reads only under its base", async () => {
     assertEquals((init as RequestInit | undefined)?.redirect, "error");
     return Promise.resolve(new Response("ok"));
   });
-  assertEquals(await (await fetch(`${BASE}sandbox.seal.gz.0`)).text(), "ok");
+  assertEquals(await (await fetch(`${BASE}sandbox.seal.zip.0`)).text(), "ok");
   for (
     const url of [
       new URL("../other/manifest.json", BASE).href,
       new URL("%2e%2e/x", BASE).href,
       `${SNAPSHOT_SOURCE}main/README.md`,
-      "https://example.com/sandbox.seal.gz.0",
-      `${BASE}sandbox.seal.gz.0?x=1`,
+      "https://example.com/sandbox.seal.zip.0",
+      `${BASE}sandbox.seal.zip.0?x=1`,
     ]
   ) {
     await assertRejects(() => fetch(url), Error, "refusing");
   }
-  assertEquals(asked, [`${BASE}sandbox.seal.gz.0`]);
+  assertEquals(asked, [`${BASE}sandbox.seal.zip.0`]);
 });
 
 Deno.test("an uploaded snapshot's manifest takes every check a pin does", async () => {
@@ -222,7 +219,7 @@ Deno.test("an uploaded snapshot's manifest takes every check a pin does", async 
     };
   const got = await uploadedSnapshot(ID, pins, fetchFrom(files));
   assertEquals(got.pin, manifest);
-  assertEquals(got.path, `${BASE}sandbox.seal.gz`);
+  assertEquals(got.path, `${BASE}sandbox.seal.zip`);
   const withManifest = (value: unknown) =>
     new Map([
       ...files,
@@ -237,9 +234,9 @@ Deno.test("an uploaded snapshot's manifest takes every check a pin does", async 
       { ...manifest, builtFrom: { ...BUILT, bootSetup: 99 } },
       "bootSetup 99",
     ],
-    [{ ...manifest, format: 2 }, `uploaded snapshot ${ID} is format 2, not 3`],
+    [{ ...manifest, format: 2 }, `uploaded snapshot ${ID} is format 2, not 4`],
     [
-      { ...manifest, parts: [] },
+      { ...manifest, store: { identity: {} } },
       `the uploaded snapshot ${ID} entry is malformed`,
     ],
   ];
@@ -277,10 +274,10 @@ Deno.test("an uploaded snapshot's manifest takes every check a pin does", async 
   );
 });
 
-Deno.test("?snapshot=<id> checks every part against the uploaded manifest", async () => {
+Deno.test("?snapshot=<id> checks the whole zip's sha256 against the uploaded manifest", async () => {
   const { files } = await upload();
   // The second of three parts is not the uploaded bytes.
-  const part = `${BASE}sandbox.seal.gz.1`;
+  const part = `${BASE}sandbox.seal.zip.1`;
   const bad = files.get(part)!.slice();
   bad[7] ^= 1;
   files.set(part, bad);
@@ -288,12 +285,10 @@ Deno.test("?snapshot=<id> checks every part against the uploaded manifest", asyn
     await assertRejects(
       () => restoreSnapshot(env(), new Uint8Array(), uploadedSnapshotPath(ID)),
       Error,
-      "sandbox snapshot part sandbox.seal.gz.1 sha256 mismatch",
+      "not the pinned",
     );
     // Nothing but the site's pins, the refs list and the snapshot's own
-    // commit; never the pinned snapshot's path. (Up to
-    // SNAPSHOT_PARTS_IN_FLIGHT parts are asked for at once, so a part
-    // after the bad one may have been.)
+    // commit; never the pinned snapshot's path.
     assertEquals(
       fetched.filter((url) => !url.startsWith(BASE)),
       ["./pins.json", SNAPSHOT_REFS_API],
@@ -368,11 +363,12 @@ Deno.test("an uploaded snapshot's file is fetched whole and inflated before the 
     );
     assertEquals(error instanceof SnapshotMismatch, false);
     assertEquals(
-      String(error).includes("sha256 mismatch") ||
+      String(error).includes("not the pinned") ||
         String(error).includes("truncated"),
       false,
+      String(error),
     );
-    assertEquals(fetched.includes(`${BASE}sandbox.seal.gz.2`), true);
+    assertEquals(fetched.includes(`${BASE}sandbox.seal.zip.2`), true);
   });
 });
 

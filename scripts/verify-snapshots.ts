@@ -44,11 +44,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSnapshotPin, type SnapshotPin } from "../src/pins.ts";
 import {
+  formatRefusal,
   GO_SET,
   kindQuery,
   SNAPSHOT_KIND_NAMES,
   SNAPSHOT_KINDS,
   type SnapshotKind,
+  storeRefusal,
   TABLET_PYTHON_SET,
 } from "../src/snapshot_pin.ts";
 import { PYTHON_SET } from "../src/python_install.ts";
@@ -134,7 +136,13 @@ export const OPTIONAL_KINDS: readonly SnapshotKind[] = ["go"];
  * {@link OPTIONAL_KINDS} kind that is not pinned is never a problem. */
 export function verifySnapshotPins(
   pins: Record<string, unknown>,
-  { complete = true }: { complete?: boolean } = {},
+  { complete = true, rootStore }: {
+    complete?: boolean;
+    /** Whether the pinned kernel's root is a YurtFS store: every pin must
+     * then be of a zip that carries it, and otherwise of one without;
+     * undefined, either (as src/snapshot_pin.ts acceptedSnapshot). */
+    rootStore?: boolean;
+  } = {},
 ): string[] {
   const problems: string[] = [];
   const parsed: Partial<Record<SnapshotKind, SnapshotPin>> = {};
@@ -155,6 +163,14 @@ export function verifySnapshotPins(
       continue;
     }
     parsed[kind] = pin;
+    const format = formatRefusal(pin.format);
+    if (format !== undefined) {
+      problems.push(`${kind}: the pinned snapshot ${format}`);
+    }
+    const store = storeRefusal(pin.store !== undefined, rootStore);
+    if (store !== undefined) {
+      problems.push(`${kind}: the pinned snapshot ${store}`);
+    }
     const expected = SNAPSHOT_EXPECTED[kind];
     if (pin.contents === undefined) {
       problems.push(`${kind}: the pin records no contents`);
@@ -450,7 +466,10 @@ if (import.meta.main) {
   const pins = JSON.parse(
     await Deno.readTextFile(join(root, "artifacts/pins.json")),
   );
-  const problems = verifySnapshotPins(pins);
+  const { kernelRootIsStore } = await import("./lib/snapshot_file.ts");
+  const problems = verifySnapshotPins(pins, {
+    rootStore: kernelRootIsStore(pins),
+  });
   const pinOf = (kind: SnapshotKind): SnapshotPin | undefined => {
     try {
       return parseSnapshotPin(pins[SNAPSHOT_KINDS[kind].pinKey]);
