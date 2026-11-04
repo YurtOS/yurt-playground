@@ -1,5 +1,8 @@
 # Agent Instructions — yurt-playground
 
+Org-wide rules: read [docs/agents/org.md](docs/agents/org.md) first; this file
+adds what is specific to this repository.
+
 Canonical instructions for AI coding agents (Claude Code, Codex, etc.) working
 in this repo. `CLAUDE.md` points here.
 
