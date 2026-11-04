@@ -28,7 +28,7 @@ Deno.test("a zip reads back entry by entry, stored and deflated, in the order wr
   const big = Uint8Array.from({ length: 300_000 }, (_, i) => (i >> 7) & 0xff);
   const entries = [
     { name: "a.json", bytes: new TextEncoder().encode("{}"), deflate: false },
-    { name: "store/data", bytes: big, deflate: true },
+    { name: "store", bytes: big, deflate: true },
     { name: "empty", bytes: new Uint8Array(0), deflate: true },
   ];
   const file = await writeZip(entries);
@@ -201,4 +201,53 @@ Deno.test("an entry is streamed in 1 MiB views up to 4 GiB, past int32 offsets",
     at = end;
   }
   assertEquals(at, length);
+});
+
+Deno.test("a zip reads the same however its stream is chunked, a header across chunks joining only what it needs", async () => {
+  const big = Uint8Array.from({ length: 200_000 }, (_, i) => (i * 7) & 0xff);
+  const entries = [
+    {
+      name: "a.json",
+      bytes: new TextEncoder().encode('{"a":1}'),
+      deflate: false,
+    },
+    { name: "store", bytes: big, deflate: true },
+    { name: "empty", bytes: new Uint8Array(0), deflate: false },
+  ];
+  const raw = new Uint8Array(await (await writeZip(entries)).arrayBuffer());
+  // Cut at 1 byte, inside the first header, after it, and in the middle
+  // of the stored entry's bytes; then the rest in one chunk.
+  for (const cuts of [[1], [3, 40], [29, 31], [37], [raw.byteLength - 30]]) {
+    const chunks: Uint8Array[] = [];
+    let at = 0;
+    for (const cut of cuts) {
+      chunks.push(raw.slice(at, cut));
+      at = cut;
+    }
+    chunks.push(raw.slice(at));
+    let next = 0;
+    const zip = new ZipStreamReader(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (next < chunks.length) controller.enqueue(chunks[next++]);
+          else controller.close();
+        },
+      }).getReader(),
+      { checkCrc: true },
+    );
+    const names: string[] = [];
+    for (let entry = await zip.next(); entry; entry = await zip.next()) {
+      const bytes = await zip.readWhole(entry, 1 << 24);
+      const want = entries[names.length].bytes;
+      assertEquals(
+        bytes.byteLength === want.byteLength &&
+          bytes.every((b, i) => b === want[i]),
+        true,
+        `${entry.name} at cuts ${cuts}`,
+      );
+      names.push(entry.name);
+    }
+    await zip.finish();
+    assertEquals(names, entries.map(({ name }) => name), String(cuts));
+  }
 });

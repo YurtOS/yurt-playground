@@ -100,6 +100,7 @@ async function upload(
     sha256: await sha256Hex(file),
     size: file.byteLength,
     builtFrom,
+    memoryBytes,
   };
   files.set(SNAPSHOT_REFS_API, refsAnswer());
   files.set(

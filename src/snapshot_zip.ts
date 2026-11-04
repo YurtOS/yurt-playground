@@ -178,6 +178,9 @@ export type ZipEntry = {
 export class ZipStreamReader {
   #reader: ReadableStreamDefaultReader<Uint8Array>;
   #pending: Uint8Array = new Uint8Array(0);
+  /** The part of a stream chunk {@link #fill} did not need: a short
+   * header joins only the bytes it needs, never a whole (20 MiB) chunk. */
+  #rest: Uint8Array | undefined;
   #entries = 0;
   #checkCrc: boolean;
 
@@ -189,17 +192,29 @@ export class ZipStreamReader {
     this.#checkCrc = checkCrc;
   }
 
+  /** The next stream chunk: the rest {@link #fill} left first. */
+  async #next(): Promise<ReadableStreamReadResult<Uint8Array>> {
+    const rest = this.#rest;
+    if (rest === undefined) return await this.#reader.read();
+    this.#rest = undefined;
+    return { done: false, value: rest };
+  }
+
   /** At least `bytes` bytes buffered, or fewer at the end of the stream. */
   async #fill(bytes: number): Promise<void> {
     while (this.#pending.byteLength < bytes) {
-      const { done, value } = await this.#reader.read();
+      const { done, value } = await this.#next();
       if (done) return;
-      const joined = new Uint8Array(
-        this.#pending.byteLength + value.byteLength,
-      );
+      if (this.#pending.byteLength === 0) {
+        this.#pending = value;
+        continue;
+      }
+      const need = Math.min(bytes - this.#pending.byteLength, value.byteLength);
+      const joined = new Uint8Array(this.#pending.byteLength + need);
       joined.set(this.#pending);
-      joined.set(value, this.#pending.byteLength);
+      joined.set(value.subarray(0, need), this.#pending.byteLength);
       this.#pending = joined;
+      if (need < value.byteLength) this.#rest = value.subarray(need);
     }
   }
 
@@ -360,7 +375,7 @@ export class ZipStreamReader {
     let had = 0;
     while (had < bytes) {
       if (this.#pending.byteLength === 0) {
-        const { done, value } = await this.#reader.read();
+        const { done, value } = await this.#next();
         if (done) {
           throw new Error(
             `sandbox snapshot is truncated (${had} of ${bytes} bytes of ${what})`,
@@ -386,7 +401,7 @@ export class ZipStreamReader {
     // The directory is ~70 bytes an entry: a "rest" this long is not one.
     await this.#fill(1 << 20);
     const rest = this.#pending;
-    const { done } = await this.#reader.read();
+    const { done } = await this.#next();
     if (!done || rest.byteLength >= 1 << 20) {
       throw new Error("sandbox snapshot runs on past its central directory");
     }

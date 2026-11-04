@@ -68,7 +68,7 @@ import {
 import { uploadedSnapshot } from "./snapshot_source.ts";
 import {
   type PageSeal,
-  type RootStoreApi,
+  type ProposedRootStoreApi,
   rootStoreOf,
   sealWithStore,
   type StoreIdentity,
@@ -434,7 +434,7 @@ export async function restorePlaygroundKernel(
   /** On a kernel whose root is a YurtFS store: its API and the written
    * store to mount as the root. */
   store?: {
-    api: RootStoreApi;
+    api: ProposedRootStoreApi;
     target: StoreRestoreTarget;
     expect: StoreIdentity;
   },
@@ -564,7 +564,9 @@ export async function restoreSnapshot(
   env: PlaygroundEnv,
   kernel: Uint8Array,
   path: string,
-  rootStore: RootStoreApi | undefined = rootStoreOf(KernelHostInterface),
+  rootStore: ProposedRootStoreApi | undefined = rootStoreOf(
+    KernelHostInterface,
+  ),
 ): Promise<{
   host: KernelHostInterface;
   /** Remove the store it restored into (none without a root store), for
@@ -610,7 +612,7 @@ export async function restoreSnapshot(
   lowerImage?.catch(() => {});
   const store = target === undefined ? undefined : {
     target,
-    expect: pin.store!.identity,
+    expect: pin.store!,
     // Taken once: the image is not held while the memory is allocated.
     image: () => {
       const image = lowerImage!;
@@ -651,9 +653,7 @@ export async function restoreSnapshot(
           await checked;
           // The pin's own record of what a restore allocates, before the
           // manifest's (unhashed yet) number is believed.
-          if (
-            pin.memoryBytes !== undefined && memoryBytes !== pin.memoryBytes
-          ) {
+          if (memoryBytes !== pin.memoryBytes) {
             throw new SnapshotMismatch(
               `the snapshot's manifest names memoryBytes ${memoryBytes}, not the pinned ${pin.memoryBytes}`,
             );
@@ -672,7 +672,11 @@ export async function restoreSnapshot(
     restored = await restorePlaygroundKernel(
       kernel,
       image,
-      store === undefined ? undefined : { ...store, api: rootStore! },
+      store === undefined ? undefined : {
+        api: rootStore!,
+        target: store.target,
+        expect: store.expect.identity,
+      },
     );
     if (restored.processes.length !== 0) {
       restored.host.dispose();

@@ -410,7 +410,7 @@ async function main(): Promise<void> {
       expected,
       {
         decode: true,
-        rootStore: await kernelRootIsStore(pins.kernelWasm.rev),
+        rootStore: kernelRootIsStore(pins),
       },
     );
     if (!check.ok) {

@@ -5,64 +5,90 @@
  * them, so the snapshot zip carries both (src/sandbox_snapshot.ts) and a
  * restore puts the store back before the memory.
  *
- * {@link RootStoreApi} is what the page needs from the kernel's JS host
- * for that. It does not exist yet -- it is YurtFS's Task 5.4b (the
- * checkpoint binding) and Slice 7 (OPFS) -- so it is written here as the
- * page expects it, and {@link rootStoreOf} finds it on
- * `KernelHostInterface.rootStore` once a kernel has it. Until then it is
- * undefined: a snapshot zip is the kernel memory alone.
+ * **{@link ProposedRootStoreApi} is a proposal, pending Sunny's Slice 7
+ * design.** No kernel JS host has it: the checkpoint binding is YurtFS
+ * Task 5.4b, the browser's store (OPFS) is Slice 7, which waits for
+ * #2069 plan 5, and the browser keeps its ramfs root until then. It is
+ * written against store format v2 (yurtos-kernel
+ * docs/superpowers/specs/2026-11-03-yurtfs-per-inode-storage-amendment.md,
+ * merged in #4339): one host file per regular inode (`content/<ino>`),
+ * the journals, `meta`, `lower.tar` and `lock`. Its export mirrors the
+ * kernel's own (`PackedStore::export`, packages/kernel/src/vfs/packed_store/export.rs,
+ * whose v1 form on main hands `(name, offset, bytes)` in 64 KiB pieces;
+ * the amendment's section 7 adds `content/<ino>`, skips all-zero pieces
+ * and gives each file's length). Everything the page needs from the
+ * kernel goes through this one interface, so the real API replaces it
+ * here; nothing else in the page names a kernel store call.
+ * {@link rootStoreOf} finds it on `KernelHostInterface.rootStore` once a
+ * kernel has it. Until then it is undefined: a snapshot zip is the kernel
+ * memory alone.
  */
 import type {
   KernelHostInterface,
   SandboxSealImage,
 } from "@yurt/kernel-host-interface-js";
+import type { StoreIdentity, StoreLower } from "./pins.ts";
 import {
-  storeExportOrderProblem,
   type StoreFileName,
-  type StoreIdentity,
-  type StoreLower,
-} from "./pins.ts";
+  StoreLogWriter,
+  type StoreTotals,
+} from "./store_log.ts";
 
 export type { StoreFileName, StoreIdentity, StoreLower };
 
-/** A fresh, empty store the host made for one restore: an OPFS directory
- * in the browser, host files on the desktop. The page fills it from the
- * snapshot zip, in this order, and then has the kernel mount it. */
+/** Where a store export goes: the kernel's export sink with its length
+ * call (the amendment's section 7). Each file's pieces come in order, at
+ * offsets that are multiples of 64 KiB (all-zero pieces skipped), then
+ * its length; `bytes` may be reused once a call returns. */
+export interface StoreExportSink {
+  write(name: StoreFileName, offset: number, bytes: Uint8Array): void;
+  setLength(name: StoreFileName, length: number): void;
+}
+
+/** A fresh, empty store directory the host made for one restore (OPFS in
+ * the browser once Slice 7 lands, host files on the desktop). The page
+ * fills it from the snapshot zip, in the export's order, and then has the
+ * kernel mount it. */
 export interface StoreRestoreTarget {
   /** Stream `image` (a .yurtimg) into `lower.tar`, as the kernel's
    * create mode materializes a lower; its size and sha256, which the
    * store's `meta` records. */
   materializeLower(image: Uint8Array): Promise<StoreLower>;
-  /** Write `bytes` at `offset` of `name`: durable in call order, so
-   * `meta`, written last, is durable only after the rest. */
+  /** Write `bytes` at `offset` of `name`, creating the file (and
+   * `content/`) at its first call. Not a flush per call. */
   write(name: StoreFileName, offset: number, bytes: Uint8Array): Promise<void>;
-  /** Make the copy a complete store (the kernel's `complete_copy`) and
-   * read its identity by replay, without mounting it. */
+  /** Set `name`'s length, creating it when no piece did (an empty or
+   * all-zero file): a gap no piece wrote stays a hole. */
+  setLength(name: StoreFileName, length: number): Promise<void>;
+  /** Flush every file, `meta` after the rest, make the copy a complete
+   * store (the kernel's `complete_copy`: the inactive journal, `lock`,
+   * and `content/` if missing), and read its identity by replay, without
+   * mounting it. A copy cut short before this holds no `meta`, so it is
+   * never a store. */
   complete(): Promise<StoreIdentity>;
   /** Remove the copy: a refused restore leaves no store behind. */
   discard(): Promise<void>;
 }
 
-export interface RootStoreApi {
-  /** A fresh, empty store, with its fixed file set present and empty,
-   * claimed by this page from the moment it is made (until its kernel
-   * mounts it, or it is discarded). First it removes every store an
-   * earlier restore of this page (this origin) left that nothing claims:
-   * another tab's root, or a store another tab's restore is still
-   * filling, is kept. So stores never outnumber the open tabs plus one;
-   * the page also discards a store it restored into when its boot falls
-   * back afterwards. */
+/** The proposal: what the page needs from the kernel's JS host for a
+ * root store (see the module docs). */
+export interface ProposedRootStoreApi {
+  /** A fresh, empty store, claimed by this page from the moment it is
+   * made (until its kernel mounts it, or it is discarded). First it
+   * removes every store an earlier restore of this page (this origin)
+   * left that nothing claims: another tab's root, or a store another
+   * tab's restore is still filling, is kept. So stores never outnumber
+   * the open tabs plus one; the page also discards a store it restored
+   * into when its boot falls back afterwards. */
   freshStore(): Promise<StoreRestoreTarget>;
   /** `host.sealSandbox` with the root store checkpointed under the
-   * kernel's barrier: commit and quiesce, then export `data`, the active
-   * journal and `meta` (last) through `sink`, each from offset 0 (`bytes`
-   * may be reused once it returns). The identity is the one the exported
-   * files replay to, the lower the one their `meta` records. */
+   * kernel's barrier: commit and quiesce, then export each content file,
+   * the active journal and `meta` (last) through `sink`. The identity is
+   * the one the exported files replay to, the lower the one their `meta`
+   * records. */
   sealSandbox(
     host: KernelHostInterface,
-    options: {
-      sink: (name: StoreFileName, offset: number, bytes: Uint8Array) => void;
-    },
+    options: { sink: StoreExportSink },
   ): Promise<{
     image: SandboxSealImage;
     identity: StoreIdentity;
@@ -80,22 +106,26 @@ export interface RootStoreApi {
 }
 
 /** The kernel host's root store API, when this kernel has one. */
-export function rootStoreOf(hostClass: unknown): RootStoreApi | undefined {
-  const api = (hostClass as { rootStore?: Partial<RootStoreApi> } | null)
-    ?.rootStore;
+export function rootStoreOf(
+  hostClass: unknown,
+): ProposedRootStoreApi | undefined {
+  const api =
+    (hostClass as { rootStore?: Partial<ProposedRootStoreApi> } | null)
+      ?.rootStore;
   return typeof api?.freshStore === "function" &&
       typeof api.sealSandbox === "function" &&
       typeof api.restore === "function"
-    ? api as RootStoreApi
+    ? api as ProposedRootStoreApi
     : undefined;
 }
 
-/** The store files a seal exported, in export order: each as the chunks
- * the export handed over, never joined (the zip streams them). */
-export type SealedStore = {
+/** A seal's store export: its identity and lower, and the log of its
+ * sink's calls (src/store_log.ts) as chunks, never joined (the zip
+ * streams them), with the files and bytes it names. */
+export type SealedStore = StoreTotals & {
   identity: StoreIdentity;
   lower: StoreLower;
-  files: { name: StoreFileName; bytes: Uint8Array | Uint8Array[] }[];
+  log: Uint8Array[];
 };
 
 /** A seal the page took: with its root store when the kernel has one. */
@@ -115,46 +145,27 @@ export function identityMismatch(
     : `the store is ${show(actual)}, not ${show(expected)}`;
 }
 
-/** Seal `host` through `api`, collecting the store files it exports: each
- * streamed from offset 0 to its end, one after another, in export order. */
+/** Seal `host` through `api`, writing down the store export it makes
+ * (refused unless whole and in the export's order). */
 export async function sealWithStore(
-  api: RootStoreApi,
+  api: ProposedRootStoreApi,
   host: KernelHostInterface,
 ): Promise<PageSeal> {
-  const files: { name: StoreFileName; bytes: Uint8Array[]; size: number }[] =
-    [];
+  const log = new StoreLogWriter();
   const sealed = await api.sealSandbox(host, {
-    sink: (name, offset, bytes) => {
-      let file = files.at(-1);
-      if (file?.name !== name) {
-        if (files.some((other) => other.name === name)) {
-          throw new Error(`the store export went back to ${name}`);
-        }
-        file = { name, bytes: [], size: 0 };
-        files.push(file);
-      }
-      if (offset !== file.size) {
-        throw new Error(
-          `the store export wrote ${name} at ${offset}, not at its end ${file.size}`,
-        );
-      }
-      file.bytes.push(bytes.slice());
-      file.size += bytes.byteLength;
+    sink: {
+      write: (name, offset, bytes) => log.write(name, offset, bytes),
+      setLength: (name, length) => log.setLength(name, length),
     },
   });
-  // A store with no file data yet has an empty `data`, which an export
-  // may never hand the sink at all.
-  if (files[0]?.name !== "data") {
-    files.unshift({ name: "data", bytes: [], size: 0 });
-  }
-  const order = storeExportOrderProblem(files.map((file) => file.name));
-  if (order !== undefined) throw new Error(`the store export's ${order}`);
+  const totals = log.finish();
   return {
     ...sealed.image,
     rootStore: {
       identity: sealed.identity,
       lower: sealed.lower,
-      files: files.map(({ name, bytes }) => ({ name, bytes })),
+      ...totals,
+      log: log.chunks,
     },
   };
 }

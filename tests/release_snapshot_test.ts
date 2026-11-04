@@ -1,4 +1,10 @@
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
+import { parsePins, PinResolutionError } from "../src/pins.ts";
 import {
   captureSetProblem,
   captureTimeoutMs,
@@ -122,7 +128,7 @@ Deno.test("a train keeps the snapshot pin only when --check-pin's checks pass", 
   const { snapshotIdentity, FORMAT } = await import(
     "../src/sandbox_snapshot.ts"
   );
-  const { parsePins } = await import("../src/pins.ts");
+
   const raw = JSON.parse(
     await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
   );
@@ -134,6 +140,7 @@ Deno.test("a train keeps the snapshot pin only when --check-pin's checks pass", 
     format: FORMAT,
     sha256: "a".repeat(64),
     size: 1,
+    memoryBytes: 16,
     builtFrom: { ...snapshotIdentity(pins), pythonSet: set },
   };
   const check = (snapshot: unknown, answer: string | null | undefined) =>
@@ -180,7 +187,10 @@ Deno.test("a train keeps the snapshot pin only when --check-pin's checks pass", 
     sequence: "7",
     hash: "2".repeat(64),
   };
-  assertEquals(await onStoreRoot({ ...entry, store: { identity } }), undefined);
+  assertEquals(
+    await onStoreRoot({ ...entry, store: { identity, files: 2, bytes: 640 } }),
+    undefined,
+  );
   // A crash is no verdict: it is thrown, never a refusal.
   await assertRejects(
     () =>
@@ -449,7 +459,7 @@ Deno.test("--check-pin reads the pins file and answers for its snapshot entry", 
   const { snapshotIdentity, FORMAT } = await import(
     "../src/sandbox_snapshot.ts"
   );
-  const { parsePins } = await import("../src/pins.ts");
+
   const raw = JSON.parse(
     await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
   );
@@ -460,6 +470,7 @@ Deno.test("--check-pin reads the pins file and answers for its snapshot entry", 
     format: FORMAT,
     sha256: "a".repeat(64),
     size: 1,
+    memoryBytes: 16,
     builtFrom: {
       ...snapshotIdentity(parsePins({ ...raw, snapshot: undefined })),
       pythonSet: set,
@@ -870,27 +881,30 @@ Deno.test("a snapshot release's notes name everything a restore checks", () => {
   assertEquals(notes.includes("transport only"), true);
 });
 
-Deno.test("the store rule asks the kernel checkout the page is bundled from (YURT_KERNEL_ROOT)", async () => {
-  const kernel = await Deno.makeTempDir();
-  const was = Deno.env.get("YURT_KERNEL_ROOT");
-  try {
-    const dir = `${kernel}/packages/kernel-host-interface-js`;
-    await Deno.mkdir(dir, { recursive: true });
-    const fn = "() => Promise.reject(new Error('fake'))";
-    await Deno.writeTextFile(
-      `${dir}/mod.ts`,
-      `export class KernelHostInterface {
-  static rootStore = { freshStore: ${fn}, sealSandbox: ${fn}, restore: ${fn} };
-}
-`,
-    );
-    Deno.env.set("YURT_KERNEL_ROOT", kernel);
-    assertEquals(await kernelRootIsStore(), true);
-  } finally {
-    if (was === undefined) Deno.env.delete("YURT_KERNEL_ROOT");
-    else Deno.env.set("YURT_KERNEL_ROOT", was);
-    await Deno.remove(kernel, { recursive: true });
-  }
+Deno.test("the store rule is the pins' own record, wherever the kernel checkout is", () => {
+  const kernelWasm = {
+    repo: "r",
+    rev: "v",
+    build: "b",
+    path: "p",
+    sha256: "k",
+  };
+  const image = { ...kernelWasm, sha256: "i" };
+  assertEquals(kernelRootIsStore(parsePins({ kernelWasm, image })), false);
+  const store = parsePins({
+    kernelWasm: { ...kernelWasm, rootStore: true },
+    image,
+  });
+  assertEquals(store.kernelWasm.rootStore, true);
+  assertEquals(kernelRootIsStore(store), true);
+  // As written in pins.json, unparsed (verify-snapshots reads it so).
+  assertEquals(kernelRootIsStore({ kernelWasm: { rootStore: true } }), true);
+  assertEquals(kernelRootIsStore(undefined), false);
+  assertThrows(
+    () => parsePins({ kernelWasm: { ...kernelWasm, rootStore: "yes" }, image }),
+    PinResolutionError,
+    "kernelWasm.rootStore must be true or absent",
+  );
 });
 
 Deno.test("a full check of a snapshot file refuses bytes its zip CRC-32 does not match", async () => {
@@ -938,21 +952,4 @@ Deno.test("a full check of a snapshot file refuses bytes its zip CRC-32 does not
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
-});
-
-Deno.test("the store rule refuses to answer for a kernel checkout that is not at the pinned rev", async () => {
-  const pinned = (await new Deno.Command("git", {
-    args: ["-C", "../yurtos-kernel", "rev-parse", "HEAD"],
-    cwd: new URL("..", import.meta.url),
-    env: withoutGitVariables(),
-    clearEnv: true,
-    stdout: "piped",
-  }).output()).stdout;
-  const rev = new TextDecoder().decode(pinned).trim();
-  assertEquals(await kernelRootIsStore(rev), false);
-  await assertRejects(
-    () => kernelRootIsStore("0".repeat(40)),
-    Error,
-    `not the pinned ${"0".repeat(40)}`,
-  );
 });

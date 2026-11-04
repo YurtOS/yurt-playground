@@ -13,9 +13,10 @@
  *   ({@link SnapshotIdentity}; a restore under anything else is refused
  *   before the memory is read), the seal's own fields (bigints written as
  *   `{"$bigint": "<decimal>"}`), and, once the kernel's root is a YurtFS
- *   store, that store's identity and lower (src/root_store.ts);
- * - with a store, `store/data`, `store/journal-a` or `-b`, `store/meta`,
- *   deflated, in the kernel barrier's export order;
+ *   store, that store's identity, totals and lower (src/root_store.ts);
+ * - with a store, `store`, deflated: the store's export, as the log of
+ *   the kernel barrier's sink calls (src/store_log.ts: each content
+ *   file, the active journal, `meta` last; holes stay holes);
  * - `kernel-memory`, deflated.
  * Without a root store the kernel's memory holds the whole filesystem
  * (its ramfs) and the zip holds no store; with one, the memory is only a
@@ -29,17 +30,15 @@
  */
 import { sha256 } from "@noble/hashes/sha2";
 import { sha256Hex } from "./integrity.ts";
-import { IMAGE_PART_BYTES } from "./image_parts.ts";
+import { IMAGE_PART_BYTES, type ImagePartsManifest } from "./image_parts.ts";
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
 import {
   type BuiltFrom,
-  parseStoreIdentity,
+  parseStorePin,
   type SnapshotIdentity,
   type SnapshotPin,
-  storeExportOrderProblem,
-  type StoreFileName,
-  type StoreIdentity,
   type StoreLower,
+  type StorePin,
 } from "./pins.ts";
 import {
   identityMismatch,
@@ -56,6 +55,7 @@ import {
   storeRefusal,
 } from "./snapshot_pin.ts";
 import { writeZip, type ZipEntry, ZipStreamReader } from "./snapshot_zip.ts";
+import { StoreLogReader } from "./store_log.ts";
 
 // The pins half, kernel-free (src/snapshot_pin.ts), for this module's
 // existing importers. Code the desktop app or the local server loads
@@ -69,17 +69,13 @@ const _hostSealVersion: SandboxSealImage["version"] = SEAL_VERSION;
 
 const MANIFEST = "snapshot.json";
 const MEMORY = "kernel-memory";
-const STORE_DIR = "store/";
+const STORE = "store";
 /** A manifest is a few KiB; anything near this is not one. */
 const MANIFEST_MAX = 1 << 20;
 
-/** The store as a snapshot's manifest names it: which one, its lower, and
- * the exported files the zip holds, in order. */
-export type ManifestStore = {
-  identity: StoreIdentity;
-  lower: StoreLower;
-  files: StoreFileName[];
-};
+/** The store as a snapshot's manifest names it: which one, the files and
+ * bytes its export holds (the pin's {@link StorePin}), and its lower. */
+export type ManifestStore = StorePin & { lower: StoreLower };
 
 type Manifest = Omit<SandboxSealImage, "kernelMemory" | "processes"> & {
   format: number;
@@ -117,11 +113,6 @@ export async function encodeSandboxSnapshot(
     );
   }
   const { kernelMemory, processes: _processes, rootStore, ...rest } = image;
-  const files = rootStore?.files ?? [];
-  const order = storeExportOrderProblem(files.map((file) => file.name));
-  if (rootStore !== undefined && order !== undefined) {
-    throw new Error(`cannot write the snapshot: ${order}`);
-  }
   const manifest: Manifest = {
     ...rest,
     format: FORMAT,
@@ -131,8 +122,9 @@ export async function encodeSandboxSnapshot(
     ...(rootStore === undefined ? {} : {
       store: {
         identity: rootStore.identity,
+        files: rootStore.files,
+        bytes: rootStore.bytes,
         lower: rootStore.lower,
-        files: files.map((file) => file.name),
       },
     }),
   };
@@ -142,11 +134,9 @@ export async function encodeSandboxSnapshot(
       bytes: new TextEncoder().encode(JSON.stringify(manifest, replacer)),
       deflate: false,
     },
-    ...files.map(({ name, bytes }) => ({
-      name: `${STORE_DIR}${name}`,
-      bytes,
-      deflate: true,
-    })),
+    ...(rootStore === undefined
+      ? []
+      : [{ name: STORE, bytes: rootStore.log, deflate: true }]),
     { name: MEMORY, bytes: kernelMemory, deflate: true },
   ]);
 }
@@ -181,13 +171,9 @@ function manifestStore(raw: unknown): ManifestStore {
     !Number.isInteger(lower.bytes) || (lower.bytes as number) <= 0 ||
     typeof lower.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(lower.sha256)
   ) fail("store.lower must be {bytes, sha256}");
-  const files = Array.isArray(value.files) ? value.files.map(String) : [];
-  const order = storeExportOrderProblem(files);
-  if (order !== undefined) fail(order);
   return {
-    identity: parseStoreIdentity(value.identity, fail),
+    ...parseStorePin(value, fail),
     lower: { bytes: lower.bytes as number, sha256: lower.sha256 as string },
-    files: files as StoreFileName[],
   };
 }
 
@@ -241,9 +227,11 @@ async function expectEntry(
 }
 
 /** Write the zip's store into `target`, from the entry after the
- * manifest: the lower from the image first, then each exported file in
- * order. Nothing parses them yet: the copy is completed and replayed only
- * once the whole zip passed its hash ({@link decodeSandboxSnapshot}). */
+ * manifest: the lower from the image first, then the export's log,
+ * replayed (never past the manifest's totals, which are the pin's). The
+ * store's own bytes are not parsed yet: the copy is completed and
+ * replayed only once the whole zip passed its hash
+ * ({@link decodeSandboxSnapshot}). */
 async function restoreStore(
   zip: ZipStreamReader,
   store: ManifestStore,
@@ -259,22 +247,23 @@ async function restoreStore(
         `the snapshot's store was made over ${store.lower.bytes} bytes, sha256 ${store.lower.sha256}`,
     );
   }
-  for (const name of store.files) {
-    const entry = await expectEntry(zip, `${STORE_DIR}${name}`);
-    // An empty file gives no chunk: written once anyway, so it exists.
-    if (entry.size === 0) await target.write(name, 0, new Uint8Array(0));
-    await zip.read(entry, (chunk, offset) => target.write(name, offset, chunk));
-  }
+  const log = new StoreLogReader(target, store);
+  await zip.read(await expectEntry(zip, STORE), (chunk) => log.push(chunk));
+  log.finish();
 }
 
-/** Skip the zip's store entries (a check that mounts nothing). */
+/** Skip the zip's store (a check that mounts nothing), checking its log
+ * all the same. */
 async function skipStore(
   zip: ZipStreamReader,
   store: ManifestStore,
 ): Promise<void> {
-  for (const name of store.files) {
-    await zip.read(await expectEntry(zip, `${STORE_DIR}${name}`), () => {});
-  }
+  const log = new StoreLogReader({
+    write: () => {},
+    setLength: () => {},
+  }, store);
+  await zip.read(await expectEntry(zip, STORE), (chunk) => log.push(chunk));
+  log.finish();
 }
 
 /** A snapshot zip's manifest: what it was built from, read without its
@@ -323,9 +312,11 @@ export async function snapshotHeaderFacts(
       ...(manifest.contents === undefined
         ? {}
         : { contents: manifest.contents }),
-      ...(manifest.store === undefined
-        ? {}
-        : { store: { identity: manifestStore(manifest.store).identity } }),
+      ...(manifest.store === undefined ? {} : {
+        store: (({ lower: _lower, ...pin }) => pin)(
+          manifestStore(manifest.store),
+        ),
+      }),
     };
   } finally {
     await reader.cancel().catch(() => {});
@@ -337,8 +328,9 @@ export async function snapshotHeaderFacts(
 export type StoreRestore = {
   /** The fresh store to write; the caller discards it on a throw. */
   target: StoreRestoreTarget;
-  /** The pin's store identity. */
-  expect: StoreIdentity;
+  /** The pin's store: its identity, and the totals its export may not
+   * pass. */
+  expect: StorePin;
   /** The image the store's lower is materialized from. */
   image: () => Promise<Uint8Array>;
 };
@@ -383,9 +375,18 @@ export async function decodeSandboxSnapshot(
     );
     if (why !== undefined) throw new SnapshotMismatch(why);
     if (store !== undefined) {
-      const pinned = identityMismatch(manifest.store!.identity, store.expect);
+      const named = manifest.store!;
+      const pinned = identityMismatch(named.identity, store.expect.identity);
       if (pinned !== undefined) {
         throw new SnapshotMismatch(`the snapshot's manifest says ${pinned}`);
+      }
+      if (
+        named.files !== store.expect.files || named.bytes !== store.expect.bytes
+      ) {
+        throw new SnapshotMismatch(
+          `the snapshot's manifest names a store of ${named.files} files of ${named.bytes} bytes, ` +
+            `not the pinned ${store.expect.files} of ${store.expect.bytes}`,
+        );
       }
     }
     onHeader?.(manifest.builtFrom!);
@@ -469,24 +470,40 @@ export async function fetchVerifiedSnapshot(
       `fetch ${path}.parts.json failed: ${manifestResponse.status}`,
     );
   }
-  const manifest = await manifestResponse.json() as {
-    size: number;
-    parts: string[];
-  };
+  const manifest = await manifestResponse.json() as Partial<
+    ImagePartsManifest
+  >;
   if (manifest.size !== pin.size) {
     throw new Error(
       `${path} is published as ${manifest.size} bytes, not the pinned ${pin.size}`,
     );
   }
+  // The layout, before any part is fetched: every part but the last
+  // `partBytes` long (at most the page's own), as many as the pinned size
+  // needs, so the download is the pin's and no part is bigger than one.
+  const partBytes = manifest.partBytes;
+  const names = manifest.parts;
+  if (
+    !Number.isInteger(partBytes) || partBytes! <= 0 ||
+    partBytes! > IMAGE_PART_BYTES || !Array.isArray(names) ||
+    names.length !== Math.max(1, Math.ceil(pin.size / partBytes!))
+  ) {
+    throw new Error(
+      `${path} is published in ${names?.length} parts of ${partBytes} bytes, not a layout of its pinned ${pin.size}`,
+    );
+  }
+  /** Part `at`'s length in that layout. */
+  const lengthOf = (at: number) =>
+    Math.min(partBytes!, pin.size - at * partBytes!);
   cache?.delete(OLD_PARTS_CACHE).catch(() => {});
   const store = cache === undefined
     ? undefined
     : await cache.open(SNAPSHOT_PARTS_CACHE).catch(() => undefined);
   const giveUp = new AbortController();
   const prefix = `${PART_KEY_ORIGIN}${pin.sha256}/`;
-  // The page's own part size too: the site is sliced with it, so parts of
-  // another deploy's size are other bytes at an index.
-  const keyOf = (at: number) => `${prefix}${IMAGE_PART_BYTES}/${at}`;
+  // The layout's part size too: parts of another layout are other bytes
+  // at an index.
+  const keyOf = (at: number) => `${prefix}${partBytes}/${at}`;
   /** Written once the whole zip passed its hash: only then are its cached
    * parts taken. A visit that ends any other way -- a decode that stops, a
    * closed tab -- leaves the parts it fetched untrusted (and drops them
@@ -506,6 +523,10 @@ export async function fetchVerifiedSnapshot(
   const putHere = new Set<string>();
   /** Set once the visit stopped: a part still on its way is not kept. */
   let stopped = false;
+  /** Taken off before this visit puts its first part, and put back once
+   * the whole passed: a part a visit that never finished put is never
+   * trusted, whether or not that visit could drop it (a closed tab). */
+  let untrusted: Promise<void> | undefined;
   /** The visit ended before the whole zip passed its hash; `all`: it
    * failed the hash, so none of its parts is to be trusted. */
   const forget = (all: boolean) => {
@@ -523,11 +544,14 @@ export async function fetchVerifiedSnapshot(
     if (cached !== undefined) {
       const bytes = new Uint8Array(await cached.arrayBuffer());
       const recorded = cached.headers.get(PART_SHA256_HEADER);
-      if (recorded !== null && await sha256Hex(bytes) === recorded) {
+      if (
+        bytes.byteLength === lengthOf(at) && recorded !== null &&
+        await sha256Hex(bytes) === recorded
+      ) {
         return bytes;
       }
     }
-    const name = manifest.parts[at];
+    const name = names[at];
     const response = await fetchImpl(new URL(name, manifestUrl), {
       signal: giveUp.signal,
     });
@@ -535,8 +559,14 @@ export async function fetchVerifiedSnapshot(
       throw new Error(`fetch ${name} failed: ${response.status}`);
     }
     const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength !== lengthOf(at)) {
+      throw new Error(
+        `${name} is ${bytes.byteLength} bytes, not its ${lengthOf(at)}`,
+      );
+    }
     putHere.add(keyOf(at));
     if (store !== undefined && !stopped) {
+      await (untrusted ??= store.delete(verifiedKey).then(() => {}, () => {}));
       const headers = { [PART_SHA256_HEADER]: await sha256Hex(bytes) };
       await store.put(keyOf(at), new Response(bytes, { headers }))
         .catch(() => {});
@@ -550,7 +580,7 @@ export async function fetchVerifiedSnapshot(
   let asked = 0;
   const askMore = () => {
     while (
-      asked < manifest.parts.length &&
+      asked < names.length &&
       pending.length < SNAPSHOT_PARTS_IN_FLIGHT
     ) {
       const next = part(asked++);
@@ -584,7 +614,7 @@ export async function fetchVerifiedSnapshot(
         // layout (an earlier deploy's part size).
         const keep = new Set([
           verifiedKey,
-          ...manifest.parts.map((_, at) => keyOf(at)),
+          ...names.map((_, at) => keyOf(at)),
         ]);
         await dropCached((url) => !keep.has(url));
         controller.close();

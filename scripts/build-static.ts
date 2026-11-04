@@ -143,12 +143,7 @@ export async function snapshotMatchesPins(
     );
     return false;
   };
-  try {
-    rootStore ??= await kernelRootIsStore(pins.kernelWasm.rev);
-  } catch (error) {
-    // Optional: a kernel checkout off the pinned rev leaves it out.
-    return leftOut(error instanceof Error ? error.message : String(error));
-  }
+  rootStore ??= kernelRootIsStore(pins);
   let pin;
   try {
     pin = pinnedSnapshot(pins, kind, rootStore);

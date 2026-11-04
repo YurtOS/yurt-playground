@@ -267,6 +267,7 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
       sha256: await sha256Hex(file),
       size: file.byteLength,
       builtFrom: built,
+      memoryBytes: 64,
     },
   };
   const dir = await Deno.makeTempDir();
@@ -278,10 +279,9 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
     await Deno.writeFile(path, file);
     assertEquals(await snapshotMatchesPins(path, pins, "desktop", false), true);
     assertEquals(warned.length, 0);
-    // The kernel is asked only at the pinned rev ("v" is none).
-    assertEquals(await snapshotMatchesPins(path, pins), false);
-    assertStringIncludes(String(warned.at(-1)), "not the pinned v");
-    warned.length = 0;
+    // Unasked, the pins' own record decides: today's kernel.
+    assertEquals(await snapshotMatchesPins(path, pins), true);
+    assertEquals(warned.length, 0);
     // A zip of the memory alone is not published for a store-root kernel.
     assertEquals(await snapshotMatchesPins(path, pins, "desktop", true), false);
     assertStringIncludes(

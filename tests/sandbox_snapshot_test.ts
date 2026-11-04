@@ -1,6 +1,6 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
-import { IMAGE_PART_BYTES } from "../src/image_parts.ts";
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
+import { IMAGE_PART_BYTES } from "../src/image_parts.ts";
 import { restoreSnapshot, snapshotOrBoot } from "../src/boot.ts";
 import { sha256Hex } from "../src/integrity.ts";
 import { writeZip } from "../src/snapshot_zip.ts";
@@ -203,6 +203,7 @@ function site(name: string, file: Uint8Array<ArrayBuffer>): typeof fetch {
   const base = name.slice(name.lastIndexOf("/") + 1);
   const manifest = {
     size: file.byteLength,
+    partBytes: 3,
     parts: Array.from(
       { length: Math.ceil(file.byteLength / 3) },
       (_, i) => `${base}.${i}`,
@@ -234,7 +235,25 @@ async function pinFor(file: Uint8Array): Promise<SnapshotPin> {
     sha256: await sha256Hex(file),
     size: file.byteLength,
     builtFrom: BUILT,
+    memoryBytes: memoryOf(file),
   };
+}
+
+/** The kernel memory a snapshot zip's manifest names (16 for a file
+ * that is no snapshot zip). */
+function memoryOf(file: Uint8Array): number {
+  // The stored manifest is the first entry: its JSON starts after the
+  // 30-byte local header and the name.
+  try {
+    const view = new DataView(file.buffer, file.byteOffset);
+    const start = 30 + view.getUint16(26, true);
+    const json = new TextDecoder().decode(
+      file.subarray(start, start + view.getUint32(18, true)),
+    );
+    return JSON.parse(json).memoryBytes ?? 16;
+  } catch {
+    return 16;
+  }
 }
 
 /** How many 3-byte parts {@link site} serves `file` in. */
@@ -306,6 +325,7 @@ Deno.test("only a snapshot pinned for the site's own kernel, image and Python se
     sha256: "00".repeat(32),
     size: 1,
     builtFrom: BUILT,
+    memoryBytes: 16,
   };
   assertEquals(pinnedSnapshot({ ...pins, snapshot }), snapshot);
   assertThrows(() => pinnedSnapshot(pins), SnapshotMismatch, "pins no");
@@ -335,6 +355,7 @@ Deno.test("a malformed snapshot entry never breaks the pins, and is refused wher
     sha256: "aa".repeat(32),
     size: 10,
     builtFrom: { ...snapshotIdentity(pins), pythonSet: null },
+    memoryBytes: 16,
   };
   assertEquals(pinnedSnapshot({ ...pins, snapshot }), snapshot);
   for (
@@ -679,7 +700,7 @@ Deno.test("a damaged part in a verified cache is fetched again, not used", async
   assertEquals(await restore(), sealed);
 });
 
-Deno.test("parts are cached by the page's own part size, and other layouts of the zip are dropped", async () => {
+Deno.test("parts are cached by their layout's part size, and other layouts of the zip are dropped", async () => {
   const sealed = image(1 << 10);
   const file = new Uint8Array(
     await (await encodeSandboxSnapshot(sealed, BUILT)).arrayBuffer(),
@@ -689,7 +710,7 @@ Deno.test("parts are cached by the page's own part size, and other layouts of th
   const cache = memoryCaches();
   const origin = "https://yurt-snapshot-parts.invalid/";
   // A part of this very zip in another layout, from an earlier deploy.
-  const stale = `${origin}${pin.sha256}/${IMAGE_PART_BYTES + 1}/0`;
+  const stale = `${origin}${pin.sha256}/4/0`;
   cache.store.set(stale, new Uint8Array([1]));
   assertEquals(
     await fetchVerifiedSnapshot(
@@ -704,7 +725,7 @@ Deno.test("parts are cached by the page's own part size, and other layouts of th
   assertEquals(cache.store.has(stale), false, "the other layout's part");
   assert(
     [...cache.store.keys()].some((url) =>
-      url.startsWith(`${origin}${pin.sha256}/${IMAGE_PART_BYTES}/`)
+      url.startsWith(`${origin}${pin.sha256}/3/`)
     ),
   );
 });
@@ -802,9 +823,7 @@ Deno.test("a repeat restore takes the parts from the cache, drops them when the 
   assertEquals(await restore(), sealed);
   assertEquals(partFetches, 0, "a repeat visit downloads no part");
   // A cached part that is not the bytes it was put as is fetched again.
-  const last = `${origin}${pin.sha256}/${IMAGE_PART_BYTES}/${
-    partsOf(file) - 1
-  }`;
+  const last = `${origin}${pin.sha256}/3/${partsOf(file) - 1}`;
   cache.store.set(last, new Uint8Array([9]));
   partFetches = 0;
   assertEquals(await restore(), sealed);
@@ -939,4 +958,131 @@ Deno.test("a check still pending refuses the snapshot before its memory is alloc
     "the live index offers another set",
   );
   assertEquals(headerSeen, true, "the header was read and accepted first");
+});
+
+Deno.test("a download is the pin's: a parts list of another layout is refused before any part, and a part of another length when it comes", async () => {
+  const file = new Uint8Array(
+    await (await encodeSandboxSnapshot(image(1 << 10), BUILT)).arrayBuffer(),
+  );
+  const name = "snapshot/tablet.seal.zip";
+  const path = `http://pg/${name}`;
+  const pin = await pinFor(file);
+  const served = site(name, file);
+  const manifest = JSON.parse(
+    await (await served(`http://pg/${name}.parts.json`)).text(),
+  );
+  for (
+    const listed of [
+      // A stale list with one part too many (its size still the pin's).
+      { ...manifest, parts: [...manifest.parts, `${name}.x`] },
+      // Parts bigger than the page ever slices.
+      { ...manifest, partBytes: IMAGE_PART_BYTES + 1, parts: ["a"] },
+      { ...manifest, partBytes: undefined },
+    ]
+  ) {
+    let partFetches = 0;
+    const lying: typeof fetch = (input, init) => {
+      if (String(input).endsWith(".parts.json")) {
+        return Promise.resolve(new Response(JSON.stringify(listed)));
+      }
+      partFetches++;
+      return served(input, init);
+    };
+    await assertRejects(
+      () => fetchVerifiedSnapshot(path, pin, lying),
+      Error,
+      "not a layout of its pinned",
+    );
+    assertEquals(partFetches, 0);
+  }
+  // A part longer than its place in the layout stops the stream there.
+  const long: typeof fetch = async (input, init) => {
+    const response = await served(input, init);
+    if (!String(input).endsWith(".2")) return response;
+    return new Response(new Uint8Array([1, 2, 3, 4]));
+  };
+  await assertRejects(
+    () =>
+      fetchVerifiedSnapshot(path, pin, long).then((body) =>
+        new Response(body).arrayBuffer()
+      ),
+    Error,
+    "is 4 bytes, not its 3",
+  );
+});
+
+Deno.test("a part a later visit put is untrusted until that visit passes, however it ends", async () => {
+  const sealed = image(1 << 10);
+  const file = new Uint8Array(
+    await (await encodeSandboxSnapshot(sealed, BUILT)).arrayBuffer(),
+  );
+  const name = "snapshot/tablet.seal.zip";
+  const path = `http://pg/${name}`;
+  const pin = await pinFor(file);
+  const cache = memoryCaches();
+  const restore = (fetchImpl: typeof fetch) =>
+    fetchVerifiedSnapshot(path, pin, fetchImpl, undefined, cache)
+      .then((body) => decodeSandboxSnapshot(body, BUILT));
+  assertEquals(await restore(site(name, file)), sealed);
+  const verified = [...cache.store.keys()].find((url) =>
+    url.endsWith("/verified")
+  )!;
+  assert(verified !== undefined);
+  // Part 30 goes missing, and a visit fetches it from another deploy
+  // (the same name, other bytes), then is left (a closed tab: nothing
+  // cancels it, nothing drops what it put).
+  const key = [...cache.store.keys()].find((url) => url.endsWith("/30"))!;
+  cache.store.delete(key);
+  const other = file.slice();
+  other.set([0xff, 0xff, 0xff], 90);
+  const reader = (await fetchVerifiedSnapshot(
+    path,
+    pin,
+    site(name, other),
+    undefined,
+    cache,
+  )).getReader();
+  for (let i = 0; i < 40; i++) await reader.read();
+  assert(cache.store.has(key), "the other deploy's part was put");
+  assertEquals(cache.store.has(verified), false, "and the cache untrusted");
+  // So the next visit fetches every part again, and restores.
+  let partFetches = 0;
+  const served = site(name, file);
+  assertEquals(
+    await restore((input, init) => {
+      if (!String(input).endsWith(".parts.json")) partFetches++;
+      return served(input, init);
+    }),
+    sealed,
+  );
+  assertEquals(partFetches, Math.ceil(file.byteLength / 3));
+  assert(cache.store.has(verified), "trusted again once it passed");
+});
+
+Deno.test("a cached part of another length than its place is fetched again, not used", async () => {
+  const sealed = image(1 << 10);
+  const file = new Uint8Array(
+    await (await encodeSandboxSnapshot(sealed, BUILT)).arrayBuffer(),
+  );
+  const name = "snapshot/tablet.seal.zip";
+  const path = `http://pg/${name}`;
+  const pin = await pinFor(file);
+  const cache = memoryCaches();
+  const restore = () =>
+    fetchVerifiedSnapshot(path, pin, site(name, file), undefined, cache)
+      .then((body) => decodeSandboxSnapshot(body, BUILT));
+  assertEquals(await restore(), sealed);
+  // Under part 14's key, the bytes of another slicing of this very zip
+  // (4 bytes from its offset), with their own sha256 recorded beside
+  // them: locally intact, but not this layout's part.
+  const key = [...cache.store.keys()].find((url) => url.endsWith("/14"))!;
+  const store = await cache.open("");
+  const wrong = file.slice(14 * 3, 14 * 3 + 4);
+  await store.put(
+    key,
+    new Response(wrong, {
+      headers: { "x-yurt-part-sha256": await sha256Hex(wrong) },
+    }),
+  );
+  assertEquals(await restore(), sealed);
 });

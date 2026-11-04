@@ -4,8 +4,6 @@
  * file to publish or pin?
  */
 import { createHash } from "node:crypto";
-import { pathToFileURL as toFileUrl } from "node:url";
-import { rootStoreOf } from "../../src/root_store.ts";
 import {
   type BuiltFrom,
   checkSandboxSnapshot,
@@ -114,40 +112,13 @@ async function streamSha256(
   }
 }
 
-/** Whether the kernel checkout the page is bundled from (YURT_KERNEL_ROOT,
- * scripts/serve.ts kernelImportMap) has a JS host with a YurtFS root
- * store (src/root_store.ts): every snapshot of it must then carry the
- * store, and none of a kernel without one may. With `pinnedRev` (the
- * pins' kernelWasm.rev), the checkout must be at that rev: a working
- * tree on another branch answers for another kernel, so it is refused
- * (thrown), never answered. */
-export async function kernelRootIsStore(pinnedRev?: string): Promise<boolean> {
-  const { kernelImportMap, kernelRoot } = await import("../serve.ts");
-  if (pinnedRev !== undefined) {
-    const out = await new Deno.Command("git", {
-      args: ["-C", kernelRoot(), "rev-parse", "HEAD"],
-      // A hook's GIT_DIR would name this checkout's repository instead.
-      env: Object.fromEntries(
-        Object.entries(Deno.env.toObject()).filter(([key]) =>
-          !key.startsWith("GIT_")
-        ),
-      ),
-      clearEnv: true,
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    const head = new TextDecoder().decode(out.stdout).trim();
-    if (!out.success || head !== pinnedRev) {
-      throw new Error(
-        `the kernel checkout ${kernelRoot()} is at ${
-          head || "(no git head)"
-        }, not the pinned ${pinnedRev}: the store rule is the pinned kernel's`,
-      );
-    }
-  }
-  const host = kernelImportMap(kernelRoot()).imports[
-    "@yurt/kernel-host-interface-js"
-  ];
-  const { KernelHostInterface } = await import(toFileUrl(host).href);
-  return rootStoreOf(KernelHostInterface) !== undefined;
+/** Whether the pinned kernel's root is a YurtFS store, as `pins` (a
+ * pins.json, parsed or not) records it (`kernelWasm.rootStore`): every
+ * snapshot of it must then carry the store, and none of a kernel without
+ * one may. A record, not a kernel checkout: the answer is the pinned
+ * kernel's wherever the checkout is (tests/root_store_snapshot_test.ts
+ * holds the record to the pinned JS host). */
+export function kernelRootIsStore(pins: unknown): boolean {
+  return (pins as { kernelWasm?: { rootStore?: unknown } } | null)?.kernelWasm
+    ?.rootStore === true;
 }

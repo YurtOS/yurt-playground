@@ -146,7 +146,7 @@ Deno.test("on a kernel whose root is a YurtFS store, a pin of a zip without the 
     hash: "2".repeat(64),
   };
   for (const key of ["snapshot", "tabletSnapshot", "goSnapshot"]) {
-    pins[key].store = { identity };
+    pins[key].store = { identity, files: 2, bytes: 640 };
   }
   // Undefined (a kernel not asked) takes either, as acceptedSnapshot.
   assertEquals(verifySnapshotPins(pins), []);

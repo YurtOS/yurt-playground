@@ -81,6 +81,7 @@ Deno.test("a snapshot whose manifest names another memory size than its pin is r
         new Response(
           JSON.stringify({
             size: file.byteLength,
+            partBytes: file.byteLength,
             parts: ["sandbox.seal.zip.0"],
           }),
         ),

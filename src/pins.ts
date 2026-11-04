@@ -7,7 +7,12 @@ export type ArtifactPin = {
 };
 
 export type Pins = {
-  kernelWasm: ArtifactPin;
+  /** `rootStore: true` once the pinned kernel's root is a YurtFS store
+   * (src/root_store.ts): every snapshot of it must then carry the store,
+   * and none of a kernel without one may. Set with the kernel pin that
+   * brings it; tests/root_store_snapshot_test.ts holds it to the pinned
+   * JS host. */
+  kernelWasm: ArtifactPin & { rootStore?: true };
   /** The full image: the desktop app, the CLI, and (on a site with no
    * slim pin) the suspend/resume kernel's standard library. */
   image: ArtifactPin;
@@ -81,7 +86,9 @@ export type SnapshotPin = {
   sha256: string;
   size: number;
   builtFrom: BuiltFrom;
-  /** The kernel memory a restore allocates (the header's memoryBytes). */
+  /** The kernel memory a restore allocates (the manifest's memoryBytes):
+   * checked against the manifest's before anything is allocated, so
+   * required from format 4 (the zip) on. */
   memoryBytes?: number;
   /** What it holds (src/sandbox_snapshot.ts SnapshotContents). */
   contents?: {
@@ -110,35 +117,20 @@ export type StoreIdentity = {
   hash: string;
 };
 
-/** The store files a checkpoint exports, in the kernel barrier's order:
- * `data`, the active journal (`journal-a` or `journal-b`), `meta` last,
- * so an interrupted copy never holds a valid `meta`. `lock`, the empty
- * journal and `lower.tar` are not exported: the copy is completed and
- * its lower materialized where it is restored. */
-export type StoreFileName = "data" | "journal-a" | "journal-b" | "meta";
-
 /** `lower.tar` as the store's `meta` records it: the pinned image
  * (`builtFrom.imageSha256`) inflated, so a snapshot never ships it. */
 export type StoreLower = { bytes: number; sha256: string };
 
-/** A snapshot's store, as its pin names it: which one. The files' sizes
- * are the zip's own; the zip's sha256 covers their bytes. */
-export type StorePin = { identity: StoreIdentity };
-
-/** Why `names` is not a store export's order (data, one journal, meta),
- * or undefined. */
-export function storeExportOrderProblem(
-  names: readonly string[],
-): string | undefined {
-  const ok = names.length === 3 && names[0] === "data" &&
-    (names[1] === "journal-a" || names[1] === "journal-b") &&
-    names[2] === "meta";
-  return ok
-    ? undefined
-    : `store files are ${
-      JSON.stringify(names)
-    }, not data, the active journal, then meta`;
-}
+/** A snapshot's store, as its pin names it: which one, and how much its
+ * export holds (src/store_log.ts: the files it names and their lengths'
+ * sum). A restore checks the manifest's against these before it writes
+ * anything, and never writes past them before the zip's hash is checked,
+ * as it never allocates more memory than `memoryBytes`. */
+export type StorePin = {
+  identity: StoreIdentity;
+  files: number;
+  bytes: number;
+};
 
 /** A store identity (a pin's, or a snapshot manifest's), checked; `fail`
  * is called with what is wrong. */
@@ -163,6 +155,28 @@ export function parseStoreIdentity(
     lineage: value.lineage as string,
     sequence: value.sequence as string,
     hash: value.hash as string,
+  };
+}
+
+/** A store pin (a pin's, or a snapshot manifest's identity and totals),
+ * checked; `fail` is called with what is wrong. */
+export function parseStorePin(
+  raw: unknown,
+  fail: (what: string) => never,
+): StorePin {
+  const value = (raw ?? {}) as Record<string, unknown>;
+  const identity = parseStoreIdentity(value.identity, fail);
+  // At least the active journal and meta.
+  if (!Number.isSafeInteger(value.files) || (value.files as number) < 2) {
+    fail("store.files must be an integer of at least 2");
+  }
+  if (!Number.isSafeInteger(value.bytes) || (value.bytes as number) <= 0) {
+    fail("store.bytes must be a positive integer");
+  }
+  return {
+    identity,
+    files: value.files as number,
+    bytes: value.bytes as number,
   };
 }
 
@@ -232,6 +246,14 @@ export function parsePins(raw: unknown): Pins {
     kernelWasm: parsePin(value.kernelWasm, "kernelWasm"),
     image: parsePin(value.image, "image"),
   };
+  const rootStore = (value.kernelWasm as { rootStore?: unknown }).rootStore;
+  if (rootStore === true) pins.kernelWasm.rootStore = true;
+  else if (rootStore !== undefined) {
+    throw new PinResolutionError(
+      "kernelWasm.rootStore must be true or absent",
+      1,
+    );
+  }
   if (value.browserImage !== undefined) {
     pins.browserImage = parsePin(value.browserImage, "browserImage");
     const python = (value.browserImage as { python?: unknown }).python;
@@ -305,7 +327,7 @@ export function parseSnapshotPin(raw: unknown): SnapshotPin {
     (typeof built.pythonSet !== "string" || built.pythonSet === "")
   ) fail("builtFrom.pythonSet must be a string or null");
   if (
-    value.memoryBytes !== undefined &&
+    (value.memoryBytes !== undefined || (value.format as number) >= 4) &&
     (!Number.isInteger(value.memoryBytes) || (value.memoryBytes as number) <= 0)
   ) fail("memoryBytes must be a positive integer");
   if (
@@ -327,12 +349,9 @@ export function parseSnapshotPin(raw: unknown): SnapshotPin {
         )
       ))
   ) fail("contents must be {packages: [{name, version, build}], remark}");
-  const store = value.store === undefined ? undefined : {
-    identity: parseStoreIdentity(
-      (value.store as { identity?: unknown } | null)?.identity,
-      fail,
-    ),
-  };
+  const store = value.store === undefined
+    ? undefined
+    : parseStorePin(value.store, fail);
   return {
     releaseRepo: value.releaseRepo as string,
     release: value.release as string,

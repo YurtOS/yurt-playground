@@ -15,10 +15,11 @@
  *
  * The commit holds:
  * - `manifest.json`: the pin's shape (src/pins.ts `SnapshotPin`: format,
- *   the whole zip's one sha256 and size, builtFrom, a store's identity), plus
- *   what the script adds for people (`packages`, `name`);
- * - `sandbox.seal.zip.parts.json` and the parts, as the site publishes the
- *   pinned one (src/image_parts.ts).
+ *   the whole zip's one sha256 and size, builtFrom, memoryBytes, a store's
+ *   identity and totals), plus what the script adds for people
+ *   (`packages`, `name`);
+ * - `sandbox.seal.zip.parts.json` (with the layout's `partBytes`) and the
+ *   parts, as the site publishes the pinned one (src/image_parts.ts).
  *
  * Who may publish one: raw.githubusercontent.com serves, under this
  * repository's path, any commit of its fork network -- a fork's, a pull
