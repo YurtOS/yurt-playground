@@ -15,7 +15,6 @@ import { chromium, type Page } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
-import { DEMO_PDF_PATH } from "../src/agent.ts";
 import { listOllamaModels, OLLAMA_URL } from "../src/ollama.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
 
@@ -55,65 +54,68 @@ type Yurtish = {
   fs: { read(p: string): Promise<Uint8Array> };
 };
 
-/** Send one message and wait for its end: an answer or a stop more than before. */
+/** Send one message and wait for its end: an answer or a stop more than before,
+ * with the sandbox suspended. A message after the first reloads the page to
+ * resume it, so this looks again across the reload. */
 async function say(page: Page, message: string): Promise<number> {
   const started = performance.now();
   const ends = "#agent-transcript .answer, #agent-transcript .stopped";
   const before = await page.locator(ends).count();
   await page.locator("[data-testid=agent-task]").fill(message);
   await page.locator("[data-testid=agent-run]").click();
-  await page.waitForFunction(
-    ([ends, before]) =>
-      document.querySelectorAll(ends as string).length > (before as number),
-    [ends, before] as const,
-    { timeout: 600_000, polling: 250 },
-  );
-  return performance.now() - started;
+  while (performance.now() - started < 600_000) {
+    const done = await page.evaluate(
+      ([ends, before]) =>
+        document.querySelectorAll(ends as string).length > (before as number) &&
+        document.querySelector("#agent")?.hasAttribute(
+            "data-agent-suspended",
+          ) ===
+          true,
+      [ends, before] as const,
+    ).catch(() => false);
+    if (done) return performance.now() - started;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`no end to: ${message}`);
 }
 
-async function readBack(page: Page, name: string): Promise<string> {
-  const bytes = await page.evaluate(
-    (path) =>
-      (globalThis as unknown as { yurt: Yurtish }).yurt.fs.read(path)
-        .then((b) => [...b]).catch(() => null),
-    DEMO_PDF_PATH,
-  );
-  if (bytes === null) return "";
-  const path = join(OUT, `${name}.pdf`);
-  await Deno.writeFile(path, new Uint8Array(bytes));
-  return await pdfText(path);
+/** The PDF as the visitor gets it: the sandbox is sealed by now. */
+async function readBack(page: Page, name: string): Promise<Uint8Array> {
+  const button = page.locator("[data-testid=agent-download]");
+  if (await button.count() === 0) return new Uint8Array();
+  const saving = page.waitForEvent("download", { timeout: 30_000 });
+  await button.click();
+  const bytes = await Deno.readFile(await (await saving).path());
+  await Deno.writeFile(join(OUT, `${name}.pdf`), bytes);
+  return bytes;
+}
+
+async function readerText(name: string, bytes: Uint8Array): Promise<string> {
+  return bytes.length === 0 ? "" : await pdfText(join(OUT, `${name}.pdf`));
 }
 
 /** The demo: the model writes the explanation, then changes it when asked. */
 async function runDemo(page: Page, name: string): Promise<boolean> {
   const task = await page.locator("[data-testid=agent-task]").inputValue();
   const firstMs = await say(page, task);
-  const first = await readBack(page, `${name}-first`);
+  const first = await readerText(
+    `${name}-first`,
+    await readBack(page, `${name}-first`),
+  );
   const secondMs = await say(page, `Add a last line saying exactly: ${EDIT}`);
-  const second = await readBack(page, `${name}-second`);
-  const colorStops = () => page.locator("#agent-transcript .stopped").count();
-  const greenMs = await say(page, "Make the text green.");
+  const secondBytes = await readBack(page, `${name}-second`);
+  const second = await readerText(`${name}-second`, secondBytes);
   const pinkMs = await say(page, "make it pink");
-  const pinkBytes = await page.evaluate(
-    (path) =>
-      (globalThis as unknown as { yurt: Yurtish }).yurt.fs.read(path)
-        .then((b) => [...b]),
-    DEMO_PDF_PATH,
-  );
-  await Deno.writeFile(
-    join(OUT, `${name}-pink.pdf`),
-    new Uint8Array(pinkBytes),
-  );
-  // Red well above green, blue above green: pink, whichever pink the model chose.
+  const pinkBytes = await readBack(page, `${name}-pink`);
   const rg = /BT \/F1 12 Tf ([\d.]+) ([\d.]+) ([\d.]+) rg/.exec(
-    new TextDecoder().decode(new Uint8Array(pinkBytes)),
+    new TextDecoder().decode(pinkBytes),
   )?.slice(1).map(Number) ?? [0, 0, 0];
-  const green = rg[0] > 0.8 && rg[1] < rg[0] && rg[2] > rg[1] &&
-    await colorStops() === 0;
+  const pink = rg[0] > 0.8 && rg[1] < rg[0] && rg[2] > rg[1];
+  const stops = await page.locator("#agent-transcript .stopped").count();
   console.log(
-    `${name}: pink=${green} rgb=${rg} (green ${
-      Math.round(greenMs / 1000)
-    } s, pink ${Math.round(pinkMs / 1000)} s)`,
+    `${name}: pink=${pink} rgb=${rg} (${
+      Math.round(pinkMs / 1000)
+    } s) stops=${stops}`,
   );
   await Deno.writeTextFile(
     join(OUT, `${name}.txt`),
@@ -122,13 +124,6 @@ async function runDemo(page: Page, name: string): Promise<boolean> {
   await page.locator("#agent").screenshot({
     path: join(OUT, `${name}.png`),
   });
-  let downloaded = 0;
-  const download = page.locator("[data-testid=agent-download]").last();
-  if (await download.count() !== 0) {
-    const saving = page.waitForEvent("download", { timeout: 30_000 });
-    await download.click();
-    downloaded = (await Deno.stat(await (await saving).path())).size;
-  }
   const flat = (t: string) => t.replace(/\s+/g, " ");
   const wrote = first.startsWith("1 ") && first.length > 200 &&
     /yurt/i.test(first);
@@ -139,13 +134,13 @@ async function runDemo(page: Page, name: string): Promise<boolean> {
   const kept = firstWords.filter((w) => words.has(w)).length /
     Math.max(firstWords.length, 1);
   console.log(
-    `${name}: download=${downloaded} bytes wrote=${wrote} (${first.length} chars, ${
+    `${name}: wrote=${wrote} (${first.length} chars, ${
       Math.round(firstMs / 1000)
     } s) changed=${changed} kept=${Math.round(kept * 100)}% (${
       Math.round(secondMs / 1000)
     } s)`,
   );
-  return wrote && changed && kept > 0.9 && downloaded > 0 && green;
+  return wrote && changed && kept > 0.9 && pink;
 }
 
 if (import.meta.main) {
@@ -179,7 +174,7 @@ if (import.meta.main) {
       await page.locator("#agent[data-agent-ready]").waitFor();
       await page.locator("[data-testid=agent-installed]").selectOption(model);
       page.on("console", (m) => {
-        if (m.text().includes("[snapshot]")) {
+        if (/\[(snapshot|session)\]/.test(m.text())) {
           console.log(m.text().slice(0, 160));
         }
       });

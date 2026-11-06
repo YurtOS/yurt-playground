@@ -16,6 +16,11 @@ const STORE = "images";
 const KEY = "newest";
 /** The notebook kernel's record (src/notebook_kernel_worker.ts). */
 export const NOTEBOOK_KEY = "notebook";
+/** The home page's sandbox, sealed after each agent run (src/agent_pane.ts). */
+export const AGENT_SESSION_KEY = "agent-session";
+/** The conversation around it, in the page's localStorage. The sandbox resumes
+ * only when this is there, so the two cannot disagree. */
+export const AGENT_CHAT_STORAGE = "yurt-agent-session";
 
 export type StoredSnapshot = {
   image: SandboxSealImage;

@@ -1,3 +1,4 @@
+import { AGENT_CHAT_STORAGE } from "./snapshot_store.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import { installedMarks, type InstalledReport } from "./installed_list.ts";
 import {
@@ -81,6 +82,7 @@ type FromWorker =
   | InstalledReport
   | { type: "snapshot-captured"; blob: Blob; ms: number }
   | { type: "linux-remark"; remark: string }
+  | { type: "suspended"; why?: string }
   | {
     type: "yurt-reply";
     req: number;
@@ -93,6 +95,34 @@ type FromWorker =
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string }
   | MemoryRefusedMessage;
+
+/** The in-tab sandbox seals after each agent run; `?suspend=0` keeps it running,
+ * and the desktop app's native sandbox does not seal. */
+function agentSeals(desktop: DesktopInfo | undefined): boolean {
+  return desktop === undefined &&
+    new URL(location.href).searchParams.get("suspend") !== "0";
+}
+
+/** Set when this page's sandbox started without Jupyter. */
+let jupyterSkipped = false;
+
+function agentOnlySandbox(desktop: DesktopInfo | undefined): boolean {
+  jupyterSkipped = agentSeals(desktop) && location.hash === "#agent";
+  return jupyterSkipped;
+}
+
+/** Whether a sealed agent run's chat is here (src/agent_pane.ts). */
+function savedAgentChat(): boolean {
+  try {
+    return localStorage.getItem(AGENT_CHAT_STORAGE) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** Seal the sandbox after an agent run; resolves to why it could not. Set at
+ * boot. */
+let suspendSandbox: (() => Promise<string | undefined>) | undefined;
 
 /** A package install in the in-tab sandbox, once it boots: the coordinator
  * runs it (src/packages.ts), one install at a time with the automatic Python
@@ -271,6 +301,12 @@ function boot(
   // A classic coordinator can spawn the module guest bootstrap.
   const worker = new Worker("/coordinator.bundle.js");
   attachGuestWorkerFactory(worker);
+  let suspendAnswer: ((why?: string) => void) | undefined;
+  suspendSandbox = () =>
+    new Promise((resolve) => {
+      suspendAnswer = resolve;
+      worker.postMessage({ type: "suspend" });
+    });
   execute.current = (id, code) => {
     worker.postMessage({ type: "cell", id, code });
   };
@@ -445,6 +481,7 @@ function boot(
     }
     // A capture ends in the sealed sandbox, with no Jupyter to wait for.
     // What this Linux holds, above the terminal (src/linux_remark.ts).
+    if (msg.type === "suspended") suspendAnswer?.(msg.why);
     if (msg.type === "linux-remark") {
       const note = byId("linux-remark");
       byId("linux-remark-text").textContent = msg.remark;
@@ -518,12 +555,16 @@ function boot(
     }
     worker.postMessage({
       type: "start",
+      resumeSession: savedAgentChat(),
       cols: term.cols,
       rows: term.rows,
       isolated: globalThis.crossOriginIsolated === true,
       kernelPorts,
       apiToken: desktop?.apiToken,
-      noJupyter: noPython,
+      // The agent needs a shell, not Jupyter: from its tab, each resume would
+      // start a kernel only for the next seal to kill it. Opening Shell & Python
+      // reloads into a sandbox with one (src/agent_pane.ts).
+      noJupyter: noPython || agentOnlySandbox(desktop),
       // A capture installs its kind's Python: the set (desktop), python
       // alone (tablet), none (phone) -- or Go's go package (go).
       python: desktop !== undefined || pins === undefined
@@ -944,6 +985,16 @@ async function runPage(): Promise<void> {
       yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
       start: () => document.getElementById("start-sandbox")?.click(),
       unavailable: refused ? "no sandbox" : undefined,
+      // Only the in-tab sandbox seals; `?suspend=0` keeps it running.
+      jupyterSkipped: () => jupyterSkipped,
+      // These reloads are the agent's own, not a boot the browser cut off.
+      reload: () => {
+        cutOffBoot();
+        location.reload();
+      },
+      suspend: !agentSeals(desktop)
+        ? undefined
+        : () => suspendSandbox?.() ?? Promise.resolve("no sandbox is running"),
     });
   }
   const start = document.getElementById("start");

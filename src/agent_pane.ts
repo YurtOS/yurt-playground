@@ -9,7 +9,8 @@
  * already runs with Ollama on this computer (src/ollama.ts), which needs no
  * WebGPU and no download; the page does not contact it until asked to.
  */
-import type { Yurt } from "./agent_api.ts";
+import { saveInBrowser, type Yurt } from "./agent_api.ts";
+import { AGENT_CHAT_STORAGE } from "./snapshot_store.ts";
 import {
   createAgentTools,
   sandboxHasPython,
@@ -40,6 +41,27 @@ import {
 } from "./ollama.ts";
 
 const GiB = 2 ** 30;
+
+/** What a sealed sandbox's chat needs across the reload that resumes it. The
+ * sandbox holds the document; this holds the conversation around it. */
+type SavedChat = {
+  choice: string;
+  model: string;
+  chat: string[];
+  transcript: string;
+  pdf?: string;
+  /** The message that asked for the resume, to run once it has. */
+  pending?: string;
+};
+
+function loadChat(): SavedChat | undefined {
+  try {
+    const saved = localStorage.getItem(AGENT_CHAT_STORAGE);
+    return saved === null ? undefined : JSON.parse(saved);
+  } catch {
+    return undefined;
+  }
+}
 
 /** The model choice that is not a pinned download. */
 const OLLAMA = "ollama";
@@ -80,6 +102,13 @@ export async function mountAgentPane(
      * browser cut off): the pane says why, in the status like the Python
      * cell's, and offers neither the download nor a Run (#197). */
     unavailable?: string;
+    /** Seal the sandbox after each run; resolves to why it could not. Unset:
+     * the sandbox keeps running. */
+    suspend?: () => Promise<string | undefined>;
+    /** Whether this sandbox started without Jupyter, to seal faster. */
+    jupyterSkipped?: () => boolean;
+    /** Reload on purpose: not a boot the browser cut off. */
+    reload?: () => void;
   },
 ): Promise<void> {
   const models = await offeredModels();
@@ -267,6 +296,11 @@ export async function mountAgentPane(
   let running: AbortController | undefined;
   /** The chat so far: the visitor's messages, in order. */
   const chat: string[] = [];
+  /** The latest PDF, read before the sandbox seals: it cannot be read after. */
+  let lastPdf: Uint8Array | undefined;
+  let suspended = false;
+  const reloadPage = sandbox.reload ?? (() => location.reload());
+  let modelLabel = "";
 
   const ready = () => {
     root.dataset.agentReady = "";
@@ -297,7 +331,8 @@ export async function mountAgentPane(
       return;
     }
     const showModel = () => {
-      status.textContent = `${installed.value} · Ollama · on this computer`;
+      modelLabel = `${installed.value} · Ollama · on this computer`;
+      status.textContent = modelLabel;
     };
     installed.replaceChildren(
       ...names.map((name) => el("option", { value: name, textContent: name })),
@@ -311,8 +346,8 @@ export async function mountAgentPane(
     ready();
   };
 
-  startButton.addEventListener("click", async () => {
-    if (choice.value === OLLAMA) return connectOllama();
+  const startModel = async () => {
+    if (choice.value === OLLAMA) return await connectOllama();
     const model = selected();
     startButton.disabled = true;
     choice.disabled = true;
@@ -342,13 +377,15 @@ export async function mountAgentPane(
       return;
     }
     llm = local;
-    status.textContent = `${model.label} · WebGPU · in this tab`;
+    modelLabel = `${model.label} · WebGPU · in this tab`;
+    status.textContent = modelLabel;
     // Which runtime build the browser got, and whether the weights were
     // already cached (tests/agent_webgpu_e2e.ts reports both).
     root.dataset.agentRuntime = local.loaded.wasmVariant;
     root.dataset.agentFromCache = String(local.loaded.fromCache);
     ready();
-  });
+  };
+  startButton.addEventListener("click", () => void startModel());
 
   const showContext = () => {
     const used = llm?.lastStats?.promptTokens;
@@ -358,9 +395,81 @@ export async function mountAgentPane(
       `context ${used.toLocaleString()} / ${contextTokens.toLocaleString()} tokens`;
   };
 
+  const removeDownload = () => {
+    for (const old of transcript.querySelectorAll("li.download")) old.remove();
+  };
+  const offerDownload = () => {
+    removeDownload();
+    const bytes = lastPdf;
+    if (bytes === undefined) return;
+    const name = DEMO_PDF_PATH.split("/").pop()!;
+    const download = el("button", {
+      type: "button",
+      className: "bar-action",
+      textContent: `Download ${name}`,
+      testid: "agent-download",
+    });
+    download.addEventListener("click", () => saveInBrowser(name, bytes));
+    transcript.append(el("li", { className: "note download" }, download));
+  };
+  const saveChat = (pending?: string) => {
+    removeDownload();
+    const saved: SavedChat = {
+      choice: choice.value,
+      model: installed.value,
+      chat,
+      transcript: transcript.innerHTML,
+      pdf: lastPdf === undefined
+        ? undefined
+        : btoa(String.fromCharCode(...lastPdf)),
+      pending,
+    };
+    offerDownload();
+    try {
+      localStorage.setItem(AGENT_CHAT_STORAGE, JSON.stringify(saved));
+    } catch {
+      // The sandbox still resumes, without the conversation.
+    }
+  };
+  /** After each run: the sandbox goes into browser storage, and the next
+   * message or a reload brings it back (src/boot.ts). */
+  const suspendNow = async () => {
+    if (sandbox.suspend === undefined) return;
+    status.textContent = "suspending";
+    const why = await sandbox.suspend();
+    suspended = true;
+    if (why === undefined) {
+      saveChat();
+      status.textContent = `${modelLabel} · suspended`;
+    } else {
+      status.textContent = modelLabel;
+      transcript.append(
+        el("li", {
+          className: "stopped",
+          textContent: `Could not suspend: ${why}`,
+        }),
+      );
+    }
+    root.dataset.agentSuspended = "";
+  };
+  /** The next boot finds no chat, so it starts fresh and drops the seal. */
+  const newSession = () => {
+    try {
+      localStorage.removeItem(AGENT_CHAT_STORAGE);
+    } catch {
+      // Nothing to remove, then.
+    }
+    reloadPage();
+  };
+
   const go = async () => {
     const text = task.value.trim();
     if (llm === undefined || running !== undefined || text === "") return;
+    if (suspended) {
+      saveChat(text);
+      reloadPage();
+      return;
+    }
     const controller = new AbortController();
     running = controller;
     run.disabled = true;
@@ -430,9 +539,8 @@ export async function mountAgentPane(
           );
         } else if (e.action.action === "set_color") {
           pdf = undefined;
-          for (const old of transcript.querySelectorAll("li.download")) {
-            old.remove();
-          }
+          lastPdf = undefined;
+          removeDownload();
           line = el(
             "div",
             { className: "call" },
@@ -442,9 +550,8 @@ export async function mountAgentPane(
         } else if (e.action.action === "write_file") {
           // What is on offer is about to change; it comes back once it is made.
           pdf = undefined;
-          for (const old of transcript.querySelectorAll("li.download")) {
-            old.remove();
-          }
+          lastPdf = undefined;
+          removeDownload();
           line = el(
             "div",
             { className: "call" },
@@ -513,20 +620,11 @@ export async function mountAgentPane(
     );
     // However the task ended: a stop after the PDF was made still made it.
     if (pdf !== undefined) {
-      const path = pdf;
-      const download = el("button", {
-        type: "button",
-        className: "bar-action",
-        textContent: `Download ${path.split("/").pop()}`,
-        testid: "agent-download",
-      });
-      download.addEventListener("click", () => {
-        yurt.fs.download(path).catch((error) => {
-          download.textContent = `Could not download: ${error}`;
-        });
-      });
-      transcript.append(el("li", { className: "note download" }, download));
+      lastPdf = await yurt.fs.read(pdf).catch(() => undefined);
     }
+    offerDownload();
+    stop.hidden = true;
+    await suspendNow();
     finish();
   };
   const finish = () => {
@@ -543,4 +641,49 @@ export async function mountAgentPane(
     }
   });
   stop.addEventListener("click", () => running?.abort());
+  // The terminal and the Python cell are this sandbox too: opening them resumes it.
+  document.querySelector("[data-testid=view-shell]")?.addEventListener(
+    "click",
+    () => {
+      if (suspended || sandbox.jupyterSkipped?.() === true) reloadPage();
+    },
+  );
+
+  if (sandbox.suspend === undefined) return;
+  const fresh = el("button", {
+    type: "button",
+    className: "bar-action",
+    textContent: "New session",
+    testid: "agent-new-session",
+  });
+  fresh.addEventListener("click", newSession);
+  run.parentElement?.append(fresh);
+
+  // A reload, or the message that asked for one: back where the run ended.
+  const saved = loadChat();
+  if (saved === undefined) return;
+  if (!Array.from(choice.options).some((o) => o.value === saved.choice)) return;
+  chat.push(...saved.chat);
+  transcript.innerHTML = saved.transcript;
+  if (saved.pdf !== undefined) {
+    lastPdf = Uint8Array.from(atob(saved.pdf), (c) => c.charCodeAt(0));
+  }
+  choice.value = saved.choice;
+  await label();
+  await startModel();
+  if (llm === undefined) return;
+  if (
+    saved.model !== "" && installed.querySelector(`[value="${saved.model}"]`)
+  ) {
+    installed.value = saved.model;
+    installed.dispatchEvent(new Event("change"));
+  }
+  offerDownload();
+  if (saved.pending !== undefined) {
+    saveChat();
+    task.value = saved.pending;
+    void go();
+  } else {
+    sandbox.start();
+  }
 }

@@ -1,3 +1,4 @@
+import { sha256Hex, type StoredSnapshot } from "./snapshot_store.ts";
 import {
   defaultHostState,
   KERNEL_PID,
@@ -97,6 +98,13 @@ export type PlaygroundTerm = {
 
 export type PlaygroundEnv = {
   isolated: boolean;
+  /** The sandbox an agent run sealed (src/agent_pane.ts), to resume instead
+   * of anything else when it was sealed under this very kernel. */
+  savedSession?: () => Promise<StoredSnapshot | undefined>;
+  /** A saved session that would not resume: it is not tried again. */
+  dropSavedSession?: () => Promise<void>;
+  /** The kernel's sha256, once loaded: a later seal records it. */
+  kernelSha256?: (sha256: string) => void;
   fetchBytes: (path: string) => Promise<Uint8Array>;
   /** The image to boot ({@link browserImagePath}); the full image when
    * unset. */
@@ -484,6 +492,31 @@ export async function bootPlayground(
       throw error;
     }
   };
+  const kernelSha256 = await sha256Hex(kernel);
+  env.kernelSha256?.(kernelSha256);
+  const saved = await env.savedSession?.().catch(() => undefined);
+  if (saved !== undefined) {
+    try {
+      if (saved.kernelSha256 !== kernelSha256) {
+        throw new Error("sealed under another kernel");
+      }
+      env.show("resuming your session");
+      const started = performance.now();
+      const restored = await restorePlaygroundKernel(kernel, saved.image);
+      if (restored.processes.length !== 0) {
+        restored.host.dispose();
+        throw new Error("a saved session must hold no process");
+      }
+      console.log(
+        `[session] resumed in ${Math.round(performance.now() - started)} ms`,
+      );
+      return await start(restored.host, true);
+    } catch (error) {
+      // It only saves the sandbox's files; a fresh start is still a start.
+      console.warn(`[session] not resumed: ${error}`);
+      await env.dropSavedSession?.();
+    }
+  }
   const bootImage = async () => {
     env.show("compiling kernel");
     return await start(await loadPlaygroundKernel(kernel), false);

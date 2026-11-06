@@ -117,6 +117,112 @@ if (import.meta.main) {
   const server = startPlaygroundServer(0);
   const browser = await chromium.launch();
   try {
+    // Each run ends sealed: the next message resumes the sandbox with its files
+    // and the chat, and the PDF is still there to download while it is sealed.
+    {
+      const context = await browser.newContext();
+      await withModel(context, { worker: "ok", webgpu: true });
+      const prompts: string[] = [];
+      await context.route(`${OLLAMA_URL}/**`, (route) => {
+        const request = route.request();
+        const cors = { "Access-Control-Allow-Origin": "*" };
+        if (request.method() === "OPTIONS") {
+          return route.fulfill({
+            status: 204,
+            headers: { ...cors, "Access-Control-Allow-Headers": "*" },
+          });
+        }
+        if (request.url().endsWith("/api/tags")) {
+          return route.fulfill({
+            headers: cors,
+            json: { models: [{ name: "stand-in:1" }] },
+          });
+        }
+        const prompt: string = request.postDataJSON().messages[1].content;
+        prompts.push(prompt);
+        const reply = prompt.includes("Result:")
+          ? { action: "answer", text: "Done." }
+          : { action: "write_file", path: DEMO_TEXT_PATH, text: "kept across" };
+        return route.fulfill({
+          headers: cors,
+          body:
+            JSON.stringify({ message: { content: JSON.stringify(reply) } }) +
+            "\n" + JSON.stringify({
+              done: true,
+              prompt_eval_count: 3,
+              eval_count: 2,
+            }) + "\n",
+        });
+      });
+      const page = await context.newPage();
+      const logs: string[] = [];
+      page.on("console", (m) => logs.push(m.text()));
+      await page.goto(`${server.url}/#agent`);
+      await page.locator("[data-testid=agent-model]").selectOption("ollama");
+      await page.locator("[data-testid=agent-start]").click();
+      await page.locator("#agent[data-agent-ready]").waitFor();
+      await page.evaluate(async () => {
+        document.getElementById("start-sandbox")?.click();
+        const yurt = (globalThis as unknown as {
+          yurt: {
+            ready: Promise<void>;
+            exec(c: string, o: { stdin: string }): Promise<unknown>;
+          };
+        }).yurt;
+        await yurt.ready;
+        await yurt.exec(
+          "sudo tee /usr/bin/mkpdf >/dev/null && sudo chmod 755 /usr/bin/mkpdf",
+          { stdin: '#!/bin/sh\ncat > "$1"\n' },
+        );
+      });
+      await page.locator("[data-testid=agent-run]").click();
+      await page.locator("#agent[data-agent-suspended]").waitFor({
+        timeout: 180_000,
+      });
+      if (!logs.some((l) => l.includes("[session] sealed in"))) {
+        throw new Error("agent e2e: the run ended without a seal");
+      }
+      const saving = page.waitForEvent("download");
+      await page.locator("[data-testid=agent-download]").click();
+      if (
+        await Deno.readTextFile(await (await saving).path()) !== "kept across"
+      ) {
+        throw new Error("agent e2e: the sealed PDF did not download");
+      }
+      await page.locator("[data-testid=agent-task]").fill("second message");
+      await page.locator("[data-testid=agent-run]").click();
+      await page.waitForFunction(
+        () =>
+          document.querySelectorAll("#agent-transcript .user").length === 2 &&
+          document.querySelectorAll("#agent-transcript .answer").length === 2 &&
+          document.querySelector("#agent")?.hasAttribute(
+              "data-agent-suspended",
+            ) === true,
+        null,
+        { timeout: 180_000, polling: 250 },
+      );
+      if (!logs.some((l) => l.includes("[session] resumed"))) {
+        throw new Error("agent e2e: the second message did not resume");
+      }
+      // The file came through the seal: the model is shown it.
+      if (!prompts.some((p) => p.includes("<<<\nkept across\n>>>"))) {
+        throw new Error("agent e2e: the document did not survive the seal");
+      }
+      if (await page.locator("[data-testid=agent-download]").count() !== 1) {
+        throw new Error("agent e2e: no Download after the resume");
+      }
+      // A plain reload resumes too, and New session starts over.
+      await page.reload();
+      await page.locator("#agent[data-agent-ready]").waitFor();
+      await page.locator("[data-testid=agent-download]").waitFor();
+      await page.locator("[data-testid=agent-new-session]").click();
+      await page.locator("[data-testid=agent-start]").waitFor();
+      if (await page.locator("#agent-transcript li").count() !== 0) {
+        throw new Error("agent e2e: New session kept the chat");
+      }
+      await context.close();
+    }
+
     // No model on offer (the hosted site, the desktop app): no pane at all.
     {
       const context = await browser.newContext();
@@ -125,7 +231,7 @@ if (import.meta.main) {
         (route) => route.fulfill({ status: 404, body: "not found" }),
       );
       const page = await context.newPage();
-      await page.goto(`${server.url}/#agent`);
+      await page.goto(`${server.url}/?suspend=0#agent`);
       await page.waitForFunction(() => "yurt" in globalThis);
       await page.waitForTimeout(500);
       if (await page.locator("#agent").isVisible()) {
@@ -139,7 +245,7 @@ if (import.meta.main) {
       const context = await browser.newContext();
       await withModel(context, { worker: "ok", webgpu: false });
       const page = await context.newPage();
-      await page.goto(`${server.url}/#agent`);
+      await page.goto(`${server.url}/?suspend=0#agent`);
       await page.locator("[data-testid=agent-unsupported]").waitFor();
       const offered = await page.locator("[data-testid=agent-model] option")
         .evaluateAll((options) =>
@@ -200,7 +306,7 @@ if (import.meta.main) {
         });
       });
       const page = await context.newPage();
-      await page.goto(`${server.url}/#agent`);
+      await page.goto(`${server.url}/?suspend=0#agent`);
       await page.locator("[data-testid=agent-model]").selectOption("ollama");
       await page.waitForTimeout(500);
       if (asked.length !== 0) {
@@ -281,7 +387,7 @@ if (import.meta.main) {
       const context = await browser.newContext();
       await withModel(context, { worker: "fail", webgpu: true });
       const page = await context.newPage();
-      await page.goto(`${server.url}/#agent`);
+      await page.goto(`${server.url}/?suspend=0#agent`);
       const cost = await page.locator("[data-testid=agent-cost]").innerText();
       if (!/Needs about 8 GB/.test(cost)) {
         throw new Error(`agent e2e: no memory cost before download: ${cost}`);
@@ -304,7 +410,7 @@ if (import.meta.main) {
     const context = await browser.newContext();
     await withModel(context, { worker: "ok", webgpu: true });
     const page = await context.newPage();
-    await page.goto(`${server.url}/#agent`);
+    await page.goto(`${server.url}/?suspend=0#agent`);
     await page.locator("[data-testid=agent-start]").click();
     await page.locator("#agent[data-agent-ready]").waitFor();
     const task = page.locator("[data-testid=agent-task]");
