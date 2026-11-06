@@ -15,11 +15,13 @@ export function mountSidebar(): void {
   ) {
     buttons.set(button.dataset.viewButton!, button);
   }
-  const sections = new Map<string, HTMLElement>();
+  // A view can hold several sections: the shell and the Python cell work together.
+  const sections = new Map<string, HTMLElement[]>();
   for (
     const section of document.querySelectorAll<HTMLElement>("[data-view]")
   ) {
-    sections.set(section.dataset.view!, section);
+    const view = section.dataset.view!;
+    sections.set(view, [...sections.get(view) ?? [], section]);
   }
   const fromHash = () => location.hash.slice(1) || DEFAULT_VIEW;
   // What was asked for, kept when it is not offered yet: the agent appears a
@@ -30,28 +32,31 @@ export function mountSidebar(): void {
     const offered = buttons.get(wanted)?.hidden === false &&
       sections.has(wanted);
     const current = offered ? wanted : DEFAULT_VIEW;
-    for (const [name, section] of sections) {
-      section.classList.toggle("view-off", name !== current);
+    for (const [name, members] of sections) {
+      for (const section of members) {
+        section.classList.toggle("view-off", name !== current);
+      }
     }
     for (const [name, button] of buttons) {
       button.setAttribute("aria-current", String(name === current));
     }
     // A collapsible section chosen by name is there to be read.
-    const shown = sections.get(current);
-    if (shown instanceof HTMLDetailsElement) shown.open = true;
+    for (const shown of sections.get(current) ?? []) {
+      if (shown instanceof HTMLDetailsElement) shown.open = true;
+    }
   };
 
   // The page hides a section it does not offer here (no agent, no Python): its
   // button goes too, and the sidebar leaves it.
   const sync = () => {
-    for (const [name, section] of sections) {
+    for (const [name, members] of sections) {
       const button = buttons.get(name);
-      if (button) button.hidden = section.hidden;
+      if (button) button.hidden = members.every((section) => section.hidden);
     }
     show();
   };
   const observer = new MutationObserver(sync);
-  for (const section of sections.values()) {
+  for (const section of [...sections.values()].flat()) {
     observer.observe(section, {
       attributes: true,
       attributeFilter: ["hidden"],

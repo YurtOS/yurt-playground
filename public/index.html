@@ -90,7 +90,7 @@
          resized to nothing, which the shell would see. */
       .layout {
         display: grid;
-        grid-template-columns: 140px minmax(0, 1fr);
+        grid-template-columns: 170px minmax(0, 1fr);
         gap: 20px;
         align-items: start;
       }
@@ -814,14 +814,7 @@
             data-view-button="shell"
             data-testid="view-shell"
           >
-            Shell
-          </button>
-          <button
-            type="button"
-            data-view-button="python"
-            data-testid="view-python"
-          >
-            Python
+            Shell &amp; Python
           </button>
           <button
             type="button"
@@ -1033,7 +1026,7 @@
           <section
             class="pane"
             id="notebook"
-            data-view="python"
+            data-view="shell"
             aria-label="Jupyter notebook"
             data-testid="notebook"
           >

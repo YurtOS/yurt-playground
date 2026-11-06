@@ -357,8 +357,14 @@ if (import.meta.main) {
         page.evaluate(() => document.querySelector("#term-wrap")?.clientWidth);
       await page.locator("[data-testid=view-shell]").click();
       const before = await cols();
-      if (!before || !await page.locator("#term-wrap").isVisible()) {
-        throw new Error("agent e2e: no terminal in the Shell section");
+      if (
+        !before || !await page.locator("#term-wrap").isVisible() ||
+        !await page.locator("#notebook").isVisible()
+      ) {
+        throw new Error("agent e2e: Shell & Python does not show both");
+      }
+      if (await page.locator("[data-testid=view-python]").count() !== 0) {
+        throw new Error("agent e2e: Python still has a section of its own");
       }
       await page.locator("[data-testid=view-install]").click();
       if (
