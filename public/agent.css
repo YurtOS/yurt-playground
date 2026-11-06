@@ -181,7 +181,7 @@
 }
 /* The pane fills the window; the task box fits its text. */
 .views > #agent:not(.view-off) {
-  min-height: calc(100vh - 190px);
+  min-height: calc(100vh - 44px);
 }
 #agent-task {
   field-sizing: content;

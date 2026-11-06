@@ -23,7 +23,13 @@ export function mountSidebar(): void {
     const view = section.dataset.view!;
     sections.set(view, [...sections.get(view) ?? [], section]);
   }
-  const fromHash = () => location.hash.slice(1) || DEFAULT_VIEW;
+  // A view's name, or the id of anything inside one: #partner is in About.
+  const fromHash = () => {
+    const name = location.hash.slice(1);
+    if (sections.has(name)) return name;
+    return document.getElementById(name)?.closest<HTMLElement>("[data-view]")
+      ?.dataset.view ?? DEFAULT_VIEW;
+  };
   // What was asked for, kept when it is not offered yet: the agent appears a
   // moment after the page does, and #agent must still land on it.
   let wanted = fromHash();
@@ -74,5 +80,6 @@ export function mountSidebar(): void {
     wanted = fromHash();
     show();
   });
+  document.documentElement.dataset.sidebar = "";
   sync();
 }

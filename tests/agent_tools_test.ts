@@ -292,6 +292,22 @@ Deno.test("writing the demo's text makes its PDF, and says when it could not", a
     `wrote 2 characters to ${DEMO_TEXT_PATH}; ${DEMO_PDF_MADE}`,
   );
   assertEquals(good.commands, [MAKE_DEMO_PDF]);
+  // The PDF itself is not the model's to write: text there would destroy it.
+  const pdf = writingSandbox(0);
+  await assertRejects(
+    () =>
+      createAgentTools(pdf.yurt).writeFile("/home/user/demo.pdf", "x", never),
+    Error,
+    "is made from",
+  );
+  assertEquals(pdf.written, []);
+  const other = writingSandbox(0);
+  await createAgentTools(other.yurt).writeFile(
+    "/home/user/./demo.txt",
+    "ab",
+    never,
+  );
+  assertEquals(other.commands, [MAKE_DEMO_PDF]);
   const long = writingSandbox(3);
   const refused = await createAgentTools(long.yurt)
     .writeFile(DEMO_TEXT_PATH, "ab", never).catch((e) => e);

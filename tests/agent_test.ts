@@ -304,6 +304,12 @@ Deno.test("a chat message carries the document and what fits of the earlier ones
   assertEquals(tight.includes("- shorter"), true);
   assertEquals(tight.includes("doc"), true);
   assertEquals(tight.length <= 150, true);
+  // A document too long to show is named instead, so the message still runs.
+  const big = chatTask([], "shorten it", 200, "z".repeat(5000));
+  assertEquals(big.includes("zzz"), false);
+  assertEquals(big.includes("read_file"), true);
+  assertEquals(big.endsWith("Now the user asks: shorten it"), true);
+  assertEquals(big.length <= 200, true);
   // Too long on its own: runAgent's refusal, not a silent cut.
   assertEquals(chatTask([], "y".repeat(50), 40), "y".repeat(50));
 });

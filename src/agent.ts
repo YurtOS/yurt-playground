@@ -113,7 +113,7 @@ export function systemPrompt(python: boolean): string {
  * chat, or a restored sandbox, finds them. */
 export const DEMO_TEXT_PATH = "/home/user/demo.txt";
 export const DEMO_PDF_PATH = "/home/user/demo.pdf";
-/** Run after each write of the text, so the PDF cannot fall behind it. */
+/** Run after each write of the text. */
 export const MAKE_DEMO_PDF =
   `command -v mkpdf >/dev/null || { sudo pkg update && sudo pkg install mkpdf; }; mkpdf ${DEMO_PDF_PATH} < ${DEMO_TEXT_PATH}`;
 /** What a write says when it made the PDF: the pane's cue to offer it. */
@@ -126,7 +126,7 @@ const PROMPT_RULES = [
   '{"action":"write_file","path":"<absolute path>","text":"<the whole file>"}',
   '{"action":"answer","text":"<final answer for the user>"}',
   "Use exec or read_file to get facts from the sandbox, one step at a time.",
-  `To create or change a PDF, write_file its whole text to ${DEMO_TEXT_PATH}: under 300 words, since a page holds 40 lines of 65 characters. That also makes the PDF at ${DEMO_PDF_PATH}; do nothing more for it.`,
+  `To create or change a PDF, write_file its whole text to ${DEMO_TEXT_PATH}: plain ASCII with no markdown, under 300 words, since a page holds 40 lines of 65 characters. That also makes the PDF at ${DEMO_PDF_PATH}; do nothing more for it.`,
   "Answer only from what you have seen. Keep the answer short.",
 ];
 
@@ -135,8 +135,8 @@ export const SYSTEM_PROMPT = systemPrompt(true);
 /** One message of a chat as the agent's task: its words, after the document as
  * it stands, so an edit changes that text and not a new one, and after the
  * earlier messages, which say what "it" refers to. The oldest go first when they
- * do not fit `maxTask`; a message and document too long together are left for
- * runAgent to refuse. */
+ * do not fit `maxTask`; a message too long on its own is left for runAgent to
+ * refuse. */
 export function chatTask(
   earlier: readonly string[],
   message: string,
@@ -146,9 +146,14 @@ export function chatTask(
   const now = document === undefined && earlier.length === 0
     ? message
     : `Now the user asks: ${message}`;
+  const shown =
+    `The text in ${DEMO_TEXT_PATH} now, to change only as asked:\n<<<\n${document}\n>>>\n\n`;
+  // A document too long to show must not block every later message.
   const text = document === undefined
     ? ""
-    : `The text in ${DEMO_TEXT_PATH} now, to change only as asked:\n<<<\n${document}\n>>>\n\n`;
+    : shown.length + now.length <= maxTask
+    ? shown
+    : `${DEMO_TEXT_PATH} is too long to show here; read_file it if you need it.\n\n`;
   const heading = "Earlier in this chat the user asked:\n";
   const kept: string[] = [];
   let room = maxTask - now.length - text.length - heading.length - 1;

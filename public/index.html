@@ -85,18 +85,38 @@
         padding: 0 16px;
       }
 
-      /* One section at a time, chosen in the sidebar (src/sidebar.ts). A section
-         not shown keeps its width and has no height: the terminal must not be
-         resized to nothing, which the shell would see. */
+      /* The name, the sections and the ways out on the left; one section at a time
+         on the right (src/sidebar.ts). A section not shown keeps its width and has
+         no height: the terminal must not be resized to nothing, which the shell
+         would see. */
       .layout {
         display: grid;
-        grid-template-columns: 170px minmax(0, 1fr);
-        gap: 20px;
+        grid-template-columns: 190px minmax(0, 1fr);
+        gap: 24px;
         align-items: start;
       }
       #sidebar {
         position: sticky;
-        top: 12px;
+        top: 0;
+        height: 100vh;
+        box-sizing: border-box;
+        padding: 20px 0;
+        display: flex;
+        flex-direction: column;
+      }
+      #sidebar h1 {
+        font-family: var(--serif);
+        font-weight: 400;
+        font-size: 1.9rem;
+        letter-spacing: 0.01em;
+        margin: 0 0 2px 10px;
+      }
+      #sidebar .tagline {
+        font-family: var(--serif);
+        color: var(--muted);
+        margin: 0 0 18px 10px;
+      }
+      #sidebar .sections {
         display: flex;
         flex-direction: column;
         gap: 2px;
@@ -122,6 +142,28 @@
       #sidebar button[hidden] {
         display: none;
       }
+      /* Without the script every section shows, and the buttons would do nothing. */
+      html:not([data-sidebar]) #sidebar .sections {
+        display: none;
+      }
+      #sidebar .links {
+        margin-top: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 14px 10px 0;
+        border-top: 1px solid var(--rule);
+      }
+      #sidebar .links a {
+        text-decoration: none;
+      }
+      #sidebar .links a:hover {
+        text-decoration: underline;
+      }
+      .content {
+        min-width: 0;
+        padding-top: 20px;
+      }
       .views {
         position: relative;
         min-width: 0;
@@ -134,41 +176,15 @@
         overflow: hidden;
         visibility: hidden;
       }
-
-      /* Masthead: the name, one sentence, the ways in. */
-      header.mast {
-        display: flex;
-        align-items: baseline;
-        gap: 20px;
-        flex-wrap: wrap;
-        padding: 20px 0 14px;
-      }
-      header.mast h1 {
-        font-family: var(--serif);
-        font-weight: 400;
-        font-size: 1.9rem;
-        letter-spacing: 0.01em;
-        margin: 0;
-      }
-      header.mast .lead {
-        font-family: var(--serif);
-        font-size: 1.05rem;
-        color: var(--muted);
-        margin: 0;
-        flex: 1 1 320px;
-      }
-      header.mast nav {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px 18px;
-      }
-      header.mast nav a {
-        text-decoration: none;
-        border-bottom: 1px solid transparent;
-        padding-bottom: 1px;
-      }
-      header.mast nav a:hover {
-        border-bottom-color: var(--sky);
+      @media print {
+        #sidebar {
+          display: none;
+        }
+        .views > .view-off {
+          position: static;
+          height: auto;
+          visibility: visible;
+        }
       }
 
       #mobile-note,
@@ -688,9 +704,18 @@
         }
         #sidebar {
           position: static;
+          height: auto;
+          padding: 14px 0 8px;
+        }
+        #sidebar h1 {
+          font-size: 1.6rem;
+        }
+        #sidebar .tagline {
+          margin-bottom: 8px;
+        }
+        #sidebar .sections {
           flex-direction: row;
           overflow-x: auto;
-          margin-bottom: 8px;
         }
         #sidebar button {
           flex: none;
@@ -700,12 +725,15 @@
         #sidebar button[aria-current="true"] {
           border-bottom-color: var(--ochre);
         }
-        header.mast {
-          gap: 8px 16px;
-          padding-top: 14px;
+        #sidebar .links {
+          margin-top: 8px;
+          flex-direction: row;
+          flex-wrap: wrap;
+          gap: 4px 16px;
+          padding: 8px 10px 0;
         }
-        header.mast h1 {
-          font-size: 1.6rem;
+        .content {
+          padding-top: 0;
         }
         #term-wrap {
           height: 40vh;
@@ -736,689 +764,720 @@
   </head>
   <body>
     <main class="wrap">
-      <header class="mast">
-        <h1>Yurt</h1>
-        <p class="lead" id="lead">
-          Yurt is an original Linux-compatible kernel compiled to WebAssembly.
-          This page runs a Linux sandbox on it inside this browser tab: a shell,
-          and on a desktop Python and Jupyter, with no server running your code.
-          It is meant for in-browser coding environments, running AI-agent tools
-          away from your machine, offline notebooks, and sandboxes embedded in
-          your own product.
-        </p>
-        <nav aria-label="interfaces">
-          <a
-            href="./jupyter/notebooks/index.html?path=welcome.ipynb"
-            data-testid="choose-notebook"
-          >Notebook</a>
-          <a href="./jupyter/lab/index.html" data-testid="choose-lab"
-          >JupyterLab</a>
-          <a
-            href="https://yurtos.github.io/yurt-playground/"
-            id="release-notes-link"
-            data-testid="release-notes-link"
-          >Release notes</a>
-          <a
-            href="https://github.com/YurtOS/yurt-playground"
-            data-testid="repo-link"
-          >Source</a>
-          <a href="#partner" data-testid="partner-link">Work with us</a>
-        </nav>
-      </header>
-
-      <p id="another-tab-note" data-testid="another-tab-note" hidden>
-        Another tab of this site is already running a sandbox. Two share this
-        machine's CPU, so this boot will be much slower than the first; use that
-        tab, or close it first.
-      </p>
-
-      <p id="mobile-note" data-testid="mobile-note" hidden>
-        This looks like a tablet, so this page runs the shell and Python, with a
-        snapshot made for tablets: Jupyter and the agent need more memory than a
-        tablet browser gives one tab. A desktop browser, or the desktop app,
-        runs all of it.
-      </p>
-
-      <p id="phone-note" data-testid="phone-note" hidden>
-        This is a phone, so this page runs the Linux shell only, with a small
-        snapshot made for phones: a phone tab has too little memory for more.
-        Installing more from <em>Packages</em> may run the tab out of memory. A
-        desktop browser, or the desktop app, runs all of it.
-      </p>
-
-      <p id="platform-note" data-testid="platform-note" role="status" hidden>
-        <span id="platform-note-text"></span>
-      </p>
-
-      <p id="linux-remark" data-testid="linux-remark" hidden>
-        This Linux: <span id="linux-remark-text"></span>
-      </p>
-
-      <p id="memory-refused" data-testid="memory-refused" role="alert" hidden>
-        The browser ran out of memory for new processes. Reload the page to
-        continue.
-        <button
-          type="button"
-          id="memory-refused-reload"
-          data-testid="memory-refused-reload"
-          class="bar-action"
-        >
-          Reload
-        </button>
-      </p>
-
       <div class="layout">
-        <nav id="sidebar" aria-label="sections" data-testid="sidebar">
-          <button
-            type="button"
-            data-view-button="shell"
-            data-testid="view-shell"
-          >
-            Shell &amp; Python
-          </button>
-          <button
-            type="button"
-            data-view-button="agent"
-            data-testid="view-agent"
-          >
-            Agent
-          </button>
-          <button
-            type="button"
-            data-view-button="install"
-            data-testid="view-install"
-          >
-            Install
-          </button>
-          <button
-            type="button"
-            data-view-button="suspend"
-            data-testid="view-suspend"
-          >
-            Suspend
-          </button>
-          <button
-            type="button"
-            data-view-button="proof"
-            data-testid="view-proof"
-          >
-            Is it real?
-          </button>
-          <button
-            type="button"
-            data-view-button="partner"
-            data-testid="view-partner"
-          >
-            Partner
-          </button>
-        </nav>
-        <div class="views">
-          <section class="pane" aria-label="terminal" data-view="shell">
-            <div class="bar">
-              <span class="name">Terminal</span>
-              <pre id="status"></pre>
-              <span class="grow"></span>
-              <button
-                type="button"
-                id="upload-files"
-                data-testid="upload-files"
-                class="bar-action"
-                hidden
-                title="Copy files from this device into /home/user. A program built for the sandbox (a .wasm, a Go binary) or a #! script is made executable. You can also drop files on the terminal."
-              >
-                Upload
-              </button>
-              <button
-                type="button"
-                id="packages-toggle"
-                data-testid="packages-toggle"
-                class="bar-action"
-                aria-expanded="false"
-                aria-controls="packages"
-                hidden
-                title="Install packages from YurtOS/yurt-packages into this tab's sandbox."
-              >
-                Packages
-              </button>
-              <input
-                type="file"
-                id="upload-input"
-                data-testid="upload-input"
-                multiple
-                hidden
-              >
-              <button
-                type="button"
-                id="export-home"
-                data-testid="export-home"
-                class="bar-action"
-                hidden
-                title="Save /home/user as a .tgz. Its own process: works while a command in the terminal is stuck."
-              >
-                Download home
-              </button>
-              <span
-                id="net"
-                data-testid="net"
-                data-online="true"
-                title="This tab's network state. The sandbox keeps working without it."
-              >online</span>
-            </div>
-            <div id="packages" data-testid="packages" hidden>
-              <p>
-                Install a package from
-                <a href="https://github.com/YurtOS/yurt-packages"
-                >YurtOS/yurt-packages</a> into this sandbox: press
-                <em>Install</em>, wait for <code>installed</code> below the
-                list, then run the package's command in the terminal. The
-                sandbox has no network, so this page downloads the package, and
-                the sandbox's own
-                <code>pkg</code> checks its signature and installs it.
-                <code>sudo pkg install NAME</code> in the terminal does the
-                same, through this page.
-              </p>
-              <p>
-                Installed packages live in this tab's memory, like every file
-                here: a reload loses them. A size is the package's own download;
-                its dependencies add theirs. A tablet or phone has much less
-                memory, so installs whose downloads add up to more than 16 MiB
-                are refused there.
-              </p>
-              <p id="packages-state" data-testid="packages-state">
-                loading the package list
-              </p>
-              <table>
-                <tbody id="packages-list" data-testid="packages-list"></tbody>
-              </table>
-              <p
-                id="packages-status"
-                data-testid="packages-status"
-                role="status"
-                aria-live="polite"
-              >
-              </p>
-              <p
-                id="packages-installed-error"
-                data-testid="packages-installed-error"
-                role="status"
-                aria-live="polite"
-              >
-              </p>
-            </div>
-            <div id="term-wrap">
-              <div id="term"></div>
-              <div id="start">
-                <div class="prompt">$</div>
-                <fieldset id="env-choice" data-testid="env-choice" hidden>
-                  <legend>Set the sandbox up for</legend>
-                  <label><input
-                      type="radio"
-                      name="env"
-                      value="python"
-                      data-testid="env-python"
-                      checked
-                    > Python and the Notebook</label>
-                  <label><input
-                      type="radio"
-                      name="env"
-                      value="go"
-                      data-testid="env-go"
-                    > Go, its standard library already compiled (no
-                    Python)</label>
-                </fieldset>
-                <button
-                  type="button"
-                  id="start-sandbox"
-                  data-testid="start-sandbox"
-                >
-                  Start the sandbox
-                </button>
-                <p>
-                  BusyBox <code>ash</code> on a real PTY, on the Yurt kernel
-                  compiled to WebAssembly: a shell in about 2&nbsp;s (Jupyter in
-                  about 5&nbsp;s on a desktop).
-                  <span id="first-visit-note" data-testid="first-visit-note"
-                  >The first visit downloads it once, about 140 MB on a desktop,
-                    100 MB on a tablet, 40 MB on a phone; later visits load it
-                    from the browser's cache.</span>
-                  <span id="offline-note"
-                  >Programs in the sandbox have no network:
-                    <code>pip install</code> and <code>wget</code> fail by
-                    design (the desktop app below has both). <code>sudo pkg
-                      install</code>
-                    works: this page fetches signed packages for it.</span>
-                </p>
-              </div>
-              <div id="failed" data-testid="boot-failed" hidden>
-                <h2 id="failed-title">The sandbox did not start</h2>
-                <p data-why="phone" hidden>
-                  A phone browser gives one tab too little memory for Python,
-                  the Notebook and JupyterLab, so this page does not start the
-                  sandbox here. Open it in a desktop browser; the app and the
-                  command line below run the same sandbox natively. To try the
-                  shell on this phone anyway, open
-                  <a href="./?start-anyway">this page with ?start-anyway</a>.
-                </p>
-                <p data-why="tablet" hidden>
-                  This is a tablet, and the sandbox did not start here: tablet
-                  browsers give one tab little memory and few background
-                  workers. Reload to try again, or open this page in a desktop
-                  browser.
-                </p>
-                <p data-why="reloaded" hidden>
-                  The browser reloaded this tab while the sandbox was starting.
-                  That is what a browser does to a tab that outgrows the memory
-                  it is allowed, and the boot needs a lot of it. The last thing
-                  the page said before the reload:
-                </p>
-                <p data-why="error">The browser reported:</p>
-                <code id="failed-reason"></code>
-                <p id="failed-retry">
-                  Reload the page to try again. If it keeps failing in a current
-                  desktop browser, please
-                  <a href="https://github.com/YurtOS/yurt-playground/issues"
-                  >open an issue</a> with the line above.
-                </p>
-              </div>
-            </div>
-          </section>
+        <aside id="sidebar" data-testid="sidebar">
+          <h1>Yurt</h1>
+          <p class="tagline">A Linux sandbox in your browser tab</p>
+          <nav class="sections" aria-label="sections">
+            <button
+              type="button"
+              data-view-button="shell"
+              data-testid="view-shell"
+            >
+              Shell &amp; Python
+            </button>
+            <button
+              type="button"
+              data-view-button="agent"
+              data-testid="view-agent"
+            >
+              Agent
+            </button>
+            <button
+              type="button"
+              data-view-button="install"
+              data-testid="view-install"
+            >
+              Install
+            </button>
+            <button
+              type="button"
+              data-view-button="suspend"
+              data-testid="view-suspend"
+            >
+              Suspend
+            </button>
+            <button
+              type="button"
+              data-view-button="proof"
+              data-testid="view-proof"
+            >
+              Is it real?
+            </button>
+            <button
+              type="button"
+              data-view-button="about"
+              data-testid="view-about"
+            >
+              About
+            </button>
+          </nav>
+          <nav class="links" aria-label="interfaces">
+            <a
+              href="./jupyter/notebooks/index.html?path=welcome.ipynb"
+              data-testid="choose-notebook"
+            >Notebook</a>
+            <a href="./jupyter/lab/index.html" data-testid="choose-lab"
+            >JupyterLab</a>
+            <a
+              href="https://yurtos.github.io/yurt-playground/"
+              id="release-notes-link"
+              data-testid="release-notes-link"
+            >Release notes</a>
+            <a
+              href="https://github.com/YurtOS/yurt-playground"
+              data-testid="repo-link"
+            >Source</a>
+          </nav>
+        </aside>
+        <div class="content">
+          <p id="another-tab-note" data-testid="another-tab-note" hidden>
+            Another tab of this site is already running a sandbox. Two share
+            this machine's CPU, so this boot will be much slower than the first;
+            use that tab, or close it first.
+          </p>
 
-          <section
-            class="pane"
-            id="notebook"
-            data-view="shell"
-            aria-label="Jupyter notebook"
-            data-testid="notebook"
-          >
-          </section>
+          <p id="mobile-note" data-testid="mobile-note" hidden>
+            This looks like a tablet, so this page runs the shell and Python,
+            with a snapshot made for tablets: Jupyter and the agent need more
+            memory than a tablet browser gives one tab. A desktop browser, or
+            the desktop app, runs all of it.
+          </p>
 
-          <section
-            class="pane"
-            id="agent"
-            data-view="agent"
-            aria-label="Local agent"
-            data-testid="agent"
+          <p id="phone-note" data-testid="phone-note" hidden>
+            This is a phone, so this page runs the Linux shell only, with a
+            small snapshot made for phones: a phone tab has too little memory
+            for more. Installing more from <em>Packages</em> may run the tab out
+            of memory. A desktop browser, or the desktop app, runs all of it.
+          </p>
+
+          <p
+            id="platform-note"
+            data-testid="platform-note"
+            role="status"
             hidden
           >
-          </section>
+            <span id="platform-note-text"></span>
+          </p>
 
-          <section
-            class="strip"
-            aria-labelledby="install-title"
-            data-view="install"
-          >
-            <h2 id="install-title">Run it on your machine</h2>
-            <p>
-              The same playground with the sandbox running natively: network
-              access, and a boot measured in seconds. Or the sandbox from a
-              shell, the way you would use <code>docker</code>.
-            </p>
-            <div id="install" data-testid="download-mac">
-              <!-- Each radio takes its accessible name from the visible group
-               heading and platform label. -->
-              <input
-                type="radio"
-                name="install"
-                id="install-app-mac"
-                aria-labelledby="install-group-app install-app-mac-label"
-                checked
-              >
-              <input
-                type="radio"
-                name="install"
-                id="install-app-linux"
-                aria-labelledby="install-group-app install-app-linux-label"
-              >
-              <input
-                type="radio"
-                name="install"
-                id="install-cli-mac"
-                aria-labelledby="install-group-cli install-cli-mac-label"
-              >
-              <input
-                type="radio"
-                name="install"
-                id="install-cli-linux"
-                aria-labelledby="install-group-cli install-cli-linux-label"
-              >
-              <div class="tabs">
-                <div class="group" id="install-group-app">Desktop app</div>
-                <label id="install-app-mac-label" for="install-app-mac"
-                >macOS</label>
-                <label id="install-app-linux-label" for="install-app-linux"
-                >Linux</label>
-                <div class="group" id="install-group-cli">Command line</div>
-                <label id="install-cli-mac-label" for="install-cli-mac"
-                >macOS</label>
-                <label id="install-cli-linux-label" for="install-cli-linux"
-                >Linux</label>
-              </div>
-              <div class="panel app-mac">
-                <h3>The playground as a Mac app</h3>
-                <p>
-                  <a
-                    href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-apple-darwin.dmg"
-                  >Download for Apple Silicon</a>, open the disk image and drag
-                  <em>Yurt Playground</em> to Applications.
-                </p>
-                <p>
-                  It is not notarized, so macOS blocks the first open: allow it
-                  under
-                  <em>System Settings &rarr; Privacy &amp; Security &rarr; Open
-                    Anyway</em> (or run
-                  <code>xattr -dr com.apple.quarantine "/Applications/Yurt
-                    Playground.app"</code>), then open it again.
-                </p>
-              </div>
-              <div class="panel app-linux">
-                <h3>The playground as a Linux app</h3>
-                <p>
-                  Download the package for
-                  <a
-                    href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-x86_64-unknown-linux-gnu.deb"
-                  >x86_64</a>
-                  or
-                  <a
-                    href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-unknown-linux-gnu.deb"
-                  >arm64</a>
-                  (Debian, Ubuntu), then:
-                </p>
-                <pre>sudo apt install ./Yurt-Playground-*.deb
-yurt-playground</pre>
-                <p>It opens in your browser; Ctrl-C stops it.</p>
-              </div>
-              <div class="panel cli-mac">
-                <h3><code>yurt</code> on macOS</h3>
-                <p>
-                  <code>run</code>, <code>exec</code>, <code>ps</code>,
-                  <code>logs</code>, <code>cp</code>, <code>stop</code>,
-                  <code>kill</code>, <code>restart</code>, <code>commit</code>,
-                  <code>inspect</code>, <code>stats</code>, <code>images</code>,
-                  <code>pull</code> — with ports, environment, a working
-                  directory and an interactive terminal; <code>commit</code>
-                  turns a sandbox you set up into an image to run again.
-                  <a
-                    href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-aarch64-apple-darwin.tar.gz"
-                  >Download for Apple Silicon</a>, then:
-                </p>
-                <pre>tar -xzf yurt-*.tar.gz &amp;&amp; sudo yurt/install.sh
-yurt pull playground                       # the image (about 90 MB), no account needed
-yurt run -it playground                    # a shell in the sandbox
-yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
-yurt logs -f web                           # Ctrl-C leaves it running
-yurt stats --no-stream web                 # CPU % and memory, docker-stats style
-yurt cp ./notes.txt web:/home/user/        # curl http://127.0.0.1:8080/notes.txt
-yurt commit web my-image                   # yurt run my-image … starts from that disk
-yurt stop web</pre>
-                <p>
-                  Everything the command needs is in the package; the daemon
-                  starts itself. <code>yurt --help</code> lists the verbs.
-                </p>
-              </div>
-              <div class="panel cli-linux">
-                <h3><code>yurt</code> on Linux</h3>
-                <p>
-                  <code>run</code>, <code>exec</code>, <code>ps</code>,
-                  <code>logs</code>, <code>cp</code>, <code>stop</code>,
-                  <code>kill</code>, <code>restart</code>, <code>commit</code>,
-                  <code>inspect</code>, <code>stats</code>, <code>images</code>,
-                  <code>pull</code> — with ports, environment, a working
-                  directory and an interactive terminal; <code>commit</code>
-                  turns a sandbox you set up into an image to run again.
-                  Download the package for
-                  <a
-                    href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-x86_64-unknown-linux-gnu.deb"
-                  >x86_64</a>
-                  or
-                  <a
-                    href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-aarch64-unknown-linux-gnu.deb"
-                  >arm64</a>
-                  (Debian, Ubuntu), then:
-                </p>
-                <pre>sudo apt install ./yurt-*.deb
-yurt pull playground                       # the image (about 90 MB), no account needed
-yurt run -it playground                    # a shell in the sandbox
-yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
-yurt logs -f web                           # Ctrl-C leaves it running
-yurt stats --no-stream web                 # CPU % and memory, docker-stats style
-yurt cp ./notes.txt web:/home/user/        # curl http://127.0.0.1:8080/notes.txt
-yurt commit web my-image                   # yurt run my-image … starts from that disk
-yurt stop web</pre>
-                <p>
-                  Everything the command needs is in the package; the daemon
-                  starts itself. <code>yurt --help</code> lists the verbs.
-                </p>
-              </div>
-            </div>
-          </section>
+          <p id="linux-remark" data-testid="linux-remark" hidden>
+            This Linux: <span id="linux-remark-text"></span>
+          </p>
 
-          <details
-            class="strip"
-            id="proof"
-            data-testid="proof"
-            data-view="proof"
+          <p
+            id="memory-refused"
+            data-testid="memory-refused"
+            role="alert"
+            hidden
           >
-            <summary data-testid="proof-toggle">
-              <h2 id="proof-title">Is this really running in your browser?</h2>
-              <span class="hint">Four checks you can do yourself</span>
-            </summary>
-            <p>
-              No badge can prove it, so here is what a server-backed fake could
-              not survive. Each takes under a minute, in Chrome, Edge, Firefox
-              or Safari.
-            </p>
-            <div class="checks">
-              <article class="check">
-                <h3>Go offline, keep computing</h3>
-                <p>
-                  Start the sandbox and wait for the cell to say <code
-                  >ready</code>. After the sandbox is up, turn off Wi-Fi (or, in
-                  Chrome, Edge and Firefox, pick
-                  <kbd>Offline</kbd> in the developer tools' <kbd>Network</kbd>
-                  panel). Run another cell.
-                </p>
-                <p>
-                  It still answers, and so does a new command in the terminal.
-                  The terminal's bar shows <code>offline</code> while you do it.
-                </p>
-              </article>
-              <article class="check">
-                <h3>Watch the tab work</h3>
-                <p>
-                  Watch this tab in the browser's task manager: in Chrome and
-                  Edge,
-                  <kbd>Shift</kbd>+<kbd>Esc</kbd>; in Firefox,
-                  <code>about:processes</code>; for Safari, macOS's Activity
-                  Monitor, which lists each tab's web content process. Its
-                  memory climbs by hundreds of MB as the sandbox boots, and its
-                  CPU spikes when a cell runs.
-                </p>
-                <p>A thin client stays flat.</p>
-              </article>
-              <article class="check">
-                <h3>See the workers</h3>
-                <p>
-                  While the sandbox runs, list the page's workers: in Chrome,
-                  visit
-                  <code>chrome://inspect/#workers</code> (in Edge,
-                  <code>edge://inspect/#workers</code>); in Firefox,
-                  <code>about:debugging#/runtime/this-firefox</code>; in Safari,
-                  the Web Inspector's <kbd>Sources</kbd> tab. The coordinator
-                  and the guest workers are listed with their script URLs, and
-                  you can attach a debugger.
-                </p>
-                <p>
-                  In the developer tools' <kbd>Network</kbd> panel, nothing
-                  moves while a cell runs. The page's security policy lets it
-                  fetch only from this site and a few named sources: the package
-                  repository on GitHub, Hugging Face for the agent's model, and
-                  GitHub for shared snapshots. The sandbox itself has no
-                  network: when
-                  <code>pkg</code> installs a package, this page fetches files
-                  from the package repository for it, and only from there.
-                </p>
-              </article>
-              <article class="check">
-                <h3>Check the bytes</h3>
-                <p>
-                  The site publishes the SHA-256 of the page's main scripts, the
-                  kernel and both guest images (the slim one and the 92 MB full
-                  one). This fetches them again and hashes them here, in your
-                  browser, and also compares the kernel's and the images' hashes
-                  with the ones this repository pins in <code
-                  >artifacts/pins.json</code>. The snapshot the page restores is
-                  not in this list: the page checks each of its parts against
-                  its pinned SHA-256 as it loads them.
-                </p>
+            The browser ran out of memory for new processes. Reload the page to
+            continue.
+            <button
+              type="button"
+              id="memory-refused-reload"
+              data-testid="memory-refused-reload"
+              class="bar-action"
+            >
+              Reload
+            </button>
+          </p>
+
+          <div class="views">
+            <section class="pane" aria-label="terminal" data-view="shell">
+              <div class="bar">
+                <span class="name">Terminal</span>
+                <pre id="status"></pre>
+                <span class="grow"></span>
                 <button
-                  id="verify-files"
                   type="button"
-                  data-testid="verify-files"
+                  id="upload-files"
+                  data-testid="upload-files"
+                  class="bar-action"
+                  hidden
+                  title="Copy files from this device into /home/user. A program built for the sandbox (a .wasm, a Go binary) or a #! script is made executable. You can also drop files on the terminal."
                 >
-                  Verify downloaded files
+                  Upload
                 </button>
-                <div id="verify-results" hidden></div>
-                <p id="verify-commit"></p>
-              </article>
-            </div>
-          </details>
-
-          <details
-            class="strip"
-            id="snapshots"
-            data-testid="snapshots"
-            data-view="suspend"
-          >
-            <summary data-testid="snapshots-toggle">
-              <h2 id="snapshots-title">Suspend and resume</h2>
-              <span class="hint"
-              >A notebook cell continues where it stopped</span>
-            </summary>
-            <p>
-              A sandbox can be sealed while it runs — the kernel's memory, each
-              program's memory and its unwound call stack — and brought back
-              later exactly where it was: no boot, no image to stage, no program
-              restarted. The
-              <a
-                href="./jupyter/notebooks/index.html?path=suspend-resume.ipynb"
-                data-testid="notebook-snapshot-demo"
-              >notebook</a>
-              suspends and resumes a running cell; the
-              <a href="./snapshot.html" data-testid="snapshot-demo"
-              >terminal demo</a>
-              seals every two seconds.
-            </p>
-            <div class="checks">
-              <article class="check">
-                <h3>In a notebook</h3>
+                <button
+                  type="button"
+                  id="packages-toggle"
+                  data-testid="packages-toggle"
+                  class="bar-action"
+                  aria-expanded="false"
+                  aria-controls="packages"
+                  hidden
+                  title="Install packages from YurtOS/yurt-packages into this tab's sandbox."
+                >
+                  Packages
+                </button>
+                <input
+                  type="file"
+                  id="upload-input"
+                  data-testid="upload-input"
+                  multiple
+                  hidden
+                >
+                <button
+                  type="button"
+                  id="export-home"
+                  data-testid="export-home"
+                  class="bar-action"
+                  hidden
+                  title="Save /home/user as a .tgz. Its own process: works while a command in the terminal is stuck."
+                >
+                  Download home
+                </button>
+                <span
+                  id="net"
+                  data-testid="net"
+                  data-online="true"
+                  title="This tab's network state. The sandbox keeps working without it."
+                >online</span>
+              </div>
+              <div id="packages" data-testid="packages" hidden>
                 <p>
-                  Open the
-                  <a
-                    href="./jupyter/notebooks/index.html?path=suspend-resume.ipynb"
+                  Install a package from
+                  <a href="https://github.com/YurtOS/yurt-packages"
+                  >YurtOS/yurt-packages</a> into this sandbox: press
+                  <em>Install</em>, wait for <code>installed</code> below the
+                  list, then run the package's command in the terminal. The
+                  sandbox has no network, so this page downloads the package,
+                  and the sandbox's own
+                  <code>pkg</code> checks its signature and installs it.
+                  <code>sudo pkg install NAME</code> in the terminal does the
+                  same, through this page.
+                </p>
+                <p>
+                  Installed packages live in this tab's memory, like every file
+                  here: a reload loses them. A size is the package's own
+                  download; its dependencies add theirs. A tablet or phone has
+                  much less memory, so installs whose downloads add up to more
+                  than 16 MiB are refused there.
+                </p>
+                <p id="packages-state" data-testid="packages-state">
+                  loading the package list
+                </p>
+                <table>
+                  <tbody id="packages-list" data-testid="packages-list"></tbody>
+                </table>
+                <p
+                  id="packages-status"
+                  data-testid="packages-status"
+                  role="status"
+                  aria-live="polite"
+                >
+                </p>
+                <p
+                  id="packages-installed-error"
+                  data-testid="packages-installed-error"
+                  role="status"
+                  aria-live="polite"
+                >
+                </p>
+              </div>
+              <div id="term-wrap">
+                <div id="term"></div>
+                <div id="start">
+                  <div class="prompt">$</div>
+                  <fieldset id="env-choice" data-testid="env-choice" hidden>
+                    <legend>Set the sandbox up for</legend>
+                    <label><input
+                        type="radio"
+                        name="env"
+                        value="python"
+                        data-testid="env-python"
+                        checked
+                      > Python and the Notebook</label>
+                    <label><input
+                        type="radio"
+                        name="env"
+                        value="go"
+                        data-testid="env-go"
+                      > Go, its standard library already compiled (no
+                      Python)</label>
+                  </fieldset>
+                  <button
+                    type="button"
+                    id="start-sandbox"
+                    data-testid="start-sandbox"
                   >
-                    suspend/resume notebook</a>. Its kernel is one CPython 3.14
-                  process (the <em>Python 3 (Yurt, suspend/resume)</em>
-                  kernelspec), built so the sandbox can be sealed. Run the cell
-                  that prints primes, press <kbd>Suspend</kbd> in the panel at
-                  the bottom right: about 50 MB lands in IndexedDB in a quarter
-                  of a second and the sandbox is gone. Press <kbd>Resume</kbd>:
-                  the cell carries on at the next prime, in the same output,
-                  with every variable intact. Interrupt works as usual, and
-                  <code>primes</code> is still there afterwards.
-                </p>
-                <p>
-                  What makes a cell suspendable is a syscall to seal at:
-                  printing progress is enough; a loop that never leaves the
-                  interpreter has to wait for its next print.
-                </p>
-              </article>
-              <article class="check">
-                <h3>In a terminal</h3>
-                <p>
-                  Open the <a href="./snapshot.html">demo</a>. A prime finder
-                  prints one prime every quarter second, testing each candidate
-                  against the primes it has already found — its position is on
-                  the call stack, its list is on the heap, and both come back.
-                  The bar counts the seals as they land in your browser's
-                  IndexedDB (about 14 MB, under 50 ms each).
-                </p>
-                <p>
-                  Close the tab. Open the page again: it says which seal it
-                  restored from, draws a marker, and the next prime is the one
-                  after the last sealed one. <kbd>Forget the snapshot</kbd>
-                  drops the image so the next load boots fresh.
-                </p>
-              </article>
-              <article class="check">
-                <h3>What is saved, and when</h3>
-                <p>
-                  Nothing happens at close: the browser gives a closing tab no
-                  chance to seal. Every seal overwrites the one before, so a
-                  restore is at most one interval behind, and the interrupted
-                  syscall runs exactly once, after the restore.
-                </p>
-                <p>
-                  The image stays on this origin, in this browser, and is tied
-                  to the kernel build that sealed it: after an update it is
-                  dropped and the page boots fresh.
-                </p>
-              </article>
-              <article class="check">
-                <h3>Building on it</h3>
-                <p>
-                  The kernel's JavaScript host can seal and restore a running
-                  sandbox (today: programs built for it, one thread each, no
-                  open sockets). It is not public yet; if you want to build on
-                  it, see
-                  <a href="#partner">Help bring Yurt to customers</a> below.
-                </p>
-                <p>
-                  To drive this page's sandbox from a program now, use
-                  <code>window.yurt</code> (commands, files, status), described
-                  in the
-                  <a
-                    href="https://github.com/YurtOS/yurt-playground#driving-the-sandbox-from-a-program"
-                  >README</a>.
-                </p>
-              </article>
-            </div>
-          </details>
+                    Start the sandbox
+                  </button>
+                  <p>
+                    BusyBox <code>ash</code> on a real PTY, on the Yurt kernel
+                    compiled to WebAssembly: a shell in about 2&nbsp;s (Jupyter
+                    in about 5&nbsp;s on a desktop).
+                    <span id="first-visit-note" data-testid="first-visit-note"
+                    >The first visit downloads it once, about 140 MB on a
+                      desktop, 100 MB on a tablet, 40 MB on a phone; later
+                      visits load it from the browser's cache.</span>
+                    <span id="offline-note"
+                    >Programs in the sandbox have no network:
+                      <code>pip install</code> and <code>wget</code> fail by
+                      design (the desktop app, under Install, has both). <code
+                      >sudo pkg install</code>
+                      works: this page fetches signed packages for it.</span>
+                  </p>
+                </div>
+                <div id="failed" data-testid="boot-failed" hidden>
+                  <h2 id="failed-title">The sandbox did not start</h2>
+                  <p data-why="phone" hidden>
+                    A phone browser gives one tab too little memory for Python,
+                    the Notebook and JupyterLab, so this page does not start the
+                    sandbox here. Open it in a desktop browser; the app and the
+                    command line, under Install, run the same sandbox natively.
+                    To try the shell on this phone anyway, open
+                    <a href="./?start-anyway">this page with ?start-anyway</a>.
+                  </p>
+                  <p data-why="tablet" hidden>
+                    This is a tablet, and the sandbox did not start here: tablet
+                    browsers give one tab little memory and few background
+                    workers. Reload to try again, or open this page in a desktop
+                    browser.
+                  </p>
+                  <p data-why="reloaded" hidden>
+                    The browser reloaded this tab while the sandbox was
+                    starting. That is what a browser does to a tab that outgrows
+                    the memory it is allowed, and the boot needs a lot of it.
+                    The last thing the page said before the reload:
+                  </p>
+                  <p data-why="error">The browser reported:</p>
+                  <code id="failed-reason"></code>
+                  <p id="failed-retry">
+                    Reload the page to try again. If it keeps failing in a
+                    current desktop browser, please
+                    <a href="https://github.com/YurtOS/yurt-playground/issues"
+                    >open an issue</a> with the line above.
+                  </p>
+                </div>
+              </div>
+            </section>
 
-          <section
-            class="strip"
-            id="partner"
-            aria-labelledby="partner-title"
-            data-view="partner"
-          >
-            <h2 id="partner-title">Help bring Yurt to customers</h2>
-            <p>
-              We're looking for a business partner to help identify customer
-              opportunities, build relationships, and bring Yurt to market.
-            </p>
-            <p>
-              Contact Ofer at <a href="mailto:ofersa@gmail.com"
-              >ofersa@gmail.com</a>, or <a href="https://github.com/smarcd"
-              >Sunny</a> on GitHub.
-            </p>
-          </section>
+            <section
+              class="pane"
+              id="notebook"
+              data-view="shell"
+              aria-label="Jupyter notebook"
+              data-testid="notebook"
+            >
+            </section>
+
+            <section
+              class="pane"
+              id="agent"
+              data-view="agent"
+              aria-label="Local agent"
+              data-testid="agent"
+              hidden
+            >
+            </section>
+
+            <section
+              class="strip"
+              aria-labelledby="install-title"
+              data-view="install"
+            >
+              <h2 id="install-title">Run it on your machine</h2>
+              <p>
+                The same playground with the sandbox running natively: network
+                access, and a boot measured in seconds. Or the sandbox from a
+                shell, the way you would use <code>docker</code>.
+              </p>
+              <div id="install" data-testid="download-mac">
+                <!-- Each radio takes its accessible name from the visible group
+               heading and platform label. -->
+                <input
+                  type="radio"
+                  name="install"
+                  id="install-app-mac"
+                  aria-labelledby="install-group-app install-app-mac-label"
+                  checked
+                >
+                <input
+                  type="radio"
+                  name="install"
+                  id="install-app-linux"
+                  aria-labelledby="install-group-app install-app-linux-label"
+                >
+                <input
+                  type="radio"
+                  name="install"
+                  id="install-cli-mac"
+                  aria-labelledby="install-group-cli install-cli-mac-label"
+                >
+                <input
+                  type="radio"
+                  name="install"
+                  id="install-cli-linux"
+                  aria-labelledby="install-group-cli install-cli-linux-label"
+                >
+                <div class="tabs">
+                  <div class="group" id="install-group-app">Desktop app</div>
+                  <label id="install-app-mac-label" for="install-app-mac"
+                  >macOS</label>
+                  <label id="install-app-linux-label" for="install-app-linux"
+                  >Linux</label>
+                  <div class="group" id="install-group-cli">Command line</div>
+                  <label id="install-cli-mac-label" for="install-cli-mac"
+                  >macOS</label>
+                  <label id="install-cli-linux-label" for="install-cli-linux"
+                  >Linux</label>
+                </div>
+                <div class="panel app-mac">
+                  <h3>The playground as a Mac app</h3>
+                  <p>
+                    <a
+                      href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-apple-darwin.dmg"
+                    >Download for Apple Silicon</a>, open the disk image and
+                    drag
+                    <em>Yurt Playground</em> to Applications.
+                  </p>
+                  <p>
+                    It is not notarized, so macOS blocks the first open: allow
+                    it under
+                    <em>System Settings &rarr; Privacy &amp; Security &rarr;
+                      Open Anyway</em> (or run
+                    <code>xattr -dr com.apple.quarantine "/Applications/Yurt
+                      Playground.app"</code>), then open it again.
+                  </p>
+                </div>
+                <div class="panel app-linux">
+                  <h3>The playground as a Linux app</h3>
+                  <p>
+                    Download the package for
+                    <a
+                      href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-x86_64-unknown-linux-gnu.deb"
+                    >x86_64</a>
+                    or
+                    <a
+                      href="https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-unknown-linux-gnu.deb"
+                    >arm64</a>
+                    (Debian, Ubuntu), then:
+                  </p>
+                  <pre>sudo apt install ./Yurt-Playground-*.deb
+yurt-playground</pre>
+                  <p>It opens in your browser; Ctrl-C stops it.</p>
+                </div>
+                <div class="panel cli-mac">
+                  <h3><code>yurt</code> on macOS</h3>
+                  <p>
+                    <code>run</code>, <code>exec</code>, <code>ps</code>,
+                    <code>logs</code>, <code>cp</code>, <code>stop</code>,
+                    <code>kill</code>, <code>restart</code>, <code
+                    >commit</code>,
+                    <code>inspect</code>, <code>stats</code>, <code
+                    >images</code>,
+                    <code>pull</code> — with ports, environment, a working
+                    directory and an interactive terminal; <code>commit</code>
+                    turns a sandbox you set up into an image to run again.
+                    <a
+                      href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-aarch64-apple-darwin.tar.gz"
+                    >Download for Apple Silicon</a>, then:
+                  </p>
+                  <pre>tar -xzf yurt-*.tar.gz &amp;&amp; sudo yurt/install.sh
+yurt pull playground                       # the image (about 90 MB), no account needed
+yurt run -it playground                    # a shell in the sandbox
+yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
+yurt logs -f web                           # Ctrl-C leaves it running
+yurt stats --no-stream web                 # CPU % and memory, docker-stats style
+yurt cp ./notes.txt web:/home/user/        # curl http://127.0.0.1:8080/notes.txt
+yurt commit web my-image                   # yurt run my-image … starts from that disk
+yurt stop web</pre>
+                  <p>
+                    Everything the command needs is in the package; the daemon
+                    starts itself. <code>yurt --help</code> lists the verbs.
+                  </p>
+                </div>
+                <div class="panel cli-linux">
+                  <h3><code>yurt</code> on Linux</h3>
+                  <p>
+                    <code>run</code>, <code>exec</code>, <code>ps</code>,
+                    <code>logs</code>, <code>cp</code>, <code>stop</code>,
+                    <code>kill</code>, <code>restart</code>, <code
+                    >commit</code>,
+                    <code>inspect</code>, <code>stats</code>, <code
+                    >images</code>,
+                    <code>pull</code> — with ports, environment, a working
+                    directory and an interactive terminal; <code>commit</code>
+                    turns a sandbox you set up into an image to run again.
+                    Download the package for
+                    <a
+                      href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-x86_64-unknown-linux-gnu.deb"
+                    >x86_64</a>
+                    or
+                    <a
+                      href="https://github.com/YurtOS/yurt-playground/releases/latest/download/yurt-aarch64-unknown-linux-gnu.deb"
+                    >arm64</a>
+                    (Debian, Ubuntu), then:
+                  </p>
+                  <pre>sudo apt install ./yurt-*.deb
+yurt pull playground                       # the image (about 90 MB), no account needed
+yurt run -it playground                    # a shell in the sandbox
+yurt run -d --name web -p 8080:8000 playground python3 -m http.server 8000
+yurt logs -f web                           # Ctrl-C leaves it running
+yurt stats --no-stream web                 # CPU % and memory, docker-stats style
+yurt cp ./notes.txt web:/home/user/        # curl http://127.0.0.1:8080/notes.txt
+yurt commit web my-image                   # yurt run my-image … starts from that disk
+yurt stop web</pre>
+                  <p>
+                    Everything the command needs is in the package; the daemon
+                    starts itself. <code>yurt --help</code> lists the verbs.
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <details
+              class="strip"
+              id="proof"
+              data-testid="proof"
+              data-view="proof"
+            >
+              <summary data-testid="proof-toggle">
+                <h2 id="proof-title">
+                  Is this really running in your browser?
+                </h2>
+                <span class="hint">Four checks you can do yourself</span>
+              </summary>
+              <p>
+                No badge can prove it, so here is what a server-backed fake
+                could not survive. Each takes under a minute, in Chrome, Edge,
+                Firefox or Safari.
+              </p>
+              <div class="checks">
+                <article class="check">
+                  <h3>Go offline, keep computing</h3>
+                  <p>
+                    Start the sandbox and wait for the cell to say <code
+                    >ready</code>. After the sandbox is up, turn off Wi-Fi (or,
+                    in Chrome, Edge and Firefox, pick
+                    <kbd>Offline</kbd> in the developer tools' <kbd
+                    >Network</kbd>
+                    panel). Run another cell.
+                  </p>
+                  <p>
+                    It still answers, and so does a new command in the terminal.
+                    The terminal's bar shows <code>offline</code> while you do
+                    it.
+                  </p>
+                </article>
+                <article class="check">
+                  <h3>Watch the tab work</h3>
+                  <p>
+                    Watch this tab in the browser's task manager: in Chrome and
+                    Edge,
+                    <kbd>Shift</kbd>+<kbd>Esc</kbd>; in Firefox,
+                    <code>about:processes</code>; for Safari, macOS's Activity
+                    Monitor, which lists each tab's web content process. Its
+                    memory climbs by hundreds of MB as the sandbox boots, and
+                    its CPU spikes when a cell runs.
+                  </p>
+                  <p>A thin client stays flat.</p>
+                </article>
+                <article class="check">
+                  <h3>See the workers</h3>
+                  <p>
+                    While the sandbox runs, list the page's workers: in Chrome,
+                    visit
+                    <code>chrome://inspect/#workers</code> (in Edge,
+                    <code>edge://inspect/#workers</code>); in Firefox,
+                    <code>about:debugging#/runtime/this-firefox</code>; in
+                    Safari, the Web Inspector's <kbd>Sources</kbd> tab. The
+                    coordinator and the guest workers are listed with their
+                    script URLs, and you can attach a debugger.
+                  </p>
+                  <p>
+                    In the developer tools' <kbd>Network</kbd> panel, nothing
+                    moves while a cell runs. The page's security policy lets it
+                    fetch only from this site and a few named sources: the
+                    package repository on GitHub, Hugging Face for the agent's
+                    model, and GitHub for shared snapshots. The sandbox itself
+                    has no network: when
+                    <code>pkg</code> installs a package, this page fetches files
+                    from the package repository for it, and only from there.
+                  </p>
+                </article>
+                <article class="check">
+                  <h3>Check the bytes</h3>
+                  <p>
+                    The site publishes the SHA-256 of the page's main scripts,
+                    the kernel and both guest images (the slim one and the 92 MB
+                    full one). This fetches them again and hashes them here, in
+                    your browser, and also compares the kernel's and the images'
+                    hashes with the ones this repository pins in <code
+                    >artifacts/pins.json</code>. The snapshot the page restores
+                    is not in this list: the page checks each of its parts
+                    against its pinned SHA-256 as it loads them.
+                  </p>
+                  <button
+                    id="verify-files"
+                    type="button"
+                    data-testid="verify-files"
+                  >
+                    Verify downloaded files
+                  </button>
+                  <div id="verify-results" hidden></div>
+                  <p id="verify-commit"></p>
+                </article>
+              </div>
+            </details>
+
+            <details
+              class="strip"
+              id="snapshots"
+              data-testid="snapshots"
+              data-view="suspend"
+            >
+              <summary data-testid="snapshots-toggle">
+                <h2 id="snapshots-title">Suspend and resume</h2>
+                <span class="hint"
+                >A notebook cell continues where it stopped</span>
+              </summary>
+              <p>
+                A sandbox can be sealed while it runs — the kernel's memory,
+                each program's memory and its unwound call stack — and brought
+                back later exactly where it was: no boot, no image to stage, no
+                program restarted. The
+                <a
+                  href="./jupyter/notebooks/index.html?path=suspend-resume.ipynb"
+                  data-testid="notebook-snapshot-demo"
+                >notebook</a>
+                suspends and resumes a running cell; the
+                <a href="./snapshot.html" data-testid="snapshot-demo"
+                >terminal demo</a>
+                seals every two seconds.
+              </p>
+              <div class="checks">
+                <article class="check">
+                  <h3>In a notebook</h3>
+                  <p>
+                    Open the
+                    <a
+                      href="./jupyter/notebooks/index.html?path=suspend-resume.ipynb"
+                    >
+                      suspend/resume notebook</a>. Its kernel is one CPython
+                    3.14 process (the <em>Python 3 (Yurt, suspend/resume)</em>
+                    kernelspec), built so the sandbox can be sealed. Run the
+                    cell that prints primes, press <kbd>Suspend</kbd> in the
+                    panel at the bottom right: about 50 MB lands in IndexedDB in
+                    a quarter of a second and the sandbox is gone. Press <kbd
+                    >Resume</kbd>: the cell carries on at the next prime, in the
+                    same output, with every variable intact. Interrupt works as
+                    usual, and
+                    <code>primes</code> is still there afterwards.
+                  </p>
+                  <p>
+                    What makes a cell suspendable is a syscall to seal at:
+                    printing progress is enough; a loop that never leaves the
+                    interpreter has to wait for its next print.
+                  </p>
+                </article>
+                <article class="check">
+                  <h3>In a terminal</h3>
+                  <p>
+                    Open the <a href="./snapshot.html">demo</a>. A prime finder
+                    prints one prime every quarter second, testing each
+                    candidate against the primes it has already found — its
+                    position is on the call stack, its list is on the heap, and
+                    both come back. The bar counts the seals as they land in
+                    your browser's IndexedDB (about 14 MB, under 50 ms each).
+                  </p>
+                  <p>
+                    Close the tab. Open the page again: it says which seal it
+                    restored from, draws a marker, and the next prime is the one
+                    after the last sealed one. <kbd>Forget the snapshot</kbd>
+                    drops the image so the next load boots fresh.
+                  </p>
+                </article>
+                <article class="check">
+                  <h3>What is saved, and when</h3>
+                  <p>
+                    Nothing happens at close: the browser gives a closing tab no
+                    chance to seal. Every seal overwrites the one before, so a
+                    restore is at most one interval behind, and the interrupted
+                    syscall runs exactly once, after the restore.
+                  </p>
+                  <p>
+                    The image stays on this origin, in this browser, and is tied
+                    to the kernel build that sealed it: after an update it is
+                    dropped and the page boots fresh.
+                  </p>
+                </article>
+                <article class="check">
+                  <h3>Building on it</h3>
+                  <p>
+                    The kernel's JavaScript host can seal and restore a running
+                    sandbox (today: programs built for it, one thread each, no
+                    open sockets). It is not public yet; if you want to build on
+                    it, see
+                    <a href="#partner">Help bring Yurt to customers</a> in
+                    About.
+                  </p>
+                  <p>
+                    To drive this page's sandbox from a program now, use
+                    <code>window.yurt</code> (commands, files, status),
+                    described in the
+                    <a
+                      href="https://github.com/YurtOS/yurt-playground#driving-the-sandbox-from-a-program"
+                    >README</a>.
+                  </p>
+                </article>
+              </div>
+            </details>
+
+            <section
+              id="about"
+              class="strip"
+              data-view="about"
+              aria-labelledby="about-title"
+            >
+              <h2 id="about-title">About</h2>
+              <p class="lead" id="lead">
+                Yurt is an original Linux-compatible kernel compiled to
+                WebAssembly. This page runs a Linux sandbox on it inside this
+                browser tab: a shell, and on a desktop Python and Jupyter, with
+                no server running your code. It is meant for in-browser coding
+                environments, running AI-agent tools away from your machine,
+                offline notebooks, and sandboxes embedded in your own product.
+              </p>
+            </section>
+            <section
+              class="strip"
+              id="partner"
+              aria-labelledby="partner-title"
+              data-view="about"
+            >
+              <h2 id="partner-title">Help bring Yurt to customers</h2>
+              <p>
+                We're looking for a business partner to help identify customer
+                opportunities, build relationships, and bring Yurt to market.
+              </p>
+              <p>
+                Contact Ofer at <a href="mailto:ofersa@gmail.com"
+                >ofersa@gmail.com</a>, or <a href="https://github.com/smarcd"
+                >Sunny</a> on GitHub.
+              </p>
+            </section>
+            <footer data-view="about">
+              Yurt is an original Linux-compatible kernel compiled to
+              WebAssembly, not Linux itself. Source, issues and releases:
+              <a href="https://github.com/YurtOS/yurt-playground"
+              >github.com/YurtOS/yurt-playground</a>. What changed in each
+              release:
+              <a
+                href="https://yurtos.github.io/yurt-playground/"
+                id="footer-release-notes"
+                data-testid="footer-release-notes"
+              >release notes</a>.<span id="release-train" hidden></span>
+              License:
+              <a
+                href="https://github.com/YurtOS/yurt-playground/blob/main/LICENSE"
+                data-testid="footer-license"
+              >Apache-2.0</a> (guest SDK: MIT).
+            </footer>
+          </div>
         </div>
       </div>
-      <footer>
-        Yurt is an original Linux-compatible kernel compiled to WebAssembly, not
-        Linux itself. Source, issues and releases:
-        <a href="https://github.com/YurtOS/yurt-playground"
-        >github.com/YurtOS/yurt-playground</a>. What changed in each release:
-        <a
-          href="https://yurtos.github.io/yurt-playground/"
-          id="footer-release-notes"
-          data-testid="footer-release-notes"
-        >release notes</a>.<span id="release-train" hidden></span>
-        License:
-        <a
-          href="https://github.com/YurtOS/yurt-playground/blob/main/LICENSE"
-          data-testid="footer-license"
-        >Apache-2.0</a> (guest SDK: MIT).
-      </footer>
     </main>
     <script type="module" src="./verify.js"></script>
     <script type="module" src="./boot.bundle.js"></script>

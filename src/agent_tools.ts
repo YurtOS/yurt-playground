@@ -1,5 +1,6 @@
 import {
   DEMO_PDF_MADE,
+  DEMO_PDF_PATH,
   DEMO_TEXT_PATH,
   MAKE_DEMO_PDF,
   ToolFailed,
@@ -93,9 +94,17 @@ export function createAgentTools(yurt: Yurt): Tools {
       };
     },
     async writeFile(path, text, signal) {
-      await abortable(yurt.fs.write(checkPath(path), text), signal);
+      // As the file system reads it: /home/user/./demo.txt is the same file.
+      const file = new URL(`file://${checkPath(path)}`).pathname;
+      // Models do try, and text there would destroy the PDF.
+      if (file === DEMO_PDF_PATH) {
+        throw new Error(
+          `${DEMO_PDF_PATH} is made from ${DEMO_TEXT_PATH}; write that instead`,
+        );
+      }
+      await abortable(yurt.fs.write(path, text), signal);
       const wrote = `wrote ${text.length} characters to ${path}`;
-      if (path !== DEMO_TEXT_PATH) return wrote;
+      if (file !== DEMO_TEXT_PATH) return wrote;
       const made = await runCommand(
         yurt,
         MAKE_DEMO_PDF,

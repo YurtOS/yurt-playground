@@ -220,6 +220,15 @@ if (import.meta.main) {
       refuse = false;
       await page.locator("[data-testid=agent-start]").click();
       await page.locator("#agent[data-agent-ready]").waitFor();
+      // A snapshot may hold mkpdf already: this scene starts without it.
+      await page.evaluate(async () => {
+        document.getElementById("start-sandbox")?.click();
+        const yurt = (globalThis as unknown as {
+          yurt: { ready: Promise<void>; exec(c: string): Promise<unknown> };
+        }).yurt;
+        await yurt.ready;
+        await yurt.exec("sudo rm -f /usr/bin/mkpdf");
+      });
       const task = await page.locator("[data-testid=agent-task]").inputValue();
       if (!task.includes("PDF")) {
         throw new Error(`agent e2e: the default task is not the demo: ${task}`);

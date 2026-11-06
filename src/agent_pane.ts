@@ -425,6 +425,11 @@ export async function mountAgentPane(
             e.action.cmd,
           );
         } else if (e.action.action === "write_file") {
+          // What is on offer is about to change; it comes back once it is made.
+          pdf = undefined;
+          for (const old of transcript.querySelectorAll("li.download")) {
+            old.remove();
+          }
           line = el(
             "div",
             { className: "call" },
@@ -457,21 +462,10 @@ export async function mountAgentPane(
         );
         return;
       }
-      if (e.type === "answer" && pdf !== undefined) {
-        const path = pdf;
-        const download = el("button", {
-          type: "button",
-          className: "bar-action",
-          textContent: `Download ${path.split("/").pop()}`,
-          testid: "agent-download",
-        });
-        download.addEventListener("click", () => {
-          yurt.fs.download(path).catch((error) => {
-            download.textContent = `Could not download: ${error}`;
-          });
-        });
-        transcript.append(el("li", { className: "note" }, download));
-        return;
+      if (e.type === "stopped" && e.reason === "task") {
+        // Refused for its length: it stays in the box to shorten, out of the chat.
+        chat.pop();
+        task.value = text;
       }
       if (e.type === "stopped" || e.type === "error") {
         current?.live.remove();
@@ -501,6 +495,22 @@ export async function mountAgentPane(
       limits,
       systemPrompt(python),
     );
+    // However the task ended: a stop after the PDF was made still made it.
+    if (pdf !== undefined) {
+      const path = pdf;
+      const download = el("button", {
+        type: "button",
+        className: "bar-action",
+        textContent: `Download ${path.split("/").pop()}`,
+        testid: "agent-download",
+      });
+      download.addEventListener("click", () => {
+        yurt.fs.download(path).catch((error) => {
+          download.textContent = `Could not download: ${error}`;
+        });
+      });
+      transcript.append(el("li", { className: "note download" }, download));
+    }
     finish();
   };
   const finish = () => {
