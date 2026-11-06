@@ -103,12 +103,11 @@ function agentSeals(desktop: DesktopInfo | undefined): boolean {
     new URL(location.href).searchParams.get("suspend") !== "0";
 }
 
-/** Set when this page's sandbox started without Jupyter. */
-let jupyterSkipped = false;
-
 function agentOnlySandbox(desktop: DesktopInfo | undefined): boolean {
-  jupyterSkipped = agentSeals(desktop) && location.hash === "#agent";
-  return jupyterSkipped;
+  // Started from the Agent tab, or resuming a session that was: nothing in an
+  // agent session needs Jupyter, so the Shell tab does not bring it in either.
+  return agentSeals(desktop) &&
+    (location.hash === "#agent" || savedAgentChat());
 }
 
 /** Whether a sealed agent run's chat is here (src/agent_pane.ts). */
@@ -335,6 +334,8 @@ function boot(
   // The agent needs little: the small snapshot, and what it installs stays in
   // each seal. Decided here, at Start, from the tab that asked.
   const agentOnly = !capturing && agentOnlySandbox(desktop);
+  // The cell runs on Jupyter; this sandbox's Python is in the terminal.
+  if (agentOnly) byId("notebook").hidden = true;
   const kind: SnapshotKind = agentOnly
     ? "tablet"
     : capturing
@@ -567,8 +568,7 @@ function boot(
       kernelPorts,
       apiToken: desktop?.apiToken,
       // The agent needs a shell, not Jupyter: from its tab, each resume would
-      // start a kernel only for the next seal to kill it. Opening Shell & Python
-      // reloads into a sandbox with one (src/agent_pane.ts).
+      // start a kernel only for the next seal to kill it.
       noJupyter: noPython || agentOnly,
       // A capture installs its kind's Python: the set (desktop), python
       // alone (tablet), none (phone) -- or Go's go package (go).
@@ -991,7 +991,6 @@ async function runPage(): Promise<void> {
       start: () => document.getElementById("start-sandbox")?.click(),
       unavailable: refused ? "no sandbox" : undefined,
       // Only the in-tab sandbox seals; `?suspend=0` keeps it running.
-      jupyterSkipped: () => jupyterSkipped,
       // These reloads are the agent's own, not a boot the browser cut off.
       reload: () => {
         cutOffBoot();

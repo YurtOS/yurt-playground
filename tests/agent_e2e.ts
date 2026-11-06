@@ -211,6 +211,19 @@ if (import.meta.main) {
       if (await page.locator("[data-testid=agent-download]").count() !== 1) {
         throw new Error("agent e2e: no Download after the resume");
       }
+      // The Shell tab resumes without Jupyter, and has no cell that needs it.
+      await page.locator("[data-testid=view-shell]").click();
+      await page.waitForFunction(
+        () =>
+          (globalThis as unknown as { yurt?: { status: string } }).yurt
+            ?.status === "running",
+        null,
+        { timeout: 60_000 },
+      );
+      if (await page.locator("#notebook").isVisible()) {
+        throw new Error("agent e2e: a Python cell with no Jupyter behind it");
+      }
+      await page.locator("[data-testid=view-agent]").click();
       // A plain reload resumes too, and New session starts over.
       await page.reload();
       await page.locator("#agent[data-agent-ready]").waitFor();

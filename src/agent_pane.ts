@@ -105,8 +105,6 @@ export async function mountAgentPane(
     /** Seal the sandbox after each run; resolves to why it could not. Unset:
      * the sandbox keeps running. */
     suspend?: () => Promise<string | undefined>;
-    /** Whether this sandbox started without Jupyter, to seal faster. */
-    jupyterSkipped?: () => boolean;
     /** Reload on purpose: not a boot the browser cut off. */
     reload?: () => void;
   },
@@ -645,7 +643,7 @@ export async function mountAgentPane(
   document.querySelector("[data-testid=view-shell]")?.addEventListener(
     "click",
     () => {
-      if (suspended || sandbox.jupyterSkipped?.() === true) reloadPage();
+      if (suspended) reloadPage();
     },
   );
 
