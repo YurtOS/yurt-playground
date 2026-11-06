@@ -302,6 +302,20 @@ export async function mountAgentPane(
   );
   root.replaceChildren(bar, intro, work);
 
+  // New output stays in view, unless the visitor has scrolled up to read.
+  let followTranscript = true;
+  transcript.addEventListener("scroll", () => {
+    followTranscript = transcript.scrollHeight - transcript.scrollTop -
+        transcript.clientHeight < 40;
+  });
+  new MutationObserver(() => {
+    if (followTranscript) transcript.scrollTop = transcript.scrollHeight;
+  }).observe(transcript, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+
   let llm:
     | (Model & { lastStats?: ModelStats; onToken?: (t: string) => void })
     | undefined;

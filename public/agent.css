@@ -192,3 +192,14 @@
   color: var(--muted);
   font-size: 12px;
 }
+/* Its own scrollbar: the box and Run stay in view however long the chat gets. */
+#agent-transcript {
+  max-height: calc(100vh - 400px);
+  min-height: 200px;
+  overflow-y: auto;
+}
+@media (max-width: 720px) {
+  #agent-transcript {
+    max-height: 60vh;
+  }
+}

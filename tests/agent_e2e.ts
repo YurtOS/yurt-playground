@@ -211,6 +211,35 @@ if (import.meta.main) {
       if (await page.locator("[data-testid=agent-download]").count() !== 1) {
         throw new Error("agent e2e: no Download after the resume");
       }
+      // The transcript scrolls on its own, follows new output at the bottom, and
+      // leaves the visitor where they scrolled to.
+      const scroll = await page.evaluate(async () => {
+        const list = document.querySelector("#agent-transcript") as HTMLElement;
+        const add = async () => {
+          for (let i = 0; i < 60; i++) {
+            list.append(document.createElement("li"));
+            list.lastElementChild!.textContent = "line";
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        };
+        await add();
+        const atBottom = list.scrollHeight - list.scrollTop -
+            list.clientHeight < 5;
+        const page = document.documentElement.scrollHeight;
+        list.scrollTop = 0;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await add();
+        const stayed = list.scrollTop === 0;
+        const scrolls = list.scrollHeight > list.clientHeight;
+        for (let i = 0; i < 120; i++) list.lastElementChild!.remove();
+        return { atBottom, stayed, scrolls, page, view: innerHeight };
+      });
+      if (
+        !scroll.atBottom || !scroll.stayed || !scroll.scrolls ||
+        scroll.page > scroll.view + 400
+      ) {
+        throw new Error(`agent e2e: scrolling: ${JSON.stringify(scroll)}`);
+      }
       // One write, then the answer: one agent call, two model calls, per message.
       const stats = await page.locator("[data-testid=agent-stats]")
         .allInnerTexts();
