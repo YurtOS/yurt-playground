@@ -5,7 +5,9 @@
  * (src/agent.ts) takes is shown as it happens. The pane appears where the
  * site ships the inference runtime (`/llm/models.json`, written by the
  * static build and answered by the dev server); the weights download from
- * Hugging Face (src/llm_models.ts).
+ * Hugging Face (src/llm_models.ts). The other choice is a model the visitor
+ * already runs with Ollama on this computer (src/ollama.ts), which needs no
+ * WebGPU and no download; the page does not contact it until asked to.
  */
 import type { Yurt } from "./agent_api.ts";
 import {
@@ -16,13 +18,28 @@ import {
 import {
   type AgentEvent,
   DEFAULT_LIMITS,
+  DEMO_TASK,
+  type Limits,
+  mkpdfOutput,
+  type Model,
+  type ModelStats,
   runAgent,
   systemPrompt,
 } from "./agent.ts";
-import { isModelCached, loadLocalModel, type LocalLlm } from "./llm.ts";
+import { isModelCached, loadLocalModel } from "./llm.ts";
 import { LOCAL_MODELS, type LocalModel, MAX_NUM_TOKENS } from "./llm_models.ts";
+import {
+  listOllamaModels,
+  OLLAMA_CONTEXT_TOKENS,
+  OLLAMA_LIMITS,
+  ollamaHelp,
+  ollamaModel,
+} from "./ollama.ts";
 
 const GiB = 2 ** 30;
+
+/** The model choice that is not a pinned download. */
+const OLLAMA = "ollama";
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -125,9 +142,15 @@ export async function mountAgentPane(
     testid: "agent-model",
   });
   choice.setAttribute("aria-label", "Model");
-  for (const m of models) {
+  for (const m of adapter ? models : []) {
     choice.append(el("option", { value: m.id, textContent: m.choice }));
   }
+  choice.append(
+    el("option", {
+      value: OLLAMA,
+      textContent: "On this computer, with Ollama",
+    }),
+  );
   const startButton = el("button", {
     type: "button",
     id: "agent-start",
@@ -148,27 +171,33 @@ export async function mountAgentPane(
       el("code", { textContent: "window.yurt" }),
       " and can run any command there, change or delete files and stop " +
         "processes, the same as typing in the terminal above. Every step is " +
-        "shown as it runs, and Stop ends it.",
+        "shown as it runs, and Stop ends it. Or use a model you already run " +
+        "with Ollama on this computer: nothing is downloaded, and what you " +
+        "type stays on this computer.",
     ),
     el("div", { className: "row" }, choice, startButton),
     cost,
     progress,
   );
   if (!adapter) {
-    intro.replaceChildren(
+    intro.prepend(
       el(
         "p",
         { className: "unsupported", testid: "agent-unsupported" },
-        "This browser offers no WebGPU, which the model needs to run in the " +
-          "tab. A current Chrome, Edge or Safari on a desktop has it.",
+        "This browser offers no WebGPU, which a model needs to run in the " +
+          "tab. A current Chrome, Edge or Safari on a desktop has it. A " +
+          "model in Ollama on this computer does not need it.",
       ),
     );
-    status.textContent = "needs WebGPU";
-    root.replaceChildren(bar, intro);
-    return;
   }
   const selected = () => models.find((m) => m.id === choice.value)!;
   const label = async () => {
+    if (choice.value === OLLAMA) {
+      startButton.textContent = "Connect to Ollama";
+      cost.textContent = "Ollama must be running, with a model installed. " +
+        "The browser may ask whether this site may reach your local network.";
+      return;
+    }
     const m = selected();
     const cached = await isModelCached(m);
     startButton.textContent = cached
@@ -184,9 +213,15 @@ export async function mountAgentPane(
   await label();
 
   // After the model: the task, Run, and the transcript.
+  const installed = el("select", {
+    id: "agent-installed",
+    testid: "agent-installed",
+    hidden: true,
+  });
+  installed.setAttribute("aria-label", "Ollama model");
   const task = el("textarea", {
     id: "agent-task",
-    value: "How many lines does /etc/passwd have?",
+    value: DEMO_TASK,
     testid: "agent-task",
   });
   task.setAttribute("aria-label", "Task for the agent");
@@ -208,24 +243,74 @@ export async function mountAgentPane(
   const work = el(
     "div",
     { hidden: true },
+    installed,
     task,
     el("div", { className: "actions" }, run, hint),
     transcript,
   );
   root.replaceChildren(bar, intro, work);
 
-  let llm: LocalLlm | undefined;
+  let llm:
+    | (Model & { lastStats?: ModelStats; onToken?: (t: string) => void })
+    | undefined;
+  let contextTokens = MAX_NUM_TOKENS;
+  let limits: Limits = DEFAULT_LIMITS;
   let running: AbortController | undefined;
 
+  const ready = () => {
+    root.dataset.agentReady = "";
+    intro.hidden = true;
+    work.hidden = false;
+    task.focus();
+  };
+
+  /** Only here, on the visitor's click, does the page contact Ollama. */
+  const connectOllama = async () => {
+    startButton.disabled = true;
+    choice.disabled = true;
+    status.textContent = "connecting";
+    let names: string[] | undefined;
+    try {
+      names = await listOllamaModels();
+    } catch {
+      cost.textContent = ollamaHelp(location.origin);
+    }
+    if (names?.length === 0) {
+      cost.textContent =
+        "Ollama has no models yet. Install one, for example: ollama pull gemma4:e4b";
+    }
+    if (names === undefined || names.length === 0) {
+      status.textContent = "not connected";
+      startButton.disabled = false;
+      choice.disabled = false;
+      return;
+    }
+    const showModel = () => {
+      status.textContent = `${installed.value} · Ollama · on this computer`;
+    };
+    installed.replaceChildren(
+      ...names.map((name) => el("option", { value: name, textContent: name })),
+    );
+    installed.hidden = false;
+    installed.addEventListener("change", showModel);
+    showModel();
+    llm = ollamaModel(() => installed.value);
+    contextTokens = OLLAMA_CONTEXT_TOKENS;
+    limits = OLLAMA_LIMITS;
+    ready();
+  };
+
   startButton.addEventListener("click", async () => {
+    if (choice.value === OLLAMA) return connectOllama();
     const model = selected();
     startButton.disabled = true;
     choice.disabled = true;
     progress.hidden = false;
     progress.removeAttribute("value");
     status.textContent = "starting";
+    let local: Awaited<ReturnType<typeof loadLocalModel>>;
     try {
-      llm = await loadLocalModel(model, (p) => {
+      local = await loadLocalModel(model, (p) => {
         if (p.phase === "download") {
           progress.value = p.loaded / p.total;
           status.textContent = `downloading ${(p.loaded / GiB).toFixed(2)} / ${
@@ -245,15 +330,13 @@ export async function mountAgentPane(
       progress.hidden = true;
       return;
     }
+    llm = local;
     status.textContent = `${model.label} · WebGPU · in this tab`;
-    root.dataset.agentReady = "";
     // Which runtime build the browser got, and whether the weights were
     // already cached (tests/agent_webgpu_e2e.ts reports both).
-    root.dataset.agentRuntime = llm.loaded.wasmVariant;
-    root.dataset.agentFromCache = String(llm.loaded.fromCache);
-    intro.hidden = true;
-    work.hidden = false;
-    task.focus();
+    root.dataset.agentRuntime = local.loaded.wasmVariant;
+    root.dataset.agentFromCache = String(local.loaded.fromCache);
+    ready();
   });
 
   const showContext = () => {
@@ -261,7 +344,7 @@ export async function mountAgentPane(
     if (used === undefined) return;
     context.hidden = false;
     context.textContent =
-      `context ${used.toLocaleString()} / ${MAX_NUM_TOKENS.toLocaleString()} tokens`;
+      `context ${used.toLocaleString()} / ${contextTokens.toLocaleString()} tokens`;
   };
 
   const go = async () => {
@@ -296,6 +379,8 @@ export async function mountAgentPane(
       waiting.remove();
     }
     let current: { item: HTMLLIElement; live: HTMLElement } | undefined;
+    let pdf: string | undefined;
+    let pdfRunning: string | undefined;
     llm.onToken = (t) => {
       if (current) current.live.textContent += t;
     };
@@ -317,6 +402,7 @@ export async function mountAgentPane(
         if (e.type === "invalid") {
           line = el("div", { className: "invalid" }, "not an action: ", e.raw);
         } else if (e.action.action === "exec") {
+          pdfRunning = mkpdfOutput(e.action.cmd);
           line = el(
             "div",
             { className: "call" },
@@ -341,9 +427,30 @@ export async function mountAgentPane(
         return;
       }
       if (e.type === "observation") {
+        // Offered only once the command has said it worked.
+        if (pdfRunning !== undefined && e.text.startsWith("exit 0\n")) {
+          pdf = pdfRunning;
+        }
+        pdfRunning = undefined;
         current?.item.append(
           el("pre", { className: "result", textContent: e.text }),
         );
+        return;
+      }
+      if (e.type === "answer" && pdf !== undefined) {
+        const path = pdf;
+        const download = el("button", {
+          type: "button",
+          className: "bar-action",
+          textContent: `Download ${path.split("/").pop()}`,
+          testid: "agent-download",
+        });
+        download.addEventListener("click", () => {
+          yurt.fs.download(path).catch((error) => {
+            download.textContent = `Could not download: ${error}`;
+          });
+        });
+        transcript.append(el("li", { className: "note" }, download));
         return;
       }
       if (e.type === "stopped" || e.type === "error") {
@@ -368,7 +475,7 @@ export async function mountAgentPane(
       tools,
       onEvent,
       controller.signal,
-      DEFAULT_LIMITS,
+      limits,
       systemPrompt(python),
     );
     finish();

@@ -108,10 +108,24 @@ const PROMPT_RULES = [
   '{"action":"read_file","path":"<absolute path>"}',
   '{"action":"answer","text":"<final answer for the user>"}',
   "Use exec or read_file to get facts from the sandbox, one step at a time.",
+  'To create a PDF, run: sudo pkg update && sudo pkg install mkpdf && mkpdf <absolute path> "<text>"',
   "Answer only from what you have seen. Keep the answer short.",
 ];
 
 export const SYSTEM_PROMPT = systemPrompt(true);
+
+/** The file a command made with the `mkpdf` package, for the pane's Download:
+ * absolute only, since the sandbox's working directory is not the page's to
+ * guess. */
+export function mkpdfOutput(cmd: string): string | undefined {
+  return /(?:^|[\s;&|/])mkpdf\s+["']?(\/[^\s"']+)/.exec(cmd)?.[1];
+}
+
+/** The demo: a task the pane offers until the visitor types their own. */
+export const DEMO_PDF_PATH = "/home/user/hello.pdf";
+export const DEMO_PDF_TEXT = "Hello from Yurt";
+export const DEMO_TASK =
+  `Create a PDF at ${DEMO_PDF_PATH} whose one page shows the text "${DEMO_PDF_TEXT}".`;
 
 const FIELDS = { exec: "cmd", read_file: "path", answer: "text" } as const;
 

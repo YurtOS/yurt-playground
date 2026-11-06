@@ -3,6 +3,7 @@ import {
   type AgentEvent,
   buildPrompt,
   DEFAULT_LIMITS,
+  mkpdfOutput,
   type Model,
   parseAction,
   runAgent,
@@ -276,4 +277,20 @@ Deno.test("runAgent hands the model the system prompt it was given", async () =>
     systemPrompt(false),
   );
   assertEquals(systems, [systemPrompt(false)]);
+});
+
+Deno.test("the pane finds the absolute path a command gave mkpdf", () => {
+  const cases: [string, string | undefined][] = [
+    ['mkpdf /home/user/a.pdf "hi"', "/home/user/a.pdf"],
+    ["mkpdf '/tmp/b.pdf' hi", "/tmp/b.pdf"],
+    [
+      'sudo pkg update && sudo pkg install mkpdf && mkpdf /tmp/c.pdf "hi"',
+      "/tmp/c.pdf",
+    ],
+    ['/usr/bin/mkpdf /tmp/d.pdf "hi"', "/tmp/d.pdf"],
+    ["sudo pkg install mkpdf", undefined],
+    ['mkpdf a.pdf "hi"', undefined],
+    ["echo notmkpdf /x.pdf", undefined],
+  ];
+  for (const [cmd, path] of cases) assertEquals(mkpdfOutput(cmd), path);
 });

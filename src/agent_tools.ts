@@ -63,20 +63,27 @@ async function runCommand(
   }
 }
 
+/** A command's time limit. Long enough for `sudo pkg` to wait out the Python
+ * set the slim image installs at boot: about a minute, holding pkg's lock. */
+const EXEC_TIMEOUT_MS = 120_000;
+
 export function createAgentTools(yurt: Yurt): Tools {
   return {
     async exec(cmd, signal) {
       const result = await runCommand(
         yurt,
         cmd,
-        30_000,
+        EXEC_TIMEOUT_MS,
         DEFAULT_MAX_OUTPUT_BYTES,
         signal,
       );
       return {
         code: "code" in result ? result.code : null,
         stdout: result.stdout,
-        stderr: result.stderr,
+        // Without this the model sees only "exit none" and cannot tell why.
+        stderr: result.timedOut
+          ? `${result.stderr}timed out after ${EXEC_TIMEOUT_MS / 1000} s\n`
+          : result.stderr,
       };
     },
     async readFile(path, signal) {

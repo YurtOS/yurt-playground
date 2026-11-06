@@ -5,7 +5,8 @@
  * protocol. Everything else is real: the pane, the client, the controller
  * and the sandbox the agent's commands run in. Scenes: no WebGPU, a model
  * that fails to start, Enter vs Shift+Enter, a task answered through a real
- * command (starting the sandbox on the way), and Stop killing a command.
+ * command (starting the sandbox on the way), Stop killing a command, and a
+ * model in Ollama, which the page leaves alone until asked.
  * This checks the tool loop and the pane, not the GPU: the adapter below
  * is a stub and the worker never creates a device. The model on a real
  * adapter, in real Chrome and Safari, is tests/agent_webgpu_e2e.ts (a Mac,
@@ -17,6 +18,7 @@ import { type BrowserContext, chromium, type Page } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
+import { OLLAMA_URL } from "../src/ollama.ts";
 import { ISOLATION_HEADERS, startPlaygroundServer } from "../src/serve.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -138,8 +140,94 @@ if (import.meta.main) {
       const page = await context.newPage();
       await page.goto(`${server.url}/`);
       await page.locator("[data-testid=agent-unsupported]").waitFor();
-      if (await page.locator("[data-testid=agent-start]").count() !== 0) {
-        throw new Error("agent e2e: a start button without WebGPU");
+      const offered = await page.locator("[data-testid=agent-model] option")
+        .evaluateAll((options) =>
+          options.map((o) => (o as HTMLOptionElement).value)
+        );
+      if (offered.join() !== "ollama") {
+        throw new Error(`agent e2e: offered without WebGPU: ${offered}`);
+      }
+      await context.close();
+    }
+
+    // Ollama on this computer: not contacted until asked, a refusal says what
+    // to do, and the model it lists does the task. Stand-in replies, because
+    // the runners have no Ollama; the real one is tests/agent_ollama_e2e.ts.
+    {
+      const context = await browser.newContext();
+      await withModel(context, { worker: "ok", webgpu: true });
+      const asked: string[] = [];
+      let refuse = true;
+      await context.route(`${OLLAMA_URL}/**`, (route) => {
+        const request = route.request();
+        asked.push(new URL(request.url()).pathname);
+        const cors = { "Access-Control-Allow-Origin": "*" };
+        if (refuse) return route.abort("connectionrefused");
+        if (request.method() === "OPTIONS") {
+          return route.fulfill({
+            status: 204,
+            headers: { ...cors, "Access-Control-Allow-Headers": "*" },
+          });
+        }
+        if (request.url().endsWith("/api/tags")) {
+          return route.fulfill({
+            headers: cors,
+            json: { models: [{ name: "stand-in:1" }, { name: "other:2" }] },
+          });
+        }
+        const { model, messages } = request.postDataJSON();
+        if (model !== "stand-in:1") throw new Error(`asked ${model}`);
+        // One that works, then one that fails: only the first is on offer.
+        const results = messages[1].content.split("Result:").length - 1;
+        const reply = results === 0
+          ? { action: "exec", cmd: 'echo mkpdf /home/user/made.pdf "text"' }
+          : results === 1
+          ? { action: "exec", cmd: 'mkpdf /home/user/failed.pdf "text"' }
+          : { action: "answer", text: "Made /home/user/made.pdf" };
+        return route.fulfill({
+          headers: cors,
+          body:
+            JSON.stringify({ message: { content: JSON.stringify(reply) } }) +
+            "\n" + JSON.stringify({
+              done: true,
+              prompt_eval_count: 3,
+              eval_count: 2,
+            }) + "\n",
+        });
+      });
+      const page = await context.newPage();
+      await page.goto(`${server.url}/`);
+      await page.locator("[data-testid=agent-model]").selectOption("ollama");
+      await page.waitForTimeout(500);
+      if (asked.length !== 0) {
+        throw new Error(`agent e2e: contacted Ollama unasked: ${asked}`);
+      }
+      await page.locator("[data-testid=agent-start]").click();
+      await until(
+        page,
+        "the way to start Ollama",
+        () =>
+          document.querySelector("[data-testid=agent-cost]")?.textContent
+              ?.includes("ollama serve") === true &&
+          !(document.querySelector("[data-testid=agent-start]") as
+            | HTMLButtonElement
+            | null)?.disabled,
+      );
+      refuse = false;
+      await page.locator("[data-testid=agent-start]").click();
+      await page.locator("#agent[data-agent-ready]").waitFor();
+      const task = await page.locator("[data-testid=agent-task]").inputValue();
+      if (!task.includes(".pdf")) {
+        throw new Error(`agent e2e: the default task is not the demo: ${task}`);
+      }
+      await page.locator("[data-testid=agent-run]").click();
+      await page.locator("[data-testid=agent-download]").waitFor({
+        timeout: 180_000,
+      });
+      const label = await page.locator("[data-testid=agent-download]")
+        .innerText();
+      if (label !== "Download made.pdf") {
+        throw new Error(`agent e2e: download offered as: ${label}`);
       }
       await context.close();
     }

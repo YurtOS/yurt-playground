@@ -27,7 +27,15 @@
 #agent-intro progress[hidden] {
   display: none;
 }
-#agent-model {
+#agent-installed {
+  display: block;
+  margin-bottom: 8px;
+}
+#agent-installed[hidden] {
+  display: none;
+}
+#agent-model,
+#agent-installed {
   font: inherit;
   color: var(--text);
   background: var(--ground);

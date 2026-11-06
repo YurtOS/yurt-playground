@@ -200,3 +200,33 @@ Deno.test("the agent's prompt keeps Python 3 on an image whose python3 lacks the
     await Deno.remove(root, { recursive: true });
   }
 });
+
+Deno.test("a command that hit its limit says so, with the limit pkg's lock needs", async () => {
+  let limit: number | undefined;
+  const yurt = {
+    spawn: (_cmd: string, opts: { timeoutMs: number }) => {
+      limit = opts.timeoutMs;
+      return Promise.resolve({
+        id: "slow",
+        kill: () => Promise.resolve(),
+        wait: () =>
+          Promise.resolve({
+            timedOut: true,
+            killAttempted: true,
+            stillRunning: true,
+            stdout: "",
+            stderr: "partial\n",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          }),
+      });
+    },
+  } as unknown as Yurt;
+  const result = await createAgentTools(yurt).exec(
+    "sudo pkg install mkpdf",
+    new AbortController().signal,
+  );
+  assertEquals(result.code, null);
+  assertEquals(result.stderr, "partial\ntimed out after 120 s\n");
+  assertEquals(limit, 120_000);
+});
