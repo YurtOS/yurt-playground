@@ -181,7 +181,7 @@ export function chatTask(
 
 /** The second demo: the model has to run this itself, in the sandbox. */
 export const DEMO_COUNT_TASK =
-  `Count the words in ${DEMO_PDF_PATH} by running a command in the sandbox, and tell me the number.`;
+  `Run this in the sandbox and tell me the number it prints: mkpdf --text ${DEMO_PDF_PATH} | wc -w`;
 
 /** The demo: a task the pane offers until the visitor types their own. */
 export const DEMO_TASK = [

@@ -529,7 +529,8 @@ export async function mountAgentPane(
     let modelCalls = 0;
     let agentCalls = 0;
     const onEvent = (e: AgentEvent) => {
-      if (e.type === "observation") agentCalls++;
+      // Each step handed to the sandbox, whether or not it worked.
+      if (e.type === "action" && e.action.action !== "answer") agentCalls++;
       if (e.type === "step") {
         modelCalls++;
         const live = el("pre", { className: "live" });
