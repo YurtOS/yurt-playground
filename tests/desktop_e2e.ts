@@ -4,6 +4,7 @@
 // reaches the internet from the guest. Run it after the build; it is the
 // acceptance for the shipped artifact, not the source tree.
 import { chromium } from "playwright";
+import { showAllSections } from "./show_all_sections.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXECUTE_TIMEOUT_MS } from "../src/jupyter_protocol.ts";
@@ -179,7 +180,7 @@ if (import.meta.main) {
   const apiPresent = await driveApi(app);
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await showAllSections(await browser.newPage());
     const started = Date.now();
     const csp = watchCspViolations(page);
     // The app runs the sandbox natively: the launcher says so, and the boot

@@ -17,10 +17,13 @@ import {
 } from "./agent_tools.ts";
 import {
   type AgentEvent,
+  chatTask,
   DEFAULT_LIMITS,
+  DEMO_PDF_MADE,
+  DEMO_PDF_PATH,
   DEMO_TASK,
+  DEMO_TEXT_PATH,
   type Limits,
-  mkpdfOutput,
   type Model,
   type ModelStats,
   runAgent,
@@ -174,7 +177,7 @@ export async function mountAgentPane(
           "this page's sandbox through ",
       el("code", { textContent: "window.yurt" }),
       " and can run any command there, change or delete files and stop " +
-        "processes, the same as typing in the terminal above. Every step is " +
+        "processes, the same as typing in its terminal. Every step is " +
         "shown as it runs, and Stop ends it." +
         (adapter
           ? " Or use a model you already run with Ollama on this computer: " +
@@ -262,6 +265,8 @@ export async function mountAgentPane(
   let contextTokens = MAX_NUM_TOKENS;
   let limits: Limits = DEFAULT_LIMITS;
   let running: AbortController | undefined;
+  /** The chat so far: the visitor's messages, in order. */
+  const chat: string[] = [];
 
   const ready = () => {
     root.dataset.agentReady = "";
@@ -361,7 +366,12 @@ export async function mountAgentPane(
     run.disabled = true;
     installed.disabled = true;
     stop.hidden = false;
-    transcript.replaceChildren();
+    transcript.append(
+      el("li", { className: "user", testid: "agent-user", textContent: text }),
+    );
+    const earlier = chat.slice();
+    chat.push(text);
+    task.value = "";
     const yurt = sandbox.yurt();
     if (yurt.status !== "running") {
       const waiting = el("li", {
@@ -387,7 +397,6 @@ export async function mountAgentPane(
     }
     let current: { item: HTMLLIElement; live: HTMLElement } | undefined;
     let pdf: string | undefined;
-    let pdfRunning: string | undefined;
     llm.onToken = (t) => {
       if (current) current.live.textContent += t;
     };
@@ -409,12 +418,19 @@ export async function mountAgentPane(
         if (e.type === "invalid") {
           line = el("div", { className: "invalid" }, "not an action: ", e.raw);
         } else if (e.action.action === "exec") {
-          pdfRunning = mkpdfOutput(e.action.cmd);
           line = el(
             "div",
             { className: "call" },
             el("b", { textContent: "$ " }),
             e.action.cmd,
+          );
+        } else if (e.action.action === "write_file") {
+          line = el(
+            "div",
+            { className: "call" },
+            el("b", { textContent: "write " }),
+            e.action.path,
+            el("pre", { className: "result", textContent: e.action.text }),
           );
         } else if (e.action.action === "read_file") {
           line = el(
@@ -434,11 +450,8 @@ export async function mountAgentPane(
         return;
       }
       if (e.type === "observation") {
-        // Offered only once the command has said it worked.
-        if (pdfRunning !== undefined && e.text.startsWith("exit 0\n")) {
-          pdf = pdfRunning;
-        }
-        pdfRunning = undefined;
+        // Offered only once the write has said it made the file.
+        if (e.text.endsWith(DEMO_PDF_MADE)) pdf = DEMO_PDF_PATH;
         current?.item.append(
           el("pre", { className: "result", textContent: e.text }),
         );
@@ -476,8 +489,11 @@ export async function mountAgentPane(
     const tools = createAgentTools(yurt);
     // The slim image has no python3; the prompt must not promise one.
     const python = await sandboxHasPython(tools, controller.signal);
+    // None yet on the first message, and a failed read only loses the context.
+    const document = await tools.readFile(DEMO_TEXT_PATH, controller.signal)
+      .catch(() => undefined);
     await runAgent(
-      text,
+      chatTask(earlier, text, limits.maxTask, document),
       llm,
       tools,
       onEvent,

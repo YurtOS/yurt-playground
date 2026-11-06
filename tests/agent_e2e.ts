@@ -18,6 +18,7 @@ import { type BrowserContext, chromium, type Page } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
+import { DEMO_TEXT_PATH } from "../src/agent.ts";
 import { OLLAMA_URL } from "../src/ollama.ts";
 import { ISOLATION_HEADERS, startPlaygroundServer } from "../src/serve.ts";
 
@@ -124,7 +125,7 @@ if (import.meta.main) {
         (route) => route.fulfill({ status: 404, body: "not found" }),
       );
       const page = await context.newPage();
-      await page.goto(`${server.url}/`);
+      await page.goto(`${server.url}/#agent`);
       await page.waitForFunction(() => "yurt" in globalThis);
       await page.waitForTimeout(500);
       if (await page.locator("#agent").isVisible()) {
@@ -138,7 +139,7 @@ if (import.meta.main) {
       const context = await browser.newContext();
       await withModel(context, { worker: "ok", webgpu: false });
       const page = await context.newPage();
-      await page.goto(`${server.url}/`);
+      await page.goto(`${server.url}/#agent`);
       await page.locator("[data-testid=agent-unsupported]").waitFor();
       const offered = await page.locator("[data-testid=agent-model] option")
         .evaluateAll((options) =>
@@ -177,17 +178,16 @@ if (import.meta.main) {
         }
         const { model, messages } = request.postDataJSON();
         if (model !== "stand-in:1") throw new Error(`asked ${model}`);
-        // One that works, then one that fails: only the first is on offer.
-        const results = messages[1].content.split("Result:").length - 1;
-        const reply = results === 0
-          ? {
-            action: "exec",
-            cmd:
-              'mkpdf() { echo made > "$1"; }; mkpdf /home/user/made.pdf "text"',
-          }
-          : results === 1
-          ? { action: "exec", cmd: 'mkpdf /home/user/failed.pdf "text"' }
-          : { action: "answer", text: "Made /home/user/made.pdf" };
+        // The first write finds no mkpdf; the answer ends each message.
+        const prompt: string = messages[1].content;
+        const reply =
+          prompt.slice(prompt.lastIndexOf("Now the user asks")).includes(
+              "Result:",
+            ) ||
+            (!prompt.includes("Now the user asks") &&
+              prompt.includes("Result:"))
+            ? { action: "answer", text: "Done." }
+            : { action: "write_file", path: DEMO_TEXT_PATH, text: "made" };
         return route.fulfill({
           headers: cors,
           body:
@@ -200,7 +200,7 @@ if (import.meta.main) {
         });
       });
       const page = await context.newPage();
-      await page.goto(`${server.url}/`);
+      await page.goto(`${server.url}/#agent`);
       await page.locator("[data-testid=agent-model]").selectOption("ollama");
       await page.waitForTimeout(500);
       if (asked.length !== 0) {
@@ -221,23 +221,45 @@ if (import.meta.main) {
       await page.locator("[data-testid=agent-start]").click();
       await page.locator("#agent[data-agent-ready]").waitFor();
       const task = await page.locator("[data-testid=agent-task]").inputValue();
-      if (!task.includes(".pdf")) {
+      if (!task.includes("PDF")) {
         throw new Error(`agent e2e: the default task is not the demo: ${task}`);
       }
+      await page.locator("[data-testid=agent-run]").click();
+      await until(
+        page,
+        "the stop after a PDF that could not be made",
+        () =>
+          document.querySelector("#agent-transcript .stopped")?.textContent
+            ?.includes("the PDF could not be made") === true,
+        180_000,
+      );
+      if (await page.locator("[data-testid=agent-download]").count() !== 0) {
+        throw new Error("agent e2e: a Download with no PDF");
+      }
+      // A stand-in for the package; a second message in the same chat.
+      await page.evaluate(() =>
+        (globalThis as unknown as {
+          yurt: { exec(c: string, o: { stdin: string }): Promise<unknown> };
+        }).yurt.exec(
+          "sudo tee /usr/bin/mkpdf >/dev/null && sudo chmod 755 /usr/bin/mkpdf",
+          { stdin: '#!/bin/sh\ncat > "$1"\n' },
+        )
+      );
+      await page.locator("[data-testid=agent-task]").fill("again");
       await page.locator("[data-testid=agent-run]").click();
       await page.locator("[data-testid=agent-download]").waitFor({
         timeout: 180_000,
       });
       const label = await page.locator("[data-testid=agent-download]")
         .innerText();
-      if (label !== "Download made.pdf") {
+      if (label !== "Download demo.pdf") {
         throw new Error(`agent e2e: download offered as: ${label}`);
       }
       const saving = page.waitForEvent("download");
       await page.locator("[data-testid=agent-download]").click();
       const saved = await saving;
       const content = await Deno.readTextFile(await saved.path());
-      if (saved.suggestedFilename() !== "made.pdf" || content !== "made\n") {
+      if (saved.suggestedFilename() !== "demo.pdf" || content !== "made") {
         throw new Error(
           `agent e2e: saved ${saved.suggestedFilename()}: ${content}`,
         );
@@ -250,7 +272,7 @@ if (import.meta.main) {
       const context = await browser.newContext();
       await withModel(context, { worker: "fail", webgpu: true });
       const page = await context.newPage();
-      await page.goto(`${server.url}/`);
+      await page.goto(`${server.url}/#agent`);
       const cost = await page.locator("[data-testid=agent-cost]").innerText();
       if (!/Needs about 8 GB/.test(cost)) {
         throw new Error(`agent e2e: no memory cost before download: ${cost}`);
@@ -273,7 +295,7 @@ if (import.meta.main) {
     const context = await browser.newContext();
     await withModel(context, { worker: "ok", webgpu: true });
     const page = await context.newPage();
-    await page.goto(`${server.url}/`);
+    await page.goto(`${server.url}/#agent`);
     await page.locator("[data-testid=agent-start]").click();
     await page.locator("#agent[data-agent-ready]").waitFor();
     const task = page.locator("[data-testid=agent-task]");
@@ -316,8 +338,8 @@ if (import.meta.main) {
       page,
       "the two-line command's answer",
       () =>
-        document.querySelector("[data-testid=agent-answer]")?.textContent ===
-          "2",
+        [...document.querySelectorAll("[data-testid=agent-answer]")].at(-1)
+          ?.textContent === "2",
       60_000,
     );
     const twoLines = await page.locator("#agent-transcript .call").last()
@@ -326,6 +348,39 @@ if (import.meta.main) {
       throw new Error(
         `agent e2e: a two-line command shows as ${JSON.stringify(twoLines)}`,
       );
+    }
+
+    // The sidebar shows one section at a time, and the terminal it hides keeps
+    // its size: a shell resized to nothing would reflow, and report 0 columns.
+    {
+      const cols = () =>
+        page.evaluate(() => document.querySelector("#term-wrap")?.clientWidth);
+      await page.locator("[data-testid=view-shell]").click();
+      const before = await cols();
+      if (!before || !await page.locator("#term-wrap").isVisible()) {
+        throw new Error("agent e2e: no terminal in the Shell section");
+      }
+      await page.locator("[data-testid=view-install]").click();
+      if (
+        await page.locator("#term-wrap").isVisible() ||
+        await page.locator("#agent").isVisible() ||
+        !await page.locator("#install").isVisible()
+      ) {
+        throw new Error("agent e2e: Install does not show alone");
+      }
+      if (await cols() !== before) {
+        throw new Error(
+          `agent e2e: the hidden terminal is ${await cols()} wide`,
+        );
+      }
+      await page.locator("[data-testid=view-suspend]").click();
+      if (!await page.locator("#snapshots h2").isVisible()) {
+        throw new Error("agent e2e: Suspend does not show");
+      }
+      if (new URL(page.url()).hash !== "#suspend") {
+        throw new Error(`agent e2e: the URL says ${page.url()}`);
+      }
+      await page.locator("[data-testid=view-agent]").click();
     }
 
     // Each button says whose it is: the agent's Run and Stop beside the
@@ -354,7 +409,9 @@ if (import.meta.main) {
     await until(
       page,
       "the sleep to start",
-      () => document.querySelector("#agent-transcript .call") !== null,
+      () =>
+        [...document.querySelectorAll("#agent-transcript .call")].at(-1)
+          ?.textContent?.includes("sleep") === true,
     );
     await page.waitForFunction(() =>
       (globalThis as unknown as {

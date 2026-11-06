@@ -14,6 +14,7 @@ import {
   pythonInstallState,
 } from "./python_install.ts";
 import { mountAgentPane } from "./agent_pane.ts";
+import { mountSidebar } from "./sidebar.ts";
 import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
   finishCapture,
@@ -1030,4 +1031,5 @@ async function runPage(): Promise<void> {
   byId("start-sandbox").addEventListener("click", begin, { once: true });
 }
 
+mountSidebar();
 void runPage();

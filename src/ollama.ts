@@ -29,19 +29,24 @@ export const OLLAMA_LIMITS: Limits = {
   timeoutMs: 600_000,
 };
 
-const action = (name: string, field: string) => ({
+const action = (name: string, ...fields: string[]) => ({
   type: "object",
-  properties: { action: { const: name }, [field]: { type: "string" } },
-  required: ["action", field],
+  properties: {
+    action: { const: name },
+    ...Object.fromEntries(fields.map((f) => [f, { type: "string" }])),
+  },
+  required: ["action", ...fields],
   additionalProperties: false,
 });
 
-/** The controller's closed set of actions (src/agent.ts), as a schema Ollama
- * constrains the reply to. The controller still validates what comes back. */
+/** The controller's closed set of actions (src/agent.ts), as a schema for the
+ * reply. It is a hint: Ollama 0.20.4 let gemma4 answer outside it, so what holds
+ * the model to these actions is the controller's own validation. */
 export const ACTION_SCHEMA = {
   anyOf: [
     action("exec", "cmd"),
     action("read_file", "path"),
+    action("write_file", "path", "text"),
     action("answer", "text"),
   ],
 };
@@ -114,6 +119,26 @@ async function* chatLines(
   }
 }
 
+/** The reply's first JSON object, when it goes on after it: models often list
+ * the steps they plan as further objects, and the controller takes exactly one
+ * action. Any other reply is left for the controller to judge. */
+export function firstObject(text: string): string {
+  const start = text.indexOf("{");
+  if (start < 0 || text.slice(0, start).trim() !== "") return text;
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return text.slice(start, i + 1);
+  }
+  return text;
+}
+
 /** `model` is read at each call: the visitor can change it between tasks, and
  * the pane locks the choice during one. */
 export function ollamaModel(
@@ -163,7 +188,7 @@ export function ollamaModel(
             outputTokens: line.eval_count ?? 0,
           };
           llm.lastStats = stats;
-          return { text, stats };
+          return { text: firstObject(text), stats };
         }
       }
       throw new Error("Ollama's reply ended early");

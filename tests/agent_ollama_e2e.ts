@@ -1,21 +1,21 @@
 /**
  * The agent pane on a real model outside the browser. Nothing is stubbed: real
  * Chrome (Playwright's `chrome` channel), the page's real sandbox and real
- * Ollama. The scene is the demo: the pane connects, the agent installs the
- * `mkpdf` package and makes a PDF in the sandbox, and a real PDF reader (macOS
- * PDFKit) finds the text in it.
+ * Ollama. The scene is the demo: the pane connects, the model writes an
+ * explanation of the demo into a PDF in the sandbox, then changes it when asked
+ * in the chat, and a real PDF reader (macOS PDFKit) checks both versions.
  *
  * Not in CI: GitHub's runners have neither Ollama nor its models. Run it on a
  * Mac, with `ollama serve` running:
  *
  *   deno run --allow-all tests/agent_ollama_e2e.ts [--model gemma4:e4b] \\
- *     [--runs 1] [--out <dir>] [--headed]
+ *     [--runs 1] [--out <dir>] [--headed] [--stage-mkpdf <file>]
  */
 import { chromium, type Page } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
-import { DEMO_PDF_PATH, DEMO_PDF_TEXT } from "../src/agent.ts";
+import { DEMO_PDF_PATH } from "../src/agent.ts";
 import { listOllamaModels, OLLAMA_URL } from "../src/ollama.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
 
@@ -26,6 +26,10 @@ const flag = (name: string) => {
 };
 const RUNS = Number(flag("runs") ?? 1);
 const OUT = flag("out") ?? await Deno.makeTempDir({ prefix: "agent-ollama-" });
+/** A local copy of the `mkpdf` command, placed in the sandbox instead of
+ * installing the package: for a port not yet published. */
+const STAGE = flag("stage-mkpdf");
+const EDIT = "Thanks for trying Yurt.";
 
 /** The text a real PDF reader finds in the file. */
 async function pdfText(path: string): Promise<string> {
@@ -45,48 +49,79 @@ print(doc.pageCount, doc.string ?? "")
   return decode.decode(stdout) + decode.decode(stderr).slice(0, 300);
 }
 
-async function transcript(page: Page): Promise<string> {
-  return await page.locator("#agent-transcript").innerText();
-}
+type Yurtish = {
+  ready: Promise<void>;
+  exec(c: string, o?: { stdin?: string }): Promise<{ code: number | null }>;
+  fs: { read(p: string): Promise<Uint8Array> };
+};
 
-/** One task to its end; what the reader found, and the transcript. */
-async function runDemo(page: Page, name: string): Promise<boolean> {
+/** Send one message and wait for its end: an answer or a stop more than before. */
+async function say(page: Page, message: string): Promise<number> {
+  const started = performance.now();
+  const ends = "#agent-transcript .answer, #agent-transcript .stopped";
+  const before = await page.locator(ends).count();
+  await page.locator("[data-testid=agent-task]").fill(message);
   await page.locator("[data-testid=agent-run]").click();
   await page.waitForFunction(
-    () =>
-      document.querySelector(
-        "#agent-transcript .answer, #agent-transcript .stopped",
-      ) !==
-        null,
-    null,
+    ([ends, before]) =>
+      document.querySelectorAll(ends as string).length > (before as number),
+    [ends, before] as const,
     { timeout: 600_000, polling: 250 },
   );
-  const steps = await page.locator("#agent-transcript li.step").count();
+  return performance.now() - started;
+}
+
+async function readBack(page: Page, name: string): Promise<string> {
   const bytes = await page.evaluate(
     (path) =>
-      (globalThis as unknown as {
-        yurt: { fs: { read(p: string): Promise<Uint8Array> } };
-      }).yurt.fs.read(path).then((b) => [...b]).catch(() => null),
+      (globalThis as unknown as { yurt: Yurtish }).yurt.fs.read(path)
+        .then((b) => [...b]).catch(() => null),
     DEMO_PDF_PATH,
   );
-  const text = await transcript(page);
-  await Deno.writeTextFile(join(OUT, `${name}.txt`), text);
-  if (bytes === null) {
-    console.log(`${name}: NO FILE after ${steps} steps`);
-    return false;
-  }
+  if (bytes === null) return "";
   const path = join(OUT, `${name}.pdf`);
   await Deno.writeFile(path, new Uint8Array(bytes));
-  const found = await pdfText(path);
-  const ok = found.includes(DEMO_PDF_TEXT) && found.startsWith("1 ");
-  console.log(
-    `${name}: ${
-      ok ? "PASS" : "FAIL"
-    }, ${steps} steps, ${bytes.length} bytes, reader: ${
-      JSON.stringify(found.slice(0, 120))
-    }`,
+  return await pdfText(path);
+}
+
+/** The demo: the model writes the explanation, then changes it when asked. */
+async function runDemo(page: Page, name: string): Promise<boolean> {
+  const task = await page.locator("[data-testid=agent-task]").inputValue();
+  const firstMs = await say(page, task);
+  const first = await readBack(page, `${name}-first`);
+  const secondMs = await say(page, `Add a last line saying exactly: ${EDIT}`);
+  const second = await readBack(page, `${name}-second`);
+  await Deno.writeTextFile(
+    join(OUT, `${name}.txt`),
+    await page.locator("#agent-transcript").innerText(),
   );
-  return ok;
+  await page.locator("#agent").screenshot({
+    path: join(OUT, `${name}.png`),
+  });
+  let downloaded = 0;
+  const download = page.locator("[data-testid=agent-download]").last();
+  if (await download.count() !== 0) {
+    const saving = page.waitForEvent("download", { timeout: 30_000 });
+    await download.click();
+    downloaded = (await Deno.stat(await (await saving).path())).size;
+  }
+  const flat = (t: string) => t.replace(/\s+/g, " ");
+  const wrote = first.startsWith("1 ") && first.length > 200 &&
+    /yurt/i.test(first);
+  const changed = flat(second).includes(EDIT);
+  // The edit kept the document: most of the first version's words survive.
+  const words = new Set(flat(second).toLowerCase().split(" "));
+  const firstWords = flat(first).toLowerCase().split(" ");
+  const kept = firstWords.filter((w) => words.has(w)).length /
+    Math.max(firstWords.length, 1);
+  console.log(
+    `${name}: download=${downloaded} bytes wrote=${wrote} (${first.length} chars, ${
+      Math.round(firstMs / 1000)
+    } s) changed=${changed} kept=${Math.round(kept * 100)}% (${
+      Math.round(secondMs / 1000)
+    } s)`,
+  );
+  return wrote && changed && kept > 0.9 && downloaded > 0;
 }
 
 if (import.meta.main) {
@@ -110,7 +145,7 @@ if (import.meta.main) {
       page.on("request", (r) => {
         if (r.url().startsWith(OLLAMA_URL)) ollamaRequests.push(r.url());
       });
-      await page.goto(`${server.url}/`);
+      await page.goto(`${server.url}/#agent`);
       await page.locator("[data-testid=agent-model]").selectOption("ollama");
       await page.waitForTimeout(500);
       if (ollamaRequests.length !== 0) {
@@ -119,6 +154,28 @@ if (import.meta.main) {
       await page.locator("[data-testid=agent-start]").click();
       await page.locator("#agent[data-agent-ready]").waitFor();
       await page.locator("[data-testid=agent-installed]").selectOption(model);
+      page.on("console", (m) => {
+        if (m.text().includes("[snapshot]")) {
+          console.log(m.text().slice(0, 160));
+        }
+      });
+      const stage = STAGE === undefined ? "" : await Deno.readTextFile(STAGE);
+      const startMs = await page.evaluate(async (stage) => {
+        const started = performance.now();
+        const yurt = (globalThis as unknown as { yurt: Yurtish }).yurt;
+        document.getElementById("start-sandbox")?.click();
+        await yurt.ready;
+        const ms = performance.now() - started;
+        if (stage !== "") {
+          const r = await yurt.exec(
+            "sudo tee /usr/bin/mkpdf >/dev/null && sudo chmod 755 /usr/bin/mkpdf",
+            { stdin: stage },
+          );
+          if (r.code !== 0) throw new Error("could not place mkpdf");
+        }
+        return ms;
+      }, stage);
+      console.log(`sandbox ready in ${(startMs / 1000).toFixed(1)} s`);
       const name = `${model.replace(/\W/g, "-")}-${run}`;
       if (await runDemo(page, name)) passed++;
       await context.close();

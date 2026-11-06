@@ -1,4 +1,10 @@
-import type { Tools } from "./agent.ts";
+import {
+  DEMO_PDF_MADE,
+  DEMO_TEXT_PATH,
+  MAKE_DEMO_PDF,
+  ToolFailed,
+  type Tools,
+} from "./agent.ts";
 import {
   PYTHON_MISSING_EXIT,
   PYTHON_PROBE_COMMAND,
@@ -85,6 +91,30 @@ export function createAgentTools(yurt: Yurt): Tools {
           ? `${result.stderr}timed out after ${EXEC_TIMEOUT_MS / 1000} s\n`
           : result.stderr,
       };
+    },
+    async writeFile(path, text, signal) {
+      await abortable(yurt.fs.write(checkPath(path), text), signal);
+      const wrote = `wrote ${text.length} characters to ${path}`;
+      if (path !== DEMO_TEXT_PATH) return wrote;
+      const made = await runCommand(
+        yurt,
+        MAKE_DEMO_PDF,
+        EXEC_TIMEOUT_MS,
+        DEFAULT_MAX_OUTPUT_BYTES,
+        signal,
+      );
+      // Only too much text is the model's to fix (mkpdf's exit 3).
+      if ("code" in made && made.code === 3) {
+        throw new Error(`${wrote}, but no PDF: ${made.stderr}`);
+      }
+      if (!("code" in made) || made.code !== 0) {
+        throw new ToolFailed(
+          `The text is saved, but the PDF could not be made: ${
+            made.stderr || "the command timed out"
+          }`,
+        );
+      }
+      return `${wrote}; ${DEMO_PDF_MADE}`;
     },
     async readFile(path, signal) {
       const checked = checkPath(path);

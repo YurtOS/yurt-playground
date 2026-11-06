@@ -2,13 +2,14 @@ import { assert, assertEquals } from "@std/assert";
 import {
   type AgentEvent,
   buildPrompt,
+  chatTask,
   DEFAULT_LIMITS,
-  mkpdfOutput,
   type Model,
   parseAction,
   runAgent,
   SYSTEM_PROMPT,
   systemPrompt,
+  ToolFailed,
   type Tools,
   validateAction,
 } from "../src/agent.ts";
@@ -36,6 +37,7 @@ const tools = (log: string[] = []): Tools => ({
     log.push(`exec ${cmd}`);
     return Promise.resolve({ code: 0, stdout: "2\n", stderr: "" });
   },
+  writeFile: () => Promise.reject(new Error("unused")),
   readFile(path) {
     log.push(`read ${path}`);
     return Promise.resolve(passwd);
@@ -63,7 +65,7 @@ async function run(
   return { events, prompts, types: events.map((e) => e.type) };
 }
 
-Deno.test("validateAction accepts exactly the three variants", () => {
+Deno.test("validateAction accepts exactly the four variants", () => {
   assertEquals(validateAction({ action: "exec", cmd: "ls" }), {
     action: "exec",
     cmd: "ls",
@@ -120,7 +122,7 @@ Deno.test("an invalid reply is retried with a correction, then limited", async (
     "action",
     "answer",
   ]);
-  assert(corrected.prompts[1].includes("not one of the three JSON actions"));
+  assert(corrected.prompts[1].includes("not one of the four JSON actions"));
 
   const gaveUp = await run(["no", "still no", "never"], {
     limits: { maxInvalid: 2 },
@@ -143,6 +145,7 @@ Deno.test("tool output is clipped to the observation limit", async () => {
     exec: () =>
       Promise.resolve({ code: 0, stdout: "x".repeat(5000), stderr: "" }),
     readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
   };
   const { events, prompts } = await run([
     '{"action":"exec","cmd":"yes"}',
@@ -157,6 +160,7 @@ Deno.test("a failing tool is an observation, not the end of the task", async () 
   const failing: Tools = {
     exec: () => Promise.reject(new Error("kernel_spawn_process failed")),
     readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
   };
   const { types, prompts } = await run([
     '{"action":"exec","cmd":"ls"}',
@@ -192,6 +196,7 @@ Deno.test("cancel stops a running tool and reports it", async () => {
         controller.abort();
       }),
     readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
   };
   const { events, prompts } = await run(
     ['{"action":"exec","cmd":"sleep 100"}', '{"action":"answer","text":"x"}'],
@@ -266,6 +271,7 @@ Deno.test("runAgent hands the model the system prompt it was given", async () =>
   const tools: Tools = {
     exec: () => Promise.reject(new Error("unused")),
     readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
   };
   await runAgent(
     "task",
@@ -279,22 +285,92 @@ Deno.test("runAgent hands the model the system prompt it was given", async () =>
   assertEquals(systems, [systemPrompt(false)]);
 });
 
-Deno.test("the pane finds the absolute path a command gave mkpdf", () => {
-  const cases: [string, string | undefined][] = [
-    ['mkpdf /home/user/a.pdf "hi"', "/home/user/a.pdf"],
-    ["mkpdf '/tmp/b.pdf' hi", "/tmp/b.pdf"],
-    [
-      'sudo pkg update && sudo pkg install mkpdf && mkpdf /tmp/c.pdf "hi"',
-      "/tmp/c.pdf",
-    ],
-    ['/usr/bin/mkpdf /tmp/d.pdf "hi"', "/tmp/d.pdf"],
-    ["sudo pkg install mkpdf", undefined],
-    ['mkpdf a.pdf "hi"', undefined],
-    ["echo notmkpdf /x.pdf", undefined],
-    ['mkpdf "/home/user/my file.pdf" "x"', "/home/user/my file.pdf"],
-    ["cat /usr/bin/mkpdf /etc/passwd", undefined],
-    ["echo mkpdf /x.pdf", undefined],
-    ['sudo mkpdf /root/e.pdf "x"', "/root/e.pdf"],
-  ];
-  for (const [cmd, path] of cases) assertEquals(mkpdfOutput(cmd), path);
+Deno.test("a chat message carries the document and what fits of the earlier ones", () => {
+  assertEquals(chatTask([], "make a pdf", 4000), "make a pdf");
+  assertEquals(
+    chatTask(["make a pdf", "shorter"], "add a title", 4000),
+    "Earlier in this chat the user asked:\n- make a pdf\n- shorter\n\nNow the user asks: add a title",
+  );
+  const withText = chatTask(["make a pdf"], "add a title", 4000, "The text.");
+  assertEquals(
+    withText,
+    "Earlier in this chat the user asked:\n- make a pdf\n\n" +
+      "The text in /home/user/demo.txt now, to change only as asked:\n<<<\nThe text.\n>>>\n\n" +
+      "Now the user asks: add a title",
+  );
+  // The oldest goes first, the document never: an edit needs it.
+  const tight = chatTask(["x".repeat(300), "shorter"], "t", 150, "doc");
+  assertEquals(tight.includes("xxx"), false);
+  assertEquals(tight.includes("- shorter"), true);
+  assertEquals(tight.includes("doc"), true);
+  assertEquals(tight.length <= 150, true);
+  // Too long on its own: runAgent's refusal, not a silent cut.
+  assertEquals(chatTask([], "y".repeat(50), 40), "y".repeat(50));
+});
+
+Deno.test("write_file needs both its fields, and the loop writes what it names", async () => {
+  const good = { action: "write_file" as const, path: "/a", text: "x" };
+  assertEquals(validateAction(good), good);
+  assertEquals(validateAction({ action: "write_file", path: "/a" }), null);
+  assertEquals(validateAction({ action: "write_file", text: "x" }), null);
+  assertEquals(
+    validateAction({ action: "write_file", path: "/a", data: "x" }),
+    null,
+  );
+  assertEquals(validateAction({ ...good, extra: "y" }), null);
+  assertEquals(validateAction({ ...good, text: " " }), null);
+
+  const replies = [JSON.stringify(good), '{"action":"answer","text":"done"}'];
+  const written: string[][] = [];
+  const prompts: string[] = [];
+  await runAgent(
+    "write it",
+    {
+      generate(_system, prompt) {
+        prompts.push(prompt);
+        return Promise.resolve({
+          text: replies.shift()!,
+          stats: { promptTokens: 1, outputTokens: 1 },
+        });
+      },
+    },
+    {
+      exec: () => Promise.reject(new Error("unused")),
+      readFile: () => Promise.reject(new Error("unused")),
+      writeFile: (path, text) => {
+        written.push([path, text]);
+        return Promise.resolve(`wrote ${path}`);
+      },
+    },
+    () => {},
+    new AbortController().signal,
+  );
+  assertEquals(written, [["/a", "x"]]);
+  assertEquals(prompts[1].includes("wrote /a"), true);
+});
+
+Deno.test("a tool failure the model cannot fix ends the task at once", async () => {
+  const events: AgentEvent[] = [];
+  let calls = 0;
+  await runAgent(
+    "write it",
+    {
+      generate() {
+        calls++;
+        return Promise.resolve({
+          text: '{"action":"write_file","path":"/a","text":"x"}',
+          stats: { promptTokens: 1, outputTokens: 1 },
+        });
+      },
+    },
+    {
+      exec: () => Promise.reject(new Error("unused")),
+      readFile: () => Promise.reject(new Error("unused")),
+      writeFile: () => Promise.reject(new ToolFailed("mkpdf: not found")),
+    },
+    (e) => events.push(e),
+    new AbortController().signal,
+  );
+  assertEquals(calls, 1);
+  assertEquals(events.at(-1), { type: "error", message: "mkpdf: not found" });
 });

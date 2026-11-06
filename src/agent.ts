@@ -10,6 +10,7 @@
 export type Action =
   | { action: "exec"; cmd: string }
   | { action: "read_file"; path: string }
+  | { action: "write_file"; path: string; text: string }
   | { action: "answer"; text: string };
 
 export type ModelStats = { promptTokens: number; outputTokens: number };
@@ -31,7 +32,12 @@ export type ExecResult = {
 export type Tools = {
   exec(cmd: string, signal: AbortSignal): Promise<ExecResult>;
   readFile(path: string, signal: AbortSignal): Promise<string>;
+  /** Resolves to what happened, for the model. */
+  writeFile(path: string, text: string, signal: AbortSignal): Promise<string>;
 };
+
+/** A tool failure the model cannot fix by trying again: it ends the task. */
+export class ToolFailed extends Error {}
 
 export type Limits = {
   /** Model calls per task, invalid replies included. */
@@ -52,7 +58,8 @@ export const DEFAULT_LIMITS: Limits = {
   maxSteps: 8,
   maxInvalid: 2,
   maxObservation: 1500,
-  maxTask: 2000,
+  // Room for the demo's document and a message about it.
+  maxTask: 4000,
   // ~2,500 tokens at 3.5 characters a token: with the system prompt and the
   // reply it stays inside the 4,096-token engine.
   maxPrompt: 9000,
@@ -102,36 +109,74 @@ export function systemPrompt(python: boolean): string {
   ].join("\n");
 }
 
+/** The demo's document: both files are the sandbox's, so a later message in the
+ * chat, or a restored sandbox, finds them. */
+export const DEMO_TEXT_PATH = "/home/user/demo.txt";
+export const DEMO_PDF_PATH = "/home/user/demo.pdf";
+/** Run after each write of the text, so the PDF cannot fall behind it. */
+export const MAKE_DEMO_PDF =
+  `command -v mkpdf >/dev/null || { sudo pkg update && sudo pkg install mkpdf; }; mkpdf ${DEMO_PDF_PATH} < ${DEMO_TEXT_PATH}`;
+/** What a write says when it made the PDF: the pane's cue to offer it. */
+export const DEMO_PDF_MADE = `made ${DEMO_PDF_PATH}`;
+
 const PROMPT_RULES = [
   "Reply with exactly one JSON object and nothing else. It must be one of:",
   '{"action":"exec","cmd":"<shell command>"}',
   '{"action":"read_file","path":"<absolute path>"}',
+  '{"action":"write_file","path":"<absolute path>","text":"<the whole file>"}',
   '{"action":"answer","text":"<final answer for the user>"}',
   "Use exec or read_file to get facts from the sandbox, one step at a time.",
-  'To create a PDF, run: sudo pkg update && sudo pkg install mkpdf && mkpdf <absolute path> "<text>"',
+  `To create or change a PDF, write_file its whole text to ${DEMO_TEXT_PATH}: under 300 words, since a page holds 40 lines of 65 characters. That also makes the PDF at ${DEMO_PDF_PATH}; do nothing more for it.`,
   "Answer only from what you have seen. Keep the answer short.",
 ];
 
 export const SYSTEM_PROMPT = systemPrompt(true);
 
-/** The file a command made with the `mkpdf` package, for the pane's Download:
- * absolute only, since the sandbox's working directory is not the page's to
- * guess. */
-export function mkpdfOutput(cmd: string): string | undefined {
-  // As a command, not as an argument: not `cat /usr/bin/mkpdf /etc/passwd`.
-  const found =
-    /(?:^|[;&|]\s*)(?:sudo\s+)?(?:\S*\/)?mkpdf\s+(?:"(\/[^"]+)"|'(\/[^']+)'|(\/\S+))/
-      .exec(cmd);
-  return found?.[1] ?? found?.[2] ?? found?.[3];
+/** One message of a chat as the agent's task: its words, after the document as
+ * it stands, so an edit changes that text and not a new one, and after the
+ * earlier messages, which say what "it" refers to. The oldest go first when they
+ * do not fit `maxTask`; a message and document too long together are left for
+ * runAgent to refuse. */
+export function chatTask(
+  earlier: readonly string[],
+  message: string,
+  maxTask: number,
+  document?: string,
+): string {
+  const now = document === undefined && earlier.length === 0
+    ? message
+    : `Now the user asks: ${message}`;
+  const text = document === undefined
+    ? ""
+    : `The text in ${DEMO_TEXT_PATH} now, to change only as asked:\n<<<\n${document}\n>>>\n\n`;
+  const heading = "Earlier in this chat the user asked:\n";
+  const kept: string[] = [];
+  let room = maxTask - now.length - text.length - heading.length - 1;
+  for (let i = earlier.length - 1; i >= 0; i--) {
+    const line = `- ${earlier[i]}\n`;
+    if (line.length > room) break;
+    kept.unshift(line);
+    room -= line.length;
+  }
+  const asked = kept.length === 0 ? "" : `${heading}${kept.join("")}\n`;
+  return `${asked}${text}${now}`;
 }
 
 /** The demo: a task the pane offers until the visitor types their own. */
-export const DEMO_PDF_PATH = "/home/user/hello.pdf";
-export const DEMO_PDF_TEXT = "Hello from Yurt";
-export const DEMO_TASK =
-  `Create a PDF at ${DEMO_PDF_PATH} whose one page shows the text "${DEMO_PDF_TEXT}".`;
+export const DEMO_TASK = [
+  "Write a short explanation of this demo for someone seeing it for the first time, and make it a PDF. Say the name Yurt.",
+  "What is true of it: a Linux sandbox (Yurt) runs inside this browser tab, started from a snapshot so it is ready in seconds.",
+  "A language model on this computer proposes one action at a time, and the page runs each in the sandbox.",
+  "The document's text and the PDF are files in that sandbox, and the user can change them by asking in this chat.",
+  "What the user types stays on this computer. Do not claim anything else.",
+].join(" ");
 
-const FIELDS = { exec: "cmd", read_file: "path", answer: "text" } as const;
+const FIELDS = {
+  exec: ["cmd"],
+  read_file: ["path"],
+  write_file: ["path", "text"],
+  answer: ["text"],
+} as const;
 
 /** Exactly the keys of one variant, each a non-empty string. */
 export function validateAction(value: unknown): Action | null {
@@ -139,12 +184,14 @@ export function validateAction(value: unknown): Action | null {
     return null;
   }
   const v = value as Record<string, unknown>;
-  const field = FIELDS[v.action as keyof typeof FIELDS];
-  if (field === undefined) return null;
-  const keys = Object.keys(v);
-  if (keys.length !== 2 || !keys.includes(field)) return null;
-  const arg = v[field];
-  if (typeof arg !== "string" || arg.trim() === "") return null;
+  const fields: readonly string[] | undefined =
+    FIELDS[v.action as keyof typeof FIELDS];
+  if (fields === undefined) return null;
+  if (Object.keys(v).length !== fields.length + 1) return null;
+  for (const field of fields) {
+    const arg = v[field];
+    if (typeof arg !== "string" || arg.trim() === "") return null;
+  }
   return v as Action;
 }
 
@@ -260,7 +307,7 @@ export async function runAgent(
         turns.push({
           reply: JSON.stringify(text.slice(0, 200)),
           result:
-            "That is not one of the three JSON actions. Reply with exactly one.",
+            "That is not one of the four JSON actions. Reply with exactly one.",
         });
         continue;
       }
@@ -275,11 +322,14 @@ export async function runAgent(
         if (action.action === "exec") {
           const r = await tools.exec(action.cmd, signal);
           raw = `exit ${r.code ?? "none"}\n${r.stdout}${r.stderr}`;
+        } else if (action.action === "write_file") {
+          raw = await tools.writeFile(action.path, action.text, signal);
         } else {
           raw = await tools.readFile(action.path, signal);
         }
       } catch (error) {
         if (signal.aborted) return stopped();
+        if (error instanceof ToolFailed) throw error;
         raw = `error: ${error instanceof Error ? error.message : error}`;
       }
       if (signal.aborted) return stopped();

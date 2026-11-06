@@ -1,6 +1,12 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import type { Yurt } from "../src/agent_api.ts";
-import type { Tools } from "../src/agent.ts";
+import {
+  DEMO_PDF_MADE,
+  DEMO_TEXT_PATH,
+  MAKE_DEMO_PDF,
+  ToolFailed,
+  type Tools,
+} from "../src/agent.ts";
 import { PYTHON_PROBE_COMMAND } from "../src/coordinator_start.ts";
 import {
   createAgentTools,
@@ -158,6 +164,7 @@ Deno.test("the agent probe says no python3 only on the missing code", async () =
         : Promise.resolve({ code, stdout: "", stderr: "" });
     },
     readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
   });
   assertEquals(await sandboxHasPython(tools(0), signal), true);
   assertEquals(await sandboxHasPython(tools(42), signal), false);
@@ -182,6 +189,7 @@ Deno.test("the agent's prompt keeps Python 3 on an image whose python3 lacks the
       return { code: output.code, stdout: "", stderr: "" };
     },
     readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
   });
   const root = await Deno.makeTempDir({ prefix: "agent-pyprobe-" });
   try {
@@ -229,4 +237,72 @@ Deno.test("a command that hit its limit says so, with the limit pkg's lock needs
   assertEquals(result.code, null);
   assertEquals(result.stderr, "partial\ntimed out after 120 s\n");
   assertEquals(limit, 120_000);
+});
+
+function writingSandbox(code: number | null) {
+  const written: string[] = [];
+  const commands: string[] = [];
+  const yurt = {
+    fs: {
+      write: (path: string, data: string) => {
+        written.push(`${path}:${data}`);
+        return Promise.resolve();
+      },
+    },
+    spawn: (cmd: string) => {
+      commands.push(cmd);
+      return Promise.resolve({
+        id: "make",
+        kill: () => Promise.resolve(),
+        wait: () =>
+          Promise.resolve({
+            code,
+            signal: null,
+            coreDumped: false,
+            timedOut: false,
+            stdout: "",
+            stderr: code === 0 ? "" : "a page holds 40\n",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          }),
+      });
+    },
+  } as unknown as Yurt;
+  return { yurt, written, commands };
+}
+
+Deno.test("writeFile writes through the sandbox's files, absolute paths only", async () => {
+  const { yurt, written, commands } = writingSandbox(0);
+  const tools = createAgentTools(yurt);
+  const never = new AbortController().signal;
+  assertEquals(
+    await tools.writeFile("/home/user/a", "text", never),
+    "wrote 4 characters to /home/user/a",
+  );
+  assertEquals(written, ["/home/user/a:text"]);
+  assertEquals(commands, []);
+  await assertRejects(() => tools.writeFile("a", "text", never));
+});
+
+Deno.test("writing the demo's text makes its PDF, and says when it could not", async () => {
+  const never = new AbortController().signal;
+  const good = writingSandbox(0);
+  assertEquals(
+    await createAgentTools(good.yurt).writeFile(DEMO_TEXT_PATH, "ab", never),
+    `wrote 2 characters to ${DEMO_TEXT_PATH}; ${DEMO_PDF_MADE}`,
+  );
+  assertEquals(good.commands, [MAKE_DEMO_PDF]);
+  const long = writingSandbox(3);
+  const refused = await createAgentTools(long.yurt)
+    .writeFile(DEMO_TEXT_PATH, "ab", never).catch((e) => e);
+  assertEquals(refused.message.includes("a page holds 40"), true);
+  assertEquals(
+    refused instanceof ToolFailed,
+    false,
+    "the model can shorten it",
+  );
+  const broken = writingSandbox(127);
+  const failed = await createAgentTools(broken.yurt)
+    .writeFile(DEMO_TEXT_PATH, "ab", never).catch((e) => e);
+  assertEquals(failed instanceof ToolFailed, true, "the model cannot fix it");
 });

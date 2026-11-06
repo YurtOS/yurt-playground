@@ -6,6 +6,7 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { parseAction, systemPrompt } from "../src/agent.ts";
 import {
   ACTION_SCHEMA,
+  firstObject,
   listOllamaModels,
   OLLAMA_CONTEXT_TOKENS,
   OLLAMA_LIMITS,
@@ -220,5 +221,20 @@ Deno.test("a server that accepts and never answers ends the wait", async () => {
   }, async (base) => {
     await assertRejects(() => listOllamaModels(base, 50));
     release.resolve();
+  });
+});
+
+Deno.test("only the first object of a reply that lists its plan is the action", () => {
+  const first = '{"action":"exec","cmd":"echo \\"}\\" {"}';
+  assertEquals(firstObject(`${first}\n{"action":"answer","text":"x"}`), first);
+  assertEquals(firstObject(`  ${first}`), first);
+  assertEquals(firstObject(first), first);
+  // Not this function's to rescue: the controller refuses these.
+  assertEquals(firstObject("Sure! {}"), "Sure! {}");
+  assertEquals(firstObject('{"a":'), '{"a":');
+  assertEquals(firstObject("no json"), "no json");
+  assertEquals(parseAction(firstObject(`${first}\n{"x":1}`)), {
+    action: "exec",
+    cmd: 'echo "}" {',
   });
 });

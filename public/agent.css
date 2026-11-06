@@ -29,7 +29,7 @@
 }
 #agent-installed {
   display: block;
-  margin-bottom: 8px;
+  margin: 8px;
 }
 #agent-installed[hidden] {
   display: none;
@@ -173,4 +173,9 @@
 }
 #agent-intro p.unsupported {
   margin-bottom: 12px;
+}
+#agent-transcript li.user {
+  color: var(--text);
+  font-weight: 600;
+  margin-top: 12px;
 }
