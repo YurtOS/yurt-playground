@@ -4,6 +4,7 @@ import {
   buildPrompt,
   chatTask,
   DEFAULT_LIMITS,
+  madePdfPath,
   type Model,
   parseAction,
   runAgent,
@@ -478,4 +479,13 @@ Deno.test("a step repeated exactly is not run again, and a second repeat ends th
   assertEquals(runs, 1);
   assertEquals(stuck.prompts.length, 3);
   assertEquals(stuckEvents.at(-1), { type: "stopped", reason: "repeat" });
+});
+
+Deno.test("a tool's result names the PDF it made, for the pane to offer", () => {
+  assertEquals(
+    madePdfPath("wrote 2 characters to /a/b.pdf; made /a/b.pdf"),
+    "/a/b.pdf",
+  );
+  assertEquals(madePdfPath("wrote 2 characters to /a/b.txt"), undefined);
+  assertEquals(madePdfPath("error: made nothing"), undefined);
 });

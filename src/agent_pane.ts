@@ -20,11 +20,11 @@ import {
   type AgentEvent,
   chatTask,
   DEFAULT_LIMITS,
-  DEMO_PDF_MADE,
   DEMO_PDF_PATH,
   DEMO_TASK,
   DEMO_TEXT_PATH,
   type Limits,
+  madePdfPath,
   type Model,
   type ModelStats,
   runAgent,
@@ -49,7 +49,8 @@ type SavedChat = {
   model: string;
   chat: string[];
   transcript: string;
-  pdf?: string;
+  /** Path to base64: the PDFs on offer. */
+  pdfs?: Record<string, string>;
   /** The message that asked for the resume, to run once it has. */
   pending?: string;
 };
@@ -308,8 +309,8 @@ export async function mountAgentPane(
   let running: AbortController | undefined;
   /** The chat so far: the visitor's messages, in order. */
   const chat: string[] = [];
-  /** The latest PDF, read before the sandbox seals: it cannot be read after. */
-  let lastPdf: Uint8Array | undefined;
+  /** The PDFs on offer, read before the sandbox seals: they cannot be after. */
+  const pdfs = new Map<string, Uint8Array>();
   let suspended = false;
   const reloadPage = sandbox.reload ?? (() => location.reload());
   let modelLabel = "";
@@ -412,17 +413,21 @@ export async function mountAgentPane(
   };
   const offerDownload = () => {
     removeDownload();
-    const bytes = lastPdf;
-    if (bytes === undefined) return;
-    const name = DEMO_PDF_PATH.split("/").pop()!;
-    const download = el("button", {
-      type: "button",
-      className: "bar-action",
-      textContent: `Download ${name}`,
-      testid: "agent-download",
-    });
-    download.addEventListener("click", () => saveInBrowser(name, bytes));
-    transcript.append(el("li", { className: "note download" }, download));
+    if (pdfs.size === 0) return;
+    const item = el("li", { className: "note download" });
+    for (const [path, bytes] of pdfs) {
+      const name = path.split("/").pop()!;
+      const download = el("button", {
+        type: "button",
+        className: "bar-action",
+        textContent: `Download ${name}`,
+        testid: "agent-download",
+      });
+      download.dataset.file = name;
+      download.addEventListener("click", () => saveInBrowser(name, bytes));
+      item.append(download);
+    }
+    transcript.append(item);
   };
   const saveChat = (pending?: string) => {
     removeDownload();
@@ -431,9 +436,11 @@ export async function mountAgentPane(
       model: installed.value,
       chat,
       transcript: transcript.innerHTML,
-      pdf: lastPdf === undefined
-        ? undefined
-        : btoa(String.fromCharCode(...lastPdf)),
+      pdfs: Object.fromEntries(
+        [...pdfs].map((
+          [path, bytes],
+        ) => [path, btoa(String.fromCharCode(...bytes))]),
+      ),
       pending,
     };
     offerDownload();
@@ -517,7 +524,7 @@ export async function mountAgentPane(
       waiting.remove();
     }
     let current: { item: HTMLLIElement; live: HTMLElement } | undefined;
-    let pdf: string | undefined;
+    const made = new Set<string>();
     llm.onToken = (t) => {
       if (current) current.live.textContent += t;
     };
@@ -557,8 +564,8 @@ export async function mountAgentPane(
             e.action.cmd,
           );
         } else if (e.action.action === "set_color") {
-          pdf = undefined;
-          lastPdf = undefined;
+          made.delete(DEMO_PDF_PATH);
+          pdfs.delete(DEMO_PDF_PATH);
           removeDownload();
           line = el(
             "div",
@@ -567,9 +574,12 @@ export async function mountAgentPane(
             e.action.color,
           );
         } else if (e.action.action === "write_file") {
-          // What is on offer is about to change; it comes back once it is made.
-          pdf = undefined;
-          lastPdf = undefined;
+          // It is about to change; it comes back once it is made.
+          const file = e.action.path.endsWith(".pdf")
+            ? new URL(`file://${e.action.path}`).pathname
+            : DEMO_PDF_PATH;
+          made.delete(file);
+          pdfs.delete(file);
           removeDownload();
           line = el(
             "div",
@@ -597,7 +607,8 @@ export async function mountAgentPane(
       }
       if (e.type === "observation") {
         // Offered only once the write has said it made the file.
-        if (e.text.endsWith(DEMO_PDF_MADE)) pdf = DEMO_PDF_PATH;
+        const pdf = madePdfPath(e.text);
+        if (pdf !== undefined) made.add(pdf);
         current?.item.append(
           el("pre", { className: "result", textContent: e.text }),
         );
@@ -648,8 +659,9 @@ export async function mountAgentPane(
       }),
     );
     // However the task ended: a stop after the PDF was made still made it.
-    if (pdf !== undefined) {
-      lastPdf = await yurt.fs.read(pdf).catch(() => undefined);
+    for (const path of made) {
+      const bytes = await yurt.fs.read(path).catch(() => undefined);
+      if (bytes !== undefined) pdfs.set(path, bytes);
     }
     offerDownload();
     stop.hidden = true;
@@ -688,8 +700,8 @@ export async function mountAgentPane(
   if (!Array.from(choice.options).some((o) => o.value === saved.choice)) return;
   chat.push(...saved.chat);
   transcript.innerHTML = saved.transcript;
-  if (saved.pdf !== undefined) {
-    lastPdf = Uint8Array.from(atob(saved.pdf), (c) => c.charCodeAt(0));
+  for (const [path, encoded] of Object.entries(saved.pdfs ?? {})) {
+    pdfs.set(path, Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0)));
   }
   choice.value = saved.choice;
   await label();

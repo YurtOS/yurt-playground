@@ -352,3 +352,31 @@ Deno.test("setColor saves a known color and remakes the PDF, changing no words",
     "the PDF's text is #ff0000 once its text is written",
   );
 });
+
+Deno.test("any .pdf written is made as a PDF, not plain text with that name", async () => {
+  const never = new AbortController().signal;
+  const box = writingSandbox(0);
+  assertEquals(
+    await createAgentTools(box.yurt).writeFile(
+      "/home/user/fact.pdf",
+      "42",
+      never,
+    ),
+    "wrote 2 characters to /home/user/fact.pdf; made /home/user/fact.pdf",
+  );
+  assertEquals(box.written, ["/tmp/agent-pdf.txt:42"]);
+  assertEquals(box.commands.length, 1);
+  assertEquals(box.commands[0].includes("mkpdf '/home/user/fact.pdf'"), true);
+  // The demo's own PDF still comes only from its text.
+  const demo = writingSandbox(0);
+  await assertRejects(
+    () =>
+      createAgentTools(demo.yurt).writeFile("/home/user/demo.pdf", "x", never),
+    Error,
+    "is made from",
+  );
+  // Not a .pdf: a plain file, as before.
+  const plain = writingSandbox(0);
+  await createAgentTools(plain.yurt).writeFile("/home/user/a.txt", "x", never);
+  assertEquals(plain.commands, []);
+});

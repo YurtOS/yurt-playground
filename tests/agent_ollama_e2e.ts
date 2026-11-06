@@ -81,7 +81,10 @@ async function say(page: Page, message: string): Promise<number> {
 
 /** The PDF as the visitor gets it: the sandbox is sealed by now. */
 async function readBack(page: Page, name: string): Promise<Uint8Array> {
-  const button = page.locator("[data-testid=agent-download]");
+  const file = name.endsWith("-fact") ? "fact.pdf" : "demo.pdf";
+  const button = page.locator(
+    `[data-testid=agent-download][data-file="${file}"]`,
+  );
   if (await button.count() === 0) return new Uint8Array();
   const saving = page.waitForEvent("download", { timeout: 30_000 });
   await button.click();
@@ -134,6 +137,17 @@ async function runDemo(page: Page, name: string): Promise<boolean> {
       JSON.stringify(counted.slice(0, 80))
     }`,
   );
+  // A PDF under another name: real, and on offer beside the demo's.
+  await say(
+    page,
+    "Use python3 to compute the factorial of 30. Write only that number to /home/user/fact.pdf.",
+  );
+  const factBytes = await readBack(page, `${name}-fact`);
+  const factText = await readerText(`${name}-fact`, factBytes);
+  const fact = factText.includes("265252859812191058636308480000000") &&
+    new TextDecoder().decode(factBytes.slice(0, 5)) === "%PDF-" &&
+    await page.locator('[data-file="demo.pdf"]').count() === 1;
+  console.log(`${name}: fact pdf=${fact} (${factBytes.length} bytes)`);
   const stops = await page.locator("#agent-transcript .stopped").count();
   console.log(
     `${name}: pink=${pink} rgb=${rg} (${
@@ -163,7 +177,7 @@ async function runDemo(page: Page, name: string): Promise<boolean> {
       Math.round(secondMs / 1000)
     } s)`,
   );
-  return wrote && changed && kept > 0.9 && pink && countRight && ranIt;
+  return wrote && changed && kept > 0.9 && pink && countRight && ranIt && fact;
 }
 
 if (import.meta.main) {

@@ -120,11 +120,23 @@ export const DEMO_PDF_PATH = "/home/user/demo.pdf";
 export const DEMO_COLOR_PATH = "/home/user/demo.color";
 /** What the `mkpdf` command takes as a color. */
 export const DEMO_COLOR = /^#[0-9a-f]{6}$/;
-/** Run after each write of the text. */
-export const MAKE_DEMO_PDF =
-  `command -v mkpdf >/dev/null || { sudo pkg update && sudo pkg install mkpdf; }; { [ -f ${DEMO_COLOR_PATH} ] && echo "%color $(cat ${DEMO_COLOR_PATH})"; cat ${DEMO_TEXT_PATH}; } | mkpdf ${DEMO_PDF_PATH}`;
-/** What a write says when it made the PDF: the pane's cue to offer it. */
-export const DEMO_PDF_MADE = `made ${DEMO_PDF_PATH}`;
+const shellQuoted = (path: string) => `'${path.replaceAll("'", "'\\''")}'`;
+
+/** Make a PDF from a text file, in the document's color if it has one. */
+export function makePdfCommand(text: string, pdf: string): string {
+  return `command -v mkpdf >/dev/null || { sudo pkg update && sudo pkg install mkpdf; }; { [ -f ${DEMO_COLOR_PATH} ] && echo "%color $(cat ${DEMO_COLOR_PATH})"; cat ${
+    shellQuoted(text)
+  }; } | mkpdf ${shellQuoted(pdf)}`;
+}
+
+/** Run after each write of the demo's text. */
+export const MAKE_DEMO_PDF = makePdfCommand(DEMO_TEXT_PATH, DEMO_PDF_PATH);
+
+/** What a tool says when it made a PDF: the pane's cue to offer it. */
+export const pdfMade = (path: string) => `made ${path}`;
+export const madePdfPath = (result: string) =>
+  /made (\/.*\.pdf)$/.exec(result)?.[1];
+export const DEMO_PDF_MADE = pdfMade(DEMO_PDF_PATH);
 
 const PROMPT_RULES = [
   "Reply with exactly one JSON object and nothing else. It must be one of:",
@@ -138,6 +150,8 @@ const PROMPT_RULES = [
   "set_color sets the color of the whole text of that PDF and remakes it; it changes no words. Give the requested color's #rrggbb value.",
   `To read the text of that PDF, exec: mkpdf --text ${DEMO_PDF_PATH} and pipe it to other commands, such as wc -w. Do not count or calculate in your head: report what the command printed.`,
   "When a step is done, do not repeat it: use the answer action. If a step failed, say so; never claim it worked.",
+  "Only if the user names another PDF file, write_file its text to that path ending in .pdf, which makes a real PDF. Otherwise use the file above.",
+  "Every PDF made gets a Download button under this chat. If asked to download one, say so; you cannot download it yourself.",
   "The PDF can do nothing else: no bold, sizes, images or background. If asked for those, say so; never claim a change you did not make.",
   "Answer only from what you have seen. Keep the answer short.",
 ];

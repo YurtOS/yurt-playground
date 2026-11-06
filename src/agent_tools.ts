@@ -5,6 +5,8 @@ import {
   DEMO_PDF_PATH,
   DEMO_TEXT_PATH,
   MAKE_DEMO_PDF,
+  makePdfCommand,
+  pdfMade,
   ToolFailed,
   type Tools,
 } from "./agent.ts";
@@ -75,12 +77,18 @@ async function runCommand(
 /** A command's time limit. Long enough for `sudo pkg` to wait out the Python
  * set the slim image installs at boot: about a minute, holding pkg's lock. */
 const EXEC_TIMEOUT_MS = 120_000;
+/** The text of a PDF other than the demo's, on its way to mkpdf. */
+const PDF_TEXT_PATH = "/tmp/agent-pdf.txt";
 
 export function createAgentTools(yurt: Yurt): Tools {
-  const makePdf = async (wrote: string, signal: AbortSignal) => {
+  const makePdf = async (
+    command: string,
+    wrote: string,
+    signal: AbortSignal,
+  ) => {
     const made = await runCommand(
       yurt,
-      MAKE_DEMO_PDF,
+      command,
       EXEC_TIMEOUT_MS,
       DEFAULT_MAX_OUTPUT_BYTES,
       signal,
@@ -124,10 +132,16 @@ export function createAgentTools(yurt: Yurt): Tools {
           `${DEMO_PDF_PATH} is made from ${DEMO_TEXT_PATH}; write that instead`,
         );
       }
-      await abortable(yurt.fs.write(path, text), signal);
       const wrote = `wrote ${text.length} characters to ${path}`;
+      // Plain text in a file named .pdf is not a PDF: any .pdf is made as one.
+      if (file.endsWith(".pdf")) {
+        await abortable(yurt.fs.write(PDF_TEXT_PATH, text), signal);
+        await makePdf(makePdfCommand(PDF_TEXT_PATH, file), wrote, signal);
+        return `${wrote}; ${pdfMade(file)}`;
+      }
+      await abortable(yurt.fs.write(path, text), signal);
       if (file !== DEMO_TEXT_PATH) return wrote;
-      await makePdf(wrote, signal);
+      await makePdf(MAKE_DEMO_PDF, wrote, signal);
       return `${wrote}; ${DEMO_PDF_MADE}`;
     },
     async setColor(color, signal) {
@@ -148,7 +162,7 @@ export function createAgentTools(yurt: Yurt): Tools {
       if (!("code" in text) || text.code !== 0) {
         return `${set} once its text is written`;
       }
-      await makePdf(set, signal);
+      await makePdf(MAKE_DEMO_PDF, set, signal);
       return `${set}; ${DEMO_PDF_MADE}`;
     },
     async readFile(path, signal) {
