@@ -256,10 +256,34 @@ function watchNetwork(net: HTMLElement): void {
  */
 const BOOTING_KEY = "yurt-playground-booting";
 let reloading = false;
+const OWN_RELOAD_KEY = "yurt-agent-own-reload";
+
+/** A refresh is the visitor starting over: the agent's chat goes, and with it
+ * its seal (a sandbox resumes only with its chat). The page's own reloads, which
+ * resume a sealed sandbox, say so first. */
+function forgetChatOnRefresh(): void {
+  try {
+    const own = sessionStorage.getItem(OWN_RELOAD_KEY) !== null;
+    sessionStorage.removeItem(OWN_RELOAD_KEY);
+    const entry = performance.getEntriesByType("navigation")[0] as
+      | PerformanceNavigationTiming
+      | undefined;
+    if (!own && entry?.type === "reload") {
+      localStorage.removeItem(AGENT_CHAT_STORAGE);
+    }
+  } catch {
+    // Storage blocked: there is no chat to forget.
+  }
+}
 /** Reload on purpose: not a boot the browser cut off. */
 function reloadOnPurpose(): void {
   cutOffBoot();
   reloading = true;
+  try {
+    sessionStorage.setItem(OWN_RELOAD_KEY, "1");
+  } catch {
+    // Storage blocked: the load reads as a refresh, and starts over.
+  }
   location.reload();
 }
 function rememberBooting(status: string | undefined): void {
@@ -1110,5 +1134,6 @@ async function runPage(): Promise<void> {
   byId("start-sandbox").addEventListener("click", begin, { once: true });
 }
 
+forgetChatOnRefresh();
 mountSidebar();
 void runPage();

@@ -250,22 +250,42 @@ if (import.meta.main) {
       await page.locator("[data-testid=view-agent]").click();
       await page.locator("#agent[data-agent-ready]").waitFor();
       await page.locator("[data-testid=agent-download]").waitFor();
-      // A plain reload resumes too, and New session starts over. Not mid-boot: a
-      // reload then reads as a boot the browser cut off.
-      await page.waitForFunction(
-        () =>
-          (globalThis as unknown as { yurt?: { status: string } }).yurt
-            ?.status === "running",
-        null,
-        { timeout: 60_000 },
-      );
-      await page.reload();
-      await page.locator("#agent[data-agent-ready]").waitFor();
-      await page.locator("[data-testid=agent-download]").waitFor();
+      // New session starts over. Not mid-boot: a reload then reads as a boot the
+      // browser cut off.
+      const sandboxRunning = () =>
+        page.waitForFunction(
+          () =>
+            (globalThis as unknown as { yurt?: { status: string } }).yurt
+              ?.status === "running",
+          null,
+          { timeout: 60_000 },
+        );
+      await sandboxRunning();
       await page.locator("[data-testid=agent-new-session]").click();
       await page.locator("[data-testid=agent-start]").waitFor();
       if (await page.locator("#agent-transcript li").count() !== 0) {
         throw new Error("agent e2e: New session kept the chat");
+      }
+      // So does a refresh, though the page's own reloads above resumed.
+      await page.locator("[data-testid=agent-model]").selectOption("ollama");
+      await page.locator("[data-testid=agent-start]").click();
+      await page.locator("#agent[data-agent-ready]").waitFor();
+      await page.locator("[data-testid=agent-run]").click();
+      await page.locator("#agent[data-agent-suspended]").waitFor({
+        timeout: 180_000,
+      });
+      await page.reload();
+      await page.locator("[data-testid=agent-start]").waitFor();
+      if (await page.locator("#agent-transcript li").count() !== 0) {
+        throw new Error("agent e2e: a refresh kept the chat");
+      }
+      if (
+        await page.evaluate(() =>
+          localStorage.getItem("yurt-agent-session")
+        ) !==
+          null
+      ) {
+        throw new Error("agent e2e: a refresh kept the saved chat");
       }
       await context.close();
     }
