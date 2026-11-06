@@ -152,6 +152,8 @@ if (import.meta.main) {
         `verification did not pass: ${summary} (integrity.json lists ${listed})`,
       );
     }
+    // The links are in Shell & Python.
+    await page.getByTestId("view-shell").click();
     await page.getByTestId("choose-notebook").click();
     await page.waitForURL(/\/jupyter\/notebooks\/index\.html/);
     await page.locator(".jp-Notebook").first().waitFor({ timeout: 60_000 });
