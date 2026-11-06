@@ -111,6 +111,41 @@ async function runDemo(page: Page, name: string): Promise<boolean> {
     new TextDecoder().decode(pinkBytes),
   )?.slice(1).map(Number) ?? [0, 0, 0];
   const pink = rg[0] > 0.8 && rg[1] < rg[0] && rg[2] > rg[1];
+  // The model has to run this one: its number against a real reader's.
+  const pinkText = (await readerText(`${name}-pink`, pinkBytes)).replace(
+    /^1 /,
+    "",
+  );
+  const wordCount = pinkText.trim().split(/\s+/).length;
+  const countStarted = performance.now();
+  const countEnds = "#agent-transcript .answer, #agent-transcript .stopped";
+  const countBefore = await page.locator(countEnds).count();
+  await page.locator("[data-testid=agent-demo-count]").click();
+  while (performance.now() - countStarted < 300_000) {
+    const done = await page.evaluate(
+      ([ends, before]) =>
+        document.querySelectorAll(ends as string).length > (before as number) &&
+        document.querySelector("#agent")?.hasAttribute(
+            "data-agent-suspended",
+          ) ===
+          true,
+      [countEnds, countBefore] as const,
+    ).catch(() => false);
+    if (done) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  const counted = await page.locator("#agent-transcript .answer").last()
+    .innerText();
+  const calls = await page.locator("#agent-transcript .call").allInnerTexts();
+  const ranIt = calls.at(-1)?.includes("wc") === true;
+  const countRight = new RegExp(`\\b${wordCount}\\b`).test(counted);
+  console.log(
+    `${name}: count right=${countRight} ran=${ranIt} truth=${wordCount} (${
+      Math.round((performance.now() - countStarted) / 1000)
+    } s) | ${JSON.stringify(calls.at(-1)?.slice(0, 70))} | ${
+      JSON.stringify(counted.slice(0, 80))
+    }`,
+  );
   const stops = await page.locator("#agent-transcript .stopped").count();
   console.log(
     `${name}: pink=${pink} rgb=${rg} (${
@@ -140,7 +175,7 @@ async function runDemo(page: Page, name: string): Promise<boolean> {
       Math.round(secondMs / 1000)
     } s)`,
   );
-  return wrote && changed && kept > 0.9 && pink;
+  return wrote && changed && kept > 0.9 && pink && countRight && ranIt;
 }
 
 if (import.meta.main) {

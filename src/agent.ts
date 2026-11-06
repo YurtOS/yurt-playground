@@ -136,6 +136,7 @@ const PROMPT_RULES = [
   "Use exec or read_file to get facts from the sandbox, one step at a time.",
   `To create or change a PDF, write_file its whole text to ${DEMO_TEXT_PATH}: plain ASCII with no markdown, under 300 words, since a page holds 40 lines of 65 characters. That also makes the PDF at ${DEMO_PDF_PATH}; do nothing more for it.`,
   "set_color sets the color of the whole text of that PDF and remakes it; it changes no words. Give the requested color's #rrggbb value.",
+  `To read the text of that PDF, exec: mkpdf --text ${DEMO_PDF_PATH} and pipe it to other commands, such as wc -w. Do not count or calculate in your head: report what the command printed.`,
   "When a step is done, do not repeat it: use the answer action. If a step failed, say so; never claim it worked.",
   "The PDF can do nothing else: no bold, sizes, images or background. If asked for those, say so; never claim a change you did not make.",
   "Answer only from what you have seen. Keep the answer short.",
@@ -177,6 +178,10 @@ export function chatTask(
   const asked = kept.length === 0 ? "" : `${heading}${kept.join("")}\n`;
   return `${asked}${text}${now}`;
 }
+
+/** The second demo: the model has to run this itself, in the sandbox. */
+export const DEMO_COUNT_TASK =
+  `Count the words in ${DEMO_PDF_PATH} by running a command in the sandbox, and tell me the number.`;
 
 /** The demo: a task the pane offers until the visitor types their own. */
 export const DEMO_TASK = [

@@ -188,3 +188,7 @@
   min-height: 7lh;
   max-height: 50vh;
 }
+#agent-transcript li.stats {
+  color: var(--muted);
+  font-size: 12px;
+}

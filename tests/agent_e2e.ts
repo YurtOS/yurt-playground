@@ -211,6 +211,17 @@ if (import.meta.main) {
       if (await page.locator("[data-testid=agent-download]").count() !== 1) {
         throw new Error("agent e2e: no Download after the resume");
       }
+      // One write, then the answer: one agent call, two model calls, per message.
+      const stats = await page.locator("[data-testid=agent-stats]")
+        .allInnerTexts();
+      if (
+        stats.length !== 2 ||
+        !stats.every((l) =>
+          /^agent called 1 time · model called 2 times · [\d.]+ s$/.test(l)
+        )
+      ) {
+        throw new Error(`agent e2e: stats read ${JSON.stringify(stats)}`);
+      }
       // The Shell tab is another sandbox, with Jupyter's cell, and none of the
       // agent's files; going back finds the agent's session as it was.
       await page.locator("[data-testid=view-shell]").click();

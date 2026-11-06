@@ -20,6 +20,7 @@ import {
   type AgentEvent,
   chatTask,
   DEFAULT_LIMITS,
+  DEMO_COUNT_TASK,
   DEMO_PDF_MADE,
   DEMO_PDF_PATH,
   DEMO_TASK,
@@ -276,10 +277,25 @@ export async function mountAgentPane(
     id: "agent-transcript",
     testid: "agent-transcript",
   });
+  // The demos: each fills the box and runs. Counting needs a PDF to count.
+  const demoWrite = el("button", {
+    type: "button",
+    className: "bar-action",
+    textContent: "Demo: write a PDF",
+    testid: "agent-demo-write",
+  });
+  const demoCount = el("button", {
+    type: "button",
+    className: "bar-action",
+    textContent: "Demo: count its words",
+    testid: "agent-demo-count",
+    disabled: true,
+  });
   const work = el(
     "div",
     { hidden: true },
     installed,
+    el("div", { className: "actions demos" }, demoWrite, demoCount),
     task,
     el("div", { className: "actions" }, run, hint),
     transcript,
@@ -399,6 +415,7 @@ export async function mountAgentPane(
   const offerDownload = () => {
     removeDownload();
     const bytes = lastPdf;
+    demoCount.disabled = bytes === undefined;
     if (bytes === undefined) return;
     const name = DEMO_PDF_PATH.split("/").pop()!;
     const download = el("button", {
@@ -507,8 +524,14 @@ export async function mountAgentPane(
     llm.onToken = (t) => {
       if (current) current.live.textContent += t;
     };
+    // This message's numbers, for the line that ends it.
+    const started = performance.now();
+    let modelCalls = 0;
+    let agentCalls = 0;
     const onEvent = (e: AgentEvent) => {
+      if (e.type === "observation") agentCalls++;
       if (e.type === "step") {
+        modelCalls++;
         const live = el("pre", { className: "live" });
         const item = el("li", { className: "step" }, live);
         transcript.append(item);
@@ -616,6 +639,16 @@ export async function mountAgentPane(
       limits,
       systemPrompt(python),
     );
+    const times = (n: number) => `${n} ${n === 1 ? "time" : "times"}`;
+    transcript.append(
+      el("li", {
+        className: "note stats",
+        testid: "agent-stats",
+        textContent: `agent called ${times(agentCalls)} · model called ${
+          times(modelCalls)
+        } · ${seconds(performance.now() - started)}`,
+      }),
+    );
     // However the task ended: a stop after the PDF was made still made it.
     if (pdf !== undefined) {
       lastPdf = await yurt.fs.read(pdf).catch(() => undefined);
@@ -632,6 +665,17 @@ export async function mountAgentPane(
     stop.hidden = true;
   };
   run.addEventListener("click", () => void go());
+  for (
+    const [button, words] of [
+      [demoWrite, DEMO_TASK],
+      [demoCount, DEMO_COUNT_TASK],
+    ] as const
+  ) {
+    button.addEventListener("click", () => {
+      task.value = words;
+      void go();
+    });
+  }
   task.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
