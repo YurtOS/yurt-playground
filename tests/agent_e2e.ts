@@ -211,8 +211,11 @@ if (import.meta.main) {
       if (await page.locator("[data-testid=agent-download]").count() !== 1) {
         throw new Error("agent e2e: no Download after the resume");
       }
-      // The Shell tab resumes without Jupyter, and has no cell that needs it.
+      // The Shell tab is another sandbox, with Jupyter's cell, and none of the
+      // agent's files; going back finds the agent's session as it was.
       await page.locator("[data-testid=view-shell]").click();
+      await page.waitForFunction(() => location.hash === "#shell");
+      await page.locator("#start-sandbox").click();
       await page.waitForFunction(
         () =>
           (globalThis as unknown as { yurt?: { status: string } }).yurt
@@ -220,11 +223,31 @@ if (import.meta.main) {
         null,
         { timeout: 60_000 },
       );
-      if (await page.locator("#notebook").isVisible()) {
-        throw new Error("agent e2e: a Python cell with no Jupyter behind it");
+      if (!await page.locator("#notebook").isVisible()) {
+        throw new Error("agent e2e: the Shell tab lost its Python cell");
+      }
+      const mixed = await page.evaluate(() =>
+        (globalThis as unknown as {
+          yurt: { exec(c: string): Promise<{ code: number }> };
+        }).yurt.exec(`test -e /home/user/demo.txt`).then((r) => r.code)
+      );
+      if (mixed === 0) {
+        throw new Error(
+          "agent e2e: the agent's file is in the shell's sandbox",
+        );
       }
       await page.locator("[data-testid=view-agent]").click();
-      // A plain reload resumes too, and New session starts over.
+      await page.locator("#agent[data-agent-ready]").waitFor();
+      await page.locator("[data-testid=agent-download]").waitFor();
+      // A plain reload resumes too, and New session starts over. Not mid-boot: a
+      // reload then reads as a boot the browser cut off.
+      await page.waitForFunction(
+        () =>
+          (globalThis as unknown as { yurt?: { status: string } }).yurt
+            ?.status === "running",
+        null,
+        { timeout: 60_000 },
+      );
       await page.reload();
       await page.locator("#agent[data-agent-ready]").waitFor();
       await page.locator("[data-testid=agent-download]").waitFor();

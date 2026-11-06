@@ -105,6 +105,7 @@ type ToWorker =
   | {
     type: "start";
     resumeSession?: boolean;
+    dropSession?: boolean;
     cols: number;
     rows: number;
     isolated: boolean;
@@ -767,7 +768,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   // The slim image's Python: the coordinator installs the set itself, so
   // every page that boots a sandbox gets the same install.
   // No chat to go with it: not waited for, it only frees the storage.
-  if (msg.resumeSession !== true) {
+  if (msg.dropSession === true) {
     void dropAgentSession().catch(() => {});
   }
   const python = msg.python;

@@ -639,13 +639,6 @@ export async function mountAgentPane(
     }
   });
   stop.addEventListener("click", () => running?.abort());
-  // The terminal and the Python cell are this sandbox too: opening them resumes it.
-  document.querySelector("[data-testid=view-shell]")?.addEventListener(
-    "click",
-    () => {
-      if (suspended) reloadPage();
-    },
-  );
 
   if (sandbox.suspend === undefined) return;
   const fresh = el("button", {
@@ -658,7 +651,8 @@ export async function mountAgentPane(
   run.parentElement?.append(fresh);
 
   // A reload, or the message that asked for one: back where the run ended.
-  const saved = loadChat();
+  // Only at the Agent tab: the Shell tab has a sandbox of its own to start.
+  const saved = location.hash === "#agent" ? loadChat() : undefined;
   if (saved === undefined) return;
   if (!Array.from(choice.options).some((o) => o.value === saved.choice)) return;
   chat.push(...saved.chat);

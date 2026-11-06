@@ -104,10 +104,28 @@ function agentSeals(desktop: DesktopInfo | undefined): boolean {
 }
 
 function agentOnlySandbox(desktop: DesktopInfo | undefined): boolean {
-  // Started from the Agent tab, or resuming a session that was: nothing in an
-  // agent session needs Jupyter, so the Shell tab does not bring it in either.
-  return agentSeals(desktop) &&
-    (location.hash === "#agent" || savedAgentChat());
+  return agentSeals(desktop) && location.hash === "#agent";
+}
+
+/** Which sandbox this page started: each tab has its own, so going to the other
+ * tab loads that one. Unset until a sandbox starts. */
+let startedAs: "agent" | "shell" | undefined;
+
+function switchSandboxes(desktop: DesktopInfo | undefined): void {
+  if (!agentSeals(desktop)) return;
+  document.querySelector("[data-testid=view-shell]")?.addEventListener(
+    "click",
+    () => {
+      if (startedAs === "agent") reloadOnPurpose();
+    },
+  );
+  document.querySelector("[data-testid=view-agent]")?.addEventListener(
+    "click",
+    () => {
+      // A saved chat comes back on a load at the Agent tab.
+      if (startedAs === "shell" || savedAgentChat()) reloadOnPurpose();
+    },
+  );
 }
 
 /** Whether a sealed agent run's chat is here (src/agent_pane.ts). */
@@ -237,7 +255,16 @@ function watchNetwork(net: HTMLElement): void {
  * the reloaded page can tell a cut-off boot from a first visit.
  */
 const BOOTING_KEY = "yurt-playground-booting";
+let reloading = false;
+/** Reload on purpose: not a boot the browser cut off. */
+function reloadOnPurpose(): void {
+  cutOffBoot();
+  reloading = true;
+  location.reload();
+}
 function rememberBooting(status: string | undefined): void {
+  // A status can still arrive between asking for a reload and the page going.
+  if (reloading) return;
   try {
     if (status === undefined) sessionStorage.removeItem(BOOTING_KEY);
     else sessionStorage.setItem(BOOTING_KEY, status);
@@ -331,11 +358,11 @@ function boot(
   const capturing = snapshotMode() === "capture";
   // The snapshot this start restores (the device's own, or Go's on a
   // desktop that chose it) or captures.
-  // The agent needs little: the small snapshot, and what it installs stays in
-  // each seal. Decided here, at Start, from the tab that asked.
+  // Two sandboxes that do not mix. Shell & Python is the default snapshot with
+  // Jupyter. The agent needs little: the small snapshot, without Jupyter, and
+  // what it installs stays in each seal. Decided here, from the tab that asked.
   const agentOnly = !capturing && agentOnlySandbox(desktop);
-  // The cell runs on Jupyter; this sandbox's Python is in the terminal.
-  if (agentOnly) byId("notebook").hidden = true;
+  startedAs = agentOnly ? "agent" : "shell";
   const kind: SnapshotKind = agentOnly
     ? "tablet"
     : capturing
@@ -561,14 +588,14 @@ function boot(
     }
     worker.postMessage({
       type: "start",
-      resumeSession: savedAgentChat(),
+      // Only the agent's sandbox is sealed; the shell's never reads that seal.
+      resumeSession: agentOnly && savedAgentChat(),
+      dropSession: agentOnly && !savedAgentChat(),
       cols: term.cols,
       rows: term.rows,
       isolated: globalThis.crossOriginIsolated === true,
       kernelPorts,
       apiToken: desktop?.apiToken,
-      // The agent needs a shell, not Jupyter: from its tab, each resume would
-      // start a kernel only for the next seal to kill it.
       noJupyter: noPython || agentOnly,
       // A capture installs its kind's Python: the set (desktop), python
       // alone (tablet), none (phone) -- or Go's go package (go).
@@ -900,6 +927,7 @@ async function runPage(): Promise<void> {
   // cross-origin isolation, and a page served without it cannot boot at all
   // and goes to the explanation.
   const desktop = await desktopInfo();
+  switchSandboxes(desktop);
   // The page's own claim is about the tab; the desktop app's sandbox is on
   // this machine and on the network, and the header should say which.
   if (desktop !== undefined) {
@@ -991,11 +1019,7 @@ async function runPage(): Promise<void> {
       start: () => document.getElementById("start-sandbox")?.click(),
       unavailable: refused ? "no sandbox" : undefined,
       // Only the in-tab sandbox seals; `?suspend=0` keeps it running.
-      // These reloads are the agent's own, not a boot the browser cut off.
-      reload: () => {
-        cutOffBoot();
-        location.reload();
-      },
+      reload: reloadOnPurpose,
       suspend: !agentSeals(desktop)
         ? undefined
         : () => suspendSandbox?.() ?? Promise.resolve("no sandbox is running"),
