@@ -105,6 +105,7 @@ type ToWorker =
   | {
     type: "start";
     resumeSession?: boolean;
+    snapshotRequired?: boolean;
     dropSession?: boolean;
     cols: number;
     rows: number;
@@ -740,6 +741,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           : `./${SNAPSHOT_KINDS[restoreKind].name}`
         : undefined,
     snapshotKind: restoreKind,
+    snapshotRequired: msg.snapshotRequired === true,
     snapshotCache: typeof caches === "undefined" ? undefined : caches,
     snapshotId: isUploadedSnapshotId(msg.snapshotId)
       ? msg.snapshotId

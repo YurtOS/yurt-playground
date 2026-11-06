@@ -165,10 +165,8 @@ if (import.meta.main) {
         document.querySelector(".jp-Notebook-ExecutionIndicator")
             ?.getAttribute("data-status") === "idle",
       undefined,
-      // Since the slim image (2026.10.27) the page installs Python first:
-      // 124-322 s on a CI runner (job logs, 10-27/28), three quarters of
-      // the 420 s this was. The rest of the scene takes about a minute,
-      // inside the acceptance step's 11 min cap.
+      // It restores the default snapshot, so this allows for a slow runner, not
+      // for an install.
       { timeout: 480_000 },
     );
     console.log(

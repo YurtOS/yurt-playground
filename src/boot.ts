@@ -103,6 +103,8 @@ export type PlaygroundEnv = {
   savedSession?: () => Promise<StoredSnapshot | undefined>;
   /** A saved session that would not resume: it is not tried again. */
   dropSavedSession?: () => Promise<void>;
+  /** Fail rather than boot the image when the snapshot cannot be restored. */
+  snapshotRequired?: boolean;
   /** The kernel's sha256, once loaded: a later seal records it. */
   kernelSha256?: (sha256: string) => void;
   fetchBytes: (path: string) => Promise<Uint8Array>;
@@ -523,6 +525,10 @@ export async function bootPlayground(
   };
   const snapshotPath = env.snapshotPath;
   if (snapshotPath === undefined) return await bootImage();
+  if (env.snapshotRequired === true) {
+    const restored = await restoreSnapshot(env, kernel, snapshotPath);
+    return await start(restored.host, true);
+  }
   // A restored kernel that then fails to start its shell falls back too.
   return (await snapshotOrBoot(
     async () => {
