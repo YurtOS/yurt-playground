@@ -47,6 +47,7 @@ export const ACTION_SCHEMA = {
     action("exec", "cmd"),
     action("read_file", "path"),
     action("write_file", "path", "text"),
+    action("set_color", "color"),
     action("answer", "text"),
   ],
 };

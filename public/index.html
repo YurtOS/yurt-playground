@@ -160,6 +160,18 @@
       #sidebar .links a:hover {
         text-decoration: underline;
       }
+      .interfaces {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px 14px;
+        margin-top: 10px;
+        color: var(--muted);
+      }
+      /* A phone or Go offers neither. */
+      .interfaces:not(:has(a:not([hidden]))) {
+        display: none;
+      }
       .content {
         min-width: 0;
         padding-top: 20px;
@@ -812,13 +824,7 @@
               About
             </button>
           </nav>
-          <nav class="links" aria-label="interfaces">
-            <a
-              href="./jupyter/notebooks/index.html?path=welcome.ipynb"
-              data-testid="choose-notebook"
-            >Notebook</a>
-            <a href="./jupyter/lab/index.html" data-testid="choose-lab"
-            >JupyterLab</a>
+          <nav class="links" aria-label="about this site">
             <a
               href="https://yurtos.github.io/yurt-playground/"
               id="release-notes-link"
@@ -1061,6 +1067,15 @@
               data-testid="notebook"
             >
             </section>
+            <nav class="interfaces" aria-label="interfaces" data-view="shell">
+              <span>Full Jupyter, with a sandbox of its own:</span>
+              <a
+                href="./jupyter/notebooks/index.html?path=welcome.ipynb"
+                data-testid="choose-notebook"
+              >Notebook</a>
+              <a href="./jupyter/lab/index.html" data-testid="choose-lab"
+              >JupyterLab</a>
+            </nav>
 
             <section
               class="pane"

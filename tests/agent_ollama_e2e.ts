@@ -91,6 +91,20 @@ async function runDemo(page: Page, name: string): Promise<boolean> {
   const first = await readBack(page, `${name}-first`);
   const secondMs = await say(page, `Add a last line saying exactly: ${EDIT}`);
   const second = await readBack(page, `${name}-second`);
+  const greenMs = await say(page, "Make the text green.");
+  const greenBytes = await page.evaluate(
+    (path) =>
+      (globalThis as unknown as { yurt: Yurtish }).yurt.fs.read(path)
+        .then((b) => [...b]),
+    DEMO_PDF_PATH,
+  );
+  await Deno.writeFile(
+    join(OUT, `${name}-green.pdf`),
+    new Uint8Array(greenBytes),
+  );
+  const green = new TextDecoder().decode(new Uint8Array(greenBytes))
+    .includes("0 0.5 0 rg");
+  console.log(`${name}: green=${green} (${Math.round(greenMs / 1000)} s)`);
   await Deno.writeTextFile(
     join(OUT, `${name}.txt`),
     await page.locator("#agent-transcript").innerText(),
@@ -121,7 +135,7 @@ async function runDemo(page: Page, name: string): Promise<boolean> {
       Math.round(secondMs / 1000)
     } s)`,
   );
-  return wrote && changed && kept > 0.9 && downloaded > 0;
+  return wrote && changed && kept > 0.9 && downloaded > 0 && green;
 }
 
 if (import.meta.main) {

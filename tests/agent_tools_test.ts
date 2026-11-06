@@ -165,6 +165,7 @@ Deno.test("the agent probe says no python3 only on the missing code", async () =
     },
     readFile: () => Promise.reject(new Error("unused")),
     writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
   });
   assertEquals(await sandboxHasPython(tools(0), signal), true);
   assertEquals(await sandboxHasPython(tools(42), signal), false);
@@ -190,6 +191,7 @@ Deno.test("the agent's prompt keeps Python 3 on an image whose python3 lacks the
     },
     readFile: () => Promise.reject(new Error("unused")),
     writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
   });
   const root = await Deno.makeTempDir({ prefix: "agent-pyprobe-" });
   try {
@@ -321,4 +323,28 @@ Deno.test("writing the demo's text makes its PDF, and says when it could not", a
   const failed = await createAgentTools(broken.yurt)
     .writeFile(DEMO_TEXT_PATH, "ab", never).catch((e) => e);
   assertEquals(failed instanceof ToolFailed, true, "the model cannot fix it");
+});
+
+Deno.test("setColor saves a known color and remakes the PDF, changing no words", async () => {
+  const never = new AbortController().signal;
+  const good = writingSandbox(0);
+  assertEquals(
+    await createAgentTools(good.yurt).setColor("green", never),
+    `the PDF's text is green; ${DEMO_PDF_MADE}`,
+  );
+  assertEquals(good.written, ["/home/user/demo.color:green"]);
+  assertEquals(good.commands.at(-1), MAKE_DEMO_PDF);
+  const mauve = writingSandbox(0);
+  await assertRejects(
+    () => createAgentTools(mauve.yurt).setColor("mauve", never),
+    Error,
+    "no color mauve",
+  );
+  assertEquals(mauve.written, []);
+  // No document yet: saved for it, no PDF claimed.
+  const early = writingSandbox(1);
+  assertEquals(
+    await createAgentTools(early.yurt).setColor("red", never),
+    "the PDF's text is red once its text is written",
+  );
 });

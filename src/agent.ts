@@ -11,6 +11,7 @@ export type Action =
   | { action: "exec"; cmd: string }
   | { action: "read_file"; path: string }
   | { action: "write_file"; path: string; text: string }
+  | { action: "set_color"; color: string }
   | { action: "answer"; text: string };
 
 export type ModelStats = { promptTokens: number; outputTokens: number };
@@ -34,6 +35,8 @@ export type Tools = {
   readFile(path: string, signal: AbortSignal): Promise<string>;
   /** Resolves to what happened, for the model. */
   writeFile(path: string, text: string, signal: AbortSignal): Promise<string>;
+  /** The demo PDF's text color; resolves to what happened, for the model. */
+  setColor(color: string, signal: AbortSignal): Promise<string>;
 };
 
 /** A tool failure the model cannot fix by trying again: it ends the task. */
@@ -113,9 +116,20 @@ export function systemPrompt(python: boolean): string {
  * chat, or a restored sandbox, finds them. */
 export const DEMO_TEXT_PATH = "/home/user/demo.txt";
 export const DEMO_PDF_PATH = "/home/user/demo.pdf";
+export const DEMO_COLOR_PATH = "/home/user/demo.color";
+/** The colors of the `mkpdf` command. */
+export const DEMO_COLORS = [
+  "black",
+  "red",
+  "green",
+  "blue",
+  "orange",
+  "purple",
+  "gray",
+];
 /** Run after each write of the text. */
 export const MAKE_DEMO_PDF =
-  `command -v mkpdf >/dev/null || { sudo pkg update && sudo pkg install mkpdf; }; mkpdf ${DEMO_PDF_PATH} < ${DEMO_TEXT_PATH}`;
+  `command -v mkpdf >/dev/null || { sudo pkg update && sudo pkg install mkpdf; }; { [ -f ${DEMO_COLOR_PATH} ] && echo "%color $(cat ${DEMO_COLOR_PATH})"; cat ${DEMO_TEXT_PATH}; } | mkpdf ${DEMO_PDF_PATH}`;
 /** What a write says when it made the PDF: the pane's cue to offer it. */
 export const DEMO_PDF_MADE = `made ${DEMO_PDF_PATH}`;
 
@@ -124,9 +138,12 @@ const PROMPT_RULES = [
   '{"action":"exec","cmd":"<shell command>"}',
   '{"action":"read_file","path":"<absolute path>"}',
   '{"action":"write_file","path":"<absolute path>","text":"<the whole file>"}',
+  `{"action":"set_color","color":"<${DEMO_COLORS.join("|")}>"}`,
   '{"action":"answer","text":"<final answer for the user>"}',
   "Use exec or read_file to get facts from the sandbox, one step at a time.",
   `To create or change a PDF, write_file its whole text to ${DEMO_TEXT_PATH}: plain ASCII with no markdown, under 300 words, since a page holds 40 lines of 65 characters. That also makes the PDF at ${DEMO_PDF_PATH}; do nothing more for it.`,
+  "set_color sets the color of the whole text of that PDF and remakes it; it changes no words.",
+  "The PDF can do nothing else: no bold, sizes, images or background. If asked for those, say so; never claim a change you did not make.",
   "Answer only from what you have seen. Keep the answer short.",
 ];
 
@@ -180,6 +197,7 @@ const FIELDS = {
   exec: ["cmd"],
   read_file: ["path"],
   write_file: ["path", "text"],
+  set_color: ["color"],
   answer: ["text"],
 } as const;
 
@@ -312,7 +330,7 @@ export async function runAgent(
         turns.push({
           reply: JSON.stringify(text.slice(0, 200)),
           result:
-            "That is not one of the four JSON actions. Reply with exactly one.",
+            "That is not one of the five JSON actions. Reply with exactly one.",
         });
         continue;
       }
@@ -327,6 +345,8 @@ export async function runAgent(
         if (action.action === "exec") {
           const r = await tools.exec(action.cmd, signal);
           raw = `exit ${r.code ?? "none"}\n${r.stdout}${r.stderr}`;
+        } else if (action.action === "set_color") {
+          raw = await tools.setColor(action.color, signal);
         } else if (action.action === "write_file") {
           raw = await tools.writeFile(action.path, action.text, signal);
         } else {

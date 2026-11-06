@@ -372,6 +372,11 @@ if (import.meta.main) {
       ) {
         throw new Error("agent e2e: Shell & Python does not show both");
       }
+      for (const link of ["choose-notebook", "choose-lab"]) {
+        if (!await page.getByTestId(link).isVisible()) {
+          throw new Error(`agent e2e: no ${link} in Shell & Python`);
+        }
+      }
       if (await page.locator("[data-testid=view-python]").count() !== 0) {
         throw new Error("agent e2e: Python still has a section of its own");
       }

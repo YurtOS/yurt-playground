@@ -424,6 +424,17 @@ export async function mountAgentPane(
             el("b", { textContent: "$ " }),
             e.action.cmd,
           );
+        } else if (e.action.action === "set_color") {
+          pdf = undefined;
+          for (const old of transcript.querySelectorAll("li.download")) {
+            old.remove();
+          }
+          line = el(
+            "div",
+            { className: "call" },
+            el("b", { textContent: "color " }),
+            e.action.color,
+          );
         } else if (e.action.action === "write_file") {
           // What is on offer is about to change; it comes back once it is made.
           pdf = undefined;

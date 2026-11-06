@@ -381,17 +381,16 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
   // The release notes live on GitHub Pages; the sidebar and the footer
   // both link there.
   const notes = "https://yurtos.github.io/yurt-playground/";
-  const nav =
-    html.match(/<nav class="links" aria-label="interfaces">([\s\S]*?)<\/nav>/)
-      ?.[1] ?? "";
+  const nav = html.match(
+    /<nav class="links" aria-label="about this site">([\s\S]*?)<\/nav>/,
+  )
+    ?.[1] ?? "";
   const navLinks = [...nav.matchAll(/<a\s([^>]*)>([^<]*)<\/a>/g)];
   assertEquals(navLinks.map((link) => link[2]), [
-    "Notebook",
-    "JupyterLab",
     "Release notes",
     "Source",
   ]);
-  const navNotes = navLinks[2][1];
+  const navNotes = navLinks[0][1];
   assertEquals(navNotes.includes(`href="${notes}"`), true);
   assertEquals(navNotes.includes('data-testid="release-notes-link"'), true);
   const footer = html.match(/<footer[^>]*>([\s\S]*?)<\/footer>/)?.[1] ?? "";

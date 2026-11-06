@@ -1,4 +1,6 @@
 import {
+  DEMO_COLOR_PATH,
+  DEMO_COLORS,
   DEMO_PDF_MADE,
   DEMO_PDF_PATH,
   DEMO_TEXT_PATH,
@@ -75,6 +77,26 @@ async function runCommand(
 const EXEC_TIMEOUT_MS = 120_000;
 
 export function createAgentTools(yurt: Yurt): Tools {
+  const makePdf = async (wrote: string, signal: AbortSignal) => {
+    const made = await runCommand(
+      yurt,
+      MAKE_DEMO_PDF,
+      EXEC_TIMEOUT_MS,
+      DEFAULT_MAX_OUTPUT_BYTES,
+      signal,
+    );
+    // Only too much text is the model's to fix (mkpdf's exit 3).
+    if ("code" in made && made.code === 3) {
+      throw new Error(`${wrote}, but no PDF: ${made.stderr}`);
+    }
+    if (!("code" in made) || made.code !== 0) {
+      throw new ToolFailed(
+        `The text is saved, but the PDF could not be made: ${
+          made.stderr || "the command timed out"
+        }`,
+      );
+    }
+  };
   return {
     async exec(cmd, signal) {
       const result = await runCommand(
@@ -105,25 +127,29 @@ export function createAgentTools(yurt: Yurt): Tools {
       await abortable(yurt.fs.write(path, text), signal);
       const wrote = `wrote ${text.length} characters to ${path}`;
       if (file !== DEMO_TEXT_PATH) return wrote;
-      const made = await runCommand(
+      await makePdf(wrote, signal);
+      return `${wrote}; ${DEMO_PDF_MADE}`;
+    },
+    async setColor(color, signal) {
+      if (!DEMO_COLORS.includes(color)) {
+        throw new Error(
+          `no color ${color}; there are ${DEMO_COLORS.join(", ")}`,
+        );
+      }
+      await abortable(yurt.fs.write(DEMO_COLOR_PATH, color), signal);
+      const set = `the PDF's text is ${color}`;
+      const text = await runCommand(
         yurt,
-        MAKE_DEMO_PDF,
+        `test -f ${DEMO_TEXT_PATH}`,
         EXEC_TIMEOUT_MS,
         DEFAULT_MAX_OUTPUT_BYTES,
         signal,
       );
-      // Only too much text is the model's to fix (mkpdf's exit 3).
-      if ("code" in made && made.code === 3) {
-        throw new Error(`${wrote}, but no PDF: ${made.stderr}`);
+      if (!("code" in text) || text.code !== 0) {
+        return `${set} once its text is written`;
       }
-      if (!("code" in made) || made.code !== 0) {
-        throw new ToolFailed(
-          `The text is saved, but the PDF could not be made: ${
-            made.stderr || "the command timed out"
-          }`,
-        );
-      }
-      return `${wrote}; ${DEMO_PDF_MADE}`;
+      await makePdf(set, signal);
+      return `${set}; ${DEMO_PDF_MADE}`;
     },
     async readFile(path, signal) {
       const checked = checkPath(path);

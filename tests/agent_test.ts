@@ -38,6 +38,7 @@ const tools = (log: string[] = []): Tools => ({
     return Promise.resolve({ code: 0, stdout: "2\n", stderr: "" });
   },
   writeFile: () => Promise.reject(new Error("unused")),
+  setColor: () => Promise.reject(new Error("unused")),
   readFile(path) {
     log.push(`read ${path}`);
     return Promise.resolve(passwd);
@@ -65,7 +66,7 @@ async function run(
   return { events, prompts, types: events.map((e) => e.type) };
 }
 
-Deno.test("validateAction accepts exactly the four variants", () => {
+Deno.test("validateAction accepts exactly the five variants", () => {
   assertEquals(validateAction({ action: "exec", cmd: "ls" }), {
     action: "exec",
     cmd: "ls",
@@ -122,7 +123,7 @@ Deno.test("an invalid reply is retried with a correction, then limited", async (
     "action",
     "answer",
   ]);
-  assert(corrected.prompts[1].includes("not one of the four JSON actions"));
+  assert(corrected.prompts[1].includes("not one of the five JSON actions"));
 
   const gaveUp = await run(["no", "still no", "never"], {
     limits: { maxInvalid: 2 },
@@ -146,6 +147,7 @@ Deno.test("tool output is clipped to the observation limit", async () => {
       Promise.resolve({ code: 0, stdout: "x".repeat(5000), stderr: "" }),
     readFile: () => Promise.reject(new Error("unused")),
     writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
   };
   const { events, prompts } = await run([
     '{"action":"exec","cmd":"yes"}',
@@ -161,6 +163,7 @@ Deno.test("a failing tool is an observation, not the end of the task", async () 
     exec: () => Promise.reject(new Error("kernel_spawn_process failed")),
     readFile: () => Promise.reject(new Error("unused")),
     writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
   };
   const { types, prompts } = await run([
     '{"action":"exec","cmd":"ls"}',
@@ -197,6 +200,7 @@ Deno.test("cancel stops a running tool and reports it", async () => {
       }),
     readFile: () => Promise.reject(new Error("unused")),
     writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
   };
   const { events, prompts } = await run(
     ['{"action":"exec","cmd":"sleep 100"}', '{"action":"answer","text":"x"}'],
@@ -272,6 +276,7 @@ Deno.test("runAgent hands the model the system prompt it was given", async () =>
     exec: () => Promise.reject(new Error("unused")),
     readFile: () => Promise.reject(new Error("unused")),
     writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
   };
   await runAgent(
     "task",
@@ -343,6 +348,7 @@ Deno.test("write_file needs both its fields, and the loop writes what it names",
     {
       exec: () => Promise.reject(new Error("unused")),
       readFile: () => Promise.reject(new Error("unused")),
+      setColor: () => Promise.reject(new Error("unused")),
       writeFile: (path, text) => {
         written.push([path, text]);
         return Promise.resolve(`wrote ${path}`);
@@ -373,10 +379,46 @@ Deno.test("a tool failure the model cannot fix ends the task at once", async () 
       exec: () => Promise.reject(new Error("unused")),
       readFile: () => Promise.reject(new Error("unused")),
       writeFile: () => Promise.reject(new ToolFailed("mkpdf: not found")),
+      setColor: () => Promise.reject(new Error("unused")),
     },
     (e) => events.push(e),
     new AbortController().signal,
   );
   assertEquals(calls, 1);
   assertEquals(events.at(-1), { type: "error", message: "mkpdf: not found" });
+});
+
+Deno.test("set_color takes one color and goes to the tool", async () => {
+  assertEquals(validateAction({ action: "set_color", color: "green" }), {
+    action: "set_color",
+    color: "green",
+  });
+  assertEquals(validateAction({ action: "set_color" }), null);
+  const asked: string[] = [];
+  const replies = [
+    '{"action":"set_color","color":"green"}',
+    '{"action":"answer","text":"done"}',
+  ];
+  await runAgent(
+    "make it green",
+    {
+      generate: () =>
+        Promise.resolve({
+          text: replies.shift()!,
+          stats: { promptTokens: 1, outputTokens: 1 },
+        }),
+    },
+    {
+      exec: () => Promise.reject(new Error("unused")),
+      readFile: () => Promise.reject(new Error("unused")),
+      writeFile: () => Promise.reject(new Error("unused")),
+      setColor: (color) => {
+        asked.push(color);
+        return Promise.resolve("set");
+      },
+    },
+    () => {},
+    new AbortController().signal,
+  );
+  assertEquals(asked, ["green"]);
 });
