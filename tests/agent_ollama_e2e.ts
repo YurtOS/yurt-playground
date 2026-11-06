@@ -118,22 +118,10 @@ async function runDemo(page: Page, name: string): Promise<boolean> {
   );
   const wordCount = pinkText.trim().split(/\s+/).length;
   const countStarted = performance.now();
-  const countEnds = "#agent-transcript .answer, #agent-transcript .stopped";
-  const countBefore = await page.locator(countEnds).count();
-  await page.locator("[data-testid=agent-demo-count]").click();
-  while (performance.now() - countStarted < 300_000) {
-    const done = await page.evaluate(
-      ([ends, before]) =>
-        document.querySelectorAll(ends as string).length > (before as number) &&
-        document.querySelector("#agent")?.hasAttribute(
-            "data-agent-suspended",
-          ) ===
-          true,
-      [countEnds, countBefore] as const,
-    ).catch(() => false);
-    if (done) break;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
+  await say(
+    page,
+    "Run this in the sandbox and tell me the number it prints: mkpdf --text /home/user/demo.pdf | wc -w",
+  );
   const counted = await page.locator("#agent-transcript .answer").last()
     .innerText();
   const calls = await page.locator("#agent-transcript .call").allInnerTexts();
