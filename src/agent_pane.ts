@@ -20,7 +20,6 @@ import {
   type AgentEvent,
   chatTask,
   DEFAULT_LIMITS,
-  DEMO_COUNT_TASK,
   DEMO_PDF_MADE,
   DEMO_PDF_PATH,
   DEMO_TASK,
@@ -277,25 +276,10 @@ export async function mountAgentPane(
     id: "agent-transcript",
     testid: "agent-transcript",
   });
-  // The demos: each fills the box and runs. Counting needs a PDF to count.
-  const demoWrite = el("button", {
-    type: "button",
-    className: "bar-action",
-    textContent: "Demo: write a PDF",
-    testid: "agent-demo-write",
-  });
-  const demoCount = el("button", {
-    type: "button",
-    className: "bar-action",
-    textContent: "Demo: count its words",
-    testid: "agent-demo-count",
-    disabled: true,
-  });
   const work = el(
     "div",
     { hidden: true },
     installed,
-    el("div", { className: "actions demos" }, demoWrite, demoCount),
     task,
     el("div", { className: "actions" }, run, hint),
     transcript,
@@ -429,7 +413,6 @@ export async function mountAgentPane(
   const offerDownload = () => {
     removeDownload();
     const bytes = lastPdf;
-    demoCount.disabled = bytes === undefined;
     if (bytes === undefined) return;
     const name = DEMO_PDF_PATH.split("/").pop()!;
     const download = el("button", {
@@ -680,17 +663,6 @@ export async function mountAgentPane(
     stop.hidden = true;
   };
   run.addEventListener("click", () => void go());
-  for (
-    const [button, words] of [
-      [demoWrite, DEMO_TASK],
-      [demoCount, DEMO_COUNT_TASK],
-    ] as const
-  ) {
-    button.addEventListener("click", () => {
-      task.value = words;
-      void go();
-    });
-  }
   task.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
