@@ -112,7 +112,7 @@ export async function loadLocalModel(
       const id = nextId++;
       const done = new Promise<Done>((resolve, reject) => {
         waiting.set(id, { resolve, reject });
-        post({ type: "generate", id, system, prompt, maxOutputTokens: 512 });
+        post({ type: "generate", id, system, prompt, maxOutputTokens: 1024 });
       });
       const cancel = () => post({ type: "cancel" });
       signal.addEventListener("abort", cancel, { once: true });

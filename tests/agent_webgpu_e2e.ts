@@ -285,7 +285,7 @@ type Report = {
 async function scene(driver: Driver, url: string): Promise<Report> {
   const report: Report = { browser: driver.version, ok: false };
   const say = (s: string) => console.error(`  [${driver.version}] ${s}`);
-  await driver.goto(url);
+  await driver.goto(`${url}#agent`);
   report.adapter = await driver.run<string>(ADAPTER);
   say(`adapter: ${report.adapter}`);
   if (report.adapter.startsWith("none")) {

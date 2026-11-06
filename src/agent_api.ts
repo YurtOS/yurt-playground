@@ -413,7 +413,7 @@ export function createYurt(
   };
 }
 
-function saveInBrowser(name: string, bytes: Uint8Array): void {
+export function saveInBrowser(name: string, bytes: Uint8Array): void {
   const url = URL.createObjectURL(new Blob([bytes as BlobPart]));
   const a = document.createElement("a");
   a.href = url;

@@ -1,6 +1,12 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import type { Yurt } from "../src/agent_api.ts";
-import type { Tools } from "../src/agent.ts";
+import {
+  DEMO_PDF_MADE,
+  DEMO_TEXT_PATH,
+  MAKE_DEMO_PDF,
+  ToolFailed,
+  type Tools,
+} from "../src/agent.ts";
 import { PYTHON_PROBE_COMMAND } from "../src/coordinator_start.ts";
 import {
   createAgentTools,
@@ -158,6 +164,8 @@ Deno.test("the agent probe says no python3 only on the missing code", async () =
         : Promise.resolve({ code, stdout: "", stderr: "" });
     },
     readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
   });
   assertEquals(await sandboxHasPython(tools(0), signal), true);
   assertEquals(await sandboxHasPython(tools(42), signal), false);
@@ -182,6 +190,8 @@ Deno.test("the agent's prompt keeps Python 3 on an image whose python3 lacks the
       return { code: output.code, stdout: "", stderr: "" };
     },
     readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
   });
   const root = await Deno.makeTempDir({ prefix: "agent-pyprobe-" });
   try {
@@ -199,4 +209,174 @@ Deno.test("the agent's prompt keeps Python 3 on an image whose python3 lacks the
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+Deno.test("a command that hit its limit says so, with the limit pkg's lock needs", async () => {
+  let limit: number | undefined;
+  const yurt = {
+    spawn: (_cmd: string, opts: { timeoutMs: number }) => {
+      limit = opts.timeoutMs;
+      return Promise.resolve({
+        id: "slow",
+        kill: () => Promise.resolve(),
+        wait: () =>
+          Promise.resolve({
+            timedOut: true,
+            killAttempted: true,
+            stillRunning: true,
+            stdout: "",
+            stderr: "partial\n",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          }),
+      });
+    },
+  } as unknown as Yurt;
+  const result = await createAgentTools(yurt).exec(
+    "sudo pkg install mkpdf",
+    new AbortController().signal,
+  );
+  assertEquals(result.code, null);
+  assertEquals(result.stderr, "partial\ntimed out after 120 s\n");
+  assertEquals(limit, 120_000);
+});
+
+function writingSandbox(code: number | null) {
+  const written: string[] = [];
+  const commands: string[] = [];
+  const yurt = {
+    fs: {
+      write: (path: string, data: string) => {
+        written.push(`${path}:${data}`);
+        return Promise.resolve();
+      },
+    },
+    spawn: (cmd: string) => {
+      commands.push(cmd);
+      return Promise.resolve({
+        id: "make",
+        kill: () => Promise.resolve(),
+        wait: () =>
+          Promise.resolve({
+            code,
+            signal: null,
+            coreDumped: false,
+            timedOut: false,
+            stdout: "",
+            stderr: code === 0 ? "" : "a page holds 40\n",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          }),
+      });
+    },
+  } as unknown as Yurt;
+  return { yurt, written, commands };
+}
+
+Deno.test("writeFile writes through the sandbox's files, absolute paths only", async () => {
+  const { yurt, written, commands } = writingSandbox(0);
+  const tools = createAgentTools(yurt);
+  const never = new AbortController().signal;
+  assertEquals(
+    await tools.writeFile("/home/user/a", "text", never),
+    "wrote 4 characters to /home/user/a",
+  );
+  assertEquals(written, ["/home/user/a:text"]);
+  assertEquals(commands, []);
+  await assertRejects(() => tools.writeFile("a", "text", never));
+});
+
+Deno.test("writing the demo's text makes its PDF, and says when it could not", async () => {
+  const never = new AbortController().signal;
+  const good = writingSandbox(0);
+  assertEquals(
+    await createAgentTools(good.yurt).writeFile(DEMO_TEXT_PATH, "ab", never),
+    `wrote 2 characters to ${DEMO_TEXT_PATH}; ${DEMO_PDF_MADE}`,
+  );
+  assertEquals(good.commands, [MAKE_DEMO_PDF]);
+  // The PDF itself is not the model's to write: text there would destroy it.
+  const pdf = writingSandbox(0);
+  await assertRejects(
+    () =>
+      createAgentTools(pdf.yurt).writeFile("/home/user/demo.pdf", "x", never),
+    Error,
+    "is made from",
+  );
+  assertEquals(pdf.written, []);
+  const other = writingSandbox(0);
+  await createAgentTools(other.yurt).writeFile(
+    "/home/user/./demo.txt",
+    "ab",
+    never,
+  );
+  assertEquals(other.commands, [MAKE_DEMO_PDF]);
+  const long = writingSandbox(3);
+  const refused = await createAgentTools(long.yurt)
+    .writeFile(DEMO_TEXT_PATH, "ab", never).catch((e) => e);
+  assertEquals(refused.message.includes("a page holds 40"), true);
+  assertEquals(
+    refused instanceof ToolFailed,
+    false,
+    "the model can shorten it",
+  );
+  const broken = writingSandbox(127);
+  const failed = await createAgentTools(broken.yurt)
+    .writeFile(DEMO_TEXT_PATH, "ab", never).catch((e) => e);
+  assertEquals(failed instanceof ToolFailed, true, "the model cannot fix it");
+});
+
+Deno.test("setColor saves a known color and remakes the PDF, changing no words", async () => {
+  const never = new AbortController().signal;
+  const good = writingSandbox(0);
+  assertEquals(
+    await createAgentTools(good.yurt).setColor("#008000", never),
+    `the PDF's text is #008000; ${DEMO_PDF_MADE}`,
+  );
+  assertEquals(good.written, ["/home/user/demo.color:#008000"]);
+  assertEquals(good.commands.at(-1), MAKE_DEMO_PDF);
+  // No # and capitals, as models send them.
+  const bare = writingSandbox(0);
+  await createAgentTools(bare.yurt).setColor("FF69B4", never);
+  assertEquals(bare.written, ["/home/user/demo.color:#ff69b4"]);
+  const mauve = writingSandbox(0);
+  await assertRejects(
+    () => createAgentTools(mauve.yurt).setColor("pink", never),
+    Error,
+    "no color pink",
+  );
+  assertEquals(mauve.written, []);
+  // No document yet: saved for it, no PDF claimed.
+  const early = writingSandbox(1);
+  assertEquals(
+    await createAgentTools(early.yurt).setColor("#ff0000", never),
+    "the PDF's text is #ff0000 once its text is written",
+  );
+});
+
+Deno.test("any .pdf written is made as a PDF, not plain text with that name", async () => {
+  const never = new AbortController().signal;
+  const box = writingSandbox(0);
+  assertEquals(
+    await createAgentTools(box.yurt).writeFile(
+      "/home/user/fact.pdf",
+      "42",
+      never,
+    ),
+    "wrote 2 characters to /home/user/fact.pdf; made /home/user/fact.pdf",
+  );
+  assertEquals(box.written, ["/tmp/agent-pdf.txt:42"]);
+  assertEquals(box.commands.length, 1);
+  assertEquals(box.commands[0].includes("mkpdf '/home/user/fact.pdf'"), true);
+  // The demo's own PDF still comes only from its text.
+  const demo = writingSandbox(0);
+  await assertRejects(
+    () =>
+      createAgentTools(demo.yurt).writeFile("/home/user/demo.pdf", "x", never),
+    Error,
+    "is made from",
+  );
+  // Not a .pdf: a plain file, as before.
+  const plain = writingSandbox(0);
+  await createAgentTools(plain.yurt).writeFile("/home/user/a.txt", "x", never);
+  assertEquals(plain.commands, []);
 });

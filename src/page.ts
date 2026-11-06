@@ -1,3 +1,4 @@
+import { AGENT_CHAT_STORAGE } from "./snapshot_store.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import { installedMarks, type InstalledReport } from "./installed_list.ts";
 import {
@@ -14,6 +15,7 @@ import {
   pythonInstallState,
 } from "./python_install.ts";
 import { mountAgentPane } from "./agent_pane.ts";
+import { mountSidebar } from "./sidebar.ts";
 import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
   finishCapture,
@@ -80,6 +82,7 @@ type FromWorker =
   | InstalledReport
   | { type: "snapshot-captured"; blob: Blob; ms: number }
   | { type: "linux-remark"; remark: string }
+  | { type: "suspended"; why?: string }
   | {
     type: "yurt-reply";
     req: number;
@@ -92,6 +95,51 @@ type FromWorker =
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string }
   | MemoryRefusedMessage;
+
+/** The in-tab sandbox seals after each agent run; `?suspend=0` keeps it running,
+ * and the desktop app's native sandbox does not seal. */
+function agentSeals(desktop: DesktopInfo | undefined): boolean {
+  return desktop === undefined &&
+    new URL(location.href).searchParams.get("suspend") !== "0";
+}
+
+function agentOnlySandbox(desktop: DesktopInfo | undefined): boolean {
+  return agentSeals(desktop) && location.hash === "#agent";
+}
+
+/** Which sandbox this page started: each tab has its own, so going to the other
+ * tab loads that one. Unset until a sandbox starts. */
+let startedAs: "agent" | "shell" | undefined;
+
+function switchSandboxes(desktop: DesktopInfo | undefined): void {
+  if (!agentSeals(desktop)) return;
+  document.querySelector("[data-testid=view-shell]")?.addEventListener(
+    "click",
+    () => {
+      if (startedAs === "agent") reloadOnPurpose();
+    },
+  );
+  document.querySelector("[data-testid=view-agent]")?.addEventListener(
+    "click",
+    () => {
+      // A saved chat comes back on a load at the Agent tab.
+      if (startedAs === "shell" || savedAgentChat()) reloadOnPurpose();
+    },
+  );
+}
+
+/** Whether a sealed agent run's chat is here (src/agent_pane.ts). */
+function savedAgentChat(): boolean {
+  try {
+    return localStorage.getItem(AGENT_CHAT_STORAGE) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** Seal the sandbox after an agent run; resolves to why it could not. Set at
+ * boot. */
+let suspendSandbox: (() => Promise<string | undefined>) | undefined;
 
 /** A package install in the in-tab sandbox, once it boots: the coordinator
  * runs it (src/packages.ts), one install at a time with the automatic Python
@@ -207,7 +255,40 @@ function watchNetwork(net: HTMLElement): void {
  * the reloaded page can tell a cut-off boot from a first visit.
  */
 const BOOTING_KEY = "yurt-playground-booting";
+let reloading = false;
+const OWN_RELOAD_KEY = "yurt-agent-own-reload";
+
+/** A refresh is the visitor starting over: the agent's chat goes, and with it
+ * its seal (a sandbox resumes only with its chat). The page's own reloads, which
+ * resume a sealed sandbox, say so first. */
+function forgetChatOnRefresh(): void {
+  try {
+    const own = sessionStorage.getItem(OWN_RELOAD_KEY) !== null;
+    sessionStorage.removeItem(OWN_RELOAD_KEY);
+    const entry = performance.getEntriesByType("navigation")[0] as
+      | PerformanceNavigationTiming
+      | undefined;
+    if (!own && entry?.type === "reload") {
+      localStorage.removeItem(AGENT_CHAT_STORAGE);
+    }
+  } catch {
+    // Storage blocked: there is no chat to forget.
+  }
+}
+/** Reload on purpose: not a boot the browser cut off. */
+function reloadOnPurpose(): void {
+  cutOffBoot();
+  reloading = true;
+  try {
+    sessionStorage.setItem(OWN_RELOAD_KEY, "1");
+  } catch {
+    // Storage blocked: the load reads as a refresh, and starts over.
+  }
+  location.reload();
+}
 function rememberBooting(status: string | undefined): void {
+  // A status can still arrive between asking for a reload and the page going.
+  if (reloading) return;
   try {
     if (status === undefined) sessionStorage.removeItem(BOOTING_KEY);
     else sessionStorage.setItem(BOOTING_KEY, status);
@@ -270,6 +351,12 @@ function boot(
   // A classic coordinator can spawn the module guest bootstrap.
   const worker = new Worker("/coordinator.bundle.js");
   attachGuestWorkerFactory(worker);
+  let suspendAnswer: ((why?: string) => void) | undefined;
+  suspendSandbox = () =>
+    new Promise((resolve) => {
+      suspendAnswer = resolve;
+      worker.postMessage({ type: "suspend" });
+    });
   execute.current = (id, code) => {
     worker.postMessage({ type: "cell", id, code });
   };
@@ -295,7 +382,14 @@ function boot(
   const capturing = snapshotMode() === "capture";
   // The snapshot this start restores (the device's own, or Go's on a
   // desktop that chose it) or captures.
-  const kind: SnapshotKind = capturing
+  // Two sandboxes that do not mix. Shell & Python is the default snapshot with
+  // Jupyter. The agent needs little: the small snapshot, without Jupyter, and
+  // what it installs stays in each seal. Decided here, from the tab that asked.
+  const agentOnly = !capturing && agentOnlySandbox(desktop);
+  startedAs = agentOnly ? "agent" : "shell";
+  const kind: SnapshotKind = agentOnly
+    ? "tablet"
+    : capturing
     ? captureKindOf(snapshotParam())!
     : platform === "desktop" && env === "go"
     ? "go"
@@ -444,6 +538,7 @@ function boot(
     }
     // A capture ends in the sealed sandbox, with no Jupyter to wait for.
     // What this Linux holds, above the terminal (src/linux_remark.ts).
+    if (msg.type === "suspended") suspendAnswer?.(msg.why);
     if (msg.type === "linux-remark") {
       const note = byId("linux-remark");
       byId("linux-remark-text").textContent = msg.remark;
@@ -517,12 +612,15 @@ function boot(
     }
     worker.postMessage({
       type: "start",
+      // Only the agent's sandbox is sealed; the shell's never reads that seal.
+      resumeSession: agentOnly && savedAgentChat(),
+      dropSession: agentOnly && !savedAgentChat(),
       cols: term.cols,
       rows: term.rows,
       isolated: globalThis.crossOriginIsolated === true,
       kernelPorts,
       apiToken: desktop?.apiToken,
-      noJupyter: noPython,
+      noJupyter: noPython || agentOnly,
       // A capture installs its kind's Python: the set (desktop), python
       // alone (tablet), none (phone) -- or Go's go package (go).
       python: desktop !== undefined || pins === undefined
@@ -535,7 +633,7 @@ function boot(
           : kind === "go"
           ? goSetRequest(pins)
           : undefined
-        : noPython
+        : noPython || agentOnly
         ? undefined
         : pythonInstallRequest(pins),
       // A tablet installs no Python, but its snapshot holds python: the
@@ -853,6 +951,7 @@ async function runPage(): Promise<void> {
   // cross-origin isolation, and a page served without it cannot boot at all
   // and goes to the explanation.
   const desktop = await desktopInfo();
+  switchSandboxes(desktop);
   // The page's own claim is about the tab; the desktop app's sandbox is on
   // this machine and on the network, and the header should say which.
   if (desktop !== undefined) {
@@ -943,6 +1042,11 @@ async function runPage(): Promise<void> {
       yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
       start: () => document.getElementById("start-sandbox")?.click(),
       unavailable: refused ? "no sandbox" : undefined,
+      // Only the in-tab sandbox seals; `?suspend=0` keeps it running.
+      reload: reloadOnPurpose,
+      suspend: !agentSeals(desktop)
+        ? undefined
+        : () => suspendSandbox?.() ?? Promise.resolve("no sandbox is running"),
     });
   }
   const start = document.getElementById("start");
@@ -1030,4 +1134,6 @@ async function runPage(): Promise<void> {
   byId("start-sandbox").addEventListener("click", begin, { once: true });
 }
 
+forgetChatOnRefresh();
+mountSidebar();
 void runPage();

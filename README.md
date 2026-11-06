@@ -83,6 +83,23 @@ build relationships, and bring Yurt to market.
 Contact Ofer at [ofersa@gmail.com](mailto:ofersa@gmail.com), or
 [Sunny](https://github.com/smarcd) on GitHub.
 
+## The agent's model
+
+The home page's agent runs a model in the tab, on WebGPU, or uses one you
+already run with [Ollama](https://ollama.com) on your computer. The page
+contacts Ollama only after you pick it and press Connect, and then only at
+`127.0.0.1:11434`; the guest gets no route to it. Ollama refuses other websites
+by default, so for the hosted site quit Ollama if it is running, then start it
+with that site's origin allowed:
+
+```sh
+OLLAMA_ORIGINS=https://<the site> ollama serve
+```
+
+Chrome may also ask whether the site may reach your local network. Allowing an
+origin lets that site use every Ollama endpoint, not only chat, so allow only
+sites you trust.
+
 ## Driving the sandbox from a program
 
 The page exposes `window.yurt` for a driver -- an agent, a test -- on the hosted

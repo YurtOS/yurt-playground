@@ -6,7 +6,9 @@
  * site's own origin (`connect-src 'self'`), so notebook markdown, rich HTML
  * output or a broken frontend cannot phone out. Two exceptions. Outside
  * JupyterLite only: the local agent's weights (#140) download from Hugging
- * Face ({@link MODEL_ORIGINS}); gigabytes do not fit the site's host. On
+ * Face ({@link MODEL_ORIGINS}); gigabytes do not fit the site's host; and
+ * Ollama at its one default address on the visitor's own computer
+ * ({@link OLLAMA_URL}), when the visitor asks the agent to use it. On
  * every page: the packages the sandbox installs come from the one
  * repository path YurtOS/yurt-packages ({@link PACKAGE_SOURCES},
  * src/packages.ts) -- on the slim image the Notebook and Lab pages install
@@ -23,6 +25,7 @@
  * inline because JupyterLab sets them everywhere.
  */
 
+import { OLLAMA_URL } from "./ollama.ts";
 import { PACKAGE_SOURCES } from "./packages.ts";
 import { SNAPSHOT_REFS_API, SNAPSHOT_SOURCE } from "./snapshot_source.ts";
 import { BEACON_REPORT_ORIGIN, BEACON_SCRIPT_ORIGIN } from "./web_analytics.ts";
@@ -75,7 +78,7 @@ export type CspOptions = {
    * validators with `new Function`; only the JupyterLite pages get this.
    */
   allowEval?: boolean;
-  /** No model download and no uploaded snapshot: `connect-src` is the
+  /** No model, downloaded or local, and no uploaded snapshot: `connect-src` is the
    * origin and the packages repository's path only. */
   sameOriginOnly?: boolean;
   /** The deployed site's Cloudflare Web Analytics beacon
@@ -100,7 +103,7 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
     "media-src 'self' blob:",
     [
       "connect-src 'self'",
-      ...(options.sameOriginOnly ? [] : MODEL_ORIGINS),
+      ...(options.sameOriginOnly ? [] : [...MODEL_ORIGINS, OLLAMA_URL]),
       ...PACKAGE_SOURCES,
       ...(options.sameOriginOnly ? [] : [SNAPSHOT_SOURCE, SNAPSHOT_REFS_API]),
       ...(options.webAnalytics ? [BEACON_REPORT_ORIGIN] : []),
