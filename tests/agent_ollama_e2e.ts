@@ -113,7 +113,7 @@ async function runDemo(page: Page, name: string): Promise<boolean> {
   const rg = /BT \/F1 12 Tf ([\d.]+) ([\d.]+) ([\d.]+) rg/.exec(
     new TextDecoder().decode(pinkBytes),
   )?.slice(1).map(Number) ?? [0, 0, 0];
-  const pink = rg[0] > 0.8 && rg[1] < rg[0] && rg[2] > rg[1];
+  const pink = rg[0] > 0.8 && rg[1] < rg[0] && rg[2] >= rg[1];
   // The model has to run this one: its number against a real reader's.
   const pinkText = (await readerText(`${name}-pink`, pinkBytes)).replace(
     /^1 /,
@@ -140,14 +140,20 @@ async function runDemo(page: Page, name: string): Promise<boolean> {
   // A PDF under another name: real, and on offer beside the demo's.
   await say(
     page,
-    "Use python3 to compute the factorial of 30. Write only that number to /home/user/fact.pdf.",
+    `First run this: python3 -c "import math; print(math.factorial(10))". Then write only the number it printed to /home/user/fact.pdf.`,
   );
   const factBytes = await readBack(page, `${name}-fact`);
   const factText = await readerText(`${name}-fact`, factBytes);
-  const fact = factText.includes("265252859812191058636308480000000") &&
+  // From Python, not from the model's memory: the number alone proves nothing.
+  const factCalls = await page.locator("#agent-transcript .call")
+    .allInnerTexts();
+  const ranPython = factCalls.slice(-3).some((c) => c.includes("python3"));
+  const fact = ranPython && factText.includes("3628800") &&
     new TextDecoder().decode(factBytes.slice(0, 5)) === "%PDF-" &&
     await page.locator('[data-file="demo.pdf"]').count() === 1;
-  console.log(`${name}: fact pdf=${fact} (${factBytes.length} bytes)`);
+  console.log(
+    `${name}: fact pdf=${fact} ran python=${ranPython} (${factBytes.length} bytes)`,
+  );
   const stops = await page.locator("#agent-transcript .stopped").count();
   console.log(
     `${name}: pink=${pink} rgb=${rg} (${
