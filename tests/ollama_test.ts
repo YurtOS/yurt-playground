@@ -3,12 +3,13 @@
  * server, in real Chrome, is tests/agent_ollama_e2e.ts (a Mac, not CI).
  */
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { parseAction } from "../src/agent.ts";
+import { parseAction, systemPrompt } from "../src/agent.ts";
 import {
   ACTION_SCHEMA,
   listOllamaModels,
   OLLAMA_CONTEXT_TOKENS,
   OLLAMA_LIMITS,
+  OLLAMA_MAX_OUTPUT_TOKENS,
   ollamaHelp,
   ollamaModel,
 } from "../src/ollama.ts";
@@ -184,13 +185,40 @@ Deno.test("the installed models are listed by name", async () => {
 
 Deno.test("the help names the origin to allow and the browser's question", () => {
   const help = ollamaHelp("https://example.dev");
-  assertStringIncludes(help, "OLLAMA_ORIGINS=https://example.dev ollama serve");
+  assertStringIncludes(help, "OLLAMA_ORIGINS=https://example.dev ollama");
   assertStringIncludes(help, "local network");
+  assertStringIncludes(help, "quit it first");
 });
 
-Deno.test("the limits fit the context window at 3.5 characters a token", () => {
-  // The room left for the system prompt and the reply is at least the reply's
-  // own cap, so a full prompt still leaves the model room to answer.
-  const promptTokens = OLLAMA_LIMITS.maxPrompt / 3.5;
-  assertEquals(promptTokens + 2048 < OLLAMA_CONTEXT_TOKENS, true);
+Deno.test("the limits fit the context window at the densest measured rate", () => {
+  // Hex output: about 2 characters a token. A full prompt, the system prompt
+  // and a full reply must all fit.
+  const tokens = (chars: number) => Math.ceil(chars / 2);
+  const total = tokens(OLLAMA_LIMITS.maxPrompt) +
+    tokens(systemPrompt(true).length) + OLLAMA_MAX_OUTPUT_TOKENS;
+  assertEquals(total < OLLAMA_CONTEXT_TOKENS, true, `${total} tokens`);
+});
+
+Deno.test("cloud models are not listed: their prompts leave this computer", async () => {
+  await withServer(() =>
+    Response.json({
+      models: [
+        { name: "gemma4:e4b" },
+        { name: "gpt-oss:20b-cloud" },
+        { name: "kimi:cloud" },
+      ],
+    }), async (base) => {
+    assertEquals(await listOllamaModels(base), ["gemma4:e4b"]);
+  });
+});
+
+Deno.test("a server that accepts and never answers ends the wait", async () => {
+  const release = Promise.withResolvers<void>();
+  await withServer(async () => {
+    await release.promise;
+    return new Response("late");
+  }, async (base) => {
+    await assertRejects(() => listOllamaModels(base, 50));
+    release.resolve();
+  });
 });

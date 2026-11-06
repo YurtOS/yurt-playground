@@ -14,17 +14,18 @@ export const OLLAMA_URL = "http://127.0.0.1:11434";
 /** Context window asked of the model: prompt + reply, in tokens. */
 export const OLLAMA_CONTEXT_TOKENS = 16384;
 
-const OLLAMA_MAX_OUTPUT_TOKENS = 2048;
+export const OLLAMA_MAX_OUTPUT_TOKENS = 2048;
 
 /** More room than the 4,096-token engine in the tab, and longer: a large model
  * can take a minute or more to load before its first token. */
 export const OLLAMA_LIMITS: Limits = {
   ...DEFAULT_LIMITS,
   maxSteps: 16,
-  maxObservation: 8000,
-  // ~11,500 tokens at 3.5 characters a token: with the system prompt and the
-  // reply it stays inside OLLAMA_CONTEXT_TOKENS.
-  maxPrompt: 40_000,
+  maxObservation: 6000,
+  // Dense output such as hex runs at about 2 characters a token (measured on
+  // llama3.2), not the usual 3.5: at that rate this, the system prompt and the
+  // reply still fit OLLAMA_CONTEXT_TOKENS.
+  maxPrompt: 24_000,
   timeoutMs: 600_000,
 };
 
@@ -54,22 +55,29 @@ export type OllamaLlm = Model & {
  * "not running", "origin not allowed" and "access refused" as one failure, so
  * this names all three. */
 export function ollamaHelp(origin: string): string {
-  return `Could not reach Ollama at ${OLLAMA_URL}. Start it, allowing this ` +
-    `page: OLLAMA_ORIGINS=${origin} ollama serve. If the browser asks ` +
-    "whether this site may reach your local network, allow it.";
+  return `Could not reach Ollama at ${OLLAMA_URL}. If it is running, quit it ` +
+    `first. Then start it, allowing this page: OLLAMA_ORIGINS=${origin} ollama ` +
+    "serve. If the browser asks whether this site may reach your local " +
+    "network, allow it.";
 }
 
-/** The models Ollama has installed, most recently changed first. */
+/** The models Ollama has installed, most recently changed first. Its cloud
+ * models are left out: they send the prompt away, and the pane promises it stays
+ * on this computer. The time limit is long enough to answer the browser's
+ * local-network question, which holds this request until it is answered. */
 export async function listOllamaModels(
   base: string = OLLAMA_URL,
+  timeoutMs = 60_000,
 ): Promise<string[]> {
-  const response = await fetch(`${base}/api/tags`);
+  const response = await fetch(`${base}/api/tags`, {
+    signal: AbortSignal.timeout(timeoutMs),
+  });
   if (!response.ok) {
     await response.body?.cancel();
     throw new Error(`Ollama answered ${response.status}`);
   }
   const { models }: { models: { name: string }[] } = await response.json();
-  return models.map((m) => m.name);
+  return models.map((m) => m.name).filter((n) => !/[:-]cloud$/.test(n));
 }
 
 type ChatLine = {
@@ -106,7 +114,8 @@ async function* chatLines(
   }
 }
 
-/** `model` is read at each call: the visitor can change it between tasks. */
+/** `model` is read at each call: the visitor can change it between tasks, and
+ * the pane locks the choice during one. */
 export function ollamaModel(
   model: () => string,
   base: string = OLLAMA_URL,

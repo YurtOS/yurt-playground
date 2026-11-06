@@ -180,7 +180,11 @@ if (import.meta.main) {
         // One that works, then one that fails: only the first is on offer.
         const results = messages[1].content.split("Result:").length - 1;
         const reply = results === 0
-          ? { action: "exec", cmd: 'echo mkpdf /home/user/made.pdf "text"' }
+          ? {
+            action: "exec",
+            cmd:
+              'mkpdf() { echo made > "$1"; }; mkpdf /home/user/made.pdf "text"',
+          }
           : results === 1
           ? { action: "exec", cmd: 'mkpdf /home/user/failed.pdf "text"' }
           : { action: "answer", text: "Made /home/user/made.pdf" };
@@ -228,6 +232,15 @@ if (import.meta.main) {
         .innerText();
       if (label !== "Download made.pdf") {
         throw new Error(`agent e2e: download offered as: ${label}`);
+      }
+      const saving = page.waitForEvent("download");
+      await page.locator("[data-testid=agent-download]").click();
+      const saved = await saving;
+      const content = await Deno.readTextFile(await saved.path());
+      if (saved.suggestedFilename() !== "made.pdf" || content !== "made\n") {
+        throw new Error(
+          `agent e2e: saved ${saved.suggestedFilename()}: ${content}`,
+        );
       }
       await context.close();
     }

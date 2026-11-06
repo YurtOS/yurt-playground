@@ -118,7 +118,11 @@ export const SYSTEM_PROMPT = systemPrompt(true);
  * absolute only, since the sandbox's working directory is not the page's to
  * guess. */
 export function mkpdfOutput(cmd: string): string | undefined {
-  return /(?:^|[\s;&|/])mkpdf\s+["']?(\/[^\s"']+)/.exec(cmd)?.[1];
+  // As a command, not as an argument: not `cat /usr/bin/mkpdf /etc/passwd`.
+  const found =
+    /(?:^|[;&|]\s*)(?:sudo\s+)?(?:\S*\/)?mkpdf\s+(?:"(\/[^"]+)"|'(\/[^']+)'|(\/\S+))/
+      .exec(cmd);
+  return found?.[1] ?? found?.[2] ?? found?.[3];
 }
 
 /** The demo: a task the pane offers until the visitor types their own. */

@@ -291,6 +291,10 @@ Deno.test("the pane finds the absolute path a command gave mkpdf", () => {
     ["sudo pkg install mkpdf", undefined],
     ['mkpdf a.pdf "hi"', undefined],
     ["echo notmkpdf /x.pdf", undefined],
+    ['mkpdf "/home/user/my file.pdf" "x"', "/home/user/my file.pdf"],
+    ["cat /usr/bin/mkpdf /etc/passwd", undefined],
+    ["echo mkpdf /x.pdf", undefined],
+    ['sudo mkpdf /root/e.pdf "x"', "/root/e.pdf"],
   ];
   for (const [cmd, path] of cases) assertEquals(mkpdfOutput(cmd), path);
 });

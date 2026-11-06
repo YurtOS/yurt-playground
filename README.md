@@ -89,7 +89,8 @@ The home page's agent runs a model in the tab, on WebGPU, or uses one you
 already run with [Ollama](https://ollama.com) on your computer. The page
 contacts Ollama only after you pick it and press Connect, and then only at
 `127.0.0.1:11434`; the guest gets no route to it. Ollama refuses other websites
-by default, so for the hosted site start it with that site's origin allowed:
+by default, so for the hosted site quit Ollama if it is running, then start it
+with that site's origin allowed:
 
 ```sh
 OLLAMA_ORIGINS=https://<the site> ollama serve

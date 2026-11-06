@@ -165,15 +165,21 @@ export async function mountAgentPane(
     el(
       "p",
       {},
-      "A language model that runs in this tab, on your GPU. Its weights " +
-        "download once from Hugging Face; after that nothing you type is " +
-        "sent anywhere. It works in this page's sandbox through ",
+      adapter
+        ? "A language model that runs in this tab, on your GPU. Its weights " +
+          "download once from Hugging Face; after that nothing you type is " +
+          "sent anywhere. It works in this page's sandbox through "
+        : "A language model from Ollama on this computer: nothing is " +
+          "downloaded, and what you type stays on this computer. It works in " +
+          "this page's sandbox through ",
       el("code", { textContent: "window.yurt" }),
       " and can run any command there, change or delete files and stop " +
         "processes, the same as typing in the terminal above. Every step is " +
-        "shown as it runs, and Stop ends it. Or use a model you already run " +
-        "with Ollama on this computer: nothing is downloaded, and what you " +
-        "type stays on this computer.",
+        "shown as it runs, and Stop ends it." +
+        (adapter
+          ? " Or use a model you already run with Ollama on this computer: " +
+            "nothing is downloaded, and what you type stays on this computer."
+          : ""),
     ),
     el("div", { className: "row" }, choice, startButton),
     cost,
@@ -353,6 +359,7 @@ export async function mountAgentPane(
     const controller = new AbortController();
     running = controller;
     run.disabled = true;
+    installed.disabled = true;
     stop.hidden = false;
     transcript.replaceChildren();
     const yurt = sandbox.yurt();
@@ -483,6 +490,7 @@ export async function mountAgentPane(
   const finish = () => {
     running = undefined;
     run.disabled = false;
+    installed.disabled = false;
     stop.hidden = true;
   };
   run.addEventListener("click", () => void go());

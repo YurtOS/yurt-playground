@@ -171,3 +171,6 @@
 #agent-transcript .note {
   color: var(--muted);
 }
+#agent-intro p.unsupported {
+  margin-bottom: 12px;
+}
