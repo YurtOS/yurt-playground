@@ -91,20 +91,30 @@ async function runDemo(page: Page, name: string): Promise<boolean> {
   const first = await readBack(page, `${name}-first`);
   const secondMs = await say(page, `Add a last line saying exactly: ${EDIT}`);
   const second = await readBack(page, `${name}-second`);
+  const colorStops = () => page.locator("#agent-transcript .stopped").count();
   const greenMs = await say(page, "Make the text green.");
-  const greenBytes = await page.evaluate(
+  const pinkMs = await say(page, "make it pink");
+  const pinkBytes = await page.evaluate(
     (path) =>
       (globalThis as unknown as { yurt: Yurtish }).yurt.fs.read(path)
         .then((b) => [...b]),
     DEMO_PDF_PATH,
   );
   await Deno.writeFile(
-    join(OUT, `${name}-green.pdf`),
-    new Uint8Array(greenBytes),
+    join(OUT, `${name}-pink.pdf`),
+    new Uint8Array(pinkBytes),
   );
-  const green = new TextDecoder().decode(new Uint8Array(greenBytes))
-    .includes("0 0.5 0 rg");
-  console.log(`${name}: green=${green} (${Math.round(greenMs / 1000)} s)`);
+  // Red well above green, blue above green: pink, whichever pink the model chose.
+  const rg = /BT \/F1 12 Tf ([\d.]+) ([\d.]+) ([\d.]+) rg/.exec(
+    new TextDecoder().decode(new Uint8Array(pinkBytes)),
+  )?.slice(1).map(Number) ?? [0, 0, 0];
+  const green = rg[0] > 0.8 && rg[1] < rg[0] && rg[2] > rg[1] &&
+    await colorStops() === 0;
+  console.log(
+    `${name}: pink=${green} rgb=${rg} (green ${
+      Math.round(greenMs / 1000)
+    } s, pink ${Math.round(pinkMs / 1000)} s)`,
+  );
   await Deno.writeTextFile(
     join(OUT, `${name}.txt`),
     await page.locator("#agent-transcript").innerText(),

@@ -1,6 +1,6 @@
 import {
+  DEMO_COLOR,
   DEMO_COLOR_PATH,
-  DEMO_COLORS,
   DEMO_PDF_MADE,
   DEMO_PDF_PATH,
   DEMO_TEXT_PATH,
@@ -131,13 +131,13 @@ export function createAgentTools(yurt: Yurt): Tools {
       return `${wrote}; ${DEMO_PDF_MADE}`;
     },
     async setColor(color, signal) {
-      if (!DEMO_COLORS.includes(color)) {
-        throw new Error(
-          `no color ${color}; there are ${DEMO_COLORS.join(", ")}`,
-        );
+      // Models do leave out the # or use capitals.
+      const hex = color.trim().toLowerCase().replace(/^#?/, "#");
+      if (!DEMO_COLOR.test(hex)) {
+        throw new Error(`no color ${color}; give its #rrggbb value`);
       }
-      await abortable(yurt.fs.write(DEMO_COLOR_PATH, color), signal);
-      const set = `the PDF's text is ${color}`;
+      await abortable(yurt.fs.write(DEMO_COLOR_PATH, hex), signal);
+      const set = `the PDF's text is ${hex}`;
       const text = await runCommand(
         yurt,
         `test -f ${DEMO_TEXT_PATH}`,

@@ -408,6 +408,10 @@ export async function mountAgentPane(
         current = { item, live };
         return;
       }
+      if (e.type === "repeat") {
+        current?.item.remove();
+        return;
+      }
       if (e.type === "action" || e.type === "invalid") {
         showContext();
         const meta = el("span", {
@@ -487,6 +491,7 @@ export async function mountAgentPane(
             "stopped: the model kept replying with something that is not an action",
           timeout: "stopped: the task took too long",
           task: "not started: the task is too long; shorten it",
+          repeat: "stopped: the model kept repeating the same step",
         }[e.reason];
         transcript.append(el("li", { className: "stopped", textContent: why }));
       }

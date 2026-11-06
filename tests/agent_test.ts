@@ -134,7 +134,7 @@ Deno.test("an invalid reply is retried with a correction, then limited", async (
 
 Deno.test("the step limit stops a model that never answers", async () => {
   const { events, prompts } = await run(
-    Array(10).fill('{"action":"exec","cmd":"true"}'),
+    Array.from({ length: 10 }, (_, i) => `{"action":"exec","cmd":"echo ${i}"}`),
     { limits: { maxSteps: 3 } },
   );
   assertEquals(prompts.length, 3);
@@ -421,4 +421,61 @@ Deno.test("set_color takes one color and goes to the tool", async () => {
     new AbortController().signal,
   );
   assertEquals(asked, ["green"]);
+});
+
+function recorded(replies: string[]) {
+  const prompts: string[] = [];
+  return {
+    prompts,
+    model: {
+      generate(_system: string, prompt: string) {
+        prompts.push(prompt);
+        return Promise.resolve({
+          text: replies.shift() ?? replies[0] ?? "",
+          stats: { promptTokens: 1, outputTokens: 1 },
+        });
+      },
+    },
+  };
+}
+
+Deno.test("a step repeated exactly is not run again, and a second repeat ends the task", async () => {
+  const again = '{"action":"set_color","color":"#0000ff"}';
+  let runs = 0;
+  const tools = {
+    exec: () => Promise.reject(new Error("unused")),
+    readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => {
+      runs++;
+      return Promise.resolve("set");
+    },
+  };
+  // It takes the hint: one run, then the answer.
+  const hinted = recorded([again, again, '{"action":"answer","text":"done"}']);
+  const events: AgentEvent[] = [];
+  await runAgent(
+    "blue",
+    hinted.model,
+    tools,
+    (e) => events.push(e),
+    new AbortController().signal,
+  );
+  assertEquals(runs, 1);
+  assertEquals(events.at(-1), { type: "answer", text: "done" });
+  assertEquals(hinted.prompts[2].includes("not run again"), true);
+  // It does not: the task ends well before the step limit.
+  runs = 0;
+  const stuck = recorded([again, again, again, again, again, again]);
+  const stuckEvents: AgentEvent[] = [];
+  await runAgent(
+    "blue",
+    stuck.model,
+    tools,
+    (e) => stuckEvents.push(e),
+    new AbortController().signal,
+  );
+  assertEquals(runs, 1);
+  assertEquals(stuck.prompts.length, 3);
+  assertEquals(stuckEvents.at(-1), { type: "stopped", reason: "repeat" });
 });

@@ -70,6 +70,7 @@ export const DEFAULT_LIMITS: Limits = {
 };
 
 export type AgentEvent =
+  | { type: "repeat"; step: number }
   | { type: "step"; step: number; promptChars: number }
   | {
     type: "action";
@@ -96,7 +97,7 @@ export type AgentEvent =
   | { type: "answer"; text: string }
   | {
     type: "stopped";
-    reason: "cancelled" | "steps" | "invalid" | "timeout" | "task";
+    reason: "cancelled" | "steps" | "invalid" | "timeout" | "task" | "repeat";
   }
   | { type: "error"; message: string };
 
@@ -117,16 +118,8 @@ export function systemPrompt(python: boolean): string {
 export const DEMO_TEXT_PATH = "/home/user/demo.txt";
 export const DEMO_PDF_PATH = "/home/user/demo.pdf";
 export const DEMO_COLOR_PATH = "/home/user/demo.color";
-/** The colors of the `mkpdf` command. */
-export const DEMO_COLORS = [
-  "black",
-  "red",
-  "green",
-  "blue",
-  "orange",
-  "purple",
-  "gray",
-];
+/** What the `mkpdf` command takes as a color. */
+export const DEMO_COLOR = /^#[0-9a-f]{6}$/;
 /** Run after each write of the text. */
 export const MAKE_DEMO_PDF =
   `command -v mkpdf >/dev/null || { sudo pkg update && sudo pkg install mkpdf; }; { [ -f ${DEMO_COLOR_PATH} ] && echo "%color $(cat ${DEMO_COLOR_PATH})"; cat ${DEMO_TEXT_PATH}; } | mkpdf ${DEMO_PDF_PATH}`;
@@ -138,11 +131,12 @@ const PROMPT_RULES = [
   '{"action":"exec","cmd":"<shell command>"}',
   '{"action":"read_file","path":"<absolute path>"}',
   '{"action":"write_file","path":"<absolute path>","text":"<the whole file>"}',
-  `{"action":"set_color","color":"<${DEMO_COLORS.join("|")}>"}`,
+  '{"action":"set_color","color":"<#rrggbb>"}',
   '{"action":"answer","text":"<final answer for the user>"}',
   "Use exec or read_file to get facts from the sandbox, one step at a time.",
   `To create or change a PDF, write_file its whole text to ${DEMO_TEXT_PATH}: plain ASCII with no markdown, under 300 words, since a page holds 40 lines of 65 characters. That also makes the PDF at ${DEMO_PDF_PATH}; do nothing more for it.`,
-  "set_color sets the color of the whole text of that PDF and remakes it; it changes no words.",
+  "set_color sets the color of the whole text of that PDF and remakes it; it changes no words. Give the requested color's #rrggbb value.",
+  "When a step is done, do not repeat it: use the answer action. If a step failed, say so; never claim it worked.",
   "The PDF can do nothing else: no bold, sizes, images or background. If asked for those, say so; never claim a change you did not make.",
   "Answer only from what you have seen. Keep the answer short.",
 ];
@@ -308,6 +302,8 @@ export async function runAgent(
   }
   const turns: Turn[] = [];
   let invalid = 0;
+  let lastAction: string | undefined;
+  let repeats = 0;
   try {
     for (let step = 1; step <= limits.maxSteps; step++) {
       if (signal.aborted) return stopped();
@@ -335,6 +331,22 @@ export async function runAgent(
         continue;
       }
       invalid = 0;
+      // A model may not see that a step is done, and repeat it for ever. The
+      // answer is exempt: it ends the task anyway.
+      if (action.action !== "answer" && text.trim() === lastAction) {
+        if (++repeats > 1) {
+          return onEvent({ type: "stopped", reason: "repeat" });
+        }
+        onEvent({ type: "repeat", step });
+        turns.push({
+          reply: JSON.stringify(action),
+          result:
+            "You already did exactly this and its result is above, so it was not run again. Change the step, or use the answer action to say what happened.",
+        });
+        continue;
+      }
+      lastAction = text.trim();
+      repeats = 0;
       onEvent({ type: "action", step, action, raw: text, stats, ms });
       if (action.action === "answer") {
         return onEvent({ type: "answer", text: action.text });

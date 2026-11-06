@@ -329,22 +329,26 @@ Deno.test("setColor saves a known color and remakes the PDF, changing no words",
   const never = new AbortController().signal;
   const good = writingSandbox(0);
   assertEquals(
-    await createAgentTools(good.yurt).setColor("green", never),
-    `the PDF's text is green; ${DEMO_PDF_MADE}`,
+    await createAgentTools(good.yurt).setColor("#008000", never),
+    `the PDF's text is #008000; ${DEMO_PDF_MADE}`,
   );
-  assertEquals(good.written, ["/home/user/demo.color:green"]);
+  assertEquals(good.written, ["/home/user/demo.color:#008000"]);
   assertEquals(good.commands.at(-1), MAKE_DEMO_PDF);
+  // No # and capitals, as models send them.
+  const bare = writingSandbox(0);
+  await createAgentTools(bare.yurt).setColor("FF69B4", never);
+  assertEquals(bare.written, ["/home/user/demo.color:#ff69b4"]);
   const mauve = writingSandbox(0);
   await assertRejects(
-    () => createAgentTools(mauve.yurt).setColor("mauve", never),
+    () => createAgentTools(mauve.yurt).setColor("pink", never),
     Error,
-    "no color mauve",
+    "no color pink",
   );
   assertEquals(mauve.written, []);
   // No document yet: saved for it, no PDF claimed.
   const early = writingSandbox(1);
   assertEquals(
-    await createAgentTools(early.yurt).setColor("red", never),
-    "the PDF's text is red once its text is written",
+    await createAgentTools(early.yurt).setColor("#ff0000", never),
+    "the PDF's text is #ff0000 once its text is written",
   );
 });
