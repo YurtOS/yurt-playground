@@ -332,7 +332,12 @@ function boot(
   const capturing = snapshotMode() === "capture";
   // The snapshot this start restores (the device's own, or Go's on a
   // desktop that chose it) or captures.
-  const kind: SnapshotKind = capturing
+  // The agent needs little: the small snapshot, and what it installs stays in
+  // each seal. Decided here, at Start, from the tab that asked.
+  const agentOnly = !capturing && agentOnlySandbox(desktop);
+  const kind: SnapshotKind = agentOnly
+    ? "tablet"
+    : capturing
     ? captureKindOf(snapshotParam())!
     : platform === "desktop" && env === "go"
     ? "go"
@@ -564,7 +569,7 @@ function boot(
       // The agent needs a shell, not Jupyter: from its tab, each resume would
       // start a kernel only for the next seal to kill it. Opening Shell & Python
       // reloads into a sandbox with one (src/agent_pane.ts).
-      noJupyter: noPython || agentOnlySandbox(desktop),
+      noJupyter: noPython || agentOnly,
       // A capture installs its kind's Python: the set (desktop), python
       // alone (tablet), none (phone) -- or Go's go package (go).
       python: desktop !== undefined || pins === undefined
@@ -577,7 +582,7 @@ function boot(
           : kind === "go"
           ? goSetRequest(pins)
           : undefined
-        : noPython
+        : noPython || agentOnly
         ? undefined
         : pythonInstallRequest(pins),
       // A tablet installs no Python, but its snapshot holds python: the
