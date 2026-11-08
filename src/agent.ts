@@ -194,8 +194,10 @@ export function chatTask(
 }
 
 /** The demo: a task the pane offers until the visitor types their own. */
+// The task names the file: told only to "make it a PDF" and to say Yurt, the
+// in-tab Gemma 4 E4B wrote /home/user/Yurt.txt and Yurt.pdf in 4 of 4 runs.
 export const DEMO_TASK = [
-  "Write a short explanation of this demo for someone seeing it for the first time, and make it a PDF. Say the name Yurt.",
+  `Write a short explanation of this demo for someone seeing it for the first time, and make it the demo PDF: write_file its text to ${DEMO_TEXT_PATH}. Mention Yurt by name in the text.`,
   "What is true of it: a Linux sandbox (Yurt) runs inside this browser tab, started from a snapshot so it is ready in seconds.",
   "A language model on this computer proposes one action at a time, and the page runs each in the sandbox.",
   "The document's text and the PDF are files in that sandbox, and the user can change them by asking in this chat.",

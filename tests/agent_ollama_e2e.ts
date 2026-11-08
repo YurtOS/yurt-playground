@@ -5,8 +5,12 @@
  * explanation of the demo into a PDF in the sandbox, then changes it when asked
  * in the chat, and a real PDF reader (macOS PDFKit) checks both versions.
  *
- * Not in CI: GitHub's runners have neither Ollama nor its models. Run it on a
- * Mac, with `ollama serve` running:
+ * `--model E4B` or `--model E2B` runs the same scene on the in-tab WebGPU
+ * model instead (the site's default), with the weights kept in one Chrome
+ * profile under ~/Library/Caches/yurt-playground/ so they download once.
+ *
+ * Not in CI: GitHub's runners have neither Ollama nor its models, nor a GPU.
+ * Run it on a Mac, with `ollama serve` running for an Ollama model:
  *
  *   deno run --allow-all tests/agent_ollama_e2e.ts [--model gemma4:e4b] \\
  *     [--runs 1] [--out <dir>] [--headed] [--stage-mkpdf <file>]
@@ -15,6 +19,7 @@ import { chromium, type Page } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
+import { LOCAL_MODELS } from "../src/llm_models.ts";
 import { listOllamaModels, OLLAMA_URL } from "../src/ollama.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
 
@@ -187,35 +192,88 @@ async function runDemo(page: Page, name: string): Promise<boolean> {
 }
 
 if (import.meta.main) {
-  const models = await listOllamaModels();
-  const model = flag("model") ?? models[0];
-  if (!models.includes(model)) throw new Error(`${model} is not installed`);
+  // `--model E4B` or `--model E2B`: the in-tab WebGPU model, not Ollama.
+  const inTab = LOCAL_MODELS.find((m) => m.id === flag("model"));
+  const models = inTab ? [] : await listOllamaModels();
+  const model = inTab?.id ?? flag("model") ?? models[0];
+  if (!inTab && !models.includes(model)) {
+    throw new Error(`${model} is not installed`);
+  }
   await ensureBundle(
     Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel"),
   );
-  const server = startPlaygroundServer(0);
-  const browser = await chromium.launch({
+  // In-tab: a fixed port, so the cached weights' origin is the same each time.
+  const server = startPlaygroundServer(inTab ? 4184 : 0);
+  const headless = !Deno.args.includes("--headed");
+  // In-tab: one profile, so the weights download once (Cache Storage); each
+  // run clears everything else the page keeps.
+  const browser = inTab ? undefined : await chromium.launch({
     channel: "chrome",
-    headless: !Deno.args.includes("--headed"),
+    headless,
   });
+  const persistent = inTab
+    ? await chromium.launchPersistentContext(
+      join(
+        Deno.env.get("HOME")!,
+        "Library/Caches/yurt-playground/agent-demo-chrome",
+      ),
+      { channel: "chrome", headless, args: ["--enable-unsafe-webgpu"] },
+    )
+    : undefined;
   let passed = 0;
   try {
     for (let run = 1; run <= RUNS; run++) {
-      const context = await browser.newContext();
+      const context = persistent ?? await browser!.newContext();
       const page = await context.newPage();
+      if (inTab) {
+        await page.goto(`${server.url}/`);
+        await page.evaluate(async () => {
+          localStorage.clear();
+          sessionStorage.clear();
+          for (const db of await indexedDB.databases()) {
+            if (db.name) indexedDB.deleteDatabase(db.name);
+          }
+          const root = await navigator.storage.getDirectory();
+          // deno-lint-ignore no-explicit-any
+          for await (const name of (root as any).keys()) {
+            await root.removeEntry(name, { recursive: true });
+          }
+        });
+      }
       const ollamaRequests: string[] = [];
       page.on("request", (r) => {
         if (r.url().startsWith(OLLAMA_URL)) ollamaRequests.push(r.url());
       });
       await page.goto(`${server.url}/#agent`);
-      await page.locator("[data-testid=agent-model]").selectOption("ollama");
-      await page.waitForTimeout(500);
-      if (ollamaRequests.length !== 0) {
-        throw new Error("the page contacted Ollama before Connect");
+      if (inTab) {
+        await page.locator("[data-testid=agent-model]").selectOption(model);
+        const loading = performance.now();
+        await page.locator("[data-testid=agent-start]").click();
+        await page.locator("#agent[data-agent-ready]").waitFor({
+          timeout: 20 * 60_000,
+        });
+        console.log(
+          `${model} loaded in ${
+            Math.round((performance.now() - loading) / 1000)
+          } s (cached=${await page.locator("#agent").getAttribute(
+            "data-agent-from-cache",
+          )})`,
+        );
+        if (ollamaRequests.length !== 0) {
+          throw new Error("the in-tab model contacted Ollama");
+        }
+      } else {
+        await page.locator("[data-testid=agent-model]").selectOption("ollama");
+        await page.waitForTimeout(500);
+        if (ollamaRequests.length !== 0) {
+          throw new Error("the page contacted Ollama before Connect");
+        }
+        await page.locator("[data-testid=agent-start]").click();
+        await page.locator("#agent[data-agent-ready]").waitFor();
+        await page.locator("[data-testid=agent-installed]").selectOption(
+          model,
+        );
       }
-      await page.locator("[data-testid=agent-start]").click();
-      await page.locator("#agent[data-agent-ready]").waitFor();
-      await page.locator("[data-testid=agent-installed]").selectOption(model);
       page.on("console", (m) => {
         if (/\[(snapshot|session)\]/.test(m.text())) {
           console.log(m.text().slice(0, 160));
@@ -240,10 +298,12 @@ if (import.meta.main) {
       console.log(`sandbox ready in ${(startMs / 1000).toFixed(1)} s`);
       const name = `${model.replace(/\W/g, "-")}-${run}`;
       if (await runDemo(page, name)) passed++;
-      await context.close();
+      if (persistent) await page.close();
+      else await context.close();
     }
   } finally {
-    await browser.close();
+    await persistent?.close();
+    await browser?.close();
     await server.shutdown();
   }
   console.log(`agent ollama e2e: ${model}: ${passed}/${RUNS}; files in ${OUT}`);
