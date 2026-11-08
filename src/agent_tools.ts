@@ -15,6 +15,19 @@ import {
   PYTHON_PROBE_COMMAND,
 } from "./coordinator_start.ts";
 import { checkPath, type Yurt } from "./agent_api.ts";
+
+/** An absolute path as the file system resolves it: `//`, `.` and `..`
+ * collapsed. Not through URL parsing, which cuts a path at `#` and
+ * percent-encodes a space. */
+export function normalPath(path: string): string {
+  const parts: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") parts.pop();
+    else parts.push(part);
+  }
+  return `/${parts.join("/")}`;
+}
 import { DEFAULT_MAX_OUTPUT_BYTES, quoted } from "./executions.ts";
 
 function cancelled(): Error {
@@ -125,7 +138,7 @@ export function createAgentTools(yurt: Yurt): Tools {
     },
     async writeFile(path, text, signal) {
       // As the file system reads it: /home/user/./demo.txt is the same file.
-      const file = new URL(`file://${checkPath(path)}`).pathname;
+      const file = normalPath(checkPath(path));
       // Models do try, and text there would destroy the PDF.
       if (file === DEMO_PDF_PATH) {
         throw new Error(

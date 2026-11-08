@@ -116,16 +116,24 @@ function switchSandboxes(desktop: DesktopInfo | undefined): void {
   document.querySelector("[data-testid=view-shell]")?.addEventListener(
     "click",
     () => {
-      if (startedAs === "agent") reloadOnPurpose();
+      if (startedAs === "agent" && !agentBusy()) reloadOnPurpose();
     },
   );
   document.querySelector("[data-testid=view-agent]")?.addEventListener(
     "click",
     () => {
       // A saved chat comes back on a load at the Agent tab.
+      if (agentBusy()) return;
       if (startedAs === "shell" || savedAgentChat()) reloadOnPurpose();
     },
   );
+}
+
+/** A run, or the seal after it, is in progress (src/agent_pane.ts): a reload
+ * now would lose it, or pair a new seal with the old chat. */
+function agentBusy(): boolean {
+  return document.getElementById("agent")?.hasAttribute("data-agent-busy") ===
+    true;
 }
 
 /** Whether a sealed agent run's chat is here (src/agent_pane.ts). */
@@ -257,6 +265,8 @@ function watchNetwork(net: HTMLElement): void {
 const BOOTING_KEY = "yurt-playground-booting";
 let reloading = false;
 const OWN_RELOAD_KEY = "yurt-agent-own-reload";
+/** Set by forgetChatOnRefresh: this load is one of the page's own reloads. */
+let ownReload = false;
 
 /** A refresh is the visitor starting over: the agent's chat goes, and with it
  * its seal (a sandbox resumes only with its chat). The page's own reloads, which
@@ -264,6 +274,7 @@ const OWN_RELOAD_KEY = "yurt-agent-own-reload";
 function forgetChatOnRefresh(): void {
   try {
     const own = sessionStorage.getItem(OWN_RELOAD_KEY) !== null;
+    ownReload = own;
     sessionStorage.removeItem(OWN_RELOAD_KEY);
     const entry = performance.getEntriesByType("navigation")[0] as
       | PerformanceNavigationTiming
@@ -1044,6 +1055,7 @@ async function runPage(): Promise<void> {
       unavailable: refused ? "no sandbox" : undefined,
       // Only the in-tab sandbox seals; `?suspend=0` keeps it running.
       reload: reloadOnPurpose,
+      resumeRun: () => ownReload,
       suspend: !agentSeals(desktop)
         ? undefined
         : () => suspendSandbox?.() ?? Promise.resolve("no sandbox is running"),

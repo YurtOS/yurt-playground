@@ -375,6 +375,17 @@ Deno.test("any .pdf written is made as a PDF, not plain text with that name", as
     Error,
     "is made from",
   );
+  // A # or a space is part of the name: a URL parse would cut the first and
+  // encode the second, writing plain text to a.pdf's name or a PDF elsewhere.
+  for (const name of ["/home/user/a#b.pdf", "/home/user/my doc.pdf"]) {
+    const odd = writingSandbox(0);
+    assertEquals(
+      (await createAgentTools(odd.yurt).writeFile(name, "x", never))
+        .endsWith(`made ${name}`),
+      true,
+    );
+    assertEquals(odd.written, ["/tmp/agent-pdf.txt:x"]);
+  }
   // Not a .pdf: a plain file, as before.
   const plain = writingSandbox(0);
   await createAgentTools(plain.yurt).writeFile("/home/user/a.txt", "x", never);

@@ -20,7 +20,6 @@ import {
   type AgentEvent,
   chatTask,
   DEFAULT_LIMITS,
-  DEMO_PDF_PATH,
   DEMO_TASK,
   DEMO_TEXT_PATH,
   type Limits,
@@ -108,6 +107,10 @@ export async function mountAgentPane(
     suspend?: () => Promise<string | undefined>;
     /** Reload on purpose: not a boot the browser cut off. */
     reload?: () => void;
+    /** Whether this load is the page's own reload, resuming a run: only then
+     * does the saved model start without a click (a new visit with a saved
+     * chat must not download weights or contact Ollama by itself). */
+    resumeRun?: () => boolean;
   },
 ): Promise<void> {
   const models = await offeredModels();
@@ -461,13 +464,20 @@ export async function mountAgentPane(
       saveChat();
       status.textContent = `${modelLabel} · suspended`;
     } else {
+      // The seal may have stopped the sandbox and stored nothing: the next
+      // message starts a new one, so the chat and its PDFs start over too
+      // rather than describing files that will not be there.
       status.textContent = modelLabel;
+      chat.length = 0;
+      pdfs.clear();
       transcript.append(
         el("li", {
           className: "stopped",
-          textContent: `Could not suspend: ${why}`,
+          textContent:
+            `Could not save this session (${why}). The next message starts a new sandbox.`,
         }),
       );
+      saveChat();
     }
     root.dataset.agentSuspended = "";
   };
@@ -491,6 +501,8 @@ export async function mountAgentPane(
     }
     const controller = new AbortController();
     running = controller;
+    // src/page.ts does not reload for a sidebar click meanwhile.
+    root.dataset.agentBusy = "";
     run.disabled = true;
     installed.disabled = true;
     stop.hidden = false;
@@ -564,8 +576,8 @@ export async function mountAgentPane(
             e.action.cmd,
           );
         } else if (e.action.action === "set_color") {
-          made.delete(DEMO_PDF_PATH);
-          pdfs.delete(DEMO_PDF_PATH);
+          // The PDF on disk stays as it was until it is remade (then read
+          // again below), so its Download stays meanwhile.
           removeDownload();
           line = el(
             "div",
@@ -574,12 +586,6 @@ export async function mountAgentPane(
             e.action.color,
           );
         } else if (e.action.action === "write_file") {
-          // It is about to change; it comes back once it is made.
-          const file = e.action.path.endsWith(".pdf")
-            ? new URL(`file://${e.action.path}`).pathname
-            : DEMO_PDF_PATH;
-          made.delete(file);
-          pdfs.delete(file);
           removeDownload();
           line = el(
             "div",
@@ -670,6 +676,7 @@ export async function mountAgentPane(
   };
   const finish = () => {
     running = undefined;
+    delete root.dataset.agentBusy;
     run.disabled = false;
     installed.disabled = false;
     stop.hidden = true;
@@ -705,6 +712,10 @@ export async function mountAgentPane(
   }
   choice.value = saved.choice;
   await label();
+  if (!(sandbox.resumeRun?.() ?? true)) {
+    offerDownload();
+    return;
+  }
   await startModel();
   if (llm === undefined) return;
   if (

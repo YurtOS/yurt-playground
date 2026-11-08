@@ -123,7 +123,9 @@ if (import.meta.main) {
       const context = await browser.newContext();
       await withModel(context, { worker: "ok", webgpu: true });
       const prompts: string[] = [];
+      let contacts = 0;
       await context.route(`${OLLAMA_URL}/**`, (route) => {
+        contacts++;
         const request = route.request();
         const cors = { "Access-Control-Allow-Origin": "*" };
         if (request.method() === "OPTIONS") {
@@ -250,6 +252,25 @@ if (import.meta.main) {
         )
       ) {
         throw new Error(`agent e2e: stats read ${JSON.stringify(stats)}`);
+      }
+      // A new visit with that chat saved (a new tab, not the page's own
+      // reload): the chat is shown, but nothing contacts Ollama or starts a
+      // model until the visitor clicks.
+      {
+        const before = contacts;
+        const visit = await context.newPage();
+        await visit.goto(`${server.url}/#agent`);
+        await visit.locator("#agent-transcript li").first().waitFor({
+          state: "attached",
+        });
+        await visit.waitForTimeout(1500);
+        if (contacts !== before) {
+          throw new Error("agent e2e: a new visit contacted Ollama unasked");
+        }
+        if (await visit.locator("#agent[data-agent-ready]").count() !== 0) {
+          throw new Error("agent e2e: a new visit started the model unasked");
+        }
+        await visit.close();
       }
       // The Shell tab is another sandbox, with Jupyter's cell, and none of the
       // agent's files; going back finds the agent's session as it was.
@@ -401,6 +422,15 @@ if (import.meta.main) {
             }) + "\n",
         });
       });
+      // mkpdf is published, so its install is made to fail here: the scene
+      // is a PDF that could not be made.
+      await context.route(
+        "https://raw.githubusercontent.com/YurtOS/yurt-packages/**",
+        (route) =>
+          route.request().url().includes("mkpdf")
+            ? route.abort()
+            : route.continue(),
+      );
       const page = await context.newPage();
       await page.goto(`${server.url}/?suspend=0#agent`);
       await page.locator("[data-testid=agent-model]").selectOption("ollama");
