@@ -391,3 +391,33 @@ Deno.test("any .pdf written is made as a PDF, not plain text with that name", as
   await createAgentTools(plain.yurt).writeFile("/home/user/a.txt", "x", never);
   assertEquals(plain.commands, []);
 });
+
+Deno.test("a command's output sent into the demo's text makes its PDF", async () => {
+  const never = new AbortController().signal;
+  const cmd = `python3 /home/user/fib.py > ${DEMO_TEXT_PATH}`;
+  const ran = writingSandbox(0);
+  const result = await createAgentTools(ran.yurt).exec(cmd, never);
+  assertEquals(ran.commands, [cmd, MAKE_DEMO_PDF]);
+  assertEquals(result.made, DEMO_PDF_MADE);
+  assertEquals(result.stdout, "");
+  // The shell would empty it before the program reads it.
+  const self = writingSandbox(0);
+  await assertRejects(
+    () =>
+      createAgentTools(self.yurt).exec(
+        `python3 ${DEMO_TEXT_PATH} > ${DEMO_TEXT_PATH}`,
+        never,
+      ),
+    Error,
+    "would empty",
+  );
+  assertEquals(self.commands, []);
+  // Reading it, or writing another file, makes nothing.
+  for (
+    const other of [`cat ${DEMO_TEXT_PATH}`, `echo 1 > ${DEMO_TEXT_PATH}.bak`]
+  ) {
+    const quiet = writingSandbox(0);
+    await createAgentTools(quiet.yurt).exec(other, never);
+    assertEquals(quiet.commands, [other]);
+  }
+});

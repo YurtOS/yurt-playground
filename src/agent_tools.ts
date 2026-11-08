@@ -4,6 +4,7 @@ import {
   DEMO_PDF_MADE,
   DEMO_PDF_PATH,
   DEMO_TEXT_PATH,
+  demoTextRedirect,
   MAKE_DEMO_PDF,
   makePdfCommand,
   pdfMade,
@@ -120,6 +121,12 @@ export function createAgentTools(yurt: Yurt): Tools {
   };
   return {
     async exec(cmd, signal) {
+      const writes = demoTextRedirect(cmd);
+      if (writes?.readsItFirst) {
+        throw new Error(
+          `this would empty ${DEMO_TEXT_PATH} before reading it; put the program in its own file and send only its output there`,
+        );
+      }
       const result = await runCommand(
         yurt,
         cmd,
@@ -127,13 +134,28 @@ export function createAgentTools(yurt: Yurt): Tools {
         DEFAULT_MAX_OUTPUT_BYTES,
         signal,
       );
+      const code = "code" in result ? result.code : null;
+      // A command's output redirected into the document makes the PDF,
+      // as a write_file of it does.
+      let made: string | undefined;
+      let unmade = "";
+      if (code === 0 && writes !== undefined) {
+        try {
+          await makePdf(MAKE_DEMO_PDF, "the text is saved", signal);
+          made = DEMO_PDF_MADE;
+        } catch (error) {
+          if (error instanceof ToolFailed) throw error;
+          unmade = `${error instanceof Error ? error.message : error}\n`;
+        }
+      }
       return {
-        code: "code" in result ? result.code : null,
+        code,
+        ...(made === undefined ? {} : { made }),
         stdout: result.stdout,
         // Without this the model sees only "exit none" and cannot tell why.
         stderr: result.timedOut
           ? `${result.stderr}timed out after ${EXEC_TIMEOUT_MS / 1000} s\n`
-          : result.stderr,
+          : result.stderr + unmade,
       };
     },
     async writeFile(path, text, signal) {

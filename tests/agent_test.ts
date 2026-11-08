@@ -4,6 +4,11 @@ import {
   buildPrompt,
   chatTask,
   DEFAULT_LIMITS,
+  DEMO_PDF_MADE,
+  DEMO_PDF_PATH,
+  DEMO_TEXT_PATH,
+  demoTextRedirect,
+  firstAction,
   madePdfPath,
   type Model,
   parseAction,
@@ -91,6 +96,34 @@ Deno.test("parseAction takes one object, fenced or bare, and nothing else", () =
   assertEquals(parseAction('Sure! {"action":"answer","text":"hi"}'), null);
   assertEquals(parseAction("the answer is 2"), null);
   assertEquals(parseAction('{"action":"answer","text":"a"} {"x":1}'), null);
+});
+
+Deno.test("firstAction runs the first of several actions in one reply", () => {
+  const reply =
+    '{"action":"write_file","path":"/home/user/a.py","text":"print(\\"{}\\")"}\n' +
+    '{"action":"exec","cmd":"python3 /home/user/a.py"}';
+  assertEquals(firstAction(reply), {
+    action: {
+      action: "write_file",
+      path: "/home/user/a.py",
+      text: 'print("{}")',
+    },
+    more: true,
+  });
+  assertEquals(firstAction('```json\n{"action":"answer","text":"hi"}\n```'), {
+    action: { action: "answer", text: "hi" },
+    more: false,
+  });
+  assertEquals(firstAction('Sure! {"action":"answer","text":"hi"}'), null);
+  assertEquals(firstAction('{"action":"answer","text":"cut off'), null);
+  // Gemma 4 E2B's answer without its "text" key.
+  assertEquals(
+    parseAction(
+      '{"action":"answer":"python3 was not found, so it \\"failed\\"."}',
+    ),
+    { action: "answer", text: 'python3 was not found, so it "failed".' },
+  );
+  assertEquals(parseAction('{"action":"exec":"ls"}'), null);
 });
 
 Deno.test("a tool step feeds its result into the next prompt, then answers", async () => {
@@ -488,4 +521,60 @@ Deno.test("a tool's result names the PDF it made, for the pane to offer", () => 
   );
   assertEquals(madePdfPath("wrote 2 characters to /a/b.txt"), undefined);
   assertEquals(madePdfPath("error: made nothing"), undefined);
+});
+
+Deno.test("a PDF made by a command ends its result, however long the output", async () => {
+  const making: Tools = {
+    exec: () =>
+      Promise.resolve({
+        code: 0,
+        stdout: "x".repeat(5000),
+        stderr: "a warning\n",
+        made: DEMO_PDF_MADE,
+      }),
+    readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
+  };
+  const { events } = await run([
+    `{"action":"exec","cmd":"python3 /home/user/main.py > ${DEMO_TEXT_PATH}"}`,
+    '{"action":"answer","text":"done"}',
+  ], { tools: making, limits: { maxObservation: 100 } });
+  const observation = events.find((e) => e.type === "observation");
+  assert(observation?.type === "observation");
+  assertEquals(madePdfPath(observation.text), DEMO_PDF_PATH);
+});
+
+Deno.test("demoTextRedirect finds output sent into the demo's text", () => {
+  const t = DEMO_TEXT_PATH;
+  for (
+    const cmd of [
+      `python3 /home/user/main.py > ${t}`,
+      `ls >>${t}`,
+      `echo hi > '${t}'; cat ${t}`,
+      `python3 /home/user/main.py > ${t} && wc -w ${t}`,
+    ]
+  ) {
+    assertEquals(demoTextRedirect(cmd), { readsItFirst: false }, cmd);
+  }
+  for (const cmd of [`python3 ${t} > ${t}`, `cat ${t} | sort > ${t}`]) {
+    assertEquals(demoTextRedirect(cmd), { readsItFirst: true }, cmd);
+  }
+  for (
+    const cmd of [
+      `cat ${t}`,
+      `ls 2> ${t}`,
+      `ls &> ${t}`,
+      `ls 2>> ${t}`,
+      `ls &>> ${t}`,
+      `echo 1 > ${t}.bak`,
+      `echo 1 > ${t}x`,
+    ]
+  ) {
+    assertEquals(demoTextRedirect(cmd), undefined, cmd);
+  }
+  // demo.txt.bak is another file: reading it first does not empty the text.
+  assertEquals(demoTextRedirect(`cat ${t}.bak > ${t}`), {
+    readsItFirst: false,
+  });
 });
