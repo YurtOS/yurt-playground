@@ -622,6 +622,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       post({ type: "status", text: "suspended" });
       post({ type: "suspended" });
     } catch (error) {
+      // An earlier seal must not come back under the chat that starts over
+      // now (src/agent_pane.ts): the next message gets a new sandbox.
+      await dropAgentSession().catch(() => {});
       post({
         type: "suspended",
         why: error instanceof Error ? error.message : String(error),

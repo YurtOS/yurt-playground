@@ -584,6 +584,8 @@ function boot(
     for (const waiter of pending.values()) waiter.reject(new Error(message));
     pending.clear();
     installs?.failAll(message);
+    // A seal in progress ends with it, so the agent's run can finish.
+    suspendAnswer?.(message);
   };
   term.onData((text) => worker.postMessage({ type: "in", text }));
   term.onResize((size) =>
