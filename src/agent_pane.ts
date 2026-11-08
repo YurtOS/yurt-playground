@@ -20,6 +20,7 @@ import {
   DEFAULT_LIMITS,
   DEMO_TASK,
   DEMO_TEXT_PATH,
+  demoTextRedirect,
   type Limits,
   madePdfPath,
   type Model,
@@ -503,6 +504,7 @@ export async function mountAgentPane(
         if (e.type === "invalid") {
           line = el("div", { className: "invalid" }, "not an action: ", e.raw);
         } else if (e.action.action === "exec") {
+          if (demoTextRedirect(e.action.cmd) !== undefined) removeDownload();
           line = el(
             "div",
             { className: "call" },

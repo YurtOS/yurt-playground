@@ -28,6 +28,9 @@ export type ExecResult = {
   code: number | null;
   stdout: string;
   stderr: string;
+  /** Set when the command's output made a PDF: {@link pdfMade}'s words,
+   * which end the result the model and the pane see. */
+  made?: string;
 };
 
 export type Tools = {
@@ -139,6 +142,28 @@ export const pdfMade = (path: string) => `made ${path}`;
 export const madePdfPath = (result: string) =>
   /made (\/.*\.pdf)$/.exec(result)?.[1];
 export const DEMO_PDF_MADE = pdfMade(DEMO_PDF_PATH);
+
+const DEMO_TEXT_WORD = DEMO_TEXT_PATH.replaceAll(".", "\\.");
+/** Output (not a numbered stream like `2>`) sent into the demo's text. */
+const DEMO_TEXT_REDIRECT = new RegExp(
+  `(?<![\\d&])>>?\\s*['"]?${DEMO_TEXT_WORD}['"]?(?=\\s|;|&|\\||$)`,
+);
+
+/** How a shell command writes the demo's text, if it does: `> ` or `>> `
+ * it, and whether the same command reads it first, which the shell would
+ * empty before the read (`python3 demo.txt > demo.txt`). Commands joined
+ * by `;`, `&&` or `||` run one after another, so only the one holding the
+ * redirect counts; a pipe runs together with it. */
+export function demoTextRedirect(
+  cmd: string,
+): { readsItFirst: boolean } | undefined {
+  const redirect = DEMO_TEXT_REDIRECT.exec(cmd);
+  if (redirect === null) return undefined;
+  const command = cmd.slice(0, redirect.index).split(/;|&&|\|\||\n/).pop()!;
+  return {
+    readsItFirst: new RegExp(`${DEMO_TEXT_WORD}(?![\\w.])`).test(command),
+  };
+}
 
 const PROMPT_RULES = [
   "Reply with exactly one JSON object and nothing else. It must be one of:",
@@ -422,10 +447,12 @@ export async function runAgent(
       }
       started = performance.now();
       let raw: string;
+      let made: string | undefined;
       try {
         if (action.action === "exec") {
           const r = await tools.exec(action.cmd, signal);
           raw = `exit ${r.code ?? "none"}\n${r.stdout}${r.stderr}`;
+          made = r.made;
         } else if (action.action === "set_color") {
           raw = await tools.setColor(action.color, signal);
         } else if (action.action === "write_file") {
@@ -439,7 +466,11 @@ export async function runAgent(
         raw = `error: ${error instanceof Error ? error.message : error}`;
       }
       if (signal.aborted) return stopped();
-      const result = clip(raw, limits.maxObservation);
+      const clipped = clip(raw, limits.maxObservation);
+      // Last, where madePdfPath reads it, and never clipped away.
+      const result = made === undefined
+        ? clipped
+        : { ...clipped, text: `${clipped.text.trimEnd()}\n${made}` };
       onEvent({
         type: "observation",
         step,

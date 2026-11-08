@@ -4,6 +4,10 @@ import {
   buildPrompt,
   chatTask,
   DEFAULT_LIMITS,
+  DEMO_PDF_MADE,
+  DEMO_PDF_PATH,
+  DEMO_TEXT_PATH,
+  demoTextRedirect,
   firstAction,
   madePdfPath,
   type Model,
@@ -517,4 +521,58 @@ Deno.test("a tool's result names the PDF it made, for the pane to offer", () => 
   );
   assertEquals(madePdfPath("wrote 2 characters to /a/b.txt"), undefined);
   assertEquals(madePdfPath("error: made nothing"), undefined);
+});
+
+Deno.test("a PDF made by a command ends its result, however long the output", async () => {
+  const making: Tools = {
+    exec: () =>
+      Promise.resolve({
+        code: 0,
+        stdout: "x".repeat(5000),
+        stderr: "a warning\n",
+        made: DEMO_PDF_MADE,
+      }),
+    readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
+  };
+  const { events } = await run([
+    `{"action":"exec","cmd":"python3 /home/user/main.py > ${DEMO_TEXT_PATH}"}`,
+    '{"action":"answer","text":"done"}',
+  ], { tools: making, limits: { maxObservation: 100 } });
+  const observation = events.find((e) => e.type === "observation");
+  assert(observation?.type === "observation");
+  assertEquals(madePdfPath(observation.text), DEMO_PDF_PATH);
+});
+
+Deno.test("demoTextRedirect finds output sent into the demo's text", () => {
+  const t = DEMO_TEXT_PATH;
+  for (
+    const cmd of [
+      `python3 /home/user/main.py > ${t}`,
+      `ls >>${t}`,
+      `echo hi > '${t}'; cat ${t}`,
+      `python3 /home/user/main.py > ${t} && wc -w ${t}`,
+    ]
+  ) {
+    assertEquals(demoTextRedirect(cmd), { readsItFirst: false }, cmd);
+  }
+  for (const cmd of [`python3 ${t} > ${t}`, `cat ${t} | sort > ${t}`]) {
+    assertEquals(demoTextRedirect(cmd), { readsItFirst: true }, cmd);
+  }
+  for (
+    const cmd of [
+      `cat ${t}`,
+      `ls 2> ${t}`,
+      `ls &> ${t}`,
+      `echo 1 > ${t}.bak`,
+      `echo 1 > ${t}x`,
+    ]
+  ) {
+    assertEquals(demoTextRedirect(cmd), undefined, cmd);
+  }
+  // demo.txt.bak is another file: reading it first does not empty the text.
+  assertEquals(demoTextRedirect(`cat ${t}.bak > ${t}`), {
+    readsItFirst: false,
+  });
 });

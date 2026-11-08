@@ -398,7 +398,8 @@ Deno.test("a command's output sent into the demo's text makes its PDF", async ()
   const ran = writingSandbox(0);
   const result = await createAgentTools(ran.yurt).exec(cmd, never);
   assertEquals(ran.commands, [cmd, MAKE_DEMO_PDF]);
-  assertEquals(result.stdout, `${DEMO_PDF_MADE}\n`);
+  assertEquals(result.made, DEMO_PDF_MADE);
+  assertEquals(result.stdout, "");
   // The shell would empty it before the program reads it.
   const self = writingSandbox(0);
   await assertRejects(
