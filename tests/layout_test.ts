@@ -173,8 +173,8 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   }
   // ...and the converse: an e2e file nobody put in the matrix would never
   // run here. `desktop_e2e.ts` is release-desktop.yml's, by name,
-  // `agent_webgpu_e2e.ts` needs a GPU and Safari, and `agent_ollama_e2e.ts`
-  // needs Ollama and its models: they run on a Mac.
+  // `agent_webgpu_e2e.ts` needs a GPU and Safari, and `agent_demo_e2e.ts`
+  // a GPU and the real weights: they run on a Mac.
   const e2eFiles: string[] = [];
   for await (const entry of Deno.readDir(testsDir)) {
     if (entry.isFile && entry.name.endsWith("_e2e.ts")) {
@@ -183,7 +183,7 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   }
   assertEquals(
     e2eFiles.filter((s) =>
-      s !== "desktop" && s !== "agent_webgpu" && s !== "agent_ollama" &&
+      s !== "desktop" && s !== "agent_webgpu" && s !== "agent_demo" &&
       !scenes.includes(s)
     ),
     [],

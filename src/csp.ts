@@ -6,9 +6,7 @@
  * site's own origin (`connect-src 'self'`), so notebook markdown, rich HTML
  * output or a broken frontend cannot phone out. Two exceptions. Outside
  * JupyterLite only: the local agent's weights (#140) download from Hugging
- * Face ({@link MODEL_ORIGINS}); gigabytes do not fit the site's host; and
- * Ollama at its one default address on the visitor's own computer
- * ({@link OLLAMA_URL}), when the visitor asks the agent to use it. On
+ * Face ({@link MODEL_ORIGINS}); gigabytes do not fit the site's host. On
  * every page: the packages the sandbox installs come from the one
  * repository path YurtOS/yurt-packages ({@link PACKAGE_SOURCES},
  * src/packages.ts) -- on the slim image the Notebook and Lab pages install
@@ -25,7 +23,6 @@
  * inline because JupyterLab sets them everywhere.
  */
 
-import { OLLAMA_URL } from "./ollama.ts";
 import { PACKAGE_SOURCES } from "./packages.ts";
 import { SNAPSHOT_REFS_API, SNAPSHOT_SOURCE } from "./snapshot_source.ts";
 import { BEACON_REPORT_ORIGIN, BEACON_SCRIPT_ORIGIN } from "./web_analytics.ts";
@@ -103,7 +100,7 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
     "media-src 'self' blob:",
     [
       "connect-src 'self'",
-      ...(options.sameOriginOnly ? [] : [...MODEL_ORIGINS, OLLAMA_URL]),
+      ...(options.sameOriginOnly ? [] : MODEL_ORIGINS),
       ...PACKAGE_SOURCES,
       ...(options.sameOriginOnly ? [] : [SNAPSHOT_SOURCE, SNAPSHOT_REFS_API]),
       ...(options.webAnalytics ? [BEACON_REPORT_ORIGIN] : []),

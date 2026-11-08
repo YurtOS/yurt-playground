@@ -5,8 +5,8 @@
  * protocol. Everything else is real: the pane, the client, the controller
  * and the sandbox the agent's commands run in. Scenes: no WebGPU, a model
  * that fails to start, Enter vs Shift+Enter, a task answered through a real
- * command (starting the sandbox on the way), Stop killing a command, and a
- * model in Ollama, which the page leaves alone until asked.
+ * command (starting the sandbox on the way), Stop killing a command, the
+ * demo's seal and resume, and a PDF that could not be made.
  * This checks the tool loop and the pane, not the GPU: the adapter below
  * is a stub and the worker never creates a device. The model on a real
  * adapter, in real Chrome and Safari, is tests/agent_webgpu_e2e.ts (a Mac,
@@ -19,16 +19,19 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { DEMO_TEXT_PATH } from "../src/agent.ts";
-import { OLLAMA_URL } from "../src/ollama.ts";
 import { ISOLATION_HEADERS, startPlaygroundServer } from "../src/serve.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+/** The path the "demo" worker posts each prompt to, for the test to read. */
+const PROMPT_PATH = "/__agent_prompt";
+
 /** A worker that loads nothing and replies from a script: run a command,
  * then answer with the last number the command printed; or, for a task
  * that says "sleep", run one that never ends on its own; for "two lines",
- * a command of two lines. */
-function fakeWorker(mode: "ok" | "fail"): string {
+ * a command of two lines. In "demo" mode it writes the demo's text (the
+ * given string) and then answers "Done.", once per message. */
+function fakeWorker(mode: "ok" | "fail" | "demo", demoText = ""): string {
   return `
 self.onmessage = (event) => {
   const m = event.data;
@@ -44,7 +47,18 @@ self.onmessage = (event) => {
     return;
   }
   let text;
-  if (m.prompt.includes("sleep")) {
+  if (${JSON.stringify(mode)} === "demo") {
+    fetch(${JSON.stringify(PROMPT_PATH)}, { method: "POST", body: m.prompt })
+      .catch(() => {});
+    const asks = m.prompt.lastIndexOf("Now the user asks");
+    const answered = asks < 0
+      ? m.prompt.includes("Result:")
+      : m.prompt.slice(asks).includes("Result:");
+    text = JSON.stringify(answered
+      ? { action: "answer", text: "Done." }
+      : { action: "write_file", path: ${JSON.stringify(DEMO_TEXT_PATH)},
+        text: ${JSON.stringify(demoText)} });
+  } else if (m.prompt.includes("sleep")) {
     text = '{"action":"exec","cmd":"sleep 60"}';
   } else if (
     m.prompt.includes("two lines") &&
@@ -67,8 +81,17 @@ self.onmessage = (event) => {
 
 async function withModel(
   context: BrowserContext,
-  opts: { worker: "ok" | "fail"; webgpu: boolean },
+  opts: {
+    worker: "ok" | "fail" | "demo";
+    webgpu: boolean;
+    demoText?: string;
+    prompts?: string[];
+  },
 ): Promise<void> {
+  await context.route(`**${PROMPT_PATH}`, (route) => {
+    opts.prompts?.push(route.request().postData() ?? "");
+    return route.fulfill({ status: 204 });
+  });
   await context.route("**/llm/models.json", (route) =>
     route.fulfill({
       contentType: "application/json",
@@ -79,7 +102,7 @@ async function withModel(
       // A worker of a cross-origin-isolated page needs the headers too.
       headers: ISOLATION_HEADERS,
       contentType: "text/javascript",
-      body: fakeWorker(opts.worker),
+      body: fakeWorker(opts.worker, opts.demoText),
     }));
   // Headless Chromium on a runner has no GPU; the pane asks for an adapter.
   // A stub, so this proves nothing about WebGPU (agent_webgpu_e2e.ts does).
@@ -121,46 +144,22 @@ if (import.meta.main) {
     // and the chat, and the PDF is still there to download while it is sealed.
     {
       const context = await browser.newContext();
-      await withModel(context, { worker: "ok", webgpu: true });
       const prompts: string[] = [];
-      let contacts = 0;
-      await context.route(`${OLLAMA_URL}/**`, (route) => {
-        contacts++;
-        const request = route.request();
-        const cors = { "Access-Control-Allow-Origin": "*" };
-        if (request.method() === "OPTIONS") {
-          return route.fulfill({
-            status: 204,
-            headers: { ...cors, "Access-Control-Allow-Headers": "*" },
-          });
-        }
-        if (request.url().endsWith("/api/tags")) {
-          return route.fulfill({
-            headers: cors,
-            json: { models: [{ name: "stand-in:1" }] },
-          });
-        }
-        const prompt: string = request.postDataJSON().messages[1].content;
-        prompts.push(prompt);
-        const reply = prompt.includes("Result:")
-          ? { action: "answer", text: "Done." }
-          : { action: "write_file", path: DEMO_TEXT_PATH, text: "kept across" };
-        return route.fulfill({
-          headers: cors,
-          body:
-            JSON.stringify({ message: { content: JSON.stringify(reply) } }) +
-            "\n" + JSON.stringify({
-              done: true,
-              prompt_eval_count: 3,
-              eval_count: 2,
-            }) + "\n",
-        });
+      await withModel(context, {
+        worker: "demo",
+        webgpu: true,
+        demoText: "kept across",
+        prompts,
+      });
+      // Each model load fetches the worker: none may happen without a click.
+      let loads = 0;
+      context.on("request", (request) => {
+        if (request.url().includes("llm_worker.bundle.js")) loads++;
       });
       const page = await context.newPage();
       const logs: string[] = [];
       page.on("console", (m) => logs.push(m.text()));
       await page.goto(`${server.url}/#agent`);
-      await page.locator("[data-testid=agent-model]").selectOption("ollama");
       await page.locator("[data-testid=agent-start]").click();
       await page.locator("#agent[data-agent-ready]").waitFor();
       await page.evaluate(async () => {
@@ -254,18 +253,18 @@ if (import.meta.main) {
         throw new Error(`agent e2e: stats read ${JSON.stringify(stats)}`);
       }
       // A new visit with that chat saved (a new tab, not the page's own
-      // reload): the chat is shown, but nothing contacts Ollama or starts a
-      // model until the visitor clicks.
+      // reload): the chat is shown, but no model loads until the visitor
+      // clicks.
       {
-        const before = contacts;
+        const before = loads;
         const visit = await context.newPage();
         await visit.goto(`${server.url}/#agent`);
         await visit.locator("#agent-transcript li").first().waitFor({
           state: "attached",
         });
         await visit.waitForTimeout(1500);
-        if (contacts !== before) {
-          throw new Error("agent e2e: a new visit contacted Ollama unasked");
+        if (loads !== before) {
+          throw new Error("agent e2e: a new visit loaded the model unasked");
         }
         if (await visit.locator("#agent[data-agent-ready]").count() !== 0) {
           throw new Error("agent e2e: a new visit started the model unasked");
@@ -317,7 +316,6 @@ if (import.meta.main) {
         throw new Error("agent e2e: New session kept the chat");
       }
       // So does a refresh, though the page's own reloads above resumed.
-      await page.locator("[data-testid=agent-model]").selectOption("ollama");
       await page.locator("[data-testid=agent-start]").click();
       await page.locator("#agent[data-agent-ready]").waitFor();
       await page.locator("[data-testid=agent-run]").click();
@@ -364,63 +362,21 @@ if (import.meta.main) {
       const page = await context.newPage();
       await page.goto(`${server.url}/?suspend=0#agent`);
       await page.locator("[data-testid=agent-unsupported]").waitFor();
-      const offered = await page.locator("[data-testid=agent-model] option")
-        .evaluateAll((options) =>
-          options.map((o) => (o as HTMLOptionElement).value)
-        );
-      if (offered.join() !== "ollama") {
-        throw new Error(`agent e2e: offered without WebGPU: ${offered}`);
+      if (await page.locator("[data-testid=agent-start]").count() !== 0) {
+        throw new Error("agent e2e: a Start offered without WebGPU");
       }
       await context.close();
     }
 
-    // Ollama on this computer: not contacted until asked, a refusal says what
-    // to do, and the model it lists does the task. Stand-in replies, because
-    // the runners have no Ollama; the real one is tests/agent_ollama_e2e.ts.
+    // The demo when mkpdf cannot be installed: the run stops and says so,
+    // with no Download; with the command in place, the next message makes
+    // the PDF and offers it.
     {
       const context = await browser.newContext();
-      await withModel(context, { worker: "ok", webgpu: true });
-      const asked: string[] = [];
-      let refuse = true;
-      await context.route(`${OLLAMA_URL}/**`, (route) => {
-        const request = route.request();
-        asked.push(new URL(request.url()).pathname);
-        const cors = { "Access-Control-Allow-Origin": "*" };
-        if (refuse) return route.abort("connectionrefused");
-        if (request.method() === "OPTIONS") {
-          return route.fulfill({
-            status: 204,
-            headers: { ...cors, "Access-Control-Allow-Headers": "*" },
-          });
-        }
-        if (request.url().endsWith("/api/tags")) {
-          return route.fulfill({
-            headers: cors,
-            json: { models: [{ name: "stand-in:1" }, { name: "other:2" }] },
-          });
-        }
-        const { model, messages } = request.postDataJSON();
-        if (model !== "stand-in:1") throw new Error(`asked ${model}`);
-        // The first write finds no mkpdf; the answer ends each message.
-        const prompt: string = messages[1].content;
-        const reply =
-          prompt.slice(prompt.lastIndexOf("Now the user asks")).includes(
-              "Result:",
-            ) ||
-            (!prompt.includes("Now the user asks") &&
-              prompt.includes("Result:"))
-            ? { action: "answer", text: "Done." }
-            : { action: "write_file", path: DEMO_TEXT_PATH, text: "made" };
-        return route.fulfill({
-          headers: cors,
-          body:
-            JSON.stringify({ message: { content: JSON.stringify(reply) } }) +
-            "\n" + JSON.stringify({
-              done: true,
-              prompt_eval_count: 3,
-              eval_count: 2,
-            }) + "\n",
-        });
+      await withModel(context, {
+        worker: "demo",
+        webgpu: true,
+        demoText: "made",
       });
       // mkpdf is published, so its install is made to fail here: the scene
       // is a PDF that could not be made.
@@ -433,23 +389,6 @@ if (import.meta.main) {
       );
       const page = await context.newPage();
       await page.goto(`${server.url}/?suspend=0#agent`);
-      await page.locator("[data-testid=agent-model]").selectOption("ollama");
-      await page.waitForTimeout(500);
-      if (asked.length !== 0) {
-        throw new Error(`agent e2e: contacted Ollama unasked: ${asked}`);
-      }
-      await page.locator("[data-testid=agent-start]").click();
-      await until(
-        page,
-        "the way to start Ollama",
-        () =>
-          document.querySelector("[data-testid=agent-cost]")?.textContent
-              ?.includes("ollama serve") === true &&
-          !(document.querySelector("[data-testid=agent-start]") as
-            | HTMLButtonElement
-            | null)?.disabled,
-      );
-      refuse = false;
       await page.locator("[data-testid=agent-start]").click();
       await page.locator("#agent[data-agent-ready]").waitFor();
       // A snapshot may hold mkpdf already: this scene starts without it.

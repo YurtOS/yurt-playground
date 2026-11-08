@@ -5,9 +5,7 @@
  * (src/agent.ts) takes is shown as it happens. The pane appears where the
  * site ships the inference runtime (`/llm/models.json`, written by the
  * static build and answered by the dev server); the weights download from
- * Hugging Face (src/llm_models.ts). The other choice is a model the visitor
- * already runs with Ollama on this computer (src/ollama.ts), which needs no
- * WebGPU and no download; the page does not contact it until asked to.
+ * Hugging Face (src/llm_models.ts). A browser without WebGPU is told so.
  */
 import { saveInBrowser, type Yurt } from "./agent_api.ts";
 import { AGENT_CHAT_STORAGE } from "./snapshot_store.ts";
@@ -31,13 +29,6 @@ import {
 } from "./agent.ts";
 import { isModelCached, loadLocalModel } from "./llm.ts";
 import { LOCAL_MODELS, type LocalModel, MAX_NUM_TOKENS } from "./llm_models.ts";
-import {
-  listOllamaModels,
-  OLLAMA_CONTEXT_TOKENS,
-  OLLAMA_LIMITS,
-  ollamaHelp,
-  ollamaModel,
-} from "./ollama.ts";
 
 const GiB = 2 ** 30;
 
@@ -45,7 +36,6 @@ const GiB = 2 ** 30;
  * sandbox holds the document; this holds the conversation around it. */
 type SavedChat = {
   choice: string;
-  model: string;
   chat: string[];
   transcript: string;
   /** Path to base64: the PDFs on offer. */
@@ -62,9 +52,6 @@ function loadChat(): SavedChat | undefined {
     return undefined;
   }
 }
-
-/** The model choice that is not a pinned download. */
-const OLLAMA = "ollama";
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -109,7 +96,7 @@ export async function mountAgentPane(
     reload?: () => void;
     /** Whether this load is the page's own reload, resuming a run: only then
      * does the saved model start without a click (a new visit with a saved
-     * chat must not download weights or contact Ollama by itself). */
+     * chat must not download or load weights by itself). */
     resumeRun?: () => boolean;
   },
 ): Promise<void> {
@@ -143,6 +130,31 @@ export async function mountAgentPane(
   }
   const gpu = (navigator as Navigator & { gpu?: GPU }).gpu;
   const adapter = await gpu?.requestAdapter().catch(() => null);
+  if (!adapter) {
+    root.replaceChildren(
+      el(
+        "div",
+        { className: "bar" },
+        el("span", { className: "name", textContent: "Agent" }),
+        el("span", {
+          id: "agent-status",
+          testid: "agent-status",
+          textContent: "no WebGPU",
+        }),
+      ),
+      el(
+        "div",
+        { id: "agent-intro" },
+        el(
+          "p",
+          { className: "unsupported", testid: "agent-unsupported" },
+          "This browser offers no WebGPU, which the model needs to run in " +
+            "this tab. A current Chrome, Edge or Safari on a desktop has it.",
+        ),
+      ),
+    );
+    return;
+  }
 
   // The bar: what this is, the model's state, the context in use, Stop.
   const status = el("span", {
@@ -176,15 +188,9 @@ export async function mountAgentPane(
     testid: "agent-model",
   });
   choice.setAttribute("aria-label", "Model");
-  for (const m of adapter ? models : []) {
+  for (const m of models) {
     choice.append(el("option", { value: m.id, textContent: m.choice }));
   }
-  choice.append(
-    el("option", {
-      value: OLLAMA,
-      textContent: "On this computer, with Ollama",
-    }),
-  );
   const startButton = el("button", {
     type: "button",
     id: "agent-start",
@@ -199,45 +205,20 @@ export async function mountAgentPane(
     el(
       "p",
       {},
-      adapter
-        ? "A language model that runs in this tab, on your GPU. Its weights " +
-          "download once from Hugging Face; after that nothing you type is " +
-          "sent anywhere. It works in this page's sandbox through "
-        : "A language model from Ollama on this computer: nothing is " +
-          "downloaded, and what you type stays on this computer. It works in " +
-          "this page's sandbox through ",
+      "A language model that runs in this tab, on your GPU. Its weights " +
+        "download once from Hugging Face; after that nothing you type is " +
+        "sent anywhere. It works in this page's sandbox through ",
       el("code", { textContent: "window.yurt" }),
       " and can run any command there, change or delete files and stop " +
         "processes, the same as typing in its terminal. Every step is " +
-        "shown as it runs, and Stop ends it." +
-        (adapter
-          ? " Or use a model you already run with Ollama on this computer: " +
-            "nothing is downloaded, and what you type stays on this computer."
-          : ""),
+        "shown as it runs, and Stop ends it.",
     ),
     el("div", { className: "row" }, choice, startButton),
     cost,
     progress,
   );
-  if (!adapter) {
-    intro.prepend(
-      el(
-        "p",
-        { className: "unsupported", testid: "agent-unsupported" },
-        "This browser offers no WebGPU, which a model needs to run in the " +
-          "tab. A current Chrome, Edge or Safari on a desktop has it. A " +
-          "model in Ollama on this computer does not need it.",
-      ),
-    );
-  }
   const selected = () => models.find((m) => m.id === choice.value)!;
   const label = async () => {
-    if (choice.value === OLLAMA) {
-      startButton.textContent = "Connect to Ollama";
-      cost.textContent = "Ollama must be running, with a model installed. " +
-        "The browser may ask whether this site may reach your local network.";
-      return;
-    }
     const m = selected();
     const cached = await isModelCached(m);
     startButton.textContent = cached
@@ -253,12 +234,6 @@ export async function mountAgentPane(
   await label();
 
   // After the model: the task, Run, and the transcript.
-  const installed = el("select", {
-    id: "agent-installed",
-    testid: "agent-installed",
-    hidden: true,
-  });
-  installed.setAttribute("aria-label", "Ollama model");
   const task = el("textarea", {
     id: "agent-task",
     value: DEMO_TASK,
@@ -283,7 +258,6 @@ export async function mountAgentPane(
   const work = el(
     "div",
     { hidden: true },
-    installed,
     task,
     el("div", { className: "actions" }, run, hint),
     transcript,
@@ -307,8 +281,8 @@ export async function mountAgentPane(
   let llm:
     | (Model & { lastStats?: ModelStats; onToken?: (t: string) => void })
     | undefined;
-  let contextTokens = MAX_NUM_TOKENS;
-  let limits: Limits = DEFAULT_LIMITS;
+  const contextTokens = MAX_NUM_TOKENS;
+  const limits: Limits = DEFAULT_LIMITS;
   let running: AbortController | undefined;
   /** The chat so far: the visitor's messages, in order. */
   const chat: string[] = [];
@@ -325,45 +299,7 @@ export async function mountAgentPane(
     task.focus();
   };
 
-  /** Only here, on the visitor's click, does the page contact Ollama. */
-  const connectOllama = async () => {
-    startButton.disabled = true;
-    choice.disabled = true;
-    status.textContent = "connecting";
-    let names: string[] | undefined;
-    try {
-      names = await listOllamaModels();
-    } catch {
-      cost.textContent = ollamaHelp(location.origin);
-    }
-    if (names?.length === 0) {
-      cost.textContent =
-        "Ollama has no models yet. Install one, for example: ollama pull gemma4:e4b";
-    }
-    if (names === undefined || names.length === 0) {
-      status.textContent = "not connected";
-      startButton.disabled = false;
-      choice.disabled = false;
-      return;
-    }
-    const showModel = () => {
-      modelLabel = `${installed.value} · Ollama · on this computer`;
-      status.textContent = modelLabel;
-    };
-    installed.replaceChildren(
-      ...names.map((name) => el("option", { value: name, textContent: name })),
-    );
-    installed.hidden = false;
-    installed.addEventListener("change", showModel);
-    showModel();
-    llm = ollamaModel(() => installed.value);
-    contextTokens = OLLAMA_CONTEXT_TOKENS;
-    limits = OLLAMA_LIMITS;
-    ready();
-  };
-
   const startModel = async () => {
-    if (choice.value === OLLAMA) return await connectOllama();
     const model = selected();
     startButton.disabled = true;
     choice.disabled = true;
@@ -436,7 +372,6 @@ export async function mountAgentPane(
     removeDownload();
     const saved: SavedChat = {
       choice: choice.value,
-      model: installed.value,
       chat,
       transcript: transcript.innerHTML,
       pdfs: Object.fromEntries(
@@ -504,7 +439,6 @@ export async function mountAgentPane(
     // src/page.ts does not reload for a sidebar click meanwhile.
     root.dataset.agentBusy = "";
     run.disabled = true;
-    installed.disabled = true;
     stop.hidden = false;
     transcript.append(
       el("li", { className: "user", testid: "agent-user", textContent: text }),
@@ -678,7 +612,6 @@ export async function mountAgentPane(
     running = undefined;
     delete root.dataset.agentBusy;
     run.disabled = false;
-    installed.disabled = false;
     stop.hidden = true;
   };
   run.addEventListener("click", () => void go());
@@ -718,12 +651,6 @@ export async function mountAgentPane(
   }
   await startModel();
   if (llm === undefined) return;
-  if (
-    saved.model !== "" && installed.querySelector(`[value="${saved.model}"]`)
-  ) {
-    installed.value = saved.model;
-    installed.dispatchEvent(new Event("change"));
-  }
   offerDownload();
   if (saved.pending !== undefined) {
     saveChat();
