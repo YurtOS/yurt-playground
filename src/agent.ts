@@ -146,7 +146,7 @@ export const DEMO_PDF_MADE = pdfMade(DEMO_PDF_PATH);
 const DEMO_TEXT_WORD = DEMO_TEXT_PATH.replaceAll(".", "\\.");
 /** Output (not a numbered stream like `2>`) sent into the demo's text. */
 const DEMO_TEXT_REDIRECT = new RegExp(
-  `(?<![\\d&])>>?\\s*['"]?${DEMO_TEXT_WORD}['"]?(?=\\s|;|&|\\||$)`,
+  `(?<![\\d&>])>>?\\s*['"]?${DEMO_TEXT_WORD}['"]?(?=\\s|;|&|\\||$)`,
 );
 
 /** How a shell command writes the demo's text, if it does: `> ` or `>> `

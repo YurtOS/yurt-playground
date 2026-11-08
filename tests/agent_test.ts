@@ -565,6 +565,8 @@ Deno.test("demoTextRedirect finds output sent into the demo's text", () => {
       `cat ${t}`,
       `ls 2> ${t}`,
       `ls &> ${t}`,
+      `ls 2>> ${t}`,
+      `ls &>> ${t}`,
       `echo 1 > ${t}.bak`,
       `echo 1 > ${t}x`,
     ]
