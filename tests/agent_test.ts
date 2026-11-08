@@ -4,6 +4,7 @@ import {
   buildPrompt,
   chatTask,
   DEFAULT_LIMITS,
+  firstAction,
   madePdfPath,
   type Model,
   parseAction,
@@ -91,6 +92,34 @@ Deno.test("parseAction takes one object, fenced or bare, and nothing else", () =
   assertEquals(parseAction('Sure! {"action":"answer","text":"hi"}'), null);
   assertEquals(parseAction("the answer is 2"), null);
   assertEquals(parseAction('{"action":"answer","text":"a"} {"x":1}'), null);
+});
+
+Deno.test("firstAction runs the first of several actions in one reply", () => {
+  const reply =
+    '{"action":"write_file","path":"/home/user/a.py","text":"print(\\"{}\\")"}\n' +
+    '{"action":"exec","cmd":"python3 /home/user/a.py"}';
+  assertEquals(firstAction(reply), {
+    action: {
+      action: "write_file",
+      path: "/home/user/a.py",
+      text: 'print("{}")',
+    },
+    more: true,
+  });
+  assertEquals(firstAction('```json\n{"action":"answer","text":"hi"}\n```'), {
+    action: { action: "answer", text: "hi" },
+    more: false,
+  });
+  assertEquals(firstAction('Sure! {"action":"answer","text":"hi"}'), null);
+  assertEquals(firstAction('{"action":"answer","text":"cut off'), null);
+  // Gemma 4 E2B's answer without its "text" key.
+  assertEquals(
+    parseAction(
+      '{"action":"answer":"python3 was not found, so it \\"failed\\"."}',
+    ),
+    { action: "answer", text: 'python3 was not found, so it "failed".' },
+  );
+  assertEquals(parseAction('{"action":"exec":"ls"}'), null);
 });
 
 Deno.test("a tool step feeds its result into the next prompt, then answers", async () => {

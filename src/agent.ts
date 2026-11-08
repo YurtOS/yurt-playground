@@ -118,6 +118,8 @@ export function systemPrompt(python: boolean): string {
 export const DEMO_TEXT_PATH = "/home/user/demo.txt";
 export const DEMO_PDF_PATH = "/home/user/demo.pdf";
 export const DEMO_COLOR_PATH = "/home/user/demo.color";
+/** Where the prompt suggests a program goes: not the document's text. */
+export const PROGRAM_PATH = "/home/user/main.py";
 /** What the `mkpdf` command takes as a color. */
 export const DEMO_COLOR = /^#[0-9a-f]{6}$/;
 const shellQuoted = (path: string) => `'${path.replaceAll("'", "'\\''")}'`;
@@ -147,6 +149,8 @@ const PROMPT_RULES = [
   '{"action":"answer","text":"<final answer for the user>"}',
   "Use exec or read_file to get facts from the sandbox, one step at a time.",
   `To create or change a PDF, write_file its whole text to ${DEMO_TEXT_PATH}: plain ASCII with no markdown, under 300 words, since a page holds 40 lines of 65 characters. That also makes the PDF at ${DEMO_PDF_PATH}; do nothing more for it.`,
+  `A program goes in its own file, such as ${PROGRAM_PATH}, never in ${DEMO_TEXT_PATH}. To put its output in that PDF, exec it with the output redirected: python3 ${PROGRAM_PATH} > ${DEMO_TEXT_PATH}. That makes the PDF too. Never type out a program's output yourself.`,
+  "Send one action per reply; you see its result before the next.",
   "set_color sets the color of the whole text of that PDF and remakes it; it changes no words. Give the requested color's #rrggbb value.",
   `To read the text of that PDF, exec: mkpdf --text ${DEMO_PDF_PATH} and pipe it to other commands, such as wc -w. Do not count or calculate in your head: report what the command printed.`,
   "When a step is done, do not repeat it: use the answer action. If a step failed, say so; never claim it worked.",
@@ -229,19 +233,66 @@ export function validateAction(value: unknown): Action | null {
   return v as Action;
 }
 
-/** The one JSON object in a reply. Small models often wrap it in a
- * ```json fence; anything more than one object is not an action. */
-export function parseAction(text: string): Action | null {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end < start) return null;
-  const outside = text.slice(0, start) + text.slice(end + 1);
-  if (outside.replace(/```(json)?/g, "").trim() !== "") return null;
+/** Where the JSON object starting at `start` ends (its closing brace),
+ * strings and escapes aside; -1 if it does not close. */
+function objectEnd(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+const FENCE = /```(json)?/g;
+
+/** Gemma 4 E2B often drops the answer's "text" key:
+ * {"action":"answer":"..."}. Not JSON, but there is only one way to read it. */
+const KEYLESS_ANSWER =
+  /^\{\s*"action"\s*:\s*"answer"\s*:\s*("(?:[^"\\]|\\.)*")\s*\}$/s;
+
+function parseObject(json: string): unknown {
   try {
-    return validateAction(JSON.parse(text.slice(start, end + 1)));
+    return JSON.parse(json);
+  } catch (error) {
+    const keyless = KEYLESS_ANSWER.exec(json);
+    if (keyless === null) throw error;
+    return { action: "answer", text: JSON.parse(keyless[1]) };
+  }
+}
+
+/** The first action in a reply, and whether more text follows it. Small
+ * models often wrap it in a ```json fence; nothing else may come first. A
+ * model that plans ahead sends several actions in one reply: the first is
+ * the one to run, and the rest wait for its result. */
+export function firstAction(
+  text: string,
+): { action: Action; more: boolean } | null {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+  if (text.slice(0, start).replace(FENCE, "").trim() !== "") return null;
+  const end = objectEnd(text, start);
+  if (end < 0) return null;
+  try {
+    const action = validateAction(parseObject(text.slice(start, end + 1)));
+    if (action === null) return null;
+    const more = text.slice(end + 1).replace(FENCE, "").trim() !== "";
+    return { action, more };
   } catch {
     return null;
   }
+}
+
+/** The one JSON object in a reply, fenced or bare, and nothing else. */
+export function parseAction(text: string): Action | null {
+  const first = firstAction(text);
+  return first === null || first.more ? null : first.action;
 }
 
 type Turn = { reply: string; result: string };
@@ -334,7 +385,8 @@ export async function runAgent(
       );
       if (signal.aborted) return stopped();
       const ms = performance.now() - started;
-      const action = parseAction(text);
+      const first = firstAction(text);
+      const action = first?.action ?? null;
       if (action === null) {
         onEvent({ type: "invalid", step, raw: text, stats, ms });
         if (++invalid > limits.maxInvalid) {
@@ -395,7 +447,12 @@ export async function runAgent(
         truncated: result.truncated,
         ms: performance.now() - started,
       });
-      turns.push({ reply: JSON.stringify(action), result: result.text });
+      turns.push({
+        reply: JSON.stringify(action),
+        result: first?.more
+          ? `${result.text}\n(Only your first action was run. Send one action per reply, after reading its result.)`
+          : result.text,
+      });
     }
     onEvent({ type: "stopped", reason: "steps" });
   } catch (error) {

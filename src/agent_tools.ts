@@ -19,6 +19,11 @@ import { checkPath, type Yurt } from "./agent_api.ts";
 /** An absolute path as the file system resolves it: `//`, `.` and `..`
  * collapsed. Not through URL parsing, which cuts a path at `#` and
  * percent-encodes a space. */
+/** A shell command that sends output into the demo's text file. */
+const WRITES_DEMO_TEXT = new RegExp(
+  `>>?\\s*['"]?${DEMO_TEXT_PATH.replaceAll(".", "\\.")}['"]?(\\s|;|&|\\||$)`,
+);
+
 export function normalPath(path: string): string {
   const parts: string[] = [];
   for (const part of path.split("/")) {
@@ -120,6 +125,16 @@ export function createAgentTools(yurt: Yurt): Tools {
   };
   return {
     async exec(cmd, signal) {
+      // `python3 demo.txt > demo.txt`: the shell empties the file first.
+      const writes = WRITES_DEMO_TEXT.exec(cmd);
+      if (
+        writes !== null &&
+        cmd.replace(writes[0], " ").includes(DEMO_TEXT_PATH)
+      ) {
+        throw new Error(
+          `this would empty ${DEMO_TEXT_PATH} before reading it; put the program in its own file and send only its output there`,
+        );
+      }
       const result = await runCommand(
         yurt,
         cmd,
@@ -127,9 +142,22 @@ export function createAgentTools(yurt: Yurt): Tools {
         DEFAULT_MAX_OUTPUT_BYTES,
         signal,
       );
+      const code = "code" in result ? result.code : null;
+      // A command's output redirected into the document makes the PDF,
+      // as a write_file of it does.
+      let made = "";
+      if (code === 0 && WRITES_DEMO_TEXT.test(cmd)) {
+        try {
+          await makePdf(MAKE_DEMO_PDF, "the text is saved", signal);
+          made = `${DEMO_PDF_MADE}\n`;
+        } catch (error) {
+          if (error instanceof ToolFailed) throw error;
+          made = `${error instanceof Error ? error.message : error}\n`;
+        }
+      }
       return {
-        code: "code" in result ? result.code : null,
-        stdout: result.stdout,
+        code,
+        stdout: result.stdout + made,
         // Without this the model sees only "exit none" and cannot tell why.
         stderr: result.timedOut
           ? `${result.stderr}timed out after ${EXEC_TIMEOUT_MS / 1000} s\n`
