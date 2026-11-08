@@ -75,7 +75,7 @@ export type CspOptions = {
    * validators with `new Function`; only the JupyterLite pages get this.
    */
   allowEval?: boolean;
-  /** No model download and no uploaded snapshot: `connect-src` is the
+  /** No model, downloaded or local, and no uploaded snapshot: `connect-src` is the
    * origin and the packages repository's path only. */
   sameOriginOnly?: boolean;
   /** The deployed site's Cloudflare Web Analytics beacon

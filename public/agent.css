@@ -27,7 +27,15 @@
 #agent-intro progress[hidden] {
   display: none;
 }
-#agent-model {
+#agent-installed {
+  display: block;
+  margin: 8px;
+}
+#agent-installed[hidden] {
+  display: none;
+}
+#agent-model,
+#agent-installed {
   font: inherit;
   color: var(--text);
   background: var(--ground);
@@ -162,4 +170,36 @@
 }
 #agent-transcript .note {
   color: var(--muted);
+}
+#agent-intro p.unsupported {
+  margin-bottom: 12px;
+}
+#agent-transcript li.user {
+  color: var(--text);
+  font-weight: 600;
+  margin-top: 12px;
+}
+/* The pane fills the window; the task box fits its text. */
+.views > #agent:not(.view-off) {
+  min-height: calc(100vh - 44px);
+}
+#agent-task {
+  field-sizing: content;
+  min-height: 7lh;
+  max-height: 50vh;
+}
+#agent-transcript li.stats {
+  color: var(--muted);
+  font-size: 12px;
+}
+/* Its own scrollbar: the box and Run stay in view however long the chat gets. */
+#agent-transcript {
+  max-height: calc(100vh - 400px);
+  min-height: 200px;
+  overflow-y: auto;
+}
+@media (max-width: 720px) {
+  #agent-transcript {
+    max-height: 60vh;
+  }
 }

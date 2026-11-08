@@ -1,4 +1,5 @@
 import { chromium, devices, type Page } from "playwright";
+import { showAllSections } from "./show_all_sections.ts";
 import { Buffer } from "node:buffer";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,7 +95,7 @@ async function tabletIsShellOnly(
   url: string,
 ): Promise<void> {
   const context = await browser.newContext(devices["iPad Pro 11"]);
-  const page = await context.newPage();
+  const page = await showAllSections(await context.newPage());
   await page.addInitScript(() => {
     const seen: string[] = [];
     (globalThis as { __statuses?: string[] }).__statuses = seen;
@@ -315,7 +316,7 @@ export async function phoneAgentHasTheSandbox(
       get: () => ({ requestAdapter: () => Promise.resolve({}) }),
     });
   });
-  const page = await phone.newPage();
+  const page = await showAllSections(await phone.newPage());
   await page.goto(`${url}/`, { waitUntil: "domcontentloaded" });
   await page.getByTestId("agent-start").waitFor({ state: "visible" });
   const agent = await page.evaluate(() => {
@@ -437,7 +438,7 @@ async function bootFailuresAreExplained(
   ];
   for (const { name, options, init } of phones) {
     const context = await browser.newContext(options);
-    const page = await context.newPage();
+    const page = await showAllSections(await context.newPage());
     if (init !== undefined) await page.addInitScript(init);
     await page.route(
       "**/yurt_kernel.wasm",
@@ -548,7 +549,7 @@ async function bootFailuresAreExplained(
     const { name, tablet, maxTouchPoints, platform, ...options } of scenes
   ) {
     const context = await browser.newContext(options);
-    const page = await context.newPage();
+    const page = await showAllSections(await context.newPage());
     // Chromium's touch emulation reports one touch point; an iPad reports 5.
     if (maxTouchPoints !== undefined) {
       await page.addInitScript((points) => {
@@ -609,7 +610,7 @@ async function bootFailuresAreExplained(
     ] as const
   ) {
     const context = await browser.newContext(options);
-    const page = await context.newPage();
+    const page = await showAllSections(await context.newPage());
     await page.goto(`${url}/?platform=${asked}`, {
       waitUntil: "domcontentloaded",
     });
@@ -626,7 +627,7 @@ async function bootFailuresAreExplained(
   }
 
   const context = await browser.newContext();
-  const page = await context.newPage();
+  const page = await showAllSections(await context.newPage());
   await page.goto(`${url}/`, { waitUntil: "domcontentloaded" });
   // The page reads and clears the boot memory once it has asked the host
   // whether it is the app; plant one only after that, or this load takes it
@@ -925,7 +926,7 @@ if (import.meta.main) {
   const server = startPlaygroundServer(0);
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await showAllSections(await browser.newPage());
     const started = Date.now();
     const csp = watchCspViolations(page);
     // The primary flow: the home page, and the one action on it.

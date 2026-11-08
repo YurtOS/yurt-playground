@@ -4,6 +4,11 @@
  * is legal here and illegal on the window thread.
  */
 import {
+  dropAgentSession,
+  loadAgentSession,
+  saveAgentSession,
+} from "./agent_session.ts";
+import {
   bootPlayground,
   browserImagePath,
   fetchPlaygroundBytes,
@@ -99,6 +104,9 @@ type ToWorker =
   // `apiToken` opens the launcher's /api/* to the launch (yurt-playground#82).
   | {
     type: "start";
+    resumeSession?: boolean;
+    snapshotRequired?: boolean;
+    dropSession?: boolean;
     cols: number;
     rows: number;
     isolated: boolean;
@@ -173,7 +181,13 @@ type ToWorker =
   // install at a time. Progress comes back as `pkg-progress`.
   | { type: "pkg-install"; req: number; name: string; tablet: boolean }
   // The Packages panel opened: what pkg has installed, as `pkg-installed`.
-  | { type: "pkg-read-installed" };
+  | { type: "pkg-read-installed" }
+  // An agent run ended: seal the sandbox into browser storage. It runs nothing
+  // more; the page reloads to resume it. Answered by `suspended`.
+  | { type: "suspend" };
+
+/** Recorded with a seal: a kernel memory means something only to its binary. */
+let runningKernelSha256: string | undefined;
 
 type FromWorker =
   // status, error, shell-ready (the shell is the whole session), and
@@ -215,6 +229,7 @@ type FromWorker =
   | { type: "snapshot-captured"; blob: Blob; ms: number }
   // What this Linux holds (src/linux_remark.ts), as the shell starts.
   | { type: "linux-remark"; remark: string }
+  | { type: "suspended"; why?: string }
   | {
     type: "pkg-reply";
     req: number;
@@ -587,6 +602,35 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   await serveYurt(msg);
   await servePackages(msg);
   if (msg.type === "pkg-read-installed") await installed.read();
+  if (msg.type === "suspend") {
+    try {
+      await installs(async () => {
+        const session = packageSession;
+        if (session?.seal === undefined || runningKernelSha256 === undefined) {
+          throw new Error("this sandbox cannot be sealed");
+        }
+        const started = performance.now();
+        const image = await session.seal();
+        const sealed = performance.now();
+        await saveAgentSession(image, runningKernelSha256);
+        console.log(
+          `[session] sealed in ${Math.round(sealed - started)} ms, saved in ${
+            Math.round(performance.now() - sealed)
+          } ms`,
+        );
+      });
+      post({ type: "status", text: "suspended" });
+      post({ type: "suspended" });
+    } catch (error) {
+      // An earlier seal must not come back under the chat that starts over
+      // now (src/agent_pane.ts): the next message gets a new sandbox.
+      await dropAgentSession().catch(() => {});
+      post({
+        type: "suspended",
+        why: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });
@@ -700,6 +744,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           : `./${SNAPSHOT_KINDS[restoreKind].name}`
         : undefined,
     snapshotKind: restoreKind,
+    snapshotRequired: msg.snapshotRequired === true,
     snapshotCache: typeof caches === "undefined" ? undefined : caches,
     snapshotId: isUploadedSnapshotId(msg.snapshotId)
       ? msg.snapshotId
@@ -716,6 +761,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     term,
     memoryRefused: () => post(memoryRefusedMessage()),
     linuxRemark: (remark: string) => post({ type: "linux-remark", remark }),
+    savedSession: msg.resumeSession === true ? loadAgentSession : undefined,
+    dropSavedSession: dropAgentSession,
+    kernelSha256: (sha256: string) => runningKernelSha256 = sha256,
     // The terminal's `pkg` fetches through the page (src/pkg_relay.ts);
     // the desktop app's guest has the network itself.
     pkgRelay: kernelPorts === undefined
@@ -724,6 +772,10 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   };
   // The slim image's Python: the coordinator installs the set itself, so
   // every page that boots a sandbox gets the same install.
+  // No chat to go with it: not waited for, it only frees the storage.
+  if (msg.dropSession === true) {
+    void dropAgentSession().catch(() => {});
+  }
   const python = msg.python;
   const tablet = msg.tablet === true;
   // The desktop app's sandbox has a network and its own pkg; only the

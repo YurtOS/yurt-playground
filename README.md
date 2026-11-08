@@ -83,6 +83,12 @@ build relationships, and bring Yurt to market.
 Contact Ofer at [ofersa@gmail.com](mailto:ofersa@gmail.com), or
 [Sunny](https://github.com/smarcd) on GitHub.
 
+## The agent's model
+
+The home page's agent runs a model in the tab, on WebGPU: Gemma 4, whose weights
+download once from Hugging Face and then stay in the browser. Nothing you type
+leaves your computer. A browser without WebGPU is told so.
+
 ## Driving the sandbox from a program
 
 The page exposes `window.yurt` for a driver -- an agent, a test -- on the hosted
@@ -231,10 +237,10 @@ The desktop's holds the Python set and starts the Notebook, the tablet's the int
 
 | Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
 | --- | --- | --- | --- | --- | --- | --- |
-| desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.10.31-3d32068.2` | 130.8 MB in 7 parts | 521.4 MiB | 2459 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
-| tablet | tablet (iPad): `?platform=tablet` | `snapshot-tablet-playground-2026.10.31-3d32068.2` | 94.7 MB in 5 parts | 380.8 MiB | 1267 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
-| phone | phone (iPhone): `?platform=phone` | `snapshot-phone-playground-2026.10.31-3d32068.2` | 31.2 MB in 2 parts | 136.1 MiB | 630 MiB | BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
-| go | desktop browser that chose Go: `?platform=desktop&env=go` | `snapshot-go-playground-2026.10.31-3d32068.2` | 246.4 MB in 12 parts | 866.9 MiB | 2193 MiB | BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
+| desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.10.31-3d32068.2-2` | 130.1 MB in 7 parts | 521.4 MiB | 2606 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
+| tablet | tablet (iPad): `?platform=tablet` | `snapshot-tablet-playground-2026.10.31-3d32068.2-2` | 101.5 MB in 5 parts | 396.7 MiB | 1358 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
+| phone | phone (iPhone): `?platform=phone` | `snapshot-phone-playground-2026.10.31-3d32068.2-2` | 31.2 MB in 2 parts | 136.1 MiB | 648 MiB | BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
+| go | desktop browser that chose Go: `?platform=desktop&env=go` | `snapshot-go-playground-2026.10.31-3d32068.2-2` | 252.4 MB in 13 parts | 883.1 MiB | 2425 MiB | BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
 
 <!-- deno-fmt-ignore-end -->
 <!-- snapshot-table:end -->

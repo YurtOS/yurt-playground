@@ -127,9 +127,9 @@ if (import.meta.main) {
       fail("browser page is not cross-origin isolated");
     }
     // "Check the bytes": the page re-hashes what it downloaded and every
-    // file matches integrity.json, the 87 MB image included. The proof is a
-    // disclosure below the workspace; open it first.
-    await page.getByTestId("proof-toggle").click();
+    // file matches integrity.json, the 87 MB image included. The proof has a
+    // section of its own, and choosing it opens it.
+    await page.getByTestId("view-proof").click();
     await page.getByTestId("verify-files").click();
     await page.waitForFunction(
       () =>
@@ -152,6 +152,8 @@ if (import.meta.main) {
         `verification did not pass: ${summary} (integrity.json lists ${listed})`,
       );
     }
+    // The links are in Shell & Python.
+    await page.getByTestId("view-shell").click();
     await page.getByTestId("choose-notebook").click();
     await page.waitForURL(/\/jupyter\/notebooks\/index\.html/);
     await page.locator(".jp-Notebook").first().waitFor({ timeout: 60_000 });
@@ -165,10 +167,8 @@ if (import.meta.main) {
         document.querySelector(".jp-Notebook-ExecutionIndicator")
             ?.getAttribute("data-status") === "idle",
       undefined,
-      // Since the slim image (2026.10.27) the page installs Python first:
-      // 124-322 s on a CI runner (job logs, 10-27/28), three quarters of
-      // the 420 s this was. The rest of the scene takes about a minute,
-      // inside the acceptance step's 11 min cap.
+      // It restores the default snapshot, so this allows for a slow runner, not
+      // for an install.
       { timeout: 480_000 },
     );
     console.log(

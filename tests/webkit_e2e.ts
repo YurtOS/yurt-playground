@@ -14,6 +14,7 @@
  * kernel checkout and pinned artifacts like playground_e2e.ts).
  */
 import { devices, webkit } from "playwright";
+import { showAllSections } from "./show_all_sections.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
@@ -39,7 +40,7 @@ if (import.meta.main) {
   const server = startPlaygroundServer(0);
   const browser = await webkit.launch();
   try {
-    const page = await browser.newPage();
+    const page = await showAllSections(await browser.newPage());
     page.on("pageerror", (error) => console.error("pageerror:", error));
     // The coordinator logs the per-process reservation it picked; a boot
     // whose probe failed says "(no probe)" (src/guest_memory_reservation.ts).
@@ -132,7 +133,7 @@ if (import.meta.main) {
     // The engine an iPad runs: the tablet page (the shell only) and its
     // touch key bar.
     const ipad = await browser.newContext(devices["iPad Pro 11"]);
-    const tablet = await ipad.newPage();
+    const tablet = await showAllSections(await ipad.newPage());
     tablet.on("pageerror", (error) => console.error("pageerror:", error));
     await tablet.goto(`${server.url}/?start`, {
       waitUntil: "domcontentloaded",

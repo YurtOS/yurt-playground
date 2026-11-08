@@ -172,8 +172,9 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
     );
   }
   // ...and the converse: an e2e file nobody put in the matrix would never
-  // run here. `desktop_e2e.ts` is release-desktop.yml's, by name, and
-  // `agent_webgpu_e2e.ts` needs a GPU and Safari: it runs on a Mac.
+  // run here. `desktop_e2e.ts` is release-desktop.yml's, by name,
+  // `agent_webgpu_e2e.ts` needs a GPU and Safari, and `agent_demo_e2e.ts`
+  // a GPU and the real weights: they run on a Mac.
   const e2eFiles: string[] = [];
   for await (const entry of Deno.readDir(testsDir)) {
     if (entry.isFile && entry.name.endsWith("_e2e.ts")) {
@@ -182,7 +183,8 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   }
   assertEquals(
     e2eFiles.filter((s) =>
-      s !== "desktop" && s !== "agent_webgpu" && !scenes.includes(s)
+      s !== "desktop" && s !== "agent_webgpu" && s !== "agent_demo" &&
+      !scenes.includes(s)
     ),
     [],
     "an e2e scene exists that no acceptance job runs",
@@ -376,23 +378,22 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
     html.includes('href="https://github.com/YurtOS/yurt-playground"'),
     true,
   );
-  // The release notes live on GitHub Pages; the header nav and the footer
+  // The release notes live on GitHub Pages; the sidebar and the footer
   // both link there.
   const notes = "https://yurtos.github.io/yurt-playground/";
-  const nav = html.match(/<nav aria-label="interfaces">([\s\S]*?)<\/nav>/)
+  const nav = html.match(
+    /<nav class="links" aria-label="about this site">([\s\S]*?)<\/nav>/,
+  )
     ?.[1] ?? "";
   const navLinks = [...nav.matchAll(/<a\s([^>]*)>([^<]*)<\/a>/g)];
   assertEquals(navLinks.map((link) => link[2]), [
-    "Notebook",
-    "JupyterLab",
     "Release notes",
     "Source",
-    "Work with us",
   ]);
-  const navNotes = navLinks[2][1];
+  const navNotes = navLinks[0][1];
   assertEquals(navNotes.includes(`href="${notes}"`), true);
   assertEquals(navNotes.includes('data-testid="release-notes-link"'), true);
-  const footer = html.match(/<footer>([\s\S]*?)<\/footer>/)?.[1] ?? "";
+  const footer = html.match(/<footer[^>]*>([\s\S]*?)<\/footer>/)?.[1] ?? "";
   const footerNotes = footer.match(
     /<a\s([^>]*data-testid="footer-release-notes"[^>]*)>/,
   )?.[1] ?? "";
@@ -731,16 +732,15 @@ Deno.test("every workflow restricts its token to reading the repository", async 
   }
 });
 
-Deno.test("the partner section is linked from the masthead and gives an email to write to", async () => {
+Deno.test("the partner section is in About and gives an email to write to", async () => {
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
   );
-  const nav = html.slice(
-    html.indexOf('<nav aria-label="interfaces">'),
-    html.indexOf("</nav>"),
+  assertEquals(html.includes('data-view-button="about"'), true);
+  assertEquals(
+    /id="partner"[^>]*data-view="about"/.test(html.replace(/\s+/g, " ")),
+    true,
   );
-  assertEquals(nav.includes('href="#partner"'), true);
-  assertEquals(/>Work with us</.test(nav), true);
   const start = html.indexOf('id="partner"');
   assertEquals(start > html.indexOf("</details>"), true, "below the strips");
   const partner = html.slice(start, html.indexOf("</section>", start));
@@ -767,9 +767,9 @@ Deno.test("the partner section is linked from the masthead and gives an email to
     ["ofersa@gmail.com", "ofersa@gmail.com"],
     "the only email address",
   );
-  assertEquals(start < html.indexOf("<footer>"), true, "before the footer");
+  assertEquals(start < html.indexOf("<footer"), true, "before the footer");
   const footer = html.slice(
-    html.indexOf("<footer>"),
+    html.indexOf("<footer"),
     html.indexOf("</footer>"),
   );
   assertEquals(/License:\s*<a[^>]*>Apache-2\.0<\/a>/.test(footer), true);

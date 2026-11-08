@@ -66,7 +66,7 @@ Deno.test("the banner is a tab-level note that names no engine", () => {
     new URL("../public/index.html", import.meta.url),
   );
   const banner = html.match(
-    /<p id="memory-refused"[^>]*>([\s\S]*?)<\/p>/,
+    /<p\s+id="memory-refused"[^>]*>([\s\S]*?)<\/p>/,
   );
   if (banner === null) throw new Error("no #memory-refused paragraph");
   const text = banner[1].replace(/<button[\s\S]*<\/button>/, "")

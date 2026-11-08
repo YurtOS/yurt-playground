@@ -29,7 +29,7 @@ Deno.test("inline script hashes are CSP sha256 sources of the exact body", async
   ]);
 });
 
-Deno.test("the policy keeps every request on the origin but the model's, the packages' and the uploaded snapshots'", () => {
+Deno.test("the policy keeps every request on the origin but the models', the packages' and the uploaded snapshots'", () => {
   const policy = contentSecurityPolicy({ scriptHashes: ["'sha256-x'"] });
   assertStringIncludes(policy, "default-src 'self'");
   assertStringIncludes(

@@ -20,6 +20,7 @@
  *   deno run -A tests/slim_e2e.ts
  */
 import { type Browser, chromium, devices } from "playwright";
+import { showAllSections } from "./show_all_sections.ts";
 import { Buffer } from "node:buffer";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,7 +45,7 @@ async function phoneInstallsNoPython(
       fetched.push(request.url());
     }
   });
-  const page = await phone.newPage();
+  const page = await showAllSections(await phone.newPage());
   await page.addInitScript(() => {
     const seen: string[] = [];
     (globalThis as { __statuses?: string[] }).__statuses = seen;
@@ -154,7 +155,7 @@ if (import.meta.main) {
         }
       });
     }
-    const page = await context.newPage();
+    const page = await showAllSections(await context.newPage());
     // Every status the page shows, as it shows it: some last only a second
     // (the layer's write, its gzip), shorter than the poll below.
     await page.addInitScript(() => {
