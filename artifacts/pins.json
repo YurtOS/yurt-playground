@@ -155,13 +155,13 @@
   },
   "phoneSnapshot": {
     "releaseRepo": "YurtOS/yurt-playground",
-    "release": "snapshot-phone-playground-2026.10.31-3d32068.2-2",
+    "release": "snapshot-phone-playground-2026.10.31-3d32068.2-3313",
     "format": 4,
-    "sha256": "a0d073af064c816a9aa53e39891cce488416b234018b0a434447dbdde7531d10",
-    "size": 31212699,
+    "sha256": "4b2bd3c436cc36eb5a78a24e4e5949124f0364de63a03da491bb8f5d6198f43b",
+    "size": 31212866,
     "builtFrom": {
       "kernelSha256": "defa8da648d122fcfd30e6e96360d1b2da1cdf7440d50d82536a825e02fa338c",
-      "kernelRev": "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
+      "kernelRev": "caaa7618539c083d05974891df7fa2206035a336",
       "sealVersion": 1,
       "bootSetup": 2,
       "imageSha256": "199c4ddce97a6abb675e40338b170cf3d13227d6c7b8ae69a53d6367c9f07468",
@@ -183,8 +183,7 @@
         }
       ],
       "remark": "BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter"
-    },
-    "restorePeakMiB": 648
+    }
   },
   "goSnapshot": {
     "releaseRepo": "YurtOS/yurt-playground",
