@@ -101,6 +101,8 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
     [
       "connect-src 'self'",
       ...(options.sameOriginOnly ? [] : MODEL_ORIGINS),
+      // The agent's remote models (src/openrouter.ts).
+      ...(options.sameOriginOnly ? [] : ["https://openrouter.ai"]),
       ...PACKAGE_SOURCES,
       ...(options.sameOriginOnly ? [] : [SNAPSHOT_SOURCE, SNAPSHOT_REFS_API]),
       ...(options.webAnalytics ? [BEACON_REPORT_ORIGIN] : []),

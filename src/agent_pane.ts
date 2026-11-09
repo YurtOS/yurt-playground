@@ -29,6 +29,15 @@ import {
   systemPrompt,
 } from "./agent.ts";
 import { isModelCached, loadLocalModel } from "./llm.ts";
+import {
+  finishOpenrouterSignIn,
+  openrouterKey,
+  openrouterModel,
+  openrouterModels,
+  type RemoteModel,
+  setOpenrouterKey,
+  signInWithOpenrouter,
+} from "./openrouter.ts";
 import { LOCAL_MODELS, type LocalModel, MAX_NUM_TOKENS } from "./llm_models.ts";
 
 const GiB = 2 ** 30;
@@ -99,10 +108,20 @@ export async function mountAgentPane(
      * does the saved model start without a click (a new visit with a saved
      * chat must not download or load weights by itself). */
     resumeRun?: () => boolean;
+    /** Offer only models that run outside this tab (a tablet: no GPU
+     * model fits beside the sandbox). */
+    remoteOnly?: boolean;
   },
 ): Promise<void> {
-  const models = await offeredModels();
-  if (models.length === 0) return;
+  const signInError = await finishOpenrouterSignIn();
+  // `?model=openrouter:<id>` picks any OpenRouter model.
+  const wanted = new URLSearchParams(location.search).get("model");
+  const orModels: RemoteModel[] = openrouterModels(
+    wanted?.startsWith("openrouter:")
+      ? wanted.slice("openrouter:".length)
+      : undefined,
+  );
+  let models = sandbox.remoteOnly ? [] : await offeredModels();
   root.hidden = false;
   if (sandbox.unavailable !== undefined) {
     root.replaceChildren(
@@ -129,32 +148,11 @@ export async function mountAgentPane(
     );
     return;
   }
-  const gpu = (navigator as Navigator & { gpu?: GPU }).gpu;
-  const adapter = await gpu?.requestAdapter().catch(() => null);
-  if (!adapter) {
-    root.replaceChildren(
-      el(
-        "div",
-        { className: "bar" },
-        el("span", { className: "name", textContent: "Agent" }),
-        el("span", {
-          id: "agent-status",
-          testid: "agent-status",
-          textContent: "no WebGPU",
-        }),
-      ),
-      el(
-        "div",
-        { id: "agent-intro" },
-        el(
-          "p",
-          { className: "unsupported", testid: "agent-unsupported" },
-          "This browser offers no WebGPU, which the model needs to run in " +
-            "this tab. A current Chrome, Edge or Safari on a desktop has it.",
-        ),
-      ),
-    );
-    return;
+  // A model in this tab needs WebGPU; without it only remote ones remain.
+  if (models.length > 0) {
+    const gpu = (navigator as Navigator & { gpu?: GPU }).gpu;
+    const adapter = await gpu?.requestAdapter().catch(() => null);
+    if (!adapter) models = [];
   }
 
   // The bar: what this is, the model's state, the context in use, Stop.
@@ -189,7 +187,7 @@ export async function mountAgentPane(
     testid: "agent-model",
   });
   choice.setAttribute("aria-label", "Model");
-  for (const m of models) {
+  for (const m of [...models, ...orModels]) {
     choice.append(el("option", { value: m.id, textContent: m.choice }));
   }
   const startButton = el("button", {
@@ -198,6 +196,17 @@ export async function mountAgentPane(
     testid: "agent-start",
   });
   const progress = el("progress", { hidden: true, max: 1, value: 0 });
+  const keyInput = el("input", {
+    type: "password",
+    placeholder: "or paste an OpenRouter key (sk-or-…)",
+    hidden: true,
+  });
+  keyInput.setAttribute("aria-label", "OpenRouter key");
+  const signOut = el("button", {
+    type: "button",
+    textContent: "Sign out of OpenRouter",
+    hidden: true,
+  });
   const cost = el("p", { className: "cost", testid: "agent-cost" });
   // What it is, what it may do, and what it costs, before anything loads.
   const intro = el(
@@ -206,20 +215,42 @@ export async function mountAgentPane(
     el(
       "p",
       {},
-      "A language model that runs in this tab, on your GPU. Its weights " +
-        "download once from Hugging Face; after that nothing you type is " +
-        "sent anywhere. It works in this page's sandbox through ",
+      models.length === 0
+        ? "A language model that runs outside this tab: on OpenRouter with " +
+          "your own account. It works in this page's sandbox through "
+        : "A language model that runs in this tab, on your GPU. Its weights " +
+          "download once from Hugging Face; after that nothing you type is " +
+          "sent anywhere. It works in this page's sandbox through ",
       el("code", { textContent: "window.yurt" }),
       " and can run any command there, change or delete files and stop " +
         "processes, the same as typing in its terminal. Every step is " +
         "shown as it runs, and Stop ends it.",
     ),
     el("div", { className: "row" }, choice, startButton),
+    keyInput,
     cost,
+    signOut,
     progress,
   );
   const selected = () => models.find((m) => m.id === choice.value)!;
+  const selectedOr = (): RemoteModel | undefined =>
+    orModels.find((m) => m.id === choice.value);
   const label = async () => {
+    const o = selectedOr();
+    keyInput.hidden = true;
+    signOut.hidden = true;
+    if (o !== undefined) {
+      const signedIn = openrouterKey() !== undefined;
+      startButton.textContent = signedIn
+        ? `Start ${o.label}`
+        : "Sign in with OpenRouter";
+      keyInput.hidden = signedIn;
+      signOut.hidden = !signedIn;
+      cost.textContent = "Runs on OpenRouter with your account: your task " +
+        "and the sandbox's output go to OpenRouter and the model's " +
+        "provider. Your key stays in this browser.";
+      return;
+    }
     const m = selected();
     const cached = await isModelCached(m);
     startButton.textContent = cached
@@ -232,7 +263,15 @@ export async function mountAgentPane(
         : "Downloaded from Hugging Face; the browser keeps it for next time.");
   };
   choice.addEventListener("change", () => void label());
+  signOut.addEventListener("click", () => {
+    setOpenrouterKey(undefined);
+    void label();
+  });
+  if (wanted !== null) {
+    if (orModels.some((m) => m.id === wanted)) choice.value = wanted;
+  }
   await label();
+  if (signInError !== undefined) cost.textContent = signInError;
 
   // After the model: the task, Run, and the transcript.
   const task = el("textarea", {
@@ -301,6 +340,24 @@ export async function mountAgentPane(
   };
 
   const startModel = async () => {
+    const o = selectedOr();
+    if (o !== undefined) {
+      if (openrouterKey() === undefined) {
+        const pasted = keyInput.value.trim();
+        if (pasted === "") {
+          await signInWithOpenrouter();
+          return;
+        }
+        setOpenrouterKey(pasted);
+        keyInput.value = "";
+      }
+      llm = openrouterModel(o.openrouter!);
+      modelLabel = o.label;
+      status.textContent = modelLabel;
+      signOut.hidden = true;
+      ready();
+      return;
+    }
     const model = selected();
     startButton.disabled = true;
     choice.disabled = true;

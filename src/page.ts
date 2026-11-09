@@ -1039,14 +1039,15 @@ async function runPage(): Promise<void> {
   };
   applyEnv();
   if (shellOnly) {
-    for (const id of ["notebook", "agent"]) byId(id).hidden = true;
+    byId("notebook").hidden = true;
     for (const testid of ["choose-notebook", "choose-lab"]) {
       const link = document.querySelector<HTMLElement>(
         `[data-testid=${testid}]`,
       );
       if (link) link.hidden = true;
     }
-  } else {
+  }
+  {
     // The local agent (#140) drives the same sandbox through window.yurt; its
     // Run starts the sandbox the way the Start button does, and only then.
     // With the boot refused there is no sandbox to start, so the pane says
@@ -1061,6 +1062,8 @@ async function runPage(): Promise<void> {
       suspend: !agentSeals(desktop)
         ? undefined
         : () => suspendSandbox?.() ?? Promise.resolve("no sandbox is running"),
+      // A tablet: only models outside the tab (OpenRouter).
+      remoteOnly: shellOnly,
     });
   }
   const start = document.getElementById("start");
