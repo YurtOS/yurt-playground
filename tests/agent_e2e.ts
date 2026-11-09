@@ -486,7 +486,7 @@ if (import.meta.main) {
                 action: "answer",
                 text: prompt.split("Result:").pop()!.match(/\d+/g)!.pop(),
               }
-              : { action: "exec", cmd: "python3 -c 'print(6*7)'" },
+              : { action: "exec", cmd: "echo $((6 * 7))" },
           );
           return route.fulfill({
             headers: cors,
@@ -518,7 +518,7 @@ if (import.meta.main) {
       await page.locator("[data-testid=agent-start]").click();
       await page.locator("#agent[data-agent-ready]").waitFor();
       const task = page.locator("[data-testid=agent-task]");
-      await task.fill("what is 6 times 7, using python");
+      await task.fill("what is 6 times 7");
       await task.press("Enter");
       await until(
         page,
@@ -550,7 +550,7 @@ if (import.meta.main) {
       );
       await page.locator("[data-testid=agent-start]").click();
       await page.locator("#agent[data-agent-ready]").waitFor();
-      await task.fill("what is 6 times 7, using python");
+      await task.fill("what is 6 times 7");
       await task.press("Enter");
       await until(
         page,
