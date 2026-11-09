@@ -14,6 +14,11 @@
  *     "phone":   { "openrouter": [] }
  *   }
  *
+ * Per platform, `instructions`: the model's system prompt as lines
+ * (`{tools}` stands for what the sandbox has, with or without Python),
+ * required wherever a model is offered: there are no built-in ones. And
+ * `task`: the starter text in the task box, empty when left out.
+ *
  * `local` names in-tab models (src/llm_models.ts ids) and is ignored where
  * none fit (a tablet or a phone). `openrouter` lists OpenRouter model ids, the first
  * being the default. A platform left out offers no model.
@@ -29,7 +34,15 @@ export type OpenrouterEntry = { id: string; label: string };
 export type PlatformModels = {
   local?: string[];
   openrouter?: OpenrouterEntry[];
+  /** The model's system prompt, as lines. */
+  instructions?: string[];
+  /** The starter text in the task box. */
+  task?: string;
 };
+
+/** Bounds on the prompts a list may set: a prompt fills the model's context. */
+const MAX_INSTRUCTIONS = 12_000;
+const MAX_TASK = 4_000;
 export type AgentModelsConfig = Partial<Record<Platform, PlatformModels>>;
 
 const PLATFORMS: Platform[] = ["phone", "tablet", "desktop"];
@@ -46,7 +59,10 @@ export function parseAgentModels(json: unknown): AgentModelsConfig | undefined {
   for (const platform of PLATFORMS) {
     const raw = (json as Record<string, unknown>)[platform];
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
-    const { local, openrouter } = raw as Record<string, unknown>;
+    const { local, openrouter, instructions, task } = raw as Record<
+      string,
+      unknown
+    >;
     const entry: PlatformModels = {};
     if (Array.isArray(local)) {
       entry.local = local.filter((id): id is string => typeof id === "string");
@@ -63,6 +79,20 @@ export function parseAgentModels(json: unknown): AgentModelsConfig | undefined {
             : id,
         }];
       });
+    }
+    if (
+      Array.isArray(instructions) &&
+      instructions.every((l) => typeof l === "string") &&
+      instructions.length > 0 &&
+      instructions.join("\n").length <= MAX_INSTRUCTIONS
+    ) {
+      entry.instructions = instructions;
+    }
+    if (
+      typeof task === "string" && task.trim() !== "" &&
+      task.length <= MAX_TASK
+    ) {
+      entry.task = task.trim();
     }
     config[platform] = entry;
   }

@@ -26,6 +26,7 @@ import {
   AGENT_MODELS_URL,
   type AgentModelsConfig,
 } from "../src/agent_models_config.ts";
+import { withPrompts } from "./agent_models_fixture.ts";
 import { ISOLATION_HEADERS, startPlaygroundServer } from "../src/serve.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -86,10 +87,12 @@ self.onmessage = (event) => {
 };`;
 }
 
-/** The page's model list, as the test says. */
+/** The page's model list, as the test says; with the built-in prompts
+ * (tests/agent_models_fixture.ts) unless `bare`. */
 async function withModels(
   context: BrowserContext,
   config: AgentModelsConfig | "missing",
+  bare = false,
 ): Promise<void> {
   await context.route(
     AGENT_MODELS_URL,
@@ -99,7 +102,7 @@ async function withModels(
         : route.fulfill({
           contentType: "application/json",
           headers: { "access-control-allow-origin": "*" },
-          body: JSON.stringify(config),
+          body: JSON.stringify(bare ? config : withPrompts(config)),
         }),
   );
 }
@@ -408,6 +411,28 @@ if (import.meta.main) {
       await context.close();
     }
 
+    // Models on the list but no instructions for them: there are no
+    // built-in ones, so no model is offered, and the pane says why.
+    {
+      const context = await browser.newContext();
+      await withModels(context, {
+        desktop: {
+          openrouter: [{ id: "test/remote:free", label: "Remote" }],
+        },
+      }, true);
+      const page = await context.newPage();
+      await page.goto(`${server.url}/?suspend=0#agent`);
+      const said = await page.locator("[data-testid=agent-no-models]")
+        .innerText();
+      if (
+        !said.includes("no instructions") ||
+        await page.locator("[data-testid=agent-start]").count() !== 0
+      ) {
+        throw new Error(`agent e2e: a list without instructions: ${said}`);
+      }
+      await context.close();
+    }
+
     // No WebGPU, with OpenRouter on the list: only OpenRouter is offered.
     {
       const context = await browser.newContext();
@@ -445,14 +470,19 @@ if (import.meta.main) {
       const context = await browser.newContext({
         ...devices["iPad Pro 11"],
       });
+      // The list's prompts too: its starter task, and its instructions
+      // with {tools} filled in for this sandbox.
       await withModels(context, {
         tablet: {
           local: ["E4B"],
           openrouter: [{ id: "test/remote:free", label: "Remote" }],
+          instructions: ["LIST PROMPT ({tools}).", "Reply with JSON."],
+          task: "the list's starter task",
         },
       });
       let refuse = false;
       const keys: string[] = [];
+      const systems: string[] = [];
       await context.route(
         "https://openrouter.ai/api/v1/chat/completions",
         (route) => {
@@ -477,6 +507,7 @@ if (import.meta.main) {
             });
           }
           const body = route.request().postDataJSON();
+          systems.push(body.messages[0].content);
           const prompt: string = body.messages[1].content;
           const done = prompt.slice(prompt.lastIndexOf("Task:"))
             .includes("Result:");
@@ -518,6 +549,10 @@ if (import.meta.main) {
       await page.locator("[data-testid=agent-start]").click();
       await page.locator("#agent[data-agent-ready]").waitFor();
       const task = page.locator("[data-testid=agent-task]");
+      const starter = await task.inputValue();
+      if (starter !== "the list's starter task") {
+        throw new Error(`agent e2e: the tablet's starter task: ${starter}`);
+      }
       await task.fill("what is 6 times 7");
       await task.press("Enter");
       await until(
@@ -559,6 +594,9 @@ if (import.meta.main) {
           document.querySelectorAll("[data-testid=agent-answer]").length === 2,
         180_000,
       );
+      if (!systems[0]?.startsWith("LIST PROMPT (BusyBox")) {
+        throw new Error(`agent e2e: the model was told ${systems[0]}`);
+      }
       if (
         keys[0] !== "Bearer sk-or-first" ||
         keys.at(-1) !== "Bearer sk-or-second"

@@ -9,6 +9,7 @@ import { EXECUTE_TIMEOUT_MS } from "../src/jupyter_protocol.ts";
 import { watchCspViolations } from "./csp_watch.ts";
 import { PACKAGE_REPO_URL } from "../src/packages.ts";
 import { AGENT_MODELS_URL } from "../src/agent_models_config.ts";
+import { withPrompts } from "./agent_models_fixture.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -102,12 +103,12 @@ async function tabletIsShellOnly(
     route.fulfill({
       contentType: "application/json",
       headers: { "access-control-allow-origin": "*" },
-      body: JSON.stringify({
+      body: JSON.stringify(withPrompts({
         tablet: {
           local: ["E4B"],
           openrouter: [{ id: "test/remote:free", label: "Remote" }],
         },
-      }),
+      })),
     }));
   const page = await showAllSections(await context.newPage());
   await page.addInitScript(() => {
@@ -335,12 +336,12 @@ export async function phoneAgentHasTheSandbox(
       contentType: "application/json",
       headers: { "access-control-allow-origin": "*" },
       // An in-tab model on the list is not offered on a phone.
-      body: JSON.stringify({
+      body: JSON.stringify(withPrompts({
         phone: {
           local: ["E4B", "E2B"],
           openrouter: [{ id: "test/remote:free", label: "Remote" }],
         },
-      }),
+      })),
     }));
   await phone.addInitScript(() => {
     Object.defineProperty(Navigator.prototype, "gpu", {

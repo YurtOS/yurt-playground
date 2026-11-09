@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { LOCAL_MODELS } from "../src/llm_models.ts";
 import { AGENT_MODELS_URL } from "../src/agent_models_config.ts";
+import { withPrompts } from "./agent_models_fixture.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -219,7 +220,7 @@ if (import.meta.main) {
     route.fulfill({
       contentType: "application/json",
       headers: { "access-control-allow-origin": "*" },
-      body: JSON.stringify({ desktop: { local: ["E4B", "E2B"] } }),
+      body: JSON.stringify(withPrompts({ desktop: { local: ["E4B", "E2B"] } })),
     }));
   let passed = 0;
   try {

@@ -9,10 +9,12 @@ import {
   DEMO_TEXT_PATH,
   demoTextRedirect,
   firstAction,
+  instructionsPrompt,
   madePdfPath,
   type Model,
   parseAction,
   runAgent,
+  sandboxTools,
   SYSTEM_PROMPT,
   systemPrompt,
   ToolFailed,
@@ -577,4 +579,21 @@ Deno.test("demoTextRedirect finds output sent into the demo's text", () => {
   assertEquals(demoTextRedirect(`cat ${t}.bak > ${t}`), {
     readsItFirst: false,
   });
+});
+
+Deno.test("instructions from the model list say what the sandbox has", () => {
+  const lines = ["You operate a sandbox ({tools}).", "Reply with JSON."];
+  assertEquals(
+    instructionsPrompt(lines, true),
+    "You operate a sandbox (BusyBox, Python 3).\nReply with JSON.",
+  );
+  assertEquals(
+    instructionsPrompt(lines, false),
+    "You operate a sandbox (BusyBox shell tools only; no Python, no Node).\nReply with JSON.",
+  );
+  // The built-in prompt says the same for the same sandbox.
+  assertEquals(
+    systemPrompt(false).split("\n")[0],
+    `You operate a Linux sandbox (${sandboxTools(false)}) for the user.`,
+  );
 });

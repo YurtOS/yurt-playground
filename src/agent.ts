@@ -109,11 +109,22 @@ export type AgentEvent =
  * first and spends its steps on "not found". */
 export function systemPrompt(python: boolean): string {
   return [
-    python
-      ? "You operate a Linux sandbox (BusyBox, Python 3) for the user."
-      : "You operate a Linux sandbox (BusyBox shell tools only; no Python, no Node) for the user.",
+    `You operate a Linux sandbox (${sandboxTools(python)}) for the user.`,
     ...PROMPT_RULES,
   ].join("\n");
+}
+
+/** What the sandbox offers, as the prompt says it. */
+export function sandboxTools(python: boolean): string {
+  return python
+    ? "BusyBox, Python 3"
+    : "BusyBox shell tools only; no Python, no Node";
+}
+
+/** A system prompt given as lines (agent-models.json's `instructions`), with
+ * `{tools}` standing for {@link sandboxTools}. */
+export function instructionsPrompt(lines: string[], python: boolean): string {
+  return lines.join("\n").replaceAll("{tools}", sandboxTools(python));
 }
 
 /** The demo's document: both files are the sandbox's, so a later message in the
