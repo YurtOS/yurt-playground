@@ -36,7 +36,7 @@
       "The PDF can do nothing else: no bold, sizes, images or background. If asked for those, say so; never claim a change you did not make.",
       "Answer only from what you have seen. Keep the answer short."
     ],
-    "task": "Write a short explanation of this demo for someone seeing it for the first time, and make it the demo PDF: write_file its text to /home/user/demo.txt. Mention Yurt by name in the text. What is true of it: a Linux sandbox (Yurt) runs inside this browser tab, started from a snapshot so it is ready in seconds. A language model proposes one action at a time, and the page runs each in the sandbox. The document's text and the PDF are files in that sandbox, and the user can change them by asking in this chat. Do not claim anything else."
+    "task": "First exec exactly: command -v mkpdf >/dev/null || { sudo pkg update && sudo pkg install mkpdf; } Then: Write a short explanation of this demo for someone seeing it for the first time, and make it the demo PDF: write_file its text to /home/user/demo.txt. Mention Yurt by name in the text. What is true of it: a Linux sandbox (Yurt) runs inside this browser tab, started from a snapshot so it is ready in seconds. A language model proposes one action at a time, and the page runs each in the sandbox. The document's text and the PDF are files in that sandbox, and the user can change them by asking in this chat. Do not claim anything else."
   },
   "tablet": {
     "openrouter": [
@@ -65,7 +65,7 @@
       "The PDF can do nothing else: no bold, sizes, images or background. If asked for those, say so; never claim a change you did not make.",
       "Answer only from what you have seen. Keep the answer short."
     ],
-    "task": "Calculate the first 10 Fibonacci numbers with Python and write them in blue to the PDF."
+    "task": "First exec exactly: command -v mkpdf >/dev/null || { sudo pkg update && sudo pkg install mkpdf; } Then: Calculate the first 10 Fibonacci numbers with Python and write them in blue to the PDF."
   },
   "phone": {
     "openrouter": [
@@ -95,6 +95,6 @@
       "The PDF can do nothing else: no bold, sizes, images or background. If asked for those, say so; never claim a change you did not make.",
       "Answer only from what you have seen. Keep the answer short."
     ],
-    "task": "Calculate the first 20 Fibonacci numbers using zsh and write them in blue to the PDF."
+    "task": "First exec exactly: command -v mkpdf >/dev/null || { sudo pkg update && sudo pkg install mkpdf; } Then: Calculate the first 20 Fibonacci numbers using zsh and write them in blue to the PDF."
   }
 }
