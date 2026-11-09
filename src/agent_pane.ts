@@ -276,6 +276,8 @@ export async function mountAgentPane(
     hidden: true,
   });
   keyInput.setAttribute("aria-label", "OpenRouter key");
+  // As wide as its placeholder, and room for a browser's own key icon.
+  keyInput.size = keyInput.placeholder.length + 3;
   const signOut = el("button", {
     id: "agent-signout",
     type: "button",

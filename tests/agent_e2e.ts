@@ -466,15 +466,15 @@ if (import.meta.main) {
         const i = input as HTMLInputElement;
         const style = getComputedStyle(i);
         const menu = getComputedStyle(document.querySelector("#agent-model")!);
-        const context = document.createElement("canvas").getContext("2d")!;
-        context.font = `${style.fontSize} ${style.fontFamily}`;
+        const canvas = document.createElement("canvas").getContext("2d")!;
+        canvas.font = `${style.fontSize} ${style.fontFamily}`;
         const room = i.clientWidth - parseFloat(style.paddingLeft) -
           parseFloat(style.paddingRight);
         return {
           visible: i.offsetParent !== null,
           sameColors: style.backgroundColor === menu.backgroundColor &&
             style.color === menu.color,
-          fits: context.measureText(i.placeholder).width <= room,
+          fits: canvas.measureText(i.placeholder).width <= room,
         };
       });
       if (!key.visible || !key.sameColors || !key.fits) {

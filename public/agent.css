@@ -50,13 +50,12 @@
   outline: 2px solid var(--ochre);
   outline-offset: 2px;
 }
-/* The pasted key, on its own line under the model: as wide as its
- * placeholder plus padding and room for a browser's own key icon, and no
- * wider than the pane, where the placeholder still fits on a 320px phone. */
+/* The pasted key, on its own line under the model. Its width is its `size`
+ * (agent_pane.ts: its placeholder's length, and room for a browser's key
+ * icon), and never wider than the pane. */
 #agent-key {
   display: block;
   margin-top: 10px;
-  width: calc(26ch + 3em);
   max-width: 100%;
   box-sizing: border-box;
 }
@@ -68,12 +67,15 @@
 }
 /* iOS zooms the page into a focused field whose text is under 16px. */
 @media (pointer: coarse) {
-  #agent-key {
+  #agent input,
+  #agent select,
+  #agent textarea {
     font-size: 16px;
   }
 }
 /* Sign-out, under the cost line: a quiet button in the controls' frame. */
 #agent-signout {
+  margin-top: 10px;
   background: transparent;
   padding: 6px 12px;
   cursor: pointer;
