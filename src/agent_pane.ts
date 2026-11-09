@@ -270,6 +270,7 @@ export async function mountAgentPane(
   });
   const progress = el("progress", { hidden: true, max: 1, value: 0 });
   const keyInput = el("input", {
+    id: "agent-key",
     type: "password",
     placeholder: "or paste an OpenRouter key (sk-or-…)",
     hidden: true,

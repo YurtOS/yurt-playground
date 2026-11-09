@@ -35,6 +35,7 @@
   display: none;
 }
 #agent-model,
+#agent-key,
 #agent-installed {
   font: inherit;
   color: var(--text);
@@ -42,6 +43,18 @@
   border: 1px solid var(--rule);
   border-radius: 6px;
   padding: 6px 8px;
+}
+/* The pasted key: as wide as its placeholder, which names the key's form. */
+#agent-key {
+  width: 38ch;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+#agent-key::placeholder {
+  color: var(--muted);
+}
+#agent-key[hidden] {
+  display: none;
 }
 #agent-start {
   font: inherit;
