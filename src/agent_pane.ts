@@ -429,8 +429,9 @@ export async function mountAgentPane(
             "it has spaces or other characters a key does not have.";
           return;
         }
-        // A running sandbox, or a chat nothing seals: leaving loses it.
-        const unsealed = sandbox.yurt()?.status === "running" ||
+        // A running sandbox not sealed yet, or a chat nothing seals:
+        // leaving loses it. A sealed one keeps "running" as its status.
+        const unsealed = (!suspended && sandbox.yurt()?.status === "running") ||
           (sandbox.suspend === undefined && chat.length > 0);
         if (pasted === "" && unsealed) {
           // Nothing seals this sandbox: leaving for sign-in would lose it.
