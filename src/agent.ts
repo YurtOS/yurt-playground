@@ -293,10 +293,48 @@ const FENCE = /```(json)?/g;
 const KEYLESS_ANSWER =
   /^\{\s*"action"\s*:\s*"answer"\s*:\s*("(?:[^"\\]|\\.)*")\s*\}$/s;
 
+/** Models write a program into a string with its line breaks and tabs as
+ * they are, not escaped (Gemma 4 31B on the phone). Not JSON either, but a
+ * raw control character inside a string can only mean itself: escape it. */
+function escapeRawControls(json: string): string {
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < json.length; i++) {
+    const c = json[i];
+    if (inString) {
+      if (c === "\\") {
+        out += c + (json[++i] ?? "");
+        continue;
+      }
+      if (c === '"') inString = false;
+      else if (c < " ") {
+        out += c === "\n"
+          ? "\\n"
+          : c === "\r"
+          ? "\\r"
+          : c === "\t"
+          ? "\\t"
+          : `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`;
+        continue;
+      }
+    } else if (c === '"') inString = true;
+    out += c;
+  }
+  return out;
+}
+
 function parseObject(json: string): unknown {
   try {
     return JSON.parse(json);
   } catch (error) {
+    const escaped = escapeRawControls(json);
+    if (escaped !== json) {
+      try {
+        return JSON.parse(escaped);
+      } catch {
+        // Not that either.
+      }
+    }
     const keyless = KEYLESS_ANSWER.exec(json);
     if (keyless === null) throw error;
     return { action: "answer", text: JSON.parse(keyless[1]) };
