@@ -568,6 +568,84 @@ if (import.meta.main) {
       await context.close();
     }
 
+    // Back from OpenRouter's sign-in: the address has its code and no
+    // fragment. The page puts #agent back before the sidebar picks a tab,
+    // trades the code for a key, and offers the model chosen before leaving.
+    {
+      const context = await browser.newContext({
+        ...devices["iPad Pro 11"],
+      });
+      await withModels(context, {
+        tablet: {
+          openrouter: [
+            { id: "test/first:free", label: "First" },
+            { id: "test/chosen:free", label: "Chosen" },
+          ],
+        },
+      });
+      const traded: string[] = [];
+      await context.route("https://openrouter.ai/api/v1/auth/keys", (route) => {
+        const cors = {
+          "access-control-allow-origin": "*",
+          "access-control-allow-headers": "*",
+          "access-control-allow-methods": "POST",
+        };
+        if (route.request().method() === "OPTIONS") {
+          return route.fulfill({ status: 204, headers: cors });
+        }
+        traded.push(route.request().postDataJSON().code);
+        return route.fulfill({
+          headers: cors,
+          contentType: "application/json",
+          body: JSON.stringify({ key: "sk-or-from-sign-in" }),
+        });
+      });
+      await context.addInitScript(() => {
+        if (sessionStorage.getItem("seeded") !== null) return;
+        sessionStorage.setItem("seeded", "1");
+        sessionStorage.setItem(
+          "yurt-openrouter-sign-in",
+          JSON.stringify({
+            verifier: "v",
+            hash: "#agent",
+            model: "openrouter:test/chosen:free",
+          }),
+        );
+      });
+      const page = await context.newPage();
+      await page.goto(`${server.url}/?suspend=0&platform=tablet&code=the-code`);
+      await until(
+        page,
+        "the return from sign-in",
+        () =>
+          (document.querySelector("[data-testid=agent-start]")?.textContent ??
+            "").startsWith("Start Chosen"),
+        60_000,
+      );
+      const back = await page.evaluate(() => ({
+        hash: location.hash,
+        code: new URL(location.href).searchParams.get("code"),
+        shown: !document.querySelector("#agent")!.closest(".view-off"),
+        choice: (document.querySelector("#agent-model") as HTMLSelectElement)
+          .value,
+        key: localStorage.getItem("yurt-openrouter-key"),
+        pending: sessionStorage.getItem("yurt-openrouter-sign-in"),
+      }));
+      if (
+        back.hash !== "#agent" || back.code !== null || !back.shown ||
+        back.choice !== "openrouter:test/chosen:free" ||
+        back.key !== "sk-or-from-sign-in" || back.pending !== null ||
+        traded.join() !== "the-code"
+      ) {
+        throw new Error(
+          `agent e2e: back from sign-in ${
+            JSON.stringify(back)
+          }, traded ${traded}`,
+        );
+      }
+      await context.close();
+    }
+
     // The demo when mkpdf cannot be installed: the run stops and says so,
     // with no Download; with the command in place, the next message makes
     // the PDF and offers it.

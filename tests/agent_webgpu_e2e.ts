@@ -24,6 +24,7 @@
 import { chromium } from "playwright";
 import { extname, join } from "node:path";
 import { buildStaticSite } from "../scripts/build-static.ts";
+import { AGENT_MODELS_URL } from "../src/agent_models_config.ts";
 
 const flag = (name: string) => {
   const at = Deno.args.indexOf(`--${name}`);
@@ -118,6 +119,13 @@ async function chrome(headed: boolean): Promise<Driver> {
     headless: !headed,
     args: ["--enable-unsafe-webgpu"],
   });
+  // The in-tab models this test drives, whatever the live list says.
+  await context.route(AGENT_MODELS_URL, (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      headers: { "access-control-allow-origin": "*" },
+      body: JSON.stringify({ desktop: { local: ["E4B", "E2B"] } }),
+    }));
   const page = context.pages()[0] ?? await context.newPage();
   return {
     version: `Chrome ${context.browser()?.version() ?? ""}`.trim(),

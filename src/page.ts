@@ -952,8 +952,6 @@ function wirePackages(): void {
 }
 
 async function runPage(): Promise<void> {
-  // Back from OpenRouter's sign-in: its `#agent` first, which picks the tab.
-  restoreAfterSignIn();
   // The platform first, before anything is fetched: a URL without one
   // gains the device's (`?platform=phone|tablet|desktop`), so it says which
   // snapshot this page restores; one written by hand is kept, and run as
@@ -1179,5 +1177,8 @@ async function runPage(): Promise<void> {
 }
 
 forgetChatOnRefresh();
+// Back from OpenRouter's sign-in: its `#agent` first, before the sidebar
+// reads the fragment to choose its tab.
+restoreAfterSignIn();
 mountSidebar();
 void runPage();

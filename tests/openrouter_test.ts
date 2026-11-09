@@ -184,7 +184,9 @@ Deno.test("Stop ends a wait between retries at once", async () => {
 
 Deno.test("a retry waits as Retry-After says, up to 10 s, else backs off", () => {
   assertEquals(retryDelay("3", 0, 2000), 3000);
-  assertEquals(retryDelay("0", 2, 2000), 0);
+  assertEquals(retryDelay("0", 2, 2000), 1000);
+  assertEquals(retryDelay("", 1, 2000), 4000);
+  assertEquals(retryDelay(" ", 0, 2000), 2000);
   assertEquals(retryDelay("120", 0, 2000), 10_000);
   assertEquals(retryDelay(null, 0, 2000), 2000);
   assertEquals(retryDelay(null, 2, 2000), 6000);
@@ -255,7 +257,7 @@ Deno.test("a rate-limited wait is said on the step's live line", async () => {
     model.onToken = (t) => said.push(t);
     await model.generate("s", "p", new AbortController().signal);
     assertEquals(said, [
-      "\nthe model is busy (rate-limited); asking again in 0 s",
+      "\nthe model is busy (rate-limited); asking again in 1 s",
     ]);
   } finally {
     restore();

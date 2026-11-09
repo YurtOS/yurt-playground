@@ -215,16 +215,19 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** How long to wait before asking again: Retry-After when given (up to
- * 10 s), else a growing back-off. */
+/** How long to wait before asking again: Retry-After when it gives a number
+ * of seconds (at least a second, at most 10), else a growing back-off. */
 export function retryDelay(
   retryAfter: string | null,
   attempt: number,
   baseMs: number,
 ): number {
   const seconds = Number(retryAfter);
-  if (retryAfter !== null && Number.isFinite(seconds) && seconds >= 0) {
-    return Math.min(seconds * 1000, 10_000);
+  if (
+    retryAfter !== null && retryAfter.trim() !== "" &&
+    Number.isFinite(seconds) && seconds >= 0
+  ) {
+    return Math.min(Math.max(seconds * 1000, Math.min(1000, baseMs)), 10_000);
   }
   return baseMs * (attempt + 1);
 }

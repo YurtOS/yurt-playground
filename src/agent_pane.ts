@@ -429,10 +429,12 @@ export async function mountAgentPane(
             "it has spaces or other characters a key does not have.";
           return;
         }
-        if (pasted === "" && chat.length > 0 && sandbox.suspend === undefined) {
+        const unsealed = sandbox.suspend === undefined &&
+          (chat.length > 0 || sandbox.yurt()?.status === "running");
+        if (pasted === "" && unsealed) {
           // Nothing seals this sandbox: leaving for sign-in would lose it.
-          cost.textContent = "Signing in leaves this page, and this chat's " +
-            "sandbox with it. Paste an OpenRouter key to go on with it.";
+          cost.textContent = "Signing in leaves this page, and its running " +
+            "sandbox with it. Paste an OpenRouter key to keep it.";
           return;
         }
         if (pasted === "") {
@@ -603,7 +605,13 @@ export async function mountAgentPane(
 
   const go = async () => {
     const text = task.value.trim();
-    if (llm === undefined || running !== undefined || text === "") return;
+    if (running !== undefined || text === "") return;
+    if (llm === undefined) {
+      cost.textContent = "Choose a model above and start it first; your " +
+        "message stays in the box.";
+      intro.scrollIntoView({ block: "nearest" });
+      return;
+    }
     if (suspended) {
       saveChat(text);
       reloadPage();
@@ -844,11 +852,14 @@ export async function mountAgentPane(
     return;
   }
   await startModel(true);
+  offerDownload();
   if (llm === undefined) {
-    offerDownload();
+    // No model to go on with by itself (no key now, or a load that
+    // failed): the chat shows, and its message waits in the box.
+    if (saved.pending !== undefined) task.value = saved.pending;
+    work.hidden = false;
     return;
   }
-  offerDownload();
   if (saved.pending !== undefined) {
     saveChat();
     task.value = saved.pending;
