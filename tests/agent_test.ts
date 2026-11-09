@@ -147,6 +147,31 @@ Deno.test("a string with raw line breaks and tabs is read as if escaped", () => 
   assertEquals(parseAction('{"action":"exec","cmd":"a\nb"} more'), null);
 });
 
+Deno.test("backslashes JSON does not know are read as written", () => {
+  // A shell line ending in a backslash, with the line break raw.
+  assertEquals(
+    parseAction('{"action":"exec","cmd":"echo a \\\nb"}'),
+    { action: "exec", cmd: "echo a \\\nb" },
+  );
+  // A regex: \d and \. are no JSON escapes.
+  assertEquals(
+    parseAction(String.raw`{"action":"exec","cmd":"grep -E '\d+\.' x"}`),
+    { action: "exec", cmd: String.raw`grep -E '\d+\.' x` },
+  );
+  // A valid escape keeps its JSON meaning, even beside raw line breaks.
+  assertEquals(
+    parseAction('{"action":"exec","cmd":"a\nb\\tc"}'),
+    { action: "exec", cmd: "a\nb\tc" },
+  );
+});
+
+Deno.test("Gemma E2B's keyless answer is read with raw line breaks too", () => {
+  assertEquals(
+    parseAction('{"action":"answer":"line 1\nline 2"}'),
+    { action: "answer", text: "line 1\nline 2" },
+  );
+});
+
 Deno.test("a tool step feeds its result into the next prompt, then answers", async () => {
   const log: string[] = [];
   const { types, prompts, events } = await run([
