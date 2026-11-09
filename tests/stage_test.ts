@@ -294,13 +294,18 @@ function fakeKernel() {
           });
           return { rc: 0n };
         case KERNEL_VFS_SET_METADATA: {
-          const path = decoder.decode(request.subarray(20));
+          // The kernel's 36-byte head (`VFS_SET_METADATA_HEAD`): mode,
+          // uid, gid, then mtime, atime and ctime as i64 ns, then the path.
+          const path = decoder.decode(request.subarray(36));
           calls.push({ kind: "metadata", path });
+          const mtimeNs = view.getBigInt64(12, true);
+          assertEquals(view.getBigInt64(20, true), mtimeNs, `atime ${path}`);
+          assertEquals(view.getBigInt64(28, true), mtimeNs, `ctime ${path}`);
           metadata.set(path, {
             mode: view.getUint32(0, true),
             uid: view.getUint32(4, true),
             gid: view.getUint32(8, true),
-            mtimeNs: view.getBigUint64(12, true),
+            mtimeNs,
           });
           return { rc: 0n };
         }

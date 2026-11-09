@@ -1,4 +1,5 @@
 import {
+  clampI64,
   KERNEL_PID,
   type KernelHostInterface,
   METHOD,
@@ -23,6 +24,14 @@ const S_IFREG = 0o100_000;
 const S_IFLNK = 0o120_000;
 const MODE_PERM_MASK = 0o7777;
 const NANOS_PER_SECOND = 1_000_000_000n;
+/** The `kernel_vfs_set_metadata` request head before the path: mode, uid,
+ * gid, then mtime, atime and ctime as i64 nanoseconds (the kernel's
+ * `VFS_SET_METADATA_HEAD`, `dispatch/vfs_export.rs`). */
+const SET_METADATA_HEAD = 36;
+/** The `kernel_vfs_stat` record: filetype, mode, uid, gid, size, then
+ * mtime, atime and ctime as i64 nanoseconds (the kernel's
+ * `VFS_STAT_RECORD_SIZE`). */
+const VFS_STAT_RECORD_SIZE = 48;
 const REGISTER_FILE_CHUNK_HEADER_BYTES = 12;
 const DEFAULT_KERNEL_SCRATCH_LEN = 64 * 1024;
 
@@ -76,7 +85,8 @@ function entryTypeBits(type: string): number {
   return S_IFREG;
 }
 
-/** Apply the image's mode, owner, and mtime to a staged entry. */
+/** Apply the image's mode, owner, and mtime to a staged entry. An image
+ * records only mtime, so it is sent as all three times. */
 function setEntryMetadata(
   mk: KernelHostInterface,
   path: string,
@@ -89,7 +99,7 @@ function setEntryMetadata(
   },
 ): void {
   const pathBytes = s(path);
-  const req = new Uint8Array(20 + pathBytes.byteLength);
+  const req = new Uint8Array(SET_METADATA_HEAD + pathBytes.byteLength);
   const view = new DataView(req.buffer);
   view.setUint32(
     0,
@@ -98,12 +108,11 @@ function setEntryMetadata(
   );
   view.setUint32(4, entry.uid >>> 0, true);
   view.setUint32(8, entry.gid >>> 0, true);
-  view.setBigUint64(
-    12,
-    BigInt(Math.trunc(entry.mtime)) * NANOS_PER_SECOND,
-    true,
-  );
-  req.set(pathBytes, 20);
+  const timeNs = clampI64(BigInt(Math.trunc(entry.mtime)) * NANOS_PER_SECOND);
+  view.setBigInt64(12, timeNs, true); // mtime
+  view.setBigInt64(20, timeNs, true); // atime
+  view.setBigInt64(28, timeNs, true); // ctime
+  req.set(pathBytes, SET_METADATA_HEAD);
   const { rc } = mk.syscall(KERNEL_VFS_SET_METADATA, req, 0);
   if (Number(rc) !== 0) {
     throw new Error(
@@ -445,12 +454,18 @@ export function vfsStat(
     mtime: number;
   }
   | undefined {
-  const { rc, response } = mk.syscall(KERNEL_VFS_STAT, s(path), 32);
+  const { rc, response } = mk.syscall(
+    KERNEL_VFS_STAT,
+    s(path),
+    VFS_STAT_RECORD_SIZE,
+  );
   const code = Number(rc);
   // Gone (or a parent that is no directory now): no entry. Anything else
   // is an error, not an absence a layer may silently skip.
   if (missing(code)) return undefined;
-  if (code !== 32) throw new Error(`stat ${path}: ${errnoText(code)}`);
+  if (code !== VFS_STAT_RECORD_SIZE) {
+    throw new Error(`stat ${path}: ${errnoText(code)}`);
+  }
   const view = new DataView(
     response.buffer,
     response.byteOffset,
@@ -469,7 +484,7 @@ export function vfsStat(
     uid: view.getUint32(8, true),
     gid: view.getUint32(12, true),
     size: Number(view.getBigUint64(16, true)),
-    mtime: Number(view.getBigUint64(24, true) / NANOS_PER_SECOND),
+    mtime: Number(view.getBigInt64(24, true) / NANOS_PER_SECOND),
   };
 }
 
