@@ -303,11 +303,13 @@ function reloadOnPurpose(): void {
  * a boot the browser cut off. */
 function leaveOnPurpose(url: string): void {
   // Only once the page really goes: a navigation that never completes
-  // leaves the boot memory as it was.
-  addEventListener("pagehide", () => {
+  // leaves the boot memory as it was, and stops listening after a while.
+  const going = () => {
     cutOffBoot();
     reloading = true;
-  }, { once: true });
+  };
+  addEventListener("pagehide", going, { once: true });
+  setTimeout(() => removeEventListener("pagehide", going), 15_000);
   // Back from the other site to this very page (the back/forward cache):
   // the page goes on, and so does its boot memory, as it stood.
   addEventListener("pageshow", (event) => {

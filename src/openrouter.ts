@@ -158,7 +158,14 @@ export function finishOpenrouterSignIn(): {
   const url = new URL(location.href);
   const code = url.searchParams.get("code");
   const signIn = pendingSignIn();
-  if (signIn === undefined) return { done: Promise.resolve(undefined) };
+  if (signIn === undefined) {
+    // A code with no sign-in of this tab's to finish: not kept in the address.
+    if (code !== null) {
+      url.searchParams.delete("code");
+      history.replaceState(history.state, "", url.href);
+    }
+    return { done: Promise.resolve(undefined) };
+  }
   forgetSignIn();
   if (code === null) {
     return {
@@ -245,6 +252,9 @@ export function openrouterModel(
     async generate(system, prompt, signal) {
       const key = openrouterKey();
       if (key === undefined) throw new Error("not signed in to OpenRouter");
+      // Reasoning off, unless the model says it cannot be (then once more,
+      // with its reasoning on).
+      let reasoning: { enabled: false } | undefined = { enabled: false };
       const request = () =>
         fetch(`${API}/chat/completions`, {
           method: "POST",
@@ -261,13 +271,20 @@ export function openrouterModel(
             ],
             max_tokens: 4096,
             // Reasoning models spend the whole budget thinking otherwise.
-            reasoning: { enabled: false },
+            ...(reasoning ? { reasoning } : {}),
             temperature: 0,
           }),
           signal,
         });
       // Free models are often rate-limited upstream for a moment: retry.
       let response = await request();
+      if (response.status === 400) {
+        const text = await response.clone().text().catch(() => "");
+        if (/reasoning is mandatory/i.test(text)) {
+          reasoning = undefined;
+          response = await request();
+        }
+      }
       for (let attempt = 0; response.status === 429 && attempt < 3; attempt++) {
         await response.body?.cancel();
         const wait = retryDelay(

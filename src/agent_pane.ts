@@ -429,8 +429,9 @@ export async function mountAgentPane(
             "it has spaces or other characters a key does not have.";
           return;
         }
-        const unsealed = sandbox.suspend === undefined &&
-          (chat.length > 0 || sandbox.yurt()?.status === "running");
+        // A running sandbox, or a chat nothing seals: leaving loses it.
+        const unsealed = sandbox.yurt()?.status === "running" ||
+          (sandbox.suspend === undefined && chat.length > 0);
         if (pasted === "" && unsealed) {
           // Nothing seals this sandbox: leaving for sign-in would lose it.
           cost.textContent = "Signing in leaves this page, and its running " +
@@ -500,6 +501,19 @@ export async function mountAgentPane(
     ready();
   };
   startButton.addEventListener("click", () => void startModel());
+  // Signed out in another tab (the key is shared): back to signing in here
+  // too, once no run is using the model.
+  addEventListener("storage", (e) => {
+    const event = e as StorageEvent;
+    if (
+      event.key === null || event.key === "yurt-openrouter-key"
+    ) {
+      if (
+        llm !== undefined && running === undefined &&
+        selectedOr() !== undefined && openrouterKey() === undefined
+      ) void signedOut();
+    }
+  });
   /** OpenRouter refused the key mid-chat: back to signing in, chat kept. */
   const signedOut = async () => {
     llm = undefined;
@@ -841,6 +855,8 @@ export async function mountAgentPane(
     if (saved.pending !== undefined) task.value = saved.pending;
     work.hidden = false;
     offerDownload();
+    // The sandbox is sealed: the next message resumes it, as after a run.
+    suspended = true;
     cost.textContent = "The model this chat used is no longer offered. " +
       "Choose another to go on with it.";
     return;

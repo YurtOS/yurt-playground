@@ -264,3 +264,35 @@ Deno.test("a rate-limited wait is said on the step's live line", async () => {
     setOpenrouterKey(undefined);
   }
 });
+
+Deno.test("a model whose reasoning cannot be turned off is asked again with it on", async () => {
+  setOpenrouterKey("sk-or-test");
+  const { calls, restore } = stubFetch([
+    reply({
+      error: {
+        message:
+          "Reasoning is mandatory for this endpoint and cannot be disabled.",
+      },
+    }, 400),
+    reply({ choices: [{ message: { content: "ok" } }] }),
+  ]);
+  try {
+    const { text } = await openrouterModel("m").generate(
+      "s",
+      "p",
+      new AbortController().signal,
+    );
+    assertEquals(text, "ok");
+    assertEquals(calls.length, 2);
+    assertEquals(JSON.parse(calls[0].init.body as string).reasoning, {
+      enabled: false,
+    });
+    assertEquals(
+      "reasoning" in JSON.parse(calls[1].init.body as string),
+      false,
+    );
+  } finally {
+    restore();
+    setOpenrouterKey(undefined);
+  }
+});
