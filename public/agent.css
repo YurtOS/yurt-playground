@@ -44,17 +44,32 @@
   border-radius: 6px;
   padding: 6px 8px;
 }
-/* The pasted key: as wide as its placeholder, which names the key's form. */
+/* The pasted key, on its own line under the model: as wide as its
+ * placeholder, which names the key's form, plus its padding and room for
+ * a browser's own key icon. */
 #agent-key {
-  width: 38ch;
+  display: block;
+  margin-top: 10px;
+  width: calc(36ch + 3em);
   max-width: 100%;
   box-sizing: border-box;
 }
 #agent-key::placeholder {
   color: var(--muted);
 }
-#agent-key[hidden] {
+#agent-key[hidden],
+#agent-signout[hidden] {
   display: none;
+}
+/* Sign-out: a quiet button beside the model, in the pane's colors. */
+#agent-signout {
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
 }
 #agent-start {
   font: inherit;

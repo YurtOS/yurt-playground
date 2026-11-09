@@ -459,6 +459,26 @@ if (import.meta.main) {
           `agent e2e: without WebGPU offered ${offered}, start ${start}`,
         );
       }
+      // Signed out, the key field shows in the pane's colors, its whole
+      // placeholder readable.
+      const key = await page.locator("#agent-key").evaluate((input) => {
+        const i = input as HTMLInputElement;
+        const style = getComputedStyle(i);
+        const menu = getComputedStyle(document.querySelector("#agent-model")!);
+        const context = document.createElement("canvas").getContext("2d")!;
+        context.font = `${style.fontSize} ${style.fontFamily}`;
+        const room = i.clientWidth - parseFloat(style.paddingLeft) -
+          parseFloat(style.paddingRight);
+        return {
+          visible: i.offsetParent !== null,
+          sameColors: style.backgroundColor === menu.backgroundColor &&
+            style.color === menu.color,
+          fits: context.measureText(i.placeholder).width <= room,
+        };
+      });
+      if (!key.visible || !key.sameColors || !key.fits) {
+        throw new Error(`agent e2e: the key field: ${JSON.stringify(key)}`);
+      }
       await context.close();
     }
 

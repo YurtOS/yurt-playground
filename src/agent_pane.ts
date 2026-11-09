@@ -277,6 +277,7 @@ export async function mountAgentPane(
   });
   keyInput.setAttribute("aria-label", "OpenRouter key");
   const signOut = el("button", {
+    id: "agent-signout",
     type: "button",
     textContent: "Sign out of OpenRouter",
     hidden: true,
