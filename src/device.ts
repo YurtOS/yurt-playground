@@ -58,6 +58,16 @@ export function touchDevice(): boolean {
  * written one overrides the device -- as far as the device can run it. */
 export type Platform = "phone" | "tablet" | "desktop";
 
+/** The snapshot an agent-only sandbox (the Agent tab's own) restores: on an
+ * iPad or iPhone the phone's, the smallest (no Python; the agent writes zsh),
+ * since a tablet's tab also ran out of memory in the tablet's; a desktop's
+ * agent keeps the tablet's, with Python. */
+export function agentSnapshotKind(
+  platform: Platform,
+): "tablet" | "phone" {
+  return platform === "desktop" ? "tablet" : "phone";
+}
+
 const PLATFORM_ALIASES: Record<string, Platform> = {
   phone: "phone",
   iphone: "phone",
