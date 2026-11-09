@@ -25,16 +25,11 @@ export type RemoteModel = {
 };
 
 /** The pane's choices for `list` (agent-models.json's, see
- * src/agent_models_config.ts), with `extra` (`?model=openrouter:<id>`)
- * first when the list lacks it. */
+ * src/agent_models_config.ts). Only the list's models: a link cannot add
+ * one, which would bill the visitor's key for a model nobody offered. */
 export function openrouterModels(
   list: { id: string; label: string }[],
-  extra?: string,
 ): RemoteModel[] {
-  list = [...list];
-  if (extra && !list.some((m) => m.id === extra)) {
-    list.unshift({ id: extra, label: extra });
-  }
   return list.map((m) => {
     const price = m.id.endsWith(":free") ? "free" : "paid";
     return {
@@ -55,6 +50,12 @@ export function openrouterKey(): string | undefined {
   } catch {
     return memoryKey;
   }
+}
+
+/** A key as OpenRouter issues them: printable ASCII, no spaces. A pasted one
+ * with a stray newline or quote would fail every request without a 401. */
+export function validKey(key: string): boolean {
+  return /^[\x21-\x7e]{8,}$/.test(key);
 }
 
 export function setOpenrouterKey(key: string | undefined): void {
@@ -124,12 +125,13 @@ function pendingSignIn(): SignIn | undefined {
   }
 }
 
-/** First thing on a load back from sign-in: put the fragment (`#agent`)
- * back, before the page reads it to choose its tab. */
+/** First thing on a load back from sign-in, with a code or without one (a
+ * sign-in the visitor cancelled): put the fragment (`#agent`) back, before
+ * the page reads it to choose its tab. */
 export function restoreAfterSignIn(): void {
   const url = new URL(location.href);
   const signIn = pendingSignIn();
-  if (!url.searchParams.has("code") || signIn === undefined) return;
+  if (signIn === undefined) return;
   if (url.hash === "" && signIn.hash !== "") {
     url.hash = signIn.hash;
     history.replaceState(history.state, "", url.href);
@@ -145,15 +147,19 @@ export async function finishOpenrouterSignIn(): Promise<
   const url = new URL(location.href);
   const code = url.searchParams.get("code");
   const signIn = pendingSignIn();
-  if (code === null || signIn === undefined) return {};
-  url.searchParams.delete("code");
-  history.replaceState(history.state, "", url.href);
+  if (signIn === undefined) return {};
   try {
     sessionStorage.removeItem(SIGN_IN_STORAGE);
   } catch { /* blocked: nothing was kept */ }
+  if (code === null) {
+    return { model: signIn.model, error: "OpenRouter sign-in was cancelled" };
+  }
+  url.searchParams.delete("code");
+  history.replaceState(history.state, "", url.href);
   try {
     const response = await fetch(`${API}/auth/keys`, {
       method: "POST",
+      signal: AbortSignal.timeout(15_000),
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         code,
@@ -235,7 +241,7 @@ export function openrouterModel(
               { role: "system", content: system },
               { role: "user", content: prompt },
             ],
-            max_tokens: 1024,
+            max_tokens: 4096,
             // Reasoning models spend the whole budget thinking otherwise.
             reasoning: { enabled: false },
             temperature: 0,
@@ -264,8 +270,16 @@ export function openrouterModel(
         setOpenrouterKey(undefined);
         throw new OpenrouterSignedOut(why);
       }
-      const text = body.choices?.[0]?.message?.content;
+      const choice = body.choices?.[0] as
+        | { message?: { content?: string | null }; finish_reason?: string }
+        | undefined;
+      const text = choice?.message?.content;
       if (!response.ok || typeof text !== "string") throw new Error(why);
+      if (choice?.finish_reason === "length") {
+        throw new Error(
+          "the model's reply was cut off at 4096 tokens; ask for less at once",
+        );
+      }
       const stats = {
         promptTokens: body.usage?.prompt_tokens ?? 0,
         outputTokens: body.usage?.completion_tokens ?? 0,

@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
 import { RESTORE_MARKER } from "../src/snapshot_store.ts";
+// The page's `globalThis.yurtSnapshotDemo`, declared there, read here.
+import type {} from "../src/snapshot_page.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 

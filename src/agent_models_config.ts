@@ -3,7 +3,9 @@
  * from `agent-models.json` on this repository's `agent-models` branch. That
  * branch never deploys, so a model is added or removed by editing that one
  * file (GitHub's raw cache serves the edit within about five minutes).
- * There is no built-in list: without the file the pane offers no model.
+ * There is no built-in list. A browser keeps the last list it loaded, so a
+ * load while GitHub is slow or down (the agent's own resume reloads among
+ * them) offers what that list did; never having loaded one, it offers none.
  *
  *   {
  *     "desktop": { "local": ["E4B", "E2B"],
@@ -13,7 +15,7 @@
  *   }
  *
  * `local` names in-tab models (src/llm_models.ts ids) and is ignored where
- * none fit (a tablet). `openrouter` lists OpenRouter model ids, the first
+ * none fit (a tablet or a phone). `openrouter` lists OpenRouter model ids, the first
  * being the default. A platform left out offers no model.
  */
 import type { Platform } from "./device.ts";
@@ -67,7 +69,19 @@ export function parseAgentModels(json: unknown): AgentModelsConfig | undefined {
   return config;
 }
 
-/** The published config, or undefined (offline, missing, malformed, slow). */
+const LAST_LIST_STORAGE = "yurt-agent-models";
+
+function lastList(): AgentModelsConfig | undefined {
+  try {
+    const saved = localStorage.getItem(LAST_LIST_STORAGE);
+    return saved === null ? undefined : parseAgentModels(JSON.parse(saved));
+  } catch {
+    return undefined;
+  }
+}
+
+/** The published config; if it cannot be read now (offline, missing,
+ * malformed, slow), the last one this browser read; else undefined. */
 export async function fetchAgentModels(
   url = AGENT_MODELS_URL,
   timeoutMs = 4000,
@@ -77,9 +91,17 @@ export async function fetchAgentModels(
       cache: "no-cache",
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!response.ok) return undefined;
-    return parseAgentModels(await response.json());
+    if (!response.ok) return lastList();
+    const json = await response.json();
+    const config = parseAgentModels(json);
+    if (config === undefined) return lastList();
+    try {
+      localStorage.setItem(LAST_LIST_STORAGE, JSON.stringify(json));
+    } catch {
+      // Storage blocked: the next load fetches again anyway.
+    }
+    return config;
   } catch {
-    return undefined;
+    return lastList();
   }
 }

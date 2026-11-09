@@ -49,9 +49,10 @@ Deno.test("the config comes from the agent-models branch, never deployed", () =>
   );
 });
 
-Deno.test("an unreachable or broken file is no config: no built-in list stands in", async () => {
+Deno.test("a list that cannot be read now is the last one read; never read, none", async () => {
   const original = globalThis.fetch;
   try {
+    localStorage.removeItem("yurt-agent-models");
     globalThis.fetch = () =>
       Promise.resolve(new Response("nope", { status: 404 }));
     assertEquals(await fetchAgentModels(), undefined);
@@ -63,10 +64,15 @@ Deno.test("an unreachable or broken file is no config: no built-in list stands i
       Promise.resolve(
         Response.json({ tablet: { openrouter: [{ id: "a/b" }] } }),
       );
-    assertEquals(await fetchAgentModels(), {
-      tablet: { openrouter: [{ id: "a/b", label: "a/b" }] },
-    });
+    const read = { tablet: { openrouter: [{ id: "a/b", label: "a/b" }] } };
+    assertEquals(await fetchAgentModels(), read);
+    globalThis.fetch = () => Promise.reject(new TypeError("offline"));
+    assertEquals(await fetchAgentModels(), read);
+    globalThis.fetch = () =>
+      Promise.resolve(new Response("nope", { status: 503 }));
+    assertEquals(await fetchAgentModels(), read);
   } finally {
     globalThis.fetch = original;
+    localStorage.removeItem("yurt-agent-models");
   }
 });

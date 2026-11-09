@@ -322,8 +322,9 @@ export async function touchKeysWork(page: Page): Promise<void> {
 
 /** The agent pane on a phone (#197): a phone boots now (its own small
  * snapshot), so the pane offers the sandbox's Start and the agent's Run,
- * as on a tablet. WebGPU is stubbed: headless Chromium has none, and
- * without it the pane never offers a Run anyway. */
+ * as on a tablet, with only models outside the tab (an in-tab one on the
+ * list is not offered). WebGPU is stubbed, so it is the phone, not a
+ * missing adapter, that leaves the in-tab model out. */
 export async function phoneAgentHasTheSandbox(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   url: string,
@@ -333,7 +334,13 @@ export async function phoneAgentHasTheSandbox(
     route.fulfill({
       contentType: "application/json",
       headers: { "access-control-allow-origin": "*" },
-      body: JSON.stringify({ phone: { local: ["E4B", "E2B"] } }),
+      // An in-tab model on the list is not offered on a phone.
+      body: JSON.stringify({
+        phone: {
+          local: ["E4B", "E2B"],
+          openrouter: [{ id: "test/remote:free", label: "Remote" }],
+        },
+      }),
     }));
   await phone.addInitScript(() => {
     Object.defineProperty(Navigator.prototype, "gpu", {
@@ -351,12 +358,16 @@ export async function phoneAgentHasTheSandbox(
       unavailable: q("agent-unavailable") !== null,
       run: q("agent-run") !== null,
       start: (q("start-sandbox")?.offsetParent ?? null) !== null,
+      models: [...document.querySelectorAll("#agent-model option")]
+        .map((o) => (o as HTMLOptionElement).value),
       platform: new URL(location.href).searchParams.get("platform"),
     };
   });
   if (
     agent.unavailable || !agent.run || !agent.start ||
-    agent.platform !== "phone"
+    agent.platform !== "phone" ||
+    JSON.stringify(agent.models) !==
+      JSON.stringify(["openrouter:test/remote:free"])
   ) {
     throw new Error(`phone agent: ${JSON.stringify(agent)}`);
   }

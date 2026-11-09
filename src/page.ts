@@ -304,6 +304,11 @@ function reloadOnPurpose(): void {
 function leaveOnPurpose(url: string): void {
   cutOffBoot();
   reloading = true;
+  // Back from the other site to this very page (the back/forward cache):
+  // the page goes on, and so does its boot memory.
+  addEventListener("pageshow", (event) => {
+    if ((event as PageTransitionEvent).persisted) reloading = false;
+  }, { once: true });
   location.assign(url);
 }
 function rememberBooting(status: string | undefined): void {
@@ -1074,8 +1079,8 @@ async function runPage(): Promise<void> {
     suspend: !agentSeals(desktop)
       ? undefined
       : () => suspendSandbox?.() ?? Promise.resolve("no sandbox is running"),
-    // A tablet: only models outside the tab (OpenRouter).
-    remoteOnly: shellOnly,
+    // A tablet or a phone: only models outside the tab (OpenRouter).
+    remoteOnly: shellOnly || (desktop === undefined && phone),
     platform,
     leave: leaveOnPurpose,
   });

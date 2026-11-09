@@ -37,6 +37,7 @@ import {
   type RemoteModel,
   setOpenrouterKey,
   signInWithOpenrouter,
+  validKey,
 } from "./openrouter.ts";
 import { fetchAgentModels } from "./agent_models_config.ts";
 import type { Platform } from "./device.ts";
@@ -110,8 +111,8 @@ export async function mountAgentPane(
      * does the saved model start without a click (a new visit with a saved
      * chat must not download or load weights by itself). */
     resumeRun?: () => boolean;
-    /** Offer only models that run outside this tab (a tablet: no GPU
-     * model fits beside the sandbox). */
+    /** Offer only models that run outside this tab (a tablet or a phone:
+     * no GPU model fits beside the sandbox). */
     remoteOnly?: boolean;
     /** Which entry of agent-models.json applies. */
     platform: Platform;
@@ -120,22 +121,18 @@ export async function mountAgentPane(
     leave?: (url: string) => void;
   },
 ): Promise<void> {
-  const signIn = await finishOpenrouterSignIn();
-  // `?model=openrouter:<id>` picks any OpenRouter model.
+  // `?model=openrouter:<id>` preselects one of the list's models.
   const wanted = new URLSearchParams(location.search).get("model");
   // The one list of models: agent-models.json (src/agent_models_config.ts).
-  const config = await fetchAgentModels();
+  const [signIn, config, shipped] = await Promise.all([
+    finishOpenrouterSignIn(),
+    fetchAgentModels(),
+    sandbox.remoteOnly ? Promise.resolve([]) : offeredModels(),
+  ]);
   const offered = config?.[sandbox.platform];
-  const orModels: RemoteModel[] = openrouterModels(
-    offered?.openrouter ?? [],
-    wanted?.startsWith("openrouter:")
-      ? wanted.slice("openrouter:".length)
-      : undefined,
-  );
+  const orModels: RemoteModel[] = openrouterModels(offered?.openrouter ?? []);
   const localIds = offered?.local ?? [];
-  let models = sandbox.remoteOnly || localIds.length === 0
-    ? []
-    : (await offeredModels()).filter((m) => localIds.includes(m.id));
+  let models = shipped.filter((m) => localIds.includes(m.id));
   // A model in this tab needs WebGPU; without it only remote ones remain.
   let noWebgpu = false;
   if (models.length > 0) {
@@ -415,6 +412,11 @@ export async function mountAgentPane(
       if (openrouterKey() === undefined) {
         const pasted = keyInput.value.trim();
         if (auto) return;
+        if (pasted !== "" && !validKey(pasted)) {
+          cost.textContent = "That does not look like an OpenRouter key: " +
+            "it has spaces or other characters a key does not have.";
+          return;
+        }
         if (pasted === "") {
           try {
             await signInWithOpenrouter(
@@ -483,6 +485,8 @@ export async function mountAgentPane(
     llm = undefined;
     delete root.dataset.agentReady;
     intro.hidden = false;
+    work.hidden = true;
+    status.textContent = "signed out of OpenRouter";
     await label();
     cost.textContent = "OpenRouter refused the key. Sign in again, or " +
       "paste another key, to go on with this chat.";
@@ -799,6 +803,7 @@ export async function mountAgentPane(
   }
   choice.value = saved.choice;
   await label();
+  if (signIn.error !== undefined) cost.textContent = signIn.error;
   if (!(sandbox.resumeRun?.() ?? true)) {
     offerDownload();
     return;

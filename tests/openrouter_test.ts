@@ -7,6 +7,7 @@ import {
   retryDelay,
   setOpenrouterKey,
   signInUrl,
+  validKey,
 } from "../src/openrouter.ts";
 
 type Call = { url: string; init: RequestInit };
@@ -113,28 +114,54 @@ Deno.test("a reply with no text is an error, and a refused key is forgotten", as
   }
 });
 
-Deno.test("the offered models say free or paid, and ?model= can add another", () => {
+Deno.test("the offered models are the list's, saying free or paid", () => {
   const list = [
     { id: "a/free-one:free", label: "Free One" },
     { id: "b/paid-one", label: "Paid One" },
   ];
-  const models = openrouterModels(list);
-  assertEquals(models.map((m) => [m.id, m.choice, m.openrouter]), [
+  assertEquals(
+    openrouterModels(list).map((m) => [m.id, m.choice, m.openrouter]),
     [
-      "openrouter:a/free-one:free",
-      "Free One — OpenRouter, free",
-      "a/free-one:free",
+      [
+        "openrouter:a/free-one:free",
+        "Free One — OpenRouter, free",
+        "a/free-one:free",
+      ],
+      ["openrouter:b/paid-one", "Paid One — OpenRouter, paid", "b/paid-one"],
     ],
-    ["openrouter:b/paid-one", "Paid One — OpenRouter, paid", "b/paid-one"],
-  ]);
-  const extra = openrouterModels(list, "vendor/other");
-  assertEquals(extra.map((m) => m.id), [
-    "openrouter:vendor/other",
-    "openrouter:a/free-one:free",
-    "openrouter:b/paid-one",
-  ]);
-  assertEquals(openrouterModels(list, "b/paid-one").length, 2);
+  );
   assertEquals(openrouterModels([]), []);
+});
+
+Deno.test("a pasted key must look like one", () => {
+  assertEquals(validKey("sk-or-v1-0123456789abcdef"), true);
+  assertEquals(validKey("sk-or-v1-0123\n456789"), false);
+  assertEquals(validKey("sk-or v1 0123456789"), false);
+  assertEquals(validKey("\u201csk-or-v1-0123456789\u201d"), false);
+  assertEquals(validKey("short"), false);
+});
+
+Deno.test("a reply cut off at the token limit says so", async () => {
+  setOpenrouterKey("sk-or-test");
+  const { restore } = stubFetch([
+    reply({
+      choices: [{
+        message: { content: '{"action":"wri' },
+        finish_reason: "length",
+      }],
+    }),
+  ]);
+  try {
+    await assertRejects(
+      () =>
+        openrouterModel("m").generate("s", "p", new AbortController().signal),
+      Error,
+      "cut off at 4096 tokens",
+    );
+  } finally {
+    restore();
+    setOpenrouterKey(undefined);
+  }
 });
 
 Deno.test("Stop ends a wait between retries at once", async () => {
