@@ -875,6 +875,9 @@ export async function mountAgentPane(
     // failed): the chat shows, and its message waits in the box.
     if (saved.pending !== undefined) task.value = saved.pending;
     work.hidden = false;
+    // Its sandbox is the seal, still kept: the next message resumes it, as
+    // after a run, and leaving for sign-in loses nothing.
+    suspended = true;
     return;
   }
   if (saved.pending !== undefined) {
