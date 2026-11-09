@@ -293,11 +293,40 @@ const FENCE = /```(json)?/g;
 const KEYLESS_ANSWER =
   /^\{\s*"action"\s*:\s*"answer"\s*:\s*("(?:[^"\\]|\\.)*")\s*\}$/s;
 
+/** Models write a program into a string with its line breaks and tabs as
+ * they are, not escaped (Gemma 4 31B on the phone). Not JSON, but a raw
+ * control character inside a string can only mean itself, so it becomes
+ * its escape. Only that: a backslash JSON does not know (`\'`, `\d`) is
+ * left for JSON.parse to refuse, so the model is asked again rather than
+ * this guessing what it meant. Escapes keep their JSON meaning (`\n` is a
+ * line break), as in the phone's reply, which mixed both. */
+const JSON_STRING = /"(?:[^"\\]|\\.)*"/gs;
+
+function escapeRawControls(json: string): string {
+  return json.replace(
+    JSON_STRING,
+    (string) =>
+      // An escape pair stays as it is (a backslash before a raw line break
+      // is still refused); a raw control character becomes its escape.
+      // deno-lint-ignore no-control-regex -- matching them is the point
+      string.replace(/\\[\s\S]|[\x00-\x1f]/g, (c) =>
+        c.length === 2 ? c : JSON.stringify(c).slice(1, -1)),
+  );
+}
+
 function parseObject(json: string): unknown {
   try {
     return JSON.parse(json);
   } catch (error) {
-    const keyless = KEYLESS_ANSWER.exec(json);
+    const escaped = escapeRawControls(json);
+    if (escaped !== json) {
+      try {
+        return JSON.parse(escaped);
+      } catch {
+        // Not that either.
+      }
+    }
+    const keyless = KEYLESS_ANSWER.exec(escaped);
     if (keyless === null) throw error;
     return { action: "answer", text: JSON.parse(keyless[1]) };
   }

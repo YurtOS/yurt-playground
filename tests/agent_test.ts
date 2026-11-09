@@ -128,6 +128,54 @@ Deno.test("firstAction runs the first of several actions in one reply", () => {
   assertEquals(parseAction('{"action":"exec":"ls"}'), null);
 });
 
+Deno.test("a string with raw line breaks and tabs is read as if escaped", () => {
+  // Gemma 4 31B on the phone: a program with real newlines inside "text".
+  const reply = '{"action":"write_file","path":"/home/user/main.zsh",' +
+    '"text":"fib() {\n\ta=0\n  echo $a\r\n}\\nfib"}';
+  assertEquals(parseAction(reply), {
+    action: "write_file",
+    path: "/home/user/main.zsh",
+    text: "fib() {\n\ta=0\n  echo $a\r\n}\nfib",
+  });
+  // Outside a string, line breaks were always fine; inside one, an escaped
+  // quote does not end it.
+  assertEquals(
+    parseAction('{\n"action":"exec",\n"cmd":"echo \\"a\nb\\""\n}'),
+    { action: "exec", cmd: 'echo "a\nb"' },
+  );
+  // Still one object and nothing else: the same reply runs, with text after
+  // it does not.
+  assertEquals(parseAction('{"action":"exec","cmd":"a\nb"}'), {
+    action: "exec",
+    cmd: "a\nb",
+  });
+  assertEquals(parseAction('{"action":"exec","cmd":"a\nb"} more'), null);
+});
+
+Deno.test("a backslash JSON does not know is still refused, beside raw line breaks", () => {
+  // The model is asked again rather than the reply being guessed at.
+  assertEquals(parseAction('{"action":"exec","cmd":"echo a \\\nb"}'), null);
+  assertEquals(
+    parseAction(
+      String
+        .raw`{"action":"write_file","path":"/home/user/demo.txt","text":"It\'s"}`,
+    ),
+    null,
+  );
+  // A valid escape keeps its JSON meaning, even beside raw line breaks.
+  assertEquals(
+    parseAction('{"action":"exec","cmd":"a\nb\\tc"}'),
+    { action: "exec", cmd: "a\nb\tc" },
+  );
+});
+
+Deno.test("Gemma E2B's keyless answer is read with raw line breaks too", () => {
+  assertEquals(
+    parseAction('{"action":"answer":"line 1\nline 2"}'),
+    { action: "answer", text: "line 1\nline 2" },
+  );
+});
+
 Deno.test("a tool step feeds its result into the next prompt, then answers", async () => {
   const log: string[] = [];
   const { types, prompts, events } = await run([
