@@ -272,7 +272,7 @@ export async function mountAgentPane(
   const keyInput = el("input", {
     id: "agent-key",
     type: "password",
-    placeholder: "or paste an OpenRouter key (sk-or-…)",
+    placeholder: "or paste an OpenRouter key",
     hidden: true,
   });
   keyInput.setAttribute("aria-label", "OpenRouter key");

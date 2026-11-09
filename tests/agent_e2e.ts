@@ -460,7 +460,8 @@ if (import.meta.main) {
         );
       }
       // Signed out, the key field shows in the pane's colors, its whole
-      // placeholder readable.
+      // placeholder readable, down to a 320px phone.
+      await page.setViewportSize({ width: 320, height: 700 });
       const key = await page.locator("#agent-key").evaluate((input) => {
         const i = input as HTMLInputElement;
         const style = getComputedStyle(i);

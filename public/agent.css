@@ -36,6 +36,7 @@
 }
 #agent-model,
 #agent-key,
+#agent-signout,
 #agent-installed {
   font: inherit;
   color: var(--text);
@@ -44,30 +45,36 @@
   border-radius: 6px;
   padding: 6px 8px;
 }
+#agent-intro input:focus-visible,
+#agent-intro select:focus-visible {
+  outline: 2px solid var(--ochre);
+  outline-offset: 2px;
+}
 /* The pasted key, on its own line under the model: as wide as its
- * placeholder, which names the key's form, plus its padding and room for
- * a browser's own key icon. */
+ * placeholder plus padding and room for a browser's own key icon, and no
+ * wider than the pane, where the placeholder still fits on a 320px phone. */
 #agent-key {
   display: block;
   margin-top: 10px;
-  width: calc(36ch + 3em);
+  width: calc(26ch + 3em);
   max-width: 100%;
   box-sizing: border-box;
 }
 #agent-key::placeholder {
   color: var(--muted);
 }
-#agent-key[hidden],
-#agent-signout[hidden] {
+#agent-key[hidden] {
   display: none;
 }
-/* Sign-out: a quiet button beside the model, in the pane's colors. */
+/* iOS zooms the page into a focused field whose text is under 16px. */
+@media (pointer: coarse) {
+  #agent-key {
+    font-size: 16px;
+  }
+}
+/* Sign-out, under the cost line: a quiet button in the controls' frame. */
 #agent-signout {
-  font: inherit;
-  color: var(--text);
   background: transparent;
-  border: 1px solid var(--rule);
-  border-radius: 6px;
   padding: 6px 12px;
   cursor: pointer;
 }
