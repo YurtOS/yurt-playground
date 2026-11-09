@@ -187,20 +187,20 @@
   },
   "goSnapshot": {
     "releaseRepo": "YurtOS/yurt-playground",
-    "release": "snapshot-go-playground-2026.10.31-3d32068.2-2",
+    "release": "snapshot-go-playground-2026.10.31-3d32068.2-3313",
     "format": 4,
-    "sha256": "b2af8515838ebb91e269767d8d770d3b7f9dbaec0b447c4606b6eb1c50bdd220",
-    "size": 252376146,
+    "sha256": "e6dfdc804f510b7d2b90b2432134bc8b9759c2c0aeadbbb895abff754e261578",
+    "size": 247368335,
     "builtFrom": {
       "kernelSha256": "defa8da648d122fcfd30e6e96360d1b2da1cdf7440d50d82536a825e02fa338c",
-      "kernelRev": "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
+      "kernelRev": "caaa7618539c083d05974891df7fa2206035a336",
       "sealVersion": 1,
       "bootSetup": 2,
       "imageSha256": "199c4ddce97a6abb675e40338b170cf3d13227d6c7b8ae69a53d6367c9f07468",
       "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
       "pythonSet": "199c4ddce97a6abb675e40338b170cf3d13227d6c7b8ae69a53d6367c9f07468/go@1.28.0-devel-yurt_2:69d8a208d2c23235"
     },
-    "memoryBytes": 926023680,
+    "memoryBytes": 925630464,
     "contents": {
       "packages": [
         {
@@ -220,7 +220,6 @@
         }
       ],
       "remark": "BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter"
-    },
-    "restorePeakMiB": 2425
+    }
   }
 }
