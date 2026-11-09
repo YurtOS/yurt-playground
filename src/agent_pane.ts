@@ -1,11 +1,11 @@
 /**
- * The home page's agent pane (#140): a language model running in this tab
- * on the GPU, using the page's own sandbox through window.yurt. One action
- * to download and start, then a task box; every step the controller
- * (src/agent.ts) takes is shown as it happens. The pane appears where the
- * site ships the inference runtime (`/llm/models.json`, written by the
- * static build and answered by the dev server); the weights download from
- * Hugging Face (src/llm_models.ts). A browser without WebGPU is told so.
+ * The home page's agent pane (#140): a language model, in this tab on the
+ * GPU or on OpenRouter (src/openrouter.ts), using the page's own sandbox
+ * through window.yurt. One action to start, then a task box; every step the
+ * controller (src/agent.ts) takes is shown as it happens. Which models each
+ * platform offers comes from agent-models.json (src/agent_models_config.ts);
+ * an in-tab one also needs the site's inference runtime (`/llm/models.json`)
+ * and WebGPU, and its weights download from Hugging Face (src/llm_models.ts).
  */
 import { saveInBrowser, type Yurt } from "./agent_api.ts";
 import { AGENT_CHAT_STORAGE } from "./snapshot_store.ts";
@@ -29,6 +29,18 @@ import {
   systemPrompt,
 } from "./agent.ts";
 import { isModelCached, loadLocalModel } from "./llm.ts";
+import {
+  finishOpenrouterSignIn,
+  openrouterKey,
+  openrouterModel,
+  openrouterModels,
+  type RemoteModel,
+  setOpenrouterKey,
+  signInWithOpenrouter,
+  validKey,
+} from "./openrouter.ts";
+import { fetchAgentModels } from "./agent_models_config.ts";
+import type { Platform } from "./device.ts";
 import { LOCAL_MODELS, type LocalModel, MAX_NUM_TOKENS } from "./llm_models.ts";
 
 const GiB = 2 ** 30;
@@ -69,7 +81,7 @@ function el<K extends keyof HTMLElementTagNameMap>(
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 
-/** Which pinned models this site offers; none (a 404) hides the pane. */
+/** Which pinned in-tab models this site ships the runtime for; a 404: none. */
 async function offeredModels(): Promise<LocalModel[]> {
   try {
     const response = await fetch("/llm/models.json");
@@ -99,10 +111,48 @@ export async function mountAgentPane(
      * does the saved model start without a click (a new visit with a saved
      * chat must not download or load weights by itself). */
     resumeRun?: () => boolean;
+    /** Offer only models that run outside this tab (a tablet or a phone:
+     * no GPU model fits beside the sandbox). */
+    remoteOnly?: boolean;
+    /** Which entry of agent-models.json applies. */
+    platform: Platform;
+    /** Leave the page on purpose (OpenRouter's sign-in): not a boot the
+     * browser cut off. */
+    leave?: (url: string) => void;
   },
 ): Promise<void> {
-  const models = await offeredModels();
-  if (models.length === 0) return;
+  // `?model=openrouter:<id>` preselects one of the list's models.
+  const wanted = new URLSearchParams(location.search).get("model");
+  // The one list of models: agent-models.json (src/agent_models_config.ts).
+  // Back from sign-in: the model at once; the key exchange in the
+  // background, needed only by an OpenRouter Start.
+  const signIn = finishOpenrouterSignIn();
+  const [config, shipped] = await Promise.all([
+    fetchAgentModels(),
+    sandbox.remoteOnly ? Promise.resolve([]) : offeredModels(),
+  ]);
+  const offered = config?.[sandbox.platform];
+  const orModels: RemoteModel[] = openrouterModels(offered?.openrouter ?? []);
+  const localIds = offered?.local ?? [];
+  let models = shipped.filter((m) => localIds.includes(m.id));
+  // A model in this tab needs WebGPU; without it only remote ones remain.
+  let noWebgpu = false;
+  if (models.length > 0) {
+    const gpu = (navigator as Navigator & { gpu?: GPU }).gpu;
+    const adapter = await gpu?.requestAdapter().catch(() => null);
+    if (!adapter) {
+      models = [];
+      noWebgpu = true;
+    }
+  }
+  // Nothing on offer here (the list says so, or the site ships no runtime):
+  // no pane, unless the list itself failed or WebGPU is what is missing.
+  if (
+    models.length === 0 && orModels.length === 0 && config !== undefined &&
+    !noWebgpu
+  ) {
+    return;
+  }
   root.hidden = false;
   if (sandbox.unavailable !== undefined) {
     root.replaceChildren(
@@ -129,9 +179,7 @@ export async function mountAgentPane(
     );
     return;
   }
-  const gpu = (navigator as Navigator & { gpu?: GPU }).gpu;
-  const adapter = await gpu?.requestAdapter().catch(() => null);
-  if (!adapter) {
+  if (models.length === 0 && orModels.length === 0) {
     root.replaceChildren(
       el(
         "div",
@@ -140,18 +188,24 @@ export async function mountAgentPane(
         el("span", {
           id: "agent-status",
           testid: "agent-status",
-          textContent: "no WebGPU",
+          textContent: noWebgpu ? "no WebGPU" : "no models",
         }),
       ),
       el(
         "div",
         { id: "agent-intro" },
-        el(
-          "p",
-          { className: "unsupported", testid: "agent-unsupported" },
-          "This browser offers no WebGPU, which the model needs to run in " +
-            "this tab. A current Chrome, Edge or Safari on a desktop has it.",
-        ),
+        noWebgpu
+          ? el(
+            "p",
+            { className: "unsupported", testid: "agent-unsupported" },
+            "This browser offers no WebGPU, which the model needs to run in " +
+              "this tab. A current Chrome, Edge or Safari on a desktop has it.",
+          )
+          : el(
+            "p",
+            { className: "unsupported", testid: "agent-no-models" },
+            "The list of models could not be loaded. Reload to try again.",
+          ),
       ),
     );
     return;
@@ -189,7 +243,7 @@ export async function mountAgentPane(
     testid: "agent-model",
   });
   choice.setAttribute("aria-label", "Model");
-  for (const m of models) {
+  for (const m of [...models, ...orModels]) {
     choice.append(el("option", { value: m.id, textContent: m.choice }));
   }
   const startButton = el("button", {
@@ -198,6 +252,17 @@ export async function mountAgentPane(
     testid: "agent-start",
   });
   const progress = el("progress", { hidden: true, max: 1, value: 0 });
+  const keyInput = el("input", {
+    type: "password",
+    placeholder: "or paste an OpenRouter key (sk-or-…)",
+    hidden: true,
+  });
+  keyInput.setAttribute("aria-label", "OpenRouter key");
+  const signOut = el("button", {
+    type: "button",
+    textContent: "Sign out of OpenRouter",
+    hidden: true,
+  });
   const cost = el("p", { className: "cost", testid: "agent-cost" });
   // What it is, what it may do, and what it costs, before anything loads.
   const intro = el(
@@ -206,20 +271,49 @@ export async function mountAgentPane(
     el(
       "p",
       {},
-      "A language model that runs in this tab, on your GPU. Its weights " +
-        "download once from Hugging Face; after that nothing you type is " +
-        "sent anywhere. It works in this page's sandbox through ",
+      models.length === 0
+        ? "A language model on OpenRouter, with your own account: your " +
+          "task and the sandbox's output go to OpenRouter and the model's " +
+          "provider. It works in this page's sandbox through "
+        : orModels.length === 0
+        ? "A language model that runs in this tab, on your GPU. Its weights " +
+          "download once from Hugging Face; after that nothing you type is " +
+          "sent anywhere. It works in this page's sandbox through "
+        : "A language model: in this tab on your GPU (its weights download " +
+          "once from Hugging Face, and then nothing you type is sent " +
+          "anywhere), or on OpenRouter with your own account (your task and " +
+          "the sandbox's output go to OpenRouter and the model's provider). " +
+          "It works in this page's sandbox through ",
       el("code", { textContent: "window.yurt" }),
       " and can run any command there, change or delete files and stop " +
         "processes, the same as typing in its terminal. Every step is " +
         "shown as it runs, and Stop ends it.",
     ),
     el("div", { className: "row" }, choice, startButton),
+    keyInput,
     cost,
+    signOut,
     progress,
   );
   const selected = () => models.find((m) => m.id === choice.value)!;
+  const selectedOr = (): RemoteModel | undefined =>
+    orModels.find((m) => m.id === choice.value);
   const label = async () => {
+    const o = selectedOr();
+    keyInput.hidden = true;
+    signOut.hidden = true;
+    if (o !== undefined) {
+      const signedIn = openrouterKey() !== undefined;
+      startButton.textContent = signedIn
+        ? `Start ${o.label}`
+        : "Sign in with OpenRouter";
+      keyInput.hidden = signedIn;
+      signOut.hidden = !signedIn;
+      cost.textContent = "Runs on OpenRouter with your account: your task " +
+        "and the sandbox's output go to OpenRouter and the model's " +
+        "provider. Your key stays in this browser.";
+      return;
+    }
     const m = selected();
     const cached = await isModelCached(m);
     startButton.textContent = cached
@@ -232,7 +326,28 @@ export async function mountAgentPane(
         : "Downloaded from Hugging Face; the browser keeps it for next time.");
   };
   choice.addEventListener("change", () => void label());
-  await label();
+  signOut.addEventListener("click", () => {
+    setOpenrouterKey(undefined);
+    void label();
+  });
+  // Back from sign-in: the model chosen before leaving; else `?model=`.
+  for (const id of [signIn.model, wanted]) {
+    if (id && orModels.some((m) => m.id === id)) {
+      choice.value = id;
+      break;
+    }
+  }
+  let signInError: string | undefined;
+  /** The choice's line, then a sign-in's failure over it, if one failed. */
+  const showChoice = async () => {
+    await label();
+    if (signInError !== undefined) cost.textContent = signInError;
+  };
+  await showChoice();
+  void signIn.done.then((error) => {
+    signInError = error;
+    if (intro.hidden === false) void showChoice();
+  });
 
   // After the model: the task, Run, and the transcript.
   const task = el("textarea", {
@@ -282,7 +397,8 @@ export async function mountAgentPane(
   let llm:
     | (Model & { lastStats?: ModelStats; onToken?: (t: string) => void })
     | undefined;
-  const contextTokens = MAX_NUM_TOKENS;
+  /** The model's context, for the gauge; unknown for OpenRouter's. */
+  let contextTokens: number | undefined;
   const limits: Limits = DEFAULT_LIMITS;
   let running: AbortController | undefined;
   /** The chat so far: the visitor's messages, in order. */
@@ -300,7 +416,53 @@ export async function mountAgentPane(
     task.focus();
   };
 
-  const startModel = async () => {
+  /** `auto`: a resume, with no click; it never leaves for sign-in. */
+  const startModel = async (auto = false) => {
+    const o = selectedOr();
+    if (o !== undefined) {
+      await signIn.done;
+      if (openrouterKey() === undefined) {
+        const pasted = keyInput.value.trim();
+        if (auto) return;
+        if (pasted !== "" && !validKey(pasted)) {
+          cost.textContent = "That does not look like an OpenRouter key: " +
+            "it has spaces or other characters a key does not have.";
+          return;
+        }
+        // A running sandbox not sealed yet, or a chat nothing seals:
+        // leaving loses it. A sealed one keeps "running" as its status.
+        const unsealed = (!suspended && sandbox.yurt()?.status === "running") ||
+          (sandbox.suspend === undefined && chat.length > 0);
+        if (pasted === "" && unsealed) {
+          // Nothing seals this sandbox: leaving for sign-in would lose it.
+          cost.textContent = "Signing in leaves this page, and its running " +
+            "sandbox with it. Paste an OpenRouter key to keep it.";
+          return;
+        }
+        if (pasted === "") {
+          try {
+            await signInWithOpenrouter(
+              o.id,
+              sandbox.leave ?? ((url) => location.assign(url)),
+            );
+          } catch (error) {
+            cost.textContent = error instanceof Error
+              ? error.message
+              : String(error);
+          }
+          return;
+        }
+        setOpenrouterKey(pasted);
+        keyInput.value = "";
+      }
+      llm = openrouterModel(o.openrouter);
+      contextTokens = undefined;
+      modelLabel = o.label;
+      status.textContent = modelLabel;
+      signOut.hidden = true;
+      ready();
+      return;
+    }
     const model = selected();
     startButton.disabled = true;
     choice.disabled = true;
@@ -330,6 +492,7 @@ export async function mountAgentPane(
       return;
     }
     llm = local;
+    contextTokens = MAX_NUM_TOKENS;
     modelLabel = `${model.label} · WebGPU · in this tab`;
     status.textContent = modelLabel;
     // Which runtime build the browser got, and whether the weights were
@@ -339,13 +502,41 @@ export async function mountAgentPane(
     ready();
   };
   startButton.addEventListener("click", () => void startModel());
+  // Signed out in another tab (the key is shared): back to signing in here
+  // too, once no run is using the model.
+  addEventListener("storage", (e) => {
+    const event = e as StorageEvent;
+    if (
+      event.key === null || event.key === "yurt-openrouter-key"
+    ) {
+      if (
+        llm !== undefined && running === undefined &&
+        selectedOr() !== undefined && openrouterKey() === undefined
+      ) void signedOut();
+    }
+  });
+  /** OpenRouter refused the key mid-chat: back to signing in, chat kept. */
+  const signedOut = async () => {
+    llm = undefined;
+    delete root.dataset.agentReady;
+    intro.hidden = false;
+    work.hidden = true;
+    status.textContent = "signed out of OpenRouter";
+    await label();
+    cost.textContent = sandbox.suspend === undefined
+      ? "OpenRouter refused the key. Paste another key to go on with this " +
+        "chat (signing in leaves the page, and the chat with it)."
+      : "OpenRouter refused the key. Sign in again, or paste another key, " +
+        "to go on with this chat.";
+  };
 
   const showContext = () => {
     const used = llm?.lastStats?.promptTokens;
     if (used === undefined) return;
     context.hidden = false;
-    context.textContent =
-      `context ${used.toLocaleString()} / ${contextTokens.toLocaleString()} tokens`;
+    context.textContent = contextTokens === undefined
+      ? `context ${used.toLocaleString()} tokens`
+      : `context ${used.toLocaleString()} / ${contextTokens.toLocaleString()} tokens`;
   };
 
   const removeDownload = () => {
@@ -429,7 +620,13 @@ export async function mountAgentPane(
 
   const go = async () => {
     const text = task.value.trim();
-    if (llm === undefined || running !== undefined || text === "") return;
+    if (running !== undefined || text === "") return;
+    if (llm === undefined) {
+      cost.textContent = "Choose a model above and start it first; your " +
+        "message stays in the box.";
+      intro.scrollIntoView({ block: "nearest" });
+      return;
+    }
     if (suspended) {
       saveChat(text);
       reloadPage();
@@ -484,7 +681,13 @@ export async function mountAgentPane(
       if (e.type === "action" && e.action.action !== "answer") agentCalls++;
       if (e.type === "step") {
         modelCalls++;
-        const live = el("pre", { className: "live" });
+        // A remote model streams nothing: say what the step waits for.
+        const live = el("pre", {
+          className: "live",
+          textContent: selectedOr() === undefined
+            ? ""
+            : "waiting for OpenRouter…",
+        });
         const item = el("li", { className: "step" }, live);
         transcript.append(item);
         current = { item, live };
@@ -609,6 +812,9 @@ export async function mountAgentPane(
     stop.hidden = true;
     await suspendNow();
     finish();
+    if (selectedOr() !== undefined && openrouterKey() === undefined) {
+      await signedOut();
+    }
   };
   const finish = () => {
     running = undefined;
@@ -639,21 +845,41 @@ export async function mountAgentPane(
   // Only at the Agent tab: the Shell tab has a sandbox of its own to start.
   const saved = location.hash === "#agent" ? loadChat() : undefined;
   if (saved === undefined) return;
-  if (!Array.from(choice.options).some((o) => o.value === saved.choice)) return;
   chat.push(...saved.chat);
   transcript.innerHTML = saved.transcript;
   for (const [path, encoded] of Object.entries(saved.pdfs ?? {})) {
     pdfs.set(path, Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0)));
   }
+  if (!Array.from(choice.options).some((o) => o.value === saved.choice)) {
+    // The list no longer offers the chat's model: the chat stays, its
+    // message waits in the box, and another model goes on with it.
+    if (saved.pending !== undefined) task.value = saved.pending;
+    work.hidden = false;
+    offerDownload();
+    // The sandbox is sealed: the next message resumes it, as after a run.
+    suspended = true;
+    cost.textContent = "The model this chat used is no longer offered. " +
+      "Choose another to go on with it.";
+    return;
+  }
   choice.value = saved.choice;
-  await label();
+  await showChoice();
   if (!(sandbox.resumeRun?.() ?? true)) {
     offerDownload();
     return;
   }
-  await startModel();
-  if (llm === undefined) return;
+  await startModel(true);
   offerDownload();
+  if (llm === undefined) {
+    // No model to go on with by itself (no key now, or a load that
+    // failed): the chat shows, and its message waits in the box.
+    if (saved.pending !== undefined) task.value = saved.pending;
+    work.hidden = false;
+    // Its sandbox is the seal, still kept: the next message resumes it, as
+    // after a run, and leaving for sign-in loses nothing.
+    suspended = true;
+    return;
+  }
   if (saved.pending !== undefined) {
     saveChat();
     task.value = saved.pending;

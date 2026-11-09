@@ -8,6 +8,7 @@ import { startPlaygroundServer } from "../src/serve.ts";
 import { EXECUTE_TIMEOUT_MS } from "../src/jupyter_protocol.ts";
 import { watchCspViolations } from "./csp_watch.ts";
 import { PACKAGE_REPO_URL } from "../src/packages.ts";
+import { AGENT_MODELS_URL } from "../src/agent_models_config.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -86,15 +87,28 @@ function expectPane(name: string, got: FailurePane, want: FailurePane): void {
   }
 }
 
-/** A tablet runs the Linux shell only: no Python cell, no Notebook or
- * JupyterLab link, no agent, and no ipykernel in the guest — iPadOS refused
- * new processes after ~13 while ipykernel started. The boot ends at the
- * shell, and a later reload is not mistaken for a boot cut off midway. */
+/** A tablet runs the Linux shell, and an agent with only models outside the
+ * tab: no Python cell, no Notebook or JupyterLab link, no in-tab model, and
+ * no ipykernel in the guest — iPadOS refused new processes after ~13 while
+ * ipykernel started. The boot ends at the shell, and a later reload is not
+ * mistaken for a boot cut off midway. */
 async function tabletIsShellOnly(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   url: string,
 ): Promise<void> {
   const context = await browser.newContext(devices["iPad Pro 11"]);
+  // A list that names an in-tab model for tablets too: it is not offered.
+  await context.route(AGENT_MODELS_URL, (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      headers: { "access-control-allow-origin": "*" },
+      body: JSON.stringify({
+        tablet: {
+          local: ["E4B"],
+          openrouter: [{ id: "test/remote:free", label: "Remote" }],
+        },
+      }),
+    }));
   const page = await showAllSections(await context.newPage());
   await page.addInitScript(() => {
     const seen: string[] = [];
@@ -136,6 +150,8 @@ async function tabletIsShellOnly(
       statuses: (globalThis as { __statuses?: string[] }).__statuses ?? [],
       notebook: shown("#notebook"),
       agent: shown("#agent"),
+      models: [...document.querySelectorAll("#agent-model option")]
+        .map((o) => (o as HTMLOptionElement).value),
       notebookLink: shown("[data-testid=choose-notebook]"),
       labLink: shown("[data-testid=choose-lab]"),
       tabletNote: shown("#mobile-note"),
@@ -148,7 +164,10 @@ async function tabletIsShellOnly(
     state.statuses.some((s) => s.includes("Jupyter")) &&
     `status mentioned Jupyter: ${JSON.stringify(state.statuses)}`,
     state.notebook && "Python pane shown",
-    state.agent && "agent pane shown",
+    !state.agent && "agent pane hidden",
+    JSON.stringify(state.models) !==
+      JSON.stringify(["openrouter:test/remote:free"]) &&
+    `agent offered ${JSON.stringify(state.models)}`,
     state.notebookLink && "Notebook link shown",
     state.labLink && "JupyterLab link shown",
     !state.tabletNote && "tablet note hidden",
@@ -303,13 +322,26 @@ export async function touchKeysWork(page: Page): Promise<void> {
 
 /** The agent pane on a phone (#197): a phone boots now (its own small
  * snapshot), so the pane offers the sandbox's Start and the agent's Run,
- * as on a tablet. WebGPU is stubbed: headless Chromium has none, and
- * without it the pane never offers a Run anyway. */
+ * as on a tablet, with only models outside the tab (an in-tab one on the
+ * list is not offered). WebGPU is stubbed, so it is the phone, not a
+ * missing adapter, that leaves the in-tab model out. */
 export async function phoneAgentHasTheSandbox(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   url: string,
 ): Promise<void> {
   const phone = await browser.newContext(devices["iPhone 13"]);
+  await phone.route(AGENT_MODELS_URL, (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      headers: { "access-control-allow-origin": "*" },
+      // An in-tab model on the list is not offered on a phone.
+      body: JSON.stringify({
+        phone: {
+          local: ["E4B", "E2B"],
+          openrouter: [{ id: "test/remote:free", label: "Remote" }],
+        },
+      }),
+    }));
   await phone.addInitScript(() => {
     Object.defineProperty(Navigator.prototype, "gpu", {
       configurable: true,
@@ -326,12 +358,16 @@ export async function phoneAgentHasTheSandbox(
       unavailable: q("agent-unavailable") !== null,
       run: q("agent-run") !== null,
       start: (q("start-sandbox")?.offsetParent ?? null) !== null,
+      models: [...document.querySelectorAll("#agent-model option")]
+        .map((o) => (o as HTMLOptionElement).value),
       platform: new URL(location.href).searchParams.get("platform"),
     };
   });
   if (
     agent.unavailable || !agent.run || !agent.start ||
-    agent.platform !== "phone"
+    agent.platform !== "phone" ||
+    JSON.stringify(agent.models) !==
+      JSON.stringify(["openrouter:test/remote:free"])
   ) {
     throw new Error(`phone agent: ${JSON.stringify(agent)}`);
   }

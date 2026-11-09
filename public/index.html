@@ -845,16 +845,18 @@
 
           <p id="mobile-note" data-testid="mobile-note" hidden>
             This looks like a tablet, so this page runs the shell and Python,
-            with a snapshot made for tablets: Jupyter and the agent need more
-            memory than a tablet browser gives one tab. A desktop browser, or
-            the desktop app, runs all of it.
+            with a snapshot made for tablets, and an agent whose model runs on
+            OpenRouter: Jupyter and a model in the tab need more memory than a
+            tablet browser gives one tab. A desktop browser, or the desktop app,
+            runs all of it.
           </p>
 
           <p id="phone-note" data-testid="phone-note" hidden>
-            This is a phone, so this page runs the Linux shell only, with a
-            small snapshot made for phones: a phone tab has too little memory
-            for more. Installing more from <em>Packages</em> may run the tab out
-            of memory. A desktop browser, or the desktop app, runs all of it.
+            This is a phone, so this page runs the Linux shell, with a small
+            snapshot made for phones, and an agent whose model runs on
+            OpenRouter: a phone tab has too little memory for more. Installing
+            more from <em>Packages</em> may run the tab out of memory. A desktop
+            browser, or the desktop app, runs all of it.
           </p>
 
           <p
@@ -1306,8 +1308,9 @@ yurt stop web</pre>
                     moves while a cell runs. The page's security policy lets it
                     fetch only from this site and a few named sources: the
                     package repository on GitHub, Hugging Face for the agent's
-                    model, and GitHub for shared snapshots. The sandbox itself
-                    has no network: when
+                    in-tab model, OpenRouter when you run the agent there, the
+                    agent's model list and shared snapshots on GitHub. The
+                    sandbox itself has no network: when
                     <code>pkg</code> installs a package, this page fetches files
                     from the package repository for it, and only from there.
                   </p>
