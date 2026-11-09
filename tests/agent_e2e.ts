@@ -767,8 +767,17 @@ if (import.meta.main) {
     {
       const context = await browser.newContext();
       await withModel(context, { worker: "fail", webgpu: true });
+      // The list names the in-tab model: the menu shows that name.
+      await withModels(context, {
+        desktop: { local: [{ id: "E4B", label: "Named by the list" }] },
+      } as unknown as AgentModelsConfig);
       const page = await context.newPage();
       await page.goto(`${server.url}/?suspend=0#agent`);
+      await page.locator("[data-testid=agent-start]").waitFor();
+      const named = await page.locator("#agent-model option").allInnerTexts();
+      if (JSON.stringify(named) !== JSON.stringify(["Named by the list"])) {
+        throw new Error(`agent e2e: the in-tab model's name: ${named}`);
+      }
       const cost = await page.locator("[data-testid=agent-cost]").innerText();
       if (!/Needs about 8 GB/.test(cost)) {
         throw new Error(`agent e2e: no memory cost before download: ${cost}`);

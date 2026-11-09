@@ -101,3 +101,24 @@ Deno.test("a platform's prompts are read when well-formed, and dropped when not"
     { phone: {} },
   );
 });
+
+Deno.test("an in-tab model may carry its menu name", () => {
+  assertEquals(
+    parseAgentModels({
+      desktop: {
+        local: [
+          { id: "E4B", label: " Gemma 4 E4B — in this tab " },
+          "E2B",
+          { id: 7, label: "no id" },
+          { id: "X", label: "" },
+        ],
+      },
+    }),
+    {
+      desktop: {
+        local: ["E4B", "E2B", "X"],
+        localLabels: { E4B: "Gemma 4 E4B — in this tab" },
+      },
+    },
+  );
+});
