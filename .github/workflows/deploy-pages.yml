@@ -1,7 +1,9 @@
 name: Deploy playground
 
-# Production is main: every push to main, and a dispatch from main with no
-# `ref`, publishes it as the Pages project's production deployment. Any other
+# A deploy runs only when someone asks for it: a merge to main deploys
+# nothing. Production is main: a dispatch from main with no `ref`
+# (`gh workflow run deploy-pages.yml --ref main`) publishes it as the Pages
+# project's production deployment. Any other
 # branch is published only as a preview, at its own branch alias
 # (https://<alias>.yurt-playground.pages.dev): dispatch this workflow from
 # main with `ref: <branch>`, or from the branch itself. scripts/deploy-target.sh
@@ -10,11 +12,6 @@ name: Deploy playground
 # secret, and only repository writers can dispatch.
 
 on:
-  push:
-    branches: [main]
-    # The agent's model list alone: the page reads it from main at load
-    # (src/agent_models_config.ts), so there is nothing to deploy.
-    paths-ignore: [config/agent-models.json]
   workflow_dispatch:
     inputs:
       ref:
@@ -31,10 +28,10 @@ env:
 permissions:
   contents: read
 
-# One deploy per target at a time, in push order. Without this, two pushes a
-# few seconds apart deploy side by side and the slower upload wins: on
+# One deploy per target at a time, in the order asked. Without this, two
+# runs a few seconds apart deploy side by side and the slower upload wins: on
 # 2026-11-09 #315's build landed 13 s after #316's and production went back
-# to the older commit. A run waits for the one before it; a newer push
+# to the older commit. A run waits for the one before it; a newer one
 # replaces a run still waiting, so the last one to deploy is the newest.
 # Production (main) and each preview branch queue separately.
 concurrency:

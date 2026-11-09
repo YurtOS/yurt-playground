@@ -106,21 +106,17 @@ Deno.test("every test that reads Markdown runs in checks", async () => {
   assertEquals(readsMarkdown.sort(), [...MARKDOWN_TESTS].sort());
 });
 
-Deno.test("the agent's model list alone builds and deploys nothing, and is validated", async () => {
+Deno.test("the agent's model list alone builds nothing, and is validated", async () => {
   const ci = await workflow();
-  const deploy = await Deno.readTextFile(
-    new URL("../.github/workflows/deploy-pages.yml", import.meta.url),
+  // A push to main that changes only the list starts no CI run (no push
+  // deploys at all: deploy-pages.yml runs only when dispatched).
+  assertMatch(
+    ci,
+    new RegExp(
+      "\\n  push:\\n    branches: \\[main\\]\\n(?:    #[^\\n]*\\n)*" +
+        "    paths-ignore: \\[config/agent-models\\.json\\]\\n",
+    ),
   );
-  // A push to main that changes only the list starts neither workflow.
-  for (const text of [ci, deploy]) {
-    assertMatch(
-      text,
-      new RegExp(
-        "\\n  push:\\n    branches: \\[main\\]\\n(?:    #[^\\n]*\\n)*" +
-          "    paths-ignore: \\[config/agent-models\\.json\\]\\n",
-      ),
-    );
-  }
   // Its pull request runs only the checks job, which validates it on every
   // run: a step of its own, with no `if:`.
   assertMatch(

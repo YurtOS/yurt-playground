@@ -3,11 +3,11 @@
 # stdout for $GITHUB_OUTPUT:
 #
 #   mode=production  branch=main  ref=<GITHUB_SHA>
-#     a push to main, or a dispatch from main with no `ref` input;
+#     a dispatch from main with no `ref` input;
 #   mode=preview  branch=<b>  ref=refs/heads/<b>  alias=<Cloudflare alias>
 #     a dispatch with `ref: <b>`, or a dispatch from branch <b> with none.
 #
-# Anything else, and a preview of the production branch, exits 1 with an
+# Anything else (a push included: a merge deploys nothing), and a preview of the production branch, exits 1 with an
 # ::error:: line and prints nothing on stdout. The preview deploy step also
 # asks the Pages project for its production branch and refuses it; this
 # script refuses `main` before anything is built.
@@ -30,11 +30,6 @@ production() {
 }
 
 case "${EVENT:-}" in
-  push)
-    [[ "$GITHUB_REF" == "refs/heads/$production_branch" ]] ||
-      die "a push to $GITHUB_REF; only $production_branch deploys on push"
-    production
-    ;;
   workflow_dispatch) ;;
   *) die "event '${EVENT:-}' does not deploy" ;;
 esac
@@ -58,7 +53,7 @@ fi
 
 lower=$(printf '%s' "$branch" | tr '[:upper:]' '[:lower:]')
 [[ "$lower" != "$production_branch" ]] ||
-  die "'$branch' is the production branch; previews never publish it (push to main deploys production)"
+  die "'$branch' is the production branch; previews never publish it (a dispatch from it with no ref deploys production)"
 
 # Cloudflare's branch alias: lowercased, every other character a hyphen, cut
 # to 28 characters; a DNS label neither starts nor ends with a hyphen. The

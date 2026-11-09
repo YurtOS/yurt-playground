@@ -9,8 +9,8 @@ name: CI
 # label is read on every event, so while it is on every push runs them.
 # Any other label starts a run too, which replaces the one in progress with
 # the same jobs; labels are rare here. Without `ci:full` a merge-tier break
-# shows up in main's run, after the merge (and after deploy-pages.yml, which
-# does not wait for this workflow, deployed it).
+# shows up in main's run, after the merge (a merge deploys nothing:
+# deploy-pages.yml runs only when dispatched).
 #
 # A Markdown-only pull request runs fmt / lint alone (and the tests that
 # read Markdown): see the `docs` step in `checks`.

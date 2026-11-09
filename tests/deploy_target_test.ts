@@ -42,12 +42,6 @@ async function target(
   };
 }
 
-Deno.test("a push to main deploys production at the pushed commit", async () => {
-  const t = await target("push", "refs/heads/main");
-  assertEquals(t.code, 0, t.err);
-  assertEquals(t.out, { mode: "production", branch: "main", ref: SHA });
-});
-
 Deno.test("a dispatch from main with no ref redeploys production", async () => {
   const t = await target("workflow_dispatch", "refs/heads/main");
   assertEquals(t.code, 0, t.err);
@@ -123,9 +117,10 @@ Deno.test("the preview path takes only a well-formed branch name", async () => {
   }
 });
 
-Deno.test("no other event deploys, and a push deploys only main", async () => {
+Deno.test("only a dispatch deploys: a push to main (a merge) does not", async () => {
   for (
     const [event, ref] of [
+      ["push", "refs/heads/main"],
       ["push", "refs/heads/feature"],
       ["pull_request", "refs/pull/1/merge"],
       ["pull_request_target", "refs/heads/main"],
@@ -155,7 +150,8 @@ Deno.test("deploy-pages.yml routes production and previews to separate steps", a
     workflow.indexOf("\nenv:\n"),
   );
   assertEquals(/pull_request/.test(triggers), false, "a pull_request trigger");
-  assertEquals(triggers.includes("branches: [main]"), true);
+  // A merge deploys nothing: a deploy is asked for.
+  assertEquals(triggers.includes("\n  push:"), false, "a push trigger");
   assertEquals(triggers.includes("workflow_dispatch:"), true);
   // The dispatch input reaches the script through the environment, never
   // spliced into a shell line.
