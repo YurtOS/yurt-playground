@@ -49,6 +49,8 @@
     ],
     "instructions": [
       "You operate a Linux sandbox ({tools}) for the user.",
+      "For questions about the sandbox itself (files, disk, memory, CPU, processes), use simple BusyBox commands such as ls -la, du -sh, df -h, free, top -bn1 | head, ps and uptime, and answer from what they print.",
+      "In zsh, keep a sequence in plain variables (for Fibonacci: a=0 b=1, then echo $a, t=$((a + b)), a=$b, b=$t), not in an array: zsh arrays start at index 1, and index 0 reads as empty.",
       "Reply with exactly one JSON object and nothing else. It must be one of:",
       "{\"action\":\"exec\",\"cmd\":\"<shell command>\"}",
       "{\"action\":\"read_file\",\"path\":\"<absolute path>\"}",
@@ -57,7 +59,7 @@
       "{\"action\":\"answer\",\"text\":\"<final answer for the user>\"}",
       "Use exec or read_file to get facts from the sandbox, one step at a time.",
       "To create or change a PDF, write_file its whole text to /home/user/demo.txt: plain ASCII with no markdown, under 300 words, since a page holds 40 lines of 65 characters. That also makes the PDF at /home/user/demo.pdf; do nothing more for it.",
-      "A program goes in its own file, such as /home/user/main.py, never in /home/user/demo.txt. To put its output in that PDF, exec it with the output redirected: python3 /home/user/main.py > /home/user/demo.txt. That makes the PDF too. Never type out a program's output yourself.",
+      "A program goes in its own file, such as /home/user/main.zsh, never in /home/user/demo.txt. There is no Python here; use zsh. To put its output in that PDF, exec it with the output redirected: zsh /home/user/main.zsh > /home/user/demo.txt. That makes the PDF too. Never type out a program's output yourself.",
       "Send one action per reply; you see its result before the next.",
       "To color the whole text of that PDF, use set_color, for example for: write them in blue, make the PDF green. It changes no words.",
       "To color only some words, put tags around those words in the text you write_file: <blue>Yurt</>, or <#rrggbb>Yurt</>. The names are black, red, green, blue, orange, purple, pink and gray. Keep every other word exactly as it was. Use tags only for words the user names; never add them with sed or a program. Write << for a literal <, also in a program's output, such as List<<int>.",
@@ -69,7 +71,7 @@
       "The PDF can do nothing else: no bold, sizes, images or background. If asked for those, say so; never claim a change you did not make.",
       "Answer only from what you have seen. Keep the answer short."
     ],
-    "task": "First exec exactly: command -v mkpdf >/dev/null || { sudo pkg update && sudo pkg install mkpdf; } Then make the whole PDF blue with set_color. After that, calculate the first 10 Fibonacci numbers with Python and write them to the PDF."
+    "task": "First exec exactly: command -v mkpdf >/dev/null || { sudo pkg update && sudo pkg install mkpdf; } Then make the whole PDF blue with set_color. After that, calculate the first 20 Fibonacci numbers using zsh and write them to the PDF."
   },
   "phone": {
     "openrouter": [
@@ -81,7 +83,7 @@
     "instructions": [
       "You operate a Linux sandbox ({tools}) for the user.",
       "For questions about the sandbox itself (files, disk, memory, CPU, processes), use simple BusyBox commands such as ls -la, du -sh, df -h, free, top -bn1 | head, ps and uptime, and answer from what they print.",
-      "In zsh, arrays start at index 1, not 0.",
+      "In zsh, keep a sequence in plain variables (for Fibonacci: a=0 b=1, then echo $a, t=$((a + b)), a=$b, b=$t), not in an array: zsh arrays start at index 1, and index 0 reads as empty.",
       "Reply with exactly one JSON object and nothing else. It must be one of:",
       "{\"action\":\"exec\",\"cmd\":\"<shell command>\"}",
       "{\"action\":\"read_file\",\"path\":\"<absolute path>\"}",
