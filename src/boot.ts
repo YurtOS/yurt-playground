@@ -201,13 +201,6 @@ export type PlaygroundSession = {
 
 /** The shell's output goes to the screen and to whoever asked to see it
  * (the Jupyter launch reads its connection file from here). */
-/** The snapshot a saved agent session grew from. A seal made before it was
- * recorded grew from the tablet's, the only one the agent then restored. */
-export function sealedFrom(saved: StoredSnapshot): SnapshotKind {
-  const kind = saved.attachments?.snapshotKind;
-  return typeof kind === "string" ? kind as SnapshotKind : "tablet";
-}
-
 export function outputFanout(term: PlaygroundTerm) {
   const handlers = new Set<(bytes: Uint8Array) => void>();
   let hushed = false;
@@ -512,9 +505,6 @@ export async function bootPlayground(
     try {
       if (saved.kernelSha256 !== kernelSha256) {
         throw new Error("sealed under another kernel");
-      }
-      if (sealedFrom(saved) !== (env.snapshotKind ?? "desktop")) {
-        throw new Error("sealed from another snapshot");
       }
       env.show("resuming your session");
       const started = performance.now();

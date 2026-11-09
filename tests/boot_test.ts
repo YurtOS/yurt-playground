@@ -4,8 +4,8 @@ import {
   bootPlayground,
   fetchPlaygroundBytes,
   prepareSeal,
-  sealedFrom,
 } from "../src/boot.ts";
+import { sealedFrom } from "../src/agent_session.ts";
 import {
   assertNoTouchFailure,
   bootAshSession,
@@ -789,18 +789,8 @@ Deno.test("a seal's clean-up has its own budget, whatever the wait before it too
 });
 
 Deno.test("a saved agent session says which snapshot it grew from; an older one, the tablet's", () => {
-  const seal = (attachments?: Record<string, unknown>) =>
-    ({
-      image: {},
-      pty: 0,
-      sealedAt: 0,
-      kernelSha256: "k",
-      attachments,
-    }) as unknown as Parameters<typeof sealedFrom>[0];
-  assertEquals(
-    sealedFrom(seal({ memoryFile: "f", snapshotKind: "phone" })),
-    "phone",
-  );
-  assertEquals(sealedFrom(seal({ memoryFile: "f" })), "tablet");
-  assertEquals(sealedFrom(seal()), "tablet");
+  assertEquals(sealedFrom({ memoryFile: "f", snapshotKind: "phone" }), "phone");
+  assertEquals(sealedFrom({ memoryFile: "f" }), "tablet");
+  assertEquals(sealedFrom(undefined), "tablet");
+  assertEquals(sealedFrom({ snapshotKind: "nonsense" }), undefined);
 });

@@ -117,8 +117,8 @@ export function systemPrompt(python: boolean): string {
 /** What the sandbox offers, as the prompt says it. */
 export function sandboxTools(python: boolean): string {
   return python
-    ? "BusyBox, Python 3"
-    : "BusyBox shell tools only; no Python, no Node";
+    ? "BusyBox, zsh, Python 3"
+    : "BusyBox shell tools and zsh; no Python, no Node";
 }
 
 /** A system prompt given as lines (agent-models.json's `instructions`), with

@@ -765,7 +765,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     term,
     memoryRefused: () => post(memoryRefusedMessage()),
     linuxRemark: (remark: string) => post({ type: "linux-remark", remark }),
-    savedSession: msg.resumeSession === true ? loadAgentSession : undefined,
+    savedSession: msg.resumeSession === true
+      ? () => loadAgentSession(restoreKind)
+      : undefined,
     dropSavedSession: dropAgentSession,
     kernelSha256: (sha256: string) => runningKernelSha256 = sha256,
     // The terminal's `pkg` fetches through the page (src/pkg_relay.ts);
