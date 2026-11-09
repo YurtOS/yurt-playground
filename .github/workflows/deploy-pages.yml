@@ -103,11 +103,12 @@ jobs:
     # production went back to the older commit. A run waits for the one
     # before it; a newer one replaces a run still waiting, so the last one to
     # deploy is the newest. The key is the target deploy-target.sh decided:
-    # production, or the preview's Cloudflare alias, so a preview dispatched
+    # production, or preview- and the preview's Cloudflare alias (so a branch
+    # named production never queues with production), and a preview dispatched
     # from main with `ref: X` and one dispatched from branch X (or `ref: x`)
     # queue together, as they publish to the same alias.
     concurrency:
-      group: deploy-${{ needs.target.outputs.alias || 'production' }}
+      group: deploy-${{ needs.target.outputs.alias && format('preview-{0}', needs.target.outputs.alias) || 'production' }}
       cancel-in-progress: false
     # A target with no ref (an output GitHub dropped) builds nothing.
     if: needs.secrets-present.outputs.present == 'true' && needs.target.outputs.ref != ''

@@ -161,7 +161,7 @@ Deno.test("deploy-pages.yml routes production and previews to separate steps", a
   assertEquals(
     workflow.includes(
       "    concurrency:\n" +
-        "      group: deploy-${{ needs.target.outputs.alias || 'production' }}\n" +
+        "      group: deploy-${{ needs.target.outputs.alias && format('preview-{0}', needs.target.outputs.alias) || 'production' }}\n" +
         "      cancel-in-progress: false\n",
     ),
     true,
