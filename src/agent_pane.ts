@@ -270,12 +270,16 @@ export async function mountAgentPane(
   });
   const progress = el("progress", { hidden: true, max: 1, value: 0 });
   const keyInput = el("input", {
+    id: "agent-key",
     type: "password",
-    placeholder: "or paste an OpenRouter key (sk-or-…)",
+    placeholder: "or paste an OpenRouter key",
     hidden: true,
   });
   keyInput.setAttribute("aria-label", "OpenRouter key");
+  // As wide as its placeholder, and room for a browser's own key icon.
+  keyInput.size = keyInput.placeholder.length + 3;
   const signOut = el("button", {
+    id: "agent-signout",
     type: "button",
     textContent: "Sign out of OpenRouter",
     hidden: true,
