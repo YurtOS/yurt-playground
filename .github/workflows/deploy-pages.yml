@@ -31,6 +31,16 @@ env:
 permissions:
   contents: read
 
+# One deploy per target at a time, in push order. Without this, two pushes a
+# few seconds apart deploy side by side and the slower upload wins: on
+# 2026-11-09 #315's build landed 13 s after #316's and production went back
+# to the older commit. A run waits for the one before it; a newer push
+# replaces a run still waiting, so the last one to deploy is the newest.
+# Production (main) and each preview branch queue separately.
+concurrency:
+  group: deploy-${{ inputs.ref || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # The deploy needs the private YurtOS siblings (kernel, jupyter) and a
   # Cloudflare Pages project. The default GITHUB_TOKEN cannot read another
