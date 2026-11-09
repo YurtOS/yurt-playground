@@ -18,15 +18,14 @@ import {
   type AgentEvent,
   chatTask,
   DEFAULT_LIMITS,
-  DEMO_TASK,
   DEMO_TEXT_PATH,
   demoTextRedirect,
+  instructionsPrompt,
   type Limits,
   madePdfPath,
   type Model,
   type ModelStats,
   runAgent,
-  systemPrompt,
 } from "./agent.ts";
 import { isModelCached, loadLocalModel } from "./llm.ts";
 import {
@@ -179,7 +178,12 @@ export async function mountAgentPane(
     );
     return;
   }
-  if (models.length === 0 && orModels.length === 0) {
+  // The model's instructions come from the list too, with no built-in
+  // ones: a list that offers models here but no instructions offers none.
+  const instructions = offered?.instructions;
+  const noInstructions = instructions === undefined &&
+    (models.length > 0 || orModels.length > 0);
+  if (noInstructions || (models.length === 0 && orModels.length === 0)) {
     root.replaceChildren(
       el(
         "div",
@@ -188,13 +192,20 @@ export async function mountAgentPane(
         el("span", {
           id: "agent-status",
           testid: "agent-status",
-          textContent: noWebgpu ? "no WebGPU" : "no models",
+          textContent: noWebgpu && !noInstructions ? "no WebGPU" : "no models",
         }),
       ),
       el(
         "div",
         { id: "agent-intro" },
-        noWebgpu
+        noInstructions
+          ? el(
+            "p",
+            { className: "unsupported", testid: "agent-no-models" },
+            "The list of models gives no instructions for this device, so " +
+              "no model is offered here.",
+          )
+          : noWebgpu
           ? el(
             "p",
             { className: "unsupported", testid: "agent-unsupported" },
@@ -352,7 +363,8 @@ export async function mountAgentPane(
   // After the model: the task, Run, and the transcript.
   const task = el("textarea", {
     id: "agent-task",
-    value: DEMO_TASK,
+    // The list's starter for this platform; none, an empty box.
+    value: offered?.task ?? "",
     testid: "agent-task",
   });
   task.setAttribute("aria-label", "Task for the agent");
@@ -791,7 +803,7 @@ export async function mountAgentPane(
       onEvent,
       controller.signal,
       limits,
-      systemPrompt(python),
+      instructionsPrompt(instructions!, python),
     );
     const times = (n: number) => `${n} ${n === 1 ? "time" : "times"}`;
     transcript.append(

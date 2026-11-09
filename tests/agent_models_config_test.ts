@@ -76,3 +76,28 @@ Deno.test("a list that cannot be read now is the last one read; never read, none
     localStorage.removeItem("yurt-agent-models");
   }
 });
+
+Deno.test("a platform's prompts are read when well-formed, and dropped when not", () => {
+  assertEquals(
+    parseAgentModels({
+      phone: {
+        instructions: ["You operate ({tools}).", "Reply with JSON."],
+        task: "  show me the files  ",
+      },
+      tablet: { instructions: ["ok", 3], task: "" },
+      desktop: { instructions: [], task: "x".repeat(4001) },
+    }),
+    {
+      phone: {
+        instructions: ["You operate ({tools}).", "Reply with JSON."],
+        task: "show me the files",
+      },
+      tablet: {},
+      desktop: {},
+    },
+  );
+  assertEquals(
+    parseAgentModels({ phone: { instructions: ["x".repeat(12_001)] } }),
+    { phone: {} },
+  );
+});
