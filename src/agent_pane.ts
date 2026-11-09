@@ -133,7 +133,13 @@ export async function mountAgentPane(
   const offered = config?.[sandbox.platform];
   const orModels: RemoteModel[] = openrouterModels(offered?.openrouter ?? []);
   const localIds = offered?.local ?? [];
-  let models = shipped.filter((m) => localIds.includes(m.id));
+  // The list's order, and its name for each where it gives one.
+  let models = localIds.flatMap((id) => {
+    const m = shipped.find((s) => s.id === id);
+    if (m === undefined) return [];
+    const label = offered?.localLabels?.[id];
+    return [label === undefined ? m : { ...m, choice: label }];
+  });
   // A model in this tab needs WebGPU; without it only remote ones remain.
   let noWebgpu = false;
   if (models.length > 0) {

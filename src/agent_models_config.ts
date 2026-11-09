@@ -33,6 +33,9 @@ export const AGENT_MODELS_URL =
 export type OpenrouterEntry = { id: string; label: string };
 export type PlatformModels = {
   local?: string[];
+  /** The menu's name for an in-tab model, by id, where the list gives one
+   * (`"local": [{ "id": "E4B", "label": "…" }]`). */
+  localLabels?: Record<string, string>;
   openrouter?: OpenrouterEntry[];
   /** The model's system prompt, as lines. */
   instructions?: string[];
@@ -65,7 +68,19 @@ export function parseAgentModels(json: unknown): AgentModelsConfig | undefined {
     >;
     const entry: PlatformModels = {};
     if (Array.isArray(local)) {
-      entry.local = local.filter((id): id is string => typeof id === "string");
+      // An id, or { id, label }: the label is the menu's name for it.
+      entry.local = [];
+      for (const m of local) {
+        if (typeof m === "string") entry.local.push(m);
+        else if (m !== null && typeof m === "object") {
+          const { id, label } = m as Record<string, unknown>;
+          if (typeof id !== "string") continue;
+          entry.local.push(id);
+          if (typeof label === "string" && label.trim() !== "") {
+            (entry.localLabels ??= {})[id] = label.trim().slice(0, 80);
+          }
+        }
+      }
     }
     if (Array.isArray(openrouter)) {
       entry.openrouter = openrouter.flatMap((m) => {
