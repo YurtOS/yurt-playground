@@ -95,6 +95,6 @@
       "The PDF can do nothing else: no bold, sizes, images or background. If asked for those, say so; never claim a change you did not make.",
       "Answer only from what you have seen. Keep the answer short."
     ],
-    "task": "Show me the files in my home directory, and how busy the CPU is."
+    "task": "Calculate the first 20 Fibonacci numbers using zsh and write them in blue to the PDF."
   }
 }
