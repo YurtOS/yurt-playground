@@ -147,16 +147,15 @@ Deno.test("a string with raw line breaks and tabs is read as if escaped", () => 
   assertEquals(parseAction('{"action":"exec","cmd":"a\nb"} more'), null);
 });
 
-Deno.test("backslashes JSON does not know are read as written", () => {
-  // A shell line ending in a backslash, with the line break raw.
+Deno.test("a backslash JSON does not know is still refused, beside raw line breaks", () => {
+  // The model is asked again rather than the reply being guessed at.
+  assertEquals(parseAction('{"action":"exec","cmd":"echo a \\\nb"}'), null);
   assertEquals(
-    parseAction('{"action":"exec","cmd":"echo a \\\nb"}'),
-    { action: "exec", cmd: "echo a \\\nb" },
-  );
-  // A regex: \d and \. are no JSON escapes.
-  assertEquals(
-    parseAction(String.raw`{"action":"exec","cmd":"grep -E '\d+\.' x"}`),
-    { action: "exec", cmd: String.raw`grep -E '\d+\.' x` },
+    parseAction(
+      String
+        .raw`{"action":"write_file","path":"/home/user/demo.txt","text":"It\'s"}`,
+    ),
+    null,
   );
   // A valid escape keeps its JSON meaning, even beside raw line breaks.
   assertEquals(

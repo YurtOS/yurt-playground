@@ -293,40 +293,24 @@ const FENCE = /```(json)?/g;
 const KEYLESS_ANSWER =
   /^\{\s*"action"\s*:\s*"answer"\s*:\s*("(?:[^"\\]|\\.)*")\s*\}$/s;
 
-/** Models write a program into a string as source text: line breaks and
- * tabs as they are, and backslashes JSON does not know (`grep '\d'`, a
- * shell line ending in `\`). Not JSON, but each of those can only mean
- * itself inside a string, so this makes it JSON: a raw control character
- * becomes its escape, and a backslash that starts no JSON escape becomes a
- * literal backslash. A valid escape such as `\n` keeps its JSON meaning:
- * Gemma 4 31B mixes raw line breaks with `\n` meaning one. Text outside
- * strings is kept. */
-export function lenientJson(json: string): string {
+/** Models write a program into a string with its line breaks and tabs as
+ * they are, not escaped (Gemma 4 31B on the phone). Not JSON, but a raw
+ * control character inside a string can only mean itself, so it becomes
+ * its escape. Only that: a backslash JSON does not know (`\'`, `\d`) is
+ * left for JSON.parse to refuse, so the model is asked again rather than
+ * this guessing what it meant. Escapes keep their JSON meaning (`\n` is a
+ * line break), as in the phone's reply, which mixed both. */
+function escapeRawControls(json: string): string {
   let out = "";
   let inString = false;
   for (let i = 0; i < json.length; i++) {
     const c = json[i];
-    if (!inString) {
-      if (c === '"') inString = true;
-      out += c;
-    } else if (c === '"') {
-      inString = false;
-      out += c;
-    } else if (c === "\\") {
-      const next = json[i + 1] ?? "";
-      const escape = /^["\\/bfnrt]$/.test(next) ||
-        /^u[0-9a-fA-F]{4}$/.test(json.slice(i + 1, i + 6));
-      if (escape) {
-        out += c + next;
-        i++;
-      } else {
-        out += "\\\\";
-      }
-    } else if (c < " ") {
-      out += JSON.stringify(c).slice(1, -1);
-    } else {
-      out += c;
+    if (inString && c === "\\") {
+      out += c + (json[++i] ?? "");
+      continue;
     }
+    if (c === '"') inString = !inString;
+    out += inString && c < " " ? JSON.stringify(c).slice(1, -1) : c;
   }
   return out;
 }
@@ -335,13 +319,13 @@ function parseObject(json: string): unknown {
   try {
     return JSON.parse(json);
   } catch (error) {
-    const lenient = lenientJson(json);
+    const escaped = escapeRawControls(json);
     try {
-      return JSON.parse(lenient);
+      return JSON.parse(escaped);
     } catch {
       // Not that either.
     }
-    const keyless = KEYLESS_ANSWER.exec(lenient);
+    const keyless = KEYLESS_ANSWER.exec(escaped);
     if (keyless === null) throw error;
     return { action: "answer", text: JSON.parse(keyless[1]) };
   }
