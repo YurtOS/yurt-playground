@@ -2,7 +2,7 @@
   "train": "playground-2026.10.31-3d32068.2",
   "kernelWasm": {
     "repo": "YurtOS/yurtos-kernel",
-    "rev": "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
+    "rev": "caaa7618539c083d05974891df7fa2206035a336",
     "releaseRepo": "YurtOS/yurt-sandbox",
     "release": "kernel-wasm-playground-2026.10.27-3d32068.2",
     "build": "scripts/build-kernel-wasm.sh",
