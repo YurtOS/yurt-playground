@@ -19,10 +19,16 @@ export const MAX_LISTED_FILES = 3000;
  * named here. */
 export const MARKDOWN_TESTS = ["tests/snapshot_table_test.ts"];
 
-/** Markdown outside `public/`. `public/` is the deployed site: a file there
- * ships, so it is never "only docs". */
+/** The agent's model list (src/agent_models_config.ts): the live page reads
+ * it from main, so it ships by being merged, not built or deployed. ci.yml's
+ * checks job validates it (tests/agent_models_file_test.ts). */
+export const AGENT_MODELS_LIST = "config/agent-models.json";
+
+/** Markdown outside `public/`, or the agent's model list. `public/` is the
+ * deployed site: a file there ships, so it is never "only docs". */
 export function isDocsPath(path: string): boolean {
-  return path.endsWith(".md") && !path.startsWith("public/");
+  return (path.endsWith(".md") && !path.startsWith("public/")) ||
+    path === AGENT_MODELS_LIST;
 }
 
 /** True when every changed path is documentation and the list is complete. */
