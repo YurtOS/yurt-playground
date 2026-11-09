@@ -258,8 +258,9 @@ run_check() {
   fi
 
   # The deployed page: what the site serves vs pins.json on main, and the
-  # commit it was built from. A merged pin PR whose deploy never ran shows
-  # here.
+  # commit it was built from. A merge deploys nothing (a deploy is a
+  # dispatch of deploy-pages.yml from main), so main ahead of the site means
+  # no deploy since main moved, or one that failed.
   local served_pins served_commit
   served_pins=$(curl -fsS "$site/pins.json" 2>/dev/null || true)
   served_commit=$(curl -fsS "$site/integrity.json" 2>/dev/null | jq -r '.commit // ""' || true)
@@ -269,13 +270,13 @@ run_check() {
   elif [ "$(jq -S . <<< "$served_pins")" = "$(jq -S . <<< "$main_pins")" ]; then
     row ok "deployed pins" "$(jq -r '.train // .image.release' <<< "$main_pins")" "$(jq -r '.train // .image.release' <<< "$served_pins")" "$site serves pins.json as on main"
   else
-    row stale "deployed pins" "$(jq -r '.train // .image.release' <<< "$main_pins")" "$(jq -r '.train // .image.release' <<< "$served_pins")" "$site serves other pins than main: deploy pending or failed"
+    row stale "deployed pins" "$(jq -r '.train // .image.release' <<< "$main_pins")" "$(jq -r '.train // .image.release' <<< "$served_pins")" "$site serves other pins than main: not deployed since main moved, or the deploy failed"
   fi
   if [ -n "$served_commit" ]; then
     if [ "$served_commit" = "$playground_main" ]; then
       row ok "deployed commit" "$(short "$playground_main")" "$(short "$served_commit")" "yurt-playground main is what is deployed"
     else
-      row stale "deployed commit" "$(short "$playground_main")" "$(short "$served_commit")" "the page was built from another commit: deploy pending or failed"
+      row stale "deployed commit" "$(short "$playground_main")" "$(short "$served_commit")" "the page was built from another commit: not deployed since main moved, or the deploy failed"
     fi
   fi
 
@@ -975,8 +976,13 @@ if [ "$pr_state" != MERGED ]; then
   gh pr checks "$pr_url" --repo YurtOS/yurt-playground --watch --fail-fast >/dev/null \
     || die "checks failed on $pr_url; fix them, then $(resume_command)"
   gh pr merge "$pr_url" --repo YurtOS/yurt-playground --squash --delete-branch
-  # A merge deploys nothing: the yes above asked for the deploy too.
+fi
+# A merge deploys nothing: the yes above asked for the deploy too. Recorded
+# as a step, so a --resume after a merge that went through (in the web UI,
+# or a run that died between the merge and here) still deploys, once.
+if [ "$(step_get deploy dispatched)" != true ]; then
   gh workflow run deploy-pages.yml --repo YurtOS/yurt-playground --ref main
+  step_set deploy dispatched true
 fi
 say "deploy: gh run list --repo YurtOS/yurt-playground --workflow deploy-pages.yml"
 

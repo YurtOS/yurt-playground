@@ -150,9 +150,23 @@ Deno.test("deploy-pages.yml routes production and previews to separate steps", a
     workflow.indexOf("\nenv:\n"),
   );
   assertEquals(/pull_request/.test(triggers), false, "a pull_request trigger");
-  // A merge deploys nothing: a deploy is asked for.
-  assertEquals(triggers.includes("\n  push:"), false, "a push trigger");
-  assertEquals(triggers.includes("workflow_dispatch:"), true);
+  // A merge deploys nothing: a deploy is asked for, and only that starts it.
+  assertEquals(
+    [...triggers.matchAll(/^ {2}([a-z_]+):/gm)].map((m) => m[1]),
+    ["workflow_dispatch"],
+    "a trigger other than workflow_dispatch",
+  );
+  // One deploy per target at a time, never cut off mid-upload, keyed on the
+  // target deploy-target.sh decided (the preview's alias, or production).
+  assertEquals(
+    workflow.includes(
+      "    concurrency:\n" +
+        "      group: deploy-${{ needs.target.outputs.alias || 'production' }}\n" +
+        "      cancel-in-progress: false\n",
+    ),
+    true,
+    "the deploy job's concurrency",
+  );
   // The dispatch input reaches the script through the environment, never
   // spliced into a shell line.
   assertEquals(workflow.includes("INPUT_REF: ${{ inputs.ref }}"), true);
