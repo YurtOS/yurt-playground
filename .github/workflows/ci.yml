@@ -25,6 +25,9 @@ on:
     types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
+    # The agent's model list alone: the page reads it from main, and its pull
+    # request's checks job validated it. Nothing to build or test again.
+    paths-ignore: [config/agent-models.json]
   workflow_dispatch:
 
 # The workflow token can read the repository and nothing else; the
@@ -180,6 +183,10 @@ jobs:
       - name: Tests that read Markdown
         if: steps.docs.outputs.docs_only == 'true'
         run: deno test --no-check --allow-read tests/snapshot_table_test.ts
+      # The agent's model list, on every run: a pull request that changes it
+      # alone runs only this job (scripts/ci-docs-only.ts).
+      - name: Agent model list
+        run: deno test --no-check --allow-read tests/agent_models_file_test.ts
 
   # The cross-repo work, split so a push waits for the longest leg rather
   # than the sum of all of them (#123). Every leg pays the same ~80 s of

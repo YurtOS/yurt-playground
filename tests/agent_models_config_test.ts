@@ -42,10 +42,10 @@ Deno.test("a file that is not an object is no config", () => {
   }
 });
 
-Deno.test("the config comes from the agent-models branch, never deployed", () => {
+Deno.test("the config is config/agent-models.json on main", () => {
   assertEquals(
     AGENT_MODELS_URL,
-    "https://raw.githubusercontent.com/YurtOS/yurt-playground/agent-models/agent-models.json",
+    "https://raw.githubusercontent.com/YurtOS/yurt-playground/main/config/agent-models.json",
   );
 });
 

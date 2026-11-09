@@ -12,6 +12,9 @@ name: Deploy playground
 on:
   push:
     branches: [main]
+    # The agent's model list alone: the page reads it from main at load
+    # (src/agent_models_config.ts), so there is nothing to deploy.
+    paths-ignore: [config/agent-models.json]
   workflow_dispatch:
     inputs:
       ref:

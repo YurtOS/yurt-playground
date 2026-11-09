@@ -1,8 +1,11 @@
 /**
  * Which models the agent pane offers on each platform, read at page load
- * from `agent-models.json` on this repository's `agent-models` branch. That
- * branch never deploys, so a model is added or removed by editing that one
- * file (GitHub's raw cache serves the edit within about five minutes).
+ * from `config/agent-models.json` on this repository's main, through
+ * raw.githubusercontent.com. A change to that file alone builds and deploys
+ * nothing (ci.yml and deploy-pages.yml ignore it; its pull request runs only
+ * the checks, which validate it), so a model or a prompt changes with one
+ * merged pull request (GitHub's raw cache serves it within about five
+ * minutes).
  * There is no built-in list. A browser keeps the last list it loaded, so a
  * load while GitHub is slow or down (the agent's own resume reloads among
  * them) offers what that list did; never having loaded one, it offers none.
@@ -26,9 +29,9 @@
 import type { Platform } from "./device.ts";
 import { SNAPSHOT_SOURCE } from "./snapshot_source.ts";
 
-export const AGENT_MODELS_BRANCH = "agent-models";
-export const AGENT_MODELS_URL =
-  `${SNAPSHOT_SOURCE}${AGENT_MODELS_BRANCH}/agent-models.json`;
+/** The list, in this repository. */
+export const AGENT_MODELS_PATH = "config/agent-models.json";
+export const AGENT_MODELS_URL = `${SNAPSHOT_SOURCE}main/${AGENT_MODELS_PATH}`;
 
 export type OpenrouterEntry = { id: string; label: string };
 export type PlatformModels = {
