@@ -302,16 +302,25 @@ function reloadOnPurpose(): void {
  * {@link reloadOnPurpose} reloads: the page that loads on the way back is not
  * a boot the browser cut off. */
 function leaveOnPurpose(url: string): void {
-  cutOffBoot();
-  reloading = true;
+  // Only once the page really goes: a navigation that never completes
+  // leaves the boot memory as it was.
+  addEventListener("pagehide", () => {
+    cutOffBoot();
+    reloading = true;
+  }, { once: true });
   // Back from the other site to this very page (the back/forward cache):
-  // the page goes on, and so does its boot memory.
+  // the page goes on, and so does its boot memory, as it stood.
   addEventListener("pageshow", (event) => {
-    if ((event as PageTransitionEvent).persisted) reloading = false;
+    if (!(event as PageTransitionEvent).persisted) return;
+    reloading = false;
+    rememberBooting(bootStatus);
   }, { once: true });
   location.assign(url);
 }
+/** The boot's last status: what {@link leaveOnPurpose} puts back. */
+let bootStatus: string | undefined;
 function rememberBooting(status: string | undefined): void {
+  bootStatus = status;
   // A status can still arrive between asking for a reload and the page going.
   if (reloading) return;
   try {

@@ -124,8 +124,10 @@ export async function mountAgentPane(
   // `?model=openrouter:<id>` preselects one of the list's models.
   const wanted = new URLSearchParams(location.search).get("model");
   // The one list of models: agent-models.json (src/agent_models_config.ts).
-  const [signIn, config, shipped] = await Promise.all([
-    finishOpenrouterSignIn(),
+  // Back from sign-in: the model at once; the key exchange in the
+  // background, needed only by an OpenRouter Start.
+  const signIn = finishOpenrouterSignIn();
+  const [config, shipped] = await Promise.all([
     fetchAgentModels(),
     sandbox.remoteOnly ? Promise.resolve([]) : offeredModels(),
   ]);
@@ -335,8 +337,17 @@ export async function mountAgentPane(
       break;
     }
   }
-  await label();
-  if (signIn.error !== undefined) cost.textContent = signIn.error;
+  let signInError: string | undefined;
+  /** The choice's line, then a sign-in's failure over it, if one failed. */
+  const showChoice = async () => {
+    await label();
+    if (signInError !== undefined) cost.textContent = signInError;
+  };
+  await showChoice();
+  void signIn.done.then((error) => {
+    signInError = error;
+    if (intro.hidden === false) void showChoice();
+  });
 
   // After the model: the task, Run, and the transcript.
   const task = el("textarea", {
@@ -409,12 +420,19 @@ export async function mountAgentPane(
   const startModel = async (auto = false) => {
     const o = selectedOr();
     if (o !== undefined) {
+      await signIn.done;
       if (openrouterKey() === undefined) {
         const pasted = keyInput.value.trim();
         if (auto) return;
         if (pasted !== "" && !validKey(pasted)) {
           cost.textContent = "That does not look like an OpenRouter key: " +
             "it has spaces or other characters a key does not have.";
+          return;
+        }
+        if (pasted === "" && chat.length > 0 && sandbox.suspend === undefined) {
+          // Nothing seals this sandbox: leaving for sign-in would lose it.
+          cost.textContent = "Signing in leaves this page, and this chat's " +
+            "sandbox with it. Paste an OpenRouter key to go on with it.";
           return;
         }
         if (pasted === "") {
@@ -488,8 +506,11 @@ export async function mountAgentPane(
     work.hidden = true;
     status.textContent = "signed out of OpenRouter";
     await label();
-    cost.textContent = "OpenRouter refused the key. Sign in again, or " +
-      "paste another key, to go on with this chat.";
+    cost.textContent = sandbox.suspend === undefined
+      ? "OpenRouter refused the key. Paste another key to go on with this " +
+        "chat (signing in leaves the page, and the chat with it)."
+      : "OpenRouter refused the key. Sign in again, or paste another key, " +
+        "to go on with this chat.";
   };
 
   const showContext = () => {
@@ -637,7 +658,13 @@ export async function mountAgentPane(
       if (e.type === "action" && e.action.action !== "answer") agentCalls++;
       if (e.type === "step") {
         modelCalls++;
-        const live = el("pre", { className: "live" });
+        // A remote model streams nothing: say what the step waits for.
+        const live = el("pre", {
+          className: "live",
+          textContent: selectedOr() === undefined
+            ? ""
+            : "waiting for OpenRouter…",
+        });
         const item = el("li", { className: "step" }, live);
         transcript.append(item);
         current = { item, live };
@@ -795,15 +822,23 @@ export async function mountAgentPane(
   // Only at the Agent tab: the Shell tab has a sandbox of its own to start.
   const saved = location.hash === "#agent" ? loadChat() : undefined;
   if (saved === undefined) return;
-  if (!Array.from(choice.options).some((o) => o.value === saved.choice)) return;
   chat.push(...saved.chat);
   transcript.innerHTML = saved.transcript;
   for (const [path, encoded] of Object.entries(saved.pdfs ?? {})) {
     pdfs.set(path, Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0)));
   }
+  if (!Array.from(choice.options).some((o) => o.value === saved.choice)) {
+    // The list no longer offers the chat's model: the chat stays, its
+    // message waits in the box, and another model goes on with it.
+    if (saved.pending !== undefined) task.value = saved.pending;
+    work.hidden = false;
+    offerDownload();
+    cost.textContent = "The model this chat used is no longer offered. " +
+      "Choose another to go on with it.";
+    return;
+  }
   choice.value = saved.choice;
-  await label();
-  if (signIn.error !== undefined) cost.textContent = signIn.error;
+  await showChoice();
   if (!(sandbox.resumeRun?.() ?? true)) {
     offerDownload();
     return;

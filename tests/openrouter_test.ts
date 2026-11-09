@@ -3,7 +3,6 @@ import {
   openrouterKey,
   openrouterModel,
   openrouterModels,
-  OpenrouterSignedOut,
   retryDelay,
   setOpenrouterKey,
   signInUrl,
@@ -99,13 +98,13 @@ Deno.test("a reply with no text is an error, and a refused key is forgotten", as
     );
     await assertRejects(
       () => model.generate("s", "p", signal),
-      OpenrouterSignedOut,
+      Error,
       "OpenRouter 401: User not found.",
     );
     assertEquals(openrouterKey(), undefined);
     await assertRejects(
       () => model.generate("s", "p", signal),
-      OpenrouterSignedOut,
+      Error,
       "not signed in to OpenRouter",
     );
   } finally {
@@ -203,4 +202,63 @@ Deno.test("sign-in comes back to the page without its fragment or an old code", 
   );
   assertEquals(url.searchParams.get("code_challenge"), "CH");
   assertEquals(url.searchParams.get("code_challenge_method"), "S256");
+});
+
+Deno.test("a key the storage refuses (full) is kept in memory", () => {
+  const setItem = Storage.prototype.setItem;
+  Storage.prototype.setItem = () => {
+    throw new DOMException("full", "QuotaExceededError");
+  };
+  try {
+    setOpenrouterKey("sk-or-in-memory");
+    assertEquals(openrouterKey(), "sk-or-in-memory");
+  } finally {
+    Storage.prototype.setItem = setItem;
+    setOpenrouterKey(undefined);
+  }
+  assertEquals(openrouterKey(), undefined);
+});
+
+Deno.test("a provider error inside a 200 is shown, not taken as a reply", async () => {
+  setOpenrouterKey("sk-or-test");
+  const { restore } = stubFetch([
+    reply({
+      choices: [{
+        message: { content: "" },
+        finish_reason: "error",
+        error: { message: "upstream overloaded" },
+      }],
+    }),
+  ]);
+  try {
+    await assertRejects(
+      () =>
+        openrouterModel("m").generate("s", "p", new AbortController().signal),
+      Error,
+      "OpenRouter: upstream overloaded",
+    );
+  } finally {
+    restore();
+    setOpenrouterKey(undefined);
+  }
+});
+
+Deno.test("a rate-limited wait is said on the step's live line", async () => {
+  setOpenrouterKey("sk-or-test");
+  const { restore } = stubFetch([
+    new Response("{}", { status: 429, headers: { "retry-after": "0" } }),
+    reply({ choices: [{ message: { content: "ok" } }] }),
+  ]);
+  try {
+    const model = openrouterModel("m");
+    const said: string[] = [];
+    model.onToken = (t) => said.push(t);
+    await model.generate("s", "p", new AbortController().signal);
+    assertEquals(said, [
+      "\nthe model is busy (rate-limited); asking again in 0 s",
+    ]);
+  } finally {
+    restore();
+    setOpenrouterKey(undefined);
+  }
 });
