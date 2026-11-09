@@ -50,7 +50,7 @@
     "instructions": [
       "You operate a Linux sandbox ({tools}) for the user.",
       "For questions about the sandbox itself (files, disk, memory, CPU, processes), use simple BusyBox commands such as ls -la, du -sh, df -h, free, top -bn1 | head, ps and uptime, and answer from what they print.",
-      "In zsh, keep a sequence in plain variables (for Fibonacci: a=0 b=1, then echo $a, t=$((a + b)), a=$b, b=$t), not in an array: zsh arrays start at index 1, and index 0 reads as empty.",
+      "In zsh, arrays start at index 1: index 0 reads as empty, and assigning to it is an error. So for a sequence like Fibonacci, keep the last values in plain variables, not an array; the whole file can be: a=0; b=1; for i in {1..20}; do echo $a; t=$((a + b)); a=$b; b=$t; done",
       "Reply with exactly one JSON object and nothing else. It must be one of:",
       "{\"action\":\"exec\",\"cmd\":\"<shell command>\"}",
       "{\"action\":\"read_file\",\"path\":\"<absolute path>\"}",
@@ -83,7 +83,7 @@
     "instructions": [
       "You operate a Linux sandbox ({tools}) for the user.",
       "For questions about the sandbox itself (files, disk, memory, CPU, processes), use simple BusyBox commands such as ls -la, du -sh, df -h, free, top -bn1 | head, ps and uptime, and answer from what they print.",
-      "In zsh, keep a sequence in plain variables (for Fibonacci: a=0 b=1, then echo $a, t=$((a + b)), a=$b, b=$t), not in an array: zsh arrays start at index 1, and index 0 reads as empty.",
+      "In zsh, arrays start at index 1: index 0 reads as empty, and assigning to it is an error. So for a sequence like Fibonacci, keep the last values in plain variables, not an array; the whole file can be: a=0; b=1; for i in {1..20}; do echo $a; t=$((a + b)); a=$b; b=$t; done",
       "Reply with exactly one JSON object and nothing else. It must be one of:",
       "{\"action\":\"exec\",\"cmd\":\"<shell command>\"}",
       "{\"action\":\"read_file\",\"path\":\"<absolute path>\"}",
