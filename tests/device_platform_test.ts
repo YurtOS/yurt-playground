@@ -1,5 +1,6 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  agentSnapshotKind,
   chooseEnv,
   choosePlatform,
   parsePlatform,
@@ -93,4 +94,10 @@ Deno.test("withEnv writes Go into the URL and Python out of it", () => {
     withEnv("https://pg.example/?platform=desktop&env=go", "python"),
     "https://pg.example/?platform=desktop",
   );
+});
+
+Deno.test("the agent's own sandbox is the phone's snapshot on an iPad or iPhone, the tablet's on a desktop", () => {
+  assertEquals(agentSnapshotKind("phone"), "phone");
+  assertEquals(agentSnapshotKind("tablet"), "phone");
+  assertEquals(agentSnapshotKind("desktop"), "tablet");
 });

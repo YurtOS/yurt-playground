@@ -633,11 +633,11 @@ Deno.test("instructions from the model list say what the sandbox has", () => {
   const lines = ["You operate a sandbox ({tools}).", "Reply with JSON."];
   assertEquals(
     instructionsPrompt(lines, true),
-    "You operate a sandbox (BusyBox, Python 3).\nReply with JSON.",
+    "You operate a sandbox (BusyBox, zsh, Python 3).\nReply with JSON.",
   );
   assertEquals(
     instructionsPrompt(lines, false),
-    "You operate a sandbox (BusyBox shell tools only; no Python, no Node).\nReply with JSON.",
+    "You operate a sandbox (BusyBox shell tools and zsh; no Python, no Node).\nReply with JSON.",
   );
   // The built-in prompt says the same for the same sandbox.
   assertEquals(

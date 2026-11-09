@@ -188,6 +188,9 @@ type ToWorker =
 
 /** Recorded with a seal: a kernel memory means something only to its binary. */
 let runningKernelSha256: string | undefined;
+/** The snapshot the running sandbox was restored from (or would have been,
+ * when it booted the image): a seal records it. */
+let runningKind: SnapshotKind = "desktop";
 
 type FromWorker =
   // status, error, shell-ready (the shell is the whole session), and
@@ -612,7 +615,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         const started = performance.now();
         const image = await session.seal();
         const sealed = performance.now();
-        await saveAgentSession(image, runningKernelSha256);
+        await saveAgentSession(image, runningKernelSha256, runningKind);
         console.log(
           `[session] sealed in ${Math.round(sealed - started)} ms, saved in ${
             Math.round(performance.now() - sealed)
@@ -730,6 +733,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   let live: ReturnType<typeof liveAnswers>;
   const term = workerTerm({ cols: msg.cols, rows: msg.rows });
   const restoreKind: SnapshotKind = msg.snapshotKind ?? "desktop";
+  runningKind = restoreKind;
   const env = {
     isolated: msg.isolated,
     // The slim image when the train pins one; the desktop app's native
@@ -761,7 +765,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     term,
     memoryRefused: () => post(memoryRefusedMessage()),
     linuxRemark: (remark: string) => post({ type: "linux-remark", remark }),
-    savedSession: msg.resumeSession === true ? loadAgentSession : undefined,
+    savedSession: msg.resumeSession === true
+      ? () => loadAgentSession(restoreKind)
+      : undefined,
     dropSavedSession: dropAgentSession,
     kernelSha256: (sha256: string) => runningKernelSha256 = sha256,
     // The terminal's `pkg` fetches through the page (src/pkg_relay.ts);

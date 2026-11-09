@@ -5,6 +5,7 @@ import {
   fetchPlaygroundBytes,
   prepareSeal,
 } from "../src/boot.ts";
+import { sealedFrom } from "../src/agent_session.ts";
 import {
   assertNoTouchFailure,
   bootAshSession,
@@ -785,4 +786,11 @@ Deno.test("a seal's clean-up has its own budget, whatever the wait before it too
     cleanUpMs: 100,
   });
   assertEquals(cleaned, true);
+});
+
+Deno.test("a saved agent session says which snapshot it grew from; an older one, the tablet's", () => {
+  assertEquals(sealedFrom({ memoryFile: "f", snapshotKind: "phone" }), "phone");
+  assertEquals(sealedFrom({ memoryFile: "f" }), "tablet");
+  assertEquals(sealedFrom(undefined), "tablet");
+  assertEquals(sealedFrom({ snapshotKind: "nonsense" }), undefined);
 });
