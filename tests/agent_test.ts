@@ -143,7 +143,12 @@ Deno.test("a string with raw line breaks and tabs is read as if escaped", () => 
     parseAction('{\n"action":"exec",\n"cmd":"echo \\"a\nb\\""\n}'),
     { action: "exec", cmd: 'echo "a\nb"' },
   );
-  // Still one object and nothing else.
+  // Still one object and nothing else: the same reply runs, with text after
+  // it does not.
+  assertEquals(parseAction('{"action":"exec","cmd":"a\nb"}'), {
+    action: "exec",
+    cmd: "a\nb",
+  });
   assertEquals(parseAction('{"action":"exec","cmd":"a\nb"} more'), null);
 });
 
