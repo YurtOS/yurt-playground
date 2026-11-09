@@ -3,7 +3,10 @@ import {
   openrouterKey,
   openrouterModel,
   openrouterModels,
+  OpenrouterSignedOut,
+  retryDelay,
   setOpenrouterKey,
+  signInUrl,
 } from "../src/openrouter.ts";
 
 type Call = { url: string; init: RequestInit };
@@ -66,7 +69,7 @@ Deno.test("a rate-limited free model is asked again", async () => {
     reply({ choices: [{ message: { content: "ok" } }] }),
   ]);
   try {
-    const { text } = await openrouterModel("m").generate(
+    const { text } = await openrouterModel("m", { retryBaseMs: 1 }).generate(
       "s",
       "p",
       new AbortController().signal,
@@ -95,13 +98,13 @@ Deno.test("a reply with no text is an error, and a refused key is forgotten", as
     );
     await assertRejects(
       () => model.generate("s", "p", signal),
-      Error,
+      OpenrouterSignedOut,
       "OpenRouter 401: User not found.",
     );
     assertEquals(openrouterKey(), undefined);
     await assertRejects(
       () => model.generate("s", "p", signal),
-      Error,
+      OpenrouterSignedOut,
       "not signed in to OpenRouter",
     );
   } finally {
@@ -111,17 +114,66 @@ Deno.test("a reply with no text is an error, and a refused key is forgotten", as
 });
 
 Deno.test("the offered models say free or paid, and ?model= can add another", () => {
-  const models = openrouterModels();
-  const ids = models.map((m) => m.id);
-  assertEquals(ids.every((id) => id.startsWith("openrouter:")), true);
-  for (const m of models) {
-    assertEquals(
-      m.choice.endsWith(m.id.endsWith(":free") ? "free" : "paid"),
-      true,
-      m.choice,
-    );
+  const list = [
+    { id: "a/free-one:free", label: "Free One" },
+    { id: "b/paid-one", label: "Paid One" },
+  ];
+  const models = openrouterModels(list);
+  assertEquals(models.map((m) => [m.id, m.choice, m.openrouter]), [
+    [
+      "openrouter:a/free-one:free",
+      "Free One — OpenRouter, free",
+      "a/free-one:free",
+    ],
+    ["openrouter:b/paid-one", "Paid One — OpenRouter, paid", "b/paid-one"],
+  ]);
+  const extra = openrouterModels(list, "vendor/other");
+  assertEquals(extra.map((m) => m.id), [
+    "openrouter:vendor/other",
+    "openrouter:a/free-one:free",
+    "openrouter:b/paid-one",
+  ]);
+  assertEquals(openrouterModels(list, "b/paid-one").length, 2);
+  assertEquals(openrouterModels([]), []);
+});
+
+Deno.test("Stop ends a wait between retries at once", async () => {
+  setOpenrouterKey("sk-or-test");
+  const { calls, restore } = stubFetch([
+    new Response("{}", { status: 429, headers: { "retry-after": "10" } }),
+  ]);
+  try {
+    const stop = new AbortController();
+    const started = performance.now();
+    const asked = openrouterModel("m").generate("s", "p", stop.signal);
+    setTimeout(() => stop.abort(new Error("stopped")), 50);
+    await assertRejects(() => asked, Error, "stopped");
+    assertEquals(performance.now() - started < 2000, true);
+    assertEquals(calls.length, 1);
+  } finally {
+    restore();
+    setOpenrouterKey(undefined);
   }
-  const extra = openrouterModels("vendor/other");
-  assertEquals(extra[0].id, "openrouter:vendor/other");
-  assertEquals(extra.length, ids.length + 1);
+});
+
+Deno.test("a retry waits as Retry-After says, up to 10 s, else backs off", () => {
+  assertEquals(retryDelay("3", 0, 2000), 3000);
+  assertEquals(retryDelay("0", 2, 2000), 0);
+  assertEquals(retryDelay("120", 0, 2000), 10_000);
+  assertEquals(retryDelay(null, 0, 2000), 2000);
+  assertEquals(retryDelay(null, 2, 2000), 6000);
+  assertEquals(retryDelay("soon", 1, 2000), 4000);
+});
+
+Deno.test("sign-in comes back to the page without its fragment or an old code", () => {
+  const url = new URL(
+    signInUrl("https://site.example/?platform=tablet&code=old#agent", "CH"),
+  );
+  assertEquals(url.origin + url.pathname, "https://openrouter.ai/auth");
+  assertEquals(
+    url.searchParams.get("callback_url"),
+    "https://site.example/?platform=tablet",
+  );
+  assertEquals(url.searchParams.get("code_challenge"), "CH");
+  assertEquals(url.searchParams.get("code_challenge_method"), "S256");
 });

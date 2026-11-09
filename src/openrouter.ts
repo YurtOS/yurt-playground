@@ -5,67 +5,55 @@
  *
  * The key is the visitor's: "Sign in with OpenRouter" (OAuth with PKCE)
  * gives this page one, or the visitor pastes one. It stays in this
- * browser's localStorage and goes only to openrouter.ai.
+ * browser's localStorage (in memory only, where storage is blocked) and
+ * goes only to openrouter.ai.
  */
 import type { Model, ModelStats } from "./agent.ts";
 
 export const OPENROUTER_ORIGIN = "https://openrouter.ai";
 const API = `${OPENROUTER_ORIGIN}/api/v1`;
 const KEY_STORAGE = "yurt-openrouter-key";
-const VERIFIER_STORAGE = "yurt-openrouter-verifier";
+/** The sign-in in flight: its PKCE verifier, and where to come back to. */
+const SIGN_IN_STORAGE = "yurt-openrouter-sign-in";
 
 export type RemoteModel = {
   id: string;
   label: string;
   choice: string;
-  /** Set for OpenRouter models: the model's OpenRouter id. */
-  openrouter?: string;
+  /** The model's OpenRouter id. */
+  openrouter: string;
 };
 
-/** Models that answer in the agent's one-JSON-action format (checked
- * 2026-11-09). Free ones are rate-limited, upstream and per account. */
-export const OPENROUTER_MODELS: { id: string; label: string }[] = [
-  {
-    id: "nvidia/nemotron-3.5-super-vl:free",
-    label: "NVIDIA Nemotron 3.5 Super",
-  },
-  {
-    id: "nvidia/nemotron-3-ultra-550b-a55b:free",
-    label: "NVIDIA Nemotron 3 Ultra",
-  },
-  { id: "cohere/north-mini-code:free", label: "Cohere North Mini Code" },
-  {
-    id: "nvidia/nemotron-3.5-lightning:free",
-    label: "NVIDIA Nemotron 3.5 Lightning (fast)",
-  },
-  // Gemma 4 31B: the free one is often rate-limited upstream; the paid one
-  // costs about a tenth of a cent a task.
-  { id: "google/gemma-4-31b-it:free", label: "Gemma 4 31B" },
-  { id: "google/gemma-4-31b-it", label: "Gemma 4 31B" },
-];
-
-export function openrouterModels(extra?: string): RemoteModel[] {
-  const list = [...OPENROUTER_MODELS];
+/** The pane's choices for `list` (agent-models.json's, see
+ * src/agent_models_config.ts), with `extra` (`?model=openrouter:<id>`)
+ * first when the list lacks it. */
+export function openrouterModels(
+  list: { id: string; label: string }[],
+  extra?: string,
+): RemoteModel[] {
+  list = [...list];
   if (extra && !list.some((m) => m.id === extra)) {
     list.unshift({ id: extra, label: extra });
   }
-  return list.map((m) => ({
-    id: `openrouter:${m.id}`,
-    label: `${m.label} (OpenRouter, ${
-      m.id.endsWith(":free") ? "free" : "paid"
-    })`,
-    choice: `${m.label} — OpenRouter, ${
-      m.id.endsWith(":free") ? "free" : "paid"
-    }`,
-    openrouter: m.id,
-  }));
+  return list.map((m) => {
+    const price = m.id.endsWith(":free") ? "free" : "paid";
+    return {
+      id: `openrouter:${m.id}`,
+      label: `${m.label} (OpenRouter, ${price})`,
+      choice: `${m.label} — OpenRouter, ${price}`,
+      openrouter: m.id,
+    };
+  });
 }
+
+/** Where storage is blocked (a private window), the key lives here. */
+let memoryKey: string | undefined;
 
 export function openrouterKey(): string | undefined {
   try {
     return localStorage.getItem(KEY_STORAGE) ?? undefined;
   } catch {
-    return undefined;
+    return memoryKey;
   }
 }
 
@@ -74,81 +62,167 @@ export function setOpenrouterKey(key: string | undefined): void {
     if (key === undefined) localStorage.removeItem(KEY_STORAGE);
     else localStorage.setItem(KEY_STORAGE, key);
   } catch {
-    // No storage (a private window): the key lasts until the page closes.
+    memoryKey = key;
   }
-  memoryKey = key;
 }
-let memoryKey: string | undefined;
+
+/** The key OpenRouter refused: the pane goes back to signing in. */
+export class OpenrouterSignedOut extends Error {}
 
 const base64url = (bytes: Uint8Array) =>
   btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_")
     .replace(/=+$/, "");
 
-/** Leave for OpenRouter's sign-in; it comes back to this page with `?code=`. */
-export async function signInWithOpenrouter(): Promise<void> {
+type SignIn = { verifier: string; hash: string; model: string };
+
+/** Where OpenRouter's sign-in sends the visitor, given the page's address
+ * now and the PKCE challenge. The fragment is left out: a provider that adds
+ * `?code=` to the URL as a string would put it after the `#`. */
+export function signInUrl(page: string, challenge: string): string {
+  const back = new URL(page);
+  back.searchParams.delete("code");
+  back.hash = "";
+  const url = new URL(`${OPENROUTER_ORIGIN}/auth`);
+  url.searchParams.set("callback_url", back.href);
+  url.searchParams.set("code_challenge", challenge);
+  url.searchParams.set("code_challenge_method", "S256");
+  return url.href;
+}
+
+/** Leave for OpenRouter's sign-in, through `leave` (the page's own way out,
+ * so the return does not read as a boot the browser cut off). It comes back
+ * with `?code=`, to the same model. Rejects when storage is blocked: the
+ * verifier would not survive the trip. */
+export async function signInWithOpenrouter(
+  model: string,
+  leave: (url: string) => void,
+): Promise<void> {
   const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
   const challenge = base64url(
     new Uint8Array(
       await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
     ),
   );
-  sessionStorage.setItem(VERIFIER_STORAGE, verifier);
-  const back = new URL(location.href);
-  back.searchParams.delete("code");
-  const url = new URL(`${OPENROUTER_ORIGIN}/auth`);
-  url.searchParams.set("callback_url", back.href);
-  url.searchParams.set("code_challenge", challenge);
-  url.searchParams.set("code_challenge_method", "S256");
-  location.assign(url.href);
+  const signIn: SignIn = { verifier, hash: location.hash, model };
+  try {
+    sessionStorage.setItem(SIGN_IN_STORAGE, JSON.stringify(signIn));
+  } catch {
+    throw new Error(
+      "this browser blocks site storage, so sign-in cannot finish; " +
+        "paste an OpenRouter key instead",
+    );
+  }
+  leave(signInUrl(location.href, challenge));
 }
 
-/** On the way back from sign-in: trade `?code=` for a key, keep it, and
- * take the code out of the address. Resolves to why it failed, if it did. */
-export async function finishOpenrouterSignIn(): Promise<string | undefined> {
+function pendingSignIn(): SignIn | undefined {
+  try {
+    const raw = sessionStorage.getItem(SIGN_IN_STORAGE);
+    return raw === null ? undefined : JSON.parse(raw) as SignIn;
+  } catch {
+    return undefined;
+  }
+}
+
+/** First thing on a load back from sign-in: put the fragment (`#agent`)
+ * back, before the page reads it to choose its tab. */
+export function restoreAfterSignIn(): void {
+  const url = new URL(location.href);
+  const signIn = pendingSignIn();
+  if (!url.searchParams.has("code") || signIn === undefined) return;
+  if (url.hash === "" && signIn.hash !== "") {
+    url.hash = signIn.hash;
+    history.replaceState(history.state, "", url.href);
+  }
+}
+
+/** On the way back from sign-in: trade `?code=` for a key, keep it, and take
+ * the code out of the address. Resolves to the model the visitor chose
+ * before leaving, and why it failed, if it did. */
+export async function finishOpenrouterSignIn(): Promise<
+  { model?: string; error?: string }
+> {
   const url = new URL(location.href);
   const code = url.searchParams.get("code");
-  let verifier: string | null = null;
-  try {
-    verifier = sessionStorage.getItem(VERIFIER_STORAGE);
-  } catch { /* no storage */ }
-  if (code === null || verifier === null) return undefined;
+  const signIn = pendingSignIn();
+  if (code === null || signIn === undefined) return {};
   url.searchParams.delete("code");
   history.replaceState(history.state, "", url.href);
-  sessionStorage.removeItem(VERIFIER_STORAGE);
+  try {
+    sessionStorage.removeItem(SIGN_IN_STORAGE);
+  } catch { /* blocked: nothing was kept */ }
   try {
     const response = await fetch(`${API}/auth/keys`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         code,
-        code_verifier: verifier,
+        code_verifier: signIn.verifier,
         code_challenge_method: "S256",
       }),
     });
-    const body = await response.json() as { key?: string };
+    const body = await response.json().catch(() => ({})) as { key?: string };
     if (!response.ok || typeof body.key !== "string") {
-      return `OpenRouter sign-in failed (${response.status})`;
+      return {
+        model: signIn.model,
+        error: `OpenRouter sign-in failed (${response.status})`,
+      };
     }
     setOpenrouterKey(body.key);
-    return undefined;
+    return { model: signIn.model };
   } catch (error) {
-    return `OpenRouter sign-in failed: ${
-      error instanceof Error ? error.message : error
-    }`;
+    return {
+      model: signIn.model,
+      error: `OpenRouter sign-in failed: ${
+        error instanceof Error ? error.message : error
+      }`,
+    };
   }
+}
+
+/** Waits `ms`, or rejects at once when `signal` aborts. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", stop);
+      resolve();
+    }, ms);
+    const stop = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", stop, { once: true });
+  });
+}
+
+/** How long to wait before asking again: Retry-After when given (up to
+ * 10 s), else a growing back-off. */
+export function retryDelay(
+  retryAfter: string | null,
+  attempt: number,
+  baseMs: number,
+): number {
+  const seconds = Number(retryAfter);
+  if (retryAfter !== null && Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, 10_000);
+  }
+  return baseMs * (attempt + 1);
 }
 
 export function openrouterModel(
   modelId: string,
+  options: { retryBaseMs?: number } = {},
 ): Model & { lastStats?: ModelStats } {
+  const retryBaseMs = options.retryBaseMs ?? 2000;
   const m: Model & { lastStats?: ModelStats } = {
     async generate(system, prompt, signal) {
-      const key = openrouterKey() ?? memoryKey;
-      if (key === undefined) throw new Error("not signed in to OpenRouter");
-      let response: Response | undefined;
-      // Free models are often rate-limited upstream for a moment: retry.
-      for (let attempt = 0; attempt < 4; attempt++) {
-        response = await fetch(`${API}/chat/completions`, {
+      const key = openrouterKey();
+      if (key === undefined) {
+        throw new OpenrouterSignedOut("not signed in to OpenRouter");
+      }
+      const request = () =>
+        fetch(`${API}/chat/completions`, {
           method: "POST",
           headers: {
             "authorization": `Bearer ${key}`,
@@ -168,23 +242,30 @@ export function openrouterModel(
           }),
           signal,
         });
-        if (response.status !== 429 || attempt === 3) break;
-        await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+      // Free models are often rate-limited upstream for a moment: retry.
+      let response = await request();
+      for (let attempt = 0; response.status === 429 && attempt < 3; attempt++) {
+        await response.body?.cancel();
+        await sleep(
+          retryDelay(response.headers.get("retry-after"), attempt, retryBaseMs),
+          signal,
+        );
+        response = await request();
       }
-      const body = await response!.json().catch(() => ({})) as {
-        choices?: { message?: { content?: string } }[];
+      const body = await response.json().catch(() => ({})) as {
+        choices?: { message?: { content?: string | null } }[];
         usage?: { prompt_tokens?: number; completion_tokens?: number };
         error?: { message?: string; metadata?: { raw?: string } };
       };
-      const text = body.choices?.[0]?.message?.content;
-      if (!response!.ok || typeof text !== "string") {
-        if (response!.status === 401) setOpenrouterKey(undefined);
-        throw new Error(
-          `OpenRouter ${response!.status}: ${
-            body.error?.metadata?.raw ?? body.error?.message ?? "no reply"
-          }`.slice(0, 300),
-        );
+      const why = `OpenRouter ${response.status}: ${
+        body.error?.metadata?.raw ?? body.error?.message ?? "no reply"
+      }`.slice(0, 300);
+      if (response.status === 401) {
+        setOpenrouterKey(undefined);
+        throw new OpenrouterSignedOut(why);
       }
+      const text = body.choices?.[0]?.message?.content;
+      if (!response.ok || typeof text !== "string") throw new Error(why);
       const stats = {
         promptTokens: body.usage?.prompt_tokens ?? 0,
         outputTokens: body.usage?.completion_tokens ?? 0,

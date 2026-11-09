@@ -15,6 +15,7 @@ import {
   pythonInstallState,
 } from "./python_install.ts";
 import { mountAgentPane } from "./agent_pane.ts";
+import { restoreAfterSignIn } from "./openrouter.ts";
 import { mountSidebar } from "./sidebar.ts";
 import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
@@ -296,6 +297,14 @@ function reloadOnPurpose(): void {
     // Storage blocked: the load reads as a refresh, and starts over.
   }
   location.reload();
+}
+/** Leave for another site on purpose (OpenRouter's sign-in), as
+ * {@link reloadOnPurpose} reloads: the page that loads on the way back is not
+ * a boot the browser cut off. */
+function leaveOnPurpose(url: string): void {
+  cutOffBoot();
+  reloading = true;
+  location.assign(url);
 }
 function rememberBooting(status: string | undefined): void {
   // A status can still arrive between asking for a reload and the page going.
@@ -929,6 +938,8 @@ function wirePackages(): void {
 }
 
 async function runPage(): Promise<void> {
+  // Back from OpenRouter's sign-in: its `#agent` first, which picks the tab.
+  restoreAfterSignIn();
   // The platform first, before anything is fetched: a URL without one
   // gains the device's (`?platform=phone|tablet|desktop`), so it says which
   // snapshot this page restores; one written by hand is kept, and run as
@@ -1003,10 +1014,12 @@ async function runPage(): Promise<void> {
     (id, code) => execute.current(id, code),
     (id) => interruptCell.current(id),
   );
-  // A tablet gets the Linux shell only. Jupyter (this cell, the Notebook and
-  // JupyterLab pages) and the agent need more memory than a tablet browser
-  // gives one tab: iPadOS refused new processes after ~13 while ipykernel
-  // started. The desktop app runs natively and keeps everything.
+  // A tablet gets the Linux shell, and an agent whose model runs outside
+  // the tab (OpenRouter). Jupyter (this cell, the Notebook and JupyterLab
+  // pages) and an in-tab model need more memory than a tablet browser gives
+  // one tab: iPadOS refused new processes after ~13 while ipykernel started,
+  // and a GPU model beside the sandbox crashed it. The desktop app runs
+  // natively and keeps everything.
   const device = platform;
   const shellOnly = desktop === undefined && device === "tablet";
   // The panel's installs run in the coordinator, capped like the tab's
@@ -1047,25 +1060,25 @@ async function runPage(): Promise<void> {
       if (link) link.hidden = true;
     }
   }
-  {
-    // The local agent (#140) drives the same sandbox through window.yurt; its
-    // Run starts the sandbox the way the Start button does, and only then.
-    // With the boot refused there is no sandbox to start, so the pane says
-    // so instead of offering a Run that does nothing (#197).
-    void mountAgentPane(byId("agent"), {
-      yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
-      start: () => document.getElementById("start-sandbox")?.click(),
-      unavailable: refused ? "no sandbox" : undefined,
-      // Only the in-tab sandbox seals; `?suspend=0` keeps it running.
-      reload: reloadOnPurpose,
-      resumeRun: () => ownReload,
-      suspend: !agentSeals(desktop)
-        ? undefined
-        : () => suspendSandbox?.() ?? Promise.resolve("no sandbox is running"),
-      // A tablet: only models outside the tab (OpenRouter).
-      remoteOnly: shellOnly,
-    });
-  }
+  // The local agent (#140) drives the same sandbox through window.yurt; its
+  // Run starts the sandbox the way the Start button does, and only then.
+  // With the boot refused there is no sandbox to start, so the pane says
+  // so instead of offering a Run that does nothing (#197).
+  void mountAgentPane(byId("agent"), {
+    yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
+    start: () => document.getElementById("start-sandbox")?.click(),
+    unavailable: refused ? "no sandbox" : undefined,
+    // Only the in-tab sandbox seals; `?suspend=0` keeps it running.
+    reload: reloadOnPurpose,
+    resumeRun: () => ownReload,
+    suspend: !agentSeals(desktop)
+      ? undefined
+      : () => suspendSandbox?.() ?? Promise.resolve("no sandbox is running"),
+    // A tablet: only models outside the tab (OpenRouter).
+    remoteOnly: shellOnly,
+    platform,
+    leave: leaveOnPurpose,
+  });
   const start = document.getElementById("start");
   const begin = () => {
     if (start) start.hidden = true;

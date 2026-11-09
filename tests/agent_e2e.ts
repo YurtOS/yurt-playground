@@ -3,10 +3,13 @@
  * no model weights: the test answers `/llm/models.json` and serves a
  * scripted stand-in for `/llm_worker.bundle.js` that speaks the worker's
  * protocol. Everything else is real: the pane, the client, the controller
- * and the sandbox the agent's commands run in. Scenes: no WebGPU, a model
+ * and the sandbox the agent's commands run in. The model list
+ * (agent-models.json) is the test's too, and OpenRouter is a stub that
+ * answers from a script. Scenes: no WebGPU, a model
  * that fails to start, Enter vs Shift+Enter, a task answered through a real
  * command (starting the sandbox on the way), Stop killing a command, the
- * demo's seal and resume, and a PDF that could not be made.
+ * demo's seal and resume, a PDF that could not be made, a list that does
+ * not load, and OpenRouter on a tablet: a run, then a key it refuses.
  * This checks the tool loop and the pane, not the GPU: the adapter below
  * is a stub and the worker never creates a device. The model on a real
  * adapter, in real Chrome and Safari, is tests/agent_webgpu_e2e.ts (a Mac,
@@ -14,11 +17,15 @@
  * Run: `deno run --allow-all tests/agent_e2e.ts` (needs the kernel checkout
  * and pinned artifacts like playground_e2e.ts).
  */
-import { type BrowserContext, chromium, type Page } from "playwright";
+import { type BrowserContext, chromium, devices, type Page } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { DEMO_TEXT_PATH } from "../src/agent.ts";
+import {
+  AGENT_MODELS_URL,
+  type AgentModelsConfig,
+} from "../src/agent_models_config.ts";
 import { ISOLATION_HEADERS, startPlaygroundServer } from "../src/serve.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -79,6 +86,24 @@ self.onmessage = (event) => {
 };`;
 }
 
+/** The page's model list, as the test says. */
+async function withModels(
+  context: BrowserContext,
+  config: AgentModelsConfig | "missing",
+): Promise<void> {
+  await context.route(
+    AGENT_MODELS_URL,
+    (route) =>
+      config === "missing"
+        ? route.fulfill({ status: 404, body: "not found" })
+        : route.fulfill({
+          contentType: "application/json",
+          headers: { "access-control-allow-origin": "*" },
+          body: JSON.stringify(config),
+        }),
+  );
+}
+
 async function withModel(
   context: BrowserContext,
   opts: {
@@ -88,6 +113,7 @@ async function withModel(
     prompts?: string[];
   },
 ): Promise<void> {
+  await withModels(context, { desktop: { local: ["E4B"] } });
   await context.route(`**${PROMPT_PATH}`, (route) => {
     opts.prompts?.push(route.request().postData() ?? "");
     return route.fulfill({ status: 204 });
@@ -341,6 +367,7 @@ if (import.meta.main) {
     // No model on offer (the hosted site, the desktop app): no pane at all.
     {
       const context = await browser.newContext();
+      await withModels(context, { desktop: { local: ["E4B"] } });
       await context.route(
         "**/llm/models.json",
         (route) => route.fulfill({ status: 404, body: "not found" }),
@@ -364,6 +391,179 @@ if (import.meta.main) {
       await page.locator("[data-testid=agent-unsupported]").waitFor();
       if (await page.locator("[data-testid=agent-start]").count() !== 0) {
         throw new Error("agent e2e: a Start offered without WebGPU");
+      }
+      await context.close();
+    }
+
+    // The model list does not load: said, with no model to start.
+    {
+      const context = await browser.newContext();
+      await withModels(context, "missing");
+      const page = await context.newPage();
+      await page.goto(`${server.url}/?suspend=0#agent`);
+      await page.locator("[data-testid=agent-no-models]").waitFor();
+      if (await page.locator("[data-testid=agent-start]").count() !== 0) {
+        throw new Error("agent e2e: a Start offered with no model list");
+      }
+      await context.close();
+    }
+
+    // No WebGPU, with OpenRouter on the list: only OpenRouter is offered.
+    {
+      const context = await browser.newContext();
+      await withModel(context, { worker: "ok", webgpu: false });
+      await withModels(context, {
+        desktop: {
+          local: ["E4B"],
+          openrouter: [{ id: "test/remote:free", label: "Remote" }],
+        },
+      });
+      const page = await context.newPage();
+      await page.goto(`${server.url}/?suspend=0#agent`);
+      await page.locator("[data-testid=agent-start]").waitFor();
+      const offered = await page.locator("#agent-model option")
+        .evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
+      const start = await page.locator("[data-testid=agent-start]")
+        .innerText();
+      if (
+        JSON.stringify(offered) !==
+          JSON.stringify(["openrouter:test/remote:free"]) ||
+        start !== "Sign in with OpenRouter"
+      ) {
+        throw new Error(
+          `agent e2e: without WebGPU offered ${offered}, start ${start}`,
+        );
+      }
+      await context.close();
+    }
+
+    // OpenRouter on a tablet: the pane shows with its models only; a run
+    // goes through OpenRouter (a stub) and the tablet's sandbox; a key it
+    // refuses takes the pane back to signing in, the chat kept, and a
+    // pasted key goes on with it.
+    {
+      const context = await browser.newContext({
+        ...devices["iPad Pro 11"],
+      });
+      await withModels(context, {
+        tablet: {
+          local: ["E4B"],
+          openrouter: [{ id: "test/remote:free", label: "Remote" }],
+        },
+      });
+      let refuse = false;
+      const keys: string[] = [];
+      await context.route(
+        "https://openrouter.ai/api/v1/chat/completions",
+        (route) => {
+          const cors = { "access-control-allow-origin": "*" };
+          if (route.request().method() === "OPTIONS") {
+            return route.fulfill({
+              status: 204,
+              headers: {
+                ...cors,
+                "access-control-allow-headers": "*",
+                "access-control-allow-methods": "POST",
+              },
+            });
+          }
+          keys.push(route.request().headers()["authorization"] ?? "");
+          if (refuse) {
+            return route.fulfill({
+              status: 401,
+              headers: cors,
+              contentType: "application/json",
+              body: JSON.stringify({ error: { message: "User not found." } }),
+            });
+          }
+          const body = route.request().postDataJSON();
+          const prompt: string = body.messages[1].content;
+          const done = prompt.slice(prompt.lastIndexOf("Task:"))
+            .includes("Result:");
+          const content = JSON.stringify(
+            done
+              ? {
+                action: "answer",
+                text: prompt.split("Result:").pop()!.match(/\d+/g)!.pop(),
+              }
+              : { action: "exec", cmd: "python3 -c 'print(6*7)'" },
+          );
+          return route.fulfill({
+            headers: cors,
+            contentType: "application/json",
+            body: JSON.stringify({
+              choices: [{ message: { content } }],
+              usage: { prompt_tokens: 100, completion_tokens: 10 },
+            }),
+          });
+        },
+      );
+      await context.addInitScript(() => {
+        if (sessionStorage.getItem("seeded") === null) {
+          sessionStorage.setItem("seeded", "1");
+          localStorage.setItem("yurt-openrouter-key", "sk-or-first");
+        }
+      });
+      const page = await context.newPage();
+      await page.goto(`${server.url}/?suspend=0&platform=tablet#agent`);
+      await page.locator("[data-testid=agent-start]").waitFor();
+      const offered = await page.locator("#agent-model option")
+        .evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
+      if (
+        JSON.stringify(offered) !==
+          JSON.stringify(["openrouter:test/remote:free"])
+      ) {
+        throw new Error(`agent e2e: a tablet offered ${offered}`);
+      }
+      await page.locator("[data-testid=agent-start]").click();
+      await page.locator("#agent[data-agent-ready]").waitFor();
+      const task = page.locator("[data-testid=agent-task]");
+      await task.fill("what is 6 times 7, using python");
+      await task.press("Enter");
+      await until(
+        page,
+        "OpenRouter's answer",
+        () =>
+          document.querySelector("[data-testid=agent-answer]")?.textContent ===
+            "42",
+        180_000,
+      );
+      refuse = true;
+      await task.fill("and 7 times 8?");
+      await task.press("Enter");
+      await until(
+        page,
+        "the way back to signing in",
+        () =>
+          !document.querySelector("#agent")!.hasAttribute(
+            "data-agent-ready",
+          ) &&
+          document.querySelector("[data-testid=agent-start]")?.textContent ===
+            "Sign in with OpenRouter" &&
+          (document.querySelector("#agent-transcript")?.textContent ?? "")
+            .includes("OpenRouter 401"),
+        60_000,
+      );
+      refuse = false;
+      await page.locator("#agent-intro input[type=password]").fill(
+        "sk-or-second",
+      );
+      await page.locator("[data-testid=agent-start]").click();
+      await page.locator("#agent[data-agent-ready]").waitFor();
+      await task.fill("what is 6 times 7, using python");
+      await task.press("Enter");
+      await until(
+        page,
+        "the answer with the pasted key",
+        () =>
+          document.querySelectorAll("[data-testid=agent-answer]").length === 2,
+        180_000,
+      );
+      if (
+        keys[0] !== "Bearer sk-or-first" ||
+        keys.at(-1) !== "Bearer sk-or-second"
+      ) {
+        throw new Error(`agent e2e: OpenRouter got keys ${keys}`);
       }
       await context.close();
     }
