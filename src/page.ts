@@ -420,11 +420,9 @@ function boot(
   // The snapshot this start restores (the device's own, or Go's on a
   // desktop that chose it) or captures.
   // Two sandboxes that do not mix. Shell & Python is the default snapshot with
-  // Jupyter. The agent needs little: a small snapshot, without Jupyter, and
-  // what it installs stays in each seal. Decided here, from the tab that asked.
-  // On an iPad or iPhone that is the phone's (no Python: the agent writes zsh),
-  // the smallest, since a tablet's tab also runs out of memory in the
-  // tablet's; a desktop's agent keeps the tablet's, with Python.
+  // Jupyter. The agent needs little: a small snapshot (agentSnapshotKind),
+  // without Jupyter, and what it installs stays in each seal. Decided here,
+  // from the tab that asked.
   const agentOnly = !capturing && agentOnlySandbox(desktop);
   startedAs = agentOnly ? "agent" : "shell";
   const kind: SnapshotKind = agentOnly

@@ -47,6 +47,9 @@ async function removeMemoryFiles(
 export async function saveAgentSession(
   image: SandboxSealImage,
   kernelSha256: string,
+  /** The snapshot the sandbox was restored from: a later load restores
+   * the seal only on a page that would restore the same one. */
+  snapshotKind: string,
 ): Promise<void> {
   const root = await navigator.storage.getDirectory();
   const sealedAt = Date.now();
@@ -67,7 +70,7 @@ export async function saveAgentSession(
     pty: 0,
     sealedAt,
     kernelSha256,
-    attachments: { memoryFile: file },
+    attachments: { memoryFile: file, snapshotKind },
   }, AGENT_SESSION_KEY);
   await removeMemoryFiles(root, file);
 }
