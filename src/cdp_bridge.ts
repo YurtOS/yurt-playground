@@ -292,6 +292,21 @@ export function startCdpBridge(
   const accept = () => {
     timer = undefined;
     if (stopped) return;
+    try {
+      acceptAll();
+    } catch (error) {
+      // A kernel that trapped or went away: stop, as the pkg relay does.
+      console.warn(
+        `[cdp bridge] stopped: ${
+          error instanceof Error ? error.message : error
+        }`,
+      );
+      stop();
+      return;
+    }
+    timer = setTimeout(accept, ACCEPT_EVERY_MS);
+  };
+  const acceptAll = () => {
     for (;;) {
       const { rc } = call(METHOD.SYS_SOCKET_ACCEPT, fdRequest(listener, 4), 16);
       if (rc === -EAGAIN) break;
@@ -306,7 +321,18 @@ export function startCdpBridge(
       fds.add(rc);
       void serve(rc);
     }
-    timer = setTimeout(accept, ACCEPT_EVERY_MS);
+  };
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    if (timer !== undefined) clearTimeout(timer);
+    for (const [conn, socket] of [...sockets]) end(socket.fd, conn);
+    for (const fd of [...fds]) end(fd);
+    try {
+      closeFd(listener);
+    } catch {
+      // the kernel is gone, and the listener with it
+    }
   };
   accept();
 
@@ -317,13 +343,6 @@ export function startCdpBridge(
     close(conn) {
       finish(conn, encodeFrame(OPCODE.close, new Uint8Array([0x03, 0xe8])));
     },
-    stop() {
-      if (stopped) return;
-      stopped = true;
-      if (timer !== undefined) clearTimeout(timer);
-      for (const [conn, socket] of [...sockets]) end(socket.fd, conn);
-      for (const fd of [...fds]) end(fd);
-      closeFd(listener);
-    },
+    stop,
   };
 }

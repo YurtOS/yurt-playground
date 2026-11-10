@@ -1,6 +1,7 @@
 import { assertEquals } from "@std/assert";
 import {
   BRIDGE_EXTENSION_ID,
+  bridgeAnswers,
   type CdpToWorker,
   createCdpRelay,
   type ExtensionPort,
@@ -90,4 +91,43 @@ Deno.test("the endpoint answers /json/version and hands /devtools/browser to the
   assertEquals(httpReply("GET", "/devtools/browser/anything", "x"), undefined);
   assertEquals(httpReply("GET", "/json/list", "x")?.status, 404);
   assertEquals(JSON.parse(versionJson("y"))["Protocol-Version"], "1.3");
+});
+
+Deno.test("only the bridge's own answer to Yurt.ping counts as installed", async () => {
+  const answering = {
+    connect(): ExtensionPort {
+      let onMessage: (m: unknown) => void = () => {};
+      return {
+        postMessage: (m) => {
+          const { id } = m as { id: number };
+          queueMicrotask(() => onMessage({ id, result: { yurt: true } }));
+        },
+        disconnect() {},
+        onMessage: { addListener: (fn) => onMessage = fn },
+        onDisconnect: { addListener() {} },
+      };
+    },
+  };
+  assertEquals(await bridgeAnswers(answering), true);
+  // Some other extension exposing chrome.runtime: the Port just drops.
+  const dropping = {
+    connect(): ExtensionPort {
+      let onDisconnect = () => {};
+      return {
+        postMessage: () => queueMicrotask(() => onDisconnect()),
+        disconnect() {},
+        onMessage: { addListener() {} },
+        onDisconnect: { addListener: (fn) => onDisconnect = fn },
+      };
+    },
+  };
+  assertEquals(await bridgeAnswers(dropping), false);
+  assertEquals(
+    await bridgeAnswers({
+      connect() {
+        throw new Error("no");
+      },
+    }),
+    false,
+  );
 });

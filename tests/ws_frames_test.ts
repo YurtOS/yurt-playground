@@ -100,3 +100,15 @@ Deno.test("server frames use the shortest length form", () => {
     new Uint8Array([0x81, 127]),
   );
 });
+
+Deno.test("a large frame fed in small reads comes out whole, once", () => {
+  const body = "y".repeat(200_000);
+  const whole = clientFrame(OPCODE.text, text(body));
+  const reader = new MessageReader();
+  const messages: string[] = [];
+  for (let at = 0; at < whole.length; at += 1000) {
+    messages.push(...reader.push(whole.subarray(at, at + 1000)).messages);
+  }
+  assertEquals(messages.length, 1);
+  assertEquals(messages[0].length, body.length);
+});

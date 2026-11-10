@@ -85,3 +85,35 @@ export function createCdpRelay(
     },
   };
 }
+
+/** Whether the Yurt bridge itself answers (another extension may be what
+ *  exposes `chrome.runtime` here): a `Yurt.ping`, which it answers before
+ *  any approval. */
+export function bridgeAnswers(
+  runtime: ExtensionRuntime,
+  { extensionId = BRIDGE_EXTENSION_ID, timeoutMs = 3000 } = {},
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let port: ExtensionPort;
+    try {
+      port = runtime.connect(extensionId, { name: "yurt-ping" });
+    } catch {
+      return resolve(false);
+    }
+    const done = (answer: boolean) => {
+      clearTimeout(timer);
+      resolve(answer);
+      try {
+        port.disconnect();
+      } catch {
+        // already gone
+      }
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    port.onMessage.addListener((reply) =>
+      done((reply as { result?: { yurt?: boolean } })?.result?.yurt === true)
+    );
+    port.onDisconnect.addListener(() => done(false));
+    port.postMessage({ id: 0, method: "Yurt.ping" });
+  });
+}

@@ -94,11 +94,44 @@ export function encodeFrame(opcode: number, payload: Uint8Array): Uint8Array {
   return out;
 }
 
-/** Joins fragmented messages and answers control frames. */
+/** How many bytes the frame starting `bytes` needs in all, or undefined
+ *  while its header is not whole. */
+function frameSize(bytes: Uint8Array): number | undefined {
+  if (bytes.length < 2) return undefined;
+  const length = bytes[1] & 0x7f;
+  if (length < 126) return 2 + 4 + length;
+  if (length === 126) {
+    return bytes.length < 4 ? undefined : 4 + 4 + ((bytes[2] << 8) | bytes[3]);
+  }
+  if (bytes.length < 10) return undefined;
+  const big = new DataView(bytes.buffer, bytes.byteOffset + 2, 8)
+    .getBigUint64(0);
+  return big > BigInt(MAX_MESSAGE_BYTES) ? Infinity : 10 + 4 + Number(big);
+}
+
+/** Joins fragmented messages and answers control frames. Received bytes
+ *  are kept as chunks and joined once a frame is whole, so a large frame
+ *  arriving in many reads is copied once, not once per read. */
 export class MessageReader {
   #parts: Uint8Array[] = [];
   #size = 0;
-  #pending: Uint8Array = new Uint8Array(0);
+  #chunks: Uint8Array[] = [];
+  #buffered = 0;
+
+  #take(n: number): Uint8Array {
+    const out = new Uint8Array(n);
+    let at = 0;
+    while (at < n) {
+      const chunk = this.#chunks[0];
+      const want = Math.min(chunk.length, n - at);
+      out.set(chunk.subarray(0, want), at);
+      at += want;
+      if (want === chunk.length) this.#chunks.shift();
+      else this.#chunks[0] = chunk.subarray(want);
+    }
+    this.#buffered -= n;
+    return out;
+  }
 
   /** Feed received bytes; returns the text messages they completed, the
    *  frames to send back (pongs, a close reply) and whether the peer
@@ -106,21 +139,25 @@ export class MessageReader {
   push(
     bytes: Uint8Array,
   ): { messages: string[]; replies: Uint8Array[]; closed: boolean } {
-    const joined = new Uint8Array(this.#pending.length + bytes.length);
-    joined.set(this.#pending);
-    joined.set(bytes, this.#pending.length);
-    const { frames, rest } = parseFrames(joined);
-    this.#pending = rest;
+    this.#chunks.push(bytes);
+    this.#buffered += bytes.length;
     const messages: string[] = [];
     const replies: Uint8Array[] = [];
-    let closed = false;
-    for (const frame of frames) {
+    for (;;) {
+      // A frame's header is at most 14 bytes: join that much to size it.
+      const head = this.#peek(14);
+      const size = frameSize(head);
+      if (size === Infinity) {
+        throw new Error("a frame larger than this bridge takes");
+      }
+      if (size === undefined || this.#buffered < size) break;
+      const { frames } = parseFrames(this.#take(size));
+      const frame = frames[0];
       if (frame.opcode === OPCODE.ping) {
         replies.push(encodeFrame(OPCODE.pong, frame.payload));
       } else if (frame.opcode === OPCODE.close) {
         replies.push(encodeFrame(OPCODE.close, frame.payload.subarray(0, 2)));
-        closed = true;
-        break;
+        return { messages, replies, closed: true };
       } else if (
         frame.opcode === OPCODE.text || frame.opcode === OPCODE.binary ||
         frame.opcode === OPCODE.continuation
@@ -143,6 +180,19 @@ export class MessageReader {
         }
       }
     }
-    return { messages, replies, closed };
+    return { messages, replies, closed: false };
+  }
+
+  /** The first `n` buffered bytes (fewer when fewer are buffered), copied. */
+  #peek(n: number): Uint8Array {
+    const out = new Uint8Array(Math.min(n, this.#buffered));
+    let at = 0;
+    for (const chunk of this.#chunks) {
+      if (at === out.length) break;
+      const want = Math.min(chunk.length, out.length - at);
+      out.set(chunk.subarray(0, want), at);
+      at += want;
+    }
+    return out;
   }
 }

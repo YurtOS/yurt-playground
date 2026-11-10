@@ -195,15 +195,21 @@ export async function buildStaticSite(
   await copyFiles(STATIC_FILES, publicDir, distDir);
   // terminal.html links ./xterm.css; the dev server maps it to the npm package.
   await Deno.copyFile(XTERM_CSS_PATH, join(distDir, "xterm.css"));
-  // The Playwright demo's assets (src/playwright_assets.ts).
-  await Deno.writeFile(
-    join(distDir, PLAYWRIGHT_CORE_TGZ),
-    await playwrightCoreTarball(),
-  );
-  await Deno.writeFile(
-    join(distDir, BRIDGE_EXTENSION_ZIP),
-    await bridgeExtensionZip(),
-  );
+  // The Playwright demo's assets (src/playwright_assets.ts). Optional: a
+  // build that cannot make one goes on without it, and the demo's setup
+  // says what is missing.
+  for (
+    const [name, make] of [
+      [PLAYWRIGHT_CORE_TGZ, playwrightCoreTarball],
+      [BRIDGE_EXTENSION_ZIP, bridgeExtensionZip],
+    ] as const
+  ) {
+    try {
+      await Deno.writeFile(join(distDir, name), await make());
+    } catch (error) {
+      console.warn(`${name} not built: ${(error as Error).message}`);
+    }
+  }
   const jupyter = join(publicDir, JUPYTER_DIR);
   try {
     await Deno.stat(join(jupyter, "index.html"));

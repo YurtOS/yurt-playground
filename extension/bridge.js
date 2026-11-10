@@ -6,7 +6,57 @@
 
 const DEFAULT_CONTEXT = "yurt-default";
 
+// A page may drive this browser only after a person allowed it in this
+// extension's own window (approve.html): any script on the site's origin can
+// reach the extension, so the page's own gate is not the boundary. The
+// approval holds for the asking tab until it closes or navigates.
+const approvedTabs = new Set();
+const pendingAsks = new Map(); // ask id -> resolve(boolean)
+let nextAsk = 1;
+
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (sender.id !== chrome.runtime.id || message?.yurtApproval === undefined) {
+    return;
+  }
+  pendingAsks.get(message.yurtApproval)?.(message.allowed === true);
+  pendingAsks.delete(message.yurtApproval);
+});
+chrome.tabs.onRemoved.addListener((tabId) => approvedTabs.delete(tabId));
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (change.status === "loading") approvedTabs.delete(tabId);
+});
+
+/** Whether a person allows the page in tab `tabId` (from `origin`). */
+async function approve(tabId, origin) {
+  if (approvedTabs.has(tabId)) return true;
+  const ask = String(nextAsk++);
+  const answer = new Promise((resolve) => pendingAsks.set(ask, resolve));
+  const popup = await chrome.windows.create({
+    url: chrome.runtime.getURL(
+      `approve.html?ask=${ask}&origin=${encodeURIComponent(origin)}`,
+    ),
+    type: "popup",
+    width: 480,
+    height: 300,
+  });
+  // Closing the window is a no.
+  const closed = (id) => {
+    if (id === popup.id) pendingAsks.get(ask)?.(false);
+  };
+  chrome.windows.onRemoved.addListener(closed);
+  const allowed = await answer;
+  chrome.windows.onRemoved.removeListener(closed);
+  pendingAsks.delete(ask);
+  if (allowed) approvedTabs.add(tabId);
+  return allowed;
+}
+
 chrome.runtime.onConnectExternal.addListener((port) => {
+  const tabId = port.sender?.tab?.id;
+  const origin = port.sender?.origin ?? port.sender?.url ?? "";
+  // Asked once per connection, on its first CDP message; until then (and
+  // on a no) nothing but Yurt.ping is answered.
+  let allowed;
   const sessions = new Map(); // sessionId -> { tabId, targetId }
   // A child session (an iframe or worker chrome.debugger auto-attached on a
   // tab) -> that tab, so its commands go to the right debuggee.
@@ -163,6 +213,16 @@ chrome.runtime.onConnectExternal.addListener((port) => {
 
   port.onMessage.addListener(async (msg) => {
     const { id, method, params, sessionId } = msg;
+    // The page's check that this is the bridge, before any approval.
+    if (method === "Yurt.ping") return reply(id, undefined, { yurt: true });
+    allowed ??= tabId === undefined
+      ? Promise.resolve(false)
+      : approve(tabId, origin);
+    if (!(await allowed)) {
+      fail(id, sessionId, "not allowed: the Yurt browser bridge was denied");
+      port.disconnect();
+      return;
+    }
     try {
       if (sessionId === undefined) {
         return await browserMethod(id, method, params);

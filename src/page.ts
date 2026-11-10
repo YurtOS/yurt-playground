@@ -1,6 +1,7 @@
 import { AGENT_CHAT_STORAGE } from "./snapshot_store.ts";
 import { setUpPlaywright } from "./playwright_demo.ts";
 import {
+  bridgeAnswers,
   type CdpFromWorker,
   createCdpRelay,
   extensionRuntime,
@@ -1149,11 +1150,13 @@ async function runPage(): Promise<void> {
       status,
       device !== "desktop",
     );
-    if (env === "playwright") {
+    // The agent's own tab gets no endpoint (boot), so no setup either.
+    if (env === "playwright" && !agentOnlySandbox(desktop)) {
+      const runtime = extensionRuntime();
       void setUpPlaywright(
         (globalThis as unknown as { yurt: Yurt }).yurt,
         {
-          extension: extensionRuntime() !== undefined,
+          extension: runtime !== undefined && bridgeAnswers(runtime),
           // One note, replaced as the setup goes.
           say: (text) => {
             const at = notes.indexOf(playwrightNote ?? "");
@@ -1172,14 +1175,14 @@ async function runPage(): Promise<void> {
   // keeps it.
   if (desktop === undefined && platform === "desktop") {
     const choice = byId("env-choice");
-    // Playwright needs no snapshot of its own; Go is offered once the site
-    // pins Go's.
+    // Playwright needs no snapshot of its own; Go's choice (hidden in the
+    // markup) is shown once the site's pins name Go's snapshot.
     choice.hidden = false;
     void fetchSitePins().then((pins) => {
       const go = choice.querySelector<HTMLElement>("[data-testid=env-go]")
         ?.closest("label");
-      if (go) go.hidden = pins?.goSnapshot === undefined;
-    });
+      if (go && pins?.goSnapshot !== undefined) go.hidden = false;
+    }).catch(() => {});
     for (
       const radio of choice.querySelectorAll<HTMLInputElement>(
         "input[name=env]",

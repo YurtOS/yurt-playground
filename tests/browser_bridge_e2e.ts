@@ -88,6 +88,43 @@ if (import.meta.main) {
     console.log("browser bridge e2e: Playwright set up in the sandbox");
 
     const target = `${server.url}/unsupported.html`;
+    // The extension asks a person first, in a window of its own; that
+    // window is the boundary (any script on the site could reach the
+    // extension). Deny once: the script gets nothing. Then allow.
+    let answer: "#deny" | "#allow" = "#deny";
+    let asked = 0;
+    context.on("page", (popup) => {
+      if (!popup.url().includes("approve.html")) {
+        popup.waitForURL(/approve\.html/, { timeout: 5000 }).then(
+          () => (asked++, popup.click(answer)),
+          () => {},
+        );
+        return;
+      }
+      asked++;
+      void popup.click(answer);
+    });
+    const runExample = (url: string) =>
+      page.evaluate(async (url) => {
+        const yurt = (globalThis as unknown as {
+          yurt: {
+            exec(cmd: string): Promise<
+              { code: number | null; stdout: string; stderr: string }
+            >;
+          };
+        }).yurt;
+        return await yurt.exec(`node playwright-example.js ${url}`);
+      }, url);
+    const denied = await runExample(target);
+    if (denied.code === 0 || asked !== 1) {
+      fail(`a denied script ran (code ${denied.code}, asked ${asked})`);
+    }
+    console.log(
+      `browser bridge e2e: denied in the approval window: ${
+        denied.stderr.trim().split("\n")[0]
+      }`,
+    );
+    answer = "#allow";
     const result = await page.evaluate(async (url) => {
       const yurt = (globalThis as unknown as {
         yurt: {
@@ -100,6 +137,10 @@ if (import.meta.main) {
     }, target);
     console.log(`browser bridge e2e: ${result.stdout.trim()}`);
     if (result.code !== 0) fail(`the example failed: ${result.stderr}`);
+    // (the listener above counts; the narrowing after the denial does not see it)
+    if ((asked as number) !== 2) {
+      fail(`expected a second approval window, saw ${asked}`);
+    }
     if (!result.stdout.includes("title: Yurt playground: this page cannot")) {
       fail(`the example read the wrong page: ${result.stdout}`);
     }

@@ -58,22 +58,11 @@ export async function playwrightCoreTarball(): Promise<Uint8Array> {
       );
     }
   }
-  return await run("tar", [
-    "-czf",
-    "-",
-    "-s",
-    "/^playwright-core/package/",
-    "playwright-core",
-  ], dir).catch(() =>
-    // GNU tar has no -s: --transform does the same.
-    run("tar", [
-      "-czf",
-      "-",
-      "--transform",
-      "s,^playwright-core,package,",
-      "playwright-core",
-    ], dir)
-  );
+  // BSD tar (macOS) renames with -s, GNU tar (Linux) with --transform.
+  const rename = Deno.build.os === "darwin"
+    ? ["-s", "/^playwright-core/package/"]
+    : ["--transform", "s,^playwright-core,package,"];
+  return await run("tar", ["-czf", "-", ...rename, "playwright-core"], dir);
 }
 
 /** extension/ zipped, to load unpacked from chrome://extensions. */

@@ -500,7 +500,10 @@ Deno.test("the start screen offers Python, Go or Playwright, hidden until the pa
     new URL("../src/page.ts", import.meta.url),
   );
   assertEquals(page.includes('platform === "desktop"'), true);
-  assertEquals(page.includes("pins?.goSnapshot === undefined"), true);
+  // Go's choice starts hidden and shows once the pins name its snapshot.
+  assertEquals(page.includes("pins?.goSnapshot !== undefined"), true);
+  const go = start.match(/<label\b[^>]*>(?=<input[^>]*value="go")/)?.[0] ?? "";
+  assertEquals(/\bhidden\b/.test(go), true, go);
 });
 
 Deno.test("every install choice has an accessible name of its own", async () => {

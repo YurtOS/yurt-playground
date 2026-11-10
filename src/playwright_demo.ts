@@ -59,12 +59,13 @@ export const READY_NOTE =
 export async function setUpPlaywright(
   yurt: Yurt,
   { extension, say, fetchAsset = fetch }: {
-    extension: boolean;
+    /** Whether the bridge extension answers (src/browser_bridge.ts). */
+    extension: boolean | Promise<boolean>;
     say: (text: string) => void;
     fetchAsset?: (path: string) => Promise<Response>;
   },
 ): Promise<boolean> {
-  if (!extension) {
+  if (!(await extension)) {
     say(NO_EXTENSION_NOTE);
     return false;
   }
@@ -100,6 +101,16 @@ export async function setUpPlaywright(
       YURT_CHROME_MODULE,
     );
     await yurt.fs.write(`${HOME}/playwright-example.js`, EXAMPLE_SCRIPT);
+    // The page serves the endpoint only for this env; say ready only once
+    // the guest can reach it.
+    const probe = await yurt.exec(
+      "wget -q -T 5 -O- http://127.0.0.1:9222/json/version",
+    );
+    if (!("code" in probe) || probe.code !== 0) {
+      throw new Error(
+        "the sandbox's DevTools endpoint (127.0.0.1:9222) is not up",
+      );
+    }
     say(READY_NOTE);
     return true;
   } catch (error) {
