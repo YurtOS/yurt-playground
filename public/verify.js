@@ -186,8 +186,8 @@ button.addEventListener("click", () => {
 
 // The release notes (GitHub Pages) have one entry per train, anchored by the
 // train name. Point the links at the train pins.json names and say so. The
-// page's own code may be newer than that train (main deploys on every
-// push); the train is what its kernel and image are pinned to. The desktop
+// page's own code may be newer than that train (main is deployed when
+// asked, between trains); the train is what its kernel and image are pinned to. The desktop
 // app ships pins.json too, so it names the train it was built for.
 // When pins.json is unavailable or names no train, the links keep pointing
 // at the top of the notes.

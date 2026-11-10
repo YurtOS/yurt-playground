@@ -17,8 +17,15 @@ runs the fast tests.
 
 ## Previewing a branch
 
-A merge to main deploys the site (`.github/workflows/deploy-pages.yml`). To try
-a branch on a real device before it merges, publish it as a preview:
+A merge to main deploys nothing. The site deploys only when asked: a dispatch of
+`.github/workflows/deploy-pages.yml` from main publishes production,
+
+```sh
+gh workflow run deploy-pages.yml --ref main
+```
+
+and runs queue one at a time, so the newest dispatch lands last. To try a branch
+on a real device before it merges, publish it as a preview:
 
 ```sh
 gh workflow run deploy-pages.yml --ref main -f ref=<branch>

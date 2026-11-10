@@ -2,7 +2,7 @@
  * Which models the agent pane offers on each platform, read at page load
  * from `config/agent-models.json` on this repository's main, through
  * raw.githubusercontent.com. A change to that file alone builds and deploys
- * nothing (ci.yml and deploy-pages.yml ignore it; its pull request runs only
+ * nothing (ci.yml ignores it, and no merge deploys; its pull request runs only
  * the checks, which validate it), so a model or a prompt changes with one
  * merged pull request (GitHub's raw cache serves it within about five
  * minutes).
