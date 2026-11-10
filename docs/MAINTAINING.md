@@ -82,31 +82,36 @@ for each one's size and the memory it needs.
 A snapshot is the kernel's memory after an install in the browser, so it is
 captured locally rather than by the train:
 `deno run -A
-scripts/release-snapshot.ts --kind desktop|tablet|phone|go`, from a
-clean checkout at its pushed head whose `artifacts/pins.json` names the train
-(with the pinned blobs installed, the sibling kernel checkout clean at the
+scripts/release-snapshot.ts --kind desktop|tablet|phone|go|playwright`,
+from a clean checkout at its pushed head whose `artifacts/pins.json` names the
+train (with the pinned blobs installed, the sibling kernel checkout clean at the
 pinned rev, and Playwright's Chromium). It serves the page, runs
 `?snapshot=capture` in headless Chromium, checks that the file decodes in full
 and was built from the pinned kernel and image and the Python the live index
 offers, publishes it as the prerelease `snapshot-<train>`
-(`snapshot-tablet-<train>`, `snapshot-phone-<train>`, `snapshot-go-<train>`) and
-writes its pin, with its kernel memory and what it holds. Go's capture installs
-`go` with pkg and then builds a warm-up program as the login user, so
-`~/.cache/go-build` holds the compiled standard library when it is sealed: a
-user's first `go run` then compiles only their own package. That build is the
-slow part of the capture (about 10 min in headless Chromium), so Go's capture
-waits up to an hour. Run `scripts/measure-boot.ts` with
-`--query 'start&platform=desktop&env=go'` for its `restorePeakMiB`, and
+(`snapshot-tablet-<train>`, `snapshot-phone-<train>`, `snapshot-go-<train>`,
+`snapshot-playwright-<train>`) and writes its pin, with its kernel memory and
+what it holds. Go's capture installs `go` with pkg and then builds a warm-up
+program as the login user, so `~/.cache/go-build` holds the compiled standard
+library when it is sealed: a user's first `go run` then compiles only their own
+package. That build is the slow part of the capture (about 10 min in headless
+Chromium), so Go's capture waits up to an hour. Run `scripts/measure-boot.ts`
+with `--query 'start&platform=desktop&env=go'` for its `restorePeakMiB`, and
 `scripts/verify-snapshots.ts --live --kind go` checks that a first build
-compiles nothing of the standard library. `--dry-run` stops before the release
-and the pin; `--tag` names a second snapshot of one train (a published one is
-never replaced). A train keeps the pin only while
-`release-snapshot.ts --check-pin` accepts it, and otherwise drops it and says to
-run the script again; so does a change to the page's boot setup (`BOOT_SETUP` in
-`src/snapshot_pin.ts`). The deploy fetches every snapshot
-(`YURT_INSTALL_SNAPSHOT=1`), and a problem with one never fails the deploy. CI's
-jupyterlite scene fetches only the desktop's (`YURT_INSTALL_SNAPSHOT=snapshot`):
-the notebook cannot start without it.
+compiles nothing of the standard library. Playwright's capture installs `node`
+with pkg, then stages playwright-core (the site's own `playwright-core.tgz`),
+the `yurt-chrome` module and the example in the login home with the same code
+the `?env=playwright` page runs (`src/playwright_setup.ts`), so a restored page
+only checks them; `verify-snapshots.ts --live --kind playwright` checks node
+loads both. Like Go's, it is optional: a train without it is whole, and the page
+then installs live. `--dry-run` stops before the release and the pin; `--tag`
+names a second snapshot of one train (a published one is never replaced). A
+train keeps the pin only while `release-snapshot.ts --check-pin` accepts it, and
+otherwise drops it and says to run the script again; so does a change to the
+page's boot setup (`BOOT_SETUP` in `src/snapshot_pin.ts`). The deploy fetches
+every snapshot (`YURT_INSTALL_SNAPSHOT=1`), and a problem with one never fails
+the deploy. CI's jupyterlite scene fetches only the desktop's
+(`YURT_INSTALL_SNAPSHOT=snapshot`): the notebook cannot start without it.
 
 To try another snapshot without a pin or a deploy, capture and upload it
 locally:

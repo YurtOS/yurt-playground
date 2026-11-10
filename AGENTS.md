@@ -53,8 +53,14 @@ Kernel primitives stay in `yurtos-kernel`. Image composition stays in
   YurtOS/yurt-packages. It answers only `GET`s of files under
   `PACKAGE_REPO_URL`, which the page fetches with the browser's `fetch`, under
   the CSP's `connect-src`, with bounded sizes and timeouts. `pkg` verifies every
-  byte as on the desktop. Guests get no other route out of the sandbox: no other
-  host, no DNS.
+  byte as on the desktop. One more route, opt-in: a page set up for Playwright
+  (`?env=playwright`) serves the guest a DevTools endpoint at `127.0.0.1:9222`
+  (`src/cdp_bridge.ts`) whose messages go to the Yurt browser bridge extension
+  (`extension/`), which drives tabs it opens in the user's browser only after a
+  person allows it in the extension's own window. Through those tabs a guest can
+  load any URL with the browser's sign-ins: that is the feature, and the
+  approval is its boundary. Guests get no other route out of the sandbox: no
+  other host, no DNS.
 - The Notebook/Lab interface is JupyterLite's frontend and server shim with one
   kernel, `yurt`, relaying to the guest `ipykernel`. JupyterLite's own kernels
   (Pyodide, xeus) never ship: the kernel is not replaced, only fronted.

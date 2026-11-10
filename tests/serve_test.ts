@@ -139,3 +139,20 @@ Deno.test("dev server applies Pages' directory rule to the Jupyter apps", async 
   assertEquals(bare.headers.get("Cross-Origin-Opener-Policy"), isolation.coop);
   await bare.body?.cancel();
 });
+
+Deno.test("the dev server serves the bridge extension's zip, with every file in it", async () => {
+  const res = await handlePlaygroundRequest(
+    new Request("http://playground/yurt-browser-bridge.zip"),
+  );
+  assertEquals(res.status, 200);
+  assertEquals(res.headers.get("content-type"), "application/zip");
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  // A zip (local file header "PK\x03\x04") naming the extension's files.
+  assertEquals([...bytes.subarray(0, 4)], [0x50, 0x4b, 0x03, 0x04]);
+  const names = new TextDecoder("latin1").decode(bytes);
+  for (
+    const file of ["manifest.json", "bridge.js", "approve.html", "approve.js"]
+  ) {
+    assertEquals(names.includes(file), true, file);
+  }
+});

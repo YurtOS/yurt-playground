@@ -143,6 +143,52 @@ the launcher's own is refused, so no web page can reach it. The page's
 `window.yurt` and a `curl` share one registry: at most 16 running or stuck
 executions per sandbox, results kept ten minutes or until read.
 
+## Playwright in the sandbox
+
+On a desktop Chromium browser, a Playwright script inside the sandbox drives the
+browser the page runs in: it opens tabs, reads them and takes screenshots. It
+needs the **Yurt browser bridge** extension.
+
+1. Download
+   [yurt-browser-bridge.zip](https://yurt-playground.pages.dev/yurt-browser-bridge.zip)
+   (also linked from the start screen) and unzip it. On macOS, unzip it
+   somewhere the folder picker shows, such as `~/Downloads` (the picker hides
+   `/private/tmp`).
+2. Open `chrome://extensions` (any Chromium browser: Chrome, Edge, Brave), turn
+   on **Developer mode**, click **Load unpacked** and pick the folder.
+3. Choose **Playwright** on the start screen (or open
+   `?platform=desktop&env=playwright`) and **Start**. The extension opens its
+   own window asking whether this page's sandbox may drive the browser: click
+   **Allow** (its buttons wake after a second).
+4. When the page says Playwright is ready, run in the terminal:
+
+   ```
+   node playwright-example.js https://example.com
+   ```
+
+   It opens a tab, prints its title and saves a screenshot in the sandbox's
+   home. A script of your own starts with
+   `const browser = await require("yurt-chrome").connect();`.
+5. To try it against a local server (`deno task serve`, port 4173), load a copy
+   of the extension whose `manifest.json` also lists `"http://127.0.0.1:4173/"`
+   and `"http://127.0.0.1:4173/?*"` in `externally_connectable.matches`.
+6. Remove it from `chrome://extensions` when you are done.
+
+The site restores a sandbox with node and playwright-core already in it when its
+pins name the Playwright snapshot; otherwise the page installs them (about 10
+s).
+
+What you allow is that page and its sandbox: anything running in the page, or in
+the sandbox, can then drive the browser the way the script does, with this
+browser's sign-ins, until the page closes or reloads. Allow it only if you chose
+Playwright on that page yourself. The extension (`extension/` in this
+repository) answers only the playground's own page, uses Chrome's debugger API
+on the tabs it opens itself, and sends them to web pages only (never
+`chrome://`, `file:` or an extension's pages). The agent is off in that sandbox.
+Inside the sandbox, Playwright reaches the extension at `127.0.0.1:9222`, a
+DevTools endpoint only a page set up for Playwright serves
+(`src/cdp_bridge.ts`).
+
 ## Desktop app
 
 The same playground, with the sandbox running natively on your machine instead
@@ -241,6 +287,7 @@ The desktop's holds the Python set and starts the Notebook, the tablet's the int
 | tablet | tablet (iPad): `?platform=tablet` | `snapshot-tablet-playground-2026.10.31-3d32068.2-3313` | 95.4 MB in 5 parts | 381.8 MiB | 1349 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
 | phone | phone (iPhone): `?platform=phone` | `snapshot-phone-playground-2026.10.31-3d32068.2-3313` | 31.2 MB in 2 parts | 136.1 MiB | 713 MiB | BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
 | go | desktop browser that chose Go: `?platform=desktop&env=go` | `snapshot-go-playground-2026.10.31-3d32068.2-3313` | 247.4 MB in 12 parts | 882.8 MiB | 2155 MiB | BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
+| playwright | desktop browser that chose Playwright: `?platform=desktop&env=playwright` | not pinned: the desktop's, with a live install | | | | |
 
 <!-- deno-fmt-ignore-end -->
 <!-- snapshot-table:end -->

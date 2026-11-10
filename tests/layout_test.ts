@@ -477,30 +477,33 @@ Deno.test("the page's instructions hold outside Chrome and without a token", asy
   }
 });
 
-Deno.test("the start screen offers Python or Go, hidden until the page shows it", async () => {
+Deno.test("the start screen offers Python, Go or Playwright, hidden until the page shows it", async () => {
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
   );
   const start = html.match(/<div id="start">[\s\S]*?<\/fieldset>/)?.[0] ?? "";
   const fieldset = start.match(/<fieldset\b[\s\S]*?>/)?.[0] ?? "";
   assertEquals(fieldset.includes('id="env-choice"'), true, fieldset);
-  // Shown only by a desktop browser's page (src/page.ts), once Go's
-  // snapshot is pinned: never on a phone or tablet.
+  // Shown only by a desktop browser's page (src/page.ts), never on a phone
+  // or tablet; Go's choice once Go's snapshot is pinned.
   assertEquals(/\bhidden\b/.test(fieldset), true, fieldset);
   const radios = [...start.matchAll(/<input\b[\s\S]*?>/g)]
     .map((m) => m[0])
     .filter((tag) => tag.includes('type="radio"'));
-  assertEquals(radios.length, 2, `expected two choices: ${radios.length}`);
+  assertEquals(radios.length, 3, `expected three choices: ${radios.length}`);
   const value = (tag: string) => tag.match(/\bvalue="([^"]*)"/)?.[1];
-  assertEquals(radios.map(value), ["python", "go"]);
+  assertEquals(radios.map(value), ["python", "go", "playwright"]);
   // Python is the default.
   assertEquals(/\bchecked\b/.test(radios[0]), true);
-  assertEquals(/\bchecked\b/.test(radios[1]), false);
+  assertEquals(radios.slice(1).some((r) => /\bchecked\b/.test(r)), false);
   const page = await Deno.readTextFile(
     new URL("../src/page.ts", import.meta.url),
   );
   assertEquals(page.includes('platform === "desktop"'), true);
-  assertEquals(page.includes("pins?.goSnapshot === undefined"), true);
+  // Go's choice starts hidden and shows once the pins name its snapshot.
+  assertEquals(page.includes("pins?.goSnapshot !== undefined"), true);
+  const go = start.match(/<label\b[^>]*>(?=<input[^>]*value="go")/)?.[0] ?? "";
+  assertEquals(/\bhidden\b/.test(go), true, go);
 });
 
 Deno.test("every install choice has an accessible name of its own", async () => {
@@ -804,4 +807,13 @@ Deno.test("the home page carries its link-preview tags and their image", async (
     new URL("../scripts/build-static.ts", import.meta.url),
   );
   assertEquals(build.includes('"og-image.jpg"'), true);
+});
+
+Deno.test("the start screen links the bridge extension's zip, to download", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const link = html.match(/<a\b[^>]*data-testid="bridge-zip"[^>]*>/)?.[0] ?? "";
+  assertEquals(/href="\.\/yurt-browser-bridge\.zip"/.test(link), true, link);
+  assertEquals(/\bdownload\b/.test(link), true, link);
 });

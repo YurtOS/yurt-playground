@@ -3,6 +3,8 @@
  * Browser coordinator. WorkerHost.spawnRootLeader uses Atomics.wait, which
  * is legal here and illegal on the window thread.
  */
+import { shLine, stagePlaywright } from "./playwright_setup.ts";
+import type { CdpBridge } from "./cdp_bridge.ts";
 import {
   dropAgentSession,
   loadAgentSession,
@@ -71,6 +73,7 @@ import {
 import { liveAnswers } from "./python_install.ts";
 import {
   capturePrecompiles,
+  captureStagesPlaywright,
   captureWarmsGo,
   goWarmupLine,
   postCaptured,
@@ -148,6 +151,10 @@ type ToWorker =
     // sandbox has no go -- Go's snapshot could not be restored and the
     // slim image was booted instead.
     goFallback?: PythonRequest;
+    // The page found the Yurt browser bridge extension: serve the guest a
+    // DevTools endpoint at 127.0.0.1:9222 (src/cdp_bridge.ts) whose
+    // messages go to the page as `cdp-*`.
+    cdpBridge?: boolean;
   }
   // Install Python again after a failed install (the cell's Install), then
   // start the kernel. Answered like a boot: status, then notebook-ready or
@@ -184,7 +191,14 @@ type ToWorker =
   | { type: "pkg-read-installed" }
   // An agent run ended: seal the sandbox into browser storage. It runs nothing
   // more; the page reloads to resume it. Answered by `suspended`.
-  | { type: "suspend" };
+  | { type: "suspend" }
+  // The extension's side of a DevTools connection (src/browser_bridge.ts):
+  // a CDP message for the guest, or the connection ended there.
+  | { type: "cdp-send"; conn: number; text: string }
+  | { type: "cdp-close"; conn: number };
+
+/** The guest's DevTools endpoint, once the shell's boot started it. */
+let cdpBridge: CdpBridge | undefined;
 
 /** Recorded with a seal: a kernel memory means something only to its binary. */
 let runningKernelSha256: string | undefined;
@@ -218,6 +232,10 @@ type FromWorker =
     channel: JupyterChannel;
   }
   | { type: "jupyter-restarted" }
+  // The guest's side of a DevTools connection (src/cdp_bridge.ts).
+  | { type: "cdp-open"; conn: number }
+  | { type: "cdp-message"; conn: number; text: string }
+  | { type: "cdp-close"; conn: number }
   | {
     type: "yurt-reply";
     req: number;
@@ -457,6 +475,53 @@ async function captureSnapshot(
       "warmed Go's build cache",
     );
   }
+  // Playwright's: what the demo's setup does on a page, done once here
+  // (the same code, src/playwright_setup.ts), so a restored page only
+  // checks. Files are staged in /tmp as root (writeFiles) and copied into
+  // the home by the login user, who owns them then.
+  if (captureStagesPlaywright(kind)) {
+    const spawn = session.process;
+    const writeFiles = session.writeFiles;
+    if (writeFiles === undefined) {
+      throw new Error("this session cannot write files");
+    }
+    const run = async (line: string) => {
+      const step = await spawn(line, { maxOutputBytes: 64 * 1024 });
+      const exited = await step.exited;
+      return typeof exited === "number" ? exited : exited.code ?? -1;
+    };
+    let staged = 0;
+    post({ type: "status", text: "staging playwright-core and yurt-chrome" });
+    await stagePlaywright({
+      run,
+      write: async (path, bytes) => {
+        const from = `/tmp/playwright-stage-${staged++}`;
+        writeFiles([{ path: from, bytes }]);
+        const dir = path.slice(0, path.lastIndexOf("/"));
+        if (
+          await run(
+            shLine(
+              `mkdir -p '${dir}' && cp '${from}' '${path}' && sudo rm -f '${from}'`,
+            ),
+          ) !== 0
+        ) {
+          throw new Error(`staging ${path} failed`);
+        }
+      },
+      tarball: async () => {
+        const response = await fetch("./playwright-core.tgz");
+        if (!response.ok) {
+          throw new Error(`playwright-core.tgz: HTTP ${response.status}`);
+        }
+        return new Uint8Array(await response.arrayBuffer());
+      },
+    }, {
+      // Its set is node: installed before this step, or the capture fails.
+      installNode: () =>
+        Promise.reject(new Error("the capture installed no node")),
+      say: (text) => post({ type: "status", text }),
+    });
+  }
   // What it holds, for its pin and for people: pkg's list as the seal
   // keeps it (src/linux_remark.ts).
   const packagesHeld = await installedReleases(session.files) ?? [];
@@ -602,6 +667,15 @@ function workerTerm(
 
 self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
+  // The DevTools relay's hot path: before the other handlers' awaits.
+  if (msg.type === "cdp-send") {
+    cdpBridge?.send(msg.conn, msg.text);
+    return;
+  }
+  if (msg.type === "cdp-close") {
+    cdpBridge?.close(msg.conn);
+    return;
+  }
   await serveYurt(msg);
   await servePackages(msg);
   if (msg.type === "pkg-read-installed") await installed.read();
@@ -775,6 +849,17 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     pkgRelay: kernelPorts === undefined
       ? { tablet: msg.tablet === true }
       : undefined,
+    cdpBridge: kernelPorts === undefined && msg.cdpBridge === true
+      ? {
+        handlers: {
+          open: (conn: number) => post({ type: "cdp-open", conn }),
+          message: (conn: number, text: string) =>
+            post({ type: "cdp-message", conn, text }),
+          close: (conn: number) => post({ type: "cdp-close", conn }),
+        },
+        started: (bridge: CdpBridge) => cdpBridge = bridge,
+      }
+      : undefined,
   };
   // The slim image's Python: the coordinator installs the set itself, so
   // every page that boots a sandbox gets the same install.
@@ -920,7 +1005,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           if (!phone && capturedSet === undefined) {
             throw new Error(
               `this capture installed no ${
-                captureKind === "go" ? "Go" : "Python"
+                captureKind === "go"
+                  ? "Go"
+                  : captureKind === "playwright"
+                  ? "node"
+                  : "Python"
               } (the phone's capture, without any, is ?snapshot=capture-phone)`,
             );
           }

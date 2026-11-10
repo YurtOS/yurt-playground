@@ -34,17 +34,27 @@ export const SANDBOX_SNAPSHOT_PATH = `./${SANDBOX_SNAPSHOT_NAME}`;
  * only a snapshot without one (checkPythonSet); a Go page asks about the
  * go package (`builtFrom.pythonSet` then holds that package's layer key).
  */
-export type SnapshotKind = "desktop" | "tablet" | "phone" | "go";
+export type SnapshotKind = "desktop" | "tablet" | "phone" | "go" | "playwright";
 
 export const SNAPSHOT_KINDS: Record<SnapshotKind, {
   /** Its artifacts/pins.json entry. */
-  pinKey: "snapshot" | "tabletSnapshot" | "phoneSnapshot" | "goSnapshot";
+  pinKey:
+    | "snapshot"
+    | "tabletSnapshot"
+    | "phoneSnapshot"
+    | "goSnapshot"
+    | "playwrightSnapshot";
   /** Its file in the site, published in parts. */
   name: string;
   /** The release asset (the name's last part). */
   asset: string;
   /** `?snapshot=<capture>` makes it. */
-  capture: "capture" | "capture-tablet" | "capture-phone" | "capture-go";
+  capture:
+    | "capture"
+    | "capture-tablet"
+    | "capture-phone"
+    | "capture-go"
+    | "capture-playwright";
   /** Its release tag, before the train. */
   tagPrefix: string;
 }> = {
@@ -76,12 +86,23 @@ export const SNAPSHOT_KINDS: Record<SnapshotKind, {
     capture: "capture-go",
     tagPrefix: "snapshot-go-",
   },
+  // The Playwright demo's (src/playwright_demo.ts): node, playwright-core
+  // and the yurt-chrome module already in the login home, no Python.
+  playwright: {
+    pinKey: "playwrightSnapshot",
+    name: "snapshot/playwright.seal.zip",
+    asset: "playwright.seal.zip",
+    capture: "capture-playwright",
+    tagPrefix: "snapshot-playwright-",
+  },
 };
 
 /** The page query that restores `kind` (the platform it is made for, and
  * Go's `env`): what a printed restore URL and a live check open. */
 export function kindQuery(kind: SnapshotKind): string {
-  return kind === "go" ? "platform=desktop&env=go" : `platform=${kind}`;
+  return kind === "go" || kind === "playwright"
+    ? `platform=desktop&env=${kind}`
+    : `platform=${kind}`;
 }
 
 export const SNAPSHOT_KIND_NAMES = Object.keys(
@@ -125,6 +146,22 @@ export function goSetRequest(
   return pins.browserImage === undefined ? undefined : {
     label: "Go",
     set: [...GO_SET],
+    image: pins.browserImage.sha256,
+  };
+}
+
+/** The Playwright snapshot's set: node alone, installed with pkg on the
+ * slim image; its capture then stages playwright-core and the yurt-chrome
+ * module (src/playwright_setup.ts), and its restore asks the live index
+ * about node, keyed like a Python set (a layer key). */
+export const PLAYWRIGHT_SET: readonly string[] = ["node"];
+
+export function playwrightSetRequest(
+  pins: Pick<Pins, "browserImage">,
+): { label: string; set: string[]; image: string } | undefined {
+  return pins.browserImage === undefined ? undefined : {
+    label: "node",
+    set: [...PLAYWRIGHT_SET],
     image: pins.browserImage.sha256,
   };
 }

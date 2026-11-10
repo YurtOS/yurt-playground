@@ -132,7 +132,7 @@ sys.exit(0 if all(compiled) else 1)
  * image as it boots, with no Python to compile; nor Go's, which warms
  * its build cache instead ({@link captureWarmsGo}). */
 export function capturePrecompiles(
-  kind: "desktop" | "tablet" | "phone" | "go",
+  kind: "desktop" | "tablet" | "phone" | "go" | "playwright",
 ): boolean {
   return kind === "desktop" || kind === "tablet";
 }
@@ -140,9 +140,18 @@ export function capturePrecompiles(
 /** Whether a capture builds Go's warm-up program before the seal: the Go
  * snapshot's (`?snapshot=capture-go`). */
 export function captureWarmsGo(
-  kind: "desktop" | "tablet" | "phone" | "go",
+  kind: "desktop" | "tablet" | "phone" | "go" | "playwright",
 ): boolean {
   return kind === "go";
+}
+
+/** Whether a capture stages playwright-core, the yurt-chrome module and
+ *  the example before the seal (src/playwright_setup.ts): the Playwright
+ *  snapshot's (`?snapshot=capture-playwright`), whose set is node. */
+export function captureStagesPlaywright(
+  kind: "desktop" | "tablet" | "phone" | "go" | "playwright",
+): boolean {
+  return kind === "playwright";
 }
 
 /** The packages Go's warm-up program imports: what a first program

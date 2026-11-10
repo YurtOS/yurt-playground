@@ -57,6 +57,11 @@ import {
   type RelayOptions,
   startPkgRelay,
 } from "./pkg_relay.ts";
+import {
+  type CdpBridge,
+  type CdpBridgeHandlers,
+  startCdpBridge,
+} from "./cdp_bridge.ts";
 import { parsePins, type Pins } from "./pins.ts";
 import {
   checkPythonSet,
@@ -138,6 +143,13 @@ export type PlaygroundEnv = {
   /** Serve the guest's `pkg` from the page (src/pkg_relay.ts): the
    * terminal sandbox's, not a short-lived one's. */
   pkgRelay?: RelayOptions;
+  /** Serve a DevTools endpoint at the guest's 127.0.0.1:9222
+   * (src/cdp_bridge.ts) whose messages go to `handlers`; `started` gets the
+   * bridge to answer through. */
+  cdpBridge?: {
+    handlers: CdpBridgeHandlers;
+    started: (bridge: CdpBridge) => void;
+  };
 };
 
 export type PlaygroundSession = {
@@ -851,11 +863,31 @@ async function startPlayground(
   }
   // Before any guest process: the relay's port is free, and the first
   // `pkg` already finds the configuration pointing at it.
-  const relay = env.pkgRelay === undefined
+  const pkgRelay = env.pkgRelay === undefined
     ? undefined
     : startPkgRelay(mk, env.pkgRelay);
+  // The guest's DevTools endpoint (src/cdp_bridge.ts): a port taken for
+  // nothing is no failure, so a refused one only says so.
+  let cdp: CdpBridge | undefined;
+  if (env.cdpBridge !== undefined) {
+    try {
+      cdp = startCdpBridge(mk, env.cdpBridge.handlers);
+      env.cdpBridge.started(cdp);
+    } catch (error) {
+      console.warn(`[cdp bridge] not started: ${error}`);
+    }
+  }
+  const relay: PkgRelay | undefined = pkgRelay === undefined &&
+      cdp === undefined
+    ? undefined
+    : {
+      stop() {
+        pkgRelay?.stop();
+        cdp?.stop();
+      },
+    };
   try {
-    const relayed = relay !== undefined && pointPkgAtRelay(mk);
+    const relayed = pkgRelay !== undefined && pointPkgAtRelay(mk);
     return await startShell(env, mk, stopWatchingRefusals, sh, relay, relayed);
   } catch (error) {
     relay?.stop();

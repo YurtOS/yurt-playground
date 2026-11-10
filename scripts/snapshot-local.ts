@@ -20,7 +20,7 @@
  *   4. print `<site>/?snapshot=<commit sha>`.
  *
  * Usage: deno run -A scripts/snapshot-local.ts [--packages a,b]
- *          [--kind desktop|tablet|phone|go]
+ *          [--kind desktop|tablet|phone|go|playwright]
  *          [--name NAME] [--file PATH] [--dry-run] [--site URL]
  *
  *   --packages  packages to install after the Python set, before the seal

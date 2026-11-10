@@ -832,7 +832,7 @@ done
 # formed, this page's format, built from these pins, of the Python set the
 # live index offers); otherwise it is dropped (scripts/lib/snapshot-pin.sh).
 # Each device's (src/snapshot_pin.ts SNAPSHOT_KINDS), checked by kind.
-snapshots_json=$(jq -c '{snapshot, tabletSnapshot, phoneSnapshot, goSnapshot}
+snapshots_json=$(jq -c '{snapshot, tabletSnapshot, phoneSnapshot, goSnapshot, playwrightSnapshot}
   | with_entries(select(.value != null))' "$root/artifacts/pins.json")
 # Whether the pinned kernel's root is a YurtFS store (src/pins.ts
 # kernelWasm.rootStore), carried over: the snapshot tools read the rule
@@ -871,7 +871,7 @@ jq -n --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sa
 # that pin is still absent: a resumed train rebuilds its pins from this
 # run's, which no longer have it, so nothing else would say so again.
 dropped_parts=() dropped_keys=" "
-for kind_entry in snapshot:desktop tabletSnapshot:tablet phoneSnapshot:phone goSnapshot:go; do
+for kind_entry in snapshot:desktop tabletSnapshot:tablet phoneSnapshot:phone goSnapshot:go playwrightSnapshot:playwright; do
   snapshot_dropped=0 snapshot_kept=0 snapshot_why=
   keep_snapshot_pin "$root" "${kind_entry%%:*}" "${kind_entry#*:}" ||
     die "$snapshot_error; fix that and $(resume_command)"
@@ -893,6 +893,7 @@ if [ "$pins_only" = 0 ]; then
       tabletSnapshot:*) key=tabletSnapshot ;;
       phoneSnapshot:*) key=phoneSnapshot ;;
       goSnapshot:*) key=goSnapshot ;;
+      playwrightSnapshot:*) key=playwrightSnapshot ;;
       *) key=snapshot ;;
     esac
     case "$dropped_keys" in *" $key "*) continue ;; esac

@@ -795,6 +795,16 @@ Deno.test("Go's capture asks about the go package, and gets an hour for its warm
   );
   assertEquals(captureTimeoutMs("desktop"), 15 * 60_000);
   assertEquals(captureTimeoutMs("go"), 60 * 60_000);
+  // Playwright's installs node and unpacks playwright-core: no compile.
+  assertEquals(captureTimeoutMs("playwright"), 15 * 60_000);
+  assertEquals(
+    captureSetProblem(NO_COMPLETE_SET, "playwright")?.includes("node package"),
+    true,
+  );
+  assertEquals(
+    captureSetProblem("img/node@22.23.3-yurt_0:0123", "playwright"),
+    undefined,
+  );
 });
 
 Deno.test("a full check of a snapshot file reads it once", async () => {

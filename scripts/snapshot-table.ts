@@ -27,6 +27,8 @@ const DEVICE = {
   tablet: "tablet (iPad): `?platform=tablet`",
   phone: "phone (iPhone): `?platform=phone`",
   go: "desktop browser that chose Go: `?platform=desktop&env=go`",
+  playwright:
+    "desktop browser that chose Playwright: `?platform=desktop&env=playwright`",
 };
 
 const MIB = 1024 * 1024;
@@ -43,9 +45,12 @@ export function snapshotTable(pins: Record<string, unknown>): string {
       pin = undefined;
     }
     if (pin === undefined) {
-      return `| ${kind} | ${
-        DEVICE[kind]
-      } | not pinned: boots the image | | | | |`;
+      // Playwright's page without its snapshot restores the desktop's and
+      // installs node and playwright-core live (src/playwright_demo.ts).
+      const without = kind === "playwright"
+        ? "not pinned: the desktop's, with a live install"
+        : "not pinned: boots the image";
+      return `| ${kind} | ${DEVICE[kind]} | ${without} | | | | |`;
     }
     const mb = (pin.size / 1e6).toFixed(1);
     const memory = pin.memoryBytes === undefined

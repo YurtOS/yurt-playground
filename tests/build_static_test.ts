@@ -74,11 +74,27 @@ Deno.test("static build writes every file the pages need", async () => {
       "llm/wasm/litertlm_wasm_internal.js",
       "llm/wasm/litertlm_wasm_internal.wasm.gz",
       "llm/wasm/litertlm_wasm_compat_asyncify_internal.wasm.gz",
+      // The Playwright demo's (src/playwright_assets.ts).
+      "playwright-core.tgz",
+      "yurt-browser-bridge.zip",
     ]
   ) {
     const stat = await Deno.stat(new URL(`dist/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/${file} is empty`);
   }
+  // The extension's zip holds what Load unpacked needs.
+  const listing = new TextDecoder().decode(
+    (await new Deno.Command("unzip", {
+      args: ["-Z1", new URL("dist/yurt-browser-bridge.zip", repoRoot).pathname],
+      stdout: "piped",
+    }).output()).stdout,
+  ).trim().split("\n").map((name) => name.replace(/^\.\//, "")).sort();
+  assertEquals(listing, [
+    "approve.html",
+    "approve.js",
+    "bridge.js",
+    "manifest.json",
+  ]);
   // Notebook 7's commands open tree/, consoles/ and edit/ in new tabs; each is
   // an app the JupyterLite build must emit, or Pages answers with the home
   // page at the wrong path and a Start button that does nothing (#73).

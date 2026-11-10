@@ -26,10 +26,12 @@
  * Usage: deno run -A scripts/release-snapshot.ts [--kind K] [--dry-run] [--resume] [--tag TAG]
  *        deno run -A scripts/release-snapshot.ts --check-pin [--kind K] [--pins PATH]
  *
- *   --kind     desktop (default), tablet, phone or go (src/snapshot_pin.ts
- *              SNAPSHOT_KINDS); go's capture installs the go package and
- *              compiles its standard library into the build cache, the
- *              slow part (captureTimeoutMs)
+ *   --kind     desktop (default), tablet, phone, go or playwright
+ *              (src/snapshot_pin.ts SNAPSHOT_KINDS); go's capture installs
+ *              the go package and compiles its standard library into the
+ *              build cache, the slow part (captureTimeoutMs); playwright's
+ *              installs node and stages playwright-core and the yurt-chrome
+ *              module (src/playwright_setup.ts)
  *
  *   --dry-run  everything but the release and the pins write
  *   --resume   reuse public/snapshot/sandbox.seal.zip when it is a capture
@@ -80,6 +82,7 @@ import {
   checkPythonSet,
   goSetRequest,
   pinnedSnapshot,
+  playwrightSetRequest,
   SANDBOX_SNAPSHOT_NAME,
   SNAPSHOT_KIND_NAMES,
   SNAPSHOT_KINDS,
@@ -249,6 +252,8 @@ export const liveSetOf = (pins: Pins, kind: SnapshotKind = "desktop") => () =>
       ? tabletPythonRequest(pins)
       : kind === "go"
       ? goSetRequest(pins)
+      : kind === "playwright"
+      ? playwrightSetRequest(pins)
       : pythonInstallRequest(pins),
   );
 
@@ -261,7 +266,11 @@ export function captureSetProblem(
 ): string | undefined {
   // The phone's holds no Python: nothing to ask the index about.
   if (kind === "phone") return undefined;
-  const what = kind === "go" ? "go package" : "Python set";
+  const what = kind === "go"
+    ? "go package"
+    : kind === "playwright"
+    ? "node package"
+    : "Python set";
   if (live === undefined) {
     return `cannot read the live package index (20 s): which ${what} is this?`;
   }
@@ -312,6 +321,7 @@ export async function capture(
   delete pins.tabletSnapshot;
   delete pins.phoneSnapshot;
   delete pins.goSnapshot;
+  delete pins.playwrightSnapshot;
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
     (request) =>
@@ -440,10 +450,14 @@ export function releaseNotes(
     ? "python alone was installed and precompiled"
     : kind === "go"
     ? "the go package was installed and its standard library compiled into the build cache"
+    : kind === "playwright"
+    ? "node was installed and playwright-core and the yurt-chrome module staged in the login home"
     : "nothing was installed";
   return [
     kind === "go"
       ? `The sealed sandbox a desktop page restores for Go (\`?env=go\`) for ${train}: the`
+      : kind === "playwright"
+      ? `The sealed sandbox a desktop page restores for Playwright (\`?env=playwright\`) for ${train}: the`
       : `The sealed sandbox a ${kind} page restores by default for ${train}: the`,
     `in-tab Yurt kernel's memory after the slim image booted and ${what},`,
     "with no process left in it.",
@@ -479,7 +493,7 @@ export function releaseNotes(
   ].join("\n");
 }
 
-/** `--kind desktop|tablet|phone|go` (default desktop), taken out of
+/** `--kind desktop|tablet|phone|go|playwright` (default desktop), taken out of
  * `args`. */
 function kindOption(args: string[]): SnapshotKind {
   const at = args.indexOf("--kind");

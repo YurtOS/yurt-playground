@@ -1,4 +1,10 @@
 import { dirname, join } from "node:path";
+import {
+  BRIDGE_EXTENSION_ZIP,
+  bridgeExtensionZip,
+  PLAYWRIGHT_CORE_TGZ,
+  playwrightCoreTarball,
+} from "./playwright_assets.ts";
 import { fileURLToPath } from "node:url";
 import {
   contentSecurityPolicy,
@@ -48,6 +54,23 @@ const ARTIFACT_FILES: Record<string, string> = {
   "/playground-slim.yurtimg": join(artifactsDir, "playground-slim.yurtimg"),
   "/xterm.css": XTERM_CSS_PATH,
 };
+
+const PLAYWRIGHT_ASSETS: Record<
+  string,
+  { type: string; make: () => Promise<Uint8Array>; fresh?: boolean }
+> = {
+  [`/${PLAYWRIGHT_CORE_TGZ}`]: {
+    type: "application/gzip",
+    make: playwrightCoreTarball,
+  },
+  [`/${BRIDGE_EXTENSION_ZIP}`]: {
+    type: "application/zip",
+    make: bridgeExtensionZip,
+    // Made on every request: an edit under extension/ shows at once.
+    fresh: true,
+  },
+};
+const assetCache: Record<string, Promise<Uint8Array>> = {};
 
 export function resolvePlaygroundPath(pathname: string): string | null {
   if (pathname in ARTIFACT_FILES) return ARTIFACT_FILES[pathname];
@@ -269,6 +292,25 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   }
   const part = await handleImagePart(pathname);
   if (part !== null) return part;
+  // The Playwright demo's assets (src/playwright_assets.ts), made once.
+  const asset = PLAYWRIGHT_ASSETS[pathname];
+  if (asset !== undefined) {
+    try {
+      // A failed make is tried again on the next request.
+      if (asset.fresh) delete assetCache[pathname];
+      const bytes = await (assetCache[pathname] ??= asset.make().catch(
+        (error) => {
+          delete assetCache[pathname];
+          throw error;
+        },
+      ));
+      return new Response(bytes as BodyInit, {
+        headers: { ...ISOLATION_HEADERS, "content-type": asset.type },
+      });
+    } catch {
+      return notFound();
+    }
+  }
   let filePath = resolvePlaygroundPath(pathname);
   if (filePath === null) return notFound();
   const directory = await directoryRule(filePath, url);

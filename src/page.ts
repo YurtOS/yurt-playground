@@ -1,4 +1,12 @@
 import { AGENT_CHAT_STORAGE } from "./snapshot_store.ts";
+import { BRIDGE_ZIP, setUpPlaywright } from "./playwright_demo.ts";
+import {
+  bridgeAnswers,
+  bridgeApproval,
+  type CdpFromWorker,
+  createCdpRelay,
+  extensionRuntime,
+} from "./browser_bridge.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import { installedMarks, type InstalledReport } from "./installed_list.ts";
 import {
@@ -52,6 +60,7 @@ import {
 import {
   captureKindOf,
   goSetRequest,
+  playwrightSetRequest,
   type SnapshotKind,
   tabletPythonRequest,
 } from "./sandbox_snapshot.ts";
@@ -96,7 +105,8 @@ type FromWorker =
   | { type: "cell-stream"; id: string; chunk: JupyterStream }
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string }
-  | MemoryRefusedMessage;
+  | MemoryRefusedMessage
+  | CdpFromWorker;
 
 /** The in-tab sandbox seals after each agent run; `?suspend=0` keeps it running,
  * and the desktop app's native sandbox does not seal. */
@@ -181,6 +191,13 @@ let platform: Platform = "desktop";
  * chooseEnv): `?env=go`, or the start screen's choice, restores the Go
  * snapshot instead of the Python one. Python's on every other page. */
 let env: Env = "python";
+/** The site pins a Playwright snapshot (src/snapshot_pin.ts): a Playwright
+ * page restores it; without one it boots the desktop's and installs live
+ * (src/playwright_demo.ts). */
+let playwrightPinned = false;
+/** Whether this page's sandbox is the Playwright snapshot's: no Python in
+ * it, so no Python install and no Notebook. */
+const playwrightSandbox = () => env === "playwright" && playwrightPinned;
 
 /**
  * window.yurt (src/agent_api.ts): a driver's view of the sandbox, present
@@ -431,6 +448,8 @@ function boot(
     ? captureKindOf(snapshotParam())!
     : platform === "desktop" && env === "go"
     ? "go"
+    : platform === "desktop" && playwrightSandbox()
+    ? "playwright"
     : platform;
   const endBoot = (why?: string) => {
     booting = false;
@@ -515,8 +534,27 @@ function boot(
     : undefined;
   if (installs !== undefined) packageInstall = installs.install;
   yurtState.set("booting");
+  // Playwright in the sandbox drives this browser through the bridge
+  // extension, when it is installed (src/browser_bridge.ts); the desktop
+  // app's guest has its own network instead.
+  // Only the sandbox the user set up for Playwright gets the endpoint: a
+  // guest that can reach it drives this browser, with its sign-ins.
+  const runtime = desktop === undefined && env === "playwright" &&
+      !agentOnly
+    ? extensionRuntime()
+    : undefined;
+  const cdpRelay = runtime === undefined
+    ? undefined
+    : createCdpRelay(runtime, (message) => worker.postMessage(message));
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
+    if (
+      msg.type === "cdp-open" || msg.type === "cdp-message" ||
+      msg.type === "cdp-close"
+    ) {
+      cdpRelay?.handle(msg);
+      return;
+    }
     installs?.heard();
     // The coordinator's empty status is "booted"; say so.
     if (msg.type === "status") {
@@ -647,11 +685,12 @@ function boot(
     const asked = new URL(location.href).searchParams.get("snapshot");
     if (asked !== null && asked !== "0" && snapshotMode() === undefined) {
       console.warn(
-        `[snapshot] ?snapshot=${asked} is not 0, 1, capture, capture-tablet, capture-phone, capture-go or an uploaded snapshot's 40-digit commit sha; booting the image`,
+        `[snapshot] ?snapshot=${asked} is not 0, 1, capture, capture-tablet, capture-phone, capture-go, capture-playwright or an uploaded snapshot's 40-digit commit sha; booting the image`,
       );
     }
     worker.postMessage({
       type: "start",
+      cdpBridge: cdpRelay !== undefined,
       // Only the agent's sandbox is sealed; the shell's never reads that seal.
       resumeSession: agentOnly && savedAgentChat(),
       dropSession: agentOnly && !savedAgentChat(),
@@ -672,6 +711,8 @@ function boot(
           ? tabletPythonRequest(pins)
           : kind === "go"
           ? goSetRequest(pins)
+          : kind === "playwright"
+          ? playwrightSetRequest(pins)
           : undefined
         : noPython || agentOnly
         ? undefined
@@ -685,6 +726,8 @@ function boot(
         ? tabletPythonRequest(pins)
         : kind === "go"
         ? goSetRequest(pins)
+        : kind === "playwright"
+        ? playwrightSetRequest(pins)
         : undefined,
       // Go's page installs go itself when Go's snapshot cannot be restored
       // (src/go_fallback.ts).
@@ -977,7 +1020,20 @@ async function runPage(): Promise<void> {
   if (chosen.note !== undefined) notes.push(chosen.note);
   const showNotes = () => {
     if (notes.length === 0) return;
-    byId("platform-note-text").textContent = notes.join(". ");
+    // Text nodes only; the one name a note may carry as a link is the
+    // extension's zip (src/playwright_demo.ts BRIDGE_ZIP), made here.
+    const text = byId("platform-note-text");
+    text.replaceChildren();
+    notes.join(". ").split(BRIDGE_ZIP).forEach((part, at) => {
+      if (at > 0) {
+        const link = document.createElement("a");
+        link.href = `./${BRIDGE_ZIP}`;
+        link.download = "";
+        link.textContent = BRIDGE_ZIP;
+        text.append(link);
+      }
+      text.append(document.createTextNode(part));
+    });
     byId("platform-note").hidden = false;
   };
   showNotes();
@@ -1011,6 +1067,17 @@ async function runPage(): Promise<void> {
     capturing: snapshotMode() === "capture",
   });
   env = chosenEnv.env;
+  // Whether the site pins Playwright's snapshot: asked now without waiting,
+  // and waited for at the start, so choosing Playwright on the start screen
+  // (after this load) restores it too.
+  const playwrightPin: Promise<boolean> =
+    desktop === undefined && platform === "desktop"
+      ? fetchSitePins().then(
+        (pins) => pins?.playwrightSnapshot !== undefined,
+        () => false,
+      )
+      : Promise.resolve(false);
+  if (env === "playwright") playwrightPinned = await playwrightPin;
   if (chosenEnv.note !== undefined) {
     notes.push(chosenEnv.note);
     showNotes();
@@ -1057,13 +1124,25 @@ async function runPage(): Promise<void> {
   const noPython = shellOnly || (desktop === undefined && phone);
   // Go's sandbox holds no Python: no Notebook or JupyterLab there.
   const applyEnv = () => {
+    // The agent is off in the Playwright sandbox (it would drive the
+    // browser): hidden too when the start screen switches to it. Only this
+    // hide is undone on a switch back; the pane's own (no model on offer)
+    // stays.
+    const agent = byId("agent");
+    if (env === "playwright" && !agent.hidden) {
+      agent.hidden = true;
+      agent.dataset.hiddenForPlaywright = "";
+    } else if (env !== "playwright" && "hiddenForPlaywright" in agent.dataset) {
+      agent.hidden = false;
+      delete agent.dataset.hiddenForPlaywright;
+    }
     if (shellOnly) return;
-    byId("notebook").hidden = env === "go";
+    byId("notebook").hidden = env === "go" || playwrightSandbox();
     for (const testid of ["choose-notebook", "choose-lab"]) {
       const link = document.querySelector<HTMLElement>(
         `[data-testid=${testid}]`,
       );
-      if (link) link.hidden = env === "go";
+      if (link) link.hidden = env === "go" || playwrightSandbox();
     }
   };
   applyEnv();
@@ -1081,8 +1160,16 @@ async function runPage(): Promise<void> {
   // With the boot refused there is no sandbox to start, so the pane says
   // so instead of offering a Run that does nothing (#197).
   void mountAgentPane(byId("agent"), {
-    yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
+    // The agent never drives a sandbox that can drive this browser.
+    yurt: () => {
+      if (env === "playwright") {
+        throw new Error("the agent is off in the Playwright sandbox");
+      }
+      return (globalThis as unknown as { yurt: Yurt }).yurt;
+    },
     start: () => document.getElementById("start-sandbox")?.click(),
+    // Playwright's sandbox hides the pane (applyEnv) and its yurt() refuses;
+    // no fixed note, so switching back to Python leaves a working pane.
     unavailable: refused ? "no sandbox" : undefined,
     // Only the in-tab sandbox seals; `?suspend=0` keeps it running.
     reload: reloadOnPurpose,
@@ -1096,7 +1183,10 @@ async function runPage(): Promise<void> {
     leave: leaveOnPurpose,
   });
   const start = document.getElementById("start");
-  const begin = () => {
+  let playwrightNote: string | undefined;
+  const begin = async () => {
+    // The env the start uses: its snapshot pin, settled now.
+    playwrightPinned = env === "playwright" && await playwrightPin;
     if (start) start.hidden = true;
     // Two sandboxes in one browser share the CPU (yurt-playground#84): say
     // so before this one boots, and answer the next tab that asks. The
@@ -1117,10 +1207,34 @@ async function runPage(): Promise<void> {
       interruptCell,
       desktop,
       stopWatchingForAnotherSandbox,
-      noPython || env === "go",
+      noPython || env === "go" || playwrightSandbox(),
       status,
       device !== "desktop",
     );
+    // The agent's own tab gets no endpoint (boot), so no setup either.
+    if (env === "playwright" && !agentOnlySandbox(desktop)) {
+      const runtime = extensionRuntime();
+      void setUpPlaywright(
+        (globalThis as unknown as { yurt: Yurt }).yurt,
+        {
+          // A page another page opened can be scripted by it: never asks.
+          openedByAnother: globalThis.opener !== null &&
+            globalThis.opener !== undefined,
+          extension: runtime !== undefined && bridgeAnswers(runtime),
+          approval: runtime === undefined
+            ? undefined
+            : () => bridgeApproval(runtime),
+          // One note, replaced as the setup goes.
+          say: (text) => {
+            const at = notes.indexOf(playwrightNote ?? "");
+            if (at >= 0) notes[at] = text;
+            else notes.push(text);
+            playwrightNote = text;
+            showNotes();
+          },
+        },
+      );
+    }
   };
   // A desktop browser's start screen offers Python or Go, once the site
   // pins Go's snapshot (without it Go's page boots the image, with no go
@@ -1128,9 +1242,30 @@ async function runPage(): Promise<void> {
   // keeps it.
   if (desktop === undefined && platform === "desktop") {
     const choice = byId("env-choice");
+    // Playwright needs no snapshot of its own; Go's choice (hidden in the
+    // markup) is shown once the site's pins name Go's snapshot.
+    // Shown only when there is something besides Python to choose:
+    // Playwright in a Chromium browser, or Go once the pins name it.
+    const chromium = /Chrome\//.test(navigator.userAgent);
+    choice.hidden = !chromium;
+    // Playwright drives a Chromium browser through its extension: no choice
+    // in Safari or Firefox.
+    const playwright = choice.querySelector<HTMLElement>(
+      "[data-testid=env-playwright]",
+    )?.closest("label");
+    if (playwright && !/Chrome\//.test(navigator.userAgent)) {
+      playwright.hidden = true;
+      const get = choice.querySelector<HTMLElement>("[data-testid=bridge-get]");
+      if (get) get.hidden = true;
+    }
     void fetchSitePins().then((pins) => {
-      choice.hidden = pins?.goSnapshot === undefined;
-    });
+      const go = choice.querySelector<HTMLElement>("[data-testid=env-go]")
+        ?.closest("label");
+      if (go && pins?.goSnapshot !== undefined) {
+        go.hidden = false;
+        choice.hidden = false;
+      }
+    }).catch(() => {});
     for (
       const radio of choice.querySelectorAll<HTMLInputElement>(
         "input[name=env]",
@@ -1139,7 +1274,9 @@ async function runPage(): Promise<void> {
       radio.checked = radio.value === env;
       radio.addEventListener("change", () => {
         if (!radio.checked) return;
-        env = radio.value === "go" ? "go" : "python";
+        env = radio.value === "go" || radio.value === "playwright"
+          ? radio.value
+          : "python";
         history.replaceState(
           history.state,
           "",
@@ -1174,10 +1311,12 @@ async function runPage(): Promise<void> {
   // The workspace opens with one action; `?start` (the old terminal page's
   // redirect, and the acceptance tests) skips it.
   if (start === null || new URL(location.href).searchParams.has("start")) {
-    begin();
+    void begin();
     return;
   }
-  byId("start-sandbox").addEventListener("click", begin, { once: true });
+  byId("start-sandbox").addEventListener("click", () => void begin(), {
+    once: true,
+  });
 }
 
 forgetChatOnRefresh();

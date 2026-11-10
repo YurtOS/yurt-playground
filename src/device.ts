@@ -136,7 +136,7 @@ export function withPlatform(href: string, platform: Platform): string {
  * library already compiled, and no Python (src/snapshot_pin.ts, kind
  * `go`). `?env=go` says it in the URL; the start screen's choice writes
  * it there. */
-export type Env = "python" | "go";
+export type Env = "python" | "go" | "playwright";
 
 /** The env a page running as `platform` takes, given `?env=` (`asked`).
  * Go is a desktop browser's only: its snapshot needs more memory than a
@@ -159,10 +159,23 @@ export function chooseEnv(
   if (asked === null || asked.toLowerCase() === "python" || capturing) {
     return { env: "python" };
   }
+  // Playwright in the sandbox drives this browser (src/playwright_demo.ts):
+  // a desktop browser's, beside Python.
+  if (asked.toLowerCase() === "playwright") {
+    return nativeApp || platform !== "desktop"
+      ? {
+        env: "python",
+        note: `Playwright drives a desktop browser's tabs: this ${
+          nativeApp ? "app" : platform
+        } page sets up Python`,
+      }
+      : { env: "playwright" };
+  }
   if (asked.toLowerCase() !== "go") {
     return {
       env: "python",
-      note: `?env=${asked} is not python or go: this page sets up Python`,
+      note:
+        `?env=${asked} is not python, go or playwright: this page sets up Python`,
     };
   }
   if (nativeApp) {
