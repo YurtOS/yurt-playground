@@ -68,7 +68,24 @@ Deno.test("?env=go is a desktop browser's only", () => {
   assertEquals(chooseEnv("desktop", "go", { nativeApp: true }).env, "python");
   const unknown = chooseEnv("desktop", "rust");
   assertEquals(unknown.env, "python");
-  assertStringIncludes(unknown.note!, "?env=rust is not python or go");
+  assertStringIncludes(
+    unknown.note!,
+    "?env=rust is not python, go or playwright",
+  );
+});
+
+Deno.test("?env=playwright is a desktop browser's", () => {
+  assertEquals(chooseEnv("desktop", "playwright"), { env: "playwright" });
+  assertEquals(chooseEnv("desktop", "Playwright"), { env: "playwright" });
+  for (const platform of ["phone", "tablet"] as const) {
+    const chosen = chooseEnv(platform, "playwright");
+    assertEquals(chosen.env, "python");
+    assertStringIncludes(chosen.note!, "desktop browser");
+  }
+  assertEquals(
+    chooseEnv("desktop", "playwright", { nativeApp: true }).env,
+    "python",
+  );
 });
 
 Deno.test("?env=go on a site without a Go snapshot sets up Python, and says so", () => {

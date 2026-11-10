@@ -3,6 +3,7 @@
  * Browser coordinator. WorkerHost.spawnRootLeader uses Atomics.wait, which
  * is legal here and illegal on the window thread.
  */
+import type { CdpBridge } from "./cdp_bridge.ts";
 import {
   dropAgentSession,
   loadAgentSession,
@@ -148,6 +149,10 @@ type ToWorker =
     // sandbox has no go -- Go's snapshot could not be restored and the
     // slim image was booted instead.
     goFallback?: PythonRequest;
+    // The page found the Yurt browser bridge extension: serve the guest a
+    // DevTools endpoint at 127.0.0.1:9222 (src/cdp_bridge.ts) whose
+    // messages go to the page as `cdp-*`.
+    cdpBridge?: boolean;
   }
   // Install Python again after a failed install (the cell's Install), then
   // start the kernel. Answered like a boot: status, then notebook-ready or
@@ -184,7 +189,14 @@ type ToWorker =
   | { type: "pkg-read-installed" }
   // An agent run ended: seal the sandbox into browser storage. It runs nothing
   // more; the page reloads to resume it. Answered by `suspended`.
-  | { type: "suspend" };
+  | { type: "suspend" }
+  // The extension's side of a DevTools connection (src/browser_bridge.ts):
+  // a CDP message for the guest, or the connection ended there.
+  | { type: "cdp-send"; conn: number; text: string }
+  | { type: "cdp-close"; conn: number };
+
+/** The guest's DevTools endpoint, once the shell's boot started it. */
+let cdpBridge: CdpBridge | undefined;
 
 /** Recorded with a seal: a kernel memory means something only to its binary. */
 let runningKernelSha256: string | undefined;
@@ -218,6 +230,10 @@ type FromWorker =
     channel: JupyterChannel;
   }
   | { type: "jupyter-restarted" }
+  // The guest's side of a DevTools connection (src/cdp_bridge.ts).
+  | { type: "cdp-open"; conn: number }
+  | { type: "cdp-message"; conn: number; text: string }
+  | { type: "cdp-close"; conn: number }
   | {
     type: "yurt-reply";
     req: number;
@@ -634,6 +650,14 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       });
     }
   }
+  if (msg.type === "cdp-send") {
+    cdpBridge?.send(msg.conn, msg.text);
+    return;
+  }
+  if (msg.type === "cdp-close") {
+    cdpBridge?.close(msg.conn);
+    return;
+  }
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });
@@ -774,6 +798,17 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     // the desktop app's guest has the network itself.
     pkgRelay: kernelPorts === undefined
       ? { tablet: msg.tablet === true }
+      : undefined,
+    cdpBridge: kernelPorts === undefined && msg.cdpBridge === true
+      ? {
+        handlers: {
+          open: (conn: number) => post({ type: "cdp-open", conn }),
+          message: (conn: number, text: string) =>
+            post({ type: "cdp-message", conn, text }),
+          close: (conn: number) => post({ type: "cdp-close", conn }),
+        },
+        started: (bridge: CdpBridge) => cdpBridge = bridge,
+      }
       : undefined,
   };
   // The slim image's Python: the coordinator installs the set itself, so

@@ -273,6 +273,7 @@ jobs:
           agent,
           webkit,
           slim,
+          browser_bridge,
         ]
         exclude: ${{ fromJSON(needs.checks.outputs.exclude) }}
     env:

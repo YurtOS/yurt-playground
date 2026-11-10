@@ -143,6 +143,29 @@ the launcher's own is refused, so no web page can reach it. The page's
 `window.yurt` and a `curl` share one registry: at most 16 running or stuck
 executions per sandbox, results kept ten minutes or until read.
 
+## Playwright in the sandbox
+
+On a desktop browser, choose **Playwright** on the start screen (or open
+`?env=playwright`). The page installs node and playwright-core in the sandbox,
+and a Playwright script there drives this browser:
+
+```
+node playwright-example.js https://example.com
+```
+
+opens a tab, reads its title and saves a screenshot in the sandbox's home. A
+script of your own starts with
+`const browser = await require("yurt-chrome").connect();`.
+
+It needs the **Yurt browser bridge** extension (Chrome or another Chromium
+browser): download [yurt-browser-bridge.zip](./yurt-browser-bridge.zip), unzip
+it, open `chrome://extensions`, turn on Developer mode, choose _Load unpacked_
+and pick the folder. The extension (`extension/` in this repository) uses
+Chrome's debugger API on the tabs it opens itself, and answers only this site.
+Inside the sandbox, Playwright reaches it at `127.0.0.1:9222`, a DevTools
+endpoint the page serves (`src/cdp_bridge.ts`); the sandbox still has no other
+network.
+
 ## Desktop app
 
 The same playground, with the sandbox running natively on your machine instead

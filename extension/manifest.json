@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Yurt browser bridge",
+  "version": "0.0.1",
+  "description": "Lets a Playwright script in a Yurt sandbox drive tabs it opens in this browser.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4V2PK+4D1GGPTFvyqDVs1qN2XtG8JbgcYMGKPHv+unwxdnnyGQ2w4ypuUTim9THL3muESBGoJaRA/XEs/I5bd4q5g2rpEdgluD70IYmta74KkkeOtaImzKmpzSCI0vFxDf9ZeUU0uXknzwcPzm4uw6G0LBVlAffF0K0SDagmvVd+9fv8ljaTkN9ET5Oa62L4npIQSPYJXRyVWRLBZiLcnRKmsFNooJPwHlp22ekqmK3xm/g9LTlrcLA+eNtflr4IzMKeYrh4a7y+op/B2C4QV3sqnDyw2J+uYokHE7m6Kni8tHnXyPLrZiqXxXUhOJ9U+RktZBWDxOrLFBx3nZuGXQIDAQAB",
+  "permissions": ["debugger", "tabs"],
+  "background": { "service_worker": "bridge.js" },
+  "externally_connectable": {
+    "matches": [
+      "http://127.0.0.1/*",
+      "http://localhost/*",
+      "https://yurt-playground.pages.dev/*",
+      "https://*.yurt-playground.pages.dev/*"
+    ]
+  }
+}

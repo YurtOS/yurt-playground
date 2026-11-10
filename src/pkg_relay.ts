@@ -25,12 +25,12 @@ import {
   TABLET_MAX_BYTES,
 } from "./packages.ts";
 
-const AF_INET = 2;
-const SOCK_STREAM = 1;
-const SOCK_NONBLOCK = 0x800;
-const MSG_DONTWAIT = 0x40;
-const MSG_NOSIGNAL = 0x4000;
-const EAGAIN = 11;
+export const AF_INET = 2;
+export const SOCK_STREAM = 1;
+export const SOCK_NONBLOCK = 0x800;
+export const MSG_DONTWAIT = 0x40;
+export const MSG_NOSIGNAL = 0x4000;
+export const EAGAIN = 11;
 
 /** What the relay needs of the kernel: calls as its own host process. */
 export type RelayKernel = {
@@ -366,9 +366,9 @@ export function replyHead(reply: RelayReply): Uint8Array {
   return new TextEncoder().encode(lines.join("\r\n"));
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function fdRequest(fd: number, extra = 0): Uint8Array {
+export function fdRequest(fd: number, extra = 0): Uint8Array {
   const req = new Uint8Array(4 + extra);
   new DataView(req.buffer).setUint32(0, fd >>> 0, true);
   return req;
@@ -376,7 +376,7 @@ function fdRequest(fd: number, extra = 0): Uint8Array {
 
 /** A backoff for I/O that would block: 1 ms doubling to 50 ms, back to
  * 1 ms after any progress. */
-function backoff() {
+export function backoff() {
   let delay = BACKOFF_MIN_MS;
   return {
     wait: async () => {

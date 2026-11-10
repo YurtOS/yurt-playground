@@ -1,4 +1,10 @@
 import { AGENT_CHAT_STORAGE } from "./snapshot_store.ts";
+import { setUpPlaywright } from "./playwright_demo.ts";
+import {
+  type CdpFromWorker,
+  createCdpRelay,
+  extensionRuntime,
+} from "./browser_bridge.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import { installedMarks, type InstalledReport } from "./installed_list.ts";
 import {
@@ -96,7 +102,8 @@ type FromWorker =
   | { type: "cell-stream"; id: string; chunk: JupyterStream }
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string }
-  | MemoryRefusedMessage;
+  | MemoryRefusedMessage
+  | CdpFromWorker;
 
 /** The in-tab sandbox seals after each agent run; `?suspend=0` keeps it running,
  * and the desktop app's native sandbox does not seal. */
@@ -515,8 +522,22 @@ function boot(
     : undefined;
   if (installs !== undefined) packageInstall = installs.install;
   yurtState.set("booting");
+  // Playwright in the sandbox drives this browser through the bridge
+  // extension, when it is installed (src/browser_bridge.ts); the desktop
+  // app's guest has its own network instead.
+  const runtime = desktop === undefined ? extensionRuntime() : undefined;
+  const cdpRelay = runtime === undefined
+    ? undefined
+    : createCdpRelay(runtime, (message) => worker.postMessage(message));
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
+    if (
+      msg.type === "cdp-open" || msg.type === "cdp-message" ||
+      msg.type === "cdp-close"
+    ) {
+      cdpRelay?.handle(msg);
+      return;
+    }
     installs?.heard();
     // The coordinator's empty status is "booted"; say so.
     if (msg.type === "status") {
@@ -652,6 +673,7 @@ function boot(
     }
     worker.postMessage({
       type: "start",
+      cdpBridge: cdpRelay !== undefined,
       // Only the agent's sandbox is sealed; the shell's never reads that seal.
       resumeSession: agentOnly && savedAgentChat(),
       dropSession: agentOnly && !savedAgentChat(),
@@ -1096,6 +1118,7 @@ async function runPage(): Promise<void> {
     leave: leaveOnPurpose,
   });
   const start = document.getElementById("start");
+  let playwrightNote: string | undefined;
   const begin = () => {
     if (start) start.hidden = true;
     // Two sandboxes in one browser share the CPU (yurt-playground#84): say
@@ -1121,6 +1144,22 @@ async function runPage(): Promise<void> {
       status,
       device !== "desktop",
     );
+    if (env === "playwright") {
+      void setUpPlaywright(
+        (globalThis as unknown as { yurt: Yurt }).yurt,
+        {
+          extension: extensionRuntime() !== undefined,
+          // One note, replaced as the setup goes.
+          say: (text) => {
+            const at = notes.indexOf(playwrightNote ?? "");
+            if (at >= 0) notes[at] = text;
+            else notes.push(text);
+            playwrightNote = text;
+            showNotes();
+          },
+        },
+      );
+    }
   };
   // A desktop browser's start screen offers Python or Go, once the site
   // pins Go's snapshot (without it Go's page boots the image, with no go
@@ -1128,8 +1167,13 @@ async function runPage(): Promise<void> {
   // keeps it.
   if (desktop === undefined && platform === "desktop") {
     const choice = byId("env-choice");
+    // Playwright needs no snapshot of its own; Go is offered once the site
+    // pins Go's.
+    choice.hidden = false;
     void fetchSitePins().then((pins) => {
-      choice.hidden = pins?.goSnapshot === undefined;
+      const go = choice.querySelector<HTMLElement>("[data-testid=env-go]")
+        ?.closest("label");
+      if (go) go.hidden = pins?.goSnapshot === undefined;
     });
     for (
       const radio of choice.querySelectorAll<HTMLInputElement>(
@@ -1139,7 +1183,9 @@ async function runPage(): Promise<void> {
       radio.checked = radio.value === env;
       radio.addEventListener("change", () => {
         if (!radio.checked) return;
-        env = radio.value === "go" ? "go" : "python";
+        env = radio.value === "go" || radio.value === "playwright"
+          ? radio.value
+          : "python";
         history.replaceState(
           history.state,
           "",
