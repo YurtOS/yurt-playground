@@ -5,7 +5,12 @@
 // the guest's DevTools endpoint (src/cdp_bridge.ts) and the Yurt browser
 // bridge extension (src/browser_bridge.ts).
 import type { Yurt } from "./agent_api.ts";
-import { stagePlaywright } from "./playwright_setup.ts";
+import {
+  BRIDGE_ZIP,
+  INSTALL_LOG,
+  shLine,
+  stagePlaywright,
+} from "./playwright_setup.ts";
 
 export {
   EXAMPLE_SCRIPT,
@@ -14,11 +19,10 @@ export {
   YURT_CHROME_MODULE,
 } from "./playwright_setup.ts";
 
-/** The note for a browser without the extension. */
-/** The extension's zip, as the site serves it (src/playwright_assets.ts):
- *  a note that names it shows it as a link (src/page.ts). */
-export const BRIDGE_ZIP = "yurt-browser-bridge.zip";
+export { BRIDGE_ZIP } from "./playwright_setup.ts";
 
+/** The note for a browser without the extension: it names the zip, which
+ *  the page shows as a link (src/page.ts). */
 export const NO_EXTENSION_NOTE =
   "Playwright drives this browser through the Yurt browser bridge extension, " +
   `which is not installed: download ${BRIDGE_ZIP} from this site, unzip it, ` +
@@ -81,12 +85,18 @@ export async function setUpPlaywright(
       const result = await yurt.exec(line);
       return "code" in result && result.code !== null ? result.code : -1;
     };
+    const made = new Set<string>();
     await stagePlaywright({
       run: code,
       write: async (path, bytes) => {
+        // Each directory once: a restored sandbox has them, and every
+        // exec is a guest process.
         const dir = path.slice(0, path.lastIndexOf("/"));
-        if (await code(`mkdir -p '${dir}'`) !== 0) {
-          throw new Error(`cannot make ${dir}`);
+        if (!made.has(dir)) {
+          if (await code(`mkdir -p '${dir}'`) !== 0) {
+            throw new Error(`cannot make ${dir}`);
+          }
+          made.add(dir);
         }
         await yurt.fs.write(path, bytes);
       },
@@ -101,7 +111,9 @@ export async function setUpPlaywright(
       say,
       installNode: async () => {
         await code(
-          "{ sudo pkg update && sudo pkg install node; } >/tmp/playwright-setup.log 2>&1",
+          shLine(
+            `{ sudo pkg update && sudo pkg install node; } >${INSTALL_LOG} 2>&1`,
+          ),
         );
       },
     });

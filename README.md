@@ -287,7 +287,7 @@ The desktop's holds the Python set and starts the Notebook, the tablet's the int
 | tablet | tablet (iPad): `?platform=tablet` | `snapshot-tablet-playground-2026.10.31-3d32068.2-3313` | 95.4 MB in 5 parts | 381.8 MiB | 1349 MiB | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
 | phone | phone (iPhone): `?platform=phone` | `snapshot-phone-playground-2026.10.31-3d32068.2-3313` | 31.2 MB in 2 parts | 136.1 MiB | 713 MiB | BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
 | go | desktop browser that chose Go: `?platform=desktop&env=go` | `snapshot-go-playground-2026.10.31-3d32068.2-3313` | 247.4 MB in 12 parts | 882.8 MiB | 2155 MiB | BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
-| playwright | desktop browser that chose Playwright: `?platform=desktop&env=playwright` | not pinned: boots the image | | | | |
+| playwright | desktop browser that chose Playwright: `?platform=desktop&env=playwright` | not pinned: the desktop's, with a live install | | | | |
 
 <!-- deno-fmt-ignore-end -->
 <!-- snapshot-table:end -->

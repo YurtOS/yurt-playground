@@ -220,9 +220,13 @@ if (import.meta.main) {
         (await page.locator("#term").textContent()) ?? "",
       );
       let jupyterSeconds: number | undefined;
-      // Go's page (`env=go`) starts no Jupyter.
+      // Go's page (`env=go`) starts no Jupyter, nor Playwright's (it
+      // restores a snapshot without Python, or its page measures the shell).
       const params = new URL(page.url()).searchParams;
-      if (params.get("platform") === "desktop" && params.get("env") !== "go") {
+      if (
+        params.get("platform") === "desktop" &&
+        params.get("env") !== "go" && params.get("env") !== "playwright"
+      ) {
         await page.waitForFunction(
           () =>
             document.querySelector("[data-testid=notebook-status]")

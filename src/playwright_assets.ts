@@ -5,11 +5,12 @@
 // server makes them on first request.
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BRIDGE_ZIP, PLAYWRIGHT_CORE_TGZ } from "./playwright_setup.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
-export const PLAYWRIGHT_CORE_TGZ = "playwright-core.tgz";
-export const BRIDGE_EXTENSION_ZIP = "yurt-browser-bridge.zip";
+export { PLAYWRIGHT_CORE_TGZ };
+export const BRIDGE_EXTENSION_ZIP = BRIDGE_ZIP;
 
 /** The version deno.json pins (`npm:playwright@X`); playwright-core is
  *  the same version. */

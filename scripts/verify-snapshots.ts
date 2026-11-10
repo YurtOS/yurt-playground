@@ -81,7 +81,7 @@ export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
 }> = {
   desktop: {
     has: PYTHON_SET,
-    lacks: GO_SET,
+    lacks: [...GO_SET, ...PLAYWRIGHT_SET],
     set: PYTHON_SET,
     python: true,
     go: false,
@@ -94,6 +94,7 @@ export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
     lacks: [
       ...PYTHON_SET.filter((name) => !TABLET_PYTHON_SET.includes(name)),
       ...GO_SET,
+      ...PLAYWRIGHT_SET,
     ],
     set: TABLET_PYTHON_SET,
     python: true,
@@ -104,7 +105,7 @@ export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
   },
   phone: {
     has: [],
-    lacks: [...PYTHON_SET, ...GO_SET],
+    lacks: [...PYTHON_SET, ...GO_SET, ...PLAYWRIGHT_SET],
     set: null,
     python: false,
     go: false,

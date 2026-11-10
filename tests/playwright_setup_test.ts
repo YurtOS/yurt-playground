@@ -89,3 +89,18 @@ Deno.test("the no-extension note names the zip, which the page shows as a link",
   assertEquals(BRIDGE_ZIP, "yurt-browser-bridge.zip");
   assertEquals(NO_EXTENSION_NOTE.split(BRIDGE_ZIP).length, 2);
 });
+
+Deno.test("a chained step runs as one exec'd shell, quotes intact", async () => {
+  const { shLine, unpackLine } = await import("../src/playwright_setup.ts");
+  assertEquals(
+    shLine("echo 'a' && echo b"),
+    `exec /bin/sh -c 'echo '\\''a'\\'' && echo b'`,
+  );
+  // The unpack is a chain: the session's redirects must cover all of it.
+  assertEquals(unpackLine("x.tgz").startsWith("exec /bin/sh -c '"), true);
+  const run = await new Deno.Command("/bin/sh", {
+    args: ["-c", shLine("printf '%s' \"it's\" && printf ' ok'")],
+    stdout: "piped",
+  }).output();
+  assertEquals(new TextDecoder().decode(run.stdout), "it's ok");
+});

@@ -3,7 +3,7 @@
  * Browser coordinator. WorkerHost.spawnRootLeader uses Atomics.wait, which
  * is legal here and illegal on the window thread.
  */
-import { stagePlaywright } from "./playwright_setup.ts";
+import { shLine, stagePlaywright } from "./playwright_setup.ts";
 import type { CdpBridge } from "./cdp_bridge.ts";
 import {
   dropAgentSession,
@@ -500,7 +500,9 @@ async function captureSnapshot(
         const dir = path.slice(0, path.lastIndexOf("/"));
         if (
           await run(
-            `mkdir -p '${dir}' && cp '${from}' '${path}' && sudo rm -f '${from}'`,
+            shLine(
+              `mkdir -p '${dir}' && cp '${from}' '${path}' && sudo rm -f '${from}'`,
+            ),
           ) !== 0
         ) {
           throw new Error(`staging ${path} failed`);

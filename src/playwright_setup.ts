@@ -8,6 +8,12 @@
 
 export const HOME = "/home/user";
 
+/** The extension's zip and playwright-core's tarball, as the site serves
+ *  them (src/playwright_assets.ts makes them; public/index.html links the
+ *  zip). Here, a module with no Deno API, so the page can import them. */
+export const BRIDGE_ZIP = "yurt-browser-bridge.zip";
+export const PLAYWRIGHT_CORE_TGZ = "playwright-core.tgz";
+
 /** Where the modules go: Node searches `~/.node_modules` from any
  *  directory (one of its global folders), not only from under the home. */
 export const MODULES = `${HOME}/.node_modules`;
@@ -62,13 +68,25 @@ export const NODE_PRESENT = "command -v node >/dev/null";
 export const CORE_PRESENT =
   `[ "$(node -p 'require("${MODULES}/playwright-core/package.json").version' 2>/dev/null)" = "${PLAYWRIGHT_CORE_VERSION}" ]`;
 
+/** `script` as one exec'd shell, so a session's output and stdin
+ *  redirects cover every command of a chain, not only the last
+ *  (src/boot.ts: a line ends in an exec). */
+export function shLine(script: string): string {
+  return `exec /bin/sh -c '${script.replace(/'/g, "'\\''")}'`;
+}
+
 /** Unpack `tgz` (in the home) into ~/.node_modules/playwright-core. */
 export function unpackLine(tgz: string): string {
-  return `cd ${HOME} && rm -rf ${MODULES}/playwright-core && ` +
-    `mkdir -p ${MODULES}/playwright-core ${MODULES}/yurt-chrome && ` +
-    `tar -xzf ${tgz} -C ${MODULES}/playwright-core ` +
-    `--strip-components=1 && rm ${tgz}`;
+  return shLine(
+    `cd ${HOME} && rm -rf ${MODULES}/playwright-core && ` +
+      `mkdir -p ${MODULES}/playwright-core ${MODULES}/yurt-chrome && ` +
+      `tar -xzf ${tgz} -C ${MODULES}/playwright-core ` +
+      `--strip-components=1 && rm ${tgz}`,
+  );
 }
+
+/** Where the page's node install writes pkg's output. */
+export const INSTALL_LOG = "/tmp/playwright-setup.log";
 
 /** What {@link stagePlaywright} did: each step it found done is false. */
 export type StageOutcome = { installedNode: boolean; unpackedCore: boolean };
@@ -88,7 +106,7 @@ export async function stagePlaywright(
     say("Setting up Playwright: installing node…");
     await installNode();
     if (await guest.run(NODE_PRESENT) !== 0) {
-      throw new Error("node did not install");
+      throw new Error(`node did not install (see ${INSTALL_LOG})`);
     }
     installedNode = true;
   }
