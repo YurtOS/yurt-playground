@@ -5,16 +5,22 @@ document.getElementById("origin").textContent = params.get("origin") ?? "?";
 // While a person reads this, keep the extension's service worker (which is
 // waiting for the answer) from being stopped as idle.
 const keepalive = setInterval(
-  () => chrome.runtime.sendMessage({ yurtApproval: "keepalive" }),
+  () =>
+    chrome.runtime.sendMessage({ yurtApproval: "keepalive" }).catch(() => {}),
   10_000,
 );
 const answer = async (allowed) => {
   clearInterval(keepalive);
   // Delivered first, then closed: a close the worker sees first is a no.
-  await chrome.runtime.sendMessage({
-    yurtApproval: params.get("ask"),
-    allowed,
-  });
+  try {
+    await chrome.runtime.sendMessage({
+      yurtApproval: params.get("ask"),
+      allowed,
+    });
+  } catch {
+    // The bridge restarted and its question is gone; the page asks again
+    // on reload.
+  }
   globalThis.close();
 };
 document.getElementById("allow").addEventListener("click", () => answer(true));

@@ -46,7 +46,6 @@ function remember(key, documentId) {
 /** One question per document at a time, shared by every connection. */
 const asking = new Map(); // documentId -> Promise<boolean>
 const answers = new Map(); // ask id -> resolve(boolean)
-let nextAsk = 1;
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id || message?.yurtApproval === undefined) {
@@ -65,13 +64,25 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 async function approve(sender) {
   const documentId = sender?.documentId;
   if (sender?.frameId !== 0 || typeof documentId !== "string") return false;
+  // Only the playground's own page sets Playwright up: never JupyterLite's
+  // pages (./jupyter/...), which render notebook output on the same origin.
+  let page;
+  try {
+    page = new URL(sender.url);
+  } catch {
+    return false;
+  }
+  if (page.pathname !== "/" && page.pathname !== "/index.html") return false;
   if ((await documentsUnder(APPROVED)).includes(documentId)) return true;
   if ((await documentsUnder(DENIED)).includes(documentId)) return false;
   const pending = asking.get(documentId);
   if (pending !== undefined) return await pending;
-  const origin = sender.origin ?? sender.url ?? "";
+  // The window names the page that asks, not just the site.
+  const origin = sender.url ?? sender.origin ?? "";
   const question = (async () => {
-    const ask = String(nextAsk++);
+    // Random: a window left from before a worker restart cannot answer a
+    // newer question.
+    const ask = crypto.randomUUID();
     const answer = new Promise((resolve) => answers.set(ask, resolve));
     // No window, no question: a no (and nothing waits on it).
     let popup;
@@ -308,6 +319,9 @@ chrome.runtime.onConnectExternal.addListener((port) => {
     allowed ??= approve(sender);
     if (!(await allowed)) {
       fail(id, sessionId, "not allowed: the Yurt browser bridge was denied");
+      // Our own disconnect fires no onDisconnect here: drop the listeners.
+      chrome.debugger.onEvent.removeListener(onEvent);
+      chrome.debugger.onDetach.removeListener(onDetach);
       port.disconnect();
       return;
     }

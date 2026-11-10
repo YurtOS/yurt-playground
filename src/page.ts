@@ -1182,6 +1182,14 @@ async function runPage(): Promise<void> {
     // Playwright needs no snapshot of its own; Go's choice (hidden in the
     // markup) is shown once the site's pins name Go's snapshot.
     choice.hidden = false;
+    // Playwright drives a Chromium browser through its extension: no choice
+    // in Safari or Firefox.
+    const playwright = choice.querySelector<HTMLElement>(
+      "[data-testid=env-playwright]",
+    )?.closest("label");
+    if (playwright && !/Chrome\//.test(navigator.userAgent)) {
+      playwright.hidden = true;
+    }
     void fetchSitePins().then((pins) => {
       const go = choice.querySelector<HTMLElement>("[data-testid=env-go]")
         ?.closest("label");

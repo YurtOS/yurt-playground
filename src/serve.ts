@@ -57,7 +57,7 @@ const ARTIFACT_FILES: Record<string, string> = {
 
 const PLAYWRIGHT_ASSETS: Record<
   string,
-  { type: string; make: () => Promise<Uint8Array> }
+  { type: string; make: () => Promise<Uint8Array>; fresh?: boolean }
 > = {
   [`/${PLAYWRIGHT_CORE_TGZ}`]: {
     type: "application/gzip",
@@ -66,6 +66,8 @@ const PLAYWRIGHT_ASSETS: Record<
   [`/${BRIDGE_EXTENSION_ZIP}`]: {
     type: "application/zip",
     make: bridgeExtensionZip,
+    // Made on every request: an edit under extension/ shows at once.
+    fresh: true,
   },
 };
 const assetCache: Record<string, Promise<Uint8Array>> = {};
@@ -295,6 +297,7 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   if (asset !== undefined) {
     try {
       // A failed make is tried again on the next request.
+      if (asset.fresh) delete assetCache[pathname];
       const bytes = await (assetCache[pathname] ??= asset.make().catch(
         (error) => {
           delete assetCache[pathname];

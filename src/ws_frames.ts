@@ -98,6 +98,8 @@ export function encodeFrame(opcode: number, payload: Uint8Array): Uint8Array {
  *  while its header is not whole. */
 function frameSize(bytes: Uint8Array): number | undefined {
   if (bytes.length < 2) return undefined;
+  // An unmasked client frame fails now, not after bytes that never come.
+  if ((bytes[1] & 0x80) === 0) throw new Error("a client frame must be masked");
   const length = bytes[1] & 0x7f;
   if (length < 126) return 2 + 4 + length;
   if (length === 126) {
@@ -170,6 +172,12 @@ export class MessageReader {
       } else if (
         frame.opcode === OPCODE.text || frame.opcode === OPCODE.continuation
       ) {
+        // RFC 6455 5.4: a new message only between messages, a
+        // continuation only inside one.
+        const inside = this.#parts.length > 0;
+        if ((frame.opcode === OPCODE.text) === inside) {
+          throw new Error("a fragmented message out of order");
+        }
         this.#parts.push(frame.payload);
         this.#size += frame.payload.length;
         if (this.#size > MAX_MESSAGE_BYTES) {

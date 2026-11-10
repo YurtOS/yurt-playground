@@ -223,7 +223,9 @@ export function startCdpBridge(
         return closed;
       };
       if (read.rest.length > 0 && take(read.rest)) return;
-      const wait = backoff();
+      // Interactive: a script's next command after a pause is seen within
+      // 5 ms, not the relay's 50.
+      const wait = backoff(5);
       while (!stopped && !socket.closing) {
         const { rc, response } = recv(fd, io.chunkCap);
         if (rc === -EAGAIN) {

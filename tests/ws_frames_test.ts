@@ -128,3 +128,28 @@ Deno.test("a malformed close gets 1002 and a binary frame 1003", () => {
     encodeFrame(OPCODE.close, new Uint8Array([0x03, 0xeb])),
   ]);
 });
+
+Deno.test("an unmasked frame fails at its header; fragments keep their order", () => {
+  assertThrows(
+    () => new MessageReader().push(new Uint8Array([0x81, 10])),
+    Error,
+    "masked",
+  );
+  // A new text frame inside an open message, and a continuation outside one.
+  assertThrows(
+    () =>
+      new MessageReader().push(
+        new Uint8Array([
+          ...clientFrame(OPCODE.text, text("abc"), false),
+          ...clientFrame(OPCODE.text, text('{"id":1}')),
+        ]),
+      ),
+    Error,
+    "out of order",
+  );
+  assertThrows(
+    () => new MessageReader().push(clientFrame(OPCODE.continuation, text("x"))),
+    Error,
+    "out of order",
+  );
+});

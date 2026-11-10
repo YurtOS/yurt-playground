@@ -217,6 +217,16 @@ if (import.meta.main) {
         `approved top ${topAnswer}, frame ${fromFrame}, windows ${askedAfterTop} -> ${asked}`,
       );
     }
+    // Only the playground's own page may ask: a JupyterLite page (a top
+    // document under /jupyter/, which renders notebook output) is a no
+    // without a window.
+    const lite = await context.newPage();
+    await lite.goto(`http://127.0.0.1:${framed.addr.port}/jupyter/lab/`);
+    const liteAnswer = await callFrom(lite.mainFrame(), "Yurt.approve");
+    if (liteAnswer !== '{"allowed":false}' || asked !== askedAfterTop) {
+      fail(`a JupyterLite page could ask: ${liteAnswer}, windows ${asked}`);
+    }
+    await lite.close();
     await framedPage.close();
     await framed.shutdown();
     console.log(

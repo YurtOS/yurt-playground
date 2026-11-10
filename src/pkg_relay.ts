@@ -376,12 +376,12 @@ export function fdRequest(fd: number, extra = 0): Uint8Array {
 
 /** A backoff for I/O that would block: 1 ms doubling to 50 ms, back to
  * 1 ms after any progress. */
-export function backoff() {
+export function backoff(maxMs = BACKOFF_MAX_MS) {
   let delay = BACKOFF_MIN_MS;
   return {
     wait: async () => {
       await sleep(delay);
-      delay = Math.min(delay * 2, BACKOFF_MAX_MS);
+      delay = Math.min(delay * 2, maxMs);
     },
     progressed: () => {
       delay = BACKOFF_MIN_MS;
