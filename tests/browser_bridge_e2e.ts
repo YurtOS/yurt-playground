@@ -88,36 +88,38 @@ if (import.meta.main) {
     // A script on the site's origin (a notebook output, say) can reach the
     // extension itself; the person's answer is what stops it.
     const tabsBefore = context.pages().length;
-    const hostile = await plain.evaluate(
-      (id) =>
-        new Promise<string>((resolve) => {
-          const port = (globalThis as unknown as {
-            chrome: {
-              runtime: {
-                connect(id: string): {
-                  postMessage(m: unknown): void;
-                  onMessage: {
-                    addListener(
-                      fn: (m: { error?: { message: string } }) => void,
-                    ): void;
+    const callExtension = () =>
+      plain.evaluate(
+        (id) =>
+          new Promise<string>((resolve) => {
+            const port = (globalThis as unknown as {
+              chrome: {
+                runtime: {
+                  connect(id: string): {
+                    postMessage(m: unknown): void;
+                    onMessage: {
+                      addListener(
+                        fn: (m: { error?: { message: string } }) => void,
+                      ): void;
+                    };
+                    onDisconnect: { addListener(fn: () => void): void };
                   };
-                  onDisconnect: { addListener(fn: () => void): void };
                 };
               };
-            };
-          }).chrome.runtime.connect(id);
-          port.onMessage.addListener((m: { error?: { message: string } }) =>
-            resolve(m.error?.message ?? "answered")
-          );
-          port.onDisconnect.addListener(() => resolve("disconnected"));
-          port.postMessage({
-            id: 1,
-            method: "Target.createTarget",
-            params: { url: "about:blank" },
-          });
-        }),
-      "leelndonobmigkkkogijljomjikkefbe",
-    );
+            }).chrome.runtime.connect(id);
+            port.onMessage.addListener((m: { error?: { message: string } }) =>
+              resolve(m.error?.message ?? "answered")
+            );
+            port.onDisconnect.addListener(() => resolve("disconnected"));
+            port.postMessage({
+              id: 1,
+              method: "Target.createTarget",
+              params: { url: "about:blank" },
+            });
+          }),
+        "leelndonobmigkkkogijljomjikkefbe",
+      );
+    const hostile = await callExtension();
     if (!/not allowed/.test(hostile) || asked !== 1) {
       fail(`a denied page drove the browser: ${hostile} (asked ${asked})`);
     }
@@ -130,6 +132,11 @@ if (import.meta.main) {
     console.log(
       `browser bridge e2e: denied in the approval window: ${hostile}`,
     );
+    // The no is remembered for the tab: connecting again asks nobody.
+    const again = await callExtension();
+    if (!/not allowed/.test(again) || asked !== 1) {
+      fail(`a denied tab was asked again: ${again} (asked ${asked})`);
+    }
     answer = "#allow";
     await plain.close();
     console.log("browser bridge e2e: no endpoint without ?env=playwright");

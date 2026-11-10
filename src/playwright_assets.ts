@@ -19,10 +19,16 @@ export async function pinnedPlaywrightVersion(): Promise<string> {
   return match[1];
 }
 
-async function run(cmd: string, args: string[], cwd: string) {
+async function run(
+  cmd: string,
+  args: string[],
+  cwd: string,
+  env: Record<string, string> = {},
+) {
   const { success, stdout, stderr } = await new Deno.Command(cmd, {
     args,
     cwd,
+    env,
     stdout: "piped",
     stderr: "piped",
   }).output();
@@ -62,7 +68,10 @@ export async function playwrightCoreTarball(): Promise<Uint8Array> {
   const rename = Deno.build.os === "darwin"
     ? ["-s", "/^playwright-core/package/"]
     : ["--transform", "s,^playwright-core,package,"];
-  return await run("tar", ["-czf", "-", ...rename, "playwright-core"], dir);
+  return await run("tar", ["-czf", "-", ...rename, "playwright-core"], dir, {
+    // BSD tar would add AppleDouble ._ files for extended attributes.
+    COPYFILE_DISABLE: "1",
+  });
 }
 
 /** extension/ zipped, to load unpacked from chrome://extensions. */

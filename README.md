@@ -162,11 +162,12 @@ browser): download [yurt-browser-bridge.zip](./yurt-browser-bridge.zip), unzip
 it, open `chrome://extensions`, turn on Developer mode, choose _Load unpacked_
 and pick the folder. The extension (`extension/` in this repository) uses
 Chrome's debugger API on the tabs it opens itself, and answers only this site.
-The first time a script connects, the extension opens its own window asking
-whether to let the sandbox drive this browser: the tabs it opens use this
-browser's sign-ins, so allow it only for a script you started. Inside the
-sandbox, Playwright reaches the extension at `127.0.0.1:9222`, a DevTools
-endpoint only a page set up for Playwright serves (`src/cdp_bridge.ts`).
+While the page sets Playwright up, the extension opens its own window asking
+whether to let this tab's sandbox drive the browser: the tabs it opens use this
+browser's sign-ins, so allow it only if you mean to. The answer holds until the
+tab closes or reloads. Inside the sandbox, Playwright reaches the extension at
+`127.0.0.1:9222`, a DevTools endpoint only a page set up for Playwright serves
+(`src/cdp_bridge.ts`).
 
 ## Desktop app
 

@@ -14,28 +14,42 @@ const DEFAULT_CONTEXT = "yurt-default";
 // closes or reloads; it is kept in chrome.storage.session, which outlives
 // this service worker's idle stops.
 const APPROVED = "approvedTabs";
+const DENIED = "deniedTabs";
 
-async function approvedTabs() {
-  const stored = await chrome.storage.session.get(APPROVED);
-  return new Set(stored[APPROVED] ?? []);
+/** The tabs under `key`, once every queued update has landed. */
+async function tabsUnder(key) {
+  await updates;
+  const stored = await chrome.storage.session.get(key);
+  return new Set(stored[key] ?? []);
 }
+const approvedTabs = () => tabsUnder(APPROVED);
 // One update at a time: each reads the set and writes it back, and two at
 // once (an approval, and the approval window's own tab closing) would lose
 // one of them.
 let updates = Promise.resolve();
-function setApproved(tabId, approved) {
-  updates = updates.then(async () => {
-    const tabs = await approvedTabs();
-    if (tabs.has(tabId) === approved) return;
-    if (approved) tabs.add(tabId);
+function setTab(key, tabId, present) {
+  const next = updates.then(async () => {
+    const stored = await chrome.storage.session.get(key);
+    const tabs = new Set(stored[key] ?? []);
+    if (tabs.has(tabId) === present) return;
+    if (present) tabs.add(tabId);
     else tabs.delete(tabId);
-    await chrome.storage.session.set({ [APPROVED]: [...tabs] });
+    await chrome.storage.session.set({ [key]: [...tabs] });
   }).catch(() => {});
-  return updates;
+  updates = next;
+  return next;
 }
-chrome.tabs.onRemoved.addListener((tabId) => void setApproved(tabId, false));
+const setApproved = (tabId, approved) => setTab(APPROVED, tabId, approved);
+// A no is remembered for the tab too, so a script that connects again (a
+// hostile one, looping) gets no new window: only a reload asks again.
+const setDenied = (tabId, denied) => setTab(DENIED, tabId, denied);
+const forget = (tabId) => {
+  void setApproved(tabId, false);
+  void setDenied(tabId, false);
+};
+chrome.tabs.onRemoved.addListener(forget);
 chrome.tabs.onUpdated.addListener((tabId, change) => {
-  if (change.status === "loading") void setApproved(tabId, false);
+  if (change.status === "loading") forget(tabId);
 });
 
 /** One question per tab at a time, shared by every connection that asks. */
@@ -58,11 +72,13 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 /** Whether a person allows the page in tab `tabId` (from `origin`). */
 async function approve(tabId, origin) {
   if ((await approvedTabs()).has(tabId)) return true;
+  if ((await tabsUnder(DENIED)).has(tabId)) return false;
   const pending = asking.get(tabId);
   if (pending !== undefined) return await pending;
   const question = (async () => {
     const ask = String(nextAsk++);
     const answer = new Promise((resolve) => answers.set(ask, resolve));
+    // No window, no question: a no (and nothing waits on it).
     const popup = await chrome.windows.create({
       url: chrome.runtime.getURL(
         `approve.html?ask=${ask}&origin=${encodeURIComponent(origin)}`,
@@ -80,9 +96,9 @@ async function approve(tabId, origin) {
     const allowed = await answer;
     chrome.windows.onRemoved.removeListener(closed);
     answers.delete(ask);
-    if (allowed) await setApproved(tabId, true);
+    await (allowed ? setApproved(tabId, true) : setDenied(tabId, true));
     return allowed;
-  })();
+  })().catch(() => false);
   asking.set(tabId, question);
   try {
     return await question;
@@ -202,7 +218,9 @@ chrome.runtime.onConnectExternal.addListener((port) => {
       case "Target.createTarget": {
         const tab = await chrome.tabs.create({
           url: "about:blank",
-          active: true,
+          // In the background: the playground tab, which relays every
+          // message, keeps the focus (and its timers unthrottled).
+          active: false,
         });
         try {
           const { targetId } = await attachTab(tab.id);

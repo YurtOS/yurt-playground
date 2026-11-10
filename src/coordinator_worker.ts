@@ -618,6 +618,15 @@ function workerTerm(
 
 self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
+  // The DevTools relay's hot path: before the other handlers' awaits.
+  if (msg.type === "cdp-send") {
+    cdpBridge?.send(msg.conn, msg.text);
+    return;
+  }
+  if (msg.type === "cdp-close") {
+    cdpBridge?.close(msg.conn);
+    return;
+  }
   await serveYurt(msg);
   await servePackages(msg);
   if (msg.type === "pkg-read-installed") await installed.read();
@@ -649,14 +658,6 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         why: error instanceof Error ? error.message : String(error),
       });
     }
-  }
-  if (msg.type === "cdp-send") {
-    cdpBridge?.send(msg.conn, msg.text);
-    return;
-  }
-  if (msg.type === "cdp-close") {
-    cdpBridge?.close(msg.conn);
-    return;
   }
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
