@@ -174,6 +174,25 @@ host, which boots the image with a network interface, your resolvers and a few
 mapped ports, and relays the terminal and the Jupyter kernel to the page over
 WebSockets on the launcher's own origin.
 
+### Playwright in the sandbox
+
+`yurt-playground --playwright` also opens a Google Chrome window (its own
+profile, with its DevTools port on loopback) and lets the sandbox reach it, so a
+Playwright script running inside Yurt drives that window. In the page's
+terminal:
+
+```
+node playwright-example.js https://example.com
+```
+
+The launcher installs `playwright-core` (the playground's own pinned version,
+checked against npm's sha512) and a `yurt-chrome` module in the sandbox's home,
+so a script of your own starts with
+`const browser = await require("yurt-chrome").connect();`. The page opens with
+`?env=playwright`: the shell, without Python or Jupyter. It needs Google Chrome
+installed. With `--playwright` the sandbox can reach every loopback port on this
+machine (as `10.0.2.2:<port>`), not only Chrome's.
+
 The home page also offers the `yurt` command line for macOS and Linux, which
 runs the same image from a shell the way you would use `docker`.
 

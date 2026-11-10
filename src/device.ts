@@ -136,7 +136,7 @@ export function withPlatform(href: string, platform: Platform): string {
  * library already compiled, and no Python (src/snapshot_pin.ts, kind
  * `go`). `?env=go` says it in the URL; the start screen's choice writes
  * it there. */
-export type Env = "python" | "go";
+export type Env = "python" | "go" | "playwright";
 
 /** The env a page running as `platform` takes, given `?env=` (`asked`).
  * Go is a desktop browser's only: its snapshot needs more memory than a
@@ -150,14 +150,30 @@ export type Env = "python" | "go";
 export function chooseEnv(
   platform: Platform,
   asked: string | null,
-  { nativeApp = false, goPinned = true, capturing = false }: {
+  {
+    nativeApp = false,
+    goPinned = true,
+    capturing = false,
+    playwrightApp = false,
+  }: {
     nativeApp?: boolean;
     goPinned?: boolean;
     capturing?: boolean;
+    /** The desktop app started with --playwright (src/desktop_playwright.ts). */
+    playwrightApp?: boolean;
   } = {},
 ): { env: Env; note?: string } {
   if (asked === null || asked.toLowerCase() === "python" || capturing) {
     return { env: "python" };
+  }
+  // Playwright drives a Chrome window on the machine, which only the desktop
+  // app started with --playwright opens and lets the sandbox reach.
+  if (asked.toLowerCase() === "playwright") {
+    return playwrightApp ? { env: "playwright" } : {
+      env: "python",
+      note:
+        "Playwright runs in the desktop app started with yurt-playground --playwright: this page sets up Python",
+    };
   }
   if (asked.toLowerCase() !== "go") {
     return {

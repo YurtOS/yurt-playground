@@ -1009,8 +1009,15 @@ async function runPage(): Promise<void> {
     goPinned: askedEnv?.toLowerCase() !== "go" ||
       (await fetchSitePins())?.goSnapshot !== undefined,
     capturing: snapshotMode() === "capture",
+    playwrightApp: desktop?.playwright === true,
   });
   env = chosenEnv.env;
+  if (env === "playwright") {
+    notes.push(
+      'Playwright: in the terminal, node playwright-example.js drives the Chrome window the app opened; require("yurt-chrome").connect() in your own scripts',
+    );
+    showNotes();
+  }
   if (chosenEnv.note !== undefined) {
     notes.push(chosenEnv.note);
     showNotes();
@@ -1055,15 +1062,15 @@ async function runPage(): Promise<void> {
   // Python or Jupyter: the automatic Python install ran an iPhone tab out
   // of memory for new processes. The phone note and the cell say so.
   const noPython = shellOnly || (desktop === undefined && phone);
-  // Go's sandbox holds no Python: no Notebook or JupyterLab there.
+  // Go's and Playwright's sandboxes hold no Python: no Notebook or JupyterLab.
   const applyEnv = () => {
     if (shellOnly) return;
-    byId("notebook").hidden = env === "go";
+    byId("notebook").hidden = env !== "python";
     for (const testid of ["choose-notebook", "choose-lab"]) {
       const link = document.querySelector<HTMLElement>(
         `[data-testid=${testid}]`,
       );
-      if (link) link.hidden = env === "go";
+      if (link) link.hidden = env !== "python";
     }
   };
   applyEnv();
@@ -1117,7 +1124,7 @@ async function runPage(): Promise<void> {
       interruptCell,
       desktop,
       stopWatchingForAnotherSandbox,
-      noPython || env === "go",
+      noPython || env !== "python",
       status,
       device !== "desktop",
     );

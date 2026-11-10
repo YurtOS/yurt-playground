@@ -261,7 +261,8 @@ Deno.test("the launcher tells the page the sandbox is native and relays /ws", as
       bootMs: 1234,
       apiToken: "s3cret",
     });
-    // /api/* is the same token, as a bearer; the page's own origin may.
+    // Only a --playwright launch says so.
+    assertEquals("playwright" in info, false);
     let response = await fetch(`${server.url}api/status`);
     assertEquals(response.status, 401);
     await response.body?.cancel();
@@ -409,7 +410,9 @@ Deno.test("the launcher's command line: --help, --port, --no-open", () => {
     version: false,
     port: 0,
     open: true,
+    playwright: false,
   });
+  assertEquals(parseLauncherArgs(["--playwright"]).playwright, true);
   assertEquals(parseLauncherArgs(["--version"]).version, true);
   assertEquals(parseLauncherArgs(["--help"]).help, true);
   assertEquals(parseLauncherArgs(["-h"]).help, true);

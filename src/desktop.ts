@@ -103,14 +103,19 @@ export type LauncherArgs = {
   port: number;
   /** Hand the URL to the default browser (a terminal only). */
   open: boolean;
+  /** The Playwright environment (src/desktop_playwright.ts). */
+  playwright: boolean;
 };
 
 export const LAUNCHER_USAGE =
-  `usage: yurt-playground [--port N] [--no-open] [--version]
+  `usage: yurt-playground [--port N] [--no-open] [--playwright] [--version]
 
 Boot the sandbox natively and serve the playground on a loopback port.
   --port N    listen on 127.0.0.1:N instead of a free port
   --no-open   print the URL but do not open a browser
+  --playwright  open a Google Chrome window the sandbox can drive with
+              Playwright (node playwright-example.js); the sandbox can then
+              reach this machine's loopback ports
   --version   the release this is, and the kernel, image and host it pins
   -h, --help  this text
 
@@ -123,7 +128,7 @@ window.yurt is the same API from the browser. See the README, "Driving the
 sandbox from a program".`;
 
 /** The launcher's command line, or an Error naming the argument. Small
- * enough to parse by hand: four flags, and a flag nobody knows is an
+ * enough to parse by hand: five flags, and a flag nobody knows is an
  * error rather than a boot (yurt-playground#90). */
 export function parseLauncherArgs(argv: string[]): LauncherArgs {
   const args: LauncherArgs = {
@@ -131,6 +136,7 @@ export function parseLauncherArgs(argv: string[]): LauncherArgs {
     version: false,
     port: 0,
     open: true,
+    playwright: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -143,6 +149,7 @@ export function parseLauncherArgs(argv: string[]): LauncherArgs {
     if (arg === "-h" || arg === "--help") args.help = true;
     else if (arg === "--version") args.version = true;
     else if (arg === "--no-open") args.open = false;
+    else if (arg === "--playwright") args.playwright = true;
     else if (arg === "--port" || arg.startsWith("--port=")) {
       const text = value("--port");
       const port = Number(text);
@@ -430,7 +437,7 @@ export function freshApiToken(): string {
 export function startDesktopServer(
   distDir: string,
   host?: DesktopHost,
-  options: { port?: number; apiToken?: string } = {},
+  options: { port?: number; apiToken?: string; playwright?: boolean } = {},
 ): { url: string; shutdown: () => Promise<void> } {
   const files = handleDistRequest(distDir);
   const apiToken = options.apiToken ?? freshApiToken();
@@ -469,6 +476,8 @@ export function startDesktopServer(
             native: true,
             kernelPorts: host.kernelPorts,
             bootMs: host.bootMs,
+            // The launcher's --playwright: the page sets up that env.
+            ...(options.playwright ? { playwright: true } : {}),
             // The page's window.yurt goes through /api/*; a host without
             // the routes leaves the page with no token and the notice.
             ...(host.sessions ? { apiToken } : {}),

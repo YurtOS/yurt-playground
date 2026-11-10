@@ -71,6 +71,22 @@ Deno.test("?env=go is a desktop browser's only", () => {
   assertStringIncludes(unknown.note!, "?env=rust is not python or go");
 });
 
+Deno.test("?env=playwright is the desktop app's, started with --playwright", () => {
+  assertEquals(
+    chooseEnv("desktop", "playwright", {
+      nativeApp: true,
+      playwrightApp: true,
+    }),
+    { env: "playwright" },
+  );
+  // A browser tab, or the app without --playwright, has no Chrome to drive.
+  for (const options of [{}, { nativeApp: true }]) {
+    const chosen = chooseEnv("desktop", "playwright", options);
+    assertEquals(chosen.env, "python");
+    assertStringIncludes(chosen.note!, "yurt-playground --playwright");
+  }
+});
+
 Deno.test("?env=go on a site without a Go snapshot sets up Python, and says so", () => {
   // A bookmark or a shared link: booting the image would give neither Go
   // nor Python.

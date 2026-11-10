@@ -23,6 +23,13 @@ import {
   RUNTIME_FILES,
   spawnDesktopHost,
 } from "../src/desktop_host.ts";
+import { hostClient } from "../src/desktop_api.ts";
+import {
+  fetchPlaywrightCore,
+  findChrome,
+  provisionGuest,
+  startChrome,
+} from "../src/desktop_playwright.ts";
 
 let args: LauncherArgs;
 try {
@@ -140,8 +147,33 @@ globalThis.addEventListener(
   "unload",
   () => removeLauncherState(tokenFile, Deno.pid),
 );
+// --playwright: Chrome first, so a machine without it says so before a boot.
+let chrome: Awaited<ReturnType<typeof startChrome>> | undefined;
+let playwrightCore: Promise<Uint8Array> | undefined;
+if (args.playwright) {
+  const executable = await findChrome();
+  if (executable === undefined) {
+    console.error(
+      "yurt-playground: --playwright needs Google Chrome installed",
+    );
+    Deno.exit(1);
+  }
+  const home = Deno.env.get("HOME") ?? ".";
+  const cache = Deno.build.os === "darwin"
+    ? join(home, "Library/Caches")
+    : Deno.env.get("XDG_CACHE_HOME") || join(home, ".cache");
+  chrome = await startChrome(
+    executable,
+    join(cache, "yurt-playground/playwright-chrome"),
+  );
+  globalThis.addEventListener("unload", () => chrome?.stop());
+  console.log(`${chrome.version} on 127.0.0.1:${chrome.port}`);
+  // Fetched while the sandbox boots.
+  playwrightCore = fetchPlaywrightCore();
+  playwrightCore.catch(() => undefined);
+}
 console.log("booting the sandbox…");
-const child = spawnDesktopHost(runtimeDir);
+const child = spawnDesktopHost(runtimeDir, { hostLoopback: args.playwright });
 let host: DesktopHost | undefined;
 // Ctrl-C, kill, or the terminal window closing: take the host down with
 // us. Its stdin closing is enough once it is up, but during the boot it
@@ -188,10 +220,35 @@ try {
   Deno.exit(1);
 }
 console.error(`sandbox up in ${(host.bootMs / 1000).toFixed(1)} s`);
+if (chrome !== undefined && playwrightCore !== undefined) {
+  try {
+    await provisionGuest(
+      hostClient(host.request),
+      await playwrightCore,
+      chrome.port,
+    );
+    console.log(
+      "Playwright: in the terminal, node playwright-example.js drives the Chrome window",
+    );
+  } catch (error) {
+    host.stop();
+    chrome.stop();
+    console.error(
+      `yurt-playground: setting up Playwright failed: ${
+        (error as Error).message
+      }`,
+    );
+    Deno.exit(1);
+  }
+}
 const apiToken = freshApiToken();
 let url: string;
 try {
-  url = startDesktopServer(distDir, host, { port: args.port, apiToken }).url;
+  url = startDesktopServer(distDir, host, {
+    port: args.port,
+    apiToken,
+    playwright: args.playwright,
+  }).url;
 } catch (error) {
   host.stop();
   console.error(
@@ -216,4 +273,4 @@ try {
   );
 }
 console.log("Close this window to stop it.");
-await openInBrowser(url);
+await openInBrowser(args.playwright ? `${url}?env=playwright` : url);

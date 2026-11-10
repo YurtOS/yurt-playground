@@ -26,6 +26,8 @@ export type DesktopInfo = {
    * `window.yurt`; served to this origin only, never in a URL. Absent
    * from a launcher older than the API. */
   apiToken?: string;
+  /** The launcher's --playwright: a Chrome window the sandbox can drive. */
+  playwright?: boolean;
 };
 
 /** `window.yurt`'s transport on the desktop page: the launcher's

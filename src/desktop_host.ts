@@ -67,7 +67,10 @@ export const RUNTIME_FILES = {
 /** Start `yurt-desktop-host` on the bundle's runtime; `connectDesktopHost`
  * waits for its sandbox. Until its announce the host does not watch its
  * stdin, so a launcher that goes away during the boot has to kill it. */
-export function spawnDesktopHost(runtimeDir: string): Deno.ChildProcess {
+export function spawnDesktopHost(
+  runtimeDir: string,
+  { hostLoopback = false }: { hostLoopback?: boolean } = {},
+): Deno.ChildProcess {
   return new Deno.Command(join(runtimeDir, RUNTIME_FILES.host), {
     args: [
       "--runtime",
@@ -76,6 +79,7 @@ export function spawnDesktopHost(runtimeDir: string): Deno.ChildProcess {
       join(runtimeDir, RUNTIME_FILES.kernelWasm),
       "--image",
       join(runtimeDir, RUNTIME_FILES.image),
+      ...(hostLoopback ? ["--host-loopback"] : []),
     ],
     stdin: "piped",
     stdout: "piped",
