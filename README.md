@@ -145,32 +145,49 @@ executions per sandbox, results kept ten minutes or until read.
 
 ## Playwright in the sandbox
 
-On a desktop browser, choose **Playwright** on the start screen (or open
-`?env=playwright`). The page installs node and playwright-core in the sandbox,
-and a Playwright script there drives this browser:
+On a desktop Chromium browser, a Playwright script inside the sandbox drives the
+browser the page runs in: it opens tabs, reads them and takes screenshots. It
+needs the **Yurt browser bridge** extension.
 
-```
-node playwright-example.js https://example.com
-```
+1. Download
+   [yurt-browser-bridge.zip](https://yurt-playground.pages.dev/yurt-browser-bridge.zip)
+   (also linked from the start screen) and unzip it. On macOS, unzip it
+   somewhere the folder picker shows, such as `~/Downloads` (the picker hides
+   `/private/tmp`).
+2. Open `chrome://extensions` (any Chromium browser: Chrome, Edge, Brave), turn
+   on **Developer mode**, click **Load unpacked** and pick the folder.
+3. Choose **Playwright** on the start screen (or open
+   `?platform=desktop&env=playwright`) and **Start**. The extension opens its
+   own window asking whether this page's sandbox may drive the browser: click
+   **Allow** (its buttons wake after a second).
+4. When the page says Playwright is ready, run in the terminal:
 
-opens a tab, reads its title and saves a screenshot in the sandbox's home. A
-script of your own starts with
-`const browser = await require("yurt-chrome").connect();`.
+   ```
+   node playwright-example.js https://example.com
+   ```
 
-It needs the **Yurt browser bridge** extension (Chrome or another Chromium
-browser): download [yurt-browser-bridge.zip](./yurt-browser-bridge.zip), unzip
-it, open `chrome://extensions`, turn on Developer mode, choose _Load unpacked_
-and pick the folder. The extension (`extension/` in this repository) uses
-Chrome's debugger API on the tabs it opens itself, and answers only this site.
-While the page sets Playwright up, the extension opens its own window asking
-whether to let this tab's sandbox drive the browser: the tabs it opens use this
-browser's sign-ins, so allow it only if you mean to. The answer holds until the
-page closes or reloads. What you allow is that page and its sandbox: anything
-running in the page, or in the sandbox, can then drive the browser the way the
-script does. The agent is off in that sandbox, and a script can send its tabs to
-web pages only (never `chrome://`, `file:` or an extension's pages). Inside the
-sandbox, Playwright reaches the extension at `127.0.0.1:9222`, a DevTools
-endpoint only a page set up for Playwright serves (`src/cdp_bridge.ts`).
+   It opens a tab, prints its title and saves a screenshot in the sandbox's
+   home. A script of your own starts with
+   `const browser = await require("yurt-chrome").connect();`.
+5. To try it against a local server (`deno task serve`, port 4173), load a copy
+   of the extension whose `manifest.json` also lists `"http://127.0.0.1:4173/"`
+   and `"http://127.0.0.1:4173/?*"` in `externally_connectable.matches`.
+6. Remove it from `chrome://extensions` when you are done.
+
+The site restores a sandbox with node and playwright-core already in it when its
+pins name the Playwright snapshot; otherwise the page installs them (about 10
+s).
+
+What you allow is that page and its sandbox: anything running in the page, or in
+the sandbox, can then drive the browser the way the script does, with this
+browser's sign-ins, until the page closes or reloads. Allow it only if you chose
+Playwright on that page yourself. The extension (`extension/` in this
+repository) answers only the playground's own page, uses Chrome's debugger API
+on the tabs it opens itself, and sends them to web pages only (never
+`chrome://`, `file:` or an extension's pages). The agent is off in that sandbox.
+Inside the sandbox, Playwright reaches the extension at `127.0.0.1:9222`, a
+DevTools endpoint only a page set up for Playwright serves
+(`src/cdp_bridge.ts`).
 
 ## Desktop app
 

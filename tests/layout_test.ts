@@ -808,3 +808,12 @@ Deno.test("the home page carries its link-preview tags and their image", async (
   );
   assertEquals(build.includes('"og-image.jpg"'), true);
 });
+
+Deno.test("the start screen links the bridge extension's zip, to download", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const link = html.match(/<a\b[^>]*data-testid="bridge-zip"[^>]*>/)?.[0] ?? "";
+  assertEquals(/href="\.\/yurt-browser-bridge\.zip"/.test(link), true, link);
+  assertEquals(/\bdownload\b/.test(link), true, link);
+});

@@ -1,5 +1,5 @@
 import { AGENT_CHAT_STORAGE } from "./snapshot_store.ts";
-import { setUpPlaywright } from "./playwright_demo.ts";
+import { BRIDGE_ZIP, setUpPlaywright } from "./playwright_demo.ts";
 import {
   bridgeAnswers,
   bridgeApproval,
@@ -1020,7 +1020,20 @@ async function runPage(): Promise<void> {
   if (chosen.note !== undefined) notes.push(chosen.note);
   const showNotes = () => {
     if (notes.length === 0) return;
-    byId("platform-note-text").textContent = notes.join(". ");
+    // Text nodes only; the one name a note may carry as a link is the
+    // extension's zip (src/playwright_demo.ts BRIDGE_ZIP), made here.
+    const text = byId("platform-note-text");
+    text.replaceChildren();
+    notes.join(". ").split(BRIDGE_ZIP).forEach((part, at) => {
+      if (at > 0) {
+        const link = document.createElement("a");
+        link.href = `./${BRIDGE_ZIP}`;
+        link.download = "";
+        link.textContent = BRIDGE_ZIP;
+        text.append(link);
+      }
+      text.append(document.createTextNode(part));
+    });
     byId("platform-note").hidden = false;
   };
   showNotes();
@@ -1230,6 +1243,8 @@ async function runPage(): Promise<void> {
     )?.closest("label");
     if (playwright && !/Chrome\//.test(navigator.userAgent)) {
       playwright.hidden = true;
+      const get = choice.querySelector<HTMLElement>("[data-testid=bridge-get]");
+      if (get) get.hidden = true;
     }
     void fetchSitePins().then((pins) => {
       const go = choice.querySelector<HTMLElement>("[data-testid=env-go]")

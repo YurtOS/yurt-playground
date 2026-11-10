@@ -81,3 +81,11 @@ Deno.test("the staged playwright-core is the playground's own pin", async () => 
   assertEquals(YURT_CHROME_MODULE.includes("http://127.0.0.1:9222"), true);
   assertEquals(EXAMPLE_SCRIPT.includes('require("yurt-chrome")'), true);
 });
+
+Deno.test("the no-extension note names the zip, which the page shows as a link", async () => {
+  const { BRIDGE_ZIP, NO_EXTENSION_NOTE } = await import(
+    "../src/playwright_demo.ts"
+  );
+  assertEquals(BRIDGE_ZIP, "yurt-browser-bridge.zip");
+  assertEquals(NO_EXTENSION_NOTE.split(BRIDGE_ZIP).length, 2);
+});

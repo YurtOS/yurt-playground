@@ -15,11 +15,15 @@ export {
 } from "./playwright_setup.ts";
 
 /** The note for a browser without the extension. */
+/** The extension's zip, as the site serves it (src/playwright_assets.ts):
+ *  a note that names it shows it as a link (src/page.ts). */
+export const BRIDGE_ZIP = "yurt-browser-bridge.zip";
+
 export const NO_EXTENSION_NOTE =
   "Playwright drives this browser through the Yurt browser bridge extension, " +
-  "which is not installed: download yurt-browser-bridge.zip from this site, " +
-  "unzip it, open chrome://extensions, turn on Developer mode, choose Load " +
-  "unpacked and pick the folder, then reload this page.";
+  `which is not installed: download ${BRIDGE_ZIP} from this site, unzip it, ` +
+  "open chrome://extensions, turn on Developer mode, choose Load unpacked " +
+  "and pick the folder, then reload this page";
 
 export const OPENED_NOTE =
   "Playwright: this page was opened by another page, which could use it; " +
