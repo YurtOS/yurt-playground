@@ -7,7 +7,7 @@
  * kernel checkout and pinned artifacts like playground_e2e.ts).
  */
 import { type Page } from "playwright";
-import { launchBrowser } from "./browser.ts";
+import { launchBrowser } from "../scripts/browser.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";

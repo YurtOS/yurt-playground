@@ -30,7 +30,7 @@
  * public/snapshot/ (YURT_INSTALL_SNAPSHOT=1 scripts/install-pinned-artifacts.sh)
  * and Playwright's browsers. Memory is sampled with `ps` (macOS, Linux).
  */
-import { launchOptions } from "../tests/browser.ts";
+import { launchOptions } from "./browser.ts";
 import { ensureBundle } from "./serve.ts";
 import { handlePlaygroundRequest, ISOLATION_HEADERS } from "../src/serve.ts";
 
@@ -155,7 +155,9 @@ if (import.meta.main) {
     for (let load = 0; load <= warm; load++) {
       logs = [];
       let peak = 0;
-      const sampler = engine !== "webkit"
+      // Renderers are the --yurt-measure browser's children in Playwright's
+      // Chromium; Chrome's come from its zygote on Linux, so no figure.
+      const sampler = engine === "chromium"
         ? setInterval(() => peak = Math.max(peak, rendererMiB(profile)), 50)
         : undefined;
       const started = performance.now();
@@ -245,7 +247,7 @@ if (import.meta.main) {
           ? null
           : Number(jupyterSeconds.toFixed(1)),
         secondsToPrompt: Number(seconds.toFixed(2)),
-        peakRendererMiB: engine !== "webkit" ? Math.round(peak) : null,
+        peakRendererMiB: engine === "chromium" ? Math.round(peak) : null,
         snapshot: logs.find((line) => /bytes of kernel memory/.test(line)) ??
           null,
         fellBack: logs.find((line) => /booting the image instead/.test(line)) ??

@@ -10,7 +10,7 @@ the browser people use.
 
 ## What changes
 
-1. `tests/browser.ts` is the one place a Chromium-family scene starts its
+1. `scripts/browser.ts` is the one place a Chromium-family scene starts its
    browser. It launches Playwright's `chrome` channel (the installed Google
    Chrome) by default, and prints the browser and version.
    `PLAYGROUND_BROWSER=chromium` selects Playwright's pinned build, to compare

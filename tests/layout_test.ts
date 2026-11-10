@@ -108,7 +108,7 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   assertEquals(workflow.includes("dtolnay/rust-toolchain"), false);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
   // The Chromium-family scenes run the runner image's Google Chrome
-  // (tests/browser.ts) and print its version; nothing installs Playwright's
+  // (scripts/browser.ts) and print its version; nothing installs Playwright's
   // Chromium for them.
   assertEquals(workflow.includes("run: google-chrome --version"), true);
   assertEquals(workflow.includes("playwright/cli.js install chromium"), false);

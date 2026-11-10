@@ -3,7 +3,7 @@
 // carries, serves the site, and in a real browser Jupyter runs a cell and
 // reaches the internet from the guest. Run it after the build; it is the
 // acceptance for the shipped artifact, not the source tree.
-import { launchBrowser } from "./browser.ts";
+import { launchBrowser } from "../scripts/browser.ts";
 import { showAllSections } from "./show_all_sections.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

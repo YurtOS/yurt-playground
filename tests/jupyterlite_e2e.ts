@@ -9,7 +9,7 @@
  * in artifacts/ and the site from jupyterlite/build.sh in public/jupyter/).
  */
 import { devices, type Page } from "playwright";
-import { launchBrowser } from "./browser.ts";
+import { launchBrowser } from "../scripts/browser.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";

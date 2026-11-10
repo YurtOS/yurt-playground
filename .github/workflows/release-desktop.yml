@@ -135,7 +135,7 @@ jobs:
         run: |
           deno install
           deno run --allow-all node_modules/playwright/cli.js install chromium
-      # Playwright's Chromium here, not Google Chrome (tests/browser.ts), until
+      # Playwright's Chromium here, not Google Chrome (scripts/browser.ts), until
       # a release run has shown the desktop scene green in Chrome on both
       # runner images: a release is the wrong place to find out.
       - name: App acceptance

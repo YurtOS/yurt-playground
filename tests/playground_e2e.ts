@@ -1,5 +1,5 @@
 import { type Browser, devices, type Page } from "playwright";
-import { launchBrowser } from "./browser.ts";
+import { launchBrowser } from "../scripts/browser.ts";
 import { showAllSections } from "./show_all_sections.ts";
 import { Buffer } from "node:buffer";
 import { dirname, join } from "node:path";

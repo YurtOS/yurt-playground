@@ -112,7 +112,7 @@ Always work in your own worktree. Follow the superpowers loop:
    `docs/superpowers/specs/`.
 3. **Implement with TDD** — `superpowers:test-driven-development`. Red test
    first. Playwright specs live under `tests/`. They run the installed Google
-   Chrome through `tests/browser.ts`; `PLAYGROUND_BROWSER=chromium` runs
+   Chrome through `scripts/browser.ts`; `PLAYGROUND_BROWSER=chromium` runs
    Playwright's own build instead (after `playwright install chromium`).
 4. **Verify** — `superpowers:verification-before-completion`.
 5. **Request review** — `superpowers:requesting-code-review`.
