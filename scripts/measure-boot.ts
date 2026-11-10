@@ -245,7 +245,11 @@ if (import.meta.main) {
           ? null
           : Number(jupyterSeconds.toFixed(1)),
         secondsToPrompt: Number(seconds.toFixed(2)),
-        peakRendererMiB: engine !== "webkit" ? Math.round(peak) : null,
+        // None found (Chrome's renderers hang off its zygote on Linux)
+        // is no figure, not 0 MiB.
+        peakRendererMiB: engine !== "webkit" && peak > 0
+          ? Math.round(peak)
+          : null,
         snapshot: logs.find((line) => /bytes of kernel memory/.test(line)) ??
           null,
         fellBack: logs.find((line) => /booting the image instead/.test(line)) ??

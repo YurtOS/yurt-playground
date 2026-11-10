@@ -56,13 +56,15 @@ Deno.test("every Chromium-family acceptance test starts its browser through scri
     if (file === "browser_test.ts" || file === "layout_test.ts") continue;
     const text = await Deno.readTextFile(new URL(file, root));
     if (OWN_CHROME.includes(file)) {
-      const launches = text.match(/\bchromium\s*\.\s*launch\w*\s*\(/g) ?? [];
-      const channels = text.match(/channel:\s*"chrome"/g) ?? [];
-      if (launches.length !== channels.length) {
-        offenders.push(
-          `${file}: ${launches.length} launches, ${channels.length} on the chrome channel`,
-        );
-      }
+      // Each launch's own options (the text up to the next launch) name it.
+      const starts = [...text.matchAll(/\bchromium\s*\.\s*launch\w*\s*\(/g)]
+        .map((m) => m.index!);
+      starts.forEach((start, i) => {
+        const call = text.slice(start, starts[i + 1] ?? start + 600);
+        if (!/channel:\s*"chrome"/.test(call.slice(0, 600))) {
+          offenders.push(`${file}: a launch without the chrome channel`);
+        }
+      });
       continue;
     }
     if (/\bchromium\b/.test(text)) offenders.push(file);

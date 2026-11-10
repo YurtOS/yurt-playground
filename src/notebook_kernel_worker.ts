@@ -505,7 +505,9 @@ function enqueueExecute(message: JupyterMessage): void {
 
 /** Hand the guest the next queued cell, when it is idle and we are live. */
 function runNextCell(): void {
-  if (live === undefined || cells.current !== undefined) return;
+  // A seal clones `cells` to match its image; a cell that started during
+  // it would be in neither. afterSeal starts it once the seal returns.
+  if (live === undefined || capturing || cells.current !== undefined) return;
   const next = cells.queued.shift();
   if (next === undefined) return;
   cells.current = next;
@@ -670,23 +672,36 @@ function sealTick(): Promise<void> {
 /** Seal `current` with its pty unread: what the page has shown is then
  *  exactly what the guest wrote before the seal, and `cells` (cloned as the
  *  seal returns) matches the image. Output written meanwhile stays in the
- *  pty: for a live sandbox the pump delivers it next; a restored one writes
- *  it again from the sealed state. Reading it during the seal instead let
- *  the page show a line the image would print a second time (#322: a
- *  prime twice after Resume, in Chrome). The pump is left stopped. */
+ *  pty: a live sandbox's pump delivers it next, and a restored one writes
+ *  it again from the sealed state. Read during the seal, a line would show
+ *  once now and once more after a restore. No cell starts while `sealing`
+ *  (runNextCell), so the cloned cells name what the image runs. The pump is
+ *  left stopped. */
 async function sealQuiet(
   current: Live,
-): Promise<
-  { image: Awaited<ReturnType<Live["mk"]["sealSandbox"]>>; cells: typeof cells }
-> {
+): Promise<{ image: SandboxSealImage; cells: typeof cells }> {
   current.stopPump();
-  const image = await current.mk.sealSandbox({ deadlineMs: SEAL_DEADLINE_MS });
-  return { image, cells: structuredClone(cells) };
+  capturing = true;
+  try {
+    const image = await current.mk.sealSandbox({
+      deadlineMs: SEAL_DEADLINE_MS,
+    });
+    return { image, cells: structuredClone(cells) };
+  } finally {
+    capturing = false;
+  }
 }
 
-/** Start reading `current`'s pty again after `sealQuiet`. */
-function restartPump(current: Live): void {
+/** A seal is capturing the guest: no cell starts (runNextCell). */
+let capturing = false;
+
+/** Read `current`'s pty again after `sealQuiet`, unless it was torn down
+ *  or restarted meanwhile (`generation` is the seal generation it began in),
+ *  and start a cell that queued during the seal. */
+function afterSeal(current: Live, generation: number): void {
+  if (live !== current || generation !== sealGeneration) return;
   current.stopPump = pumpPtyMaster(current.mk, current.pty, onGuestOutput);
+  runNextCell();
 }
 
 async function sealOnce(): Promise<void> {
@@ -694,26 +709,16 @@ async function sealOnce(): Promise<void> {
   if (current === undefined || sealing || forgotten || sealEveryMs <= 0) return;
   sealing = true;
   const generation = sealGeneration;
-  let sealed;
   try {
-    sealed = await sealQuiet(current).finally(() => {
-      if (live === current) restartPump(current);
-    });
-  } catch (error) {
-    status(
-      `seal skipped: ${error instanceof Error ? error.message : String(error)}`,
+    const sealed = await sealQuiet(current).finally(() =>
+      afterSeal(current, generation)
     );
-    sealing = false;
-    return;
-  }
-  const { image } = sealed;
-  try {
     if (live !== current || forgotten || generation !== sealGeneration) {
       return;
     }
     const sealedAt = Date.now();
     storeInFlight = storeSnapshot({
-      image,
+      image: sealed.image,
       pty: current.pty,
       sealedAt,
       kernelSha256: current.kernelSha256,
@@ -1150,6 +1155,7 @@ async function suspend(): Promise<void> {
   const current = live;
   if (current === undefined || sealing) return;
   sealing = true;
+  const generation = sealGeneration;
   post({ type: "snapshot", snapshot: { state: "sealing" } });
   const startedAt = performance.now();
   try {
@@ -1181,8 +1187,8 @@ async function suspend(): Promise<void> {
       },
     });
   } catch (error) {
-    // Still live: read its pty again.
-    if (live === current) restartPump(current);
+    // Still live: read its pty again, and run what queued meanwhile.
+    afterSeal(current, generation);
     status(
       `suspend failed: ${
         error instanceof Error ? error.message : String(error)
