@@ -80,7 +80,7 @@ jobs:
       - name: Choose the tier
         id: tier
         env:
-          MERGE_TIER: playground jupyterlite slim
+          MERGE_TIER: playground jupyterlite slim browser_bridge
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |

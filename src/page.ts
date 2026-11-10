@@ -525,7 +525,12 @@ function boot(
   // Playwright in the sandbox drives this browser through the bridge
   // extension, when it is installed (src/browser_bridge.ts); the desktop
   // app's guest has its own network instead.
-  const runtime = desktop === undefined ? extensionRuntime() : undefined;
+  // Only the sandbox the user set up for Playwright gets the endpoint: a
+  // guest that can reach it drives this browser, with its sign-ins.
+  const runtime = desktop === undefined && env === "playwright" &&
+      !agentOnly
+    ? extensionRuntime()
+    : undefined;
   const cdpRelay = runtime === undefined
     ? undefined
     : createCdpRelay(runtime, (message) => worker.postMessage(message));

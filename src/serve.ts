@@ -294,7 +294,13 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   const asset = PLAYWRIGHT_ASSETS[pathname];
   if (asset !== undefined) {
     try {
-      const bytes = await (assetCache[pathname] ??= asset.make());
+      // A failed make is tried again on the next request.
+      const bytes = await (assetCache[pathname] ??= asset.make().catch(
+        (error) => {
+          delete assetCache[pathname];
+          throw error;
+        },
+      ));
       return new Response(bytes as BodyInit, {
         headers: { ...ISOLATION_HEADERS, "content-type": asset.type },
       });

@@ -43,11 +43,21 @@ export async function playwrightCoreTarball(): Promise<Uint8Array> {
     `playwright-core@${version}`,
     "node_modules",
   );
-  await Deno.stat(join(dir, "playwright-core/package.json")).catch(() => {
-    throw new Error(
-      `no playwright-core ${version} in ${dir}: run deno install`,
+  // A build that resolved nothing from npm yet (release-desktop's) has no
+  // node_modules/.deno: install the deno.json dependencies first.
+  const present = () =>
+    Deno.stat(join(dir, "playwright-core/package.json")).then(
+      () => true,
+      () => false,
     );
-  });
+  if (!(await present())) {
+    await run(Deno.execPath(), ["install"], root);
+    if (!(await present())) {
+      throw new Error(
+        `no playwright-core ${version} in ${dir} after deno install`,
+      );
+    }
+  }
   return await run("tar", [
     "-czf",
     "-",

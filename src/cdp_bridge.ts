@@ -11,17 +11,15 @@
 // loopback: nothing leaves the sandbox but these messages.
 import { METHOD } from "@yurt/kernel-host-interface-js";
 import {
-  AF_INET,
   backoff,
   EAGAIN,
   fdRequest,
+  listenOnGuestLoopback,
   MAX_HEAD_BYTES,
   MSG_DONTWAIT,
   MSG_NOSIGNAL,
   parseRequestHead,
   type RelayKernel,
-  SOCK_NONBLOCK,
-  SOCK_STREAM,
 } from "./pkg_relay.ts";
 import { acceptKey, encodeFrame, MessageReader, OPCODE } from "./ws_frames.ts";
 
@@ -95,40 +93,26 @@ export function startCdpBridge(
     return { rc: Number(rc), response };
   };
   const closeFd = (fd: number) => call(METHOD.SYS_SOCKET_CLOSE, fdRequest(fd));
-  const open = new Uint8Array(8);
-  open[0] = AF_INET;
-  open[1] = SOCK_STREAM;
-  new DataView(open.buffer).setUint32(4, SOCK_NONBLOCK, true);
-  const listener = call(METHOD.SYS_SOCKET_OPEN, open).rc;
-  if (listener < 0) throw new Error(`cdp bridge socket: rc=${listener}`);
-  const bind = fdRequest(listener, 16);
-  const addr = new DataView(bind.buffer, 4, 16);
-  addr.setUint16(0, AF_INET, true);
-  addr.setUint16(2, CDP_PORT, false);
-  bind.set([127, 0, 0, 1], 8);
-  const listen = fdRequest(listener, 4);
-  new DataView(listen.buffer).setUint32(4, 16, true);
-  for (
-    const [what, method, req] of [
-      ["bind", METHOD.SYS_SOCKET_BIND, bind],
-      ["listen", METHOD.SYS_SOCKET_LISTEN, listen],
-    ] as const
-  ) {
-    const { rc } = call(method, req);
-    if (rc !== 0) {
-      closeFd(listener);
-      throw new Error(`cdp bridge ${what} 127.0.0.1:${CDP_PORT}: rc=${rc}`);
-    }
-  }
+  const listener = listenOnGuestLoopback(mk, CDP_PORT, "cdp bridge");
 
   let stopped = false;
   const chunkCap = Math.max(
     4096,
     Math.min(64 * 1024, (mk.scratchLen ?? 0) - 64),
   );
-  /** Open WebSockets, by connection (the fd): their outgoing queue. */
-  const sockets = new Map<number, { queue: Uint8Array[]; flushing: boolean }>();
+  /** Every accepted socket, by fd. */
   const fds = new Set<number>();
+  /** Open WebSockets by connection id: never reused, unlike an fd, so a
+   *  late message for a gone connection reaches nothing. */
+  type Socket = {
+    fd: number;
+    queue: Uint8Array[];
+    flushing: boolean;
+    /** Close once the queue is sent. */
+    closing: boolean;
+  };
+  const sockets = new Map<number, Socket>();
+  let nextConn = 1;
 
   const recv = (fd: number, cap: number) => {
     const req = fdRequest(fd, 4);
@@ -154,56 +138,83 @@ export function startCdpBridge(
       at += rc;
     }
   };
-  const end = (fd: number) => {
-    if (!fds.delete(fd)) return;
-    closeFd(fd);
-    if (sockets.delete(fd)) handlers.close(fd);
+  /** Close `fd` now, and say so for its connection. */
+  const end = (fd: number, conn?: number) => {
+    if (conn !== undefined && sockets.delete(conn)) handlers.close(conn);
+    if (fds.delete(fd)) closeFd(fd);
   };
-  const flush = async (fd: number) => {
-    const socket = sockets.get(fd);
+  const flush = async (conn: number) => {
+    const socket = sockets.get(conn);
     if (socket === undefined || socket.flushing) return;
     socket.flushing = true;
     try {
-      while (socket.queue.length > 0) await sendAll(fd, socket.queue.shift()!);
+      while (socket.queue.length > 0) {
+        await sendAll(socket.fd, socket.queue.shift()!);
+      }
     } catch {
-      end(fd);
+      socket.queue = [];
+      socket.closing = true;
     } finally {
       socket.flushing = false;
     }
+    if (socket.closing) end(socket.fd, conn);
   };
-  const enqueue = (fd: number, frame: Uint8Array) => {
-    const socket = sockets.get(fd);
-    if (socket === undefined) return;
+  const enqueue = (conn: number, frame: Uint8Array) => {
+    const socket = sockets.get(conn);
+    if (socket === undefined || socket.closing) return;
     socket.queue.push(frame);
-    void flush(fd);
+    void flush(conn);
+  };
+  /** Close `conn` after what is queued, with `frame` last. */
+  const finish = (conn: number, frame?: Uint8Array) => {
+    const socket = sockets.get(conn);
+    if (socket === undefined || socket.closing) return;
+    if (frame !== undefined) socket.queue.push(frame);
+    socket.closing = true;
+    void flush(conn);
   };
 
-  const readHead = async (fd: number): Promise<string | undefined> => {
+  /** The request head, and the bytes after it in the same reads (a client
+   *  may send its first frame with the upgrade). */
+  const readHead = async (
+    fd: number,
+  ): Promise<{ head: string; rest: Uint8Array } | undefined> => {
     const wait = backoff();
     const deadline = Date.now() + 10_000;
-    let head = "";
+    let bytes = new Uint8Array(0);
     while (!stopped && Date.now() < deadline) {
-      const { rc, response } = recv(fd, MAX_HEAD_BYTES - head.length + 1);
+      const { rc, response } = recv(fd, MAX_HEAD_BYTES);
       if (rc === -EAGAIN) {
         await wait.wait();
         continue;
       }
       if (rc <= 0) return undefined;
       wait.progressed();
-      head += String.fromCharCode(...response.subarray(0, rc));
-      if (head.includes("\r\n\r\n")) {
-        return head.slice(0, head.indexOf("\r\n\r\n"));
+      const joined = new Uint8Array(bytes.length + rc);
+      joined.set(bytes);
+      joined.set(response.subarray(0, rc), bytes.length);
+      bytes = joined;
+      // latin1: one char per byte, so the index is a byte offset.
+      const text = String.fromCharCode(
+        ...bytes.subarray(0, MAX_HEAD_BYTES + 4),
+      );
+      const end = text.indexOf("\r\n\r\n");
+      if (end >= 0) {
+        return { head: text.slice(0, end), rest: bytes.slice(end + 4) };
       }
-      if (head.length > MAX_HEAD_BYTES) return undefined;
+      if (bytes.length > MAX_HEAD_BYTES) return undefined;
     }
     return undefined;
   };
 
   const serve = async (fd: number) => {
+    let conn: number | undefined;
     try {
-      const head = await readHead(fd);
-      const request = head === undefined ? undefined : parseRequestHead(head);
-      if (request === undefined) return end(fd);
+      const read = await readHead(fd);
+      const request = read === undefined
+        ? undefined
+        : parseRequestHead(read.head);
+      if (read === undefined || request === undefined) return;
       const plain = httpReply(request.method, request.target, product);
       if (plain !== undefined) {
         const body = new TextEncoder().encode(plain.body);
@@ -218,14 +229,14 @@ export function startCdpBridge(
           ),
         );
         await sendAll(fd, body);
-        return end(fd);
+        return;
       }
       const key = request.headers.get("sec-websocket-key");
       if (
         key === undefined ||
         request.headers.get("upgrade")?.toLowerCase() !== "websocket"
       ) {
-        return end(fd);
+        return;
       }
       await sendAll(
         fd,
@@ -236,11 +247,23 @@ export function startCdpBridge(
             )}\r\n\r\n`,
         ),
       );
-      sockets.set(fd, { queue: [], flushing: false });
-      handlers.open(fd);
+      conn = nextConn++;
+      const socket: Socket = { fd, queue: [], flushing: false, closing: false };
+      sockets.set(conn, socket);
+      handlers.open(conn);
       const reader = new MessageReader();
+      const take = (bytes: Uint8Array) => {
+        const { messages, replies, closed } = reader.push(bytes);
+        for (const text of messages) handlers.message(conn!, text);
+        for (const reply of replies.slice(0, closed ? -1 : undefined)) {
+          enqueue(conn!, reply);
+        }
+        if (closed) finish(conn!, replies.at(-1));
+        return closed;
+      };
+      if (read.rest.length > 0 && take(read.rest)) return;
       const wait = backoff();
-      while (!stopped && fds.has(fd)) {
+      while (!stopped && !socket.closing) {
         const { rc, response } = recv(fd, chunkCap);
         if (rc === -EAGAIN) {
           await wait.wait();
@@ -248,24 +271,20 @@ export function startCdpBridge(
         }
         if (rc <= 0) break;
         wait.progressed();
-        const { messages, replies, closed } = reader.push(
-          response.slice(0, rc),
-        );
-        for (const text of messages) handlers.message(fd, text);
-        for (const reply of replies) enqueue(fd, reply);
-        if (closed) {
-          await flush(fd);
-          break;
-        }
+        if (take(response.slice(0, rc))) return;
       }
+      // The peer went away, or the page closed it (finish ends it).
+      if (!socket.closing) end(fd, conn);
     } catch (error) {
       if (!stopped) {
         console.warn(
           `[cdp bridge] ${error instanceof Error ? error.message : error}`,
         );
       }
+      if (conn !== undefined) end(fd, conn);
     } finally {
-      end(fd);
+      // A plain request, a refused one, or a WebSocket that is gone.
+      if (conn === undefined || !sockets.has(conn)) end(fd, conn);
     }
   };
 
@@ -296,13 +315,13 @@ export function startCdpBridge(
       enqueue(conn, encodeFrame(OPCODE.text, new TextEncoder().encode(text)));
     },
     close(conn) {
-      enqueue(conn, encodeFrame(OPCODE.close, new Uint8Array([0x03, 0xe8])));
-      void flush(conn).then(() => end(conn));
+      finish(conn, encodeFrame(OPCODE.close, new Uint8Array([0x03, 0xe8])));
     },
     stop() {
       if (stopped) return;
       stopped = true;
       if (timer !== undefined) clearTimeout(timer);
+      for (const [conn, socket] of [...sockets]) end(socket.fd, conn);
       for (const fd of [...fds]) end(fd);
       closeFd(listener);
     },

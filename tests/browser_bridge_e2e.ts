@@ -1,7 +1,8 @@
 /**
  * Browser acceptance for Playwright in the in-tab sandbox: the page with
  * `?env=playwright`, in Chrome with the Yurt browser bridge extension
- * (extension/), installs node and playwright-core in the sandbox; then
+ * (extension/), installs node and playwright-core in the sandbox (a page
+ * not set up for Playwright serves no endpoint, extension or not); then
  * `node playwright-example.js <url>` there opens a tab in this browser
  * through the guest's DevTools endpoint (src/cdp_bridge.ts), the page and
  * the extension, reads its title and screenshots it.
@@ -27,8 +28,47 @@ if (import.meta.main) {
     Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel"),
   );
   const server = startPlaygroundServer(0);
-  const context = await launchWithExtension(join(repoRoot, "extension"));
+  // The extension answers the site alone; this copy also answers the
+  // local server the scene runs on.
+  const extension = await Deno.makeTempDir({ prefix: "yurt-bridge-" });
+  for await (const entry of Deno.readDir(join(repoRoot, "extension"))) {
+    await Deno.copyFile(
+      join(repoRoot, "extension", entry.name),
+      join(extension, entry.name),
+    );
+  }
+  const manifest = JSON.parse(
+    await Deno.readTextFile(join(extension, "manifest.json")),
+  );
+  manifest.externally_connectable.matches.push("http://127.0.0.1/*");
+  await Deno.writeTextFile(
+    join(extension, "manifest.json"),
+    JSON.stringify(manifest),
+  );
+  const context = await launchWithExtension(extension);
   try {
+    // The extension alone opens nothing: a page not set up for Playwright
+    // (the default Python one) serves the guest no DevTools endpoint.
+    const plain = await context.newPage();
+    await plain.goto(`${server.url}/?start&platform=desktop`, {
+      waitUntil: "domcontentloaded",
+    });
+    await plain.waitForFunction(
+      () => document.querySelector("#status")?.textContent === "running",
+      undefined,
+      { timeout: 300_000 },
+    );
+    const probe = await plain.evaluate(async () =>
+      (await (globalThis as unknown as {
+        yurt: { exec(cmd: string): Promise<{ stdout: string }> };
+      }).yurt.exec(
+        "wget -q -T 3 -O- http://127.0.0.1:9222/json/version || echo refused",
+      )).stdout.trim()
+    );
+    if (probe !== "refused") fail(`the Python page serves CDP: ${probe}`);
+    await plain.close();
+    console.log("browser bridge e2e: no endpoint without ?env=playwright");
+
     const page = await context.newPage();
     await page.goto(`${server.url}/?start&platform=desktop&env=playwright`, {
       waitUntil: "domcontentloaded",

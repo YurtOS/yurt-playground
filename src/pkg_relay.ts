@@ -366,7 +366,7 @@ export function replyHead(reply: RelayReply): Uint8Array {
   return new TextEncoder().encode(lines.join("\r\n"));
 }
 
-export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function fdRequest(fd: number, extra = 0): Uint8Array {
   const req = new Uint8Array(4 + extra);
@@ -389,6 +389,43 @@ export function backoff() {
   };
 }
 
+/** A non-blocking listening socket on the guest's 127.0.0.1:`port`, the
+ *  kernel's own host socket (the pkg relay's, the DevTools bridge's). */
+export function listenOnGuestLoopback(
+  mk: RelayKernel,
+  port: number,
+  label: string,
+): number {
+  const call = (method: number, req: Uint8Array) =>
+    Number(mk.syscall(method, req, 0).rc);
+  const open = new Uint8Array(8);
+  open[0] = AF_INET;
+  open[1] = SOCK_STREAM;
+  new DataView(open.buffer).setUint32(4, SOCK_NONBLOCK, true);
+  const listener = call(METHOD.SYS_SOCKET_OPEN, open);
+  if (listener < 0) throw new Error(`${label} socket: rc=${listener}`);
+  const bind = fdRequest(listener, 16);
+  const addr = new DataView(bind.buffer, 4, 16);
+  addr.setUint16(0, AF_INET, true);
+  addr.setUint16(2, port, false);
+  bind.set([127, 0, 0, 1], 8);
+  const listen = fdRequest(listener, 4);
+  new DataView(listen.buffer).setUint32(4, 16, true);
+  for (
+    const [what, method, req] of [
+      ["bind", METHOD.SYS_SOCKET_BIND, bind],
+      ["listen", METHOD.SYS_SOCKET_LISTEN, listen],
+    ] as const
+  ) {
+    const rc = call(method, req);
+    if (rc !== 0) {
+      call(METHOD.SYS_SOCKET_CLOSE, fdRequest(listener));
+      throw new Error(`${label} ${what} 127.0.0.1:${port}: rc=${rc}`);
+    }
+  }
+  return listener;
+}
+
 export type PkgRelay = {
   /** Close every connection and the listener; nothing runs after it. */
   stop(): void;
@@ -409,33 +446,7 @@ export function startPkgRelay(
   };
   const close = (fd: number) => call(METHOD.SYS_SOCKET_CLOSE, fdRequest(fd));
 
-  const open = new Uint8Array(8);
-  open[0] = AF_INET;
-  open[1] = SOCK_STREAM;
-  new DataView(open.buffer).setUint32(4, SOCK_NONBLOCK, true);
-  const listener = call(METHOD.SYS_SOCKET_OPEN, open).rc;
-  if (listener < 0) throw new Error(`pkg relay socket: rc=${listener}`);
-  const bind = fdRequest(listener, 16);
-  const addr = new DataView(bind.buffer, 4, 16);
-  addr.setUint16(0, AF_INET, true);
-  addr.setUint16(2, PKG_RELAY_PORT, false);
-  bind.set([127, 0, 0, 1], 8);
-  const listen = fdRequest(listener, 4);
-  new DataView(listen.buffer).setUint32(4, 16, true);
-  for (
-    const [what, method, req] of [
-      ["bind", METHOD.SYS_SOCKET_BIND, bind],
-      ["listen", METHOD.SYS_SOCKET_LISTEN, listen],
-    ] as const
-  ) {
-    const { rc } = call(method, req);
-    if (rc !== 0) {
-      close(listener);
-      throw new Error(
-        `pkg relay ${what} 127.0.0.1:${PKG_RELAY_PORT}: rc=${rc}`,
-      );
-    }
-  }
+  const listener = listenOnGuestLoopback(mk, PKG_RELAY_PORT, "pkg relay");
 
   let stopped = false;
   /** Every fetch in flight ends with the relay. */

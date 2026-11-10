@@ -8,7 +8,11 @@ import type { Yurt } from "./agent_api.ts";
 
 export const HOME = "/home/user";
 
-/** `~/node_modules/yurt-chrome/index.js`: the guest's DevTools endpoint. */
+/** Where the modules go: Node searches `~/.node_modules` from any
+ *  directory (one of its global folders), not only from under the home. */
+export const MODULES = `${HOME}/.node_modules`;
+
+/** `~/.node_modules/yurt-chrome/index.js`: the guest's DevTools endpoint. */
 export const YURT_CHROME_MODULE =
   `// The browser this sandbox runs in, through the Yurt browser bridge.
 const cdpUrl = "http://127.0.0.1:9222";
@@ -28,8 +32,9 @@ const { connect } = require("yurt-chrome");
   const page = await browser.contexts()[0].newPage();
   await page.goto(process.argv[2] ?? "https://example.com");
   console.log("title:", await page.title());
-  await page.screenshot({ path: "playwright-example.png" });
-  console.log("screenshot: ~/playwright-example.png");
+  const shot = require("node:path").join(require("node:os").homedir(), "playwright-example.png");
+  await page.screenshot({ path: shot });
+  console.log("screenshot:", shot);
   await browser.close(); // disconnects; the tab stays open
 })().catch((error) => {
   console.error(error.message);
@@ -82,16 +87,16 @@ export async function setUpPlaywright(
       new Uint8Array(await response.arrayBuffer()),
     );
     const unpack = await yurt.exec(
-      `cd ${HOME} && rm -rf node_modules/playwright-core && ` +
-        "mkdir -p node_modules/playwright-core node_modules/yurt-chrome && " +
-        "tar -xzf .playwright-core.tgz -C node_modules/playwright-core " +
+      `cd ${HOME} && rm -rf ${MODULES}/playwright-core && ` +
+        `mkdir -p ${MODULES}/playwright-core ${MODULES}/yurt-chrome && ` +
+        `tar -xzf .playwright-core.tgz -C ${MODULES}/playwright-core ` +
         "--strip-components=1 && rm .playwright-core.tgz",
     );
     if (!("code" in unpack) || unpack.code !== 0) {
       throw new Error("unpacking playwright-core failed");
     }
     await yurt.fs.write(
-      `${HOME}/node_modules/yurt-chrome/index.js`,
+      `${MODULES}/yurt-chrome/index.js`,
       YURT_CHROME_MODULE,
     );
     await yurt.fs.write(`${HOME}/playwright-example.js`, EXAMPLE_SCRIPT);
