@@ -60,6 +60,7 @@ import {
 import {
   captureKindOf,
   goSetRequest,
+  playwrightSetRequest,
   type SnapshotKind,
   tabletPythonRequest,
 } from "./sandbox_snapshot.ts";
@@ -190,6 +191,13 @@ let platform: Platform = "desktop";
  * chooseEnv): `?env=go`, or the start screen's choice, restores the Go
  * snapshot instead of the Python one. Python's on every other page. */
 let env: Env = "python";
+/** The site pins a Playwright snapshot (src/snapshot_pin.ts): a Playwright
+ * page restores it; without one it boots the desktop's and installs live
+ * (src/playwright_demo.ts). */
+let playwrightPinned = false;
+/** Whether this page's sandbox is the Playwright snapshot's: no Python in
+ * it, so no Python install and no Notebook. */
+const playwrightSandbox = () => env === "playwright" && playwrightPinned;
 
 /**
  * window.yurt (src/agent_api.ts): a driver's view of the sandbox, present
@@ -440,6 +448,8 @@ function boot(
     ? captureKindOf(snapshotParam())!
     : platform === "desktop" && env === "go"
     ? "go"
+    : platform === "desktop" && playwrightSandbox()
+    ? "playwright"
     : platform;
   const endBoot = (why?: string) => {
     booting = false;
@@ -675,7 +685,7 @@ function boot(
     const asked = new URL(location.href).searchParams.get("snapshot");
     if (asked !== null && asked !== "0" && snapshotMode() === undefined) {
       console.warn(
-        `[snapshot] ?snapshot=${asked} is not 0, 1, capture, capture-tablet, capture-phone, capture-go or an uploaded snapshot's 40-digit commit sha; booting the image`,
+        `[snapshot] ?snapshot=${asked} is not 0, 1, capture, capture-tablet, capture-phone, capture-go, capture-playwright or an uploaded snapshot's 40-digit commit sha; booting the image`,
       );
     }
     worker.postMessage({
@@ -701,6 +711,8 @@ function boot(
           ? tabletPythonRequest(pins)
           : kind === "go"
           ? goSetRequest(pins)
+          : kind === "playwright"
+          ? playwrightSetRequest(pins)
           : undefined
         : noPython || agentOnly
         ? undefined
@@ -714,6 +726,8 @@ function boot(
         ? tabletPythonRequest(pins)
         : kind === "go"
         ? goSetRequest(pins)
+        : kind === "playwright"
+        ? playwrightSetRequest(pins)
         : undefined,
       // Go's page installs go itself when Go's snapshot cannot be restored
       // (src/go_fallback.ts).
@@ -1040,6 +1054,8 @@ async function runPage(): Promise<void> {
     capturing: snapshotMode() === "capture",
   });
   env = chosenEnv.env;
+  playwrightPinned = (await fetchSitePins())?.playwrightSnapshot !==
+    undefined;
   if (chosenEnv.note !== undefined) {
     notes.push(chosenEnv.note);
     showNotes();
@@ -1099,12 +1115,12 @@ async function runPage(): Promise<void> {
       delete agent.dataset.hiddenForPlaywright;
     }
     if (shellOnly) return;
-    byId("notebook").hidden = env === "go";
+    byId("notebook").hidden = env === "go" || playwrightSandbox();
     for (const testid of ["choose-notebook", "choose-lab"]) {
       const link = document.querySelector<HTMLElement>(
         `[data-testid=${testid}]`,
       );
-      if (link) link.hidden = env === "go";
+      if (link) link.hidden = env === "go" || playwrightSandbox();
     }
   };
   applyEnv();
@@ -1169,7 +1185,7 @@ async function runPage(): Promise<void> {
       interruptCell,
       desktop,
       stopWatchingForAnotherSandbox,
-      noPython || env === "go",
+      noPython || env === "go" || playwrightSandbox(),
       status,
       device !== "desktop",
     );

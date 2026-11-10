@@ -3,7 +3,8 @@
 #
 # keep_snapshot_pin ROOT [KEY KIND]: ROOT/artifacts/pins.json keeps its KEY
 # entry (default `snapshot`, the desktop's; `tabletSnapshot` tablet,
-# `phoneSnapshot` phone, `goSnapshot` go: src/snapshot_pin.ts
+# `phoneSnapshot` phone, `goSnapshot` go, `playwrightSnapshot` playwright:
+# src/snapshot_pin.ts
 # SNAPSHOT_KINDS) unless
 # `scripts/release-snapshot.ts --check-pin --kind KIND` refuses it (exit 3,
 # with a "snapshot pin refused: <reason>" line): well formed, this page's
@@ -56,5 +57,5 @@ keep_snapshot_pin() {
 remind_dropped_snapshot() {
   [ -n "$1" ] || return 0
   # One line per dropped pin (release-playground.sh), shown on one.
-  say "the snapshot pin was dropped (${1//$'\n'/ | }): run scripts/release-snapshot.ts (deno run -A; --kind tablet, phone or go for those pins), then commit artifacts/pins.json"
+  say "the snapshot pin was dropped (${1//$'\n'/ | }): run scripts/release-snapshot.ts (deno run -A; --kind tablet, phone, go or playwright for those pins), then commit artifacts/pins.json"
 }

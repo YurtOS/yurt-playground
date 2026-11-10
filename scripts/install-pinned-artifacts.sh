@@ -84,7 +84,7 @@ fi
 fetch pythonSeal python3-seal.wasm public/demo/python3-seal.wasm
 # Each device's sealed sandbox (src/snapshot_pin.ts SNAPSHOT_KINDS:
 # `snapshot` the desktop's, `tabletSnapshot`, `phoneSnapshot`,
-# `goSnapshot`), when the
+# `goSnapshot`, `playwrightSnapshot`), when the
 # train pins it and the caller asks for it: YURT_INSTALL_SNAPSHOT=1 fetches
 # every kind (the deploy, which publishes them), or a space-separated list of
 # pin keys only those (CI's jupyterlite scene, whose notebook must restore
@@ -118,7 +118,7 @@ install_snapshot() (
   echo "installed $tag/$asset as public/snapshot/$asset" >&2
 )
 
-for kind in snapshot:sandbox.seal.zip tabletSnapshot:tablet.seal.zip phoneSnapshot:phone.seal.zip goSnapshot:go.seal.zip; do
+for kind in snapshot:sandbox.seal.zip tabletSnapshot:tablet.seal.zip phoneSnapshot:phone.seal.zip goSnapshot:go.seal.zip playwrightSnapshot:playwright.seal.zip; do
   key=${kind%%:*} asset=${kind#*:}
   if [[ "$(jq -r ".$key // empty" "$pins")" == "" ]]; then
     # One from earlier pins would be checked and left out by the static

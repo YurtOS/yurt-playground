@@ -2,6 +2,7 @@ import { assertEquals } from "@std/assert";
 import {
   type CaptureMark,
   capturePrecompiles,
+  captureStagesPlaywright,
   captureWarmsGo,
   DOWNLOAD_URL_KEEP_MS,
   finishCapture,
@@ -239,6 +240,14 @@ Deno.test("a capture precompiles the Python it installed; the phone's has none",
   assertEquals(captureWarmsGo("go"), true);
   for (const kind of ["desktop", "tablet", "phone"] as const) {
     assertEquals(captureWarmsGo(kind), false);
+  }
+  // Playwright's stages playwright-core (src/playwright_setup.ts): no
+  // Python to compile, no Go to warm.
+  assertEquals(captureStagesPlaywright("playwright"), true);
+  assertEquals(capturePrecompiles("playwright"), false);
+  assertEquals(captureWarmsGo("playwright"), false);
+  for (const kind of ["desktop", "tablet", "phone", "go"] as const) {
+    assertEquals(captureStagesPlaywright(kind), false);
   }
 });
 

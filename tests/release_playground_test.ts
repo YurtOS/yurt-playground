@@ -1406,6 +1406,7 @@ case "$*" in
   "run -A scripts/release-snapshot.ts --check-pin --kind tablet") kind=tablet ;;
   "run -A scripts/release-snapshot.ts --check-pin --kind phone") kind=phone ;;
   "run -A scripts/release-snapshot.ts --check-pin --kind go") kind=go ;;
+  "run -A scripts/release-snapshot.ts --check-pin --kind playwright") kind=playwright ;;
   *) exit 9 ;;
 esac
 [ "$(pwd -P)" = "$(cd ${JSON.stringify(root)} && pwd -P)" ] || exit 9
@@ -1487,6 +1488,39 @@ echo 'snapshot pin refused: the snapshot holds go@1, the live index offers go@2'
   assertStringIncludes(
     run.output,
     "the pinned snapshot is not this train's (goSnapshot: the snapshot holds go@1, the live index offers go@2): dropped",
+  );
+});
+
+Deno.test("a train carries a Playwright snapshot pin, and drops it when its own kind's check refuses", async () => {
+  const kept = await pinsWrite(
+    "exit 0",
+    { steps: {} },
+    {
+      snapshots: {
+        snapshot: { release: "d" },
+        playwrightSnapshot: { release: "w" },
+      },
+    },
+  );
+  assertEquals(kept.code, 0, kept.output);
+  assertEquals(kept.pins.playwrightSnapshot, { release: "w" });
+  const run = await pinsWrite(
+    `[ "$kind" = playwright ] || exit 0
+echo 'snapshot pin refused: the snapshot holds node@1, the live index offers node@2' >&2; exit 3`,
+    { steps: {} },
+    {
+      snapshots: {
+        snapshot: { release: "d" },
+        playwrightSnapshot: { release: "w" },
+      },
+    },
+  );
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.pins.snapshot, { release: "d" });
+  assertEquals("playwrightSnapshot" in run.pins, false);
+  assertStringIncludes(
+    run.output,
+    "the pinned snapshot is not this train's (playwrightSnapshot: the snapshot holds node@1, the live index offers node@2): dropped",
   );
 });
 

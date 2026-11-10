@@ -1,6 +1,8 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   compiledPackages,
+  OPTIONAL_KINDS,
+  SNAPSHOT_EXPECTED,
   type SnapshotProbe,
   verifySnapshotPins,
   verifySnapshotProbe,
@@ -267,6 +269,37 @@ Deno.test("a phone snapshot as large as the tablet's is refused", () => {
   ]);
 });
 
+Deno.test("the Playwright snapshot is optional, holds node and loads playwright-core", () => {
+  // Not pinned: a complete train is whole without it (the page installs
+  // live), like Go's.
+  assertEquals(OPTIONAL_KINDS.includes("playwright"), true);
+  assertEquals(SNAPSHOT_EXPECTED.playwright.has, ["node"]);
+  assertEquals(SNAPSHOT_EXPECTED.playwright.playwright, true);
+  for (const kind of ["desktop", "tablet", "phone", "go"] as const) {
+    assertEquals(SNAPSHOT_EXPECTED[kind].playwright, false);
+  }
+  assertEquals(verifySnapshotPins(fixture()), []);
+  // A restore whose node does not load playwright-core is refused.
+  const probe: SnapshotProbe = {
+    kind: "playwright",
+    restored: true,
+    restoredBytes: null,
+    processes: [],
+    python: false,
+    go: false,
+    playwright: false,
+    goCompiled: null,
+    goBuildSeconds: null,
+    imports: { numpy: false, zmq: false },
+    notebook: false,
+    memTotalKiB: null,
+    df: "",
+  };
+  assertEquals(verifySnapshotProbe(probe), [
+    "playwright: node does not load playwright-core and yurt-chrome",
+  ]);
+});
+
 Deno.test("the order holds across a kind that is not pinned", () => {
   const pins = fixture();
   delete pins.tabletSnapshot;
@@ -296,6 +329,7 @@ Deno.test("a live probe is held to its kind", () => {
     processes: [],
     python: false,
     go: false,
+    playwright: false,
     goCompiled: null,
     goBuildSeconds: null,
     imports: { numpy: false, zmq: false },
@@ -330,6 +364,7 @@ Deno.test("a live probe of Go's snapshot needs go and a warm build cache", () =>
     processes: [],
     python: false,
     go: true,
+    playwright: false,
     goCompiled: [],
     goBuildSeconds: 20,
     imports: { numpy: false, zmq: false },

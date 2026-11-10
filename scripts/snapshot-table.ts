@@ -27,6 +27,8 @@ const DEVICE = {
   tablet: "tablet (iPad): `?platform=tablet`",
   phone: "phone (iPhone): `?platform=phone`",
   go: "desktop browser that chose Go: `?platform=desktop&env=go`",
+  playwright:
+    "desktop browser that chose Playwright: `?platform=desktop&env=playwright`",
 };
 
 const MIB = 1024 * 1024;

@@ -47,6 +47,7 @@ import {
   formatRefusal,
   GO_SET,
   kindQuery,
+  PLAYWRIGHT_SET,
   SNAPSHOT_KIND_NAMES,
   SNAPSHOT_KINDS,
   type SnapshotKind,
@@ -70,6 +71,9 @@ export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
    * importing GO_WARMUP_IMPORTS compiles no package of the standard
    * library (the build cache holds them). */
   go: boolean;
+  /** node loads playwright-core and the yurt-chrome module after a
+   * restore (src/playwright_setup.ts). */
+  playwright: boolean;
   /** Python modules that import after a restore. */
   imports: readonly string[];
   /** The Notebook (Jupyter) starts after a restore. */
@@ -81,6 +85,7 @@ export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
     set: PYTHON_SET,
     python: true,
     go: false,
+    playwright: false,
     imports: ["numpy", "zmq"],
     notebook: true,
   },
@@ -93,6 +98,7 @@ export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
     set: TABLET_PYTHON_SET,
     python: true,
     go: false,
+    playwright: false,
     imports: [],
     notebook: false,
   },
@@ -102,15 +108,27 @@ export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
     set: null,
     python: false,
     go: false,
+    playwright: false,
     imports: [],
     notebook: false,
   },
   go: {
     has: GO_SET,
-    lacks: PYTHON_SET,
+    lacks: [...PYTHON_SET, ...PLAYWRIGHT_SET],
     set: GO_SET,
     python: false,
     go: true,
+    playwright: false,
+    imports: [],
+    notebook: false,
+  },
+  playwright: {
+    has: PLAYWRIGHT_SET,
+    lacks: [...PYTHON_SET, ...GO_SET],
+    set: PLAYWRIGHT_SET,
+    python: false,
+    go: false,
+    playwright: true,
     imports: [],
     notebook: false,
   },
@@ -122,12 +140,14 @@ export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
 export const SNAPSHOT_SIZE_ORDERS: readonly (readonly SnapshotKind[])[] = [
   ["desktop", "tablet", "phone"],
   ["go", "phone"],
+  ["playwright", "phone"],
 ];
 
 /** Kinds a train may leave unpinned even when complete: Go's is an
- * opt-in a desktop page offers only once it is pinned (src/page.ts), so
- * a train without one is whole. Pinned, it is checked like the rest. */
-export const OPTIONAL_KINDS: readonly SnapshotKind[] = ["go"];
+ * opt-in a desktop page offers only once it is pinned (src/page.ts), and
+ * Playwright's page installs live without one (src/playwright_demo.ts), so
+ * a train without them is whole. Pinned, they are checked like the rest. */
+export const OPTIONAL_KINDS: readonly SnapshotKind[] = ["go", "playwright"];
 
 /** Every problem with `pins`' snapshot entries; none is a pass. With
  * `complete: false` a kind that is not pinned, or not measured yet (no
@@ -253,6 +273,8 @@ export type SnapshotProbe = {
   python: boolean;
   /** go is on the PATH. */
   go: boolean;
+  /** node loads playwright-core and yurt-chrome. */
+  playwright: boolean;
   /** The standard library packages a first `go build` of the warm-up's
    * imports compiled (none on a warm cache); null when go is absent. */
   goCompiled: string[] | null;
@@ -293,6 +315,13 @@ export function verifySnapshotProbe(
   if (probe.go !== expected.go) {
     problems.push(`${kind}: go is ${probe.go ? "" : "not "}on the PATH`);
   }
+  if (probe.playwright !== expected.playwright) {
+    problems.push(
+      `${kind}: node ${
+        probe.playwright ? "loads" : "does not load"
+      } playwright-core and yurt-chrome`,
+    );
+  }
   if (expected.go && probe.goCompiled !== null && probe.goCompiled.length > 0) {
     problems.push(
       `${kind}: a first go build compiled the standard library's ${
@@ -321,6 +350,7 @@ const DESCRIPTOR: Record<SnapshotKind, string | undefined> = {
   tablet: "iPad Pro 11",
   phone: "iPhone 13",
   go: undefined,
+  playwright: undefined,
 };
 
 /** A program unlike the warm-up's own (src/capture_outcome.ts
@@ -393,6 +423,9 @@ async function probeKind(
         (await exec(`python3 -c 'import ${module}'`)).code === 0;
     }
     const go = (await exec("command -v go")).code === 0;
+    const playwright = (await exec(
+      `node -e 'require("yurt-chrome"); require("playwright-core")'`,
+    )).code === 0;
     let goCompiled: string[] | null = null;
     let goBuildSeconds: number | null = null;
     if (go) {
@@ -449,6 +482,7 @@ async function probeKind(
       processes: ps.stdout.trim().split("\n").slice(1).map((row) => row.trim()),
       python,
       go,
+      playwright,
       goCompiled,
       goBuildSeconds,
       imports,

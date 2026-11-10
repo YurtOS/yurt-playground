@@ -5,42 +5,14 @@
 // the guest's DevTools endpoint (src/cdp_bridge.ts) and the Yurt browser
 // bridge extension (src/browser_bridge.ts).
 import type { Yurt } from "./agent_api.ts";
+import { stagePlaywright } from "./playwright_setup.ts";
 
-export const HOME = "/home/user";
-
-/** Where the modules go: Node searches `~/.node_modules` from any
- *  directory (one of its global folders), not only from under the home. */
-export const MODULES = `${HOME}/.node_modules`;
-
-/** `~/.node_modules/yurt-chrome/index.js`: the guest's DevTools endpoint. */
-export const YURT_CHROME_MODULE =
-  `// The browser this sandbox runs in, through the Yurt browser bridge.
-const cdpUrl = "http://127.0.0.1:9222";
-module.exports = {
-  cdpUrl,
-  /** This browser, as a Playwright Browser: newPage() opens a tab. */
-  connect: () => require("playwright-core").chromium.connectOverCDP(cdpUrl),
-};
-`;
-
-/** `~/playwright-example.js`: open a tab, read it, screenshot it. */
-export const EXAMPLE_SCRIPT = `// node playwright-example.js [url]
-// Opens a tab in this browser, reads it and takes a screenshot.
-const { connect } = require("yurt-chrome");
-(async () => {
-  const browser = await connect();
-  const page = await browser.contexts()[0].newPage();
-  await page.goto(process.argv[2] ?? "https://example.com");
-  console.log("title:", await page.title());
-  const shot = require("node:path").join(require("node:os").homedir(), "playwright-example.png");
-  await page.screenshot({ path: shot });
-  console.log("screenshot:", shot);
-  await browser.close(); // disconnects; the tab stays open
-})().catch((error) => {
-  console.error(error.message);
-  process.exit(1);
-});
-`;
+export {
+  EXAMPLE_SCRIPT,
+  HOME,
+  MODULES,
+  YURT_CHROME_MODULE,
+} from "./playwright_setup.ts";
 
 /** The note for a browser without the extension. */
 export const NO_EXTENSION_NOTE =
@@ -99,36 +71,36 @@ export async function setUpPlaywright(
   }
   try {
     await yurt.ready;
-    say("Setting up Playwright: installing node…");
-    const node = await yurt.exec(
-      "command -v node >/dev/null || { sudo pkg update && sudo pkg install node; } >/tmp/playwright-setup.log 2>&1; command -v node",
-    );
-    if (!("code" in node) || node.code !== 0) {
-      throw new Error("node did not install (see /tmp/playwright-setup.log)");
-    }
-    say("Setting up Playwright: playwright-core…");
-    const response = await fetchAsset("./playwright-core.tgz");
-    if (!response.ok) {
-      throw new Error(`playwright-core.tgz: HTTP ${response.status}`);
-    }
-    await yurt.fs.write(
-      `${HOME}/.playwright-core.tgz`,
-      new Uint8Array(await response.arrayBuffer()),
-    );
-    const unpack = await yurt.exec(
-      `cd ${HOME} && rm -rf ${MODULES}/playwright-core && ` +
-        `mkdir -p ${MODULES}/playwright-core ${MODULES}/yurt-chrome && ` +
-        `tar -xzf .playwright-core.tgz -C ${MODULES}/playwright-core ` +
-        "--strip-components=1 && rm .playwright-core.tgz",
-    );
-    if (!("code" in unpack) || unpack.code !== 0) {
-      throw new Error("unpacking playwright-core failed");
-    }
-    await yurt.fs.write(
-      `${MODULES}/yurt-chrome/index.js`,
-      YURT_CHROME_MODULE,
-    );
-    await yurt.fs.write(`${HOME}/playwright-example.js`, EXAMPLE_SCRIPT);
+    // A sandbox restored from the Playwright snapshot has it all: this
+    // only checks (src/playwright_setup.ts).
+    const code = async (line: string) => {
+      const result = await yurt.exec(line);
+      return "code" in result && result.code !== null ? result.code : -1;
+    };
+    await stagePlaywright({
+      run: code,
+      write: async (path, bytes) => {
+        const dir = path.slice(0, path.lastIndexOf("/"));
+        if (await code(`mkdir -p '${dir}'`) !== 0) {
+          throw new Error(`cannot make ${dir}`);
+        }
+        await yurt.fs.write(path, bytes);
+      },
+      tarball: async () => {
+        const response = await fetchAsset("./playwright-core.tgz");
+        if (!response.ok) {
+          throw new Error(`playwright-core.tgz: HTTP ${response.status}`);
+        }
+        return new Uint8Array(await response.arrayBuffer());
+      },
+    }, {
+      say,
+      installNode: async () => {
+        await code(
+          "{ sudo pkg update && sudo pkg install node; } >/tmp/playwright-setup.log 2>&1",
+        );
+      },
+    });
     // The page serves the endpoint only for this env; say ready only once
     // the guest can reach it.
     const probe = await yurt.exec(

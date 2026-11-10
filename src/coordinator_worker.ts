@@ -3,6 +3,7 @@
  * Browser coordinator. WorkerHost.spawnRootLeader uses Atomics.wait, which
  * is legal here and illegal on the window thread.
  */
+import { stagePlaywright } from "./playwright_setup.ts";
 import type { CdpBridge } from "./cdp_bridge.ts";
 import {
   dropAgentSession,
@@ -72,6 +73,7 @@ import {
 import { liveAnswers } from "./python_install.ts";
 import {
   capturePrecompiles,
+  captureStagesPlaywright,
   captureWarmsGo,
   goWarmupLine,
   postCaptured,
@@ -472,6 +474,51 @@ async function captureSnapshot(
       "warming Go's build cache",
       "warmed Go's build cache",
     );
+  }
+  // Playwright's: what the demo's setup does on a page, done once here
+  // (the same code, src/playwright_setup.ts), so a restored page only
+  // checks. Files are staged in /tmp as root (writeFiles) and copied into
+  // the home by the login user, who owns them then.
+  if (captureStagesPlaywright(kind)) {
+    const spawn = session.process;
+    const writeFiles = session.writeFiles;
+    if (writeFiles === undefined) {
+      throw new Error("this session cannot write files");
+    }
+    const run = async (line: string) => {
+      const step = await spawn(line, { maxOutputBytes: 64 * 1024 });
+      const exited = await step.exited;
+      return typeof exited === "number" ? exited : exited.code ?? -1;
+    };
+    let staged = 0;
+    post({ type: "status", text: "staging playwright-core and yurt-chrome" });
+    await stagePlaywright({
+      run,
+      write: async (path, bytes) => {
+        const from = `/tmp/playwright-stage-${staged++}`;
+        writeFiles([{ path: from, bytes }]);
+        const dir = path.slice(0, path.lastIndexOf("/"));
+        if (
+          await run(
+            `mkdir -p '${dir}' && cp '${from}' '${path}' && sudo rm -f '${from}'`,
+          ) !== 0
+        ) {
+          throw new Error(`staging ${path} failed`);
+        }
+      },
+      tarball: async () => {
+        const response = await fetch("./playwright-core.tgz");
+        if (!response.ok) {
+          throw new Error(`playwright-core.tgz: HTTP ${response.status}`);
+        }
+        return new Uint8Array(await response.arrayBuffer());
+      },
+    }, {
+      // Its set is node: installed before this step, or the capture fails.
+      installNode: () =>
+        Promise.reject(new Error("the capture installed no node")),
+      say: (text) => post({ type: "status", text }),
+    });
   }
   // What it holds, for its pin and for people: pkg's list as the seal
   // keeps it (src/linux_remark.ts).
@@ -956,7 +1003,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           if (!phone && capturedSet === undefined) {
             throw new Error(
               `this capture installed no ${
-                captureKind === "go" ? "Go" : "Python"
+                captureKind === "go"
+                  ? "Go"
+                  : captureKind === "playwright"
+                  ? "node"
+                  : "Python"
               } (the phone's capture, without any, is ?snapshot=capture-phone)`,
             );
           }
