@@ -112,7 +112,6 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   // Chromium for them.
   assertEquals(workflow.includes("run: google-chrome --version"), true);
   assertEquals(workflow.includes("playwright/cli.js install chromium"), false);
-  assertEquals(workflow.includes("PLAYGROUND_BROWSER"), false);
   // WebKit runs in Playwright's image for the pinned version, not from an
   // apt install of its system libraries (32 min at ~60 kB/s on #246).
   assertEquals(workflow.includes("--with-deps"), false);

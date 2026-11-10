@@ -37,8 +37,9 @@ bytes between releases, so they keep the pinned build.
 ## Risks
 
 - The runner image updates Chrome weekly, so a scene can turn red with no change
-  in this repository. The version line in the log shows when that happened;
-  `PLAYGROUND_BROWSER=chromium` reruns the scene on the old engine.
+  in this repository. The version line in the log shows when that happened.
+  `PLAYGROUND_BROWSER=chromium` reruns a scene on the old engine locally; in CI
+  that also needs the `playwright install chromium` step back.
 - Playwright 1.55 predates Chrome 156. If the protocol breaks, bump Playwright
   (which also moves the WebKit image tag).
 - Headless Chrome is the real binary but not a desktop session: GPU and display

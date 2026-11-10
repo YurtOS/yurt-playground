@@ -255,8 +255,9 @@ jobs:
     needs: checks
     if: ${{ !cancelled() && needs.checks.outputs.present == 'true' && needs.checks.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
-    # Above the step cap (11) plus both browser installs at their cap (5 + 5)
-    # and setup and build (1.6 min typical, 2.1 worst seen), with ~2 min to
+    # Above the step cap (11) plus both browser installs at their cap (5 + 5;
+    # only the webkit leg installs one now, the others use the runner's
+    # Chrome) and setup and build (1.6 min typical, 2.1 worst seen), with ~2 min to
     # spare, for the same reason. A cap costs nothing unless something
     # hangs; the slowest scene took 10.0 min in all.
     timeout-minutes: 25

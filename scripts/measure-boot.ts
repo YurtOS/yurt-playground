@@ -30,6 +30,7 @@
  * public/snapshot/ (YURT_INSTALL_SNAPSHOT=1 scripts/install-pinned-artifacts.sh)
  * and Playwright's browsers. Memory is sampled with `ps` (macOS, Linux).
  */
+import { launchOptions } from "../tests/browser.ts";
 import { ensureBundle } from "./serve.ts";
 import { handlePlaygroundRequest, ISOLATION_HEADERS } from "../src/serve.ts";
 
@@ -100,10 +101,10 @@ function rendererMiB(profile: string): number {
 
 if (import.meta.main) {
   const device = option("--device", "phone");
-  const engine = option("--engine", "chromium") as
-    | "chromium"
-    | "chrome"
-    | "webkit";
+  const engine = option("--engine", "chromium");
+  if (engine !== "chromium" && engine !== "chrome" && engine !== "webkit") {
+    throw new Error(`--engine ${engine}: want chromium, chrome or webkit`);
+  }
   const query = option("--query", "start");
   const pinsPath = option("--pins", "");
   const warm = Number(option("--warm", "1"));
@@ -131,11 +132,14 @@ if (import.meta.main) {
   // API. The flag names this browser's process tree for `ps`.
   // `chrome` is the installed Google Chrome, the browser people run;
   // `chromium` stays Playwright's pinned build so figures compare across runs.
-  const browser = await (engine === "webkit" ? webkit : chromium).launch({
-    headless: true,
-    ...(engine === "chrome" ? { channel: "chrome" } : {}),
-    args: engine === "webkit" ? [] : [`--yurt-measure=${profile}`],
-  });
+  const browser = engine === "webkit"
+    ? await webkit.launch({ headless: true })
+    : await chromium.launch(
+      launchOptions(engine, {
+        headless: true,
+        args: [`--yurt-measure=${profile}`],
+      }),
+    );
   const context = await browser.newContext(descriptor);
   if (spec.maxTouchPoints !== undefined) {
     await context.addInitScript((points: number) => {

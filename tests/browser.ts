@@ -5,7 +5,9 @@
 // different binary (chromium_headless_shell) several releases behind, and
 // the playground has passed there while failing in Chrome (the notebook's
 // "No Kernel", 2026-09-20). PLAYGROUND_BROWSER=chromium selects Playwright's
-// pinned build instead, to reproduce a run from before the switch.
+// pinned build instead, to compare with a run from before the switch, or on a
+// machine without Chrome (after `playwright install chromium`; CI installs
+// only Chrome's runner-image copy, so there it needs that step back).
 //
 // The WebKit scene and the snapshot release scripts launch their own engine:
 // a released snapshot is captured and checked in Playwright's pinned build,
@@ -17,10 +19,13 @@ import type { Browser, LaunchOptions } from "playwright";
 
 export type ChromiumBrowser = "chrome" | "chromium";
 
-/** The browser PLAYGROUND_BROWSER names; Chrome when it is unset. */
-export function selectedBrowser(
-  value: string | undefined = Deno.env.get("PLAYGROUND_BROWSER"),
-): ChromiumBrowser {
+/** The browser PLAYGROUND_BROWSER names. */
+export function selectedBrowser(): ChromiumBrowser {
+  return parseBrowser(Deno.env.get("PLAYGROUND_BROWSER"));
+}
+
+/** A PLAYGROUND_BROWSER value's browser; Chrome when it is unset. */
+export function parseBrowser(value: string | undefined): ChromiumBrowser {
   if (value === undefined || value === "" || value === "chrome") {
     return "chrome";
   }

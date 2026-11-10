@@ -1,5 +1,5 @@
 /**
- * The home page's agent pane (#140), end to end in headless Chromium, with
+ * The home page's agent pane (#140), end to end in headless Google Chrome, with
  * no model weights: the test answers `/llm/models.json` and serves a
  * scripted stand-in for `/llm_worker.bundle.js` that speaks the worker's
  * protocol. Everything else is real: the pane, the client, the controller
@@ -134,7 +134,7 @@ async function withModel(
       contentType: "text/javascript",
       body: fakeWorker(opts.worker, opts.demoText),
     }));
-  // Headless Chromium on a runner has no GPU; the pane asks for an adapter.
+  // Headless Chrome on a runner has no GPU; the pane asks for an adapter.
   // A stub, so this proves nothing about WebGPU (agent_webgpu_e2e.ts does).
   await context.addInitScript((webgpu: boolean) => {
     Object.defineProperty(Navigator.prototype, "gpu", {
