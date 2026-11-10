@@ -86,15 +86,15 @@ Deno.test("an existing snapshot release counts only when it holds every part, by
   ]);
 });
 
-Deno.test("only the deploy fetches the snapshot, with the other blobs' retry", async () => {
+Deno.test("the deploy fetches every snapshot, CI's jupyterlite scene only the desktop's, with the other blobs' retry", async () => {
   const read = (path: string) =>
     Deno.readTextFile(new URL(`../${path}`, import.meta.url));
   const script = await read("scripts/install-pinned-artifacts.sh");
   assertEquals(
-    /YURT_INSTALL_SNAPSHOT:-\}" == 1 \]\]; then\s+if ! install_snapshot "\$key" "\$asset"; then/
+    /YURT_INSTALL_SNAPSHOT:-\}" == 1 \|\| " \$\{YURT_INSTALL_SNAPSHOT:-\} " == \*" \$key "\* \]\]; then\s+if ! install_snapshot "\$key" "\$asset"; then/
       .test(script),
     true,
-    "each snapshot is installed behind YURT_INSTALL_SNAPSHOT=1",
+    "each snapshot is installed behind YURT_INSTALL_SNAPSHOT=1 or its key",
   );
   assertEquals(
     /install_snapshot\(\) \([^]*download "\$tag" "\$repo" "\$asset\.\[0-9\]\*"/
@@ -113,15 +113,21 @@ Deno.test("only the deploy fetches the snapshot, with the other blobs' retry", a
     ),
     true,
   );
-  for (const workflow of ["ci.yml", "release-desktop.yml"]) {
-    assertEquals(
-      (await read(`.github/workflows/${workflow}`)).includes(
-        "YURT_INSTALL_SNAPSHOT",
-      ),
-      false,
-      workflow,
-    );
-  }
+  // CI fetches the desktop's for the jupyterlite scene alone, whose
+  // notebook cannot start without it (src/lite_bridge.ts).
+  const ci = await read(".github/workflows/ci.yml");
+  assertEquals(
+    ci.match(/YURT_INSTALL_SNAPSHOT: .*/g),
+    [
+      "YURT_INSTALL_SNAPSHOT: ${{ matrix.scene == 'jupyterlite' && 'snapshot' || '' }}",
+    ],
+  );
+  assertEquals(
+    (await read(".github/workflows/release-desktop.yml")).includes(
+      "YURT_INSTALL_SNAPSHOT",
+    ),
+    false,
+  );
 });
 
 Deno.test("a train keeps the snapshot pin only when --check-pin's checks pass", async () => {
@@ -363,10 +369,11 @@ Deno.test("a damaged or missing snapshot file is a problem to report, never a th
 
 /** install-pinned-artifacts.sh run on its own tree, with a `gh` that
  * serves each release asset as its name's bytes ("<asset>" in UTF-8) and
- * fails for the snapshot when `failSnapshot` is set. */
+ * fails for the snapshot when `failSnapshot` is set. `install` is the
+ * YURT_INSTALL_SNAPSHOT it runs with. */
 async function installWith(
   snapshot: unknown,
-  { failSnapshot = false } = {},
+  { failSnapshot = false, install = "1" } = {},
 ) {
   const root = await Deno.makeTempDir();
   try {
@@ -416,7 +423,7 @@ esac
       args: [`${root}/scripts/install-pinned-artifacts.sh`],
       env: {
         PATH: `${root}/bin:${Deno.env.get("PATH")}`,
-        YURT_INSTALL_SNAPSHOT: "1",
+        YURT_INSTALL_SNAPSHOT: install,
       },
       stdout: "piped",
       stderr: "piped",
@@ -455,6 +462,27 @@ Deno.test("a deploy never fails on the optional snapshot: any problem is a warni
     assertEquals(run.code, 0, `${why}: ${run.stderr}`);
     assertEquals(run.installed, false, why);
     assertEquals(run.stderr.includes("WARNING"), true, why);
+  }
+});
+
+Deno.test("YURT_INSTALL_SNAPSHOT names the kinds it fetches by pin key", async () => {
+  const snapSha = (await installWith(undefined)).snapSha;
+  const pin = {
+    releaseRepo: "YurtOS/yurt-playground",
+    release: "snapshot-t",
+    sha256: snapSha,
+  };
+  for (
+    const [install, installed] of [
+      ["snapshot", true],
+      ["tabletSnapshot snapshot", true],
+      ["tabletSnapshot", false],
+      ["snap", false],
+      ["", false],
+    ] as const
+  ) {
+    const run = await installWith(pin, { install });
+    assertEquals([run.code, run.installed], [0, installed], install);
   }
 });
 

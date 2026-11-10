@@ -103,8 +103,10 @@ and the pin; `--tag` names a second snapshot of one train (a published one is
 never replaced). A train keeps the pin only while
 `release-snapshot.ts --check-pin` accepts it, and otherwise drops it and says to
 run the script again; so does a change to the page's boot setup (`BOOT_SETUP` in
-`src/snapshot_pin.ts`). Only the deploy fetches the snapshot
-(`YURT_INSTALL_SNAPSHOT=1`), and a problem with it never fails the deploy.
+`src/snapshot_pin.ts`). The deploy fetches every snapshot
+(`YURT_INSTALL_SNAPSHOT=1`), and a problem with one never fails the deploy. CI's
+jupyterlite scene fetches only the desktop's (`YURT_INSTALL_SNAPSHOT=snapshot`):
+the notebook cannot start without it.
 
 To try another snapshot without a pin or a deploy, capture and upload it
 locally:
