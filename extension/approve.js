@@ -23,5 +23,12 @@ const answer = async (allowed) => {
   }
   globalThis.close();
 };
+// The buttons wake a moment after the window is seen, so a click meant for
+// the page under it cannot land on Allow.
+setTimeout(() => {
+  for (const id of ["allow", "deny"]) {
+    document.getElementById(id).disabled = false;
+  }
+}, 1000);
 document.getElementById("allow").addEventListener("click", () => answer(true));
 document.getElementById("deny").addEventListener("click", () => answer(false));

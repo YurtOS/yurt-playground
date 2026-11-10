@@ -165,11 +165,12 @@ Chrome's debugger API on the tabs it opens itself, and answers only this site.
 While the page sets Playwright up, the extension opens its own window asking
 whether to let this tab's sandbox drive the browser: the tabs it opens use this
 browser's sign-ins, so allow it only if you mean to. The answer holds until the
-tab closes or reloads. What you allow is that page and its sandbox: anything
+page closes or reloads. What you allow is that page and its sandbox: anything
 running in the page, or in the sandbox, can then drive the browser the way the
-script does. Inside the sandbox, Playwright reaches the extension at
-`127.0.0.1:9222`, a DevTools endpoint only a page set up for Playwright serves
-(`src/cdp_bridge.ts`).
+script does. The agent is off in that sandbox, and a script can send its tabs to
+web pages only (never `chrome://`, `file:` or an extension's pages). Inside the
+sandbox, Playwright reaches the extension at `127.0.0.1:9222`, a DevTools
+endpoint only a page set up for Playwright serves (`src/cdp_bridge.ts`).
 
 ## Desktop app
 

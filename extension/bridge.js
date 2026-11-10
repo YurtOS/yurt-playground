@@ -6,6 +6,21 @@
 
 const DEFAULT_CONTEXT = "yurt-default";
 
+/** Where a script may send a tab: the web, or a blank page. Never this
+ *  extension's own pages (which run with its powers), chrome://,
+ *  devtools:, file: or another extension. */
+function navigable(url) {
+  if (url === undefined || url === "about:blank") return true;
+  try {
+    const protocol = new URL(url).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+/** The most tabs one connection may open at once. */
+const MAX_TABS = 16;
+
 // A page may drive this browser only after a person allowed it in this
 // extension's own window (approve.html): any script on the site's origin can
 // reach the extension, so the page's own gate is not the boundary.
@@ -201,6 +216,17 @@ chrome.runtime.onConnectExternal.addListener((port) => {
   };
   chrome.debugger.onEvent.addListener(onEvent);
   chrome.debugger.onDetach.addListener(onDetach);
+  // Second layer: a controlled tab that reaches anything but the web or a
+  // blank page (a link, a redirect, script) is let go and closed.
+  const onTabUpdated = (tabId, change) => {
+    if (change.url === undefined || navigable(change.url)) return;
+    const root = byTab.get(tabId);
+    if (root === undefined) return;
+    void chrome.debugger.detach({ tabId }).catch(() => {});
+    void chrome.tabs.remove(tabId).catch(() => {});
+    onDetach({ tabId });
+  };
+  chrome.tabs.onUpdated.addListener(onTabUpdated);
 
   const browserMethod = async (id, method, params) => {
     switch (method) {
@@ -228,6 +254,12 @@ chrome.runtime.onConnectExternal.addListener((port) => {
           ),
         });
       case "Target.createTarget": {
+        if (!navigable(params?.url)) {
+          return fail(id, undefined, `the bridge does not open ${params.url}`);
+        }
+        if (sessions.size >= MAX_TABS) {
+          return fail(id, undefined, `a script may keep ${MAX_TABS} tabs open`);
+        }
         const tab = await chrome.tabs.create({
           url: "about:blank",
           // In the background: the playground tab, which relays every
@@ -322,6 +354,7 @@ chrome.runtime.onConnectExternal.addListener((port) => {
       // Our own disconnect fires no onDisconnect here: drop the listeners.
       chrome.debugger.onEvent.removeListener(onEvent);
       chrome.debugger.onDetach.removeListener(onDetach);
+      chrome.tabs.onUpdated.removeListener(onTabUpdated);
       port.disconnect();
       return;
     }
@@ -339,6 +372,14 @@ chrome.runtime.onConnectExternal.addListener((port) => {
       const target = root !== undefined
         ? { tabId: root.tabId }
         : { tabId: childOf, sessionId };
+      // A tab goes to the web or a blank page only (history entries could
+      // hold anything: not offered).
+      if (method === "Page.navigateToHistoryEntry") {
+        return fail(id, sessionId, "the bridge does not navigate history");
+      }
+      if (method === "Page.navigate" && !navigable(params?.url)) {
+        return fail(id, sessionId, `the bridge does not open ${params?.url}`);
+      }
       const result = await chrome.debugger.sendCommand(
         target,
         method,
@@ -354,6 +395,7 @@ chrome.runtime.onConnectExternal.addListener((port) => {
   port.onDisconnect.addListener(async () => {
     chrome.debugger.onEvent.removeListener(onEvent);
     chrome.debugger.onDetach.removeListener(onDetach);
+    chrome.tabs.onUpdated.removeListener(onTabUpdated);
     for (const { tabId } of sessions.values()) {
       await chrome.debugger.detach({ tabId }).catch(() => {});
     }

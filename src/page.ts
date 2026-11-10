@@ -1110,9 +1110,19 @@ async function runPage(): Promise<void> {
   // With the boot refused there is no sandbox to start, so the pane says
   // so instead of offering a Run that does nothing (#197).
   void mountAgentPane(byId("agent"), {
-    yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
+    // The agent never drives a sandbox that can drive this browser.
+    yurt: () => {
+      if (env === "playwright") {
+        throw new Error("the agent is off in the Playwright sandbox");
+      }
+      return (globalThis as unknown as { yurt: Yurt }).yurt;
+    },
     start: () => document.getElementById("start-sandbox")?.click(),
-    unavailable: refused ? "no sandbox" : undefined,
+    unavailable: refused
+      ? "no sandbox"
+      : env === "playwright"
+      ? "off in the Playwright sandbox"
+      : undefined,
     // Only the in-tab sandbox seals; `?suspend=0` keeps it running.
     reload: reloadOnPurpose,
     resumeRun: () => ownReload,
@@ -1157,6 +1167,9 @@ async function runPage(): Promise<void> {
       void setUpPlaywright(
         (globalThis as unknown as { yurt: Yurt }).yurt,
         {
+          // A page another page opened can be scripted by it: never asks.
+          openedByAnother: globalThis.opener !== null &&
+            globalThis.opener !== undefined,
           extension: runtime !== undefined && bridgeAnswers(runtime),
           approval: runtime === undefined
             ? undefined

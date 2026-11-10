@@ -257,6 +257,37 @@ if (import.meta.main) {
     // The tab it opened is this browser's: the extension made it.
     const urls = context.pages().map((p) => p.url());
     if (!urls.includes(target)) fail(`no tab on ${target}: ${urls}`);
+    // A script sends tabs to the web only: the extension's own page (which
+    // runs with its powers) is refused, by createTarget and by navigate.
+    const escape = await page.evaluate(async () => {
+      const yurt = (globalThis as unknown as {
+        yurt: {
+          fs: { write(path: string, data: string): Promise<void> };
+          exec(cmd: string): Promise<{ stdout: string }>;
+        };
+      }).yurt;
+      await yurt.fs.write(
+        "/home/user/escape.js",
+        `const { connect } = require("yurt-chrome");
+const own = "chrome-extension://leelndonobmigkkkogijljomjikkefbe/approve.html";
+(async () => {
+  const browser = await connect();
+  const page = await browser.contexts()[0].newPage();
+  for (const step of [() => page.goto(own), () => page.goto("file:///etc/passwd")]) {
+    await step().then(() => console.log("OPENED"), (e) => console.log("refused:", e.message.split("\\n")[0]));
+  }
+  await page.close();
+  await browser.close();
+})();`,
+      );
+      return (await yurt.exec("node escape.js")).stdout.trim();
+    });
+    if (
+      escape.includes("OPENED") || (escape.match(/refused/g) ?? []).length !== 2
+    ) {
+      fail(`a script reached a non-web page: ${escape}`);
+    }
+    console.log(`browser bridge e2e: ${escape.replace(/\n/g, "; ")}`);
     const shot = await page.evaluate(async () =>
       (await (globalThis as unknown as {
         yurt: { fs: { read(path: string): Promise<Uint8Array> } };

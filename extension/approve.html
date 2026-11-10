@@ -32,10 +32,10 @@
   open tabs in this browser and control them.
 </p>
 <p>
-  Those tabs use this browser's sign-ins and cookies. Allow it only if you
-  started that script yourself. It lasts until that playground tab closes or
-  reloads.
+  Those tabs use this browser's sign-ins and cookies, and anything on that page
+  can use them. Allow it only if you chose Playwright on that page yourself,
+  just now. It lasts while that page stays open.
 </p>
-<button id="allow" type="button">Allow</button>
-<button id="deny" type="button">Deny</button>
+<button id="allow" type="button" disabled>Allow</button>
+<button id="deny" type="button" disabled>Deny</button>
 <script src="approve.js"></script>

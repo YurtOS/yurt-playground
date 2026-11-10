@@ -49,6 +49,10 @@ export const NO_EXTENSION_NOTE =
   "unzip it, open chrome://extensions, turn on Developer mode, choose Load " +
   "unpacked and pick the folder, then reload this page.";
 
+export const OPENED_NOTE =
+  "Playwright: this page was opened by another page, which could use it; " +
+  "open the playground yourself (a new tab, or its address) to set Playwright up";
+
 export const ASK_NOTE =
   "Playwright: the Yurt browser bridge opened a window asking whether this " +
   "sandbox may drive this browser; answer it to go on";
@@ -66,7 +70,9 @@ export const READY_NOTE =
  *  outcome; resolves when done or failed (said either way). */
 export async function setUpPlaywright(
   yurt: Yurt,
-  { extension, approval, say, fetchAsset = fetch }: {
+  { extension, approval, say, fetchAsset = fetch, openedByAnother = false }: {
+    /** This page was opened by another one, which can script it. */
+    openedByAnother?: boolean;
     /** Whether the bridge extension answers (src/browser_bridge.ts). */
     extension: boolean | Promise<boolean>;
     /** A person's answer, in the extension's window, to whether this tab
@@ -76,6 +82,10 @@ export async function setUpPlaywright(
     fetchAsset?: (path: string) => Promise<Response>;
   },
 ): Promise<boolean> {
+  if (openedByAnother) {
+    say(OPENED_NOTE);
+    return false;
+  }
   if (!(await extension)) {
     say(NO_EXTENSION_NOTE);
     return false;
