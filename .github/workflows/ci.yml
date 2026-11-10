@@ -256,11 +256,12 @@ jobs:
     if: ${{ !cancelled() && needs.checks.outputs.present == 'true' && needs.checks.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     # Above the step cap (11) plus setup and build (1.6 min typical, 2.1
-    # worst seen), with ~2 min to spare, for the same reason; the webkit leg
-    # adds its image pull and retry at their cap (5 + 5). The other legs
-    # install nothing: they use the runner's Chrome. A cap costs nothing
-    # unless something hangs; the slowest scene took 10.0 min in all.
-    timeout-minutes: ${{ matrix.scene == 'webkit' && 25 || 15 }}
+    # worst seen), with ~5 min to spare while Chrome's boot is unmeasured, for
+    # the same reason; the webkit leg adds its image pull and retry at their
+    # cap (5 + 5). The other legs install nothing: they use the runner's
+    # Chrome. A cap costs nothing unless something hangs; the slowest scene
+    # took 10.0 min in all.
+    timeout-minutes: ${{ matrix.scene == 'webkit' && 25 || 18 }}
     strategy:
       fail-fast: false
       matrix:

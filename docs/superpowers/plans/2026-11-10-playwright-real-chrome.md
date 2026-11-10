@@ -3,10 +3,10 @@
 ## Why
 
 Playwright 1.55 runs headless `chromium.launch()` on `chromium_headless_shell`,
-a separate binary built from Chromium 140. People run Google Chrome 156–157. On
-2026-09-20 the notebook passed `notebook_snapshot_e2e.ts` and failed twice in
-Chrome 153 ("No Kernel", then a silent cell). The acceptance scenes should run
-the browser people use.
+a separate binary built from Chromium 140. People run Google Chrome (156–157
+today). On 2026-09-20 the notebook passed `notebook_snapshot_e2e.ts` and failed
+twice in Chrome 153 ("No Kernel", then a silent cell). The acceptance scenes
+should run the browser people use.
 
 ## What changes
 
