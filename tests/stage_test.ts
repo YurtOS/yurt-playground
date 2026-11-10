@@ -258,7 +258,19 @@ function zstdStored(bytes: Uint8Array): Uint8Array {
 }
 
 type Call = { kind: string; path: string };
-type Recorded = { mode: number; uid: number; gid: number; mtimeNs: bigint };
+type Recorded = {
+  mode: number;
+  uid: number;
+  gid: number;
+  mtimeNs: bigint;
+  atimeNs: bigint;
+  ctimeNs: bigint;
+};
+
+/** The kernel's `kernel_vfs_set_metadata` head (yurtos-kernel#4431): mode,
+ * uid, gid, then mtime, atime and ctime as i64 ns, before the path. A
+ * request shorter than the head is EINVAL, as in the kernel. */
+const SET_METADATA_HEAD = 36;
 
 function fakeKernel() {
   const decoder = new TextDecoder();
@@ -294,13 +306,16 @@ function fakeKernel() {
           });
           return { rc: 0n };
         case KERNEL_VFS_SET_METADATA: {
-          const path = decoder.decode(request.subarray(20));
+          if (request.byteLength < SET_METADATA_HEAD) return { rc: -22n };
+          const path = decoder.decode(request.subarray(SET_METADATA_HEAD));
           calls.push({ kind: "metadata", path });
           metadata.set(path, {
             mode: view.getUint32(0, true),
             uid: view.getUint32(4, true),
             gid: view.getUint32(8, true),
-            mtimeNs: view.getBigUint64(12, true),
+            mtimeNs: view.getBigInt64(12, true),
+            atimeNs: view.getBigInt64(20, true),
+            ctimeNs: view.getBigInt64(28, true),
           });
           return { rc: 0n };
         }
@@ -399,6 +414,8 @@ Deno.test("stageYurtimg applies every entry's recorded mode, owner and mtime aft
         uid: entry.uid,
         gid: entry.gid,
         mtimeNs: BigInt(entry.mtime) * 1_000_000_000n,
+        atimeNs: BigInt(entry.mtime) * 1_000_000_000n,
+        ctimeNs: BigInt(entry.mtime) * 1_000_000_000n,
       },
       `metadata for ${entry.path}`,
     );
@@ -610,4 +627,71 @@ Deno.test("vfsStat and vfsReadWhole tell a missing path (ENOENT, ENOTDIR) from a
     }
     assert(threw.includes(words), threw);
   }
+});
+
+Deno.test("setEntryMetadata clamps a time beyond i64 nanoseconds instead of wrapping it", async () => {
+  const { mk, metadata } = fakeKernel();
+  const far = 9_000_000_000_000; // seconds: 9e21 ns, past i64
+  await stageYurtimg(
+    mk,
+    zstdStored(
+      ustar([
+        { path: "/d", type: "5", mode: 0o755, uid: 0, gid: 0, mtime: far },
+      ]),
+    ),
+    new Map(),
+  );
+  const recorded = metadata.get("/d");
+  const max = (1n << 63n) - 1n;
+  assertEquals(
+    [recorded?.mtimeNs, recorded?.atimeNs, recorded?.ctimeNs],
+    [max, max, max],
+  );
+});
+
+/** A `kernel_vfs_stat` that answers like the kernel: it rejects a response
+ * buffer under the 48-byte record (EINVAL) and returns the record's size,
+ * 48 bytes, or 72 with the later kernel's link identity appended. */
+function statKernel(recordSize: 48 | 72, mtimeNs: bigint) {
+  return {
+    scratchLen: 64 * 1024,
+    syscall(_method: number, _request: Uint8Array, responseLen: number) {
+      if (responseLen < 48) return { rc: -22n, response: new Uint8Array(0) };
+      const response = new Uint8Array(responseLen);
+      const view = new DataView(response.buffer);
+      view.setUint32(0, 4, true); // regular file
+      view.setUint32(4, 0o100_644, true);
+      view.setUint32(8, 1000, true);
+      view.setUint32(12, 1001, true);
+      view.setBigUint64(16, 123n, true);
+      view.setBigInt64(24, mtimeNs, true);
+      view.setBigInt64(32, 5n, true); // atime
+      view.setBigInt64(40, 6n, true); // ctime
+      if (recordSize === 72) response.fill(0xee, 48, 72);
+      return { rc: BigInt(recordSize), response };
+    },
+    // deno-lint-ignore no-explicit-any
+  } as any;
+}
+
+Deno.test("vfsStat reads the kernel's 48-byte record, and a longer one, with a signed mtime", () => {
+  for (const size of [48, 72] as const) {
+    assertEquals(
+      vfsStat(statKernel(size, 7_000_000_000n), "/f"),
+      {
+        type: "file",
+        mode: 0o644,
+        uid: 1000,
+        gid: 1001,
+        size: 123,
+        mtime: 7,
+      },
+      `a ${size}-byte record`,
+    );
+  }
+  // A time before 1970 is negative, not a 2^64-scale number (#4393).
+  assertEquals(
+    vfsStat(statKernel(48, -3_000_000_000n), "/old")?.mtime,
+    -3,
+  );
 });
