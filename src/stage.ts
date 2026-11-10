@@ -78,14 +78,32 @@ function entryTypeBits(type: string): number {
 
 /** `kernel_vfs_set_metadata`'s request head: mode, uid, gid (u32 each),
  * then mtime, atime and ctime as i64 nanoseconds, before the path
- * (yurtos-kernel#4431). */
+ * (yurtos-kernel#4431). A kernel older than that has a 20-byte head with the
+ * mtime alone. */
 const SET_METADATA_HEAD = 36;
+const SET_METADATA_HEAD_LEGACY = 20;
 
-/** `kernel_vfs_stat`'s response: 48 bytes (type, mode, uid, gid, size,
- * then mtime, atime and ctime as i64 ns); later kernels append more, which
- * is ignored. The buffer asked for leaves room for that. */
-const VFS_STAT_MIN_RECORD = 48;
+/** `kernel_vfs_stat`'s response: 32 bytes before #4431 (type, mode, uid,
+ * gid, size, mtime), 48 after it (atime and ctime appended); later kernels
+ * append more, which is ignored. The buffer asked for leaves room for that,
+ * and the size the kernel answers tells which layout it speaks. */
+const VFS_STAT_LEGACY_RECORD = 32;
 const VFS_STAT_RESPONSE_CAP = 72;
+
+/** Which layout of the two host-control VFS calls a kernel speaks, found
+ * once per kernel from the size of a stat record of `/`. The pinned kernel
+ * wasm moves with the release train, and the two layouts must both stage. */
+const kernelLayouts = new WeakMap<KernelHostInterface, "legacy" | "current">();
+
+function kernelLayout(mk: KernelHostInterface): "legacy" | "current" {
+  let layout = kernelLayouts.get(mk);
+  if (layout === undefined) {
+    const { rc } = mk.syscall(KERNEL_VFS_STAT, s("/"), VFS_STAT_RESPONSE_CAP);
+    layout = Number(rc) === VFS_STAT_LEGACY_RECORD ? "legacy" : "current";
+    kernelLayouts.set(mk, layout);
+  }
+  return layout;
+}
 
 const I64_MAX = (1n << 63n) - 1n;
 const I64_MIN = -(1n << 63n);
@@ -114,7 +132,9 @@ function setEntryMetadata(
   },
 ): void {
   const pathBytes = s(path);
-  const req = new Uint8Array(SET_METADATA_HEAD + pathBytes.byteLength);
+  const legacy = kernelLayout(mk) === "legacy";
+  const head = legacy ? SET_METADATA_HEAD_LEGACY : SET_METADATA_HEAD;
+  const req = new Uint8Array(head + pathBytes.byteLength);
   const view = new DataView(req.buffer);
   view.setUint32(
     0,
@@ -127,9 +147,11 @@ function setEntryMetadata(
   // (the kernel's own vfs-stage.ts does the same).
   const timeNs = clampI64(BigInt(Math.trunc(entry.mtime)) * NANOS_PER_SECOND);
   view.setBigInt64(12, timeNs, true); // mtime
-  view.setBigInt64(20, timeNs, true); // atime
-  view.setBigInt64(28, timeNs, true); // ctime
-  req.set(pathBytes, SET_METADATA_HEAD);
+  if (!legacy) {
+    view.setBigInt64(20, timeNs, true); // atime
+    view.setBigInt64(28, timeNs, true); // ctime
+  }
+  req.set(pathBytes, head);
   const { rc } = mk.syscall(KERNEL_VFS_SET_METADATA, req, 0);
   if (Number(rc) !== 0) {
     throw new Error(
@@ -480,9 +502,9 @@ export function vfsStat(
   // Gone (or a parent that is no directory now): no entry. Anything else
   // is an error, not an absence a layer may silently skip.
   if (missing(code)) return undefined;
-  if (code >= 0 && code < VFS_STAT_MIN_RECORD) {
+  if (code >= 0 && code < VFS_STAT_LEGACY_RECORD) {
     throw new Error(
-      `stat ${path}: the kernel answered ${code} bytes, under the ${VFS_STAT_MIN_RECORD}-byte record`,
+      `stat ${path}: the kernel answered ${code} bytes, under the ${VFS_STAT_LEGACY_RECORD}-byte record`,
     );
   }
   if (code < 0) throw new Error(`stat ${path}: ${errnoText(code)}`);

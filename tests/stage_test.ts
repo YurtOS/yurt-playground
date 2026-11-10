@@ -182,6 +182,7 @@ Deno.test({
 // --- A fake kernel: what stageYurtimg asks for, and in which order. ---
 
 const KERNEL_VFS_SET_METADATA = 33;
+const KERNEL_VFS_STAT = 27;
 const SYS_CHOWN = 0x1_0023;
 const SYS_LCHOWN = 0x1_01D2;
 
@@ -272,13 +273,16 @@ type Recorded = {
  * request shorter than the head is EINVAL, as in the kernel. */
 const SET_METADATA_HEAD = 36;
 
-function fakeKernel() {
+function fakeKernel(layout: "current" | "legacy" = "current") {
   const decoder = new TextDecoder();
   const calls: Call[] = [];
   const metadata = new Map<string, Recorded>();
   const mk = {
     scratchLen: 64 * 1024,
-    syscall(method: number, request: Uint8Array): { rc: bigint } {
+    syscall(
+      method: number,
+      request: Uint8Array,
+    ): { rc: bigint; response?: Uint8Array } {
       const view = new DataView(
         request.buffer,
         request.byteOffset,
@@ -305,17 +309,25 @@ function fakeKernel() {
             path: decoder.decode(request.subarray(8)),
           });
           return { rc: 0n };
+        case KERNEL_VFS_STAT:
+          // The record size tells the layout: 32 bytes before #4431, 48 after.
+          return {
+            rc: layout === "legacy" ? 32n : 48n,
+            response: new Uint8Array(72),
+          };
         case KERNEL_VFS_SET_METADATA: {
-          if (request.byteLength < SET_METADATA_HEAD) return { rc: -22n };
-          const path = decoder.decode(request.subarray(SET_METADATA_HEAD));
+          const head = layout === "legacy" ? 20 : SET_METADATA_HEAD;
+          if (request.byteLength < head) return { rc: -22n };
+          const path = decoder.decode(request.subarray(head));
           calls.push({ kind: "metadata", path });
           metadata.set(path, {
             mode: view.getUint32(0, true),
             uid: view.getUint32(4, true),
             gid: view.getUint32(8, true),
             mtimeNs: view.getBigInt64(12, true),
-            atimeNs: view.getBigInt64(20, true),
-            ctimeNs: view.getBigInt64(28, true),
+            // A legacy head carries the mtime alone.
+            atimeNs: layout === "legacy" ? 0n : view.getBigInt64(20, true),
+            ctimeNs: layout === "legacy" ? 0n : view.getBigInt64(28, true),
           });
           return { rc: 0n };
         }
@@ -701,10 +713,10 @@ Deno.test("vfsStat reads the kernel's 48-byte record, and a longer one, with a s
   );
 });
 
-Deno.test("vfsStat names a record shorter than 48 bytes instead of reading it as an errno", () => {
+Deno.test("vfsStat names a record shorter than the 32-byte legacy one instead of reading it as an errno", () => {
   const short = {
     scratchLen: 64 * 1024,
-    syscall: () => ({ rc: 32n, response: new Uint8Array(32) }),
+    syscall: () => ({ rc: 24n, response: new Uint8Array(32) }),
     // deno-lint-ignore no-explicit-any
   } as any;
   let threw = "";
@@ -713,5 +725,54 @@ Deno.test("vfsStat names a record shorter than 48 bytes instead of reading it as
   } catch (error) {
     threw = String(error);
   }
-  assert(threw.includes("answered 32 bytes, under the 48-byte record"), threw);
+  assert(threw.includes("answered 24 bytes, under the 32-byte record"), threw);
+});
+
+Deno.test("stageYurtimg stages against a kernel from before #4431: a 20-byte head and a 32-byte stat record", async () => {
+  const { mk, metadata } = fakeKernel("legacy");
+  await stageYurtimg(mk, zstdStored(ustar(IMAGE)), new Map());
+  for (const entry of IMAGE) {
+    const recorded = metadata.get(entry.path);
+    assertEquals(
+      [recorded?.mode, recorded?.uid, recorded?.gid, recorded?.mtimeNs],
+      [
+        TYPE_BITS[entry.type] | entry.mode,
+        entry.uid,
+        entry.gid,
+        BigInt(entry.mtime) * 1_000_000_000n,
+      ],
+      `metadata for ${entry.path} through the legacy head`,
+    );
+  }
+});
+
+Deno.test("the kernel's layout is found once per kernel, from the stat record of /", async () => {
+  let probes = 0;
+  const { mk } = fakeKernel();
+  const original = mk.syscall.bind(mk);
+  // deno-lint-ignore no-explicit-any
+  (mk as any).syscall = (method: number, ...rest: any[]) => {
+    if (method === KERNEL_VFS_STAT) probes++;
+    // deno-lint-ignore no-explicit-any
+    return (original as any)(method, ...rest);
+  };
+  await stageYurtimg(mk, zstdStored(ustar(IMAGE)), new Map());
+  assertEquals(probes, 1);
+});
+
+Deno.test("vfsStat reads the 32-byte record of a kernel from before #4431", () => {
+  const view = new DataView(new ArrayBuffer(72));
+  view.setUint32(0, 3, true); // directory
+  view.setUint32(4, 0o040_755, true);
+  view.setUint32(8, 0, true);
+  view.setUint32(12, 0, true);
+  view.setBigUint64(16, 0n, true);
+  view.setBigInt64(24, 9_000_000_000n, true);
+  const legacy = {
+    scratchLen: 64 * 1024,
+    syscall: () => ({ rc: 32n, response: new Uint8Array(view.buffer) }),
+    // deno-lint-ignore no-explicit-any
+  } as any;
+  assertEquals(vfsStat(legacy, "/d")?.mtime, 9);
+  assertEquals(vfsStat(legacy, "/d")?.type, "dir");
 });
