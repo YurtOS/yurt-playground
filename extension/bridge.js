@@ -372,6 +372,27 @@ chrome.runtime.onConnectExternal.addListener((port) => {
       const target = root !== undefined
         ? { tabId: root.tabId }
         : { tabId: childOf, sessionId };
+      // On a tab, Target.* is how one reaches past it (another target, a
+      // wrapped command no filter here sees): only the flat auto-attach
+      // Playwright uses, whose children come back as sessions this code
+      // filters like any other.
+      if (
+        typeof method === "string" && method.startsWith("Target.") &&
+        !(method === "Target.setAutoAttach" && params?.flatten === true)
+      ) {
+        return fail(
+          id,
+          sessionId,
+          `the bridge does not allow ${method} on a tab`,
+        );
+      }
+      if (typeof method === "string" && method.startsWith("Browser.")) {
+        return fail(
+          id,
+          sessionId,
+          `the bridge does not allow ${method} on a tab`,
+        );
+      }
       // A tab goes to the web or a blank page only (history entries could
       // hold anything: not offered).
       if (method === "Page.navigateToHistoryEntry") {

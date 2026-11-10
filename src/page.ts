@@ -1086,6 +1086,9 @@ async function runPage(): Promise<void> {
   const noPython = shellOnly || (desktop === undefined && phone);
   // Go's sandbox holds no Python: no Notebook or JupyterLab there.
   const applyEnv = () => {
+    // The agent is off in the Playwright sandbox (it would drive the
+    // browser): hidden too when the start screen switches to it.
+    byId("agent").hidden = env === "playwright";
     if (shellOnly) return;
     byId("notebook").hidden = env === "go";
     for (const testid of ["choose-notebook", "choose-lab"]) {

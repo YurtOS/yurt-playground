@@ -25,10 +25,14 @@ const answer = async (allowed) => {
 };
 // The buttons wake a moment after the window is seen, so a click meant for
 // the page under it cannot land on Allow.
-setTimeout(() => {
-  for (const id of ["allow", "deny"]) {
-    document.getElementById(id).disabled = false;
-  }
-}, 1000);
+const wake = () =>
+  setTimeout(() => {
+    for (const id of ["allow", "deny"]) {
+      document.getElementById(id).disabled = false;
+    }
+  }, 1000);
+// From when the window has the focus, not from when it loaded.
+if (document.hasFocus()) wake();
+else globalThis.addEventListener("focus", wake, { once: true });
 document.getElementById("allow").addEventListener("click", () => answer(true));
 document.getElementById("deny").addEventListener("click", () => answer(false));

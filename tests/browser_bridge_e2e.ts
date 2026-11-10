@@ -282,6 +282,57 @@ const own = "chrome-extension://leelndonobmigkkkogijljomjikkefbe/approve.html";
       );
       return (await yurt.exec("node escape.js")).stdout.trim();
     });
+    // Raw CDP, as a hostile script would speak it: a navigation wrapped in
+    // Target.sendMessageToTarget must not slip past the filter.
+    const wrapped = await page.evaluate(async () => {
+      const yurt = (globalThis as unknown as {
+        yurt: {
+          fs: { write(path: string, data: string): Promise<void> };
+          exec(cmd: string): Promise<{ stdout: string; stderr: string }>;
+        };
+      }).yurt;
+      await yurt.fs.write(
+        "/home/user/wrapped.js",
+        `const WS = require(require("node:os").homedir() + "/.node_modules/playwright-core/lib/utilsBundle.js").ws;
+const ws = new WS("ws://127.0.0.1:9222/devtools/browser/yurt");
+let n = 0;
+const pending = new Map();
+const call = (method, params, sessionId) => new Promise((resolve) => {
+  const id = ++n;
+  pending.set(id, resolve);
+  ws.send(JSON.stringify({ id, method, params, sessionId }));
+});
+const attached = new Promise((resolve) => ws.on("message", (raw) => {
+  const m = JSON.parse(String(raw));
+  if (m.method === "Target.attachedToTarget") resolve(m.params.sessionId);
+  if (m.id) pending.get(m.id)?.(m);
+}));
+ws.on("open", async () => {
+  await call("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
+  await call("Target.createTarget", { url: "about:blank" });
+  const sessionId = await attached;
+  const inner = JSON.stringify({ id: 1, method: "Page.navigate", params: { url: "chrome-extension://leelndonobmigkkkogijljomjikkefbe/approve.html" } });
+  for (const [method, params] of [
+    ["Target.sendMessageToTarget", { sessionId, message: inner }],
+    ["Target.attachToTarget", { targetId: "x", flatten: false }],
+    ["Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: false }],
+  ]) {
+    const r = await call(method, params, sessionId);
+    console.log(r.error ? "refused " + method : "ALLOWED " + method);
+  }
+  ws.close();
+});`,
+      );
+      const r = await yurt.exec("node wrapped.js");
+      return (r.stdout + r.stderr).trim();
+    });
+    if (
+      wrapped.includes("ALLOWED") ||
+      (wrapped.match(/refused/g) ?? []).length !== 3
+    ) {
+      fail(`a wrapped or attached command got through: ${wrapped}`);
+    }
+    console.log(`browser bridge e2e: ${wrapped.replace(/\n/g, "; ")}`);
     if (
       escape.includes("OPENED") || (escape.match(/refused/g) ?? []).length !== 2
     ) {
