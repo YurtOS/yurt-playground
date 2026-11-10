@@ -13,7 +13,7 @@
  * and in Chromium the renderer processes' peak resident memory.
  *
  * Usage: deno run -A scripts/measure-boot.ts [--device NAME]
- *          [--engine chromium|webkit] [--query start] [--pins PATH] [--warm N]
+ *          [--engine chromium|chrome|webkit] [--query start] [--pins PATH] [--warm N]
  *
  *   --device  the emulation: phone (iPhone 13), tablet (iPad Pro 11),
  *             ipados-landscape and ipados-mini (iPadOS Safari's desktop UA
@@ -30,6 +30,7 @@
  * public/snapshot/ (YURT_INSTALL_SNAPSHOT=1 scripts/install-pinned-artifacts.sh)
  * and Playwright's browsers. Memory is sampled with `ps` (macOS, Linux).
  */
+import { launchOptions } from "./browser.ts";
 import { ensureBundle } from "./serve.ts";
 import { handlePlaygroundRequest, ISOLATION_HEADERS } from "../src/serve.ts";
 
@@ -100,7 +101,10 @@ function rendererMiB(profile: string): number {
 
 if (import.meta.main) {
   const device = option("--device", "phone");
-  const engine = option("--engine", "chromium") as "chromium" | "webkit";
+  const engine = option("--engine", "chromium");
+  if (engine !== "chromium" && engine !== "chrome" && engine !== "webkit") {
+    throw new Error(`--engine ${engine}: want chromium, chrome or webkit`);
+  }
   const query = option("--query", "start");
   const pinsPath = option("--pins", "");
   const warm = Number(option("--warm", "1"));
@@ -126,10 +130,16 @@ if (import.meta.main) {
   if (engine === "webkit") delete descriptor.isMobile;
   // One context for every load: the warm one finds the cold one's Cache
   // API. The flag names this browser's process tree for `ps`.
-  const browser = await (engine === "chromium" ? chromium : webkit).launch({
-    headless: true,
-    args: engine === "chromium" ? [`--yurt-measure=${profile}`] : [],
-  });
+  // `chrome` is the installed Google Chrome, the browser people run;
+  // `chromium` stays Playwright's pinned build so figures compare across runs.
+  const browser = engine === "webkit"
+    ? await webkit.launch({ headless: true })
+    : await chromium.launch(
+      launchOptions(engine, {
+        headless: true,
+        args: [`--yurt-measure=${profile}`],
+      }),
+    );
   const context = await browser.newContext(descriptor);
   if (spec.maxTouchPoints !== undefined) {
     await context.addInitScript((points: number) => {
@@ -145,7 +155,7 @@ if (import.meta.main) {
     for (let load = 0; load <= warm; load++) {
       logs = [];
       let peak = 0;
-      const sampler = engine === "chromium"
+      const sampler = engine !== "webkit"
         ? setInterval(() => peak = Math.max(peak, rendererMiB(profile)), 50)
         : undefined;
       const started = performance.now();
@@ -226,6 +236,7 @@ if (import.meta.main) {
       console.log(JSON.stringify({
         device,
         engine,
+        browserVersion: browser.version(),
         query,
         load: load === 0 ? "cold" : "warm",
         platform: new URL(page.url()).searchParams.get("platform"),
@@ -235,7 +246,7 @@ if (import.meta.main) {
           ? null
           : Number(jupyterSeconds.toFixed(1)),
         secondsToPrompt: Number(seconds.toFixed(2)),
-        peakRendererMiB: engine === "chromium" ? Math.round(peak) : null,
+        peakRendererMiB: engine !== "webkit" ? Math.round(peak) : null,
         snapshot: logs.find((line) => /bytes of kernel memory/.test(line)) ??
           null,
         fellBack: logs.find((line) => /booting the image instead/.test(line)) ??

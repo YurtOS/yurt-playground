@@ -255,11 +255,13 @@ jobs:
     needs: checks
     if: ${{ !cancelled() && needs.checks.outputs.present == 'true' && needs.checks.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
-    # Above the step cap (11) plus both browser installs at their cap (5 + 5)
-    # and setup and build (1.6 min typical, 2.1 worst seen), with ~2 min to
-    # spare, for the same reason. A cap costs nothing unless something
-    # hangs; the slowest scene took 10.0 min in all.
-    timeout-minutes: 25
+    # Above the step cap (11) plus setup and build (1.6 min typical, 2.1
+    # worst seen), with ~5 min to spare while Chrome's boot is unmeasured, for
+    # the same reason; the webkit leg adds its image pull and retry at their
+    # cap (5 + 5). The other legs install nothing: they use the runner's
+    # Chrome. A cap costs nothing unless something hangs; the slowest scene
+    # took 10.0 min in all.
+    timeout-minutes: ${{ matrix.scene == 'webkit' && 25 || 18 }}
     strategy:
       fail-fast: false
       matrix:
@@ -287,15 +289,14 @@ jobs:
       - uses: ./playground/.github/actions/site-inputs
         with:
           token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
-      # Chromium, keyed on the pinned playwright version: a hit makes the
-      # install a no-op. Release desktop saves it on main, the one scope every
-      # pull request can read; after any deno.json change, until it runs
-      # again, the legs install from Playwright's CDN, which takes seconds.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Every scene but `webkit` runs the runner image's Google Chrome
+      # (scripts/browser.ts), the browser people use, not Playwright's headless
+      # Chromium build. Its version goes in the log: the image updates it
+      # weekly, so a scene that turns red with no change here may be a new
+      # Chrome.
+      - name: Google Chrome version
         if: matrix.scene != 'webkit'
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('playground/deno.json') }}
+        run: google-chrome --version
       # The `webkit` scene runs JavaScriptCore (#2996's engine) in Playwright's
       # own image, which has WebKit and its system libraries for the pinned
       # playwright version. Installing them here meant ~117 MB of Ubuntu
@@ -306,34 +307,23 @@ jobs:
       # at this step's 5 min and is tried once more.
       - name: Install the browser for browser acceptance
         id: install
+        if: matrix.scene == 'webkit'
         continue-on-error: true
         timeout-minutes: 5
         working-directory: playground
-        env:
-          BROWSER: ${{ matrix.scene == 'webkit' && 'webkit' || 'chromium' }}
         run: |
           set -euo pipefail
-          if [ "$BROWSER" = webkit ]; then
-            version=$(jq -r .imports.playwright deno.json)
-            docker pull -q "mcr.microsoft.com/playwright:v${version#npm:playwright@}-noble"
-          else
-            deno run --allow-all node_modules/playwright/cli.js install chromium
-          fi
+          version=$(jq -r .imports.playwright deno.json)
+          docker pull -q "mcr.microsoft.com/playwright:v${version#npm:playwright@}-noble"
       - name: Install the browser for browser acceptance (retry)
-        if: steps.install.outcome == 'failure'
+        if: matrix.scene == 'webkit' && steps.install.outcome == 'failure'
         timeout-minutes: 5
         working-directory: playground
-        env:
-          BROWSER: ${{ matrix.scene == 'webkit' && 'webkit' || 'chromium' }}
         # The same script as the step above.
         run: |
           set -euo pipefail
-          if [ "$BROWSER" = webkit ]; then
-            version=$(jq -r .imports.playwright deno.json)
-            docker pull -q "mcr.microsoft.com/playwright:v${version#npm:playwright@}-noble"
-          else
-            deno run --allow-all node_modules/playwright/cli.js install chromium
-          fi
+          version=$(jq -r .imports.playwright deno.json)
+          docker pull -q "mcr.microsoft.com/playwright:v${version#npm:playwright@}-noble"
       # The deployable site, built from the inputs above: what the
       # acceptance below boots.
       - name: Build static site

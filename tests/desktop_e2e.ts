@@ -3,7 +3,7 @@
 // carries, serves the site, and in a real browser Jupyter runs a cell and
 // reaches the internet from the guest. Run it after the build; it is the
 // acceptance for the shipped artifact, not the source tree.
-import { chromium } from "playwright";
+import { launchBrowser } from "../scripts/browser.ts";
 import { showAllSections } from "./show_all_sections.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -178,7 +178,7 @@ async function driveApi(
 if (import.meta.main) {
   const app = await startApp();
   const apiPresent = await driveApi(app);
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   try {
     const page = await showAllSections(await browser.newPage());
     const started = Date.now();

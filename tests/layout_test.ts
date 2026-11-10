@@ -107,7 +107,11 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   assertEquals(workflow.includes("scripts/build-all-ports.sh"), false);
   assertEquals(workflow.includes("dtolnay/rust-toolchain"), false);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
-  assertEquals(workflow.includes("playwright/cli.js install chromium"), true);
+  // The Chromium-family scenes run the runner image's Google Chrome
+  // (scripts/browser.ts) and print its version; nothing installs Playwright's
+  // Chromium for them.
+  assertEquals(workflow.includes("run: google-chrome --version"), true);
+  assertEquals(workflow.includes("playwright/cli.js install chromium"), false);
   // WebKit runs in Playwright's image for the pinned version, not from an
   // apt install of its system libraries (32 min at ~60 kB/s on #246).
   assertEquals(workflow.includes("--with-deps"), false);
@@ -137,10 +141,11 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   const control = /^ {8}(?:id|continue-on-error|if): .*$/gm;
   assertEquals(installs[0].match(control), [
     "        id: install",
+    "        if: matrix.scene == 'webkit'",
     "        continue-on-error: true",
   ]);
   assertEquals(installs[1].match(control), [
-    "        if: steps.install.outcome == 'failure'",
+    "        if: matrix.scene == 'webkit' && steps.install.outcome == 'failure'",
   ]);
   const body = (step: string) =>
     step.split("\n").slice(1).filter((line) =>

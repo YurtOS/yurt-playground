@@ -1,5 +1,5 @@
 /**
- * The home page's agent pane (#140), end to end in headless Chromium, with
+ * The home page's agent pane (#140), end to end in headless Google Chrome, with
  * no model weights: the test answers `/llm/models.json` and serves a
  * scripted stand-in for `/llm_worker.bundle.js` that speaks the worker's
  * protocol. Everything else is real: the pane, the client, the controller
@@ -17,7 +17,8 @@
  * Run: `deno run --allow-all tests/agent_e2e.ts` (needs the kernel checkout
  * and pinned artifacts like playground_e2e.ts).
  */
-import { type BrowserContext, chromium, devices, type Page } from "playwright";
+import { type BrowserContext, devices, type Page } from "playwright";
+import { launchBrowser } from "../scripts/browser.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
@@ -133,7 +134,7 @@ async function withModel(
       contentType: "text/javascript",
       body: fakeWorker(opts.worker, opts.demoText),
     }));
-  // Headless Chromium on a runner has no GPU; the pane asks for an adapter.
+  // Headless Chrome on a runner has no GPU; the pane asks for an adapter.
   // A stub, so this proves nothing about WebGPU (agent_webgpu_e2e.ts does).
   await context.addInitScript((webgpu: boolean) => {
     Object.defineProperty(Navigator.prototype, "gpu", {
@@ -167,7 +168,7 @@ if (import.meta.main) {
     Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel"),
   );
   const server = startPlaygroundServer(0);
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   try {
     // Each run ends sealed: the next message resumes the sandbox with its files
     // and the chat, and the PDF is still there to download while it is sealed.

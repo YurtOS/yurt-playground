@@ -1120,6 +1120,11 @@ async function suspend(): Promise<void> {
   sealing = true;
   post({ type: "snapshot", snapshot: { state: "sealing" } });
   const startedAt = performance.now();
+  // Nothing the guest writes from here reaches the page: what is unread
+  // stays in the pty and goes into the image, and Resume delivers it. Read
+  // while the store below is awaited (the guest runs on until teardown), a
+  // line would show now and again from the resumed guest.
+  current.stopPump();
   try {
     const image = await current.mk.sealSandbox({
       deadlineMs: SEAL_DEADLINE_MS,
@@ -1148,6 +1153,10 @@ async function suspend(): Promise<void> {
       },
     });
   } catch (error) {
+    // Still live: read its pty again.
+    if (live === current) {
+      current.stopPump = pumpPtyMaster(current.mk, current.pty, onGuestOutput);
+    }
     status(
       `suspend failed: ${
         error instanceof Error ? error.message : String(error)

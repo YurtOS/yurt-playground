@@ -1,4 +1,5 @@
-import { chromium, devices, type Page } from "playwright";
+import { type Browser, devices, type Page } from "playwright";
+import { launchBrowser } from "../scripts/browser.ts";
 import { showAllSections } from "./show_all_sections.ts";
 import { Buffer } from "node:buffer";
 import { dirname, join } from "node:path";
@@ -94,7 +95,7 @@ function expectPane(name: string, got: FailurePane, want: FailurePane): void {
  * ipykernel started. The boot ends at the shell, and a later reload is not
  * mistaken for a boot cut off midway. */
 async function tabletIsShellOnly(
-  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  browser: Browser,
   url: string,
 ): Promise<void> {
   const context = await browser.newContext(devices["iPad Pro 11"]);
@@ -327,7 +328,7 @@ export async function touchKeysWork(page: Page): Promise<void> {
  * list is not offered). WebGPU is stubbed, so it is the phone, not a
  * missing adapter, that leaves the in-tab model out. */
 export async function phoneAgentHasTheSandbox(
-  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  browser: Browser,
   url: string,
 ): Promise<void> {
   const phone = await browser.newContext(devices["iPhone 13"]);
@@ -390,7 +391,7 @@ const ANDROID_DESKTOP_SITE_UA =
  * a tablet; and a tab the browser reloaded mid-boot says so on the next
  * load instead of offering a fresh Start. */
 async function bootFailuresAreExplained(
-  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  browser: Browser,
   url: string,
 ): Promise<void> {
   // On a timeout, say what the page was doing: its status line, where it
@@ -961,7 +962,7 @@ if (import.meta.main) {
     Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel"),
   );
   const server = startPlaygroundServer(0);
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   try {
     const page = await showAllSections(await browser.newPage());
     const started = Date.now();
