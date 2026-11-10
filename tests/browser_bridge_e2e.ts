@@ -318,10 +318,16 @@ ws.on("open", async () => {
     ["Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: false }],
     ["Network.getAllCookies", {}],
     ["Storage.getCookies", {}],
+    ["Network.getCookies", { urls: ["https://example.com/"] }],
   ]) {
     const r = await call(method, params, sessionId);
     console.log(r.error ? "refused " + method : "ALLOWED " + method);
   }
+  // 20 tab opens at once: the cap holds across the burst.
+  const burst = await Promise.all(
+    Array.from({ length: 20 }, () => call("Target.createTarget", { url: "about:blank" })),
+  );
+  console.log("burst opened " + burst.filter((r) => !r.error).length);
   ws.close();
 });`,
       );
@@ -330,7 +336,8 @@ ws.on("open", async () => {
     });
     if (
       wrapped.includes("ALLOWED") ||
-      (wrapped.match(/refused/g) ?? []).length !== 5
+      (wrapped.match(/refused/g) ?? []).length !== 6 ||
+      Number(wrapped.match(/burst opened (\d+)/)?.[1] ?? 99) > 16
     ) {
       fail(
         `a wrapped, attached or browser-wide command got through: ${wrapped}`,

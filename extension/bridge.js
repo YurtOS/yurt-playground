@@ -22,6 +22,8 @@ function navigable(url) {
  *  connection (tabs stay open after a script ends). */
 const MAX_TABS = 16;
 const openedTabs = new Set();
+/** Tabs being opened right now (between the check and the create). */
+let reserved = 0;
 chrome.tabs.onRemoved.addListener((tabId) => openedTabs.delete(tabId));
 
 /** Schemes a controlled tab must never reach, by any route: privileged
@@ -40,6 +42,8 @@ function privileged(url) {
  *  owns. The cookie jar of every site (read or written) above all. */
 const BROWSER_WIDE = new Set([
   "Network.getAllCookies",
+  // With a urls list it reads any site's cookies from the profile.
+  "Network.getCookies",
   "Network.setCookie",
   "Network.setCookies",
   "Network.deleteCookies",
@@ -283,15 +287,22 @@ chrome.runtime.onConnectExternal.addListener((port) => {
         if (!navigable(params?.url)) {
           return fail(id, undefined, `the bridge does not open ${params.url}`);
         }
-        if (openedTabs.size >= MAX_TABS) {
+        // Counted before the await: concurrent calls cannot all pass.
+        if (openedTabs.size + reserved >= MAX_TABS) {
           return fail(id, undefined, `a script may keep ${MAX_TABS} tabs open`);
         }
-        const tab = await chrome.tabs.create({
-          url: "about:blank",
-          // In the background: the playground tab, which relays every
-          // message, keeps the focus (and its timers unthrottled).
-          active: false,
-        });
+        reserved++;
+        let tab;
+        try {
+          tab = await chrome.tabs.create({
+            url: "about:blank",
+            // In the background: the playground tab, which relays every
+            // message, keeps the focus (and its timers unthrottled).
+            active: false,
+          });
+        } finally {
+          reserved--;
+        }
         openedTabs.add(tab.id);
         try {
           const { targetId } = await attachTab(tab.id);

@@ -1067,9 +1067,17 @@ async function runPage(): Promise<void> {
     capturing: snapshotMode() === "capture",
   });
   env = chosenEnv.env;
-  // Only a Playwright page asks the pins for its snapshot.
-  playwrightPinned = env === "playwright" &&
-    (await fetchSitePins())?.playwrightSnapshot !== undefined;
+  // Whether the site pins Playwright's snapshot: asked now without waiting,
+  // and waited for at the start, so choosing Playwright on the start screen
+  // (after this load) restores it too.
+  const playwrightPin: Promise<boolean> =
+    desktop === undefined && platform === "desktop"
+      ? fetchSitePins().then(
+        (pins) => pins?.playwrightSnapshot !== undefined,
+        () => false,
+      )
+      : Promise.resolve(false);
+  if (env === "playwright") playwrightPinned = await playwrightPin;
   if (chosenEnv.note !== undefined) {
     notes.push(chosenEnv.note);
     showNotes();
@@ -1176,7 +1184,9 @@ async function runPage(): Promise<void> {
   });
   const start = document.getElementById("start");
   let playwrightNote: string | undefined;
-  const begin = () => {
+  const begin = async () => {
+    // The env the start uses: its snapshot pin, settled now.
+    playwrightPinned = env === "playwright" && await playwrightPin;
     if (start) start.hidden = true;
     // Two sandboxes in one browser share the CPU (yurt-playground#84): say
     // so before this one boots, and answer the next tab that asks. The
@@ -1301,10 +1311,12 @@ async function runPage(): Promise<void> {
   // The workspace opens with one action; `?start` (the old terminal page's
   // redirect, and the acceptance tests) skips it.
   if (start === null || new URL(location.href).searchParams.has("start")) {
-    begin();
+    void begin();
     return;
   }
-  byId("start-sandbox").addEventListener("click", begin, { once: true });
+  byId("start-sandbox").addEventListener("click", () => void begin(), {
+    once: true,
+  });
 }
 
 forgetChatOnRefresh();
