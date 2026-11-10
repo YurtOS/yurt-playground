@@ -1087,8 +1087,17 @@ async function runPage(): Promise<void> {
   // Go's sandbox holds no Python: no Notebook or JupyterLab there.
   const applyEnv = () => {
     // The agent is off in the Playwright sandbox (it would drive the
-    // browser): hidden too when the start screen switches to it.
-    byId("agent").hidden = env === "playwright";
+    // browser): hidden too when the start screen switches to it. Only this
+    // hide is undone on a switch back; the pane's own (no model on offer)
+    // stays.
+    const agent = byId("agent");
+    if (env === "playwright" && !agent.hidden) {
+      agent.hidden = true;
+      agent.dataset.hiddenForPlaywright = "";
+    } else if (env !== "playwright" && "hiddenForPlaywright" in agent.dataset) {
+      agent.hidden = false;
+      delete agent.dataset.hiddenForPlaywright;
+    }
     if (shellOnly) return;
     byId("notebook").hidden = env === "go";
     for (const testid of ["choose-notebook", "choose-lab"]) {
