@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
-import { PHONE_REFUSAL } from "../src/bridge_status.ts";
+import { BRIDGE_STATUS_ID, PHONE_REFUSAL } from "../src/bridge_status.ts";
 import { watchCspViolations } from "./csp_watch.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -50,6 +50,35 @@ async function waitForLastOutput(
     text,
     { timeout },
   );
+}
+
+/** Wait until the toolbar names the Yurt kernel and it is idle. Before the
+ * session starts the toolbar reads "No Kernel" with an idle indicator, so both
+ * the name and the status are required. A sandbox that cannot start says so on
+ * the page's status line (src/bridge_status.ts) and never becomes idle: that
+ * fails at once, with the page's words, instead of at the timeout. */
+async function waitForKernelIdle(page: Page, timeout: number): Promise<void> {
+  const outcome = await page.waitForFunction(
+    (statusId) => {
+      const line = document.getElementById(statusId);
+      const state = line?.dataset.state;
+      if (state === "error" || state === "python-missing") {
+        return `failed: ${line?.textContent ?? ""}`;
+      }
+      return document.querySelector(".jp-Toolbar-kernelName")?.textContent
+              ?.includes("Yurt") === true &&
+          document.querySelector(".jp-Notebook-ExecutionIndicator")
+              ?.getAttribute("data-status") === "idle"
+        ? "idle"
+        : false;
+    },
+    BRIDGE_STATUS_ID,
+    { timeout },
+  );
+  const result = await outcome.jsonValue();
+  if (result !== "idle") {
+    fail(`the notebook's sandbox did not start: ${result}`);
+  }
 }
 
 if (import.meta.main) {
@@ -158,19 +187,9 @@ if (import.meta.main) {
     await page.waitForURL(/\/jupyter\/notebooks\/index\.html/);
     await page.locator(".jp-Notebook").first().waitFor({ timeout: 60_000 });
     // The kernel plugin boots the sandbox and connects the guest ipykernel.
-    // Before the session starts the toolbar reads "No Kernel" with an idle
-    // indicator, so both the name and the status are required.
-    await page.waitForFunction(
-      () =>
-        document.querySelector(".jp-Toolbar-kernelName")?.textContent
-            ?.includes("Yurt") === true &&
-        document.querySelector(".jp-Notebook-ExecutionIndicator")
-            ?.getAttribute("data-status") === "idle",
-      undefined,
-      // It restores the default snapshot, so this allows for a slow runner, not
-      // for an install.
-      { timeout: 480_000 },
-    );
+    // It restores the default snapshot (ci.yml installs it for this scene),
+    // so the timeout allows for a slow runner, not for an install.
+    await waitForKernelIdle(page, 480_000);
     console.log(
       `jupyterlite e2e: kernel idle after ${
         Math.round((Date.now() - started) / 1000)
@@ -220,15 +239,7 @@ if (import.meta.main) {
     await waitForLastOutput(page, "1", 60_000);
     await page.locator('[data-jp-item-name="restart"] button').click();
     await page.locator(".jp-Dialog button.jp-mod-accept").click();
-    await page.waitForFunction(
-      () =>
-        document.querySelector(".jp-Toolbar-kernelName")?.textContent
-            ?.includes("Yurt") === true &&
-        document.querySelector(".jp-Notebook-ExecutionIndicator")
-            ?.getAttribute("data-status") === "idle",
-      undefined,
-      { timeout: 420_000 },
-    );
+    await waitForKernelIdle(page, 420_000);
     await runNewCell(page, "x");
     await waitForLastOutput(page, "NameError", 120_000);
     console.log("jupyterlite e2e: restart replaced the guest kernel");

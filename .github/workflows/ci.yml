@@ -273,6 +273,12 @@ jobs:
           slim,
         ]
         exclude: ${{ fromJSON(needs.checks.outputs.exclude) }}
+    env:
+      # The notebook on a desktop restores the default snapshot and has no
+      # other way to start (src/lite_bridge.ts snapshotRequired), so this
+      # scene fetches that one (scripts/install-pinned-artifacts.sh). The
+      # other scenes boot the image and fetch none.
+      YURT_INSTALL_SNAPSHOT: ${{ matrix.scene == 'jupyterlite' && 'snapshot' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -85,8 +85,10 @@ fetch pythonSeal python3-seal.wasm public/demo/python3-seal.wasm
 # Each device's sealed sandbox (src/snapshot_pin.ts SNAPSHOT_KINDS:
 # `snapshot` the desktop's, `tabletSnapshot`, `phoneSnapshot`,
 # `goSnapshot`), when the
-# train pins it and the caller asks for it (YURT_INSTALL_SNAPSHOT=1: the
-# deploy, which publishes them): up to 132 MB each that no test reads. A
+# train pins it and the caller asks for it: YURT_INSTALL_SNAPSHOT=1 fetches
+# every kind (the deploy, which publishes them), or a space-separated list of
+# pin keys only those (CI's jupyterlite scene, whose notebook must restore
+# `snapshot`). Up to 132 MB each, so no other test fetches one. A
 # yurt-playground release of its parts, joined here and checked against
 # the whole file's sha256 the pin records. Each is optional: any problem
 # with one -- a malformed entry, a failed download, a wrong sha256 -- is a
@@ -122,7 +124,7 @@ for kind in snapshot:sandbox.seal.zip tabletSnapshot:tablet.seal.zip phoneSnapsh
     # One from earlier pins would be checked and left out by the static
     # build; it is not this train's.
     rm -f "$root/public/snapshot/$asset"
-  elif [[ "${YURT_INSTALL_SNAPSHOT:-}" == 1 ]]; then
+  elif [[ "${YURT_INSTALL_SNAPSHOT:-}" == 1 || " ${YURT_INSTALL_SNAPSHOT:-} " == *" $key "* ]]; then
     if ! install_snapshot "$key" "$asset"; then
       echo "WARNING: the pinned $key was not installed; the site ships without it (that device boots the image)" >&2
       rm -f "$root/public/snapshot/$asset"
