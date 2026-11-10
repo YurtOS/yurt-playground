@@ -426,6 +426,92 @@ export function listenOnGuestLoopback(
   return listener;
 }
 
+/** Non-blocking I/O on accepted guest-loopback sockets (the pkg relay's,
+ *  the DevTools bridge's). Accepted sockets block (they do not inherit the
+ *  listener's O_NONBLOCK), and a blocking call would park the kernel's own
+ *  host thread, so every call is MSG_DONTWAIT with a backoff; a send to a
+ *  gone peer would also signal it, hence MSG_NOSIGNAL (recv takes no
+ *  MSG_NOSIGNAL: EOPNOTSUPP). `alive` false ends a send or a head read. */
+export function guestSocketIo(
+  mk: RelayKernel,
+  alive: (fd: number) => boolean,
+) {
+  const call = (method: number, req: Uint8Array, cap = 0) => {
+    const { rc, response } = mk.syscall(method, req, cap);
+    return { rc: Number(rc), response };
+  };
+  const chunkCap = Math.max(
+    4096,
+    Math.min(64 * 1024, (mk.scratchLen ?? 0) - 64),
+  );
+  const recv = (fd: number, cap: number) => {
+    const req = fdRequest(fd, 4);
+    new DataView(req.buffer).setUint32(4, MSG_DONTWAIT, true);
+    return call(METHOD.SYS_SOCKET_RECV, req, cap);
+  };
+  return {
+    chunkCap,
+    recv,
+    /** Send all of `bytes`, waiting out EAGAIN; throws when the peer or
+     *  the server is gone. */
+    async send(fd: number, bytes: Uint8Array): Promise<void> {
+      const wait = backoff();
+      let at = 0;
+      while (at < bytes.byteLength) {
+        if (!alive(fd)) throw new Error("closed");
+        const chunk = bytes.subarray(at, at + chunkCap);
+        const req = fdRequest(fd, 4 + chunk.byteLength);
+        new DataView(req.buffer).setUint32(
+          4,
+          MSG_DONTWAIT | MSG_NOSIGNAL,
+          true,
+        );
+        req.set(chunk, 8);
+        const { rc } = call(METHOD.SYS_SOCKET_SEND, req);
+        if (rc === -EAGAIN) {
+          await wait.wait();
+          continue;
+        }
+        if (rc <= 0) throw new Error(`send: rc=${rc}`);
+        wait.progressed();
+        at += rc;
+      }
+    },
+    /** An HTTP request head (up to MAX_HEAD_BYTES, within 10 s), and the
+     *  bytes after it in the same reads. */
+    async readHead(
+      fd: number,
+    ): Promise<{ head: string; rest: Uint8Array } | undefined> {
+      const deadline = Date.now() + HEAD_DEADLINE_MS;
+      const wait = backoff();
+      let bytes = new Uint8Array(0);
+      while (alive(fd) && Date.now() < deadline) {
+        const { rc, response } = recv(fd, MAX_HEAD_BYTES + 1);
+        if (rc === -EAGAIN) {
+          await wait.wait();
+          continue;
+        }
+        if (rc <= 0) return undefined;
+        wait.progressed();
+        const joined = new Uint8Array(bytes.length + rc);
+        joined.set(bytes);
+        joined.set(response.subarray(0, rc), bytes.length);
+        bytes = joined;
+        // latin1: a head is ASCII, and one char per byte keeps offsets.
+        const text = String.fromCharCode(
+          ...bytes.subarray(0, MAX_HEAD_BYTES + 4),
+        );
+        const end = text.indexOf("\r\n\r\n");
+        if (end >= 0) {
+          return { head: text.slice(0, end), rest: bytes.slice(end + 4) };
+        }
+        if (bytes.length > MAX_HEAD_BYTES) return undefined;
+      }
+      return undefined;
+    },
+  };
+}
+
 export type PkgRelay = {
   /** Close every connection and the listener; nothing runs after it. */
   stop(): void;
@@ -452,63 +538,9 @@ export function startPkgRelay(
   /** Every fetch in flight ends with the relay. */
   const ended = new AbortController();
   const connections = new Set<number>();
-  const chunkCap = Math.max(
-    4096,
-    Math.min(64 * 1024, (mk.scratchLen ?? 0) - 64),
-  );
-  // Accepted sockets block (they do not inherit the listener's
-  // O_NONBLOCK), and a blocking call would park the kernel's own host
-  // thread; a send to a gone peer would also signal it. (recv takes no
-  // MSG_NOSIGNAL: EOPNOTSUPP.)
-  const recvFlags = MSG_DONTWAIT;
-  const sendFlags = MSG_DONTWAIT | MSG_NOSIGNAL;
-
-  const readHead = async (fd: number): Promise<string | undefined> => {
-    const deadline = Date.now() + HEAD_DEADLINE_MS;
-    const wait = backoff();
-    let head = "";
-    const req = fdRequest(fd, 4);
-    new DataView(req.buffer).setUint32(4, recvFlags, true);
-    while (!stopped && Date.now() < deadline) {
-      const { rc, response } = call(
-        METHOD.SYS_SOCKET_RECV,
-        req,
-        MAX_HEAD_BYTES - head.length + 1,
-      );
-      if (rc === -EAGAIN) {
-        await wait.wait();
-        continue;
-      }
-      if (rc <= 0) return undefined;
-      wait.progressed();
-      // latin1: a head is ASCII, and this keeps one char per byte.
-      head += String.fromCharCode(...response.subarray(0, rc));
-      const end = head.indexOf("\r\n\r\n");
-      if (end >= 0) return head.slice(0, end);
-      if (head.length > MAX_HEAD_BYTES) return undefined;
-    }
-    return undefined;
-  };
-
-  const send = async (fd: number, bytes: Uint8Array): Promise<void> => {
-    const wait = backoff();
-    let at = 0;
-    while (at < bytes.byteLength) {
-      if (stopped) throw new Error("relay stopped");
-      const chunk = bytes.subarray(at, at + chunkCap);
-      const req = fdRequest(fd, 4 + chunk.byteLength);
-      new DataView(req.buffer).setUint32(4, sendFlags, true);
-      req.set(chunk, 8);
-      const { rc } = call(METHOD.SYS_SOCKET_SEND, req);
-      if (rc === -EAGAIN) {
-        await wait.wait();
-        continue;
-      }
-      if (rc <= 0) throw new Error(`send: rc=${rc}`);
-      wait.progressed();
-      at += rc;
-    }
-  };
+  const io = guestSocketIo(mk, () => !stopped);
+  const readHead = async (fd: number) => (await io.readHead(fd))?.head;
+  const send = io.send;
 
   const serve = async (fd: number) => {
     let reply: RelayReply | undefined;

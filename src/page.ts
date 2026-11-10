@@ -2,6 +2,7 @@ import { AGENT_CHAT_STORAGE } from "./snapshot_store.ts";
 import { setUpPlaywright } from "./playwright_demo.ts";
 import {
   bridgeAnswers,
+  bridgeApproval,
   type CdpFromWorker,
   createCdpRelay,
   extensionRuntime,
@@ -1157,6 +1158,9 @@ async function runPage(): Promise<void> {
         (globalThis as unknown as { yurt: Yurt }).yurt,
         {
           extension: runtime !== undefined && bridgeAnswers(runtime),
+          approval: runtime === undefined
+            ? undefined
+            : () => bridgeApproval(runtime),
           // One note, replaced as the setup goes.
           say: (text) => {
             const at = notes.indexOf(playwrightNote ?? "");

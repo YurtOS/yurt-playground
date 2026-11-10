@@ -1,11 +1,13 @@
 /**
  * Browser acceptance for Playwright in the in-tab sandbox: the page with
  * `?env=playwright`, in Chrome with the Yurt browser bridge extension
- * (extension/), installs node and playwright-core in the sandbox (a page
- * not set up for Playwright serves no endpoint, extension or not); then
+ * (extension/), asks a person (the extension's own window) and installs node
+ * and playwright-core in the sandbox; then
  * `node playwright-example.js <url>` there opens a tab in this browser
  * through the guest's DevTools endpoint (src/cdp_bridge.ts), the page and
- * the extension, reads its title and screenshots it.
+ * the extension, reads its title and screenshots it. Before that: a page
+ * not set up for Playwright serves the guest no endpoint, and a script on
+ * the site that calls the extension directly is stopped by a Deny.
  *
  * Run: deno run --allow-all tests/browser_bridge_e2e.ts (after
  * scripts/install-pinned-artifacts.sh, like the other scenes).
@@ -46,7 +48,24 @@ if (import.meta.main) {
     JSON.stringify(manifest),
   );
   const context = await launchWithExtension(extension);
+
   try {
+    // The extension's approval window (its own page, out of reach of page
+    // and guest code): this scene answers it as a person would.
+    let answer: "#deny" | "#allow" = "#deny";
+    let asked = 0;
+    const answerPopup = (popup: import("playwright").Page) => {
+      asked++;
+      void popup.click(answer).catch(() => {});
+    };
+    context.on("page", (popup) => {
+      if (popup.url().includes("approve.html")) return answerPopup(popup);
+      popup.waitForURL(/approve\.html/, { timeout: 5000 }).then(
+        () => answerPopup(popup),
+        () => {},
+      );
+    });
+
     // The extension alone opens nothing: a page not set up for Playwright
     // (the default Python one) serves the guest no DevTools endpoint.
     const plain = await context.newPage();
@@ -66,6 +85,52 @@ if (import.meta.main) {
       )).stdout.trim()
     );
     if (probe !== "refused") fail(`the Python page serves CDP: ${probe}`);
+    // A script on the site's origin (a notebook output, say) can reach the
+    // extension itself; the person's answer is what stops it.
+    const tabsBefore = context.pages().length;
+    const hostile = await plain.evaluate(
+      (id) =>
+        new Promise<string>((resolve) => {
+          const port = (globalThis as unknown as {
+            chrome: {
+              runtime: {
+                connect(id: string): {
+                  postMessage(m: unknown): void;
+                  onMessage: {
+                    addListener(
+                      fn: (m: { error?: { message: string } }) => void,
+                    ): void;
+                  };
+                  onDisconnect: { addListener(fn: () => void): void };
+                };
+              };
+            };
+          }).chrome.runtime.connect(id);
+          port.onMessage.addListener((m: { error?: { message: string } }) =>
+            resolve(m.error?.message ?? "answered")
+          );
+          port.onDisconnect.addListener(() => resolve("disconnected"));
+          port.postMessage({
+            id: 1,
+            method: "Target.createTarget",
+            params: { url: "about:blank" },
+          });
+        }),
+      "leelndonobmigkkkogijljomjikkefbe",
+    );
+    if (!/not allowed/.test(hostile) || asked !== 1) {
+      fail(`a denied page drove the browser: ${hostile} (asked ${asked})`);
+    }
+    if (
+      context.pages().filter((p) => !p.url().includes("approve")).length >
+        tabsBefore
+    ) {
+      fail("a denied page opened a tab");
+    }
+    console.log(
+      `browser bridge e2e: denied in the approval window: ${hostile}`,
+    );
+    answer = "#allow";
     await plain.close();
     console.log("browser bridge e2e: no endpoint without ?env=playwright");
 
@@ -88,43 +153,6 @@ if (import.meta.main) {
     console.log("browser bridge e2e: Playwright set up in the sandbox");
 
     const target = `${server.url}/unsupported.html`;
-    // The extension asks a person first, in a window of its own; that
-    // window is the boundary (any script on the site could reach the
-    // extension). Deny once: the script gets nothing. Then allow.
-    let answer: "#deny" | "#allow" = "#deny";
-    let asked = 0;
-    context.on("page", (popup) => {
-      if (!popup.url().includes("approve.html")) {
-        popup.waitForURL(/approve\.html/, { timeout: 5000 }).then(
-          () => (asked++, popup.click(answer)),
-          () => {},
-        );
-        return;
-      }
-      asked++;
-      void popup.click(answer);
-    });
-    const runExample = (url: string) =>
-      page.evaluate(async (url) => {
-        const yurt = (globalThis as unknown as {
-          yurt: {
-            exec(cmd: string): Promise<
-              { code: number | null; stdout: string; stderr: string }
-            >;
-          };
-        }).yurt;
-        return await yurt.exec(`node playwright-example.js ${url}`);
-      }, url);
-    const denied = await runExample(target);
-    if (denied.code === 0 || asked !== 1) {
-      fail(`a denied script ran (code ${denied.code}, asked ${asked})`);
-    }
-    console.log(
-      `browser bridge e2e: denied in the approval window: ${
-        denied.stderr.trim().split("\n")[0]
-      }`,
-    );
-    answer = "#allow";
     const result = await page.evaluate(async (url) => {
       const yurt = (globalThis as unknown as {
         yurt: {
@@ -137,9 +165,9 @@ if (import.meta.main) {
     }, target);
     console.log(`browser bridge e2e: ${result.stdout.trim()}`);
     if (result.code !== 0) fail(`the example failed: ${result.stderr}`);
-    // (the listener above counts; the narrowing after the denial does not see it)
+    // One window at setup, none when the script connected.
     if ((asked as number) !== 2) {
-      fail(`expected a second approval window, saw ${asked}`);
+      fail(`expected one approval at setup, saw ${asked} windows in all`);
     }
     if (!result.stdout.includes("title: Yurt playground: this page cannot")) {
       fail(`the example read the wrong page: ${result.stdout}`);

@@ -2,8 +2,19 @@
 // a person can do. Page and guest code cannot reach this page.
 const params = new URLSearchParams(location.search);
 document.getElementById("origin").textContent = params.get("origin") ?? "?";
-const answer = (allowed) => {
-  chrome.runtime.sendMessage({ yurtApproval: params.get("ask"), allowed });
+// While a person reads this, keep the extension's service worker (which is
+// waiting for the answer) from being stopped as idle.
+const keepalive = setInterval(
+  () => chrome.runtime.sendMessage({ yurtApproval: "keepalive" }),
+  10_000,
+);
+const answer = async (allowed) => {
+  clearInterval(keepalive);
+  // Delivered first, then closed: a close the worker sees first is a no.
+  await chrome.runtime.sendMessage({
+    yurtApproval: params.get("ask"),
+    allowed,
+  });
   globalThis.close();
 };
 document.getElementById("allow").addEventListener("click", () => answer(true));

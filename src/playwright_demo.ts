@@ -49,6 +49,14 @@ export const NO_EXTENSION_NOTE =
   "unzip it, open chrome://extensions, turn on Developer mode, choose Load " +
   "unpacked and pick the folder, then reload this page.";
 
+export const ASK_NOTE =
+  "Playwright: the Yurt browser bridge opened a window asking whether this " +
+  "sandbox may drive this browser; answer it to go on";
+
+export const DENIED_NOTE =
+  "Playwright: the bridge was not allowed to drive this browser; reload the " +
+  "page to be asked again";
+
 export const READY_NOTE =
   "Playwright is ready: in the terminal, node playwright-example.js " +
   "https://example.com opens a tab in this browser and drives it; " +
@@ -58,9 +66,12 @@ export const READY_NOTE =
  *  outcome; resolves when done or failed (said either way). */
 export async function setUpPlaywright(
   yurt: Yurt,
-  { extension, say, fetchAsset = fetch }: {
+  { extension, approval, say, fetchAsset = fetch }: {
     /** Whether the bridge extension answers (src/browser_bridge.ts). */
     extension: boolean | Promise<boolean>;
+    /** A person's answer, in the extension's window, to whether this tab
+     *  may drive the browser. */
+    approval?: () => Promise<boolean>;
     say: (text: string) => void;
     fetchAsset?: (path: string) => Promise<Response>;
   },
@@ -68,6 +79,13 @@ export async function setUpPlaywright(
   if (!(await extension)) {
     say(NO_EXTENSION_NOTE);
     return false;
+  }
+  if (approval !== undefined) {
+    say(ASK_NOTE);
+    if (!(await approval())) {
+      say(DENIED_NOTE);
+      return false;
+    }
   }
   try {
     await yurt.ready;

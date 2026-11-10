@@ -117,3 +117,38 @@ export function bridgeAnswers(
     port.postMessage({ id: 0, method: "Yurt.ping" });
   });
 }
+
+/** Ask the bridge to ask a person (its own window) whether this tab may
+ *  drive the browser; true once they allow it. Asked at setup, so no
+ *  script's connection ever waits on that answer. */
+export function bridgeApproval(
+  runtime: ExtensionRuntime,
+  extensionId = BRIDGE_EXTENSION_ID,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let port: ExtensionPort;
+    try {
+      port = runtime.connect(extensionId, { name: "yurt-approve" });
+    } catch {
+      return resolve(false);
+    }
+    let settled = false;
+    const done = (answer: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(answer);
+      try {
+        port.disconnect();
+      } catch {
+        // already gone
+      }
+    };
+    port.onMessage.addListener((reply) =>
+      done(
+        (reply as { result?: { allowed?: boolean } })?.result?.allowed === true,
+      )
+    );
+    port.onDisconnect.addListener(() => done(false));
+    port.postMessage({ id: 0, method: "Yurt.approve" });
+  });
+}

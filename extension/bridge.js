@@ -8,54 +8,94 @@ const DEFAULT_CONTEXT = "yurt-default";
 
 // A page may drive this browser only after a person allowed it in this
 // extension's own window (approve.html): any script on the site's origin can
-// reach the extension, so the page's own gate is not the boundary. The
-// approval holds for the asking tab until it closes or navigates.
-const approvedTabs = new Set();
-const pendingAsks = new Map(); // ask id -> resolve(boolean)
+// reach the extension, so the page's own gate is not the boundary. The page
+// asks while it sets Playwright up (Yurt.approve), so a script's connection
+// never waits on a person. An approval holds for the asking tab until it
+// closes or reloads; it is kept in chrome.storage.session, which outlives
+// this service worker's idle stops.
+const APPROVED = "approvedTabs";
+
+async function approvedTabs() {
+  const stored = await chrome.storage.session.get(APPROVED);
+  return new Set(stored[APPROVED] ?? []);
+}
+// One update at a time: each reads the set and writes it back, and two at
+// once (an approval, and the approval window's own tab closing) would lose
+// one of them.
+let updates = Promise.resolve();
+function setApproved(tabId, approved) {
+  updates = updates.then(async () => {
+    const tabs = await approvedTabs();
+    if (tabs.has(tabId) === approved) return;
+    if (approved) tabs.add(tabId);
+    else tabs.delete(tabId);
+    await chrome.storage.session.set({ [APPROVED]: [...tabs] });
+  }).catch(() => {});
+  return updates;
+}
+chrome.tabs.onRemoved.addListener((tabId) => void setApproved(tabId, false));
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (change.status === "loading") void setApproved(tabId, false);
+});
+
+/** One question per tab at a time, shared by every connection that asks. */
+const asking = new Map(); // tabId -> Promise<boolean>
+const answers = new Map(); // ask id -> resolve(boolean)
 let nextAsk = 1;
 
-chrome.runtime.onMessage.addListener((message, sender) => {
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
   if (sender.id !== chrome.runtime.id || message?.yurtApproval === undefined) {
     return;
   }
-  pendingAsks.get(message.yurtApproval)?.(message.allowed === true);
-  pendingAsks.delete(message.yurtApproval);
-});
-chrome.tabs.onRemoved.addListener((tabId) => approvedTabs.delete(tabId));
-chrome.tabs.onUpdated.addListener((tabId, change) => {
-  if (change.status === "loading") approvedTabs.delete(tabId);
+  // approve.js also pings while it waits, which keeps this worker alive.
+  if (message.yurtApproval !== "keepalive") {
+    answers.get(message.yurtApproval)?.(message.allowed === true);
+    answers.delete(message.yurtApproval);
+  }
+  respond(true);
 });
 
 /** Whether a person allows the page in tab `tabId` (from `origin`). */
 async function approve(tabId, origin) {
-  if (approvedTabs.has(tabId)) return true;
-  const ask = String(nextAsk++);
-  const answer = new Promise((resolve) => pendingAsks.set(ask, resolve));
-  const popup = await chrome.windows.create({
-    url: chrome.runtime.getURL(
-      `approve.html?ask=${ask}&origin=${encodeURIComponent(origin)}`,
-    ),
-    type: "popup",
-    width: 480,
-    height: 300,
-  });
-  // Closing the window is a no.
-  const closed = (id) => {
-    if (id === popup.id) pendingAsks.get(ask)?.(false);
-  };
-  chrome.windows.onRemoved.addListener(closed);
-  const allowed = await answer;
-  chrome.windows.onRemoved.removeListener(closed);
-  pendingAsks.delete(ask);
-  if (allowed) approvedTabs.add(tabId);
-  return allowed;
+  if ((await approvedTabs()).has(tabId)) return true;
+  const pending = asking.get(tabId);
+  if (pending !== undefined) return await pending;
+  const question = (async () => {
+    const ask = String(nextAsk++);
+    const answer = new Promise((resolve) => answers.set(ask, resolve));
+    const popup = await chrome.windows.create({
+      url: chrome.runtime.getURL(
+        `approve.html?ask=${ask}&origin=${encodeURIComponent(origin)}`,
+      ),
+      type: "popup",
+      width: 480,
+      height: 300,
+    });
+    // Closing the window without an answer is a no. approve.js closes it
+    // only after its answer was delivered.
+    const closed = (id) => {
+      if (id === popup.id) answers.get(ask)?.(false);
+    };
+    chrome.windows.onRemoved.addListener(closed);
+    const allowed = await answer;
+    chrome.windows.onRemoved.removeListener(closed);
+    answers.delete(ask);
+    if (allowed) await setApproved(tabId, true);
+    return allowed;
+  })();
+  asking.set(tabId, question);
+  try {
+    return await question;
+  } finally {
+    asking.delete(tabId);
+  }
 }
 
 chrome.runtime.onConnectExternal.addListener((port) => {
   const tabId = port.sender?.tab?.id;
   const origin = port.sender?.origin ?? port.sender?.url ?? "";
-  // Asked once per connection, on its first CDP message; until then (and
-  // on a no) nothing but Yurt.ping is answered.
+  // Checked on a connection's first CDP message (asking, if the page did
+  // not ask at setup); until then only Yurt.ping and Yurt.approve.
   let allowed;
   const sessions = new Map(); // sessionId -> { tabId, targetId }
   // A child session (an iframe or worker chrome.debugger auto-attached on a
@@ -111,6 +151,9 @@ chrome.runtime.onConnectExternal.addListener((port) => {
     if (method === "Target.attachedToTarget" && params?.sessionId) {
       childTab.set(params.sessionId, source.tabId);
     }
+    if (method === "Target.detachedFromTarget" && params?.sessionId) {
+      childTab.delete(params.sessionId);
+    }
     send({ method, params, sessionId: source.sessionId ?? root });
   };
   const onDetach = (source) => {
@@ -119,6 +162,10 @@ chrome.runtime.onConnectExternal.addListener((port) => {
     const s = sessions.get(root);
     sessions.delete(root);
     byTab.delete(source.tabId);
+    // The tab's child sessions go with it.
+    for (const [child, tab] of childTab) {
+      if (tab === source.tabId) childTab.delete(child);
+    }
     send({
       method: "Target.detachedFromTarget",
       params: { sessionId: root, targetId: s?.targetId },
@@ -157,15 +204,22 @@ chrome.runtime.onConnectExternal.addListener((port) => {
           url: "about:blank",
           active: true,
         });
-        const { targetId } = await attachTab(tab.id);
-        if (params?.url && params.url !== "about:blank") {
-          await chrome.debugger.sendCommand(
-            { tabId: tab.id },
-            "Page.navigate",
-            { url: params.url },
-          );
+        try {
+          const { targetId } = await attachTab(tab.id);
+          if (params?.url && params.url !== "about:blank") {
+            await chrome.debugger.sendCommand(
+              { tabId: tab.id },
+              "Page.navigate",
+              { url: params.url },
+            );
+          }
+          return reply(id, undefined, { targetId });
+        } catch (error) {
+          // No orphan: the tab this call opened goes with its failure.
+          await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
+          await chrome.tabs.remove(tab.id).catch(() => {});
+          throw error;
         }
-        return reply(id, undefined, { targetId });
       }
       case "Target.closeTarget": {
         const s = [...sessions.values()].find((x) =>
@@ -215,6 +269,11 @@ chrome.runtime.onConnectExternal.addListener((port) => {
     const { id, method, params, sessionId } = msg;
     // The page's check that this is the bridge, before any approval.
     if (method === "Yurt.ping") return reply(id, undefined, { yurt: true });
+    // The page's question at setup: the person answers before any script.
+    if (method === "Yurt.approve") {
+      const yes = tabId !== undefined && await approve(tabId, origin);
+      return reply(id, undefined, { allowed: yes });
+    }
     allowed ??= tabId === undefined
       ? Promise.resolve(false)
       : approve(tabId, origin);

@@ -14,10 +14,8 @@ import {
   backoff,
   EAGAIN,
   fdRequest,
+  guestSocketIo,
   listenOnGuestLoopback,
-  MAX_HEAD_BYTES,
-  MSG_DONTWAIT,
-  MSG_NOSIGNAL,
   parseRequestHead,
   type RelayKernel,
 } from "./pkg_relay.ts";
@@ -96,10 +94,6 @@ export function startCdpBridge(
   const listener = listenOnGuestLoopback(mk, CDP_PORT, "cdp bridge");
 
   let stopped = false;
-  const chunkCap = Math.max(
-    4096,
-    Math.min(64 * 1024, (mk.scratchLen ?? 0) - 64),
-  );
   /** Every accepted socket, by fd. */
   const fds = new Set<number>();
   /** Open WebSockets by connection id: never reused, unlike an fd, so a
@@ -114,30 +108,9 @@ export function startCdpBridge(
   const sockets = new Map<number, Socket>();
   let nextConn = 1;
 
-  const recv = (fd: number, cap: number) => {
-    const req = fdRequest(fd, 4);
-    new DataView(req.buffer).setUint32(4, MSG_DONTWAIT, true);
-    return call(METHOD.SYS_SOCKET_RECV, req, cap);
-  };
-  const sendAll = async (fd: number, bytes: Uint8Array) => {
-    const wait = backoff();
-    let at = 0;
-    while (at < bytes.byteLength) {
-      if (stopped || !fds.has(fd)) throw new Error("closed");
-      const chunk = bytes.subarray(at, at + chunkCap);
-      const req = fdRequest(fd, 4 + chunk.byteLength);
-      new DataView(req.buffer).setUint32(4, MSG_DONTWAIT | MSG_NOSIGNAL, true);
-      req.set(chunk, 8);
-      const { rc } = call(METHOD.SYS_SOCKET_SEND, req);
-      if (rc === -EAGAIN) {
-        await wait.wait();
-        continue;
-      }
-      if (rc <= 0) throw new Error(`send: rc=${rc}`);
-      wait.progressed();
-      at += rc;
-    }
-  };
+  const io = guestSocketIo(mk, (fd) => !stopped && fds.has(fd));
+  const recv = io.recv;
+  const sendAll = io.send;
   /** Close `fd` now, and say so for its connection. */
   const end = (fd: number, conn?: number) => {
     if (conn !== undefined && sockets.delete(conn)) handlers.close(conn);
@@ -176,36 +149,7 @@ export function startCdpBridge(
 
   /** The request head, and the bytes after it in the same reads (a client
    *  may send its first frame with the upgrade). */
-  const readHead = async (
-    fd: number,
-  ): Promise<{ head: string; rest: Uint8Array } | undefined> => {
-    const wait = backoff();
-    const deadline = Date.now() + 10_000;
-    let bytes = new Uint8Array(0);
-    while (!stopped && Date.now() < deadline) {
-      const { rc, response } = recv(fd, MAX_HEAD_BYTES);
-      if (rc === -EAGAIN) {
-        await wait.wait();
-        continue;
-      }
-      if (rc <= 0) return undefined;
-      wait.progressed();
-      const joined = new Uint8Array(bytes.length + rc);
-      joined.set(bytes);
-      joined.set(response.subarray(0, rc), bytes.length);
-      bytes = joined;
-      // latin1: one char per byte, so the index is a byte offset.
-      const text = String.fromCharCode(
-        ...bytes.subarray(0, MAX_HEAD_BYTES + 4),
-      );
-      const end = text.indexOf("\r\n\r\n");
-      if (end >= 0) {
-        return { head: text.slice(0, end), rest: bytes.slice(end + 4) };
-      }
-      if (bytes.length > MAX_HEAD_BYTES) return undefined;
-    }
-    return undefined;
-  };
+  const readHead = io.readHead;
 
   const serve = async (fd: number) => {
     let conn: number | undefined;
@@ -264,7 +208,7 @@ export function startCdpBridge(
       if (read.rest.length > 0 && take(read.rest)) return;
       const wait = backoff();
       while (!stopped && !socket.closing) {
-        const { rc, response } = recv(fd, chunkCap);
+        const { rc, response } = recv(fd, io.chunkCap);
         if (rc === -EAGAIN) {
           await wait.wait();
           continue;
