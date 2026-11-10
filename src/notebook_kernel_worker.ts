@@ -1120,17 +1120,15 @@ async function suspend(): Promise<void> {
   sealing = true;
   post({ type: "snapshot", snapshot: { state: "sealing" } });
   const startedAt = performance.now();
-  let pumping = true;
+  // Nothing the guest writes from here reaches the page: what is unread
+  // stays in the pty and goes into the image, and Resume delivers it. Read
+  // while the store below is awaited (the guest runs on until teardown), a
+  // line would show now and again from the resumed guest.
+  current.stopPump();
   try {
     const image = await current.mk.sealSandbox({
       deadlineMs: SEAL_DEADLINE_MS,
     });
-    // The image is the guest as of this instant (sealSandbox copies the
-    // kernel's memory last, synchronously). The guest runs on until the
-    // teardown below; what it writes meanwhile is past the image, and the
-    // restored guest writes it again, so it must not reach the page now.
-    current.stopPump();
-    pumping = false;
     const sealedAt = Date.now();
     await storeSnapshot({
       image,
@@ -1156,7 +1154,7 @@ async function suspend(): Promise<void> {
     });
   } catch (error) {
     // Still live: read its pty again.
-    if (!pumping && live === current) {
+    if (live === current) {
       current.stopPump = pumpPtyMaster(current.mk, current.pty, onGuestOutput);
     }
     status(

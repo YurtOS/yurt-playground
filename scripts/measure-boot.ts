@@ -236,6 +236,7 @@ if (import.meta.main) {
       console.log(JSON.stringify({
         device,
         engine,
+        browserVersion: browser.version(),
         query,
         load: load === 0 ? "cold" : "warm",
         platform: new URL(page.url()).searchParams.get("platform"),
@@ -245,11 +246,7 @@ if (import.meta.main) {
           ? null
           : Number(jupyterSeconds.toFixed(1)),
         secondsToPrompt: Number(seconds.toFixed(2)),
-        // None found (Chrome's renderers hang off its zygote on Linux)
-        // is no figure, not 0 MiB.
-        peakRendererMiB: engine !== "webkit" && peak > 0
-          ? Math.round(peak)
-          : null,
+        peakRendererMiB: engine !== "webkit" ? Math.round(peak) : null,
         snapshot: logs.find((line) => /bytes of kernel memory/.test(line)) ??
           null,
         fellBack: logs.find((line) => /booting the image instead/.test(line)) ??
