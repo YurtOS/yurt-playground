@@ -1067,8 +1067,9 @@ async function runPage(): Promise<void> {
     capturing: snapshotMode() === "capture",
   });
   env = chosenEnv.env;
-  playwrightPinned = (await fetchSitePins())?.playwrightSnapshot !==
-    undefined;
+  // Only a Playwright page asks the pins for its snapshot.
+  playwrightPinned = env === "playwright" &&
+    (await fetchSitePins())?.playwrightSnapshot !== undefined;
   if (chosenEnv.note !== undefined) {
     notes.push(chosenEnv.note);
     showNotes();
@@ -1159,11 +1160,9 @@ async function runPage(): Promise<void> {
       return (globalThis as unknown as { yurt: Yurt }).yurt;
     },
     start: () => document.getElementById("start-sandbox")?.click(),
-    unavailable: refused
-      ? "no sandbox"
-      : env === "playwright"
-      ? "off in the Playwright sandbox"
-      : undefined,
+    // Playwright's sandbox hides the pane (applyEnv) and its yurt() refuses;
+    // no fixed note, so switching back to Python leaves a working pane.
+    unavailable: refused ? "no sandbox" : undefined,
     // Only the in-tab sandbox seals; `?suspend=0` keeps it running.
     reload: reloadOnPurpose,
     resumeRun: () => ownReload,
@@ -1235,7 +1234,10 @@ async function runPage(): Promise<void> {
     const choice = byId("env-choice");
     // Playwright needs no snapshot of its own; Go's choice (hidden in the
     // markup) is shown once the site's pins name Go's snapshot.
-    choice.hidden = false;
+    // Shown only when there is something besides Python to choose:
+    // Playwright in a Chromium browser, or Go once the pins name it.
+    const chromium = /Chrome\//.test(navigator.userAgent);
+    choice.hidden = !chromium;
     // Playwright drives a Chromium browser through its extension: no choice
     // in Safari or Firefox.
     const playwright = choice.querySelector<HTMLElement>(
@@ -1249,7 +1251,10 @@ async function runPage(): Promise<void> {
     void fetchSitePins().then((pins) => {
       const go = choice.querySelector<HTMLElement>("[data-testid=env-go]")
         ?.closest("label");
-      if (go && pins?.goSnapshot !== undefined) go.hidden = false;
+      if (go && pins?.goSnapshot !== undefined) {
+        go.hidden = false;
+        choice.hidden = false;
+      }
     }).catch(() => {});
     for (
       const radio of choice.querySelectorAll<HTMLInputElement>(

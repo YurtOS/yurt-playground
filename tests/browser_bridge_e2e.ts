@@ -316,6 +316,8 @@ ws.on("open", async () => {
     ["Target.sendMessageToTarget", { sessionId, message: inner }],
     ["Target.attachToTarget", { targetId: "x", flatten: false }],
     ["Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: false }],
+    ["Network.getAllCookies", {}],
+    ["Storage.getCookies", {}],
   ]) {
     const r = await call(method, params, sessionId);
     console.log(r.error ? "refused " + method : "ALLOWED " + method);
@@ -328,9 +330,11 @@ ws.on("open", async () => {
     });
     if (
       wrapped.includes("ALLOWED") ||
-      (wrapped.match(/refused/g) ?? []).length !== 3
+      (wrapped.match(/refused/g) ?? []).length !== 5
     ) {
-      fail(`a wrapped or attached command got through: ${wrapped}`);
+      fail(
+        `a wrapped, attached or browser-wide command got through: ${wrapped}`,
+      );
     }
     console.log(`browser bridge e2e: ${wrapped.replace(/\n/g, "; ")}`);
     if (

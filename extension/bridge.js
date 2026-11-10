@@ -18,8 +18,34 @@ function navigable(url) {
     return false;
   }
 }
-/** The most tabs one connection may open at once. */
+/** The most tabs the bridge keeps open for scripts at once, across every
+ *  connection (tabs stay open after a script ends). */
 const MAX_TABS = 16;
+const openedTabs = new Set();
+chrome.tabs.onRemoved.addListener((tabId) => openedTabs.delete(tabId));
+
+/** Schemes a controlled tab must never reach, by any route: privileged
+ *  pages (this extension's, chrome://, devtools) and local files. Ordinary
+ *  web documents (blob:, data:) are left alone. */
+function privileged(url) {
+  try {
+    const protocol = new URL(url).protocol;
+    return !["http:", "https:", "about:", "blob:", "data:"].includes(protocol);
+  } catch {
+    return true;
+  }
+}
+
+/** Methods refused on a tab session: browser-wide state no tab of ours
+ *  owns. The cookie jar of every site (read or written) above all. */
+const BROWSER_WIDE = new Set([
+  "Network.getAllCookies",
+  "Network.setCookie",
+  "Network.setCookies",
+  "Network.deleteCookies",
+  "Network.clearBrowserCookies",
+  "Network.clearBrowserCache",
+]);
 
 // A page may drive this browser only after a person allowed it in this
 // extension's own window (approve.html): any script on the site's origin can
@@ -219,7 +245,7 @@ chrome.runtime.onConnectExternal.addListener((port) => {
   // Second layer: a controlled tab that reaches anything but the web or a
   // blank page (a link, a redirect, script) is let go and closed.
   const onTabUpdated = (tabId, change) => {
-    if (change.url === undefined || navigable(change.url)) return;
+    if (change.url === undefined || !privileged(change.url)) return;
     const root = byTab.get(tabId);
     if (root === undefined) return;
     void chrome.debugger.detach({ tabId }).catch(() => {});
@@ -257,7 +283,7 @@ chrome.runtime.onConnectExternal.addListener((port) => {
         if (!navigable(params?.url)) {
           return fail(id, undefined, `the bridge does not open ${params.url}`);
         }
-        if (sessions.size >= MAX_TABS) {
+        if (openedTabs.size >= MAX_TABS) {
           return fail(id, undefined, `a script may keep ${MAX_TABS} tabs open`);
         }
         const tab = await chrome.tabs.create({
@@ -266,6 +292,7 @@ chrome.runtime.onConnectExternal.addListener((port) => {
           // message, keeps the focus (and its timers unthrottled).
           active: false,
         });
+        openedTabs.add(tab.id);
         try {
           const { targetId } = await attachTab(tab.id);
           if (params?.url && params.url !== "about:blank") {
@@ -385,6 +412,13 @@ chrome.runtime.onConnectExternal.addListener((port) => {
           sessionId,
           `the bridge does not allow ${method} on a tab`,
         );
+      }
+      // Browser-wide state (every site's cookies) is not a tab's to touch.
+      if (
+        typeof method === "string" &&
+        (method.startsWith("Storage.") || BROWSER_WIDE.has(method))
+      ) {
+        return fail(id, sessionId, `the bridge does not allow ${method}`);
       }
       if (typeof method === "string" && method.startsWith("Browser.")) {
         return fail(
