@@ -159,6 +159,70 @@ if (import.meta.main) {
     if (!note?.includes(READY_NOTE)) fail(`setup did not finish: ${note}`);
     console.log("browser bridge e2e: Playwright set up in the sandbox");
 
+    // An approval is the asking document's, never a frame's: a page whose
+    // top document is approved, with a same-origin frame (the playground
+    // itself allows no frames; JupyterLite opens as pages of its own).
+    const framed = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) =>
+        new Response(
+          new URL(req.url).pathname === "/"
+            ? '<iframe id="inner" src="/inner"></iframe>'
+            : "<p>inner</p>",
+          { headers: { "content-type": "text/html" } },
+        ),
+    );
+    const framedPage = await context.newPage();
+    await framedPage.goto(`http://127.0.0.1:${framed.addr.port}/`);
+    const callFrom = (frame: import("playwright").Frame, method: string) =>
+      frame.evaluate(([id, method]) =>
+        new Promise<string>((resolve) => {
+          const port = (globalThis as unknown as {
+            chrome: {
+              runtime: {
+                connect(id: string): {
+                  postMessage(m: unknown): void;
+                  onMessage: {
+                    addListener(
+                      fn: (
+                        m: {
+                          result?: { allowed?: boolean };
+                          error?: { message: string };
+                        },
+                      ) => void,
+                    ): void;
+                  };
+                  onDisconnect: { addListener(fn: () => void): void };
+                };
+              };
+            };
+          }).chrome.runtime.connect(id);
+          port.onMessage.addListener((m) =>
+            resolve(
+              m.error?.message ?? JSON.stringify(m.result ?? "answered"),
+            )
+          );
+          port.onDisconnect.addListener(() => resolve("disconnected"));
+          port.postMessage({ id: 1, method });
+        }), ["leelndonobmigkkkogijljomjikkefbe", method] as const);
+    const topAnswer = await callFrom(framedPage.mainFrame(), "Yurt.approve");
+    const askedAfterTop = asked;
+    const inner = framedPage.frames().find((f) => f.url().endsWith("/inner"))!;
+    const fromFrame = await callFrom(inner, "Browser.getVersion");
+    if (
+      topAnswer !== '{"allowed":true}' || !/not allowed/.test(fromFrame) ||
+      asked !== askedAfterTop
+    ) {
+      fail(
+        `approved top ${topAnswer}, frame ${fromFrame}, windows ${askedAfterTop} -> ${asked}`,
+      );
+    }
+    await framedPage.close();
+    await framed.shutdown();
+    console.log(
+      `browser bridge e2e: the top document allowed, its frame: ${fromFrame}`,
+    );
+
     const target = `${server.url}/unsupported.html`;
     const result = await page.evaluate(async (url) => {
       const yurt = (globalThis as unknown as {
@@ -172,9 +236,10 @@ if (import.meta.main) {
     }, target);
     console.log(`browser bridge e2e: ${result.stdout.trim()}`);
     if (result.code !== 0) fail(`the example failed: ${result.stderr}`);
-    // One window at setup, none when the script connected.
-    if ((asked as number) !== 2) {
-      fail(`expected one approval at setup, saw ${asked} windows in all`);
+    // Windows: the denied page, setup, the framed page's top: none when
+    // the script connected.
+    if ((asked as number) !== 3) {
+      fail(`expected three approval windows in all, saw ${asked}`);
     }
     if (!result.stdout.includes("title: Yurt playground: this page cannot")) {
       fail(`the example read the wrong page: ${result.stdout}`);

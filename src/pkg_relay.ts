@@ -453,12 +453,17 @@ export function guestSocketIo(
     chunkCap,
     recv,
     /** Send all of `bytes`, waiting out EAGAIN; throws when the peer or
-     *  the server is gone. */
-    async send(fd: number, bytes: Uint8Array): Promise<void> {
+     *  the server is gone, or `open` (the caller's own liveness: an fd
+     *  number is reused once closed) says so. */
+    async send(
+      fd: number,
+      bytes: Uint8Array,
+      open: () => boolean = () => alive(fd),
+    ): Promise<void> {
       const wait = backoff();
       let at = 0;
       while (at < bytes.byteLength) {
-        if (!alive(fd)) throw new Error("closed");
+        if (!open()) throw new Error("closed");
         const chunk = bytes.subarray(at, at + chunkCap);
         const req = fdRequest(fd, 4 + chunk.byteLength);
         new DataView(req.buffer).setUint32(
@@ -478,34 +483,41 @@ export function guestSocketIo(
       }
     },
     /** An HTTP request head (up to MAX_HEAD_BYTES, within 10 s), and the
-     *  bytes after it in the same reads. */
+     *  bytes after it in the same reads. Each read is decoded once and
+     *  only its own bytes are searched. */
     async readHead(
       fd: number,
     ): Promise<{ head: string; rest: Uint8Array } | undefined> {
       const deadline = Date.now() + HEAD_DEADLINE_MS;
       const wait = backoff();
-      let bytes = new Uint8Array(0);
+      const parts: Uint8Array[] = [];
+      let text = "";
       while (alive(fd) && Date.now() < deadline) {
-        const { rc, response } = recv(fd, MAX_HEAD_BYTES + 1);
+        const { rc, response } = recv(fd, MAX_HEAD_BYTES + 1 - text.length);
         if (rc === -EAGAIN) {
           await wait.wait();
           continue;
         }
         if (rc <= 0) return undefined;
         wait.progressed();
-        const joined = new Uint8Array(bytes.length + rc);
-        joined.set(bytes);
-        joined.set(response.subarray(0, rc), bytes.length);
-        bytes = joined;
+        const bytes = response.slice(0, rc);
+        parts.push(bytes);
+        const from = Math.max(0, text.length - 3);
         // latin1: a head is ASCII, and one char per byte keeps offsets.
-        const text = String.fromCharCode(
-          ...bytes.subarray(0, MAX_HEAD_BYTES + 4),
-        );
-        const end = text.indexOf("\r\n\r\n");
-        if (end >= 0) {
-          return { head: text.slice(0, end), rest: bytes.slice(end + 4) };
+        for (let i = 0; i < bytes.length; i += 4096) {
+          text += String.fromCharCode(...bytes.subarray(i, i + 4096));
         }
-        if (bytes.length > MAX_HEAD_BYTES) return undefined;
+        const end = text.indexOf("\r\n\r\n", from);
+        if (end >= 0) {
+          const all = new Uint8Array(text.length);
+          let at = 0;
+          for (const part of parts) {
+            all.set(part, at);
+            at += part.length;
+          }
+          return { head: text.slice(0, end), rest: all.slice(end + 4) };
+        }
+        if (text.length > MAX_HEAD_BYTES) return undefined;
       }
       return undefined;
     },

@@ -114,15 +114,23 @@ export function startCdpBridge(
   /** Close `fd` now, and say so for its connection. */
   const end = (fd: number, conn?: number) => {
     if (conn !== undefined && sockets.delete(conn)) handlers.close(conn);
-    if (fds.delete(fd)) closeFd(fd);
+    if (fds.delete(fd)) {
+      try {
+        closeFd(fd);
+      } catch {
+        // the kernel is gone, and the socket with it
+      }
+    }
   };
   const flush = async (conn: number) => {
     const socket = sockets.get(conn);
     if (socket === undefined || socket.flushing) return;
     socket.flushing = true;
     try {
+      // Its own liveness, not the fd's: a closed fd's number is reused.
+      const open = () => !stopped && sockets.get(conn) === socket;
       while (socket.queue.length > 0) {
-        await sendAll(socket.fd, socket.queue.shift()!);
+        await sendAll(socket.fd, socket.queue.shift()!, open);
       }
     } catch {
       socket.queue = [];

@@ -8,52 +8,43 @@ const DEFAULT_CONTEXT = "yurt-default";
 
 // A page may drive this browser only after a person allowed it in this
 // extension's own window (approve.html): any script on the site's origin can
-// reach the extension, so the page's own gate is not the boundary. The page
-// asks while it sets Playwright up (Yurt.approve), so a script's connection
-// never waits on a person. An approval holds for the asking tab until it
-// closes or reloads; it is kept in chrome.storage.session, which outlives
-// this service worker's idle stops.
-const APPROVED = "approvedTabs";
-const DENIED = "deniedTabs";
+// reach the extension, so the page's own gate is not the boundary.
+//
+// An approval belongs to the one top-level document that asked (Chrome's
+// sender.documentId, frameId 0), not to its tab: the playground runs
+// JupyterLite in a frame of the same tab and origin, and a frame is never
+// covered (it is refused without a window). A reload is a new document, so
+// an old approval simply does not apply, and a late answer only ever
+// reaches the document that asked. The page asks while it sets Playwright
+// up (Yurt.approve), so a script's connection never waits on a person.
+// Answers are kept in chrome.storage.session, which outlives this service
+// worker's idle stops.
+const APPROVED = "approvedDocuments";
+const DENIED = "deniedDocuments";
+/** Answers kept, newest last: a document id is never reused. */
+const KEEP = 64;
 
-/** The tabs under `key`, once every queued update has landed. */
-async function tabsUnder(key) {
+// One update at a time: each reads a list and writes it back, and two at
+// once would lose one of them.
+let updates = Promise.resolve();
+async function documentsUnder(key) {
   await updates;
   const stored = await chrome.storage.session.get(key);
-  return new Set(stored[key] ?? []);
+  return stored[key] ?? [];
 }
-const approvedTabs = () => tabsUnder(APPROVED);
-// One update at a time: each reads the set and writes it back, and two at
-// once (an approval, and the approval window's own tab closing) would lose
-// one of them.
-let updates = Promise.resolve();
-function setTab(key, tabId, present) {
+function remember(key, documentId) {
   const next = updates.then(async () => {
     const stored = await chrome.storage.session.get(key);
-    const tabs = new Set(stored[key] ?? []);
-    if (tabs.has(tabId) === present) return;
-    if (present) tabs.add(tabId);
-    else tabs.delete(tabId);
-    await chrome.storage.session.set({ [key]: [...tabs] });
+    const ids = (stored[key] ?? []).filter((id) => id !== documentId);
+    ids.push(documentId);
+    await chrome.storage.session.set({ [key]: ids.slice(-KEEP) });
   }).catch(() => {});
   updates = next;
   return next;
 }
-const setApproved = (tabId, approved) => setTab(APPROVED, tabId, approved);
-// A no is remembered for the tab too, so a script that connects again (a
-// hostile one, looping) gets no new window: only a reload asks again.
-const setDenied = (tabId, denied) => setTab(DENIED, tabId, denied);
-const forget = (tabId) => {
-  void setApproved(tabId, false);
-  void setDenied(tabId, false);
-};
-chrome.tabs.onRemoved.addListener(forget);
-chrome.tabs.onUpdated.addListener((tabId, change) => {
-  if (change.status === "loading") forget(tabId);
-});
 
-/** One question per tab at a time, shared by every connection that asks. */
-const asking = new Map(); // tabId -> Promise<boolean>
+/** One question per document at a time, shared by every connection. */
+const asking = new Map(); // documentId -> Promise<boolean>
 const answers = new Map(); // ask id -> resolve(boolean)
 let nextAsk = 1;
 
@@ -69,12 +60,16 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   respond(true);
 });
 
-/** Whether a person allows the page in tab `tabId` (from `origin`). */
-async function approve(tabId, origin) {
-  if ((await approvedTabs()).has(tabId)) return true;
-  if ((await tabsUnder(DENIED)).has(tabId)) return false;
-  const pending = asking.get(tabId);
+/** Whether a person allows the document `sender` names. A frame, or a
+ *  sender without a document id, is a no without asking. */
+async function approve(sender) {
+  const documentId = sender?.documentId;
+  if (sender?.frameId !== 0 || typeof documentId !== "string") return false;
+  if ((await documentsUnder(APPROVED)).includes(documentId)) return true;
+  if ((await documentsUnder(DENIED)).includes(documentId)) return false;
+  const pending = asking.get(documentId);
   if (pending !== undefined) return await pending;
+  const origin = sender.origin ?? sender.url ?? "";
   const question = (async () => {
     const ask = String(nextAsk++);
     const answer = new Promise((resolve) => answers.set(ask, resolve));
@@ -96,20 +91,19 @@ async function approve(tabId, origin) {
     const allowed = await answer;
     chrome.windows.onRemoved.removeListener(closed);
     answers.delete(ask);
-    await (allowed ? setApproved(tabId, true) : setDenied(tabId, true));
+    await remember(allowed ? APPROVED : DENIED, documentId);
     return allowed;
   })().catch(() => false);
-  asking.set(tabId, question);
+  asking.set(documentId, question);
   try {
     return await question;
   } finally {
-    asking.delete(tabId);
+    asking.delete(documentId);
   }
 }
 
 chrome.runtime.onConnectExternal.addListener((port) => {
-  const tabId = port.sender?.tab?.id;
-  const origin = port.sender?.origin ?? port.sender?.url ?? "";
+  const sender = port.sender;
   // Checked on a connection's first CDP message (asking, if the page did
   // not ask at setup); until then only Yurt.ping and Yurt.approve.
   let allowed;
@@ -233,7 +227,19 @@ chrome.runtime.onConnectExternal.addListener((port) => {
           }
           return reply(id, undefined, { targetId });
         } catch (error) {
-          // No orphan: the tab this call opened goes with its failure.
+          // No orphan: the tab this call opened goes with its failure, and
+          // a session already announced is announced gone (an explicit
+          // detach fires no onDetach).
+          const root = byTab.get(tab.id);
+          if (root !== undefined) {
+            const target = sessions.get(root)?.targetId;
+            sessions.delete(root);
+            byTab.delete(tab.id);
+            send({
+              method: "Target.detachedFromTarget",
+              params: { sessionId: root, targetId: target },
+            });
+          }
           await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
           await chrome.tabs.remove(tab.id).catch(() => {});
           throw error;
@@ -289,12 +295,10 @@ chrome.runtime.onConnectExternal.addListener((port) => {
     if (method === "Yurt.ping") return reply(id, undefined, { yurt: true });
     // The page's question at setup: the person answers before any script.
     if (method === "Yurt.approve") {
-      const yes = tabId !== undefined && await approve(tabId, origin);
+      const yes = await approve(sender);
       return reply(id, undefined, { allowed: yes });
     }
-    allowed ??= tabId === undefined
-      ? Promise.resolve(false)
-      : approve(tabId, origin);
+    allowed ??= approve(sender);
     if (!(await allowed)) {
       fail(id, sessionId, "not allowed: the Yurt browser bridge was denied");
       port.disconnect();
@@ -324,6 +328,8 @@ chrome.runtime.onConnectExternal.addListener((port) => {
       fail(id, sessionId, String(error?.message ?? error));
     }
   });
+  // A script that ends leaves the tabs it opened (the demo's point is to
+  // see them); only the debugger lets go of them.
   port.onDisconnect.addListener(async () => {
     chrome.debugger.onEvent.removeListener(onEvent);
     chrome.debugger.onDetach.removeListener(onDetach);
