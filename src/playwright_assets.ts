@@ -4,8 +4,9 @@
 // as a zip to load unpacked. The build writes both into dist/; the dev
 // server makes them on first request.
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 
 export const PLAYWRIGHT_CORE_TGZ = "playwright-core.tgz";
 export const BRIDGE_EXTENSION_ZIP = "yurt-browser-bridge.zip";

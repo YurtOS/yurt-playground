@@ -26,6 +26,8 @@ export const CDP_PORT = 9222;
  *  browser); any `/devtools/browser/<id>` path reaches it. */
 export const BROWSER_PATH = "/devtools/browser/yurt";
 const MAX_CONNECTIONS = 4;
+/** How long a closing connection may take to drain its queue. */
+const CLOSE_DEADLINE_MS = 5_000;
 const ACCEPT_EVERY_MS = 100;
 
 export type CdpBridgeHandlers = {
@@ -113,7 +115,12 @@ export function startCdpBridge(
   const sendAll = io.send;
   /** Close `fd` now, and say so for its connection. */
   const end = (fd: number, conn?: number) => {
-    if (conn !== undefined && sockets.delete(conn)) handlers.close(conn);
+    if (conn !== undefined) {
+      // Ended already: its fd number may belong to a newer connection.
+      if (sockets.get(conn)?.fd !== fd) return;
+      sockets.delete(conn);
+      handlers.close(conn);
+    }
     if (fds.delete(fd)) {
       try {
         closeFd(fd);
@@ -146,12 +153,14 @@ export function startCdpBridge(
     socket.queue.push(frame);
     void flush(conn);
   };
-  /** Close `conn` after what is queued, with `frame` last. */
+  /** Close `conn` after what is queued, with `frame` last; a peer that
+   *  will not take it within {@link CLOSE_DEADLINE_MS} is cut off. */
   const finish = (conn: number, frame?: Uint8Array) => {
     const socket = sockets.get(conn);
     if (socket === undefined || socket.closing) return;
     if (frame !== undefined) socket.queue.push(frame);
     socket.closing = true;
+    setTimeout(() => end(socket.fd, conn), CLOSE_DEADLINE_MS);
     void flush(conn);
   };
 

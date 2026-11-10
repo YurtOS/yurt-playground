@@ -156,11 +156,19 @@ export class MessageReader {
       if (frame.opcode === OPCODE.ping) {
         replies.push(encodeFrame(OPCODE.pong, frame.payload));
       } else if (frame.opcode === OPCODE.close) {
-        replies.push(encodeFrame(OPCODE.close, frame.payload.subarray(0, 2)));
+        // A one-byte body is malformed (RFC 6455 5.5.1): 1002.
+        replies.push(
+          frame.payload.length === 1
+            ? encodeFrame(OPCODE.close, new Uint8Array([0x03, 0xea]))
+            : encodeFrame(OPCODE.close, frame.payload.subarray(0, 2)),
+        );
+        return { messages, replies, closed: true };
+      } else if (frame.opcode === OPCODE.binary) {
+        // CDP is JSON text: 1003, cannot accept this data type.
+        replies.push(encodeFrame(OPCODE.close, new Uint8Array([0x03, 0xeb])));
         return { messages, replies, closed: true };
       } else if (
-        frame.opcode === OPCODE.text || frame.opcode === OPCODE.binary ||
-        frame.opcode === OPCODE.continuation
+        frame.opcode === OPCODE.text || frame.opcode === OPCODE.continuation
       ) {
         this.#parts.push(frame.payload);
         this.#size += frame.payload.length;

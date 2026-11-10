@@ -74,14 +74,21 @@ async function approve(sender) {
     const ask = String(nextAsk++);
     const answer = new Promise((resolve) => answers.set(ask, resolve));
     // No window, no question: a no (and nothing waits on it).
-    const popup = await chrome.windows.create({
-      url: chrome.runtime.getURL(
-        `approve.html?ask=${ask}&origin=${encodeURIComponent(origin)}`,
-      ),
-      type: "popup",
-      width: 480,
-      height: 300,
-    });
+    let popup;
+    try {
+      popup = await chrome.windows.create({
+        url: chrome.runtime.getURL(
+          `approve.html?ask=${ask}&origin=${encodeURIComponent(origin)}`,
+        ),
+        type: "popup",
+        width: 480,
+        height: 300,
+      });
+    } catch (error) {
+      answers.delete(ask);
+      console.warn(`[yurt bridge] could not ask: ${error?.message ?? error}`);
+      return false;
+    }
     // Closing the window without an answer is a no. approve.js closes it
     // only after its answer was delivered.
     const closed = (id) => {

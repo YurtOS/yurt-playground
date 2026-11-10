@@ -112,3 +112,19 @@ Deno.test("a large frame fed in small reads comes out whole, once", () => {
   assertEquals(messages.length, 1);
   assertEquals(messages[0].length, body.length);
 });
+
+Deno.test("a malformed close gets 1002 and a binary frame 1003", () => {
+  assertEquals(
+    new MessageReader().push(clientFrame(OPCODE.close, new Uint8Array([1])))
+      .replies,
+    [encodeFrame(OPCODE.close, new Uint8Array([0x03, 0xea]))],
+  );
+  const binary = new MessageReader().push(
+    clientFrame(OPCODE.binary, new Uint8Array([1, 2])),
+  );
+  assertEquals(binary.closed, true);
+  assertEquals(binary.messages, []);
+  assertEquals(binary.replies, [
+    encodeFrame(OPCODE.close, new Uint8Array([0x03, 0xeb])),
+  ]);
+});
