@@ -155,9 +155,7 @@ if (import.meta.main) {
     for (let load = 0; load <= warm; load++) {
       logs = [];
       let peak = 0;
-      // Renderers are the --yurt-measure browser's children in Playwright's
-      // Chromium; Chrome's come from its zygote on Linux, so no figure.
-      const sampler = engine === "chromium"
+      const sampler = engine !== "webkit"
         ? setInterval(() => peak = Math.max(peak, rendererMiB(profile)), 50)
         : undefined;
       const started = performance.now();
@@ -247,7 +245,7 @@ if (import.meta.main) {
           ? null
           : Number(jupyterSeconds.toFixed(1)),
         secondsToPrompt: Number(seconds.toFixed(2)),
-        peakRendererMiB: engine === "chromium" ? Math.round(peak) : null,
+        peakRendererMiB: engine !== "webkit" ? Math.round(peak) : null,
         snapshot: logs.find((line) => /bytes of kernel memory/.test(line)) ??
           null,
         fellBack: logs.find((line) => /booting the image instead/.test(line)) ??

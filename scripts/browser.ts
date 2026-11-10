@@ -9,11 +9,6 @@ import type { Browser, LaunchOptions } from "playwright";
 
 export type ChromiumBrowser = "chrome" | "chromium";
 
-/** The browser PLAYGROUND_BROWSER names. */
-export function selectedBrowser(): ChromiumBrowser {
-  return parseBrowser(Deno.env.get("PLAYGROUND_BROWSER"));
-}
-
 /** A PLAYGROUND_BROWSER value's browser; Chrome when it is unset. */
 export function parseBrowser(value: string | undefined): ChromiumBrowser {
   if (value === undefined || value === "" || value === "chrome") {
@@ -35,7 +30,7 @@ export function launchOptions(
 
 /** Launch the selected browser and print which one, with its version. */
 export async function launchBrowser(): Promise<Browser> {
-  const selected = selectedBrowser();
+  const selected = parseBrowser(Deno.env.get("PLAYGROUND_BROWSER"));
   const { chromium } = await import("playwright");
   const browser = await chromium.launch(launchOptions(selected));
   const name = selected === "chrome" ? "Google Chrome" : "Playwright Chromium";

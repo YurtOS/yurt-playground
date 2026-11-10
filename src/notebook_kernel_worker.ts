@@ -667,15 +667,47 @@ function sealTick(): Promise<void> {
   return tickInFlight;
 }
 
+/** Seal `current` with its pty unread: what the page has shown is then
+ *  exactly what the guest wrote before the seal, and `cells` (cloned as the
+ *  seal returns) matches the image. Output written meanwhile stays in the
+ *  pty: for a live sandbox the pump delivers it next; a restored one writes
+ *  it again from the sealed state. Reading it during the seal instead let
+ *  the page show a line the image would print a second time (#322: a
+ *  prime twice after Resume, in Chrome). The pump is left stopped. */
+async function sealQuiet(
+  current: Live,
+): Promise<
+  { image: Awaited<ReturnType<Live["mk"]["sealSandbox"]>>; cells: typeof cells }
+> {
+  current.stopPump();
+  const image = await current.mk.sealSandbox({ deadlineMs: SEAL_DEADLINE_MS });
+  return { image, cells: structuredClone(cells) };
+}
+
+/** Start reading `current`'s pty again after `sealQuiet`. */
+function restartPump(current: Live): void {
+  current.stopPump = pumpPtyMaster(current.mk, current.pty, onGuestOutput);
+}
+
 async function sealOnce(): Promise<void> {
   const current = live;
   if (current === undefined || sealing || forgotten || sealEveryMs <= 0) return;
   sealing = true;
   const generation = sealGeneration;
+  let sealed;
   try {
-    const image = await current.mk.sealSandbox({
-      deadlineMs: SEAL_DEADLINE_MS,
+    sealed = await sealQuiet(current).finally(() => {
+      if (live === current) restartPump(current);
     });
+  } catch (error) {
+    status(
+      `seal skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    sealing = false;
+    return;
+  }
+  const { image } = sealed;
+  try {
     if (live !== current || forgotten || generation !== sealGeneration) {
       return;
     }
@@ -687,7 +719,7 @@ async function sealOnce(): Promise<void> {
       kernelSha256: current.kernelSha256,
       pythonSet: sealSet?.id,
       indexVersion: sealCatalog?.index.index_version,
-      attachments: { cells: structuredClone(cells) },
+      attachments: { cells: sealed.cells },
     }, NOTEBOOK_KEY);
     await storeInFlight;
     post({
@@ -1121,9 +1153,10 @@ async function suspend(): Promise<void> {
   post({ type: "snapshot", snapshot: { state: "sealing" } });
   const startedAt = performance.now();
   try {
-    const image = await current.mk.sealSandbox({
-      deadlineMs: SEAL_DEADLINE_MS,
-    });
+    // Nothing more reaches the page: the rest is in the sealed pty, and
+    // Resume delivers it.
+    const sealed = await sealQuiet(current);
+    const image = sealed.image;
     const sealedAt = Date.now();
     await storeSnapshot({
       image,
@@ -1132,7 +1165,7 @@ async function suspend(): Promise<void> {
       kernelSha256: current.kernelSha256,
       pythonSet: sealSet?.id,
       indexVersion: sealCatalog?.index.index_version,
-      attachments: { cells: structuredClone(cells) },
+      attachments: { cells: sealed.cells },
     }, NOTEBOOK_KEY);
     forgotten = false;
     live = undefined;
@@ -1148,6 +1181,8 @@ async function suspend(): Promise<void> {
       },
     });
   } catch (error) {
+    // Still live: read its pty again.
+    if (live === current) restartPump(current);
     status(
       `suspend failed: ${
         error instanceof Error ? error.message : String(error)
