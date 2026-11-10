@@ -689,9 +689,29 @@ Deno.test("vfsStat reads the kernel's 48-byte record, and a longer one, with a s
       `a ${size}-byte record`,
     );
   }
-  // A time before 1970 is negative, not a 2^64-scale number (#4393).
+  // A time before 1970 is negative, not a 2^64-scale number (#4393), and a
+  // sub-second part belongs to the earlier second.
   assertEquals(
     vfsStat(statKernel(48, -3_000_000_000n), "/old")?.mtime,
     -3,
   );
+  assertEquals(
+    vfsStat(statKernel(48, -3_500_000_000n), "/older")?.mtime,
+    -4,
+  );
+});
+
+Deno.test("vfsStat names a record shorter than 48 bytes instead of reading it as an errno", () => {
+  const short = {
+    scratchLen: 64 * 1024,
+    syscall: () => ({ rc: 32n, response: new Uint8Array(32) }),
+    // deno-lint-ignore no-explicit-any
+  } as any;
+  let threw = "";
+  try {
+    vfsStat(short, "/f");
+  } catch (error) {
+    threw = String(error);
+  }
+  assert(threw.includes("answered 32 bytes, under the 48-byte record"), threw);
 });

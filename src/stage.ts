@@ -90,6 +90,13 @@ const VFS_STAT_RESPONSE_CAP = 72;
 const I64_MAX = (1n << 63n) - 1n;
 const I64_MIN = -(1n << 63n);
 
+/** Division that rounds toward negative infinity: a time before 1970 with
+ * a sub-second part is in the earlier second. */
+function floorDiv(value: bigint, by: bigint): bigint {
+  const quotient = value / by;
+  return value % by < 0n ? quotient - 1n : quotient;
+}
+
 function clampI64(value: bigint): bigint {
   return value > I64_MAX ? I64_MAX : value < I64_MIN ? I64_MIN : value;
 }
@@ -473,9 +480,12 @@ export function vfsStat(
   // Gone (or a parent that is no directory now): no entry. Anything else
   // is an error, not an absence a layer may silently skip.
   if (missing(code)) return undefined;
-  if (code < VFS_STAT_MIN_RECORD) {
-    throw new Error(`stat ${path}: ${errnoText(code)}`);
+  if (code >= 0 && code < VFS_STAT_MIN_RECORD) {
+    throw new Error(
+      `stat ${path}: the kernel answered ${code} bytes, under the ${VFS_STAT_MIN_RECORD}-byte record`,
+    );
   }
+  if (code < 0) throw new Error(`stat ${path}: ${errnoText(code)}`);
   const view = new DataView(
     response.buffer,
     response.byteOffset,
@@ -494,7 +504,7 @@ export function vfsStat(
     uid: view.getUint32(8, true),
     gid: view.getUint32(12, true),
     size: Number(view.getBigUint64(16, true)),
-    mtime: Number(view.getBigInt64(24, true) / NANOS_PER_SECOND),
+    mtime: Number(floorDiv(view.getBigInt64(24, true), NANOS_PER_SECOND)),
   };
 }
 
