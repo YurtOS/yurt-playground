@@ -21,7 +21,8 @@
  * whose python-seal archive matches its metadata but not its signature), it
  * first checks that the kernel refuses to start on it.
  */
-import { chromium, type Page } from "playwright";
+import { type Page } from "playwright";
+import { launchBrowser } from "./browser.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
@@ -82,7 +83,7 @@ if (import.meta.main) {
     fail("public/jupyter is missing; run jupyterlite/build.sh first")
   );
   const server = startPlaygroundServer(0);
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   // One context: IndexedDB, where the sealed sandbox lives, is per context.
   const context = await browser.newContext();
   // The package repository, for a slim site: answered from a directory

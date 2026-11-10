@@ -8,7 +8,8 @@
  * Run: deno run --allow-all tests/jupyterlite_e2e.ts (needs the pinned blobs
  * in artifacts/ and the site from jupyterlite/build.sh in public/jupyter/).
  */
-import { chromium, devices, type Page } from "playwright";
+import { devices, type Page } from "playwright";
+import { launchBrowser } from "./browser.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
@@ -89,7 +90,7 @@ if (import.meta.main) {
     fail("public/jupyter is missing; run jupyterlite/build.sh first")
   );
   const server = startPlaygroundServer(0);
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   try {
     // A phone is not sent away: it reaches the home page and its links, as
     // the phone platform (the URL says so), with the Start of its shell.

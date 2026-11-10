@@ -19,7 +19,8 @@
  *
  *   deno run -A tests/slim_e2e.ts
  */
-import { type Browser, chromium, devices } from "playwright";
+import { type Browser, devices } from "playwright";
+import { launchBrowser } from "./browser.ts";
 import { showAllSections } from "./show_all_sections.ts";
 import { Buffer } from "node:buffer";
 import { dirname, join } from "node:path";
@@ -123,7 +124,7 @@ if (import.meta.main) {
   /** The directory the route answers from: switched between visits. */
   let current = repo;
   const server = startPlaygroundServer(0);
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   try {
     await phoneInstallsNoPython(browser, server.url);
     const context = await browser.newContext();

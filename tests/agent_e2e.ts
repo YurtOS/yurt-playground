@@ -17,7 +17,8 @@
  * Run: `deno run --allow-all tests/agent_e2e.ts` (needs the kernel checkout
  * and pinned artifacts like playground_e2e.ts).
  */
-import { type BrowserContext, chromium, devices, type Page } from "playwright";
+import { type BrowserContext, devices, type Page } from "playwright";
+import { launchBrowser } from "./browser.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
@@ -167,7 +168,7 @@ if (import.meta.main) {
     Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel"),
   );
   const server = startPlaygroundServer(0);
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   try {
     // Each run ends sealed: the next message resumes the sandbox with its files
     // and the chat, and the PDF is still there to download while it is sealed.
