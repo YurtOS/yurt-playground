@@ -505,9 +505,7 @@ function enqueueExecute(message: JupyterMessage): void {
 
 /** Hand the guest the next queued cell, when it is idle and we are live. */
 function runNextCell(): void {
-  // A seal clones `cells` to match its image; a cell that started during
-  // it would be in neither. afterSeal starts it once the seal returns.
-  if (live === undefined || capturing || cells.current !== undefined) return;
+  if (live === undefined || cells.current !== undefined) return;
   const next = cells.queued.shift();
   if (next === undefined) return;
   cells.current = next;
@@ -669,62 +667,27 @@ function sealTick(): Promise<void> {
   return tickInFlight;
 }
 
-/** Seal `current` with its pty unread: what the page has shown is then
- *  exactly what the guest wrote before the seal, and `cells` (cloned as the
- *  seal returns) matches the image. Output written meanwhile stays in the
- *  pty: a live sandbox's pump delivers it next, and a restored one writes
- *  it again from the sealed state. Read during the seal, a line would show
- *  once now and once more after a restore. No cell starts while `sealing`
- *  (runNextCell), so the cloned cells name what the image runs. The pump is
- *  left stopped. */
-async function sealQuiet(
-  current: Live,
-): Promise<{ image: SandboxSealImage; cells: typeof cells }> {
-  current.stopPump();
-  capturing = true;
-  try {
-    const image = await current.mk.sealSandbox({
-      deadlineMs: SEAL_DEADLINE_MS,
-    });
-    return { image, cells: structuredClone(cells) };
-  } finally {
-    capturing = false;
-  }
-}
-
-/** A seal is capturing the guest: no cell starts (runNextCell). */
-let capturing = false;
-
-/** Read `current`'s pty again after `sealQuiet`, unless it was torn down
- *  or restarted meanwhile (`generation` is the seal generation it began in),
- *  and start a cell that queued during the seal. */
-function afterSeal(current: Live, generation: number): void {
-  if (live !== current || generation !== sealGeneration) return;
-  current.stopPump = pumpPtyMaster(current.mk, current.pty, onGuestOutput);
-  runNextCell();
-}
-
 async function sealOnce(): Promise<void> {
   const current = live;
   if (current === undefined || sealing || forgotten || sealEveryMs <= 0) return;
   sealing = true;
   const generation = sealGeneration;
   try {
-    const sealed = await sealQuiet(current).finally(() =>
-      afterSeal(current, generation)
-    );
+    const image = await current.mk.sealSandbox({
+      deadlineMs: SEAL_DEADLINE_MS,
+    });
     if (live !== current || forgotten || generation !== sealGeneration) {
       return;
     }
     const sealedAt = Date.now();
     storeInFlight = storeSnapshot({
-      image: sealed.image,
+      image,
       pty: current.pty,
       sealedAt,
       kernelSha256: current.kernelSha256,
       pythonSet: sealSet?.id,
       indexVersion: sealCatalog?.index.index_version,
-      attachments: { cells: sealed.cells },
+      attachments: { cells: structuredClone(cells) },
     }, NOTEBOOK_KEY);
     await storeInFlight;
     post({
@@ -1155,14 +1118,19 @@ async function suspend(): Promise<void> {
   const current = live;
   if (current === undefined || sealing) return;
   sealing = true;
-  const generation = sealGeneration;
   post({ type: "snapshot", snapshot: { state: "sealing" } });
   const startedAt = performance.now();
+  let pumping = true;
   try {
-    // Nothing more reaches the page: the rest is in the sealed pty, and
-    // Resume delivers it.
-    const sealed = await sealQuiet(current);
-    const image = sealed.image;
+    const image = await current.mk.sealSandbox({
+      deadlineMs: SEAL_DEADLINE_MS,
+    });
+    // The image is the guest as of this instant (sealSandbox copies the
+    // kernel's memory last, synchronously). The guest runs on until the
+    // teardown below; what it writes meanwhile is past the image, and the
+    // restored guest writes it again, so it must not reach the page now.
+    current.stopPump();
+    pumping = false;
     const sealedAt = Date.now();
     await storeSnapshot({
       image,
@@ -1171,7 +1139,7 @@ async function suspend(): Promise<void> {
       kernelSha256: current.kernelSha256,
       pythonSet: sealSet?.id,
       indexVersion: sealCatalog?.index.index_version,
-      attachments: { cells: sealed.cells },
+      attachments: { cells: structuredClone(cells) },
     }, NOTEBOOK_KEY);
     forgotten = false;
     live = undefined;
@@ -1187,8 +1155,10 @@ async function suspend(): Promise<void> {
       },
     });
   } catch (error) {
-    // Still live: read its pty again, and run what queued meanwhile.
-    afterSeal(current, generation);
+    // Still live: read its pty again.
+    if (!pumping && live === current) {
+      current.stopPump = pumpPtyMaster(current.mk, current.pty, onGuestOutput);
+    }
     status(
       `suspend failed: ${
         error instanceof Error ? error.message : String(error)
