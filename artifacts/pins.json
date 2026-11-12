@@ -1,57 +1,57 @@
 {
-  "train": "playground-2026.11.11-1d31f65",
+  "train": "playground-2026.11.12-846dddb",
   "kernelWasm": {
     "repo": "YurtOS/yurtos-kernel",
-    "rev": "1d31f65cbaae2fc6d3e82f4df2bb52d35026ad39",
+    "rev": "846dddb4af210a5867bc46abe0833e298c6b246f",
     "releaseRepo": "YurtOS/yurt-sandbox",
-    "release": "kernel-wasm-playground-2026.11.11-1d31f65",
+    "release": "kernel-wasm-playground-2026.11.12-846dddb",
     "build": "scripts/build-kernel-wasm.sh",
     "path": "target/kernel-wasm/release/yurt_kernel.wasm",
-    "sha256": "9757a168aff392bf8c20551cf11bee8a1ff5c2b50801b9055f238725cd4f1e70"
+    "sha256": "f072f5cb7e0f24cab6802df4cdaa2006f6e5461f3b16efac51aa21824b04e392"
   },
   "image": {
     "repo": "YurtOS/yurt-ports",
     "rev": "1854a8e47c96a7505d702b2fdd5ce832e59f8490",
     "releaseRepo": "YurtOS/yurt-ports",
-    "release": "playground-image-playground-2026.11.11-1d31f65",
+    "release": "playground-image-playground-2026.11.12-846dddb",
     "build": "scripts/build-playground-image.sh",
     "path": "ports/playground-image/build/dist/playground.yurtimg",
-    "sha256": "ee4e4bd87fdfd08eac1ae868c7d22d3de24cc599e895f426d4be762dbb6a95d9"
+    "sha256": "077c9e0d0dc1742383b41d1caeea86022b62cbccaebefd739a3a0dce21755a11"
   },
   "desktopHost": {
     "repo": "YurtOS/yurt-sandbox",
-    "rev": "3e024fe29c0eafd2d214de7369478aef5c644af9",
+    "rev": "c84b23ff5e0b8b14b6e998513418b17e76c1281a",
     "releaseRepo": "YurtOS/yurt-sandbox",
-    "release": "desktop-host-playground-2026.11.11-1d31f65",
+    "release": "desktop-host-playground-2026.11.12-846dddb",
     "build": "scripts/build-desktop-host.sh",
     "sha256": {
-      "aarch64-apple-darwin": "2858101666afbfaaf71e94a3decb565d5b17ea776a586da89c45dd8c2bafb59c",
-      "x86_64-unknown-linux-gnu": "5574e2605444cc5213033e87e9b7f418f9d7469163411069d01611fae2a38fcd",
-      "aarch64-unknown-linux-gnu": "37dbadeb16549ff6697412218ce514de37a81b6160b2c230c1e646cc8f30e9e4"
+      "aarch64-apple-darwin": "510b6c8a17f886b47b51fd17209ced7c1cb3cae1f8d406379ea9216d542d3f12",
+      "x86_64-unknown-linux-gnu": "ca662fa9483fd765cffd628b0d3b179bca07d3f7fc666784785c49ab5dba5d30",
+      "aarch64-unknown-linux-gnu": "ce1f3be3dc6dc50b9ca60ff442754ebd39e37d0edc23e68bcfc4f9ff995ef935"
     }
   },
   "yurtCli": {
     "repo": "YurtOS/yurt-sandbox",
-    "rev": "3e024fe29c0eafd2d214de7369478aef5c644af9",
+    "rev": "c84b23ff5e0b8b14b6e998513418b17e76c1281a",
     "releaseRepo": "YurtOS/yurt-sandbox",
-    "release": "yurt-cli-playground-2026.11.11-1d31f65",
+    "release": "yurt-cli-playground-2026.11.12-846dddb",
     "build": "scripts/build-yurt-cli.sh",
     "assets": {
       "aarch64-apple-darwin": "yurt-aarch64-apple-darwin.tar.gz",
-      "x86_64-unknown-linux-gnu": "yurt_0.1.3+playground.2026.11.11.1d31f65_amd64.deb",
-      "aarch64-unknown-linux-gnu": "yurt_0.1.3+playground.2026.11.11.1d31f65_arm64.deb"
+      "x86_64-unknown-linux-gnu": "yurt_0.1.3+playground.2026.11.12.846dddb_amd64.deb",
+      "aarch64-unknown-linux-gnu": "yurt_0.1.3+playground.2026.11.12.846dddb_arm64.deb"
     },
     "sha256": {
-      "aarch64-apple-darwin": "820c3a7ea24eac8217540eb200fe859a3ed4457e8b5f88862daaf5626adcd6e8",
-      "x86_64-unknown-linux-gnu": "4ff939799ad18f67a979e29d5c34486390d5d0d7fa5f5373c166a93e173daa60",
-      "aarch64-unknown-linux-gnu": "22f1ea86ed72c02e3994f9a80f90ac3d1c5e39668fde9ec2cb1f54362f7da067"
+      "aarch64-apple-darwin": "52adf2530e48e1dc401996615d2b714b3c465a6105661c7613a99a366eef9394",
+      "x86_64-unknown-linux-gnu": "789e52dd15a8cbce27e6537d2ce6e8f5be93192539afaac0f10936fd93cd55f4",
+      "aarch64-unknown-linux-gnu": "0d511a420d23290a81d1e5062ba0307cf7a5989b82518f587d8a7523c17a044a"
     }
   },
   "pythonSeal": {
     "repo": "YurtOS/yurt-ports",
     "rev": "1854a8e47c96a7505d702b2fdd5ce832e59f8490",
     "releaseRepo": "YurtOS/yurt-ports",
-    "release": "python-seal-playground-2026.11.11-1d31f65",
+    "release": "python-seal-playground-2026.11.12-846dddb",
     "build": "ports/cpython/scripts/build-seal.sh",
     "sha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e"
   },
@@ -59,9 +59,9 @@
     "repo": "YurtOS/yurt-ports",
     "rev": "1854a8e47c96a7505d702b2fdd5ce832e59f8490",
     "releaseRepo": "YurtOS/yurt-ports",
-    "release": "playground-image-playground-2026.11.11-1d31f65",
+    "release": "playground-image-playground-2026.11.12-846dddb",
     "build": "scripts/build-playground-image.sh",
     "path": "ports/playground-image/build/dist/playground-slim.yurtimg",
-    "sha256": "2b0e6ab75c925a3be7410534fb3b436cde80cfd90cadbfaf9c7e7982f08f00e4"
+    "sha256": "a0bb635e66b8f7fed540a30f4f7e3d44057b087b5a14c615e6d868c5adc48f70"
   }
 }
