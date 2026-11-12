@@ -182,6 +182,7 @@ Deno.test({
 // --- A fake kernel: what stageYurtimg asks for, and in which order. ---
 
 const KERNEL_VFS_SET_METADATA = 33;
+const KERNEL_VFS_STAT = 27;
 const SYS_CHOWN = 0x1_0023;
 const SYS_LCHOWN = 0x1_01D2;
 
@@ -258,15 +259,30 @@ function zstdStored(bytes: Uint8Array): Uint8Array {
 }
 
 type Call = { kind: string; path: string };
-type Recorded = { mode: number; uid: number; gid: number; mtimeNs: bigint };
+type Recorded = {
+  mode: number;
+  uid: number;
+  gid: number;
+  mtimeNs: bigint;
+  atimeNs: bigint;
+  ctimeNs: bigint;
+};
 
-function fakeKernel() {
+/** The kernel's `kernel_vfs_set_metadata` head (yurtos-kernel#4431): mode,
+ * uid, gid, then mtime, atime and ctime as i64 ns, before the path. A
+ * request shorter than the head is EINVAL, as in the kernel. */
+const SET_METADATA_HEAD = 36;
+
+function fakeKernel(layout: "current" | "legacy" = "current") {
   const decoder = new TextDecoder();
   const calls: Call[] = [];
   const metadata = new Map<string, Recorded>();
   const mk = {
     scratchLen: 64 * 1024,
-    syscall(method: number, request: Uint8Array): { rc: bigint } {
+    syscall(
+      method: number,
+      request: Uint8Array,
+    ): { rc: bigint; response?: Uint8Array } {
       const view = new DataView(
         request.buffer,
         request.byteOffset,
@@ -293,14 +309,25 @@ function fakeKernel() {
             path: decoder.decode(request.subarray(8)),
           });
           return { rc: 0n };
+        case KERNEL_VFS_STAT:
+          // The record size tells the layout: 32 bytes before #4431, 48 after.
+          return {
+            rc: layout === "legacy" ? 32n : 48n,
+            response: new Uint8Array(72),
+          };
         case KERNEL_VFS_SET_METADATA: {
-          const path = decoder.decode(request.subarray(20));
+          const head = layout === "legacy" ? 20 : SET_METADATA_HEAD;
+          if (request.byteLength < head) return { rc: -22n };
+          const path = decoder.decode(request.subarray(head));
           calls.push({ kind: "metadata", path });
           metadata.set(path, {
             mode: view.getUint32(0, true),
             uid: view.getUint32(4, true),
             gid: view.getUint32(8, true),
-            mtimeNs: view.getBigUint64(12, true),
+            mtimeNs: view.getBigInt64(12, true),
+            // A legacy head carries the mtime alone.
+            atimeNs: layout === "legacy" ? 0n : view.getBigInt64(20, true),
+            ctimeNs: layout === "legacy" ? 0n : view.getBigInt64(28, true),
           });
           return { rc: 0n };
         }
@@ -399,6 +426,8 @@ Deno.test("stageYurtimg applies every entry's recorded mode, owner and mtime aft
         uid: entry.uid,
         gid: entry.gid,
         mtimeNs: BigInt(entry.mtime) * 1_000_000_000n,
+        atimeNs: BigInt(entry.mtime) * 1_000_000_000n,
+        ctimeNs: BigInt(entry.mtime) * 1_000_000_000n,
       },
       `metadata for ${entry.path}`,
     );
@@ -609,5 +638,208 @@ Deno.test("vfsStat and vfsReadWhole tell a missing path (ENOENT, ENOTDIR) from a
       threw = String(error);
     }
     assert(threw.includes(words), threw);
+  }
+});
+
+Deno.test("setEntryMetadata clamps a time beyond i64 nanoseconds instead of wrapping it", async () => {
+  const { mk, metadata } = fakeKernel();
+  const far = 9_000_000_000_000; // seconds: 9e21 ns, past i64
+  await stageYurtimg(
+    mk,
+    zstdStored(
+      ustar([
+        { path: "/d", type: "5", mode: 0o755, uid: 0, gid: 0, mtime: far },
+      ]),
+    ),
+    new Map(),
+  );
+  const recorded = metadata.get("/d");
+  const max = (1n << 63n) - 1n;
+  assertEquals(
+    [recorded?.mtimeNs, recorded?.atimeNs, recorded?.ctimeNs],
+    [max, max, max],
+  );
+});
+
+/** A `kernel_vfs_stat` that answers like the kernel: it rejects a response
+ * buffer under the 48-byte record (EINVAL) and returns the record's size,
+ * 48 bytes, or 72 with the later kernel's link identity appended. */
+function statKernel(recordSize: 48 | 72, mtimeNs: bigint) {
+  return {
+    scratchLen: 64 * 1024,
+    syscall(_method: number, _request: Uint8Array, responseLen: number) {
+      if (responseLen < 48) return { rc: -22n, response: new Uint8Array(0) };
+      const response = new Uint8Array(responseLen);
+      const view = new DataView(response.buffer);
+      view.setUint32(0, 4, true); // regular file
+      view.setUint32(4, 0o100_644, true);
+      view.setUint32(8, 1000, true);
+      view.setUint32(12, 1001, true);
+      view.setBigUint64(16, 123n, true);
+      view.setBigInt64(24, mtimeNs, true);
+      view.setBigInt64(32, 5n, true); // atime
+      view.setBigInt64(40, 6n, true); // ctime
+      if (recordSize === 72) response.fill(0xee, 48, 72);
+      return { rc: BigInt(recordSize), response };
+    },
+    // deno-lint-ignore no-explicit-any
+  } as any;
+}
+
+Deno.test("vfsStat reads the kernel's 48-byte record, and a longer one, with a signed mtime", () => {
+  for (const size of [48, 72] as const) {
+    assertEquals(
+      vfsStat(statKernel(size, 7_000_000_000n), "/f"),
+      {
+        type: "file",
+        mode: 0o644,
+        uid: 1000,
+        gid: 1001,
+        size: 123,
+        mtime: 7,
+      },
+      `a ${size}-byte record`,
+    );
+  }
+  // A time before 1970 is negative, not a 2^64-scale number (#4393), and a
+  // sub-second part belongs to the earlier second.
+  assertEquals(
+    vfsStat(statKernel(48, -3_000_000_000n), "/old")?.mtime,
+    -3,
+  );
+  assertEquals(
+    vfsStat(statKernel(48, -3_500_000_000n), "/older")?.mtime,
+    -4,
+  );
+});
+
+Deno.test("vfsStat names a record shorter than the 32-byte legacy one instead of reading it as an errno", () => {
+  const short = {
+    scratchLen: 64 * 1024,
+    syscall: () => ({ rc: 24n, response: new Uint8Array(32) }),
+    // deno-lint-ignore no-explicit-any
+  } as any;
+  let threw = "";
+  try {
+    vfsStat(short, "/f");
+  } catch (error) {
+    threw = String(error);
+  }
+  assert(threw.includes("answered 24 bytes, not a 32-byte record"), threw);
+});
+
+Deno.test("stageYurtimg stages against a kernel from before #4431: a 20-byte head and a 32-byte stat record", async () => {
+  const { mk, metadata } = fakeKernel("legacy");
+  await stageYurtimg(mk, zstdStored(ustar(IMAGE)), new Map());
+  for (const entry of IMAGE) {
+    const recorded = metadata.get(entry.path);
+    assertEquals(
+      [recorded?.mode, recorded?.uid, recorded?.gid, recorded?.mtimeNs],
+      [
+        TYPE_BITS[entry.type] | entry.mode,
+        entry.uid,
+        entry.gid,
+        BigInt(entry.mtime) * 1_000_000_000n,
+      ],
+      `metadata for ${entry.path} through the legacy head`,
+    );
+  }
+});
+
+Deno.test("the kernel's layout is found once per kernel, from the stat record of /", async () => {
+  let probes = 0;
+  const { mk } = fakeKernel();
+  const original = mk.syscall.bind(mk);
+  // deno-lint-ignore no-explicit-any
+  (mk as any).syscall = (method: number, ...rest: any[]) => {
+    if (method === KERNEL_VFS_STAT) probes++;
+    // deno-lint-ignore no-explicit-any
+    return (original as any)(method, ...rest);
+  };
+  await stageYurtimg(mk, zstdStored(ustar(IMAGE)), new Map());
+  assertEquals(probes, 1);
+});
+
+Deno.test("vfsStat reads the 32-byte record of a kernel from before #4431", () => {
+  const view = new DataView(new ArrayBuffer(72));
+  view.setUint32(0, 3, true); // directory
+  view.setUint32(4, 0o040_755, true);
+  view.setUint32(8, 0, true);
+  view.setUint32(12, 0, true);
+  view.setBigUint64(16, 0n, true);
+  view.setBigInt64(24, 9_000_000_000n, true);
+  const legacy = {
+    scratchLen: 64 * 1024,
+    syscall: () => ({ rc: 32n, response: new Uint8Array(view.buffer) }),
+    // deno-lint-ignore no-explicit-any
+  } as any;
+  assertEquals(vfsStat(legacy, "/d")?.mtime, 9);
+  assertEquals(vfsStat(legacy, "/d")?.type, "dir");
+});
+
+/** A `kernel_vfs_stat` that answers `rc` with a `responseLen`-byte response,
+ * whatever the request: a reply the kernel never gives. */
+function oddStatKernel(rc: bigint, responseLen = 72) {
+  return {
+    scratchLen: 64 * 1024,
+    syscall: () => ({ rc, response: new Uint8Array(responseLen) }),
+    // deno-lint-ignore no-explicit-any
+  } as any;
+}
+
+function thrown(run: () => unknown): string {
+  try {
+    run();
+  } catch (error) {
+    return String(error);
+  }
+  return "";
+}
+
+Deno.test("vfsStat refuses a record size neither layout has, and one past the response it came in", () => {
+  for (const rc of [33n, 47n]) {
+    const threw = thrown(() => vfsStat(oddStatKernel(rc), "/f"));
+    assert(threw.includes(`answered ${rc} bytes`), threw);
+  }
+  // More than the buffer asked for.
+  let threw = thrown(() => vfsStat(oddStatKernel(73n, 73), "/f"));
+  assert(threw.includes("answered 73 bytes"), threw);
+  // A size the response does not hold: named, not a RangeError.
+  threw = thrown(() => vfsStat(oddStatKernel(48n, 24), "/f"));
+  assert(threw.includes("answered 48 bytes in a 24-byte response"), threw);
+});
+
+Deno.test("a failed or malformed layout probe stops staging instead of choosing a layout", async () => {
+  for (const rc of [-11n, -2n, 0n, 24n, 40n]) {
+    const { mk, metadata } = fakeKernel("legacy");
+    const original = mk.syscall.bind(mk);
+    let probe = true;
+    // deno-lint-ignore no-explicit-any
+    (mk as any).syscall = (method: number, ...rest: any[]) => {
+      if (method === KERNEL_VFS_STAT && probe) {
+        probe = false;
+        return { rc, response: new Uint8Array(72) };
+      }
+      // deno-lint-ignore no-explicit-any
+      return (original as any)(method, ...rest);
+    };
+    let threw = "";
+    try {
+      await stageYurtimg(mk, zstdStored(ustar(IMAGE)), new Map());
+    } catch (error) {
+      threw = String(error);
+    }
+    assert(threw.includes("stat /"), `rc ${rc}: ${threw}`);
+    // Nothing was cached: the next staging probes again and uses the legacy
+    // head the kernel really speaks.
+    metadata.clear();
+    await stageYurtimg(mk, zstdStored(ustar(IMAGE)), new Map());
+    for (const entry of IMAGE) {
+      assertEquals(
+        metadata.get(entry.path)?.mtimeNs,
+        BigInt(entry.mtime) * 1_000_000_000n,
+        `rc ${rc}: ${entry.path} staged through the legacy head`,
+      );
+    }
   }
 });

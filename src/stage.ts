@@ -76,6 +76,83 @@ function entryTypeBits(type: string): number {
   return S_IFREG;
 }
 
+/** `kernel_vfs_set_metadata`'s request head: mode, uid, gid (u32 each),
+ * then mtime, atime and ctime as i64 nanoseconds, before the path
+ * (yurtos-kernel#4431). A kernel older than that has a 20-byte head with the
+ * mtime alone. */
+const SET_METADATA_HEAD = 36;
+const SET_METADATA_HEAD_LEGACY = 20;
+
+/** `kernel_vfs_stat`'s response: 32 bytes before #4431 (type, mode, uid,
+ * gid, size, mtime), 48 after it (atime and ctime appended); later kernels
+ * append more, which is ignored. The buffer asked for leaves room for that,
+ * and the size the kernel answers tells which layout it speaks. */
+const VFS_STAT_LEGACY_RECORD = 32;
+const VFS_STAT_RECORD = 48;
+const VFS_STAT_RESPONSE_CAP = 72;
+
+/** Which layout of the two host-control VFS calls a kernel speaks, found
+ * once per kernel from the size of a stat record of `/`. The pinned kernel
+ * wasm moves with the release train, and the two layouts must both stage. */
+const kernelLayouts = new WeakMap<KernelHostInterface, "legacy" | "current">();
+
+function kernelLayout(mk: KernelHostInterface): "legacy" | "current" {
+  let layout = kernelLayouts.get(mk);
+  if (layout === undefined) {
+    // A failed or malformed answer throws and caches nothing: a layout is
+    // only ever taken from a record the kernel really sent.
+    const { rc, response } = mk.syscall(
+      KERNEL_VFS_STAT,
+      s("/"),
+      VFS_STAT_RESPONSE_CAP,
+    );
+    const size = statRecordSize("/", Number(rc), response);
+    layout = size === VFS_STAT_LEGACY_RECORD ? "legacy" : "current";
+    kernelLayouts.set(mk, layout);
+  }
+  return layout;
+}
+
+/** The size of the stat record in a `kernel_vfs_stat` answer, refusing
+ * an errno and a size neither layout has: 32 bytes, or 48 up to the buffer
+ * asked for, and never past the response it came in. */
+function statRecordSize(
+  path: string,
+  code: number,
+  response: Uint8Array | undefined,
+): number {
+  if (code < 0) throw new Error(`stat ${path}: ${errnoText(code)}`);
+  if (
+    code !== VFS_STAT_LEGACY_RECORD &&
+    (code < VFS_STAT_RECORD || code > VFS_STAT_RESPONSE_CAP)
+  ) {
+    throw new Error(
+      `stat ${path}: the kernel answered ${code} bytes, not a ${VFS_STAT_LEGACY_RECORD}-byte record or one of ${VFS_STAT_RECORD} to ${VFS_STAT_RESPONSE_CAP}`,
+    );
+  }
+  const held = response?.byteLength ?? 0;
+  if (held < code) {
+    throw new Error(
+      `stat ${path}: the kernel answered ${code} bytes in a ${held}-byte response`,
+    );
+  }
+  return code;
+}
+
+const I64_MAX = (1n << 63n) - 1n;
+const I64_MIN = -(1n << 63n);
+
+/** Division that rounds toward negative infinity: a time before 1970 with
+ * a sub-second part is in the earlier second. */
+function floorDiv(value: bigint, by: bigint): bigint {
+  const quotient = value / by;
+  return value % by < 0n ? quotient - 1n : quotient;
+}
+
+function clampI64(value: bigint): bigint {
+  return value > I64_MAX ? I64_MAX : value < I64_MIN ? I64_MIN : value;
+}
+
 /** Apply the image's mode, owner, and mtime to a staged entry. */
 function setEntryMetadata(
   mk: KernelHostInterface,
@@ -89,7 +166,9 @@ function setEntryMetadata(
   },
 ): void {
   const pathBytes = s(path);
-  const req = new Uint8Array(20 + pathBytes.byteLength);
+  const legacy = kernelLayout(mk) === "legacy";
+  const head = legacy ? SET_METADATA_HEAD_LEGACY : SET_METADATA_HEAD;
+  const req = new Uint8Array(head + pathBytes.byteLength);
   const view = new DataView(req.buffer);
   view.setUint32(
     0,
@@ -98,12 +177,15 @@ function setEntryMetadata(
   );
   view.setUint32(4, entry.uid >>> 0, true);
   view.setUint32(8, entry.gid >>> 0, true);
-  view.setBigUint64(
-    12,
-    BigInt(Math.trunc(entry.mtime)) * NANOS_PER_SECOND,
-    true,
-  );
-  req.set(pathBytes, 20);
+  // The image records one time; it is the mtime, atime and ctime alike
+  // (the kernel's own vfs-stage.ts does the same).
+  const timeNs = clampI64(BigInt(Math.trunc(entry.mtime)) * NANOS_PER_SECOND);
+  view.setBigInt64(12, timeNs, true); // mtime
+  if (!legacy) {
+    view.setBigInt64(20, timeNs, true); // atime
+    view.setBigInt64(28, timeNs, true); // ctime
+  }
+  req.set(pathBytes, head);
   const { rc } = mk.syscall(KERNEL_VFS_SET_METADATA, req, 0);
   if (Number(rc) !== 0) {
     throw new Error(
@@ -445,12 +527,16 @@ export function vfsStat(
     mtime: number;
   }
   | undefined {
-  const { rc, response } = mk.syscall(KERNEL_VFS_STAT, s(path), 32);
+  const { rc, response } = mk.syscall(
+    KERNEL_VFS_STAT,
+    s(path),
+    VFS_STAT_RESPONSE_CAP,
+  );
   const code = Number(rc);
   // Gone (or a parent that is no directory now): no entry. Anything else
   // is an error, not an absence a layer may silently skip.
   if (missing(code)) return undefined;
-  if (code !== 32) throw new Error(`stat ${path}: ${errnoText(code)}`);
+  statRecordSize(path, code, response);
   const view = new DataView(
     response.buffer,
     response.byteOffset,
@@ -469,7 +555,7 @@ export function vfsStat(
     uid: view.getUint32(8, true),
     gid: view.getUint32(12, true),
     size: Number(view.getBigUint64(16, true)),
-    mtime: Number(view.getBigUint64(24, true) / NANOS_PER_SECOND),
+    mtime: Number(floorDiv(view.getBigInt64(24, true), NANOS_PER_SECOND)),
   };
 }
 
