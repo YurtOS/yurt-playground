@@ -88,6 +88,7 @@ const SET_METADATA_HEAD_LEGACY = 20;
  * append more, which is ignored. The buffer asked for leaves room for that,
  * and the size the kernel answers tells which layout it speaks. */
 const VFS_STAT_LEGACY_RECORD = 32;
+const VFS_STAT_RECORD = 48;
 const VFS_STAT_RESPONSE_CAP = 72;
 
 /** Which layout of the two host-control VFS calls a kernel speaks, found
@@ -98,11 +99,44 @@ const kernelLayouts = new WeakMap<KernelHostInterface, "legacy" | "current">();
 function kernelLayout(mk: KernelHostInterface): "legacy" | "current" {
   let layout = kernelLayouts.get(mk);
   if (layout === undefined) {
-    const { rc } = mk.syscall(KERNEL_VFS_STAT, s("/"), VFS_STAT_RESPONSE_CAP);
-    layout = Number(rc) === VFS_STAT_LEGACY_RECORD ? "legacy" : "current";
+    // A failed or malformed answer throws and caches nothing: a layout is
+    // only ever taken from a record the kernel really sent.
+    const { rc, response } = mk.syscall(
+      KERNEL_VFS_STAT,
+      s("/"),
+      VFS_STAT_RESPONSE_CAP,
+    );
+    const size = statRecordSize("/", Number(rc), response);
+    layout = size === VFS_STAT_LEGACY_RECORD ? "legacy" : "current";
     kernelLayouts.set(mk, layout);
   }
   return layout;
+}
+
+/** The size of the stat record in a `kernel_vfs_stat` answer, refusing
+ * an errno and a size neither layout has: 32 bytes, or 48 up to the buffer
+ * asked for, and never past the response it came in. */
+function statRecordSize(
+  path: string,
+  code: number,
+  response: Uint8Array | undefined,
+): number {
+  if (code < 0) throw new Error(`stat ${path}: ${errnoText(code)}`);
+  if (
+    code !== VFS_STAT_LEGACY_RECORD &&
+    (code < VFS_STAT_RECORD || code > VFS_STAT_RESPONSE_CAP)
+  ) {
+    throw new Error(
+      `stat ${path}: the kernel answered ${code} bytes, not a ${VFS_STAT_LEGACY_RECORD}-byte record or one of ${VFS_STAT_RECORD} to ${VFS_STAT_RESPONSE_CAP}`,
+    );
+  }
+  const held = response?.byteLength ?? 0;
+  if (held < code) {
+    throw new Error(
+      `stat ${path}: the kernel answered ${code} bytes in a ${held}-byte response`,
+    );
+  }
+  return code;
 }
 
 const I64_MAX = (1n << 63n) - 1n;
@@ -502,12 +536,7 @@ export function vfsStat(
   // Gone (or a parent that is no directory now): no entry. Anything else
   // is an error, not an absence a layer may silently skip.
   if (missing(code)) return undefined;
-  if (code >= 0 && code < VFS_STAT_LEGACY_RECORD) {
-    throw new Error(
-      `stat ${path}: the kernel answered ${code} bytes, under the ${VFS_STAT_LEGACY_RECORD}-byte record`,
-    );
-  }
-  if (code < 0) throw new Error(`stat ${path}: ${errnoText(code)}`);
+  statRecordSize(path, code, response);
   const view = new DataView(
     response.buffer,
     response.byteOffset,

@@ -725,7 +725,7 @@ Deno.test("vfsStat names a record shorter than the 32-byte legacy one instead of
   } catch (error) {
     threw = String(error);
   }
-  assert(threw.includes("answered 24 bytes, under the 32-byte record"), threw);
+  assert(threw.includes("answered 24 bytes, not a 32-byte record"), threw);
 });
 
 Deno.test("stageYurtimg stages against a kernel from before #4431: a 20-byte head and a 32-byte stat record", async () => {
@@ -775,4 +775,71 @@ Deno.test("vfsStat reads the 32-byte record of a kernel from before #4431", () =
   } as any;
   assertEquals(vfsStat(legacy, "/d")?.mtime, 9);
   assertEquals(vfsStat(legacy, "/d")?.type, "dir");
+});
+
+/** A `kernel_vfs_stat` that answers `rc` with a `responseLen`-byte response,
+ * whatever the request: a reply the kernel never gives. */
+function oddStatKernel(rc: bigint, responseLen = 72) {
+  return {
+    scratchLen: 64 * 1024,
+    syscall: () => ({ rc, response: new Uint8Array(responseLen) }),
+    // deno-lint-ignore no-explicit-any
+  } as any;
+}
+
+function thrown(run: () => unknown): string {
+  try {
+    run();
+  } catch (error) {
+    return String(error);
+  }
+  return "";
+}
+
+Deno.test("vfsStat refuses a record size neither layout has, and one past the response it came in", () => {
+  for (const rc of [33n, 47n]) {
+    const threw = thrown(() => vfsStat(oddStatKernel(rc), "/f"));
+    assert(threw.includes(`answered ${rc} bytes`), threw);
+  }
+  // More than the buffer asked for.
+  let threw = thrown(() => vfsStat(oddStatKernel(73n, 73), "/f"));
+  assert(threw.includes("answered 73 bytes"), threw);
+  // A size the response does not hold: named, not a RangeError.
+  threw = thrown(() => vfsStat(oddStatKernel(48n, 24), "/f"));
+  assert(threw.includes("answered 48 bytes in a 24-byte response"), threw);
+});
+
+Deno.test("a failed or malformed layout probe stops staging instead of choosing a layout", async () => {
+  for (const rc of [-11n, -2n, 0n, 24n, 40n]) {
+    const { mk, metadata } = fakeKernel("legacy");
+    const original = mk.syscall.bind(mk);
+    let probe = true;
+    // deno-lint-ignore no-explicit-any
+    (mk as any).syscall = (method: number, ...rest: any[]) => {
+      if (method === KERNEL_VFS_STAT && probe) {
+        probe = false;
+        return { rc, response: new Uint8Array(72) };
+      }
+      // deno-lint-ignore no-explicit-any
+      return (original as any)(method, ...rest);
+    };
+    let threw = "";
+    try {
+      await stageYurtimg(mk, zstdStored(ustar(IMAGE)), new Map());
+    } catch (error) {
+      threw = String(error);
+    }
+    assert(threw.includes("stat /"), `rc ${rc}: ${threw}`);
+    // Nothing was cached: the next staging probes again and uses the legacy
+    // head the kernel really speaks.
+    metadata.clear();
+    await stageYurtimg(mk, zstdStored(ustar(IMAGE)), new Map());
+    for (const entry of IMAGE) {
+      assertEquals(
+        metadata.get(entry.path)?.mtimeNs,
+        BigInt(entry.mtime) * 1_000_000_000n,
+        `rc ${rc}: ${entry.path} staged through the legacy head`,
+      );
+    }
+  }
 });
