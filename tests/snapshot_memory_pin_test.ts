@@ -13,7 +13,7 @@ import {
 
 function image(memoryBytes: number): SandboxSealImage {
   return {
-    version: 1,
+    version: 2,
     kernelToken: 1n,
     kernelMemory: new Uint8Array(memoryBytes).fill(5),
     processes: [],
@@ -27,7 +27,7 @@ Deno.test("the check before the memory is allocated is told its size", async () 
   const built = {
     kernelSha256: "ab".repeat(32),
     kernelRev: "r",
-    sealVersion: 1,
+    sealVersion: 2,
     bootSetup: 2,
     imageSha256: "cd".repeat(32),
     pythonSealSha256: null,

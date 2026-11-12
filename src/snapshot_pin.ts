@@ -174,7 +174,7 @@ export type SnapshotContents = {
 };
 /** The seal image version this page's host writes and restores
  * (src/sandbox_snapshot.ts checks it against the host's own type). */
-export const SEAL_VERSION = 1;
+export const SEAL_VERSION = 2;
 
 /** The page's boot setup, as a snapshot records it: bump it when
  * src/boot.ts changes what a boot stages beside the image or how it sets

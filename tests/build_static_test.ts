@@ -251,14 +251,14 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
   const built = {
     kernelSha256: hex("a"),
     kernelRev: "v",
-    sealVersion: 1,
+    sealVersion: 2,
     bootSetup: BOOT_SETUP,
     imageSha256: hex("b"),
     pythonSealSha256: hex("c"),
     pythonSet: "b/python@3.14.7-yurt_0:0123456789abcdef",
   };
   const seal = {
-    version: 1 as const,
+    version: 2 as const,
     kernelToken: 1n,
     kernelMemory: new Uint8Array(64),
     processes: [],
