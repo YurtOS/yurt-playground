@@ -303,14 +303,14 @@ Deno.test("a damaged or missing snapshot file is a problem to report, never a th
   const built = {
     kernelSha256: "a".repeat(64),
     kernelRev: "r",
-    sealVersion: 1,
+    sealVersion: 2,
     bootSetup: 1,
     imageSha256: "b".repeat(64),
     pythonSealSha256: null,
     pythonSet: null,
   };
   const seal = {
-    version: 1 as const,
+    version: 2 as const,
     kernelToken: 1n,
     kernelMemory: new Uint8Array(1 << 16).fill(7),
     processes: [],
@@ -811,7 +811,7 @@ Deno.test("a full check of a snapshot file reads it once", async () => {
   const built = {
     kernelSha256: "a".repeat(64),
     kernelRev: "r",
-    sealVersion: 1,
+    sealVersion: 2,
     bootSetup: 1,
     imageSha256: "b".repeat(64),
     pythonSealSha256: null,
@@ -819,7 +819,7 @@ Deno.test("a full check of a snapshot file reads it once", async () => {
   };
   const file = new Uint8Array(
     await (await encodeSandboxSnapshot({
-      version: 1,
+      version: 2,
       kernelToken: 1n,
       kernelMemory: new Uint8Array(1 << 12),
       processes: [],
@@ -899,7 +899,7 @@ Deno.test("a snapshot release's notes name everything a restore checks", () => {
   const builtFrom = {
     kernelSha256: "k".repeat(64),
     kernelRev: "rev0123",
-    sealVersion: 1,
+    sealVersion: 2,
     bootSetup: 2,
     imageSha256: "i".repeat(64),
     pythonSealSha256: "p".repeat(64),
@@ -952,14 +952,14 @@ Deno.test("a full check of a snapshot file refuses bytes its zip CRC-32 does not
   const built = {
     kernelSha256: "a".repeat(64),
     kernelRev: "r",
-    sealVersion: 1,
+    sealVersion: 2,
     bootSetup: 1,
     imageSha256: "b".repeat(64),
     pythonSealSha256: null,
     pythonSet: null,
   };
   const seal = {
-    version: 1 as const,
+    version: 2 as const,
     kernelToken: 1n,
     kernelMemory: new Uint8Array(1 << 16).fill(7),
     processes: [],

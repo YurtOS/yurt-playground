@@ -8,6 +8,7 @@
     "npm:@xterm/addon-fit@0.10.0": "0.10.0_@xterm+xterm@5.5.0",
     "npm:@xterm/xterm@5.5.0": "5.5.0",
     "npm:fzstd@0.1.1": "0.1.1",
+    "npm:hash-wasm@4.12.0": "4.12.0",
     "npm:playwright@1.55.0": "1.55.0"
   },
   "jsr": {
@@ -51,6 +52,9 @@
     "fzstd@0.1.1": {
       "integrity": "sha512-dkuVSOKKwh3eas5VkJy1AW1vFpet8TA/fGmVA5krThl8YcOVE/8ZIoEA1+U1vEn5ckxxhLirSdY837azmbaNHA=="
     },
+    "hash-wasm@4.12.0": {
+      "integrity": "sha512-+/2B2rYLb48I/evdOIhP+K/DD2ca2fgBjp6O+GBEnCDk2e4rpeXIK8GvIyRPjTezgmWn9gmKwkQjjx6BtqDHVQ=="
+    },
     "playwright-core@1.55.0": {
       "integrity": "sha512-GvZs4vU3U5ro2nZpeiwyb0zuFaqb9sUiAJuyrWpcGouD8y9/HLgGbNRjIph7zU9D3hnPaisMl9zG9CgFi/biIg==",
       "bin": true
@@ -74,6 +78,7 @@
       "npm:@xterm/addon-fit@0.10.0",
       "npm:@xterm/xterm@5.5.0",
       "npm:fzstd@0.1.1",
+      "npm:hash-wasm@4.12.0",
       "npm:playwright@1.55.0"
     ]
   }

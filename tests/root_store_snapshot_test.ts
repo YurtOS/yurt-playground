@@ -48,7 +48,7 @@ import {
 const BUILT: BuiltFrom = {
   kernelSha256: "ab".repeat(32),
   kernelRev: "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
-  sealVersion: 1,
+  sealVersion: 2,
   bootSetup: BOOT_SETUP,
   imageSha256: "cd".repeat(32),
   pythonSealSha256: "ef".repeat(32),
@@ -75,7 +75,7 @@ function bytes(length: number, seed: number): Uint8Array {
 
 function memory(length: number): SandboxSealImage {
   return {
-    version: 1,
+    version: 2,
     kernelToken: 0x1234n,
     kernelMemory: bytes(length, 7),
     processes: [],

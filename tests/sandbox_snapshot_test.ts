@@ -26,7 +26,7 @@ function image(memoryBytes: number): SandboxSealImage {
   const kernelMemory = new Uint8Array(memoryBytes);
   for (let i = 0; i < memoryBytes; i += 4093) kernelMemory[i] = i % 251;
   return {
-    version: 1,
+    version: 2,
     kernelToken: 0xfedcba9876543210n,
     kernelMemory,
     processes: [],
@@ -51,7 +51,7 @@ function image(memoryBytes: number): SandboxSealImage {
 const BUILT: BuiltFrom = {
   kernelSha256: "ab".repeat(32),
   kernelRev: "3d32068f59dcbbffd1aa7a9482e6b5e6f75472b1",
-  sealVersion: 1,
+  sealVersion: 2,
   bootSetup: BOOT_SETUP,
   imageSha256: "cd".repeat(32),
   pythonSealSha256: "ef".repeat(32),
@@ -86,7 +86,7 @@ Deno.test("a sandbox snapshot built from anything else is refused, by name", asy
     pythonSet: "cd/python@3.14.8-yurt_0:fedcba9876543210",
     kernelSha256: "00".repeat(32),
     kernelRev: "0000000",
-    sealVersion: 2,
+    sealVersion: 3,
     bootSetup: BOOT_SETUP + 1,
     imageSha256: "00".repeat(32),
     pythonSealSha256: "00".repeat(32),

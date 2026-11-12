@@ -62,7 +62,7 @@ function image(memoryBytes: number): SandboxSealImage {
     crypto.getRandomValues(kernelMemory.subarray(at, at + 65536));
   }
   return {
-    version: 1,
+    version: 2,
     kernelToken: 1n,
     kernelMemory,
     processes: [],
