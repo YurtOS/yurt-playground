@@ -639,7 +639,6 @@ type KernelRelease =
   | "pending"
   | "failed"
   | "norun"
-  | "lost"
   | "flaky"
   | "slow"
   | "error";
@@ -670,8 +669,8 @@ async function imageStepFixture(
      * (the default); published from the third look on, while the tag
      * push's release-kernel.yml run is in progress (later) or not listed
      * (slow); published after one 502 (flaky); missing (404) while that
-     * run is in progress, failed, absent or succeeded; or its lookup fails
-     * with a 401. */
+     * run is in progress, failed or absent; or its lookup fails with a
+     * 401. */
     kernelRelease?: KernelRelease;
     /** YURT_KERNEL_RELEASE_TIMEOUT_SECS for the script. */
     kernelReleaseTimeout?: string;
@@ -811,10 +810,9 @@ case "$*" in
       error) echo "gh: Bad credentials (HTTP 401)" >&2; exit 1;;
       *) echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
     esac;;
-  "run list --repo YurtOS/yurtos-kernel --workflow release-kernel.yml --branch kernel-v0.0.1 --event push --limit 20 --json status,conclusion,url,headSha --jq "*'"${shas.kernel.main}"'*)
+  "run list --repo YurtOS/yurtos-kernel --workflow release-kernel.yml --branch kernel-v0.0.1 --commit ${shas.kernel.main} --event push --limit 1 --json status,conclusion,url --jq "*)
     case ${kernelRelease} in
       failed) echo "completed failure ${kernelRun}";;
-      lost) echo "completed success ${kernelRun}";;
       norun|slow) ;;
       *) echo "in_progress - ${kernelRun}";;
     esac;;
@@ -1122,7 +1120,7 @@ Deno.test("a new train looks again after a server error on the kernel-v* release
   });
   try {
     assertEquals(f.code, 0, f.output);
-    assertStringIncludes(f.output, "HTTP 502");
+    assertStringIncludes(f.output, "release: gh: Server Error (HTTP 502)");
     assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
   } finally {
     await f.cleanup();
@@ -1130,31 +1128,25 @@ Deno.test("a new train looks again after a server error on the kernel-v* release
 });
 
 // [kernelRelease, how the test names it, YURT_KERNEL_RELEASE_TIMEOUT_SECS,
-// what the stop says]. The default timeout (30 minutes) leaves the stops
-// that come sooner to fire: the stub gh answers at once and the script
-// does not sleep between looks.
+// what the stop says].
 for (
   const [kernelRelease, why, timeout, says] of [
     ["pending", "is still unpublished at the timeout", "0", [
       "not published after 0s",
+      "release: gh: Not Found (HTTP 404)",
       `release-kernel.yml: in_progress - ${kernelRun}`,
       "--resume --train",
     ]],
-    ["failed", "has a failed run", undefined, [
-      "ended failure",
-      kernelRun,
+    ["norun", "has no run at the timeout", "0", [
+      "release-kernel.yml: no run yet",
       "--resume --train",
     ]],
-    ["norun", "has no run", undefined, [
-      "no release-kernel.yml run for the push of kernel-v0.0.1",
+    ["error", "cannot be looked up at the timeout", "0", [
+      "release: gh: Bad credentials (HTTP 401)",
       "--resume --train",
     ]],
-    ["lost", "has a successful run but no release", undefined, [
-      `succeeded (${kernelRun}) but published no release`,
-      "--resume --train",
-    ]],
-    ["error", "cannot be looked up", undefined, [
-      "HTTP 401",
+    ["failed", "has a failed run", "0", [
+      `ended failure (${kernelRun})`,
       "--resume --train",
     ]],
     ["pending", "wait is given a bad timeout", "30m", [

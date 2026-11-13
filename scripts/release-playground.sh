@@ -44,8 +44,7 @@
 #                   The kernel commit needs a kernel-v* tag; [1] waits (30
 #                   minutes, YURT_KERNEL_RELEASE_TIMEOUT_SECS) for the tag's
 #                   release to be published, and stops sooner when the
-#                   tag push's release-kernel.yml run failed, or when 2
-#                   minutes pass with neither a release nor a run building one
+#                   tag push's release-kernel.yml run failed
 #   --image-release pin this playground-image release instead of building
 #                   one ([2] is skipped; the pythonSeal pin is carried
 #                   through unchanged unless --python-seal-release names a
