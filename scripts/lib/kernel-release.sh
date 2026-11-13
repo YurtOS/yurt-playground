@@ -40,18 +40,26 @@ resolve_kernel_release() {
 # printed as it changes, and the stop names the last one.
 wait_for_kernel_release() {
   local tag=$1 sha=$2 timeout=${YURT_KERNEL_RELEASE_TIMEOUT_SECS:-1800}
-  local start=$SECONDS release run state shown=""
-  [[ "$timeout" =~ ^[0-9]+$ ]] || die "YURT_KERNEL_RELEASE_TIMEOUT_SECS must be a whole number of seconds"
+  local start=$SECONDS release run state shown="" err
+  [[ "$timeout" =~ ^[0-9]+$ ]] \
+    || die "YURT_KERNEL_RELEASE_TIMEOUT_SECS must be a whole number of seconds; set it so, then $(resume_command)"
+  # gh's stderr, apart from its output: a 404 prints the error's JSON body
+  # on stdout, and a debug or warning line can come with any answer.
+  err=$(mktemp)
   while :; do
     # The check yurt-sandbox's workflow makes; a tag with no published
     # release is a 404.
-    release=$(gh api "repos/YurtOS/yurtos-kernel/releases/tags/$tag" --jq .draft 2>&1) \
-      && [ "$release" = false ] && return
-    # The run of the tag's push at SHA: not a build-only workflow_dispatch
-    # on the tag, nor the run of an earlier push of the same tag.
+    if release=$(gh api "repos/YurtOS/yurtos-kernel/releases/tags/$tag" --jq .draft 2>"$err"); then
+      [ "$release" = false ] && { rm -f "$err"; return; }
+    else
+      release=$(cat "$err")
+    fi
+    # The tag push's run at SHA, not a build-only workflow_dispatch on
+    # the tag.
     run=$(gh run list --repo YurtOS/yurtos-kernel --workflow release-kernel.yml --branch "$tag" \
       --commit "$sha" --event push --limit 1 --json status,conclusion,url \
-      --jq '.[0] // empty | "\(.status) \(.conclusion // "" | if . == "" then "-" else . end) \(.url)"' 2>&1) || run="lookup failed: $run"
+      --jq '.[0] // empty | "\(.status) \(.conclusion // "" | if . == "" then "-" else . end) \(.url)"' 2>"$err") \
+      || run="lookup failed: $(cat "$err")"
     case $run in
       "completed success "*) ;;
       "completed "*)

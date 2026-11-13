@@ -805,10 +805,10 @@ case "$*" in
     echo "$n" > "${dir}/release-looks"
     case ${kernelRelease} in
       published) echo false;;
-      later|slow) if [ "$n" -ge 3 ]; then echo false; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi;;
+      later|slow) if [ "$n" -ge 3 ]; then echo "a gh warning on stderr" >&2; echo false; else echo '{"message":"Not Found","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi;;
       flaky) if [ "$n" -ge 2 ]; then echo false; else echo "gh: Server Error (HTTP 502)" >&2; exit 1; fi;;
       error) echo "gh: Bad credentials (HTTP 401)" >&2; exit 1;;
-      *) echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
+      *) echo '{"message":"Not Found","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
     esac;;
   "run list --repo YurtOS/yurtos-kernel --workflow release-kernel.yml --branch kernel-v0.0.1 --commit ${shas.kernel.main} --event push --limit 1 --json status,conclusion,url --jq "*)
     case ${kernelRelease} in
