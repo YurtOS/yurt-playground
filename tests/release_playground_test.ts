@@ -633,6 +633,17 @@ async function writePinnedCli(root: string) {
   );
 }
 
+type KernelRelease =
+  | "published"
+  | "later"
+  | "pending"
+  | "failed"
+  | "norun"
+  | "flaky"
+  | "slow"
+  | "error";
+const kernelRun = "https://github.com/YurtOS/yurtos-kernel/actions/runs/9";
+
 async function imageStepFixture(
   opts: {
     validate: 0 | 1;
@@ -654,6 +665,15 @@ async function imageStepFixture(
     yurtCli?: unknown;
     /** Stop where [4] starts and print the CLI it would pin. */
     stopAtPins?: boolean;
+    /** yurtos-kernel's release of the kernel's kernel-v* tag: published
+     * (the default); published from the third look on, while the tag
+     * push's release-kernel.yml run is in progress (later) or not listed
+     * (slow); published after one 502 (flaky); missing (404) while that
+     * run is in progress, failed or absent; or its lookup fails with a
+     * 401. */
+    kernelRelease?: KernelRelease;
+    /** YURT_KERNEL_RELEASE_TIMEOUT_SECS for the script. */
+    kernelReleaseTimeout?: string;
   },
 ) {
   const sandbox = opts.sandbox ?? "main";
@@ -759,6 +779,7 @@ async function imageStepFixture(
     });
   }
   const log = join(dir, "gh.log");
+  const kernelRelease = opts.kernelRelease ?? "published";
   await Deno.writeTextFile(
     join(bin, "gh"),
     `#!/bin/bash
@@ -779,6 +800,22 @@ case "$*" in
   "api repos/YurtOS/"*"/git/refs/heads/"*)
     repo=\${2#repos/YurtOS/}; repo=\${repo%%/*}
     [ -d "${refs}/\$repo/\${2#repos/YurtOS/*/git/refs/heads/}" ];;
+  "api repos/YurtOS/yurtos-kernel/releases/tags/kernel-v0.0.1 --jq .draft")
+    n=$(($(cat "${dir}/release-looks" 2>/dev/null || echo 0) + 1))
+    echo "$n" > "${dir}/release-looks"
+    case ${kernelRelease} in
+      published) echo false;;
+      later|slow) if [ "$n" -ge 3 ]; then echo "a gh warning on stderr" >&2; echo false; else echo '{"message":"Not Found","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi;;
+      flaky) if [ "$n" -ge 2 ]; then echo false; else echo "gh: Server Error (HTTP 502)" >&2; exit 1; fi;;
+      error) echo "gh: Bad credentials (HTTP 401)" >&2; exit 1;;
+      *) echo '{"message":"Not Found","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
+    esac;;
+  "run list --repo YurtOS/yurtos-kernel --workflow release-kernel.yml --branch kernel-v0.0.1 --commit ${shas.kernel.main} --event push --limit 1 --json status,conclusion,url --jq "*)
+    case ${kernelRelease} in
+      failed) echo "a gh warning on stderr" >&2; echo "completed failure ${kernelRun}";;
+      norun|slow) ;;
+      *) echo "in_progress - ${kernelRun}";;
+    esac;;
   "workflow run"*) ;;
   "run list"*) echo 456;;
   "run watch"*) ${opts.failKernelRun ? "exit 1" : "exit 0"};;
@@ -811,6 +848,9 @@ esac
         YURT_KERNEL_ROOT: join(dir, "kernel"),
         YURT_PORTS_ROOT: join(dir, "ports"),
         YURT_SANDBOX_ROOT: join(dir, opts.sandboxRoot ?? "sandbox"),
+        ...(opts.kernelReleaseTimeout !== undefined
+          ? { YURT_KERNEL_RELEASE_TIMEOUT_SECS: opts.kernelReleaseTimeout }
+          : {}),
       },
     },
   );
@@ -1019,6 +1059,120 @@ Deno.test("a new rehearsal of a sandbox commit off main records the validate bra
     await f.cleanup();
   }
 });
+
+Deno.test("a new train waits for the kernel-v* release before dispatching [1]", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    kernelRelease: "later",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    const looks = f.calls.filter((c) =>
+      c.startsWith(
+        "api repos/YurtOS/yurtos-kernel/releases/tags/kernel-v0.0.1 ",
+      )
+    );
+    assertEquals(looks.length, 3, f.calls.join("\n"));
+    // Every look comes before [1]'s dispatch.
+    const firstDispatch = f.calls.findIndex((c) =>
+      c.startsWith("workflow run")
+    );
+    assertEquals(
+      f.calls.lastIndexOf(looks[2]) < firstDispatch,
+      true,
+      f.calls.join("\n"),
+    );
+    assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+    // One line for the run's state, not one per look.
+    assertEquals(f.output.split("waiting for yurtos-kernel").length - 1, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new train gives the kernel-v* release's run time to appear", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    kernelRelease: "slow",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    assertStringIncludes(f.output, "release-kernel.yml: no run yet");
+    assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new train looks again after a server error on the kernel-v* release", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    kernelRelease: "flaky",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    assertStringIncludes(f.output, "release: gh: Server Error (HTTP 502)");
+    assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+// [kernelRelease, how the test names it, YURT_KERNEL_RELEASE_TIMEOUT_SECS,
+// what the stop says].
+for (
+  const [kernelRelease, why, timeout, says] of [
+    ["pending", "is still unpublished at the timeout", "0", [
+      "not published after 0s",
+      "release: gh: Not Found (HTTP 404)",
+      `release-kernel.yml: in_progress - ${kernelRun}`,
+      "--resume --train",
+    ]],
+    ["norun", "has no run at the timeout", "0", [
+      "release-kernel.yml: no run yet",
+      "--resume --train",
+    ]],
+    ["error", "cannot be looked up at the timeout", "0", [
+      "release: gh: Bad credentials (HTTP 401)",
+      "--resume --train",
+    ]],
+    ["failed", "has a failed run", "0", [
+      `ended failure (${kernelRun})`,
+      "--resume --train",
+    ]],
+    ["pending", "wait is given a bad timeout", "30m", [
+      "YURT_KERNEL_RELEASE_TIMEOUT_SECS must be a whole number",
+      "--resume --train",
+    ]],
+  ] as [KernelRelease, string, string | undefined, string[]][]
+) {
+  Deno.test(`a new train stops before [1] when the kernel-v* release ${why}`, async () => {
+    const f = await imageStepFixture({
+      validate: 0,
+      ports: "main",
+      kernel: "main",
+      fresh: true,
+      kernelRelease,
+      kernelReleaseTimeout: timeout,
+    });
+    try {
+      assertEquals(f.code, 1, f.output);
+      for (const text of says) assertStringIncludes(f.output, text);
+      assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
 
 Deno.test("a new rehearsal stops while yurt-sandbox still has its validate branch", async () => {
   const f = await imageStepFixture({
