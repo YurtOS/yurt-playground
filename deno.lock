@@ -6,6 +6,7 @@
     "npm:@xterm/addon-fit@0.10.0": "0.10.0_@xterm+xterm@5.5.0",
     "npm:@xterm/addon-unicode11@0.8.0": "0.8.0_@xterm+xterm@5.5.0",
     "npm:@xterm/addon-webgl@0.18.0": "0.18.0_@xterm+xterm@5.5.0",
+    "npm:@xterm/headless@5.5.0": "5.5.0",
     "npm:@xterm/xterm@5.5.0": "5.5.0",
     "npm:fzstd@0.1.1": "0.1.1",
     "npm:playwright@1.55.0": "1.55.0"
@@ -39,6 +40,9 @@
       "dependencies": [
         "@xterm/xterm"
       ]
+    },
+    "@xterm/headless@5.5.0": {
+      "integrity": "sha512-5xXB7kdQlFBP82ViMJTwwEc3gKCLGKR/eoxQm4zge7GPBl86tCdI0IdPJjoKd8mUSFXz5V7i/25sfsEkP4j46g=="
     },
     "@xterm/xterm@5.5.0": {
       "integrity": "sha512-hqJHYaQb5OptNunnyAnkHyM8aCjZ1MEIDTQu1iIbbTD/xops91NB5yq1ZK/dC2JDbVWtF23zUtl9JE2NqwT87A=="
