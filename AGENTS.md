@@ -1,7 +1,8 @@
 # Agent Instructions — yurt-playground
 
 Org-wide rules: read [docs/agents/org.md](docs/agents/org.md) first; this file
-adds what is specific to this repository.
+adds what is specific to this repository. Its hosted CI budget is
+[Hosted CI budget during draft review](#hosted-ci-budget-during-draft-review).
 
 Canonical instructions for AI coding agents (Claude Code, Codex, etc.) working
 in this repo. `CLAUDE.md` points here.
@@ -107,6 +108,39 @@ playground, jupyterlite, slim); they run on every push to main. Add the
 `ci:full` label to a pull request that changes what they cover (the boot, the
 terminal, the notebook pages, the slim image) so they run before the merge, and
 check main's run after merging one without it.
+
+### Hosted CI budget during draft review
+
+This is the hosted CI budget that org.md's "Hosted CI cost during PR review"
+defers to for this repository, modeled on
+[yurtos-kernel's](https://github.com/YurtOS/yurtos-kernel/blob/main/docs/contributing/gates.md#manual-ci-budget-during-draft-review):
+**at most one hand-triggered merge-tier round per draft PR, at its final head.**
+A round is one `ci.yml` run of the merge-tier acceptance scenes (`MERGE_TIER`)
+at the reviewed head, started by adding `ci:full` or by one `workflow_dispatch`
+of `ci.yml` on the PR branch. It is not a separate budget for every review
+round.
+
+- Between review rounds, use the pull request tier every push already runs
+  (fmt/lint, the test shards, the other acceptance scenes) and local tests
+  narrowed to what changed. Do not add `ci:full` or dispatch `ci.yml` after each
+  round. While `ci:full` is on, every push reruns the merge tier, so add it only
+  for the final round and take it off before any push that is not the fix for a
+  failed final round. Adding any other label also starts a run, so leave labels
+  alone during review.
+- Complete the last fix, its review and the local checks before spending the
+  round. Check for existing runs at that exact head rather than duplicating
+  in-progress or successful coverage. Marking a PR ready runs nothing extra.
+- If that final round fails, fix the failure, review the delta and pass the
+  local checks before running once more at the corrected final head. Repeat this
+  only for an actual failed final round; a successful run does not authorize
+  speculative reruns.
+- A preview deploy (`deploy-pages.yml` with `ref`, see `docs/MAINTAINING.md`) is
+  not CI: dispatch one only when the user asks or the change needs a real-device
+  check, once, at the final head. `regenerate-jupyter-payload.yml` and
+  `release-desktop.yml` belong to releases, not draft review.
+- This applies to every session and any agents or subagents it starts. Put a
+  link to this section and the instruction to follow it in their briefs,
+  including reviewer briefs.
 
 ## Development procedure (non-trivial work)
 
