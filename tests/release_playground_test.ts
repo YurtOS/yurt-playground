@@ -654,6 +654,12 @@ async function imageStepFixture(
     yurtCli?: unknown;
     /** Stop where [4] starts and print the CLI it would pin. */
     stopAtPins?: boolean;
+    /** The yurtos-kernel release for the kernel's kernel-v* tag: published
+     * (the default), published from the third look on, a draft, or
+     * missing with its release-kernel.yml run failed. */
+    kernelRelease?: "published" | "later" | "draft" | "failed";
+    /** YURT_KERNEL_RELEASE_TIMEOUT_SECS for the script. */
+    kernelReleaseTimeout?: string;
   },
 ) {
   const sandbox = opts.sandbox ?? "main";
@@ -779,6 +785,20 @@ case "$*" in
   "api repos/YurtOS/"*"/git/refs/heads/"*)
     repo=\${2#repos/YurtOS/}; repo=\${repo%%/*}
     [ -d "${refs}/\$repo/\${2#repos/YurtOS/*/git/refs/heads/}" ];;
+  "api repos/YurtOS/yurtos-kernel/releases/tags/"*)
+    n=$(($(cat "${dir}/release-looks" 2>/dev/null || echo 0) + 1))
+    echo "$n" > "${dir}/release-looks"
+    case ${opts.kernelRelease ?? "published"} in
+      published) echo false;;
+      later) if [ "$n" -ge 3 ]; then echo false; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi;;
+      draft) echo true;;
+      failed) echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
+    esac;;
+  "run list --repo YurtOS/yurtos-kernel "*)
+    case ${opts.kernelRelease ?? "published"} in
+      failed) echo "completed failure https://github.com/YurtOS/yurtos-kernel/actions/runs/9";;
+      *) echo "in_progress  https://github.com/YurtOS/yurtos-kernel/actions/runs/9";;
+    esac;;
   "workflow run"*) ;;
   "run list"*) echo 456;;
   "run watch"*) ${opts.failKernelRun ? "exit 1" : "exit 0"};;
@@ -811,6 +831,9 @@ esac
         YURT_KERNEL_ROOT: join(dir, "kernel"),
         YURT_PORTS_ROOT: join(dir, "ports"),
         YURT_SANDBOX_ROOT: join(dir, opts.sandboxRoot ?? "sandbox"),
+        ...(opts.kernelReleaseTimeout !== undefined
+          ? { YURT_KERNEL_RELEASE_TIMEOUT_SECS: opts.kernelReleaseTimeout }
+          : {}),
       },
     },
   );
@@ -1015,6 +1038,79 @@ Deno.test("a new rehearsal of a sandbox commit off main records the validate bra
     assertStringIncludes(native, "-f publish=false");
     assertEquals(f.leftBranches, 0, "the validate branch was not deleted");
     assertEquals(f.stateLeft, false, "a finished rehearsal left its state");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new train waits for the kernel-v* release before dispatching [1]", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    kernelRelease: "later",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    const looks = f.calls.filter((c) =>
+      c.startsWith(
+        "api repos/YurtOS/yurtos-kernel/releases/tags/kernel-v0.0.1 ",
+      )
+    );
+    assertEquals(looks.length, 3, f.calls.join("\n"));
+    // Every look comes before [1]'s dispatch.
+    const firstDispatch = f.calls.findIndex((c) =>
+      c.startsWith("workflow run")
+    );
+    assertEquals(
+      f.calls.lastIndexOf(looks[2]) < firstDispatch,
+      true,
+      f.calls.join("\n"),
+    );
+    assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new train stops before [1] when the kernel-v* release stays a draft", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    kernelRelease: "draft",
+    kernelReleaseTimeout: "0",
+  });
+  try {
+    assertEquals(f.code, 1, f.output);
+    assertStringIncludes(f.output, "kernel-v0.0.1");
+    assertStringIncludes(f.output, "not published");
+    assertStringIncludes(f.output, "--resume --train");
+    assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new train stops before [1] and says so when the kernel's release-kernel.yml run failed", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    kernelRelease: "failed",
+  });
+  try {
+    assertEquals(f.code, 1, f.output);
+    assertStringIncludes(f.output, "release-kernel.yml");
+    assertStringIncludes(f.output, "failure");
+    assertStringIncludes(
+      f.output,
+      "https://github.com/YurtOS/yurtos-kernel/actions/runs/9",
+    );
+    assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
   } finally {
     await f.cleanup();
   }
