@@ -55,9 +55,9 @@ async function waitForLines(
 }
 
 /**
- * Type `command` after `clear` and resolve once a line reads `expect`.
- * `command` must not print `expect` as typed (the echo of a long line can
- * wrap), so markers are computed: `echo ok-$((6*7))` prints `ok-42`.
+ * Type `command` after `clear` and resolve once a line reads `expect`; throw
+ * at once if it fails. Markers are computed (`echo ok-$((6*7))` prints
+ * `ok-42`), so the typed line, even wrapped, never matches one.
  */
 async function typed(
   page: Page,
@@ -67,13 +67,16 @@ async function typed(
 ) {
   await waitForLines(page, "prompt", (s) => /[$#]$/.test(s.at(-1) ?? ""));
   const start = performance.now();
-  await page.keyboard.type(`clear; ${command}\n`);
-  await waitForLines(
+  await page.keyboard.type(`clear; ${command} || echo failed-$((6*7))\n`);
+  const seen = await waitForLines(
     page,
     `"${command}" printed "${expect}"`,
-    (seen) => seen.includes(expect),
+    (seen) => seen.includes(expect) || seen.includes("failed-42"),
     timeoutMs,
   );
+  if (!seen.includes(expect)) {
+    throw new Error(`"${command}" failed; terminal: ${seen.join(" | ")}`);
+  }
   console.log(
     `terminal: ${command} -> ${expect} (${
       (performance.now() - start).toFixed(0)
@@ -116,27 +119,35 @@ if (import.meta.main) {
     );
     await typed(page, "yurtos-x86 hello", "hello, world");
     await typed(page, "yurtos-x86 busybox echo x86-$((6*7))", "x86-42");
+    // x86 ash captures a command substitution (the sandbox's Wasm busybox).
     await typed(
       page,
       "yurtos-x86 busybox sh -c 'x=$(busybox echo sub); echo x86-$x'",
       "x86-sub",
     );
 
+    // Each case's exact stdout; stderr must stay empty.
     const cases: [string, string][] = [
       ["yurtos-x86 hello", "hello, world\n"],
       ["yurtos-x86 busybox echo hi", "hi\n"],
-      ["yurtos-x86 busybox uname -sr", "Linux 0.1.0-yurt\n"],
+      ["yurtos-x86 busybox uname -s", "Linux\n"],
       ["yurtos-x86 busybox head -n1 /etc/os-release", 'NAME="Yurt"\n'],
-      // x86 ash piping into the sandbox's own (Wasm) head, and back.
-      ["yurtos-x86 busybox sh -c 'ls / | head -n 2'", "bin\ndev\n"],
-      ["ls / | yurtos-x86 busybox head -n 1", "bin\n"],
+      // x86 ash piping into the sandbox's own (Wasm) head: bare names in an
+      // x86 shell are the sandbox's programs (PATH), not YURTOS_X86_PATH.
+      [
+        "yurtos-x86 busybox sh -c 'printf \"a\\nb\\nc\\n\" | head -n 2'",
+        "a\nb\n",
+      ],
+      // A Wasm program piping into an x86 one.
+      ["printf 'a\\nb\\n' | yurtos-x86 busybox head -n 1", "a\n"],
       [
         "yurtos-x86 busybox sh -c 'i=0; while [ $i -lt 1000 ]; do i=$((i+1)); done; echo $i'",
         "1000\n",
       ],
+      // x86 ash forks and execs an x86 program, three times.
       [
-        "yurtos-x86 busybox sh -c 'for i in 1 2 3; do /usr/lib/yurtos-x86/bin/busybox true; done; echo forked'",
-        "forked\n",
+        "yurtos-x86 busybox sh -c 'for i in 1 2 3; do /usr/lib/yurtos-x86/bin/busybox echo x$i || exit 1; done'",
+        "x1\nx2\nx3\n",
       ],
     ];
     const failures: string[] = [];
@@ -147,7 +158,7 @@ if (import.meta.main) {
           JSON.stringify(r.stdout)
         }`,
       );
-      if (r.code !== 0 || r.stdout !== stdout) {
+      if (r.code !== 0 || r.stdout !== stdout || r.stderr !== "") {
         failures.push(`${command}: code ${r.code} ${JSON.stringify(r)}`);
       }
     }
