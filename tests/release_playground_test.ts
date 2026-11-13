@@ -812,7 +812,7 @@ case "$*" in
     esac;;
   "run list --repo YurtOS/yurtos-kernel --workflow release-kernel.yml --branch kernel-v0.0.1 --commit ${shas.kernel.main} --event push --limit 1 --json status,conclusion,url --jq "*)
     case ${kernelRelease} in
-      failed) echo "completed failure ${kernelRun}";;
+      failed) echo "a gh warning on stderr" >&2; echo "completed failure ${kernelRun}";;
       norun|slow) ;;
       *) echo "in_progress - ${kernelRun}";;
     esac;;
@@ -1151,6 +1151,7 @@ for (
     ]],
     ["pending", "wait is given a bad timeout", "30m", [
       "YURT_KERNEL_RELEASE_TIMEOUT_SECS must be a whole number",
+      "--resume --train",
     ]],
   ] as [KernelRelease, string, string | undefined, string[]][]
 ) {
