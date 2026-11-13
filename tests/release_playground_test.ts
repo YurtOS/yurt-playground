@@ -640,6 +640,8 @@ type KernelRelease =
   | "failed"
   | "norun"
   | "lost"
+  | "flaky"
+  | "slow"
   | "error";
 const kernelRun = "https://github.com/YurtOS/yurtos-kernel/actions/runs/9";
 
@@ -665,9 +667,11 @@ async function imageStepFixture(
     /** Stop where [4] starts and print the CLI it would pin. */
     stopAtPins?: boolean;
     /** yurtos-kernel's release of the kernel's kernel-v* tag: published
-     * (the default), published from the third look on, or missing (404)
-     * while the tag push's release-kernel.yml run is in progress, failed,
-     * absent, or succeeded; or its lookup fails with a 401. */
+     * (the default); published from the third look on, while the tag
+     * push's release-kernel.yml run is in progress (later) or not listed
+     * (slow); published after one 502 (flaky); missing (404) while that
+     * run is in progress, failed, absent or succeeded; or its lookup fails
+     * with a 401. */
     kernelRelease?: KernelRelease;
     /** YURT_KERNEL_RELEASE_TIMEOUT_SECS for the script. */
     kernelReleaseTimeout?: string;
@@ -802,16 +806,17 @@ case "$*" in
     echo "$n" > "${dir}/release-looks"
     case ${kernelRelease} in
       published) echo false;;
-      later) if [ "$n" -ge 3 ]; then echo false; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi;;
+      later|slow) if [ "$n" -ge 3 ]; then echo false; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi;;
+      flaky) if [ "$n" -ge 2 ]; then echo false; else echo "gh: Server Error (HTTP 502)" >&2; exit 1; fi;;
       error) echo "gh: Bad credentials (HTTP 401)" >&2; exit 1;;
       *) echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
     esac;;
-  "run list --repo YurtOS/yurtos-kernel --workflow release-kernel.yml --branch kernel-v0.0.1 --event push --limit 1 --json status,conclusion,url "*)
+  "run list --repo YurtOS/yurtos-kernel --workflow release-kernel.yml --branch kernel-v0.0.1 --event push --limit 20 --json status,conclusion,url,headSha --jq "*'"${shas.kernel.main}"'*)
     case ${kernelRelease} in
       failed) echo "completed failure ${kernelRun}";;
       lost) echo "completed success ${kernelRun}";;
-      norun) ;;
-      *) echo "in_progress ${kernelRun}";;
+      norun|slow) ;;
+      *) echo "in_progress - ${kernelRun}";;
     esac;;
   "workflow run"*) ;;
   "run list"*) echo 456;;
@@ -1083,25 +1088,79 @@ Deno.test("a new train waits for the kernel-v* release before dispatching [1]", 
       f.calls.join("\n"),
     );
     assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+    // One line for the run's state, not one per look.
+    assertEquals(f.output.split("waiting for yurtos-kernel").length - 1, 1);
   } finally {
     await f.cleanup();
   }
 });
 
+Deno.test("a new train gives the kernel-v* release's run time to appear", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    kernelRelease: "slow",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    assertStringIncludes(f.output, "release-kernel.yml: no run yet");
+    assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new train looks again after a server error on the kernel-v* release", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    kernelRelease: "flaky",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    assertStringIncludes(f.output, "HTTP 502");
+    assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+// [kernelRelease, how the test names it, YURT_KERNEL_RELEASE_TIMEOUT_SECS,
+// what the stop says]. The default timeout (30 minutes) leaves the stops
+// that come sooner to fire: the stub gh answers at once and the script
+// does not sleep between looks.
 for (
-  const [kernelRelease, why, says] of [
-    ["pending", "is still unpublished at the timeout", [
+  const [kernelRelease, why, timeout, says] of [
+    ["pending", "is still unpublished at the timeout", "0", [
       "not published after 0s",
-      `release-kernel.yml: in_progress ${kernelRun}`,
+      `release-kernel.yml: in_progress - ${kernelRun}`,
+      "--resume --train",
     ]],
-    ["failed", "has a failed run", ["ended failure", kernelRun]],
-    ["norun", "has no run", ["no release-kernel.yml run"]],
-    ["lost", "has a successful run but no release", [
-      "succeeded",
-      "published no release",
+    ["failed", "has a failed run", undefined, [
+      "ended failure",
+      kernelRun,
+      "--resume --train",
     ]],
-    ["error", "cannot be looked up", ["could not look up", "HTTP 401"]],
-  ] as [KernelRelease, string, string[]][]
+    ["norun", "has no run", undefined, [
+      "no release-kernel.yml run for the push of kernel-v0.0.1",
+      "--resume --train",
+    ]],
+    ["lost", "has a successful run but no release", undefined, [
+      `succeeded (${kernelRun}) but published no release`,
+      "--resume --train",
+    ]],
+    ["error", "cannot be looked up", undefined, [
+      "HTTP 401",
+      "--resume --train",
+    ]],
+    ["pending", "wait is given a bad timeout", "30m", [
+      "YURT_KERNEL_RELEASE_TIMEOUT_SECS must be a whole number",
+    ]],
+  ] as [KernelRelease, string, string | undefined, string[]][]
 ) {
   Deno.test(`a new train stops before [1] when the kernel-v* release ${why}`, async () => {
     const f = await imageStepFixture({
@@ -1110,15 +1169,11 @@ for (
       kernel: "main",
       fresh: true,
       kernelRelease,
-      kernelReleaseTimeout: "0",
+      kernelReleaseTimeout: timeout,
     });
     try {
       assertEquals(f.code, 1, f.output);
-      assertStringIncludes(f.output, "kernel-v0.0.1");
       for (const text of says) assertStringIncludes(f.output, text);
-      if (kernelRelease !== "error") {
-        assertStringIncludes(f.output, "--resume --train");
-      }
       assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
     } finally {
       await f.cleanup();

@@ -31,52 +31,68 @@ resolve_kernel_release() {
   printf '%s\n' "${matches[@]}" | sort -V | tail -1
 }
 
-# Whether yurtos-kernel has published its release of TAG, by the check
-# yurt-sandbox's release-kernel-wasm.yml makes. GitHub answers 404 for a
-# tag with no published release; any other error stops the train.
-kernel_release_published() {
-  local tag=$1 err draft msg
+# kernel_gh ARGS...: run gh, its output in kernel_gh_out. On failure,
+# status 1 for an HTTP 404, 2 for an error worth another look (a 429, a
+# 5xx, no answer at all), and a stop for any other.
+kernel_gh() {
+  local err msg
   err=$(mktemp)
-  if draft=$(gh api "repos/YurtOS/yurtos-kernel/releases/tags/$tag" --jq .draft 2>"$err"); then
+  if kernel_gh_out=$(gh "$@" 2>"$err"); then
     rm -f "$err"
-    [ "$draft" = false ]
-    return
+    return 0
   fi
   msg=$(cat "$err")
   rm -f "$err"
-  case $msg in *"HTTP 404"*) return 1 ;; esac
-  die "could not look up yurtos-kernel's release of $tag: $msg"
+  case $msg in
+    *"HTTP 404"*) return 1 ;;
+    *"HTTP 429"* | *"HTTP 5"[0-9][0-9]*) ;;
+    *"HTTP "[0-9][0-9][0-9]*) die "gh $1 $2 failed: $msg; fix it, then $(resume_command)" ;;
+  esac
+  say "gh $1 $2 failed, looking again: $msg"
+  return 2
 }
 
-# Wait for yurtos-kernel's release of TAG: pushing a kernel-v* tag starts
-# release-kernel.yml, which takes minutes to publish it, and yurt-sandbox's
-# release-kernel-wasm.yml fails on a tag with no release yet (#326). Stops
-# when the tag's run ends without a release, when no run has started after
-# 2 minutes (the tag push started none), and after
-# YURT_KERNEL_RELEASE_TIMEOUT_SECS (30 minutes) in any case.
+# Wait for yurtos-kernel's release of TAG (at SHA): pushing a kernel-v*
+# tag starts release-kernel.yml, which takes minutes to publish it, and
+# yurt-sandbox's release-kernel-wasm.yml fails on a tag with no release yet
+# (#326). The release is looked up the way that workflow does. Stops when
+# the push's run fails, when 24 looks (2 minutes) find no run in progress
+# and no release, and after YURT_KERNEL_RELEASE_TIMEOUT_SECS (30 minutes)
+# in any case.
 wait_for_kernel_release() {
-  local tag=$1 timeout=${YURT_KERNEL_RELEASE_TIMEOUT_SECS:-1800} start=$SECONDS run shown=-
+  local tag=$1 sha=$2 timeout=${YURT_KERNEL_RELEASE_TIMEOUT_SECS:-1800}
+  local start=$SECONDS idle=0 run="" shown=- rc
   [[ "$timeout" =~ ^[0-9]+$ ]] || die "YURT_KERNEL_RELEASE_TIMEOUT_SECS must be a whole number of seconds"
-  while ! kernel_release_published "$tag"; do
-    # The tag push's run, not a build-only workflow_dispatch on the tag.
-    run=$(gh run list --repo YurtOS/yurtos-kernel --workflow release-kernel.yml --branch "$tag" \
-      --event push --limit 1 --json status,conclusion,url \
-      --jq '.[0] // empty | [.status, .conclusion, .url] | map(select(. != "" and . != null)) | join(" ")') \
-      || die "could not list yurtos-kernel's release-kernel.yml runs for $tag"
-    case $run in
-      "completed success "*)
-        kernel_release_published "$tag" && return
-        die "yurtos-kernel release-kernel.yml for $tag succeeded (${run##* }) but published no release; publish it, then $(resume_command)" ;;
-      "completed "*)
-        run=${run#completed }
-        die "yurtos-kernel release-kernel.yml for $tag ended ${run%% *} (${run#* }), so it has no release; fix it, then $(resume_command)" ;;
-      "")
-        [ $((SECONDS - start)) -lt 120 ] && [ $((SECONDS - start)) -lt "$timeout" ] \
-          || die "yurtos-kernel has no release-kernel.yml run for the push of $tag, so no release is coming; push the tag again, then $(resume_command)" ;;
-    esac
+  while :; do
+    rc=0
+    kernel_gh api "repos/YurtOS/yurtos-kernel/releases/tags/$tag" --jq .draft || rc=$?
+    [ "$rc" = 0 ] && [ "$kernel_gh_out" = false ] && return
+    # The run of the tag's push at SHA: not a build-only workflow_dispatch
+    # on the tag, nor the run of an earlier push of the same tag.
+    rc=0
+    kernel_gh run list --repo YurtOS/yurtos-kernel --workflow release-kernel.yml --branch "$tag" \
+      --event push --limit 20 --json status,conclusion,url,headSha \
+      --jq '[.[] | select(.headSha == "'"$sha"'")][0] // empty
+        | "\(.status) \(if (.conclusion // "") == "" then "-" else .conclusion end) \(.url)"' || rc=$?
+    [ "$rc" = 1 ] && die "yurtos-kernel has no release-kernel.yml workflow to publish $tag"
+    if [ "$rc" = 0 ]; then
+      run=$kernel_gh_out
+      case $run in
+        "completed success "* | "") idle=$((idle + 1)) ;;
+        "completed "*)
+          run=${run#completed }
+          die "yurtos-kernel release-kernel.yml for $tag ended ${run%% *} (${run#* }), so it has no release; fix it, then $(resume_command)" ;;
+        *) idle=0 ;;
+      esac
+    fi
+    if [ "$idle" -ge 24 ]; then
+      [ -n "$run" ] \
+        && die "yurtos-kernel release-kernel.yml for $tag succeeded (${run##* }) but published no release; publish it, then $(resume_command)"
+      die "yurtos-kernel has no release-kernel.yml run for the push of $tag at ${sha:0:7}, so no release is coming; publish it, then $(resume_command)"
+    fi
     [ $((SECONDS - start)) -lt "$timeout" ] \
-      || die "yurtos-kernel's release of $tag is not published after ${timeout}s (release-kernel.yml: $run); once it is, $(resume_command)"
-    [ "$run" = "$shown" ] || say "waiting for yurtos-kernel's release of $tag (${run:-no release-kernel.yml run yet})"
+      || die "yurtos-kernel's release of $tag is not published after ${timeout}s (release-kernel.yml: ${run:-no run}); once it is, $(resume_command)"
+    [ "$run" = "$shown" ] || say "waiting for yurtos-kernel's release of $tag (release-kernel.yml: ${run:-no run yet})"
     shown=$run
     sleep "${YURT_RELEASE_POLL_SECS:-5}"
   done

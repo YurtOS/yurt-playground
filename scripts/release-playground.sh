@@ -43,7 +43,9 @@
 #                   override the paths), so the checkouts must exist.
 #                   The kernel commit needs a kernel-v* tag; [1] waits (30
 #                   minutes, YURT_KERNEL_RELEASE_TIMEOUT_SECS) for the tag's
-#                   release to be published, and stops if its run failed
+#                   release to be published, and stops sooner when the
+#                   tag push's release-kernel.yml run failed, or when 2
+#                   minutes pass with neither a release nor a run building one
 #   --image-release pin this playground-image release instead of building
 #                   one ([2] is skipped; the pythonSeal pin is carried
 #                   through unchanged unless --python-seal-release names a
@@ -626,7 +628,7 @@ dispatch_and_watch() {
       local kernel_release
       kernel_release=$(resolve_kernel_release "$kernel_dir" "$kernel_sha_to_resolve")
       say "kernel release $kernel_release"
-      wait_for_kernel_release "$kernel_release"
+      wait_for_kernel_release "$kernel_release" "$kernel_sha_to_resolve"
       set -- "$@" -f "kernel_release=$kernel_release"
     fi
     local cid="rel-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM$RANDOM"
