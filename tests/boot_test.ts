@@ -1,4 +1,3 @@
-import { getActiveResourcesInfo } from "node:process";
 import { assertEquals, assertRejects } from "@std/assert";
 import { KernelHostInterface, METHOD } from "@yurt/kernel-host-interface-js";
 import {
@@ -800,8 +799,12 @@ Deno.test("a saved agent session says which snapshot it grew from; an older one,
 Deno.test("dispose cancels the pending output sweep of a finished exec", async () => {
   const session = await bootAshSession();
   if (!session) return;
+  // node:process's types would change setTimeout's for the whole check.
+  const { process } = globalThis as unknown as {
+    process: { getActiveResourcesInfo(): string[] };
+  };
   const timeouts = () =>
-    getActiveResourcesInfo().filter((r) => r === "Timeout").length;
+    process.getActiveResourcesInfo().filter((r) => r === "Timeout").length;
   const booted = timeouts();
   try {
     const finished = await session.process("exec true", {
