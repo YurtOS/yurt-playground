@@ -504,11 +504,13 @@ export function startDesktopServer(
   // 127.0.0.1 is same-origin with itself, so the Origin check above cannot see
   // it; its Host is the attacker's name. Only `127.0.0.1` and `localhost` on
   // the bound port are served (not `[::1]`, a proxy's name or a forwarded
-  // port). The port is known once bound, and the
-  // first request comes after.
+  // port). Both the header and the request line's authority (which routing
+  // and the Origin checks read) must pass. The port is known once bound, and
+  // the first request comes after.
   let allowedHosts = new Set<string>();
   const handle = (req: Request) =>
-    allowedHosts.has((req.headers.get("host") ?? "").toLowerCase())
+    allowedHosts.has((req.headers.get("host") ?? "").toLowerCase()) &&
+      allowedHosts.has(new URL(req.url).host.toLowerCase())
       ? route(req)
       : Promise.resolve(
         new Response("not this host", {
