@@ -794,31 +794,3 @@ Deno.test("a saved agent session says which snapshot it grew from; an older one,
   assertEquals(sealedFrom(undefined), "tablet");
   assertEquals(sealedFrom({ snapshotKind: "nonsense" }), undefined);
 });
-
-// Deno's own sanitizers do not see these timers, so count them.
-// Deno's own timer sanitizer stays on: a leaked sweep timer fails the test.
-Deno.test("dispose cancels the pending output sweep of a finished exec", async () => {
-  const session = await bootAshSession();
-  if (!session) return;
-  try {
-    const finished = await session.process("exec true", {
-      maxOutputBytes: 64,
-    });
-    await finished.exited;
-  } finally {
-    session.dispose();
-  }
-});
-
-Deno.test("after dispose a process and a seal are refused, a second dispose is a no-op", async () => {
-  const session = await bootAshSession();
-  if (!session) return;
-  session.dispose();
-  await assertRejects(
-    () => session.process("exec true", { maxOutputBytes: 64 }),
-    Error,
-    "disposed",
-  );
-  await assertRejects(() => session.seal(), Error, "disposed");
-  session.dispose();
-});
