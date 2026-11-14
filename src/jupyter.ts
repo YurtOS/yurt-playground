@@ -140,7 +140,9 @@ export function buildKernelStartLine(
   logFile = JUPYTER_LOG_FILE,
   pidFile = JUPYTER_PID_FILE,
 ): string {
-  return `${
+  // A leftover file from an earlier launch is removed first, so the wait
+  // below cannot take it for this kernel's.
+  return `rm -f ${connectionFile}; ${
     buildKernelLaunchCommand(key, connectionFile, ports)
   } >${logFile} 2>&1 & echo $! > ${pidFile}`;
 }
@@ -158,7 +160,7 @@ export function buildKernelOwnProcessLine(
   logFile = JUPYTER_LOG_FILE,
   pidFile = JUPYTER_PID_FILE,
 ): string {
-  return `echo $$ > ${pidFile}; exec ${
+  return `echo $$ > ${pidFile}; rm -f ${connectionFile}; exec ${
     buildKernelLaunchCommand(key, connectionFile, ports)
   } >${logFile} 2>&1`;
 }
@@ -492,10 +494,10 @@ async function pollConnectionFile(
   pollMs: number,
   /** The kernel process's end, when the session can see it: once it has
    * exited, one last look, and the wait is over. */
-  exited?: Promise<unknown>,
+  exited: Promise<unknown> | undefined,
   /** The key this launch set: a file under any other key is a stale one
    * from an earlier launch (or page), not this kernel's yet. */
-  key?: string,
+  key: string,
 ): Promise<KernelConnection> {
   const deadline = performance.now() + CONNECTION_FILE_WAIT_SECONDS * 1000;
   const decoder = new TextDecoder();
@@ -522,7 +524,7 @@ async function pollConnectionFile(
       // the create and the write: an unparsable file is "not yet".
       try {
         const parsed = JSON.parse(decoder.decode(bytes)) as KernelConnection;
-        if (key === undefined || parsed.key === key) return parsed;
+        if (parsed.key === key) return parsed;
       } catch {
         // fall through to the next look
       }

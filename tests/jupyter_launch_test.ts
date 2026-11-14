@@ -30,7 +30,7 @@ Deno.test("the kernel start line backgrounds the launch and records its pid", ()
   const line = buildKernelStartLine(KEY);
   assertEquals(
     line,
-    `${
+    `rm -f ${JUPYTER_CONNECTION_FILE}; ${
       buildKernelLaunchCommand(KEY)
     } >${JUPYTER_LOG_FILE} 2>&1 & echo $! > ${JUPYTER_PID_FILE}`,
   );
@@ -51,7 +51,7 @@ Deno.test("as its own process the kernel records its pid and execs in place", ()
   // stop command and becomes the kernel; no job table is involved.
   assertEquals(
     buildKernelOwnProcessLine(KEY),
-    `echo $$ > ${JUPYTER_PID_FILE}; exec ${
+    `echo $$ > ${JUPYTER_PID_FILE}; rm -f ${JUPYTER_CONNECTION_FILE}; exec ${
       buildKernelLaunchCommand(KEY)
     } >${JUPYTER_LOG_FILE} 2>&1`,
   );
