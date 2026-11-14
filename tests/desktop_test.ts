@@ -368,6 +368,112 @@ Deno.test("the launcher refuses other origins on the sandbox endpoints", async (
   }
 });
 
+/** One raw HTTP/1.1 request with exactly this Host (fetch cannot forge it, a
+ * rebinding page's browser sends whatever name the attacker's DNS answered
+ * to); resolves with the response's status line. `upgrade` asks for a
+ * WebSocket. */
+async function statusWithHost(
+  url: string,
+  path: string,
+  hostHeader: string | undefined,
+  upgrade = false,
+): Promise<string> {
+  const conn = await Deno.connect({
+    hostname: "127.0.0.1",
+    port: Number(new URL(url).port),
+  });
+  try {
+    const lines = [`GET ${path} HTTP/1.1`];
+    if (hostHeader !== undefined) lines.push(`Host: ${hostHeader}`);
+    if (upgrade) {
+      lines.push(
+        "Connection: Upgrade",
+        "Upgrade: websocket",
+        "Sec-WebSocket-Version: 13",
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+      );
+    }
+    lines.push("Connection: close", "", "");
+    await conn.write(new TextEncoder().encode(lines.join("\r\n")));
+    const buf = new Uint8Array(256);
+    const n = await conn.read(buf) ?? 0;
+    return new TextDecoder().decode(buf.subarray(0, n)).split("\r\n")[0];
+  } finally {
+    conn.close();
+  }
+}
+
+Deno.test("the launcher answers only to its own loopback Host (DNS rebinding)", async () => {
+  const upstream = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen() {} },
+    (req) => Deno.upgradeWebSocket(req).response,
+  );
+  const host = {
+    url: `http://127.0.0.1:${(upstream.addr as Deno.NetAddr).port}/`,
+    token: "deadbeef",
+    kernelPorts: [1, 2, 3, 4, 5] as [number, number, number, number, number],
+    bootMs: 1,
+    request: () => Promise.reject(new Error("not asked in this test")),
+    sessions: true,
+    stop() {},
+  };
+  const dist = await fakeDist();
+  const server = startDesktopServer(dist, host);
+  const port = new URL(server.url).port;
+  try {
+    // A rebinding page is same-origin with itself, so the Origin check
+    // passes; only the Host (the attacker's name) gives it away.
+    for (
+      const bad of [
+        `rebind.example:${port}`,
+        `rebind.example`,
+        `127.0.0.1.rebind.example:${port}`,
+        `127.0.0.1`,
+        `127.0.0.1:${Number(port) + 1}`,
+        `localhost.rebind.example:${port}`,
+        `[::1]:${port}`,
+        undefined,
+      ]
+    ) {
+      for (const path of ["/desktop.json", "/api/status", "/", "/ws/tty"]) {
+        assertStringIncludes(
+          await statusWithHost(server.url, path, bad),
+          " 403 ",
+          `${bad} ${path}`,
+        );
+      }
+      assertStringIncludes(
+        await statusWithHost(server.url, "/ws/tty", bad, true),
+        " 403 ",
+        `${bad} upgrade`,
+      );
+    }
+    // The names a person and the launcher use, in any case.
+    for (
+      const good of [
+        `127.0.0.1:${port}`,
+        `localhost:${port}`,
+        `LocalHost:${port}`,
+      ]
+    ) {
+      assertStringIncludes(
+        await statusWithHost(server.url, "/desktop.json", good),
+        " 200 ",
+        good,
+      );
+      assertStringIncludes(
+        await statusWithHost(server.url, "/ws/tty", good, true),
+        " 101 ",
+        `${good} upgrade`,
+      );
+    }
+  } finally {
+    await server.shutdown();
+    await upstream.shutdown();
+    await Deno.remove(dist, { recursive: true });
+  }
+});
+
 Deno.test("desktop server applies Pages' directory rule to the Jupyter apps", async () => {
   // Notebook 7 opens "New Console for Notebook" at `consoles?path=…` — no
   // index.html, no trailing slash — and its assets are relative, so the
