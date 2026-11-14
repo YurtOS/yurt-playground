@@ -422,11 +422,33 @@ export function freshApiToken(): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/** The `Host` values the launcher answers to on `port`: `127.0.0.1` and
+ * `localhost`, and bare too on port 80, which a browser leaves out. */
+export function allowedHostsFor(port: number): Set<string> {
+  const hosts = new Set<string>();
+  for (const name of ["127.0.0.1", "localhost"]) {
+    hosts.add(`${name}:${port}`);
+    if (port === 80) hosts.add(name);
+  }
+  return hosts;
+}
+
+/** The authority of a request URL; "" when it does not parse. */
+function authorityOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+
 /** Serve `distDir` on a loopback port (a free one unless `port` says).
  * With a native host, the page learns so from `/desktop.json` and its
  * `/ws/*` sockets are relayed to it (src/desktop_host.ts), and `/api/*`
  * runs commands and moves files for a driver (src/desktop_api.ts) --
- * behind `apiToken`, which `/desktop.json` hands the page. */
+ * behind `apiToken`, which `/desktop.json` hands the page. Every request must
+ * carry a `Host` of `127.0.0.1` or `localhost` on the bound port (DNS rebinding;
+ * see `allowedHostsFor`), else 403. */
 export function startDesktopServer(
   distDir: string,
   host?: DesktopHost,
@@ -435,7 +457,7 @@ export function startDesktopServer(
   const files = handleDistRequest(distDir);
   const apiToken = options.apiToken ?? freshApiToken();
   let api: ReturnType<typeof createDesktopApi> | undefined;
-  const handle = host === undefined ? files : (req: Request) => {
+  const route = host === undefined ? files : (req: Request) => {
     const url = new URL(req.url);
     const path = url.pathname;
     if (path === "/api" || path.startsWith("/api/")) {
@@ -487,6 +509,24 @@ export function startDesktopServer(
     }
     return files(req);
   };
+  // Every request passes here first. A page that DNS-rebinds its own name to
+  // 127.0.0.1 is same-origin with itself, so the Origin check above cannot see
+  // it; its Host is the attacker's name. Only `127.0.0.1` and `localhost` on
+  // the bound port are served (not `[::1]`, a proxy's name or a forwarded
+  // port). Both the header and the request line's authority (which routing
+  // and the Origin checks read) must pass. The port is known once bound, and
+  // the first request comes after.
+  let allowedHosts = new Set<string>();
+  const handle = (req: Request) =>
+    allowedHosts.has((req.headers.get("host") ?? "").toLowerCase()) &&
+      allowedHosts.has(authorityOf(req.url))
+      ? route(req)
+      : Promise.resolve(
+        new Response("not this host", {
+          status: 403,
+          headers: ISOLATION_HEADERS,
+        }),
+      );
   const server = Deno.serve(
     { port: options.port ?? 0, hostname: "127.0.0.1", onListen: () => {} },
     handle,
@@ -495,6 +535,8 @@ export function startDesktopServer(
   if (!("port" in addr)) {
     throw new Error("desktop server did not bind a TCP port");
   }
+  allowedHosts = allowedHostsFor(addr.port);
+
   return {
     url: `http://127.0.0.1:${addr.port}/`,
     shutdown: () => server.shutdown(),

@@ -139,9 +139,11 @@ curl -H "Authorization: Bearer $T" -X PUT --data-binary @data.csv "${U}api/fs/co
 Results are JSON, so a command's output is text there; binary output goes
 through a file. A process running as you on this machine is you: that is the
 whole of the access model. Errors are `{error, code}`; an `Origin` other than
-the launcher's own is refused, so no web page can reach it. The page's
-`window.yurt` and a `curl` share one registry: at most 16 running or stuck
-executions per sandbox, results kept ten minutes or until read.
+the launcher's own is refused, as is any `Host` but `127.0.0.1` or `localhost`
+on the launcher's port (DNS rebinding; a forwarded port or a proxy name gets a
+403), so no web page can reach it. The page's `window.yurt` and a `curl` share
+one registry: at most 16 running or stuck executions per sandbox, results kept
+ten minutes or until read.
 
 ## Playwright in the sandbox
 

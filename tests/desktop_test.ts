@@ -2,6 +2,7 @@ import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  allowedHostsFor,
   handleDistRequest,
   launcherVersion,
   parseLauncherArgs,
@@ -366,6 +367,190 @@ Deno.test("the launcher refuses other origins on the sandbox endpoints", async (
     await server.shutdown();
     await Deno.remove(dist, { recursive: true });
   }
+});
+
+/** One raw HTTP/1.1 request with exactly this Host (fetch cannot forge it, a
+ * rebinding page's browser sends whatever name the attacker's DNS answered
+ * to); resolves with the response's status line. `upgrade` asks for a
+ * WebSocket. */
+async function statusWithHost(
+  url: string,
+  path: string,
+  hostHeader: string | undefined,
+  upgrade = false,
+  origin?: string,
+  target = path,
+): Promise<string> {
+  const conn = await Deno.connect({
+    hostname: "127.0.0.1",
+    port: Number(new URL(url).port || 80),
+  });
+  try {
+    const lines = [`GET ${target} HTTP/1.1`];
+    if (hostHeader !== undefined) lines.push(`Host: ${hostHeader}`);
+    if (upgrade) {
+      lines.push(
+        "Connection: Upgrade",
+        "Upgrade: websocket",
+        "Sec-WebSocket-Version: 13",
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+      );
+    }
+    if (origin !== undefined) lines.push(`Origin: ${origin}`);
+    lines.push("Connection: close", "", "");
+    await conn.write(new TextEncoder().encode(lines.join("\r\n")));
+    const buf = new Uint8Array(256);
+    let timer = 0;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`no response: ${hostHeader} ${path}`)),
+        5000,
+      );
+    });
+    const n = await Promise.race([conn.read(buf), timeout]).finally(() =>
+      clearTimeout(timer)
+    ) ?? 0;
+    return new TextDecoder().decode(buf.subarray(0, n)).split("\r\n")[0];
+  } finally {
+    conn.close();
+  }
+}
+
+Deno.test("the launcher answers only to its own loopback Host (DNS rebinding)", async () => {
+  const upstream = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen() {} },
+    (req) => Deno.upgradeWebSocket(req).response,
+  );
+  const host = {
+    url: `http://127.0.0.1:${(upstream.addr as Deno.NetAddr).port}/`,
+    token: "deadbeef",
+    kernelPorts: [1, 2, 3, 4, 5] as [number, number, number, number, number],
+    bootMs: 1,
+    request: () => Promise.reject(new Error("not asked in this test")),
+    sessions: true,
+    stop() {},
+  };
+  const dist = await fakeDist();
+  const server = startDesktopServer(dist, host);
+  const port = new URL(server.url).port;
+  try {
+    // A rebinding page is same-origin with itself, so the Origin check
+    // passes; only the Host (the attacker's name) gives it away.
+    for (
+      const bad of [
+        `rebind.example:${port}`,
+        `rebind.example`,
+        `127.0.0.1.rebind.example:${port}`,
+        `127.0.0.1`,
+        `127.0.0.1:${Number(port) + 1}`,
+        `localhost.rebind.example:${port}`,
+        `[::1]:${port}`,
+        undefined,
+      ]
+    ) {
+      for (const path of ["/desktop.json", "/api/status", "/", "/ws/tty"]) {
+        assertStringIncludes(
+          await statusWithHost(server.url, path, bad),
+          " 403 ",
+          `${bad} ${path}`,
+        );
+      }
+      assertStringIncludes(
+        await statusWithHost(server.url, "/ws/tty", bad, true),
+        " 403 ",
+        `${bad} upgrade`,
+      );
+      // The real attack: its Origin is its own (attacker) origin, which the
+      // Origin check accepts, since that origin derives from the same Host.
+      if (bad !== undefined) {
+        const origin = `http://${bad}`;
+        assertStringIncludes(
+          await statusWithHost(server.url, "/desktop.json", bad, false, origin),
+          " 403 ",
+          `${bad} same-origin json`,
+        );
+        assertStringIncludes(
+          await statusWithHost(server.url, "/ws/tty", bad, true, origin),
+          " 403 ",
+          `${bad} same-origin upgrade`,
+        );
+      }
+    }
+    // Routing and the Origin check read the request line's authority, not the
+    // header: an absolute-form request line must not slip past with a good Host.
+    const evil = `evil.example:${port}`;
+    assertStringIncludes(
+      await statusWithHost(
+        server.url,
+        "/desktop.json",
+        `127.0.0.1:${port}`,
+        false,
+        `http://${evil}`,
+        `http://${evil}/desktop.json`,
+      ),
+      " 403 ",
+      "absolute-form target",
+    );
+    // A malformed request-line authority is refused (by the HTTP parser or
+    // the gate), never a 500.
+    const malformed = await statusWithHost(
+      server.url,
+      "/",
+      `127.0.0.1:${port}`,
+      false,
+      undefined,
+      "http://evil:99999/",
+    );
+    assertEquals(/ 40[03] /.test(malformed), true, malformed);
+    // The names a person and the launcher use, in any case.
+    for (
+      const good of [
+        `127.0.0.1:${port}`,
+        `localhost:${port}`,
+        `LocalHost:${port}`,
+      ]
+    ) {
+      assertStringIncludes(
+        await statusWithHost(server.url, "/desktop.json", good),
+        " 200 ",
+        good,
+      );
+      assertStringIncludes(
+        await statusWithHost(server.url, "/ws/tty", good, true),
+        " 101 ",
+        `${good} upgrade`,
+      );
+    }
+  } finally {
+    await server.shutdown();
+    await upstream.shutdown();
+    await Deno.remove(dist, { recursive: true });
+  }
+});
+
+Deno.test("the Host rule holds without a native host", async () => {
+  const dist = await fakeDist();
+  const server = startDesktopServer(dist);
+  try {
+    assertStringIncludes(
+      await statusWithHost(server.url, "/", "rebind.example"),
+      " 403 ",
+    );
+  } finally {
+    await server.shutdown();
+    await Deno.remove(dist, { recursive: true });
+  }
+});
+
+Deno.test("allowed Hosts: both loopback names on the port, bare as well on port 80", () => {
+  assertEquals(
+    [...allowedHostsFor(4321)].sort(),
+    ["127.0.0.1:4321", "localhost:4321"],
+  );
+  assertEquals(
+    [...allowedHostsFor(80)].sort(),
+    ["127.0.0.1", "127.0.0.1:80", "localhost", "localhost:80"],
+  );
 });
 
 Deno.test("desktop server applies Pages' directory rule to the Jupyter apps", async () => {
