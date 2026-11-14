@@ -2,6 +2,7 @@ import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  allowedHostsFor,
   handleDistRequest,
   launcherVersion,
   parseLauncherArgs,
@@ -400,7 +401,10 @@ async function statusWithHost(
     const buf = new Uint8Array(256);
     let timer = 0;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error("no response")), 5000);
+      timer = setTimeout(
+        () => reject(new Error(`no response: ${hostHeader} ${path}`)),
+        5000,
+      );
     });
     const n = await Promise.race([conn.read(buf), timeout]).finally(() =>
       clearTimeout(timer)
@@ -497,7 +501,7 @@ Deno.test("the launcher answers only to its own loopback Host (DNS rebinding)", 
   }
 });
 
-Deno.test("the Host rule holds without a native host, and on port 80 a bare Host is the right one", async () => {
+Deno.test("the Host rule holds without a native host", async () => {
   const dist = await fakeDist();
   const server = startDesktopServer(dist);
   try {
@@ -507,28 +511,19 @@ Deno.test("the Host rule holds without a native host, and on port 80 a bare Host
     );
   } finally {
     await server.shutdown();
-  }
-  let on80: ReturnType<typeof startDesktopServer> | undefined;
-  try {
-    on80 = startDesktopServer(dist, undefined, { port: 80 });
-  } catch {
-    // binding port 80 needs privileges this runner may lack
-  }
-  try {
-    if (on80 !== undefined) {
-      // fetch (like a browser) leaves the default port out of Host.
-      const res = await fetch(on80.url);
-      assertEquals(res.status, 200);
-      await res.body?.cancel();
-      assertStringIncludes(
-        await statusWithHost(on80.url, "/", "127.0.0.1:81"),
-        " 403 ",
-      );
-    }
-  } finally {
-    await on80?.shutdown();
     await Deno.remove(dist, { recursive: true });
   }
+});
+
+Deno.test("allowed Hosts: both loopback names on the port, bare as well on port 80", () => {
+  assertEquals(
+    [...allowedHostsFor(4321)].sort(),
+    ["127.0.0.1:4321", "localhost:4321"],
+  );
+  assertEquals(
+    [...allowedHostsFor(80)].sort(),
+    ["127.0.0.1", "127.0.0.1:80", "localhost", "localhost:80"],
+  );
 });
 
 Deno.test("desktop server applies Pages' directory rule to the Jupyter apps", async () => {
