@@ -22,6 +22,20 @@ import type {
   JupyterTransport,
 } from "../src/jupyter_transport.ts";
 
+/** The connection file ipykernel writes for a launch line: it echoes the
+ * `--Session.key` it was given. */
+function connectionFile(launchLine: string, key?: string): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify({
+    shell_port: 1,
+    iopub_port: 2,
+    stdin_port: 3,
+    control_port: 4,
+    hb_port: 5,
+    key: key ?? launchLine.match(/--Session\.key=(\S+)/)?.[1],
+    transport: "tcp",
+  }));
+}
+
 Deno.test("executeCell collects standard Jupyter stream, result, and reply messages", async () => {
   let listener:
     | ((message: JupyterMessage, channel: JupyterChannel) => void)
@@ -255,15 +269,6 @@ Deno.test("a session that can read guest files polls the connection file instead
   const typed: string[] = [];
   const spawned: string[] = [];
   let reads = 0;
-  const connection = JSON.stringify({
-    shell_port: 1,
-    iopub_port: 2,
-    stdin_port: 3,
-    control_port: 4,
-    hb_port: 5,
-    key: "k",
-    transport: "tcp",
-  });
   const session = {
     terminal: {
       write(bytes: Uint8Array) {
@@ -279,7 +284,7 @@ Deno.test("a session that can read guest files polls the connection file instead
       reads += 1;
       // The file appears on the third look, as ipykernel writes it late.
       if (path === JUPYTER_CONNECTION_FILE && reads >= 3) {
-        return Promise.resolve(new TextEncoder().encode(connection));
+        return Promise.resolve(connectionFile(spawned[0]));
       }
       return Promise.resolve(undefined);
     },
@@ -591,23 +596,16 @@ Deno.test("a kernel process the host failed to run is not reported as an exit", 
 });
 
 Deno.test("a kernel that wrote its connection file and then exited still gets it read", async () => {
-  const connection = JSON.stringify({
-    shell_port: 1,
-    iopub_port: 2,
-    stdin_port: 3,
-    control_port: 4,
-    hb_port: 5,
-    key: "k",
-    transport: "tcp",
-  });
+  let launched = "";
   const session = {
     terminal: { write: () => Promise.resolve() },
-    spawn: () => Promise.resolve({ exited: Promise.resolve(0) }),
+    spawn: (line: string) => {
+      launched = line;
+      return Promise.resolve({ exited: Promise.resolve(0) });
+    },
     readFile: (path: string) =>
       Promise.resolve(
-        path === JUPYTER_CONNECTION_FILE
-          ? new TextEncoder().encode(connection)
-          : undefined,
+        path === JUPYTER_CONNECTION_FILE ? connectionFile(launched) : undefined,
       ),
     dialSandboxPort: () => {
       throw new Error("the transport is not dialed in this test");
@@ -640,15 +638,6 @@ function launchingSession(ends: LaunchEnd[]) {
   const typed: string[] = [];
   const spawned: string[] = [];
   let current: LaunchEnd = 0;
-  const connection = new TextEncoder().encode(JSON.stringify({
-    shell_port: 1,
-    iopub_port: 2,
-    stdin_port: 3,
-    control_port: 4,
-    hb_port: 5,
-    key: "k",
-    transport: "tcp",
-  }));
   return {
     get launches() {
       return spawnedAt.length;
@@ -690,7 +679,7 @@ function launchingSession(ends: LaunchEnd[]) {
     readFile: (path: string) =>
       Promise.resolve(
         path === JUPYTER_CONNECTION_FILE && current === "ready"
-          ? connection
+          ? connectionFile(spawned.at(-1) ?? "")
           : path === JUPYTER_LOG_FILE
           ? new TextEncoder().encode("Segmentation fault\n")
           : undefined,
@@ -893,4 +882,43 @@ Deno.test("a signal death is named in the message", async () => {
     Error,
     "exited before writing its connection file (signal SIGABRT); kernel log",
   );
+});
+
+Deno.test('a connection file carrying another key (a stale one, the old fixed "yurt") is refused and the kernel stopped', async () => {
+  const typed: string[] = [];
+  const handlers = new Set<(bytes: Uint8Array) => void>();
+  const session = {
+    terminal: {
+      write(bytes: Uint8Array) {
+        const line = new TextDecoder().decode(bytes);
+        typed.push(line);
+        const stop = line.match(/echo (YURT_SHELL_DONE_)""(\w+)/);
+        if (stop !== null) {
+          const reply = new TextEncoder().encode(`${stop[1]}${stop[2]}\n$ `);
+          for (const handler of handlers) handler(reply);
+        }
+        return Promise.resolve();
+      },
+    },
+    spawn: () => Promise.resolve(),
+    readFile: (path: string) =>
+      Promise.resolve(
+        path === JUPYTER_CONNECTION_FILE
+          ? connectionFile("", "yurt")
+          : undefined,
+      ),
+    dialSandboxPort: (): never => {
+      throw new Error("the transport must not be dialed under a foreign key");
+    },
+    onOutput(handler: (bytes: Uint8Array) => void) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+  };
+  await assertRejects(
+    () => startGuestKernel(session, undefined, { pollMs: 1 }),
+    Error,
+    "key is not the one this launch set",
+  );
+  assertEquals(typed.some((t) => t.includes("kill -KILL")), true);
 });

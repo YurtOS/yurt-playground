@@ -396,6 +396,15 @@ async function launchGuestKernel(
           exited,
         )
         : await readConnectionFile(session);
+      // A stale file from an older launch (or page) would carry its own,
+      // possibly the old fixed, key: never talk under any key but ours.
+      // Thrown here, the kernel is stopped and its files removed.
+      if (connection.key !== key) {
+        throw new Error(
+          "the Jupyter connection file's key is not the one this launch " +
+            "set; a stale kernel connection file was read",
+        );
+      }
     } catch (error) {
       if (error instanceof KernelExited) {
         // Nothing is left to kill, and its pid may be another process's
