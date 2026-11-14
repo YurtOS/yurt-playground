@@ -1119,9 +1119,9 @@ async function startShell(
       if (disposed) return;
       disposed = true;
       clearSweeps();
-      stop();
       relayServes = false;
       try {
+        stop();
         relay?.stop();
       } finally {
         mk.dispose();
@@ -1206,7 +1206,7 @@ async function startShell(
       // The registry reads the files right after the exit; the sweep comes
       // well after, whichever way the exit went.
       exited.finally(() => {
-        if (disposed || sealing) return;
+        if (disposed) return;
         const timer = setTimeout(() => {
           sweepTimers.delete(timer);
           void sweep().catch(() => {});
