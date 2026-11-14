@@ -435,7 +435,7 @@ export function startDesktopServer(
   const files = handleDistRequest(distDir);
   const apiToken = options.apiToken ?? freshApiToken();
   let api: ReturnType<typeof createDesktopApi> | undefined;
-  const handle = host === undefined ? files : (req: Request) => {
+  const route = host === undefined ? files : (req: Request) => {
     const url = new URL(req.url);
     const path = url.pathname;
     if (path === "/api" || path.startsWith("/api/")) {
@@ -487,6 +487,21 @@ export function startDesktopServer(
     }
     return files(req);
   };
+  // Every request passes here first. A page that DNS-rebinds its own name to
+  // 127.0.0.1 is same-origin with itself, so the Origin check above cannot see
+  // it; its Host is the attacker's name. Only the loopback names a person (or
+  // the launcher) types are served. The port is known once bound, and the
+  // first request comes after.
+  let hosts = new Set<string>();
+  const handle = (req: Request) =>
+    hosts.has((req.headers.get("host") ?? "").toLowerCase())
+      ? route(req)
+      : Promise.resolve(
+        new Response("not this host", {
+          status: 403,
+          headers: ISOLATION_HEADERS,
+        }),
+      );
   const server = Deno.serve(
     { port: options.port ?? 0, hostname: "127.0.0.1", onListen: () => {} },
     handle,
@@ -495,6 +510,7 @@ export function startDesktopServer(
   if (!("port" in addr)) {
     throw new Error("desktop server did not bind a TCP port");
   }
+  hosts = new Set([`127.0.0.1:${addr.port}`, `localhost:${addr.port}`]);
   return {
     url: `http://127.0.0.1:${addr.port}/`,
     shutdown: () => server.shutdown(),
