@@ -147,6 +147,7 @@ Deno.test("static build writes every file the pages need", async () => {
       "Cross-Origin-Opener-Policy: same-origin",
       "Cross-Origin-Embedder-Policy: require-corp",
       "Cross-Origin-Resource-Policy: same-origin",
+      "Permissions-Policy: camera=(), microphone=(), geolocation=()",
       "/jupyter/*\n  ! Content-Security-Policy\n  Content-Security-Policy: ",
     ]
   ) {
