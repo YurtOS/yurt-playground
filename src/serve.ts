@@ -38,6 +38,20 @@ export const ISOLATION_HEADERS = {
   // Non-document responses carry the policy too: a worker script's own CSP
   // is what governs the worker.
   "Content-Security-Policy": contentSecurityPolicy(),
+  // Script in the page origin (a guest's notebook output) must not be able to
+  // raise device prompts under the playground's name. Clipboard (terminal) and
+  // GPU (agent) are left alone: the page uses them.
+  "Permissions-Policy": [
+    "camera",
+    "microphone",
+    "geolocation",
+    "usb",
+    "serial",
+    "bluetooth",
+    "hid",
+    "payment",
+    "display-capture",
+  ].map((feature) => `${feature}=()`).join(", "),
 };
 
 /** xterm's stylesheet, served from the npm package rather than copied into
