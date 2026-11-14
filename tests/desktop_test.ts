@@ -379,13 +379,14 @@ async function statusWithHost(
   hostHeader: string | undefined,
   upgrade = false,
   origin?: string,
+  target = path,
 ): Promise<string> {
   const conn = await Deno.connect({
     hostname: "127.0.0.1",
     port: Number(new URL(url).port || 80),
   });
   try {
-    const lines = [`GET ${path} HTTP/1.1`];
+    const lines = [`GET ${target} HTTP/1.1`];
     if (hostHeader !== undefined) lines.push(`Host: ${hostHeader}`);
     if (upgrade) {
       lines.push(
@@ -475,6 +476,21 @@ Deno.test("the launcher answers only to its own loopback Host (DNS rebinding)", 
         );
       }
     }
+    // Routing and the Origin check read the request line's authority, not the
+    // header: an absolute-form request line must not slip past with a good Host.
+    const evil = `evil.example:${port}`;
+    assertStringIncludes(
+      await statusWithHost(
+        server.url,
+        "/desktop.json",
+        `127.0.0.1:${port}`,
+        false,
+        `http://${evil}`,
+        `http://${evil}/desktop.json`,
+      ),
+      " 403 ",
+      "absolute-form target",
+    );
     // The names a person and the launcher use, in any case.
     for (
       const good of [
