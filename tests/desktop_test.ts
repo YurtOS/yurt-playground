@@ -491,6 +491,17 @@ Deno.test("the launcher answers only to its own loopback Host (DNS rebinding)", 
       " 403 ",
       "absolute-form target",
     );
+    // A malformed request-line authority is refused (by the HTTP parser or
+    // the gate), never a 500.
+    const malformed = await statusWithHost(
+      server.url,
+      "/",
+      `127.0.0.1:${port}`,
+      false,
+      undefined,
+      "http://evil:99999/",
+    );
+    assertEquals(/ 40[03] /.test(malformed), true, malformed);
     // The names a person and the launcher use, in any case.
     for (
       const good of [

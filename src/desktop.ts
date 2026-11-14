@@ -433,6 +433,15 @@ export function allowedHostsFor(port: number): Set<string> {
   return hosts;
 }
 
+/** The authority of a request URL; "" when it does not parse. */
+function authorityOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+
 /** Serve `distDir` on a loopback port (a free one unless `port` says).
  * With a native host, the page learns so from `/desktop.json` and its
  * `/ws/*` sockets are relayed to it (src/desktop_host.ts), and `/api/*`
@@ -510,7 +519,7 @@ export function startDesktopServer(
   let allowedHosts = new Set<string>();
   const handle = (req: Request) =>
     allowedHosts.has((req.headers.get("host") ?? "").toLowerCase()) &&
-      allowedHosts.has(new URL(req.url).host.toLowerCase())
+      allowedHosts.has(authorityOf(req.url))
       ? route(req)
       : Promise.resolve(
         new Response("not this host", {
