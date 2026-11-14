@@ -368,12 +368,12 @@ async function launchGuestKernel(
 ): Promise<JupyterTransport> {
   // Only what is typed into the user's shell needs hushing; a session that
   // spawns the launch and reads the file itself types nothing.
+  const key = generateJupyterKey();
   const typesIntoShell = session.spawn === undefined ||
     session.readFile === undefined;
   const release = typesIntoShell
     ? hushUntil(session, CONNECTION_MARKER)
     : () => {};
-  const key = generateJupyterKey();
   let connection: KernelConnection;
   try {
     let exited: Promise<unknown> | undefined;
@@ -394,11 +394,12 @@ async function launchGuestKernel(
           session.readFile,
           options.pollMs ?? CONNECTION_FILE_POLL_MS,
           exited,
+          key,
         )
         : await readConnectionFile(session);
-      // A stale file from an older launch (or page) would carry its own,
-      // possibly the old fixed, key: never talk under any key but ours.
-      // Thrown here, the kernel is stopped and its files removed.
+      // The polled file is already ours; the typed read has no such
+      // filter. Never talk under any key but this launch's (a stale file
+      // may carry the old fixed one); thrown here, the kernel is stopped.
       if (connection.key !== key) {
         throw new Error(
           "the Jupyter connection file's key is not the one this launch " +
@@ -492,6 +493,9 @@ async function pollConnectionFile(
   /** The kernel process's end, when the session can see it: once it has
    * exited, one last look, and the wait is over. */
   exited?: Promise<unknown>,
+  /** The key this launch set: a file under any other key is a stale one
+   * from an earlier launch (or page), not this kernel's yet. */
+  key?: string,
 ): Promise<KernelConnection> {
   const deadline = performance.now() + CONNECTION_FILE_WAIT_SECONDS * 1000;
   const decoder = new TextDecoder();
@@ -517,7 +521,8 @@ async function pollConnectionFile(
       // ipykernel writes the file in one go, but a look can land between
       // the create and the write: an unparsable file is "not yet".
       try {
-        return JSON.parse(decoder.decode(bytes)) as KernelConnection;
+        const parsed = JSON.parse(decoder.decode(bytes)) as KernelConnection;
+        if (key === undefined || parsed.key === key) return parsed;
       } catch {
         // fall through to the next look
       }

@@ -31,7 +31,10 @@ function connectionFile(launchLine: string, key?: string): Uint8Array {
     stdin_port: 3,
     control_port: 4,
     hb_port: 5,
-    key: key ?? launchLine.match(/--Session\.key=(\S+)/)?.[1],
+    key: key ?? launchLine.match(/--Session\.key=(\S+)/)?.[1] ??
+      (() => {
+        throw new Error(`no --Session.key in launch line: ${launchLine}`);
+      })(),
     transport: "tcp",
   }));
 }
@@ -884,7 +887,7 @@ Deno.test("a signal death is named in the message", async () => {
   );
 });
 
-Deno.test('a connection file carrying another key (a stale one, the old fixed "yurt") is refused and the kernel stopped', async () => {
+Deno.test('a connection file carrying another key (a stale one, the old fixed "yurt") is never taken for this launch', async () => {
   const typed: string[] = [];
   const handlers = new Set<(bytes: Uint8Array) => void>();
   const session = {
@@ -900,7 +903,8 @@ Deno.test('a connection file carrying another key (a stale one, the old fixed "y
         return Promise.resolve();
       },
     },
-    spawn: () => Promise.resolve(),
+    // The kernel exits without writing its own file: only the stale one.
+    spawn: () => Promise.resolve({ exited: Promise.resolve(1) }),
     readFile: (path: string) =>
       Promise.resolve(
         path === JUPYTER_CONNECTION_FILE
@@ -918,7 +922,6 @@ Deno.test('a connection file carrying another key (a stale one, the old fixed "y
   await assertRejects(
     () => startGuestKernel(session, undefined, { pollMs: 1 }),
     Error,
-    "key is not the one this launch set",
+    "exited before writing its connection file",
   );
-  assertEquals(typed.some((t) => t.includes("kill -KILL")), true);
 });
