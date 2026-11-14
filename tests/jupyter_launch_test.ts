@@ -106,11 +106,14 @@ async function launchOnce(): Promise<{ line: string; used: string }> {
     onOutput: () => () => {},
   };
   // The dial is where this stops; the launch line is what is under test.
-  await assertRejects(() =>
-    startGuestKernel(session, undefined, {
-      pollMs: 1,
-      connect: { attempts: 1, delayMs: 1 },
-    })
+  await assertRejects(
+    () =>
+      startGuestKernel(session, undefined, {
+        pollMs: 1,
+        connect: { attempts: 1, delayMs: 1 },
+      }),
+    Error,
+    "did not become ready",
   );
   return { line, used: keyOf(line) };
 }

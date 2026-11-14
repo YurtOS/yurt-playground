@@ -925,3 +925,37 @@ Deno.test('a connection file carrying another key (a stale one, the old fixed "y
     "exited before writing its connection file",
   );
 });
+
+Deno.test("a stale connection file under another key is skipped until the launch's own file replaces it", async () => {
+  let launched = "";
+  let reads = 0;
+  const session = {
+    terminal: { write: () => Promise.resolve() },
+    spawn: (line: string) => {
+      launched = line;
+      return Promise.resolve();
+    },
+    readFile: (path: string) => {
+      if (path !== JUPYTER_CONNECTION_FILE) return Promise.resolve(undefined);
+      reads += 1;
+      return Promise.resolve(
+        reads <= 3 ? connectionFile("", "yurt") : connectionFile(launched),
+      );
+    },
+    dialSandboxPort: (): never => {
+      throw new Error("the transport is not dialed in this test");
+    },
+    onOutput: () => () => {},
+  };
+  // Past the file: the dial is where this one stops.
+  await assertRejects(
+    () =>
+      startGuestKernel(session, undefined, {
+        pollMs: 1,
+        connect: { attempts: 1, delayMs: 1 },
+      }),
+    Error,
+    "did not become ready",
+  );
+  assertEquals(reads, 4, "three stale looks skipped, the fourth taken");
+});

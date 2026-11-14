@@ -140,8 +140,8 @@ export function buildKernelStartLine(
   logFile = JUPYTER_LOG_FILE,
   pidFile = JUPYTER_PID_FILE,
 ): string {
-  // A leftover file from an earlier launch is removed first, so the wait
-  // below cannot take it for this kernel's.
+  // A leftover file from an earlier launch is removed first: ipykernel
+  // reloads an existing --f file and would keep its old key and ports.
   return `rm -f ${connectionFile}; ${
     buildKernelLaunchCommand(key, connectionFile, ports)
   } >${logFile} 2>&1 & echo $! > ${pidFile}`;
@@ -513,6 +513,8 @@ async function pollConnectionFile(
     failed = error instanceof Error ? error.message : String(error);
     gone = true;
   });
+  /** A file was there, under a key that is not this launch's. */
+  let foreignKey = false;
   for (;;) {
     // Read before deciding: a kernel that wrote the file and then exited
     // still gets its file read once.
@@ -525,6 +527,7 @@ async function pollConnectionFile(
       try {
         const parsed = JSON.parse(decoder.decode(bytes)) as KernelConnection;
         if (parsed.key === key) return parsed;
+        foreignKey = true;
       } catch {
         // fall through to the next look
       }
@@ -547,6 +550,8 @@ async function pollConnectionFile(
   throw new Error(
     failed !== undefined
       ? `the Jupyter kernel process failed to run: ${failed}; kernel log:\n${tail}`
+      : foreignKey
+      ? `Jupyter connection file stayed under a key other than this launch's for ${CONNECTION_FILE_WAIT_SECONDS} s (a stale file the kernel kept?); kernel log:\n${tail}`
       : `Jupyter connection file was not written within ${CONNECTION_FILE_WAIT_SECONDS} s; kernel log:\n${tail}`,
   );
 }
