@@ -1,3 +1,4 @@
+import { getActiveResourcesInfo } from "node:process";
 import { assertEquals, assertRejects } from "@std/assert";
 import { KernelHostInterface, METHOD } from "@yurt/kernel-host-interface-js";
 import {
@@ -793,4 +794,36 @@ Deno.test("a saved agent session says which snapshot it grew from; an older one,
   assertEquals(sealedFrom({ memoryFile: "f" }), "tablet");
   assertEquals(sealedFrom(undefined), "tablet");
   assertEquals(sealedFrom({ snapshotKind: "nonsense" }), undefined);
+});
+
+// Deno's own sanitizers do not see these timers, so count them.
+Deno.test("dispose cancels the pending output sweep of a finished exec", async () => {
+  const session = await bootAshSession();
+  if (!session) return;
+  const timeouts = () =>
+    getActiveResourcesInfo().filter((r) => r === "Timeout").length;
+  const booted = timeouts();
+  try {
+    const finished = await session.process("exec true", {
+      maxOutputBytes: 64,
+    });
+    await finished.exited;
+    // The sweep is armed: five seconds from the exit.
+    assertEquals(timeouts(), booted + 1);
+  } finally {
+    session.dispose();
+    // Neither the sweep nor the kernel's own timers outlive it.
+    assertEquals(timeouts(), 0);
+  }
+});
+
+Deno.test("a process or spawn after dispose is refused", async () => {
+  const session = await bootAshSession();
+  if (!session) return;
+  session.dispose();
+  await assertRejects(
+    () => session.process("exec true", { maxOutputBytes: 64 }),
+    Error,
+    "disposed",
+  );
 });
