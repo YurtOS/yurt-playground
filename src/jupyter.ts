@@ -14,7 +14,15 @@ export const JUPYTER_PID_FILE = "/tmp/yurt-kernel.pid";
 export const JUPYTER_LOG_FILE = "/tmp/yurt-jupyter.log";
 /** How long the guest waits for ipykernel to write its connection file. */
 export const CONNECTION_FILE_WAIT_SECONDS = 240;
-const JUPYTER_KEY = "yurt";
+
+/** A fresh random HMAC key for one kernel launch: 32 bytes, hex. A fixed
+ * key would let any holder of the source forge messages to a kernel's
+ * ports (YurtOS/yurt-sandbox#384). The page reads it back from the
+ * kernel's connection file, so nothing else needs to know it. */
+export function generateJupyterKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
 const encoder = new TextEncoder();
 
 export type JupyterLaunchSession = {
@@ -92,6 +100,7 @@ export type JupyterReply = {
 export type KernelPorts = [number, number, number, number, number];
 
 export function buildKernelLaunchCommand(
+  key: string,
   connectionFile = JUPYTER_CONNECTION_FILE,
   ports?: KernelPorts,
 ): string {
@@ -101,7 +110,7 @@ export function buildKernelLaunchCommand(
     // non-loopback bind; in the tab the dial is loopback anyway.
     ports === undefined ? "--ip=127.0.0.1" : "--ip=0.0.0.0",
     "--transport=tcp",
-    `--Session.key=${JUPYTER_KEY}`,
+    `--Session.key=${key}`,
     `--f=${connectionFile}`,
   ];
   if (ports !== undefined) {
@@ -125,13 +134,14 @@ export function buildKernelLaunchCommand(
  * session without `spawn` gets: a launcher older than the /api/sessions
  * route. */
 export function buildKernelStartLine(
+  key: string,
   ports?: KernelPorts,
   connectionFile = JUPYTER_CONNECTION_FILE,
   logFile = JUPYTER_LOG_FILE,
   pidFile = JUPYTER_PID_FILE,
 ): string {
   return `${
-    buildKernelLaunchCommand(connectionFile, ports)
+    buildKernelLaunchCommand(key, connectionFile, ports)
   } >${logFile} 2>&1 & echo $! > ${pidFile}`;
 }
 
@@ -142,13 +152,14 @@ export function buildKernelStartLine(
  * and `kill %1` killed it (yurt-playground#82); as its own process it is
  * in no job table. */
 export function buildKernelOwnProcessLine(
+  key: string,
   ports?: KernelPorts,
   connectionFile = JUPYTER_CONNECTION_FILE,
   logFile = JUPYTER_LOG_FILE,
   pidFile = JUPYTER_PID_FILE,
 ): string {
   return `echo $$ > ${pidFile}; exec ${
-    buildKernelLaunchCommand(connectionFile, ports)
+    buildKernelLaunchCommand(key, connectionFile, ports)
   } >${logFile} 2>&1`;
 }
 
@@ -362,18 +373,19 @@ async function launchGuestKernel(
   const release = typesIntoShell
     ? hushUntil(session, CONNECTION_MARKER)
     : () => {};
+  const key = generateJupyterKey();
   let connection: KernelConnection;
   try {
     let exited: Promise<unknown> | undefined;
     if (session.spawn !== undefined) {
-      exited = (await session.spawn(buildKernelOwnProcessLine(ports)))
+      exited = (await session.spawn(buildKernelOwnProcessLine(key, ports)))
         ?.exited;
     } else {
       // No way to start a process of the page's own (a launcher older
       // than /api/sessions): the launch is a background job of the user's
       // shell (yurt-playground#82).
       await session.terminal.write(
-        encoder.encode(`${buildKernelStartLine(ports)}\n`),
+        encoder.encode(`${buildKernelStartLine(key, ports)}\n`),
       );
     }
     try {

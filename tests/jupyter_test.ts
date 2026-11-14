@@ -791,7 +791,12 @@ Deno.test("a launch that exited is cleared up without typing into the user's she
   // the files go, before the next launch.
   assertEquals(session.spawned.length, 3);
   const [first, clear, second] = session.spawned;
-  assert(first.includes("ipykernel_launcher") && second === first);
+  // A relaunch is a new launch: same line, but under a fresh key.
+  const withoutKey = (line: string) =>
+    line.replace(/--Session\.key=\S+/, "--Session.key=K");
+  assert(first.includes("ipykernel_launcher"));
+  assertEquals(withoutKey(second), withoutKey(first));
+  assert(second !== first, "the relaunch reuses the first launch's key");
   assertEquals(clear, `rm -f ${JUPYTER_CONNECTION_FILE} ${JUPYTER_PID_FILE}`);
 });
 
