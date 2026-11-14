@@ -928,6 +928,15 @@ async function startShell(
   /** A seal has begun: the page starts nothing more of its own -- an exec,
    * a process, a sweep -- but the seal's own clean-up. */
   let sealing = false;
+  /** A dispose has freed the kernel: nothing more may start, and no sweep
+   * may be armed for an exec that ends after it. */
+  let disposed = false;
+  /** Cancel every pending sweep: a seal and a dispose both end them (the
+   * seal removes the files itself). */
+  const clearSweeps = () => {
+    for (const timer of sweepTimers) clearTimeout(timer);
+    sweepTimers.clear();
+  };
   /** Spawns that have begun and not yet returned: a seal waits for them,
    * so no process it has not seen can start under it. */
   let spawning = 0;
@@ -938,6 +947,7 @@ async function startShell(
   /** `/bin/sh` with `argv`, as the login user in the login home, leading
    * its own process group unless `ownGroup` is false. */
   const spawnShell = async (argv: string[], { ownGroup = true } = {}) => {
+    if (disposed) throw new Error("the sandbox is disposed");
     spawning++;
     try {
       return await spawnShellNow(argv, ownGroup);
@@ -1106,9 +1116,12 @@ async function startShell(
       return relayServes;
     },
     dispose() {
-      stop();
+      if (disposed) return;
+      disposed = true;
+      clearSweeps();
       relayServes = false;
       try {
+        stop();
         relay?.stop();
       } finally {
         mk.dispose();
@@ -1118,6 +1131,7 @@ async function startShell(
     terminal,
     async spawn(line) {
       if (sealing) throw new Error("the sandbox is being sealed");
+      if (disposed) throw new Error("the sandbox is disposed");
       const process = await spawnShell(["/bin/sh", "-c", line]);
       // Nothing feeds it: stdin is at end-of-file from the start.
       process.closeStdin();
@@ -1143,13 +1157,14 @@ async function startShell(
       // capture. `line` ends in the exec of the command, so the redirects
       // bind to the command and every child inherits them.
       if (sealing) throw new Error("the sandbox is being sealed");
+      if (disposed) throw new Error("the sandbox is disposed");
       const tag = crypto.randomUUID();
       const path = (name: string) => `/tmp/.yurt-exec-${tag}.${name}`;
       const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
       // A sweep after a seal began is the seal's to do (it removes every
       // exec's files itself, once nothing runs).
       const single = async (command: string) => {
-        if (sealing) return;
+        if (sealing || disposed) return;
         const p = await spawnShell(["/bin/sh", "-c", command]);
         p.closeStdin();
         await p.runStartAsync();
@@ -1191,6 +1206,7 @@ async function startShell(
       // The registry reads the files right after the exit; the sweep comes
       // well after, whichever way the exit went.
       exited.finally(() => {
+        if (disposed) return;
         const timer = setTimeout(() => {
           sweepTimers.delete(timer);
           void sweep().catch(() => {});
@@ -1220,9 +1236,9 @@ async function startShell(
     async seal() {
       // From here the page starts nothing (an exec, a process and a sweep
       // are refused): see prepareSeal.
+      if (disposed) throw new Error("the sandbox is disposed");
       sealing = true;
-      for (const timer of sweepTimers) clearTimeout(timer);
-      sweepTimers.clear();
+      clearSweeps();
       await prepareSeal({
         host: mk,
         spawning: () => spawning,
