@@ -947,6 +947,7 @@ async function startShell(
   /** `/bin/sh` with `argv`, as the login user in the login home, leading
    * its own process group unless `ownGroup` is false. */
   const spawnShell = async (argv: string[], { ownGroup = true } = {}) => {
+    if (disposed) throw new Error("the sandbox is disposed");
     spawning++;
     try {
       return await spawnShellNow(argv, ownGroup);
@@ -1115,6 +1116,7 @@ async function startShell(
       return relayServes;
     },
     dispose() {
+      if (disposed) return;
       disposed = true;
       clearSweeps();
       stop();
@@ -1204,7 +1206,7 @@ async function startShell(
       // The registry reads the files right after the exit; the sweep comes
       // well after, whichever way the exit went.
       exited.finally(() => {
-        if (disposed) return;
+        if (disposed || sealing) return;
         const timer = setTimeout(() => {
           sweepTimers.delete(timer);
           void sweep().catch(() => {});
@@ -1234,6 +1236,7 @@ async function startShell(
     async seal() {
       // From here the page starts nothing (an exec, a process and a sweep
       // are refused): see prepareSeal.
+      if (disposed) throw new Error("the sandbox is disposed");
       sealing = true;
       clearSweeps();
       await prepareSeal({

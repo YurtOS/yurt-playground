@@ -815,12 +815,12 @@ Deno.test("dispose cancels the pending output sweep of a finished exec", async (
     assertEquals(timeouts(), booted + 1);
   } finally {
     session.dispose();
-    // Neither the sweep nor the kernel's own timers outlive it.
-    assertEquals(timeouts(), 0);
   }
+  // Neither the sweep nor the kernel's own timers outlive it.
+  assertEquals(timeouts(), 0);
 });
 
-Deno.test("a process or spawn after dispose is refused", async () => {
+Deno.test("after dispose a process and a seal are refused, a second dispose is a no-op", async () => {
   const session = await bootAshSession();
   if (!session) return;
   session.dispose();
@@ -829,4 +829,6 @@ Deno.test("a process or spawn after dispose is refused", async () => {
     Error,
     "disposed",
   );
+  await assertRejects(() => session.seal(), Error, "disposed");
+  session.dispose();
 });
