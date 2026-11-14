@@ -377,10 +377,11 @@ async function statusWithHost(
   path: string,
   hostHeader: string | undefined,
   upgrade = false,
+  origin?: string,
 ): Promise<string> {
   const conn = await Deno.connect({
     hostname: "127.0.0.1",
-    port: Number(new URL(url).port),
+    port: Number(new URL(url).port || 80),
   });
   try {
     const lines = [`GET ${path} HTTP/1.1`];
@@ -393,10 +394,17 @@ async function statusWithHost(
         "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
       );
     }
+    if (origin !== undefined) lines.push(`Origin: ${origin}`);
     lines.push("Connection: close", "", "");
     await conn.write(new TextEncoder().encode(lines.join("\r\n")));
     const buf = new Uint8Array(256);
-    const n = await conn.read(buf) ?? 0;
+    let timer = 0;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("no response")), 5000);
+    });
+    const n = await Promise.race([conn.read(buf), timeout]).finally(() =>
+      clearTimeout(timer)
+    ) ?? 0;
     return new TextDecoder().decode(buf.subarray(0, n)).split("\r\n")[0];
   } finally {
     conn.close();
@@ -447,6 +455,21 @@ Deno.test("the launcher answers only to its own loopback Host (DNS rebinding)", 
         " 403 ",
         `${bad} upgrade`,
       );
+      // The real attack: its Origin is its own (attacker) origin, which the
+      // Origin check accepts, since that origin derives from the same Host.
+      if (bad !== undefined) {
+        const origin = `http://${bad}`;
+        assertStringIncludes(
+          await statusWithHost(server.url, "/desktop.json", bad, false, origin),
+          " 403 ",
+          `${bad} same-origin json`,
+        );
+        assertStringIncludes(
+          await statusWithHost(server.url, "/ws/tty", bad, true, origin),
+          " 403 ",
+          `${bad} same-origin upgrade`,
+        );
+      }
     }
     // The names a person and the launcher use, in any case.
     for (
@@ -470,6 +493,40 @@ Deno.test("the launcher answers only to its own loopback Host (DNS rebinding)", 
   } finally {
     await server.shutdown();
     await upstream.shutdown();
+    await Deno.remove(dist, { recursive: true });
+  }
+});
+
+Deno.test("the Host rule holds without a native host, and on port 80 a bare Host is the right one", async () => {
+  const dist = await fakeDist();
+  const server = startDesktopServer(dist);
+  try {
+    assertStringIncludes(
+      await statusWithHost(server.url, "/", "rebind.example"),
+      " 403 ",
+    );
+  } finally {
+    await server.shutdown();
+  }
+  let on80: ReturnType<typeof startDesktopServer> | undefined;
+  try {
+    on80 = startDesktopServer(dist, undefined, { port: 80 });
+  } catch {
+    // binding port 80 needs privileges this runner may lack
+  }
+  try {
+    if (on80 !== undefined) {
+      // fetch (like a browser) leaves the default port out of Host.
+      const res = await fetch(on80.url);
+      assertEquals(res.status, 200);
+      await res.body?.cancel();
+      assertStringIncludes(
+        await statusWithHost(on80.url, "/", "127.0.0.1:81"),
+        " 403 ",
+      );
+    }
+  } finally {
+    await on80?.shutdown();
     await Deno.remove(dist, { recursive: true });
   }
 });

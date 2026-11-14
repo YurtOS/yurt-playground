@@ -426,7 +426,8 @@ export function freshApiToken(): string {
  * With a native host, the page learns so from `/desktop.json` and its
  * `/ws/*` sockets are relayed to it (src/desktop_host.ts), and `/api/*`
  * runs commands and moves files for a driver (src/desktop_api.ts) --
- * behind `apiToken`, which `/desktop.json` hands the page. */
+ * behind `apiToken`, which `/desktop.json` hands the page. Every request must
+ * carry a loopback `Host` on the bound port (DNS rebinding), else 403. */
 export function startDesktopServer(
   distDir: string,
   host?: DesktopHost,
@@ -489,12 +490,13 @@ export function startDesktopServer(
   };
   // Every request passes here first. A page that DNS-rebinds its own name to
   // 127.0.0.1 is same-origin with itself, so the Origin check above cannot see
-  // it; its Host is the attacker's name. Only the loopback names a person (or
-  // the launcher) types are served. The port is known once bound, and the
+  // it; its Host is the attacker's name. Only `127.0.0.1` and `localhost` on
+  // the bound port are served (not `[::1]`, a proxy's name or a forwarded
+  // port). The port is known once bound, and the
   // first request comes after.
-  let hosts = new Set<string>();
+  let allowedHosts = new Set<string>();
   const handle = (req: Request) =>
-    hosts.has((req.headers.get("host") ?? "").toLowerCase())
+    allowedHosts.has((req.headers.get("host") ?? "").toLowerCase())
       ? route(req)
       : Promise.resolve(
         new Response("not this host", {
@@ -510,7 +512,11 @@ export function startDesktopServer(
   if (!("port" in addr)) {
     throw new Error("desktop server did not bind a TCP port");
   }
-  hosts = new Set([`127.0.0.1:${addr.port}`, `localhost:${addr.port}`]);
+  // A browser leaves the scheme's default port out of Host.
+  const names = ["127.0.0.1", "localhost"];
+  allowedHosts = new Set(
+    names.map((name) => addr.port === 80 ? name : `${name}:${addr.port}`),
+  );
   return {
     url: `http://127.0.0.1:${addr.port}/`,
     shutdown: () => server.shutdown(),
