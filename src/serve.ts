@@ -40,7 +40,8 @@ export const ISOLATION_HEADERS = {
   "Content-Security-Policy": contentSecurityPolicy(),
   // Script in the page origin (a guest's notebook output) must not be able to
   // raise device prompts under the playground's name. Clipboard (terminal) and
-  // GPU (agent) are left alone: the page uses them.
+  // GPU (agent) are left alone: the page uses them. Not exhaustive: it
+  // covers the features that raise prompts or read sensors.
   "Permissions-Policy": [
     "camera",
     "microphone",
@@ -51,6 +52,11 @@ export const ISOLATION_HEADERS = {
     "hid",
     "payment",
     "display-capture",
+    "midi",
+    "accelerometer",
+    "gyroscope",
+    "magnetometer",
+    "xr-spatial-tracking",
   ].map((feature) => `${feature}=()`).join(", "),
 };
 

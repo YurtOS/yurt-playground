@@ -162,8 +162,30 @@ Deno.test("every response denies the powerful features a guest could prompt for"
   // Script that runs in the page origin must not be able to raise camera,
   // microphone or location prompts under the playground's name
   // (yurt-sandbox#382). Clipboard and GPU stay: the terminal and agent use them.
-  const policy = ISOLATION_HEADERS["Permissions-Policy"];
-  for (const feature of ["camera", "microphone", "geolocation", "usb"]) {
-    assertEquals(policy.split(", ").includes(`${feature}=()`), true, feature);
+  const denied = ISOLATION_HEADERS["Permissions-Policy"].split(", ");
+  for (
+    const feature of [
+      "camera",
+      "microphone",
+      "geolocation",
+      "usb",
+      "serial",
+      "bluetooth",
+      "hid",
+      "payment",
+      "display-capture",
+      "midi",
+      "accelerometer",
+      "gyroscope",
+      "magnetometer",
+      "xr-spatial-tracking",
+    ]
+  ) {
+    assertEquals(denied.includes(`${feature}=()`), true, feature);
   }
+  // The terminal and the agent need these.
+  assertEquals(
+    denied.some((d) => /^(clipboard|gpu|fullscreen)/.test(d)),
+    false,
+  );
 });
