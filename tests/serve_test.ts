@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   handlePlaygroundRequest,
+  ISOLATION_HEADERS,
   resolvePlaygroundPath,
 } from "../src/serve.ts";
 import { kernelImportMap, resolveKernelRoot } from "../scripts/serve.ts";
@@ -154,5 +155,15 @@ Deno.test("the dev server serves the bridge extension's zip, with every file in 
     const file of ["manifest.json", "bridge.js", "approve.html", "approve.js"]
   ) {
     assertEquals(names.includes(file), true, file);
+  }
+});
+
+Deno.test("every response denies the powerful features a guest could prompt for", () => {
+  // Script that runs in the page origin must not be able to raise camera,
+  // microphone or location prompts under the playground's name
+  // (yurt-sandbox#382). Clipboard and GPU stay: the terminal and agent use them.
+  const policy = ISOLATION_HEADERS["Permissions-Policy"];
+  for (const feature of ["camera", "microphone", "geolocation", "usb"]) {
+    assertEquals(policy.split(", ").includes(`${feature}=()`), true, feature);
   }
 });
