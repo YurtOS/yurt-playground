@@ -14,7 +14,15 @@ export const JUPYTER_PID_FILE = "/tmp/yurt-kernel.pid";
 export const JUPYTER_LOG_FILE = "/tmp/yurt-jupyter.log";
 /** How long the guest waits for ipykernel to write its connection file. */
 export const CONNECTION_FILE_WAIT_SECONDS = 240;
-const JUPYTER_KEY = "yurt";
+
+/** A fresh random HMAC key for one kernel launch: 32 bytes, hex. A fixed
+ * key would let any holder of the source forge messages to a kernel's
+ * ports (YurtOS/yurt-sandbox#384). The page reads it back from the
+ * kernel's connection file, so nothing else needs to know it. */
+export function generateJupyterKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
 const encoder = new TextEncoder();
 
 export type JupyterLaunchSession = {
@@ -92,6 +100,7 @@ export type JupyterReply = {
 export type KernelPorts = [number, number, number, number, number];
 
 export function buildKernelLaunchCommand(
+  key: string,
   connectionFile = JUPYTER_CONNECTION_FILE,
   ports?: KernelPorts,
 ): string {
@@ -101,7 +110,7 @@ export function buildKernelLaunchCommand(
     // non-loopback bind; in the tab the dial is loopback anyway.
     ports === undefined ? "--ip=127.0.0.1" : "--ip=0.0.0.0",
     "--transport=tcp",
-    `--Session.key=${JUPYTER_KEY}`,
+    `--Session.key=${key}`,
     `--f=${connectionFile}`,
   ];
   if (ports !== undefined) {
@@ -125,13 +134,16 @@ export function buildKernelLaunchCommand(
  * session without `spawn` gets: a launcher older than the /api/sessions
  * route. */
 export function buildKernelStartLine(
+  key: string,
   ports?: KernelPorts,
   connectionFile = JUPYTER_CONNECTION_FILE,
   logFile = JUPYTER_LOG_FILE,
   pidFile = JUPYTER_PID_FILE,
 ): string {
-  return `${
-    buildKernelLaunchCommand(connectionFile, ports)
+  // A leftover file from an earlier launch is removed first: ipykernel
+  // reloads an existing --f file and would keep its old key and ports.
+  return `rm -f ${connectionFile}; ${
+    buildKernelLaunchCommand(key, connectionFile, ports)
   } >${logFile} 2>&1 & echo $! > ${pidFile}`;
 }
 
@@ -142,13 +154,14 @@ export function buildKernelStartLine(
  * and `kill %1` killed it (yurt-playground#82); as its own process it is
  * in no job table. */
 export function buildKernelOwnProcessLine(
+  key: string,
   ports?: KernelPorts,
   connectionFile = JUPYTER_CONNECTION_FILE,
   logFile = JUPYTER_LOG_FILE,
   pidFile = JUPYTER_PID_FILE,
 ): string {
-  return `echo $$ > ${pidFile}; exec ${
-    buildKernelLaunchCommand(connectionFile, ports)
+  return `echo $$ > ${pidFile}; rm -f ${connectionFile}; exec ${
+    buildKernelLaunchCommand(key, connectionFile, ports)
   } >${logFile} 2>&1`;
 }
 
@@ -357,6 +370,7 @@ async function launchGuestKernel(
 ): Promise<JupyterTransport> {
   // Only what is typed into the user's shell needs hushing; a session that
   // spawns the launch and reads the file itself types nothing.
+  const key = generateJupyterKey();
   const typesIntoShell = session.spawn === undefined ||
     session.readFile === undefined;
   const release = typesIntoShell
@@ -366,14 +380,14 @@ async function launchGuestKernel(
   try {
     let exited: Promise<unknown> | undefined;
     if (session.spawn !== undefined) {
-      exited = (await session.spawn(buildKernelOwnProcessLine(ports)))
+      exited = (await session.spawn(buildKernelOwnProcessLine(key, ports)))
         ?.exited;
     } else {
       // No way to start a process of the page's own (a launcher older
       // than /api/sessions): the launch is a background job of the user's
       // shell (yurt-playground#82).
       await session.terminal.write(
-        encoder.encode(`${buildKernelStartLine(ports)}\n`),
+        encoder.encode(`${buildKernelStartLine(key, ports)}\n`),
       );
     }
     try {
@@ -382,8 +396,18 @@ async function launchGuestKernel(
           session.readFile,
           options.pollMs ?? CONNECTION_FILE_POLL_MS,
           exited,
+          key,
         )
         : await readConnectionFile(session);
+      // The polled file is already ours; the typed read has no such
+      // filter. Never talk under any key but this launch's (a stale file
+      // may carry the old fixed one); thrown here, the kernel is stopped.
+      if (connection.key !== key) {
+        throw new Error(
+          "the Jupyter connection file's key is not the one this launch " +
+            "set; a stale kernel connection file was read",
+        );
+      }
     } catch (error) {
       if (error instanceof KernelExited) {
         // Nothing is left to kill, and its pid may be another process's
@@ -470,7 +494,10 @@ async function pollConnectionFile(
   pollMs: number,
   /** The kernel process's end, when the session can see it: once it has
    * exited, one last look, and the wait is over. */
-  exited?: Promise<unknown>,
+  exited: Promise<unknown> | undefined,
+  /** The key this launch set: a file under any other key is a stale one
+   * from an earlier launch (or page), not this kernel's yet. */
+  key: string,
 ): Promise<KernelConnection> {
   const deadline = performance.now() + CONNECTION_FILE_WAIT_SECONDS * 1000;
   const decoder = new TextDecoder();
@@ -486,6 +513,8 @@ async function pollConnectionFile(
     failed = error instanceof Error ? error.message : String(error);
     gone = true;
   });
+  /** A file was there, under a key that is not this launch's. */
+  let foreignKey = false;
   for (;;) {
     // Read before deciding: a kernel that wrote the file and then exited
     // still gets its file read once.
@@ -496,7 +525,9 @@ async function pollConnectionFile(
       // ipykernel writes the file in one go, but a look can land between
       // the create and the write: an unparsable file is "not yet".
       try {
-        return JSON.parse(decoder.decode(bytes)) as KernelConnection;
+        const parsed = JSON.parse(decoder.decode(bytes)) as KernelConnection;
+        if (parsed.key === key) return parsed;
+        foreignKey = true;
       } catch {
         // fall through to the next look
       }
@@ -519,6 +550,8 @@ async function pollConnectionFile(
   throw new Error(
     failed !== undefined
       ? `the Jupyter kernel process failed to run: ${failed}; kernel log:\n${tail}`
+      : foreignKey
+      ? `Jupyter connection file stayed under a key other than this launch's for ${CONNECTION_FILE_WAIT_SECONDS} s (a stale file the kernel kept?); kernel log:\n${tail}`
       : `Jupyter connection file was not written within ${CONNECTION_FILE_WAIT_SECONDS} s; kernel log:\n${tail}`,
   );
 }
