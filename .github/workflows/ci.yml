@@ -143,29 +143,31 @@ jobs:
           fi
       # yurtos-kernel and yurt-jupyter are PRIVATE, and the default
       # GITHUB_TOKEN cannot read another private repository. Without a PAT stored as
-      # KERNEL_CHECKOUT_TOKEN the integration job cannot check them out at all, so
+      # REPO_READ_TOKEN the integration job cannot check them out at all, so
       # it announces that loudly instead of dying at "Repository not found".
       - name: Check for the cross-repo checkout token
         id: token
         env:
-          KERNEL_CHECKOUT_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          REPO_READ_TOKEN: ${{ secrets.REPO_READ_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -n "${KERNEL_CHECKOUT_TOKEN:-}" ]; then
+          if [ -n "${REPO_READ_TOKEN:-}" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Integration did not run::KERNEL_CHECKOUT_TOKEN is not set, so the private YurtOS siblings could not be checked out. No kernel, image, or Jupyter payload was built and no artifact-backed test ran."
+            echo "::warning title=Integration did not run::REPO_READ_TOKEN is not set, so the private YurtOS siblings could not be checked out. No kernel, image, or Jupyter payload was built and no artifact-backed test ran."
             {
               echo "### Integration: **not run**"
               echo
-              echo '`KERNEL_CHECKOUT_TOKEN` is unset, so the private'
+              echo '`REPO_READ_TOKEN` is unset, so the private'
               echo '`yurtos-kernel` and `yurt-jupyter` checkouts'
               echo 'were skipped. Nothing was built and no artifact-backed test'
               echo 'ran — this is not coverage.'
               echo
-              echo 'Add a PAT with read access to those repositories as the'
-              echo '`KERNEL_CHECKOUT_TOKEN` repository secret to enable it.'
+              echo 'Add the `ci-yurt-playground` PAT (Contents read on'
+              echo '`yurtos-kernel`, `yurt-jupyter` and the private release'
+              echo 'repos in `artifacts/pins.json`: `yurt-sandbox`, `yurt-ports`)'
+              echo 'as the `REPO_READ_TOKEN` repository secret to enable it.'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -216,7 +218,7 @@ jobs:
           path: playground
       - uses: ./playground/.github/actions/site-inputs
         with:
-          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          token: ${{ secrets.REPO_READ_TOKEN }}
       # `fast` is the catch-all shard (scripts/ci-shards.ts CATCH_ALL_SHARD);
       # layout_test.ts asserts this condition names it, so renaming the shard
       # cannot leave `deno check` silently unrun (#123 review).
@@ -289,7 +291,7 @@ jobs:
           path: playground
       - uses: ./playground/.github/actions/site-inputs
         with:
-          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          token: ${{ secrets.REPO_READ_TOKEN }}
       # Every scene but `webkit` runs the runner image's Google Chrome
       # (scripts/browser.ts), the browser people use, not Playwright's headless
       # Chromium build. Its version goes in the log: the image updates it
@@ -394,7 +396,7 @@ jobs:
               # A fork's pull request: GitHub withholds the secret, the legs
               # are skipped by design, and `checks` has already said so in
               # the job summary.
-              echo "cross-repo legs did not run: no KERNEL_CHECKOUT_TOKEN"
+              echo "cross-repo legs did not run: no REPO_READ_TOKEN"
               exit 0
               ;;
             *)

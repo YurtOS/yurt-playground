@@ -40,7 +40,7 @@ jobs:
         with:
           persist-credentials: false
           repository: YurtOS/yurt-jupyter
-          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          token: ${{ secrets.REPO_READ_TOKEN }}
           ref: ${{ steps.pins.outputs.jupyter_rev }}
           path: yurt-jupyter
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
