@@ -1889,6 +1889,17 @@ Deno.test("a full --pins-only run keeps the record of a host it pins again, and 
   assertEquals(unlabelled.code, 0, unlabelled.output);
   assertEquals("train" in unlabelled.desktop?.desktopHost, false);
   assertEquals(unlabelled.desktop?.desktopHost.kernelRev, "k-old");
+  // A second browser-only train: the top-level train is the first one's,
+  // which built no host, so it is not taken as the host's.
+  const again = await desktopPins(1, {
+    train: "playground-2026.11.16-bbbbbbb",
+    kernelWasm: { rev: "k-mid" },
+    desktopHost: unlabelled.desktop?.desktopHost,
+    yurtCli: pinnedCli,
+  });
+  assertEquals(again.code, 0, again.output);
+  assertEquals("train" in again.desktop?.desktopHost, false, again.output);
+  assertEquals(again.desktop?.desktopHost.kernelRev, "k-old");
 });
 
 Deno.test("a real browser-only train with a kernel commit off main stops before its first dispatch", async () => {

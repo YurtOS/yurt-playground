@@ -292,7 +292,10 @@ run_check() {
   # from before desktopHost.kernelRev are one full train's, built together.
   local host_kernel desktop_train
   host_kernel=$(jq -r '.desktopHost.kernelRev // ""' "$pins")
-  desktop_train=$(jq -r '.desktopHost.train // .train // "" | sub("^.*@"; "") | sub("^yurt-cli-"; "")' "$pins")
+  # The top-level train is the host's only in pins from before
+  # desktopHost.kernelRev (one full train's); after a browser-only train it
+  # is that train's, which built no host.
+  desktop_train=$(jq -r '.desktopHost.train // (if .desktopHost.kernelRev then null else .train end) // "" | sub("^.*@"; "") | sub("^yurt-cli-"; "") | select(. != "") // "an unlabelled train"' "$pins")
   if [ -z "$host_kernel" ] || [ "$host_kernel" = "$kernel_pin" ]; then
     row ok "desktop app" "$(short "${host_kernel:-$kernel_pin}")" "$(short "$kernel_pin")" "host and CLI of $desktop_train: built for the pinned kernel"
   else
@@ -929,7 +932,7 @@ fi
 if [ "$browser_only" = 1 ]; then
   desktop_json=$(jq -c 'select(.desktopHost.release and .yurtCli.release)
     | {desktopHost: ((.desktopHost + {kernelRev: (.desktopHost.kernelRev // .kernelWasm.rev),
-                                      train: (.desktopHost.train // .train // "" | sub("^.*@"; "") | sub("^yurt-cli-"; ""))})
+                                      train: (.desktopHost.train // (if .desktopHost.kernelRev then null else .train end) // "" | sub("^.*@"; "") | sub("^yurt-cli-"; ""))})
                      | if .train == "" then del(.train) else . end),
        yurtCli}' "$root/artifacts/pins.json") || desktop_json=""
   [ -n "$desktop_json" ] && [ "$(jq -r '.desktopHost.kernelRev // ""' <<< "$desktop_json")" != "" ] \
@@ -951,7 +954,7 @@ else
   if [ "$pins_only" = 1 ] && [ "$(jq -r '.desktopHost.release // ""' "$root/artifacts/pins.json")" = "$host_release" ] \
     && [ "$(jq -r ".desktopHost.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")" = "$host_repo" ]; then
     host_kernel_rev=$(jq -r '.desktopHost.kernelRev // .kernelWasm.rev // ""' "$root/artifacts/pins.json")
-    host_train=$(jq -r '.desktopHost.train // .train // "" | sub("^.*@"; "") | sub("^yurt-cli-"; "")' "$root/artifacts/pins.json")
+    host_train=$(jq -r '.desktopHost.train // (if .desktopHost.kernelRev then null else .train end) // "" | sub("^.*@"; "") | sub("^yurt-cli-"; "")' "$root/artifacts/pins.json")
     [ -n "$host_kernel_rev" ] || host_kernel_rev=$kernel_sha
     [ -n "$host_train" ] || { host_train=$(release_tag "$train"); host_train=${host_train#yurt-cli-}; }
   elif [ "$pins_only" = 1 ] \
@@ -1159,7 +1162,7 @@ say "deploy: gh run list --repo YurtOS/yurt-playground --workflow deploy-pages.y
 # its host and CLI are from>, whose installers carry their own kernel and
 # image.
 if [ "$browser_only" = 1 ]; then
-  say "released (browser-only): kernel-wasm-$train, $image_release, $seal_release_of_train; the desktop app stays at $desktop_train's host and CLI, and the links at the newest desktop-* release (desktop-$desktop_train when its [5] published); a full train brings it level"
+  say "released (browser-only): kernel-wasm-$train, $image_release, $seal_release_of_train; the desktop app stays at $desktop_train's host and CLI, and the links at the newest desktop-* release$( [ "$desktop_train" = "an unlabelled train" ] || echo " (desktop-$desktop_train when its [5] published)"); a full train brings it level"
   remind_dropped_snapshot "$(step_get snapshot dropped)"
   exit 0
 fi
