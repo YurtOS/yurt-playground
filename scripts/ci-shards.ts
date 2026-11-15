@@ -18,6 +18,7 @@ export const NAMED_SHARDS: Record<string, string[]> = {
   // ones (#123 review).
   guest: [
     "tests/boot_test.ts",
+    "tests/boot_dispose_test.ts",
     // Boots the in-tab sandbox, like the others here.
     "tests/linux_remark_boot_test.ts",
     "tests/notebook_kernel_test.ts",
