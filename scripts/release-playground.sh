@@ -928,8 +928,9 @@ fi
 # train's, built at its own kernel pin).
 if [ "$browser_only" = 1 ]; then
   desktop_json=$(jq -c 'select(.desktopHost.release and .yurtCli.release)
-    | {desktopHost: (.desktopHost + {kernelRev: (.desktopHost.kernelRev // .kernelWasm.rev),
-                                     train: (.desktopHost.train // .train // "" | sub("^.*@"; "") | sub("^yurt-cli-"; ""))}),
+    | {desktopHost: ((.desktopHost + {kernelRev: (.desktopHost.kernelRev // .kernelWasm.rev),
+                                      train: (.desktopHost.train // .train // "" | sub("^.*@"; "") | sub("^yurt-cli-"; ""))})
+                     | if .train == "" then del(.train) else . end),
        yurtCli}' "$root/artifacts/pins.json") || desktop_json=""
   [ -n "$desktop_json" ] && [ "$(jq -r '.desktopHost.kernelRev // ""' <<< "$desktop_json")" != "" ] \
     || die "artifacts/pins.json has no desktopHost and yurtCli to carry through (with the kernel rev they were built for); a browser-only train needs a full train's pins"
@@ -937,8 +938,30 @@ if [ "$browser_only" = 1 ]; then
   # the pin PR): another one now means pins.json changed under the train.
   [ "$(jq -r .desktopHost.rev <<< "$desktop_json")" = "$sandbox_sha" ] \
     || die "artifacts/pins.json now pins the desktop host at yurt-sandbox $(jq -r .desktopHost.rev <<< "$desktop_json"), not $sandbox_sha as when $train started; check out the pins it started from, or start a new train"
-  say "desktop: carried through from $(jq -r .desktopHost.train <<< "$desktop_json") (host $(jq -r .desktopHost.release <<< "$desktop_json"), CLI $(jq -r .yurtCli.release <<< "$desktop_json"))"
+  say "desktop: carried through from $(jq -r '.desktopHost.train // "an unlabelled train"' <<< "$desktop_json") (host $(jq -r .desktopHost.release <<< "$desktop_json"), CLI $(jq -r .yurtCli.release <<< "$desktop_json"))"
 else
+  # Built for this train's kernel ([3]), under this train's label. A
+  # --pins-only run names its releases by hand: its label may be the CLI
+  # release's (desktop-<train> is named without the prefix), and the host it
+  # pins again unchanged keeps the kernel rev it was recorded with -- this
+  # kernel may be a browser-only train's, which that host cannot boot.
+  host_kernel_rev=$kernel_sha
+  host_train=$(release_tag "$train")
+  host_train=${host_train#yurt-cli-}
+  if [ "$pins_only" = 1 ] && [ "$(jq -r '.desktopHost.release // ""' "$root/artifacts/pins.json")" = "$host_release" ] \
+    && [ "$(jq -r ".desktopHost.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")" = "$host_repo" ]; then
+    host_kernel_rev=$(jq -r '.desktopHost.kernelRev // .kernelWasm.rev // ""' "$root/artifacts/pins.json")
+    host_train=$(jq -r '.desktopHost.train // .train // "" | sub("^.*@"; "") | sub("^yurt-cli-"; "")' "$root/artifacts/pins.json")
+    [ -n "$host_kernel_rev" ] || host_kernel_rev=$kernel_sha
+    [ -n "$host_train" ] || { host_train=$(release_tag "$train"); host_train=${host_train#yurt-cli-}; }
+  elif [ "$pins_only" = 1 ] \
+    && [[ "$host_release" =~ ^desktop-host-playground-[0-9]{4}\.[0-9]{2}\.[0-9]{2}-([0-9a-f]{7})(\.[0-9]+)?(-validate)?$ ]] \
+    && [ "${BASH_REMATCH[1]}" != "${kernel_sha:0:7}" ]; then
+    # Another train's host, by its name: built at the kernel rev its label
+    # ends with, not this one. (A hand-cut host's name says nothing; naming
+    # it with this kernel asserts the pair, as before.)
+    die "--desktop-host-release $host_release was built at kernel ${BASH_REMATCH[1]}, not ${kernel_sha:0:7} (--kernel-sha): a host boots only its own kernel's wasm"
+  fi
   host_json='{}'
   cli_json='{}'
   # The CLI's package names carry its version; the release's asset list says
@@ -958,28 +981,6 @@ else
     cli_json=$(jq --arg t "$target" --arg a "$asset" --arg s "$(sidecar_sha "$cli_repo" "$cli_release" "$asset")" \
       '. + {($t): {asset: $a, sha256: $s}}' <<< "$cli_json")
   done
-  # Built for this train's kernel ([3]), under this train's label. A
-  # --pins-only run names its releases by hand: its label may be the CLI
-  # release's (desktop-<train> is named without the prefix), and the host it
-  # pins again unchanged keeps the kernel rev it was recorded with -- this
-  # kernel may be a browser-only train's, which that host cannot boot.
-  host_kernel_rev=$kernel_sha
-  host_train=$(release_tag "$train")
-  host_train=${host_train#yurt-cli-}
-  if [ "$pins_only" = 1 ] && [ "$(jq -r '.desktopHost.release // ""' "$root/artifacts/pins.json")" = "$host_release" ] \
-    && [ "$(jq -r ".desktopHost.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")" = "$host_repo" ]; then
-    host_kernel_rev=$(jq -r '.desktopHost.kernelRev // .kernelWasm.rev // ""' "$root/artifacts/pins.json")
-    host_train=$(jq -r '.desktopHost.train // .train // "" | sub("^.*@"; "") | sub("^yurt-cli-"; "")' "$root/artifacts/pins.json")
-    [ -n "$host_kernel_rev" ] || host_kernel_rev=$kernel_sha
-    [ -n "$host_train" ] || { host_train=$(release_tag "$train"); host_train=${host_train#yurt-cli-}; }
-  elif [ "$pins_only" = 1 ] && [[ "$host_release" == desktop-host-playground-* ]] \
-    && [[ "$kernel_wasm_release" == kernel-wasm-playground-* ]] \
-    && [ "${host_release#desktop-host-}" != "${kernel_wasm_release#kernel-wasm-}" ]; then
-    # Another train's host, by its name: built for that train's kernel,
-    # which is not this kernel wasm's. (A hand-cut host's name says
-    # nothing; naming it with this kernel asserts the pair, as before.)
-    die "--desktop-host-release $host_release is train ${host_release#desktop-host-}'s, built for that train's kernel, not $kernel_wasm_release's: a host boots only its own kernel's wasm"
-  fi
   desktop_json=$(jq -nc --arg train "$host_train" --arg kernel_sha "$host_kernel_rev" --arg sandbox_sha "$sandbox_sha" \
     --arg host_release "$host_release" --arg host_repo "$host_repo" --arg cli_release "$cli_release" --arg cli_repo "$cli_repo" \
     --argjson host "$host_json" --argjson cli "$cli_json" '{
@@ -990,7 +991,7 @@ else
         assets: ($cli | with_entries(.value = .value.asset)),
         sha256: ($cli | with_entries(.value = .value.sha256))}}')
 fi
-desktop_train=$(jq -r .desktopHost.train <<< "$desktop_json")
+desktop_train=$(jq -r '.desktopHost.train // "an unlabelled train"' <<< "$desktop_json")
 # The sealed sandbox snapshot (scripts/release-snapshot.ts) is captured by
 # hand, not by the train: the old entry goes into the new pins, and stays
 # only if release-snapshot.ts --check-pin says it is this train's (well
