@@ -12,7 +12,8 @@ inputs:
   token:
     description: >
       PAT that reads the private siblings (yurtos-kernel, yurt-jupyter) and
-      the yurt-packages releases: REPO_READ_TOKEN.
+      the pinned releases (artifacts/pins.json: yurt-sandbox, yurt-ports):
+      REPO_READ_TOKEN.
     required: true
 
 runs:

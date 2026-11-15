@@ -165,8 +165,9 @@ jobs:
               echo 'ran — this is not coverage.'
               echo
               echo 'Add the `ci-yurt-playground` PAT (Contents read on'
-              echo '`yurtos-kernel`, `yurt-jupyter` and `yurt-packages`) as the'
-              echo '`REPO_READ_TOKEN` repository secret to enable it.'
+              echo '`yurtos-kernel`, `yurt-jupyter` and the private release'
+              echo 'repos in `artifacts/pins.json`: `yurt-sandbox`, `yurt-ports`)'
+              echo 'as the `REPO_READ_TOKEN` repository secret to enable it.'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
