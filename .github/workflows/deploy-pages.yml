@@ -43,14 +43,14 @@ jobs:
       - name: Check for the deploy secrets
         id: check
         env:
-          KERNEL_CHECKOUT_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          REPO_READ_TOKEN: ${{ secrets.REPO_READ_TOKEN }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_PROJECT_NAME: ${{ secrets.CLOUDFLARE_PROJECT_NAME }}
         run: |
           set -euo pipefail
           missing=""
-          for name in KERNEL_CHECKOUT_TOKEN CLOUDFLARE_API_TOKEN \
+          for name in REPO_READ_TOKEN CLOUDFLARE_API_TOKEN \
             CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PROJECT_NAME; do
             eval "value=\${$name:-}"
             if [ -z "$value" ]; then missing="$missing $name"; fi
@@ -128,7 +128,7 @@ jobs:
           ref: ${{ needs.target.outputs.ref }}
       - uses: ./playground/.github/actions/site-inputs
         with:
-          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          token: ${{ secrets.REPO_READ_TOKEN }}
       - name: Verify playground
         timeout-minutes: 12
         working-directory: playground

@@ -66,7 +66,7 @@ jobs:
           path: playground
       - uses: ./playground/.github/actions/site-inputs
         with:
-          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          token: ${{ secrets.REPO_READ_TOKEN }}
       - name: Build static site
         working-directory: playground
         env:
@@ -109,11 +109,11 @@ jobs:
       # (artifacts/), and the pinned desktop host + runtime (runtime/<target>/).
       - name: Install the pinned kernel wasm and playground image
         env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPO_READ_TOKEN }}
         run: scripts/install-pinned-artifacts.sh
       - name: Install the pinned desktop host for each target
         env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPO_READ_TOKEN }}
           TARGETS: ${{ matrix.targets }}
         run: |
           for target in $TARGETS; do
@@ -189,7 +189,7 @@ jobs:
       # pinned release is mirrored here under stable, versionless names.
       - name: Fetch the pinned yurt CLI packages
         env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPO_READ_TOKEN }}
         run: |
           set -euo pipefail
           tag=$(jq -r .yurtCli.release artifacts/pins.json)
@@ -212,7 +212,7 @@ jobs:
       # and verify what it got.
       - name: Fetch the pinned playground image
         env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPO_READ_TOKEN }}
         run: |
           set -euo pipefail
           tag=$(jq -r .image.release artifacts/pins.json)

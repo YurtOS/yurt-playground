@@ -12,7 +12,7 @@ inputs:
   token:
     description: >
       PAT that reads the private siblings (yurtos-kernel, yurt-jupyter) and
-      the yurt-packages releases: KERNEL_CHECKOUT_TOKEN.
+      the yurt-packages releases: REPO_READ_TOKEN.
     required: true
 
 runs:
