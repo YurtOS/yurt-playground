@@ -52,6 +52,21 @@ verifies it, and asks before merging the pin PR that deploys the page.
 `--validate` builds everything and publishes nothing; `--pins-only` regenerates
 the pins from releases cut by hand.
 
+`--browser-only` cuts a train for the page alone, in about 30 minutes instead of
+one to two hours: the kernel wasm, the image and the Python seal, the pin PR and
+the deploy, but not yurt-sandbox's desktop host and CLI or the desktop
+installers. The desktop host and CLI pins are carried through unchanged, with
+the kernel rev and the train they were built for (`desktopHost.kernelRev`,
+`desktopHost.train`). The home page's download links resolve to the newest
+`desktop-<train>` release, which bundles its own kernel, image and runtime, so
+they keep serving the last full train's app. A desktop host boots only a kernel
+wasm of its own kernel rev, so `scripts/install-desktop-host.sh` refuses to pair
+the carried host with the new kernel pin: no desktop app is built from a
+browser-only train's pins. `--check` shows the desktop app as `BEHIND` (not
+`STALE`) until the next full train, which pins its own host and CLI and cuts the
+installers again. Leave yurt-sandbox's `scripts/desktop-host-pins.env` at the
+desktop's train meanwhile: it describes the host, not the page.
+
 ## The suspend/resume kernel
 
 The _Python 3 (Yurt, suspend/resume)_ kernelspec runs a CPython built so the

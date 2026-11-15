@@ -674,6 +674,10 @@ async function imageStepFixture(
     kernelRelease?: KernelRelease;
     /** YURT_KERNEL_RELEASE_TIMEOUT_SECS for the script. */
     kernelReleaseTimeout?: string;
+    /** Pass --browser-only. */
+    browserOnly?: boolean;
+    /** The resumed train's state file records a browser-only train. */
+    stateBrowserOnly?: boolean;
   },
 ) {
   const sandbox = opts.sandbox ?? "main";
@@ -691,18 +695,8 @@ async function imageStepFixture(
     opts.stopAtPins
       ? `${
         source.split(pinsStep)[0]
-      }\nprintf 'PINS_CLI=%s@%s\\n' "$cli_repo" "$cli_release"\nexit 0\n`
+      }\nprintf 'PINS_CLI=%s@%s\\n' "$cli_repo" "$cli_release"\nprintf 'BROWSER_ONLY=%s SANDBOX=%s\\n' "$browser_only" "$sandbox_sha"\nexit 0\n`
       : source,
-  );
-  await Deno.writeTextFile(
-    join(root, "artifacts/pins.json"),
-    JSON.stringify({
-      image: {
-        releaseRepo: "YurtOS/yurt-ports",
-        release: "playground-image-pinned",
-      },
-      yurtCli: opts.yurtCli ?? pinnedCli,
-    }),
   );
   const shas: Record<string, { main: string; pr: string }> = {};
   for (const name of ["ports", "kernel", "sandbox"]) {
@@ -740,6 +734,23 @@ async function imageStepFixture(
     ]);
     shas[name] = { main, pr };
   }
+  // The desktop host a browser-only train carries through: yurt-sandbox's
+  // main, as the train before it pinned it.
+  await Deno.writeTextFile(
+    join(root, "artifacts/pins.json"),
+    JSON.stringify({
+      image: {
+        releaseRepo: "YurtOS/yurt-ports",
+        release: "playground-image-pinned",
+      },
+      desktopHost: {
+        rev: shas.sandbox.main,
+        releaseRepo: "YurtOS/yurt-sandbox",
+        release: "desktop-host-pinned",
+      },
+      yurtCli: opts.yurtCli ?? pinnedCli,
+    }),
+  );
   const train = `playground-${today}-aaaaaaa${
     opts.validate ? "-validate" : ""
   }`;
@@ -758,6 +769,7 @@ async function imageStepFixture(
         image_repo: "YurtOS/yurt-ports",
         build_image: true,
         validate: opts.validate,
+        ...(opts.stateBrowserOnly ? { browser_only: true } : {}),
         steps: {
           kernel_wasm: { run_id: 1, conclusion: "success" },
           image: { jupyter_payload_release: "jupyter-payload-x" },
@@ -830,14 +842,15 @@ esac
       shas.kernel[opts.kernel],
       "--ports-sha",
       shas.ports[opts.ports],
-      "--sandbox-sha",
-      shas.sandbox[sandbox],
+      // A browser-only train builds nothing of yurt-sandbox's.
+      ...(opts.browserOnly ? [] : ["--sandbox-sha", shas.sandbox[sandbox]]),
       "--train",
       train.replace(/-validate$/, ""),
       ...(opts.imageRelease ? ["--image-release", opts.imageRelease] : []),
     ]
     : ["--resume", "--train", train.replace(/-validate$/, "")];
   if (opts.validate) args.push("--validate");
+  if (opts.browserOnly) args.push("--browser-only");
   const result = await command(
     "bash",
     [join(root, "scripts/release-playground.sh"), ...args],
@@ -1478,6 +1491,524 @@ Deno.test("a real train pins its own CLI in [4], not the one [2]'s smoke install
   }
 });
 
+// --browser-only: a train for the page alone. [1] and [2] as ever, no
+// [3] (the host and CLI) and no [5] (the installers); [4] carries the
+// desktop pins through, with the kernel rev and train they were built for.
+
+Deno.test("a browser-only train dispatches the kernel wasm and the image, never the host and CLI", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    browserOnly: true,
+    stopAtPins: true,
+    // It needs no yurt-sandbox checkout: it builds nothing there.
+    sandboxRoot: "missing-sandbox-checkout",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    assertEquals(f.dispatches.length, 2, f.calls.join("\n"));
+    assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+    assertStringIncludes(f.dispatches[1], "release-playground-image.yml");
+    assertEquals(
+      f.dispatches.some((d) => d.includes("release-native.yml")),
+      false,
+      f.calls.join("\n"),
+    );
+    // The mode is the train's, for --resume; the sandbox rev it records
+    // is the carried desktop host's.
+    assertEquals(f.state?.browser_only, true);
+    assertEquals(f.state?.sandbox_sha, f.shas.sandbox.main);
+    assertEquals(f.state?.steps?.native, undefined);
+    assertStringIncludes(
+      f.output,
+      `BROWSER_ONLY=1 SANDBOX=${f.shas.sandbox.main}`,
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a resumed browser-only train stays browser-only without the flag", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "main",
+    stateBrowserOnly: true,
+    stopAtPins: true,
+    sandboxRoot: "missing-sandbox-checkout",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    assertEquals(f.dispatches.length, 1, f.calls.join("\n"));
+    assertStringIncludes(f.dispatches[0], "release-playground-image.yml");
+    assertStringIncludes(f.output, "BROWSER_ONLY=1");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("--resume --browser-only refuses a full train", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "main",
+    browserOnly: true,
+  });
+  try {
+    assertEquals(f.code, 1, f.output);
+    assertStringIncludes(f.output, "is not a browser-only train");
+    assertEquals(f.dispatches, [], f.calls.join("\n"));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a browser-only rehearsal skips the host and CLI and leaves nothing behind", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    browserOnly: true,
+    sandboxRoot: "missing-sandbox-checkout",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    assertEquals(f.dispatches.length, 2, f.calls.join("\n"));
+    assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+    assertStringIncludes(f.dispatches[1], "release-playground-image.yml");
+    // Neither looked for nor deleted: it publishes no host or CLI.
+    const calls = f.calls.join("\n");
+    assertEquals(calls.includes("desktop-host-"), false, calls);
+    assertEquals(calls.includes("yurt-cli-playground"), false, calls);
+    assertEquals(f.stateLeft, false, "a finished rehearsal left its state");
+    assertEquals(f.leftBranches, 0, "a validate branch was left");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("--browser-only refuses the host and CLI inputs it would not use", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "release-browser-only-" });
+  try {
+    const root = join(dir, "project");
+    await copyScriptLib(root);
+    await Deno.copyFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+      join(root, "scripts/release-playground.sh"),
+    );
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    await Deno.writeTextFile(
+      join(bin, "gh"),
+      '#!/bin/sh\n[ "$1 $2" = \'auth status\' ] && exit 0\necho "unexpected gh call: $*" >&2; exit 1\n',
+    );
+    await Deno.chmod(join(bin, "gh"), 0o755);
+    for (
+      const given of [
+        ["--sandbox-sha", "a".repeat(40)],
+        ["--desktop-host-release", "desktop-host-x"],
+        ["--yurt-cli-release", "yurt-cli-x"],
+      ]
+    ) {
+      const result = await command("bash", [
+        join(root, "scripts/release-playground.sh"),
+        "--browser-only",
+        ...given,
+      ], { env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` } });
+      const output = new TextDecoder().decode(result.stdout) +
+        new TextDecoder().decode(result.stderr);
+      assertEquals(result.code, 1, `${given[0]}: ${output}`);
+      assertStringIncludes(output, `--browser-only takes no ${given[0]}`);
+      assertEquals(output.includes("unexpected gh call"), false, output);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** Parsed pins, read field by field. */
+// deno-lint-ignore no-explicit-any
+type Json = any;
+
+/** release-playground.sh's desktop part of the pins ([4]): the host and CLI
+ * a full train pins from its own releases, or a browser-only train carries
+ * through from `pins`. Prints the computed JSON. */
+async function desktopPins(
+  browserOnly: 0 | 1,
+  pins: unknown,
+): Promise<{ code: number; output: string; desktop?: Json }> {
+  const dir = await Deno.makeTempDir({ prefix: "release-desktop-pins-" });
+  try {
+    const root = join(dir, "project");
+    await Deno.mkdir(join(root, "artifacts"), { recursive: true });
+    await Deno.writeTextFile(
+      join(root, "artifacts/pins.json"),
+      JSON.stringify(pins),
+    );
+    const source = await Deno.readTextFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+    );
+    const start = "# The desktop part of the pins";
+    const end = "# The sealed sandbox snapshot (scripts/release-snapshot.ts)";
+    assertEquals(
+      source.includes(start),
+      true,
+      "release-playground.sh computes the desktop part of the pins",
+    );
+    const block = start + source.split(start)[1].split(end)[0];
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    // The CLI release's assets, as \`gh release view --jq\` lists them.
+    await Deno.writeTextFile(
+      join(bin, "gh"),
+      `#!/bin/sh
+case "$1 $2" in
+  'release view') printf '%s\\n' yurt-aarch64-apple-darwin.tar.gz yurt_1_amd64.deb yurt_1_arm64.deb;;
+  *) echo "unexpected gh call: $*" >&2; exit 1;;
+esac
+`,
+    );
+    await Deno.chmod(join(bin, "gh"), 0o755);
+    const scriptPath = join(dir, "block.sh");
+    await Deno.writeTextFile(
+      scriptPath,
+      `set -euo pipefail
+say() { printf '==> %s\\n' "$*" >&2; }
+die() { echo "release-playground: $*" >&2; exit 1; }
+sidecar_sha() { echo "sha-$3"; }
+root=${JSON.stringify(root)}
+browser_only=${browserOnly}
+train=playground-new kernel_sha=k-new sandbox_sha=s-new
+host_release=desktop-host-new host_repo=YurtOS/yurt-sandbox
+cli_release=yurt-cli-new cli_repo=YurtOS/yurt-sandbox
+${block}
+printf 'DESKTOP=%s\\n' "$desktop_json"
+`,
+    );
+    const result = await command("bash", [scriptPath], {
+      env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` },
+    });
+    const output = new TextDecoder().decode(result.stdout) +
+      new TextDecoder().decode(result.stderr);
+    const line = output.split("\n").find((l) => l.startsWith("DESKTOP="));
+    return {
+      code: result.code,
+      output,
+      desktop: line ? JSON.parse(line.slice("DESKTOP=".length)) : undefined,
+    };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+const oldDesktopHost = {
+  repo: "YurtOS/yurt-sandbox",
+  rev: "s-old",
+  releaseRepo: "YurtOS/yurt-sandbox",
+  release: "desktop-host-playground-old",
+  build: "scripts/build-desktop-host.sh",
+  sha256: { "aarch64-apple-darwin": "h".repeat(64) },
+};
+
+Deno.test("a full train pins its own host and CLI with the kernel rev and train they were built for", async () => {
+  const run = await desktopPins(0, {
+    train: "playground-old",
+    kernelWasm: { rev: "k-old" },
+    desktopHost: oldDesktopHost,
+    yurtCli: pinnedCli,
+  });
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.desktop?.desktopHost.release, "desktop-host-new");
+  assertEquals(run.desktop?.desktopHost.rev, "s-new");
+  assertEquals(run.desktop?.desktopHost.kernelRev, "k-new");
+  assertEquals(run.desktop?.desktopHost.train, "playground-new");
+  assertEquals(
+    run.desktop?.desktopHost.sha256["x86_64-unknown-linux-gnu"],
+    "sha-yurt-desktop-host-x86_64-unknown-linux-gnu.tar.gz",
+  );
+  assertEquals(run.desktop?.yurtCli.release, "yurt-cli-new");
+  assertEquals(
+    run.desktop?.yurtCli.assets["x86_64-unknown-linux-gnu"],
+    "yurt_1_amd64.deb",
+  );
+});
+
+Deno.test("a browser-only train carries the desktop pins through, with the kernel rev and train they were built for", async () => {
+  // Pins from before the record: a full train's host was built at its
+  // own kernel pin.
+  const first = await desktopPins(1, {
+    train: "playground-old",
+    kernelWasm: { rev: "k-old" },
+    desktopHost: oldDesktopHost,
+    yurtCli: pinnedCli,
+  });
+  assertEquals(first.code, 0, first.output);
+  assertEquals(first.desktop?.desktopHost, {
+    ...oldDesktopHost,
+    kernelRev: "k-old",
+    train: "playground-old",
+  });
+  assertEquals(first.desktop?.yurtCli, pinnedCli);
+  // A second browser-only train keeps what the first recorded, not its
+  // own pins' kernel.
+  const second = await desktopPins(1, {
+    train: "playground-mid",
+    kernelWasm: { rev: "k-mid" },
+    desktopHost: first.desktop?.desktopHost,
+    yurtCli: pinnedCli,
+  });
+  assertEquals(second.code, 0, second.output);
+  assertEquals(second.desktop?.desktopHost.kernelRev, "k-old");
+  assertEquals(second.desktop?.desktopHost.train, "playground-old");
+  // Nothing to carry: it stops.
+  const none = await desktopPins(1, {
+    train: "playground-old",
+    kernelWasm: { rev: "k-old" },
+  });
+  assertEquals(none.code, 1, none.output);
+  assertStringIncludes(none.output, "no desktopHost and yurtCli to carry");
+});
+
+Deno.test("a browser-only train dispatches no desktop installers after the deploy", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "release-browser-only-end-" });
+  try {
+    const source = await Deno.readTextFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+    );
+    const start = "# [5] the desktop installers";
+    assertEquals(source.includes(start), true);
+    const ending = start + source.split(start)[1];
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    const log = join(dir, "gh.log");
+    await Deno.writeTextFile(
+      join(bin, "gh"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nexit 1\n`,
+    );
+    await Deno.chmod(join(bin, "gh"), 0o755);
+    const state = join(dir, "state.json");
+    await Deno.writeTextFile(state, JSON.stringify({ steps: {} }));
+    const result = await command("bash", [
+      "-c",
+      `set -euo pipefail
+say() { printf '==> %s\\n' "$*"; }
+die() { echo "release-playground: $*"; exit 1; }
+source "$1"
+state=${JSON.stringify(state)}
+browser_only=1 pr_url=https://example.invalid/pull/1
+train=t image_release=i seal_release_of_train=s
+desktop_train=playground-old
+${stepHelpers(source)}
+${ending}`,
+      "bash",
+      join(repoRoot, "scripts/lib/snapshot-pin.sh"),
+    ], { env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` } });
+    const output = new TextDecoder().decode(result.stdout) +
+      new TextDecoder().decode(result.stderr);
+    assertEquals(result.code, 0, output);
+    assertEquals(
+      await Deno.readTextFile(log).catch(() => ""),
+      "",
+      "a browser-only train called gh after the deploy",
+    );
+    assertStringIncludes(output, "released (browser-only): kernel-wasm-t");
+    assertStringIncludes(output, "desktop-playground-old");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** scripts/install-desktop-host.sh on a project with these pins (and the
+ * blobs it copies), with a \`gh\` that logs its calls and fails. */
+async function installDesktopHost(pins: unknown) {
+  const dir = await Deno.makeTempDir({ prefix: "install-desktop-host-" });
+  try {
+    const root = join(dir, "project");
+    await Deno.mkdir(join(root, "scripts"), { recursive: true });
+    await Deno.mkdir(join(root, "artifacts"));
+    await Deno.copyFile(
+      join(repoRoot, "scripts/install-desktop-host.sh"),
+      join(root, "scripts/install-desktop-host.sh"),
+    );
+    await Deno.writeTextFile(
+      join(root, "artifacts/pins.json"),
+      JSON.stringify(pins),
+    );
+    for (const blob of ["yurt_kernel.wasm", "playground.yurtimg"]) {
+      await Deno.writeTextFile(join(root, "artifacts", blob), "x");
+    }
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    const log = join(dir, "gh.log");
+    await Deno.writeTextFile(
+      join(bin, "gh"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nexit 1\n`,
+    );
+    await Deno.chmod(join(bin, "gh"), 0o755);
+    const result = await command("bash", [
+      join(root, "scripts/install-desktop-host.sh"),
+      "--target",
+      "aarch64-apple-darwin",
+    ], { env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` } });
+    return {
+      code: result.code,
+      output: new TextDecoder().decode(result.stdout) +
+        new TextDecoder().decode(result.stderr),
+      ghCalls: await Deno.readTextFile(log).catch(() => ""),
+    };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("install-desktop-host.sh refuses a desktop host built for another kernel than the pinned wasm", async () => {
+  // After a browser-only train: the host would fail to boot this
+  // kernel.wasm ("unknown import: kh::..."), so it is never paired with it.
+  const behind = await installDesktopHost({
+    kernelWasm: { rev: "k-new" },
+    desktopHost: { ...oldDesktopHost, kernelRev: "k-old", train: "p-old" },
+  });
+  assertEquals(behind.code, 1, behind.output);
+  assertStringIncludes(behind.output, "browser-only train");
+  assertStringIncludes(behind.output, "p-old");
+  assertEquals(behind.ghCalls, "", "it fetched the host anyway");
+  // Built for the pinned kernel, or pins from before the record: it goes
+  // on to fetch the host (which the stub gh then refuses).
+  for (
+    const desktopHost of [
+      { ...oldDesktopHost, kernelRev: "k-new", train: "p-new" },
+      oldDesktopHost,
+    ]
+  ) {
+    const run = await installDesktopHost({
+      kernelWasm: { rev: "k-new" },
+      desktopHost,
+    });
+    assertStringIncludes(run.ghCalls, "release download", run.output);
+  }
+});
+
+/** \`release-playground.sh --check\` on these pins, with every repo's main
+ * at its pinned rev, the page deployed from main, and every release
+ * installable. */
+async function check(pins: Json) {
+  const dir = await Deno.makeTempDir({ prefix: "release-check-" });
+  try {
+    const root = join(dir, "project");
+    await copyScriptLib(root);
+    await Deno.copyFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+      join(root, "scripts/release-playground.sh"),
+    );
+    await Deno.mkdir(join(root, "artifacts"));
+    const pinsFile = join(root, "artifacts/pins.json");
+    await Deno.writeTextFile(pinsFile, JSON.stringify(pins));
+    const assets = [
+      "kernel-wasm.wasm",
+      "playground-image.yurtimg",
+      "python3-seal.wasm",
+      "yurt-desktop-host-aarch64-apple-darwin.tar.gz",
+      pins.yurtCli.assets["aarch64-apple-darwin"],
+    ].flatMap((a) => [a, `${a}.sha256`]);
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    const raw = "api -H Accept: application/vnd.github.raw+json";
+    await Deno.writeTextFile(
+      join(bin, "gh"),
+      `#!/bin/bash
+case "$*" in
+  "auth status") exit 0;;
+  "api repos/YurtOS/yurtos-kernel/commits/main --jq .sha") echo ${pins.kernelWasm.rev};;
+  "api repos/YurtOS/yurt-ports/commits/main --jq .sha") echo ${pins.image.rev};;
+  "api repos/YurtOS/yurt-sandbox/commits/main --jq .sha") echo ${pins.desktopHost.rev};;
+  "api repos/YurtOS/yurt-playground/commits/main --jq .sha") echo pmain;;
+  "${raw} repos/YurtOS/yurtos-kernel/contents/toolchain/sdk.lock"*) echo 'guest_sdk_release = "guest-sdk-v1"';;
+  "api repos/YurtOS/yurt-toolchain/releases --paginate"*) echo guest-sdk-v1;;
+  "${raw} repos/YurtOS/yurt-playground/contents/artifacts/pins.json"*) cat ${
+        JSON.stringify(pinsFile)
+      };;
+  "release view "*) printf '%s\\n' ${assets.join(" ")};;
+  *) echo "unexpected gh call: $*" >&2; exit 1;;
+esac
+`,
+    );
+    await Deno.writeTextFile(
+      join(bin, "curl"),
+      `#!/bin/bash
+case "$*" in
+  *pins.json) cat ${JSON.stringify(pinsFile)};;
+  *integrity.json) echo '{"commit":"pmain"}';;
+  *) exit 22;;
+esac
+`,
+    );
+    for (const tool of ["gh", "curl"]) {
+      await Deno.chmod(join(bin, tool), 0o755);
+    }
+    const result = await command("bash", [
+      join(root, "scripts/release-playground.sh"),
+      "--check",
+    ], { env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` } });
+    return {
+      code: result.code,
+      output: new TextDecoder().decode(result.stdout) +
+        new TextDecoder().decode(result.stderr),
+    };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+const checkedPins = {
+  train: "playground-new",
+  kernelWasm: { rev: "k".repeat(40), releaseRepo: "r", release: "kw" },
+  image: { rev: "p".repeat(40), releaseRepo: "r", release: "im" },
+  pythonSeal: { rev: "p".repeat(40), releaseRepo: "r", release: "ps" },
+  desktopHost: {
+    rev: "s".repeat(40),
+    releaseRepo: "r",
+    release: "desktop-host-playground-old",
+  },
+  yurtCli: { ...pinnedCli, rev: "s".repeat(40) },
+};
+
+Deno.test("--check shows a browser-only train's desktop as behind, not stale", async () => {
+  const behind = await check({
+    ...checkedPins,
+    desktopHost: {
+      ...checkedPins.desktopHost,
+      kernelRev: "o".repeat(40),
+      train: "playground-old",
+    },
+  });
+  assertEquals(behind.code, 0, behind.output);
+  const row = behind.output.split("\n").find((l) => l.includes("desktop app"));
+  assertEquals(row?.startsWith("BEHIND"), true, behind.output);
+  assertStringIncludes(row!, "desktop-playground-old");
+  assertStringIncludes(row!, "browser-only train");
+  assertStringIncludes(behind.output, "the desktop app is behind");
+  // Built for the pinned kernel, or pins from before the record: level.
+  for (
+    const desktopHost of [
+      {
+        ...checkedPins.desktopHost,
+        kernelRev: "k".repeat(40),
+        train: "playground-new",
+      },
+      checkedPins.desktopHost,
+    ]
+  ) {
+    const level = await check({ ...checkedPins, desktopHost });
+    assertEquals(level.code, 0, level.output);
+    const row = level.output.split("\n").find((l) => l.includes("desktop app"));
+    assertEquals(row?.startsWith("ok"), true, level.output);
+    assertStringIncludes(level.output, "up to date");
+  }
+});
+
 /** The script's own step_get and step_set lines, for a fixture state. */
 function stepHelpers(source: string): string {
   const lines = source.split("\n").filter((line) =>
@@ -1537,6 +2068,7 @@ kernel_wasm_release=kw kernel_wasm_repo=r kernel_sha256=ks
 image_release=ir image_repo=r image_sha256=is
 host_release=hr host_repo=r cli_release=cr cli_repo=r
 host_json='{}' cli_json='{}' python_seal_json='{"sha256":"py"}' slim_json=null
+desktop_json='{"desktopHost":{"release":"hr"},"yurtCli":{"release":"cr"}}'
 ${block}
 printf 'DROPPED=%s\\n' "\${snapshot_dropped:-0}"
 `,

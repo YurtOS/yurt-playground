@@ -6,7 +6,9 @@ name: Release desktop
 # release the home page's download links resolve to. The last step of the
 # playground release train (yurt-playground#78): scripts/release-playground.sh
 # dispatches it after the pin PR has merged, so the installers carry the
-# train's kernel, image, host and CLI.
+# train's kernel, image, host and CLI. A browser-only train (--browser-only)
+# never dispatches it: its pins carry an older train's host, which
+# scripts/install-desktop-host.sh refuses to pair with the new kernel wasm.
 #
 # Dispatch only (on main, never on a pull request or a merge): these used
 # to be built and released on every merge to main, which meant two macOS
