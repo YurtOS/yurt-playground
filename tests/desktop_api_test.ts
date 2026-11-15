@@ -251,6 +251,8 @@ function api(
     bootMs: 1200,
     pollMs: 1,
     sweepMs: 0,
+    ownOrigin: (candidate) =>
+      candidate === origin || candidate === "http://localhost:4321",
   });
   const request = (
     path: string,
