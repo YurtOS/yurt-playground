@@ -178,13 +178,17 @@ resume_command() {
     "${train%-validate}" "$( [ "$validate" = 1 ] && echo ' --validate')"
 }
 # A browser-only train builds no host or CLI: an input that names one is a
-# mistake, not something to ignore.
-if [ "$browser_only" = 1 ]; then
+# mistake, not something to ignore. Checked on the command line, and again
+# once a --resume has read the mode from the state file.
+refuse_desktop_inputs() {
+  [ "$browser_only" = 1 ] || return 0
+  local given
   for given in "--sandbox-sha:$sandbox_sha" "--desktop-host-release:$host_release" "--yurt-cli-release:$cli_release"; do
     [ -z "${given#*:}" ] \
       || die "--browser-only takes no ${given%%:*}: it builds no host or CLI, and carries the pinned ones through"
   done
-fi
+}
+refuse_desktop_inputs
 source "$root/scripts/lib/kernel-release.sh"
 source "$root/scripts/lib/snapshot-pin.sh"
 source "$root/scripts/lib/python-set.sh"
@@ -423,6 +427,7 @@ if [ "$resume" = 1 ] && [ "$pins_only" = 0 ]; then
   # skipped and its own host and CLI left unpinned).
   if [ "$(jq -r '.browser_only // false' "$state")" = true ]; then
     browser_only=1
+    refuse_desktop_inputs
   elif [ "$browser_only" = 1 ]; then
     die "$train is not a browser-only train (its state file records a full one); resume it without --browser-only"
   fi
@@ -591,6 +596,14 @@ decide_native_ref() {
   native_publish=false
   say "native  built from yurt-sandbox $native_ref, not published ($off_main not on main)"
 }
+# A browser-only train has no [3], but its kernel wasm is published and
+# pinned all the same: a real one builds only a kernel commit on main, as
+# decide_native_ref (and, with an image to build, decide_image_ref) holds
+# every full train to -- with a hand-cut image nothing else would.
+if [ "$pins_only" = 0 ] && [ "$resume" = 0 ] && [ "$browser_only" = 1 ] && [ "$validate" = 0 ]; then
+  on_main "$kernel_dir" "$kernel_sha" \
+    || die "not in main's history: yurtos-kernel $kernel_sha (checkout: $kernel_dir). A train's kernel wasm builds only from main; rehearse it with --validate"
+fi
 if [ "$pins_only" = 0 ] && [ "$resume" = 0 ] && [ "$browser_only" = 0 ]; then
   decide_native_ref
   if [ "$native_ref" != main ] && gh api "repos/$sandbox_repo/git/refs/heads/$native_ref" >/dev/null 2>&1; then
@@ -907,6 +920,10 @@ if [ "$browser_only" = 1 ]; then
        yurtCli}' "$root/artifacts/pins.json") || desktop_json=""
   [ -n "$desktop_json" ] && [ "$(jq -r '.desktopHost.kernelRev // ""' <<< "$desktop_json")" != "" ] \
     || die "artifacts/pins.json has no desktopHost and yurtCli to carry through (with the kernel rev they were built for); a browser-only train needs a full train's pins"
+  # The host the train recorded when it started (its sandbox_sha, named in
+  # the pin PR): another one now means pins.json changed under the train.
+  [ "$(jq -r .desktopHost.rev <<< "$desktop_json")" = "$sandbox_sha" ] \
+    || die "artifacts/pins.json now pins the desktop host at yurt-sandbox $(jq -r .desktopHost.rev <<< "$desktop_json"), not $sandbox_sha as when $train started; check out the pins it started from, or start a new train"
   say "desktop: carried through from $(jq -r .desktopHost.train <<< "$desktop_json") (host $(jq -r .desktopHost.release <<< "$desktop_json"), CLI $(jq -r .yurtCli.release <<< "$desktop_json"))"
 else
   host_json='{}'
@@ -928,7 +945,21 @@ else
     cli_json=$(jq --arg t "$target" --arg a "$asset" --arg s "$(sidecar_sha "$cli_repo" "$cli_release" "$asset")" \
       '. + {($t): {asset: $a, sha256: $s}}' <<< "$cli_json")
   done
-  desktop_json=$(jq -nc --arg train "$train" --arg kernel_sha "$kernel_sha" --arg sandbox_sha "$sandbox_sha" \
+  # Built for this train's kernel ([3]), under this train's label. A
+  # --pins-only run names its releases by hand: its label may be the CLI
+  # release's (desktop-<train> is named without the prefix), and the host it
+  # pins again unchanged keeps the kernel rev it was recorded with -- this
+  # kernel may be a browser-only train's, which that host cannot boot.
+  host_kernel_rev=$kernel_sha
+  host_train=${train#yurt-cli-}
+  if [ "$pins_only" = 1 ] && [ "$(jq -r '.desktopHost.release // ""' "$root/artifacts/pins.json")" = "$host_release" ] \
+    && [ "$(jq -r ".desktopHost.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")" = "$host_repo" ]; then
+    host_kernel_rev=$(jq -r '.desktopHost.kernelRev // .kernelWasm.rev // ""' "$root/artifacts/pins.json")
+    host_train=$(jq -r '.desktopHost.train // .train // ""' "$root/artifacts/pins.json")
+    [ -n "$host_kernel_rev" ] || host_kernel_rev=$kernel_sha
+    [ -n "$host_train" ] || host_train=${train#yurt-cli-}
+  fi
+  desktop_json=$(jq -nc --arg train "$host_train" --arg kernel_sha "$host_kernel_rev" --arg sandbox_sha "$sandbox_sha" \
     --arg host_release "$host_release" --arg host_repo "$host_repo" --arg cli_release "$cli_release" --arg cli_repo "$cli_repo" \
     --argjson host "$host_json" --argjson cli "$cli_json" '{
       desktopHost: {repo: "YurtOS/yurt-sandbox", rev: $sandbox_sha, releaseRepo: $host_repo, release: $host_release,
