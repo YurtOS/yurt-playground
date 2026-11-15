@@ -66,13 +66,13 @@ jobs:
           path: playground
       - uses: ./playground/.github/actions/site-inputs
         with:
-          token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          token: ${{ secrets.REPO_READ_TOKEN }}
       - name: Build static site
         working-directory: playground
         env:
           YURT_KERNEL_ROOT: ../yurtos-kernel
         run: deno task build-static
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: playground/dist
@@ -98,7 +98,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.playground_sha }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist
@@ -109,11 +109,11 @@ jobs:
       # (artifacts/), and the pinned desktop host + runtime (runtime/<target>/).
       - name: Install the pinned kernel wasm and playground image
         env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPO_READ_TOKEN }}
         run: scripts/install-pinned-artifacts.sh
       - name: Install the pinned desktop host for each target
         env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPO_READ_TOKEN }}
           TARGETS: ${{ matrix.targets }}
         run: |
           for target in $TARGETS; do
@@ -153,7 +153,7 @@ jobs:
           test -x /usr/lib/yurt-playground/yurt-playground
           test -f /usr/lib/yurt-playground/runtime/yurt-desktop-host
           command -v yurt-playground
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Yurt-Playground-${{ runner.os }}
           path: |
@@ -178,7 +178,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.playground_sha }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: Yurt-Playground-*
           merge-multiple: true
@@ -189,7 +189,7 @@ jobs:
       # pinned release is mirrored here under stable, versionless names.
       - name: Fetch the pinned yurt CLI packages
         env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPO_READ_TOKEN }}
         run: |
           set -euo pipefail
           tag=$(jq -r .yurtCli.release artifacts/pins.json)
@@ -212,7 +212,7 @@ jobs:
       # and verify what it got.
       - name: Fetch the pinned playground image
         env:
-          GH_TOKEN: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPO_READ_TOKEN }}
         run: |
           set -euo pipefail
           tag=$(jq -r .image.release artifacts/pins.json)

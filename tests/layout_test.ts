@@ -303,14 +303,14 @@ Deno.test("workflows authenticate every private sibling checkout", async () => {
     const siblings = workflow.match(/repository: YurtOS\/\S+/g) ?? [];
     assertEquals(siblings.length > 0, true, `${file} checks out no sibling`);
     // The composite takes the token as its input and hands it to its
-    // checkouts; the callers pass KERNEL_CHECKOUT_TOKEN.
+    // checkouts; the callers pass REPO_READ_TOKEN.
     const tokens = (workflow.match(
-      /token: \$\{\{ (secrets\.KERNEL_CHECKOUT_TOKEN|inputs\.token) \}\}/g,
+      /token: \$\{\{ (secrets\.REPO_READ_TOKEN|inputs\.token) \}\}/g,
     ) ?? []).filter((t) => t.includes("inputs.token"));
     assertEquals(
-      workflow.includes("token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}"),
+      workflow.includes("token: ${{ secrets.REPO_READ_TOKEN }}"),
       true,
-      `${file} passes no KERNEL_CHECKOUT_TOKEN to the site inputs`,
+      `${file} passes no REPO_READ_TOKEN to the site inputs`,
     );
     assertEquals(
       tokens.length,
