@@ -128,6 +128,97 @@ Deno.test("two launches get different keys, neither the old fixed one", async ()
   }
 });
 
+/** A session with no `spawn` and no `readFile` (a launcher older than the
+ * API): the launch and the connection-file read are both typed at the prompt.
+ * The "shell" answers the `cat` of the connection file with `fileFor(key)`,
+ * where `key` is the one the launch line set. */
+function typedSession(fileFor: (launchKey: string) => unknown) {
+  const listeners = new Set<(chunk: Uint8Array) => void>();
+  const typedLines: string[] = [];
+  let launchKey = "";
+  const emit = (text: string) => {
+    for (const listener of listeners) listener(new TextEncoder().encode(text));
+  };
+  return {
+    typedLines,
+    terminal: {
+      write(bytes: Uint8Array) {
+        const typed = new TextDecoder().decode(bytes);
+        typedLines.push(typed);
+        const m = typed.match(/--Session\.key=(\S+)/);
+        if (m !== null) launchKey = m[1];
+        if (typed.includes(`cat ${JUPYTER_CONNECTION_FILE}`)) {
+          emit(
+            `${
+              JSON.stringify(fileFor(launchKey))
+            }\nYURT_JUPYTER_CONNECTION_READY\n`,
+          );
+        }
+        // runShell types `...; echo YURT_SHELL_DONE_""xxxxxx` and waits for
+        // the shell to print the marker with the quotes gone.
+        const done = typed.match(/echo (YURT_SHELL_DONE_)""(\w+)/);
+        if (done !== null) emit(`${done[1]}${done[2]}\n`);
+        return Promise.resolve();
+      },
+    },
+    dialSandboxPort: () => {
+      throw new Error("not dialed");
+    },
+    onOutput(listener: (chunk: Uint8Array) => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+
+const connectionWith = (key: string) => ({
+  shell_port: 1,
+  iopub_port: 2,
+  stdin_port: 3,
+  control_port: 4,
+  hb_port: 5,
+  key,
+  transport: "tcp",
+});
+
+Deno.test("typed at the prompt, a stale connection file with another key is refused and the kernel stopped", async () => {
+  // The old fixed key a previous launch used, left behind in /tmp.
+  const session = typedSession(() => connectionWith("yurt"));
+  await assertRejects(
+    () =>
+      startGuestKernel(session, undefined, {
+        connect: { attempts: 1, delayMs: 1 },
+      }),
+    Error,
+    "a stale kernel connection file was read",
+  );
+  // The launch is not left running for nobody: a stop was typed after it.
+  const stop = session.typedLines.findIndex((line) =>
+    line.includes(JUPYTER_PID_FILE) && line.includes("kill")
+  );
+  const launch = session.typedLines.findIndex((line) =>
+    line.includes("--Session.key=")
+  );
+  assertEquals(
+    stop > launch && launch >= 0,
+    true,
+    session.typedLines.join("|"),
+  );
+});
+
+Deno.test("typed at the prompt, the file carrying this launch's key is accepted", async () => {
+  // Same path, same session: only the key differs, so the refusal above is
+  // the key check and not something else on the typed path.
+  await assertRejects(
+    () =>
+      startGuestKernel(typedSession(connectionWith), undefined, {
+        connect: { attempts: 1, delayMs: 1 },
+      }),
+    Error,
+    "did not become ready",
+  );
+});
+
 const message = {
   header: {
     msg_id: "m1",
