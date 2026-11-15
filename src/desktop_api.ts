@@ -432,6 +432,11 @@ export function createDesktopApi(options: {
   /** False for a host without the session routes (desktop-host before
    * v0.1.3): every authorized request is then a 503 that says so. */
   available?: boolean;
+  /** Whether an `Origin` is the launcher's own page. The launcher passes its
+   * boundary's predicate, fixed when the port was bound. Without it, an
+   * origin is accepted only if it equals the request's own (a standalone
+   * `createDesktopApi`, as in tests, has no other names to know). */
+  ownOrigin?: (origin: string) => boolean;
   pollMs?: number;
   sweepMs?: number;
 }): DesktopApi {
@@ -462,12 +467,14 @@ export function createDesktopApi(options: {
     if (presented === "" || !sameToken(presented, options.token)) {
       return refuse(401, "Unauthorized", "Authorization: Bearer <token>");
     }
-    // The launcher's own origin is the one this request was made to: the
-    // same page reaches it as 127.0.0.1 or as localhost, and a same-origin
-    // request names that host in both places. Anything else is a page from
-    // elsewhere.
+    // Only the launcher's own page may call the API. The launcher says which
+    // origins those are (the same page reaches it as 127.0.0.1 or as
+    // localhost); anything else is a page from elsewhere.
     const origin = req.headers.get("origin");
-    if (origin !== null && origin !== url.origin) {
+    if (
+      origin !== null &&
+      !(options.ownOrigin ? options.ownOrigin(origin) : origin === url.origin)
+    ) {
       return refuse(403, "Forbidden", `not this page: ${origin}`);
     }
     if (req.headers.get("sec-fetch-site") === "cross-site") {

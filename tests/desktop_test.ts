@@ -3,6 +3,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   allowedHostsFor,
+  allowedOriginsFor,
+  createLauncherBoundary,
   handleDistRequest,
   launcherVersion,
   parseLauncherArgs,
@@ -536,6 +538,174 @@ Deno.test("the Host rule holds without a native host", async () => {
       await statusWithHost(server.url, "/", "rebind.example"),
       " 403 ",
     );
+  } finally {
+    await server.shutdown();
+    await Deno.remove(dist, { recursive: true });
+  }
+});
+
+Deno.test("allowed Origins: both loopback names on the port, no port on port 80", () => {
+  assertEquals(
+    [...allowedOriginsFor(4321)].sort(),
+    ["http://127.0.0.1:4321", "http://localhost:4321"],
+  );
+  assertEquals(
+    [...allowedOriginsFor(80)].sort(),
+    ["http://127.0.0.1", "http://localhost"],
+  );
+});
+
+Deno.test("the boundary is fixed at bind: nothing is read from the request", () => {
+  const boundary = createLauncherBoundary();
+  const req = (host: string, url: string) =>
+    new Request(url, { headers: { host } });
+  // Before the port is bound nothing is allowed, not even loopback.
+  assertEquals(
+    boundary.hostAllowed(req("127.0.0.1:9", "http://127.0.0.1:9/")),
+    false,
+  );
+  assertEquals(boundary.originAllowed("http://127.0.0.1:9"), false);
+  boundary.bind(9);
+  assertEquals(
+    boundary.hostAllowed(req("127.0.0.1:9", "http://127.0.0.1:9/")),
+    true,
+  );
+  assertEquals(
+    boundary.hostAllowed(req("LOCALHOST:9", "http://localhost:9/x")),
+    true,
+  );
+  // The Host and the request line must both be ours.
+  assertEquals(
+    boundary.hostAllowed(req("127.0.0.1:9", "http://evil.example:9/")),
+    false,
+  );
+  assertEquals(
+    boundary.hostAllowed(req("evil.example", "http://127.0.0.1:9/")),
+    false,
+  );
+  assertEquals(boundary.originAllowed("http://localhost:9"), true);
+  // Another port on loopback, another scheme and a lookalike are other pages.
+  for (
+    const other of [
+      "http://127.0.0.1:10",
+      "https://127.0.0.1:9",
+      "http://127.0.0.1.evil.example:9",
+      "http://localhost.:9",
+      "null",
+      "",
+    ]
+  ) {
+    assertEquals(boundary.originAllowed(other), false, other);
+  }
+});
+
+/** The whole response to one raw request with exactly this Host. */
+async function rawWithHost(
+  url: string,
+  path: string,
+  hostHeader: string,
+  extra: string[] = [],
+): Promise<string> {
+  const conn = await Deno.connect({
+    hostname: "127.0.0.1",
+    port: Number(new URL(url).port || 80),
+  });
+  try {
+    await conn.write(
+      new TextEncoder().encode(
+        [
+          `GET ${path} HTTP/1.1`,
+          `Host: ${hostHeader}`,
+          ...extra,
+          "Connection: close",
+          "",
+          "",
+        ]
+          .join("\r\n"),
+      ),
+    );
+    const chunks: Uint8Array[] = [];
+    const buf = new Uint8Array(4096);
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const n = await conn.read(buf);
+      if (n === null) break;
+      chunks.push(buf.slice(0, n));
+    }
+    return new TextDecoder().decode(
+      new Uint8Array(chunks.flatMap((c) => [...c])),
+    );
+  } finally {
+    conn.close();
+  }
+}
+
+Deno.test("an Origin is judged against the launcher's own names, and a Host refusal on /api is the API's JSON", async () => {
+  const host = {
+    url: "http://127.0.0.1:1/",
+    token: "deadbeef",
+    kernelPorts: [1, 2, 3, 4, 5] as [number, number, number, number, number],
+    bootMs: 1,
+    request: () => Promise.reject(new Error("not asked in this test")),
+    sessions: true,
+    stop() {},
+  };
+  const dist = await fakeDist();
+  const server = startDesktopServer(dist, host, { apiToken: "tok" });
+  const port = new URL(server.url).port;
+  const bearer = { authorization: "Bearer tok" };
+  try {
+    // The page reached as either loopback name is the launcher's own page.
+    for (
+      const origin of [`http://127.0.0.1:${port}`, `http://localhost:${port}`]
+    ) {
+      const res = await fetch(`${server.url}desktop.json`, {
+        headers: { origin },
+      });
+      assertEquals(res.status, 200, origin);
+      await res.body?.cancel();
+      const api = await fetch(`${server.url}api/status`, {
+        headers: { ...bearer, origin },
+      });
+      assertEquals(api.status, 200, `api ${origin}`);
+      await api.body?.cancel();
+    }
+    // Another port on loopback (another local server's page) is not ours,
+    // for the sandbox endpoints and for the API alike.
+    const foreign = `http://127.0.0.1:${Number(port) + 1}`;
+    for (const path of ["desktop.json", "ws/tty"]) {
+      const res = await fetch(`${server.url}${path}`, {
+        headers: { origin: foreign },
+      });
+      assertEquals(res.status, 403, path);
+      await res.body?.cancel();
+    }
+    const api = await fetch(`${server.url}api/status`, {
+      headers: { ...bearer, origin: foreign },
+    });
+    assertEquals(api.status, 403);
+    assertEquals((await api.json()).code, "Forbidden");
+
+    // A refused Host under /api carries the API's {error, code} body; elsewhere
+    // it stays plain text.
+    const refused = await rawWithHost(
+      server.url,
+      "/api/status",
+      "rebind.example",
+    );
+    assertStringIncludes(refused, " 403 ");
+    assertStringIncludes(
+      refused.toLowerCase(),
+      "content-type: application/json",
+    );
+    assertEquals(
+      JSON.parse(refused.slice(refused.indexOf("\r\n\r\n") + 4)),
+      { error: "not this host", code: "Forbidden" },
+    );
+    const plain = await rawWithHost(server.url, "/", "rebind.example");
+    assertStringIncludes(plain, " 403 ");
+    assertStringIncludes(plain, "not this host");
+    assertEquals(plain.toLowerCase().includes("application/json"), false);
   } finally {
     await server.shutdown();
     await Deno.remove(dist, { recursive: true });

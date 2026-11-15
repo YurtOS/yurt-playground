@@ -442,6 +442,68 @@ function authorityOf(url: string): string {
   }
 }
 
+/** The `Origin` values that are the launcher's own page: `http://127.0.0.1` and
+ * `http://localhost` on `port` (a browser leaves a default port 80 out). */
+export function allowedOriginsFor(port: number): Set<string> {
+  const origins = new Set<string>();
+  for (const name of ["127.0.0.1", "localhost"]) {
+    origins.add(port === 80 ? `http://${name}` : `http://${name}:${port}`);
+  }
+  return origins;
+}
+
+/** The launcher's one trust boundary: the `Host` and `Origin` values it
+ * answers to. Both are the launcher's own names on the port it bound, fixed
+ * once bound -- never derived from the request, so a request cannot vouch for
+ * itself. The server and the `/api` routes both ask this and nothing else. */
+export function createLauncherBoundary(): {
+  bind(port: number): void;
+  /** The request's `Host` header and its request-line authority are both ours. */
+  hostAllowed(req: Request): boolean;
+  /** `origin` is one of the launcher's own origins. */
+  originAllowed(origin: string): boolean;
+} {
+  let hosts = new Set<string>();
+  let origins = new Set<string>();
+  return {
+    bind(port) {
+      hosts = allowedHostsFor(port);
+      origins = allowedOriginsFor(port);
+    },
+    hostAllowed: (req) =>
+      hosts.has((req.headers.get("host") ?? "").toLowerCase()) &&
+      hosts.has(authorityOf(req.url)),
+    originAllowed: (origin) => origins.has(origin),
+  };
+}
+
+/** The refusal for a request whose Host is not ours. Under `/api` it is the
+ * API's `{error, code}` JSON, like every other API refusal. */
+function refuseHost(req: Request): Response {
+  let path = "";
+  try {
+    path = new URL(req.url).pathname;
+  } catch {
+    // An unparsable URL is not under /api.
+  }
+  if (path === "/api" || path.startsWith("/api/")) {
+    return new Response(
+      JSON.stringify({ error: "not this host", code: "Forbidden" }),
+      {
+        status: 403,
+        headers: {
+          ...ISOLATION_HEADERS,
+          "content-type": "application/json; charset=utf-8",
+        },
+      },
+    );
+  }
+  return new Response("not this host", {
+    status: 403,
+    headers: ISOLATION_HEADERS,
+  });
+}
+
 /** Serve `distDir` on a loopback port (a free one unless `port` says).
  * With a native host, the page learns so from `/desktop.json` and its
  * `/ws/*` sockets are relayed to it (src/desktop_host.ts), and `/api/*`
@@ -456,6 +518,7 @@ export function startDesktopServer(
 ): { url: string; shutdown: () => Promise<void> } {
   const files = handleDistRequest(distDir);
   const apiToken = options.apiToken ?? freshApiToken();
+  const boundary = createLauncherBoundary();
   let api: ReturnType<typeof createDesktopApi> | undefined;
   const route = host === undefined ? files : (req: Request) => {
     const url = new URL(req.url);
@@ -466,16 +529,18 @@ export function startDesktopServer(
         token: apiToken,
         bootMs: host.bootMs,
         available: host.sessions,
+        ownOrigin: boundary.originAllowed,
       });
       return api.handle(req) ?? files(req);
     }
     // Browsers apply no same-origin policy to WebSocket connects, so a page
-    // from anywhere could otherwise open a shell here; only the page this
-    // server serves (its own origin) may reach the sandbox.
+    // from anywhere could otherwise open a shell here; only the launcher's
+    // own origins (fixed at bind, not read from the request) may reach the
+    // sandbox.
     const origin = req.headers.get("origin");
     if (
       (path === "/desktop.json" || path.startsWith("/ws/")) &&
-      origin !== null && origin !== url.origin
+      origin !== null && !boundary.originAllowed(origin)
     ) {
       return Promise.resolve(
         new Response("not this page", {
@@ -510,23 +575,13 @@ export function startDesktopServer(
     return files(req);
   };
   // Every request passes here first. A page that DNS-rebinds its own name to
-  // 127.0.0.1 is same-origin with itself, so the Origin check above cannot see
-  // it; its Host is the attacker's name. Only `127.0.0.1` and `localhost` on
-  // the bound port are served (not `[::1]`, a proxy's name or a forwarded
-  // port). Both the header and the request line's authority (which routing
-  // and the Origin checks read) must pass. The port is known once bound, and
-  // the first request comes after.
-  let allowedHosts = new Set<string>();
+  // 127.0.0.1 is same-origin with itself, so the Origin check cannot see it;
+  // its Host is the attacker's name. Only `127.0.0.1` and `localhost` on the
+  // bound port are served (not `[::1]`, a proxy's name or a forwarded port).
+  // Both the header and the request line's authority must pass. The port is
+  // known once bound, and the first request comes after.
   const handle = (req: Request) =>
-    allowedHosts.has((req.headers.get("host") ?? "").toLowerCase()) &&
-      allowedHosts.has(authorityOf(req.url))
-      ? route(req)
-      : Promise.resolve(
-        new Response("not this host", {
-          status: 403,
-          headers: ISOLATION_HEADERS,
-        }),
-      );
+    boundary.hostAllowed(req) ? route(req) : Promise.resolve(refuseHost(req));
   const server = Deno.serve(
     { port: options.port ?? 0, hostname: "127.0.0.1", onListen: () => {} },
     handle,
@@ -535,7 +590,7 @@ export function startDesktopServer(
   if (!("port" in addr)) {
     throw new Error("desktop server did not bind a TCP port");
   }
-  allowedHosts = allowedHostsFor(addr.port);
+  boundary.bind(addr.port);
 
   return {
     url: `http://127.0.0.1:${addr.port}/`,
