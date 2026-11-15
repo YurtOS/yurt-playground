@@ -432,11 +432,10 @@ export function createDesktopApi(options: {
   /** False for a host without the session routes (desktop-host before
    * v0.1.3): every authorized request is then a 503 that says so. */
   available?: boolean;
-  /** Whether an `Origin` is the launcher's own page. The launcher passes its
-   * boundary's predicate, fixed when the port was bound. Without it, an
-   * origin is accepted only if it equals the request's own (a standalone
-   * `createDesktopApi`, as in tests, has no other names to know). */
-  ownOrigin?: (origin: string) => boolean;
+  /** Whether an `Origin` is the launcher's own page: the launcher passes its
+   * boundary's predicate, fixed when the port was bound. Required: judging an
+   * origin by the request's own URL would let the request vouch for itself. */
+  ownOrigin: (origin: string) => boolean;
   pollMs?: number;
   sweepMs?: number;
 }): DesktopApi {
@@ -461,7 +460,7 @@ export function createDesktopApi(options: {
     throw new Error("download: not on the launcher");
   });
 
-  const authorize = (req: Request, url: URL): Response | undefined => {
+  const authorize = (req: Request): Response | undefined => {
     const auth = req.headers.get("authorization") ?? "";
     const presented = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
     if (presented === "" || !sameToken(presented, options.token)) {
@@ -471,10 +470,7 @@ export function createDesktopApi(options: {
     // origins those are (the same page reaches it as 127.0.0.1 or as
     // localhost); anything else is a page from elsewhere.
     const origin = req.headers.get("origin");
-    if (
-      origin !== null &&
-      !(options.ownOrigin ? options.ownOrigin(origin) : origin === url.origin)
-    ) {
+    if (origin !== null && !options.ownOrigin(origin)) {
       return refuse(403, "Forbidden", `not this page: ${origin}`);
     }
     if (req.headers.get("sec-fetch-site") === "cross-site") {
@@ -630,7 +626,7 @@ export function createDesktopApi(options: {
       if (url.pathname !== "/api" && !url.pathname.startsWith("/api/")) {
         return undefined;
       }
-      const refused = authorize(req, url) ??
+      const refused = authorize(req) ??
         (options.available === false
           ? refuse(
             503,

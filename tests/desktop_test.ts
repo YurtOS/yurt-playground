@@ -673,18 +673,31 @@ Deno.test("an Origin is judged against the launcher's own names, and a Host refu
     // Another port on loopback (another local server's page) is not ours,
     // for the sandbox endpoints and for the API alike.
     const foreign = `http://127.0.0.1:${Number(port) + 1}`;
+    // Other forms that are not exactly one of the launcher's origins: the
+    // literal "null" a sandboxed page sends, an uppercase scheme and host, and
+    // a trailing slash.
+    const notOurs = [
+      foreign,
+      "null",
+      `HTTP://127.0.0.1:${port}`,
+      `http://127.0.0.1:${port}/`,
+    ];
     for (const path of ["desktop.json", "ws/tty"]) {
-      const res = await fetch(`${server.url}${path}`, {
-        headers: { origin: foreign },
-      });
-      assertEquals(res.status, 403, path);
-      await res.body?.cancel();
+      for (const origin of notOurs) {
+        const res = await fetch(`${server.url}${path}`, {
+          headers: { origin },
+        });
+        assertEquals(res.status, 403, `${path} ${origin}`);
+        await res.body?.cancel();
+      }
     }
-    const api = await fetch(`${server.url}api/status`, {
-      headers: { ...bearer, origin: foreign },
-    });
-    assertEquals(api.status, 403);
-    assertEquals((await api.json()).code, "Forbidden");
+    for (const origin of notOurs) {
+      const api = await fetch(`${server.url}api/status`, {
+        headers: { ...bearer, origin },
+      });
+      assertEquals(api.status, 403, `api ${origin}`);
+      assertEquals((await api.json()).code, "Forbidden", `api ${origin}`);
+    }
 
     // A refused Host under /api carries the API's {error, code} body; elsewhere
     // it stays plain text.
