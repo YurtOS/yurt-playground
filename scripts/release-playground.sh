@@ -475,7 +475,8 @@ kernel_sha=$(resolve_sha "$kernel_dir" "$kernel_sha" kernel-sha)
 # the carried desktop host's, recorded as such, and no checkout is needed.
 if [ "$browser_only" = 1 ] && [ -z "$sandbox_sha" ]; then
   sandbox_sha=$(jq -r '.desktopHost.rev // empty' "$root/artifacts/pins.json" 2>/dev/null) || true
-  [ -n "$sandbox_sha" ] || die "artifacts/pins.json pins no desktopHost.rev for a browser-only train to carry through"
+  [[ "$sandbox_sha" =~ ^[0-9a-f]{40}$ ]] \
+    || die "artifacts/pins.json pins no desktopHost.rev (a full 40-hex yurt-sandbox SHA) for a browser-only train to carry through: '$sandbox_sha'"
 fi
 sandbox_sha=$(resolve_sha "$sandbox_dir" "$sandbox_sha" sandbox-sha)
 if [ -n "$image_release" ] && [ -z "$ports_sha" ]; then
@@ -928,7 +929,7 @@ fi
 if [ "$browser_only" = 1 ]; then
   desktop_json=$(jq -c 'select(.desktopHost.release and .yurtCli.release)
     | {desktopHost: (.desktopHost + {kernelRev: (.desktopHost.kernelRev // .kernelWasm.rev),
-                                     train: (.desktopHost.train // .train | sub("^.*@"; "") | sub("^yurt-cli-"; ""))}),
+                                     train: (.desktopHost.train // .train // "" | sub("^.*@"; "") | sub("^yurt-cli-"; ""))}),
        yurtCli}' "$root/artifacts/pins.json") || desktop_json=""
   [ -n "$desktop_json" ] && [ "$(jq -r '.desktopHost.kernelRev // ""' <<< "$desktop_json")" != "" ] \
     || die "artifacts/pins.json has no desktopHost and yurtCli to carry through (with the kernel rev they were built for); a browser-only train needs a full train's pins"
@@ -971,6 +972,13 @@ else
     host_train=$(jq -r '.desktopHost.train // .train // "" | sub("^.*@"; "") | sub("^yurt-cli-"; "")' "$root/artifacts/pins.json")
     [ -n "$host_kernel_rev" ] || host_kernel_rev=$kernel_sha
     [ -n "$host_train" ] || { host_train=$(release_tag "$train"); host_train=${host_train#yurt-cli-}; }
+  elif [ "$pins_only" = 1 ] && [[ "$host_release" == desktop-host-playground-* ]] \
+    && [[ "$kernel_wasm_release" == kernel-wasm-playground-* ]] \
+    && [ "${host_release#desktop-host-}" != "${kernel_wasm_release#kernel-wasm-}" ]; then
+    # Another train's host, by its name: built for that train's kernel,
+    # which is not this kernel wasm's. (A hand-cut host's name says
+    # nothing; naming it with this kernel asserts the pair, as before.)
+    die "--desktop-host-release $host_release is train ${host_release#desktop-host-}'s, built for that train's kernel, not $kernel_wasm_release's: a host boots only its own kernel's wasm"
   fi
   desktop_json=$(jq -nc --arg train "$host_train" --arg kernel_sha "$host_kernel_rev" --arg sandbox_sha "$sandbox_sha" \
     --arg host_release "$host_release" --arg host_repo "$host_repo" --arg cli_release "$cli_release" --arg cli_repo "$cli_repo" \

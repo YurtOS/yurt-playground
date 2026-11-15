@@ -1646,12 +1646,14 @@ async function desktopPins(
     pinsOnly = 0,
     train = "playground-new",
     hostRelease = "desktop-host-new",
+    kernelWasmRelease = "kernel-wasm-new",
     // A browser-only train's is the carried host's, recorded at its start.
     sandboxSha = browserOnly ? pins.desktopHost?.rev ?? "s-new" : "s-new",
   }: {
     pinsOnly?: 0 | 1;
     train?: string;
     hostRelease?: string;
+    kernelWasmRelease?: string;
     sandboxSha?: string;
   } = {},
 ): Promise<{ code: number; output: string; desktop?: Json }> {
@@ -1699,6 +1701,7 @@ root=${JSON.stringify(root)}
 browser_only=${browserOnly} pins_only=${pinsOnly}
 packages_repo=YurtOS/yurt-packages
 train=${train} kernel_sha=k-new sandbox_sha=${sandboxSha}
+kernel_wasm_release=${kernelWasmRelease}
 host_release=${hostRelease} host_repo=YurtOS/yurt-sandbox
 cli_release=yurt-cli-new cli_repo=YurtOS/yurt-sandbox
 ${block}
@@ -1834,6 +1837,26 @@ Deno.test("a full --pins-only run keeps the record of a host it pins again, and 
     assertEquals(other.desktop?.desktopHost.kernelRev, "k-new");
     assertEquals(other.desktop?.desktopHost.train, "playground-new");
   }
+  // Another train's host, by name, with this kernel: refused.
+  const mismatched = await desktopPins(0, pins, {
+    pinsOnly: 1,
+    train: "playground-2026.11.16-bbbbbbb",
+    hostRelease: "desktop-host-playground-2026.11.12-aaaaaaa",
+    kernelWasmRelease: "kernel-wasm-playground-2026.11.16-bbbbbbb",
+  });
+  assertEquals(mismatched.code, 1, mismatched.output);
+  assertStringIncludes(
+    mismatched.output,
+    "a host boots only its own kernel's wasm",
+  );
+  const matched = await desktopPins(0, pins, {
+    pinsOnly: 1,
+    train: "playground-2026.11.16-bbbbbbb",
+    hostRelease: "desktop-host-playground-2026.11.16-bbbbbbb",
+    kernelWasmRelease: "kernel-wasm-playground-2026.11.16-bbbbbbb",
+  });
+  assertEquals(matched.code, 0, matched.output);
+  assertEquals(matched.desktop?.desktopHost.kernelRev, "k-new");
   // A label an earlier --pins-only run wrote is carried as a train's.
   const carried = await desktopPins(1, {
     train: "YurtOS/yurt-sandbox@yurt-cli-playground-old",

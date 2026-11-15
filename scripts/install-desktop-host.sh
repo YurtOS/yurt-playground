@@ -36,7 +36,7 @@ host_kernel=$(jq -r '.desktopHost.kernelRev // empty' "$pins")
 kernel_rev=$(jq -r '.kernelWasm.rev // empty' "$pins")
 if [[ -n "$host_kernel" && "$host_kernel" != "$kernel_rev" ]]; then
   desktop_train=$(jq -r '.desktopHost.train // "an earlier train"' "$pins")
-  echo "install-desktop-host: the pinned desktop host ($(jq -r .desktopHost.release "$pins")) was built for kernel ${host_kernel:0:12}, of $desktop_train; the pinned kernel wasm is ${kernel_rev:0:12}, which it cannot boot. A browser-only train moved the page alone: the desktop app of these pins comes with the next full train (scripts/release-playground.sh); $desktop_train's is desktop-$desktop_train." >&2
+  echo "install-desktop-host: the pinned desktop host ($(jq -r .desktopHost.release "$pins")) was built for kernel ${host_kernel:0:12}, of $desktop_train; the pinned kernel wasm is ${kernel_rev:0:12}, which it cannot boot. A browser-only train moved the page alone: the desktop app of these pins comes with the next full train (scripts/release-playground.sh); until then the download links serve the newest desktop-* release." >&2
   exit 1
 fi
 for blob in yurt_kernel.wasm playground.yurtimg; do
