@@ -164,7 +164,8 @@ jobs:
               echo 'were skipped. Nothing was built and no artifact-backed test'
               echo 'ran — this is not coverage.'
               echo
-              echo 'Add a PAT with read access to those repositories as the'
+              echo 'Add the `ci-yurt-playground` PAT (Contents read on'
+              echo '`yurtos-kernel`, `yurt-jupyter` and `yurt-packages`) as the'
               echo '`REPO_READ_TOKEN` repository secret to enable it.'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
