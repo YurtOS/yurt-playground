@@ -1694,6 +1694,7 @@ esac
 say() { printf '==> %s\\n' "$*" >&2; }
 die() { echo "release-playground: $*" >&2; exit 1; }
 sidecar_sha() { echo "sha-$3"; }
+${source.split("\n").find((l) => l.startsWith("release_tag() {"))}
 root=${JSON.stringify(root)}
 browser_only=${browserOnly} pins_only=${pinsOnly}
 packages_repo=YurtOS/yurt-packages
@@ -1821,13 +1822,27 @@ Deno.test("a full --pins-only run keeps the record of a host it pins again, and 
   assertEquals(same.desktop?.desktopHost.train, "p-old");
   // Another host: the one the run asserts for this kernel, under the
   // train's label, never the CLI release's.
-  const other = await desktopPins(0, pins, {
-    pinsOnly: 1,
-    train: "yurt-cli-playground-new",
+  // The CLI release as a train's is named, owner/repo@tag, or bare.
+  for (
+    const train of [
+      "yurt-cli-playground-new",
+      "YurtOS/yurt-sandbox@yurt-cli-playground-new",
+    ]
+  ) {
+    const other = await desktopPins(0, pins, { pinsOnly: 1, train });
+    assertEquals(other.code, 0, other.output);
+    assertEquals(other.desktop?.desktopHost.kernelRev, "k-new");
+    assertEquals(other.desktop?.desktopHost.train, "playground-new");
+  }
+  // A label an earlier --pins-only run wrote is carried as a train's.
+  const carried = await desktopPins(1, {
+    train: "YurtOS/yurt-sandbox@yurt-cli-playground-old",
+    kernelWasm: { rev: "k-old" },
+    desktopHost: oldDesktopHost,
+    yurtCli: pinnedCli,
   });
-  assertEquals(other.code, 0, other.output);
-  assertEquals(other.desktop?.desktopHost.kernelRev, "k-new");
-  assertEquals(other.desktop?.desktopHost.train, "playground-new");
+  assertEquals(carried.code, 0, carried.output);
+  assertEquals(carried.desktop?.desktopHost.train, "playground-old");
 });
 
 Deno.test("a real browser-only train with a kernel commit off main stops before its first dispatch", async () => {
@@ -1906,8 +1921,6 @@ Deno.test("--pins-only --browser-only takes its label from the kernel wasm relea
         join(root, "scripts/release-playground.sh"),
         "--pins-only",
         "--browser-only",
-        "--kernel-sha",
-        "7".repeat(40),
         "--ports-sha",
         "6".repeat(40),
         ...args,
@@ -1919,6 +1932,8 @@ Deno.test("--pins-only --browser-only takes its label from the kernel wasm relea
       };
     };
     const ok = await run(
+      "--kernel-sha",
+      "7".repeat(40),
       "--kernel-wasm-release",
       "YurtOS/yurt-sandbox@kernel-wasm-playground-2026.11.16-abcdef0",
       "--image-release",
@@ -1930,6 +1945,8 @@ Deno.test("--pins-only --browser-only takes its label from the kernel wasm relea
       `TRAIN=playground-2026.11.16-abcdef0 SANDBOX=${sandbox}`,
     );
     const missing = await run(
+      "--kernel-sha",
+      "7".repeat(40),
       "--kernel-wasm-release",
       "YurtOS/yurt-sandbox@kernel-wasm-playground-2026.11.16-abcdef0",
     );
@@ -1938,6 +1955,16 @@ Deno.test("--pins-only --browser-only takes its label from the kernel wasm relea
       missing.output,
       "--pins-only --browser-only needs --kernel-wasm-release and --image-release",
     );
+    // The kernel rev the host is checked against is the caller's to give:
+    // the kernel checkout's main may be past the release.
+    const noKernel = await run(
+      "--kernel-wasm-release",
+      "YurtOS/yurt-sandbox@kernel-wasm-playground-2026.11.16-abcdef0",
+      "--image-release",
+      "YurtOS/yurt-ports@playground-image-x",
+    );
+    assertEquals(noKernel.code, 1, noKernel.output);
+    assertStringIncludes(noKernel.output, "--pins-only needs --kernel-sha");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -2062,6 +2089,44 @@ Deno.test("install-desktop-host.sh refuses a desktop host built for another kern
   }
 });
 
+Deno.test("build-desktop.sh refuses pins whose desktop host was built for another kernel", async () => {
+  // A runtime/ installed before a browser-only train's pins were pulled
+  // passes the file checks; the pins say the pair is wrong.
+  const dir = await Deno.makeTempDir({ prefix: "build-desktop-" });
+  try {
+    await Deno.mkdir(join(dir, "scripts"));
+    await Deno.mkdir(join(dir, "artifacts"));
+    await Deno.mkdir(join(dir, "dist"));
+    await Deno.writeTextFile(join(dir, "dist/index.html"), "<!doctype html>");
+    await Deno.copyFile(
+      join(repoRoot, "scripts/build-desktop.sh"),
+      join(dir, "scripts/build-desktop.sh"),
+    );
+    const run = async (desktopHost: unknown) => {
+      await Deno.writeTextFile(
+        join(dir, "artifacts/pins.json"),
+        JSON.stringify({ kernelWasm: { rev: "k-new" }, desktopHost }),
+      );
+      const result = await command("bash", [
+        join(dir, "scripts/build-desktop.sh"),
+        "--target",
+        "aarch64-apple-darwin",
+      ]);
+      return new TextDecoder().decode(result.stderr) + ` (exit ${result.code})`;
+    };
+    const behind = await run({ kernelRev: "k-old" });
+    assertStringIncludes(behind, "a browser-only train moved the page alone");
+    assertStringIncludes(behind, "(exit 1)");
+    // Built for this kernel, or from before the record: on to the runtime
+    // check, which this fixture has none for.
+    for (const host of [{ kernelRev: "k-new" }, {}]) {
+      assertStringIncludes(await run(host), "build-desktop: no runtime/");
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 /** \`release-playground.sh --check\` on these pins, with every repo's main
  * at its pinned rev, the page deployed from main, and every release
  * installable. */
@@ -2158,7 +2223,7 @@ Deno.test("--check shows a browser-only train's desktop as behind, not stale", a
   assertEquals(behind.code, 0, behind.output);
   const row = behind.output.split("\n").find((l) => l.includes("desktop app"));
   assertEquals(row?.startsWith("BEHIND"), true, behind.output);
-  assertStringIncludes(row!, "desktop-playground-old");
+  assertStringIncludes(row!, "host and CLI of playground-old");
   assertStringIncludes(row!, "browser-only train");
   assertStringIncludes(behind.output, "the desktop app is behind");
   // Built for the pinned kernel, or pins from before the record: level.

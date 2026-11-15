@@ -69,7 +69,11 @@
 #                   --desktop-host-release or --yurt-cli-release; with
 #                   --validate, a rehearsal of [1] and [2]; with
 #                   --pins-only, carries them through likewise; a --resume
-#                   takes the mode from the state file
+#                   takes the mode from the state file. [2]'s smoke boots
+#                   the new image through the pinned CLI, with that CLI's
+#                   own (older) kernel, and nothing tests the new image on
+#                   the new kernel natively: cut a full train before many
+#                   browser-only ones pile up
 #   --validate      a rehearsal: the train is labelled <TRAIN>-validate and
 #                   published like any other -- as prereleases in the
 #                   builders' repositories, so every step tests against
@@ -109,7 +113,10 @@
 #                   --desktop-host-release, --yurt-cli-release, and
 #                   --python-seal-release or the carried-through pin) and
 #                   verify it -- the generator's ground-truth check against a
-#                   release cut by hand
+#                   release cut by hand. Needs --kernel-sha, the rev the
+#                   kernel wasm release was built at (the desktop host is
+#                   checked against it). With --browser-only, no host or CLI
+#                   release: the pinned ones are carried through
 #
 # State: $XDG_STATE_HOME/yurt-playground/releases/<train>.json (~/.local/state)
 # records every step's run id and result; --resume picks up from there. The
@@ -189,6 +196,11 @@ refuse_desktop_inputs() {
   done
 }
 refuse_desktop_inputs
+# kernelWasm.rev is what the desktop host's kernelRev is checked against
+# (install-desktop-host.sh, --check): from releases named by hand, only the
+# caller knows it -- the kernel checkout's main may have moved past them.
+[ "$pins_only" = 0 ] || [ -n "$kernel_sha" ] \
+  || die "--pins-only needs --kernel-sha: the yurtos-kernel rev the --kernel-wasm-release was built at"
 source "$root/scripts/lib/kernel-release.sh"
 source "$root/scripts/lib/snapshot-pin.sh"
 source "$root/scripts/lib/python-set.sh"
@@ -280,11 +292,11 @@ run_check() {
   # from before desktopHost.kernelRev are one full train's, built together.
   local host_kernel desktop_train
   host_kernel=$(jq -r '.desktopHost.kernelRev // ""' "$pins")
-  desktop_train=$(jq -r '.desktopHost.train // .train // ""' "$pins")
+  desktop_train=$(jq -r '.desktopHost.train // .train // "" | sub("^.*@"; "") | sub("^yurt-cli-"; "")' "$pins")
   if [ -z "$host_kernel" ] || [ "$host_kernel" = "$kernel_pin" ]; then
-    row ok "desktop app" "$(short "${host_kernel:-$kernel_pin}")" "$(short "$kernel_pin")" "desktop-$desktop_train: built for the pinned kernel"
+    row ok "desktop app" "$(short "${host_kernel:-$kernel_pin}")" "$(short "$kernel_pin")" "host and CLI of $desktop_train: built for the pinned kernel"
   else
-    row behind "desktop app" "$(short "$host_kernel")" "$(short "$kernel_pin")" "desktop-$desktop_train (browser-only train): its host and CLI are of an older kernel; a full train ([3] native, [5] desktop) brings it level"
+    row behind "desktop app" "$(short "$host_kernel")" "$(short "$kernel_pin")" "host and CLI of $desktop_train (browser-only train), an older kernel; the links serve the newest desktop-* release; a full train ([3] native, [5] desktop) brings it level"
   fi
 
   # The guest SDK behind the image: the train builds the ports with the
@@ -488,7 +500,7 @@ if [ "$pins_only" = 1 ] && [ "$browser_only" = 1 ]; then
 elif [ "$pins_only" = 1 ]; then
   [ -n "$kernel_wasm_release" ] && [ -n "$image_release" ] && [ -n "$host_release" ] && [ -n "$cli_release" ] \
     || die "--pins-only needs --kernel-wasm-release, --image-release, --desktop-host-release and --yurt-cli-release"
-  train=${train:-$cli_release}
+  train=${train:-$(release_tag "$cli_release")}
 elif [ -z "$train" ]; then
   base="playground-$(date -u +%Y.%m.%d)-${kernel_sha:0:7}"
   train=$base
@@ -916,7 +928,7 @@ fi
 if [ "$browser_only" = 1 ]; then
   desktop_json=$(jq -c 'select(.desktopHost.release and .yurtCli.release)
     | {desktopHost: (.desktopHost + {kernelRev: (.desktopHost.kernelRev // .kernelWasm.rev),
-                                     train: (.desktopHost.train // .train)}),
+                                     train: (.desktopHost.train // .train | sub("^.*@"; "") | sub("^yurt-cli-"; ""))}),
        yurtCli}' "$root/artifacts/pins.json") || desktop_json=""
   [ -n "$desktop_json" ] && [ "$(jq -r '.desktopHost.kernelRev // ""' <<< "$desktop_json")" != "" ] \
     || die "artifacts/pins.json has no desktopHost and yurtCli to carry through (with the kernel rev they were built for); a browser-only train needs a full train's pins"
@@ -951,13 +963,14 @@ else
   # pins again unchanged keeps the kernel rev it was recorded with -- this
   # kernel may be a browser-only train's, which that host cannot boot.
   host_kernel_rev=$kernel_sha
-  host_train=${train#yurt-cli-}
+  host_train=$(release_tag "$train")
+  host_train=${host_train#yurt-cli-}
   if [ "$pins_only" = 1 ] && [ "$(jq -r '.desktopHost.release // ""' "$root/artifacts/pins.json")" = "$host_release" ] \
     && [ "$(jq -r ".desktopHost.releaseRepo // \"$packages_repo\"" "$root/artifacts/pins.json")" = "$host_repo" ]; then
     host_kernel_rev=$(jq -r '.desktopHost.kernelRev // .kernelWasm.rev // ""' "$root/artifacts/pins.json")
-    host_train=$(jq -r '.desktopHost.train // .train // ""' "$root/artifacts/pins.json")
+    host_train=$(jq -r '.desktopHost.train // .train // "" | sub("^.*@"; "") | sub("^yurt-cli-"; "")' "$root/artifacts/pins.json")
     [ -n "$host_kernel_rev" ] || host_kernel_rev=$kernel_sha
-    [ -n "$host_train" ] || host_train=${train#yurt-cli-}
+    [ -n "$host_train" ] || { host_train=$(release_tag "$train"); host_train=${host_train#yurt-cli-}; }
   fi
   desktop_json=$(jq -nc --arg train "$host_train" --arg kernel_sha "$host_kernel_rev" --arg sandbox_sha "$sandbox_sha" \
     --arg host_release "$host_release" --arg host_repo "$host_repo" --arg cli_release "$cli_release" --arg cli_repo "$cli_repo" \
@@ -1137,7 +1150,7 @@ say "deploy: gh run list --repo YurtOS/yurt-playground --workflow deploy-pages.y
 # its host and CLI are from>, whose installers carry their own kernel and
 # image.
 if [ "$browser_only" = 1 ]; then
-  say "released (browser-only): kernel-wasm-$train, $image_release, $seal_release_of_train; the desktop app stays desktop-$desktop_train (a full train brings it level)"
+  say "released (browser-only): kernel-wasm-$train, $image_release, $seal_release_of_train; the desktop app stays at $desktop_train's host and CLI, and the links at the newest desktop-* release (desktop-$desktop_train when its [5] published); a full train brings it level"
   remind_dropped_snapshot "$(step_get snapshot dropped)"
   exit 0
 fi
