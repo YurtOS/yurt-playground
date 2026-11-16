@@ -26,7 +26,7 @@ yurtos-rules checkout.
 
 If a rule here and an org rule disagree, stop and tell the user.
 
-`CLAUDE.md` points here. Its hosted CI budget is
+`CLAUDE.md` points here. This repository's hosted CI budget is
 [Hosted CI budget during draft review](#hosted-ci-budget-during-draft-review).
 
 ## Project shape
