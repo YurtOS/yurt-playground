@@ -431,26 +431,18 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
       .includes("integrity.json"),
     true,
   );
-  // Tablets get a note; phones and a boot that dies get the explanation.
+  // Tablets and phones get a note; a boot that dies gets the explanation.
   assertEquals(html.includes('data-testid="mobile-note"'), true);
+  assertEquals(html.includes('data-testid="phone-note"'), true);
   assertEquals(html.includes('data-testid="boot-failed"'), true);
-  for (const why of ["phone", "tablet", "reloaded", "error"]) {
+  for (const why of ["tablet", "reloaded", "error"]) {
     assertEquals(html.includes(`data-why="${why}"`), true, why);
   }
-  // The phone refusal names its way out, and states no stale measurement.
+  // A phone boots (the tablet's snapshot): no refusal pane is left for it.
+  assertEquals(html.includes('data-why="phone"'), false);
   assertEquals(html.includes('id="failed-title"'), true);
-  assertEquals(html.includes('href="./?start-anyway"'), true);
   assertEquals(html.includes("around a gigabyte"), false);
-  // The slim boot: a phone that starts anyway gets the shell and a note
-  // instead of Python, and the refusal tells no story of the old full-image
-  // boot ("starting Jupyter"). The intro says Python comes on its own.
-  assertEquals(html.includes('data-testid="phone-note"'), true);
-  const phonePane = html.slice(
-    html.indexOf('data-why="phone"'),
-    html.indexOf("</p>", html.indexOf('data-why="phone"')),
-  );
-  assertEquals(phonePane.includes("starting Jupyter"), false);
-  assertEquals(/Notebook\s+and\s+JupyterLab/.test(phonePane), true);
+  // The intro says Python comes on its own.
   assertEquals(html.includes("when the sandbox's image has Python"), false);
   const unsupported = await Deno.readTextFile(
     new URL("../public/unsupported.html", import.meta.url),

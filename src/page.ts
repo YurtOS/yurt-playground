@@ -363,24 +363,18 @@ function cutOffBoot(): string | undefined {
 /**
  * The failure pane in the terminal's place: one paragraph for the known
  * cause (`why`), the browser's own words as `reason` when there are any.
- * A phone is refused before Start; the others come from the boot.
  */
 function showFailure(
-  why: "phone" | "tablet" | "reloaded" | "error",
+  why: "tablet" | "reloaded" | "error",
   reason?: string,
 ): void {
   byId("start").hidden = true;
-  // A phone is not a boot that failed: nothing was started.
-  byId("failed-title").textContent = why === "phone"
-    ? "The sandbox does not run on phones"
-    : "The sandbox did not start";
   const failed = byId("failed");
   for (const p of failed.querySelectorAll<HTMLElement>("[data-why]")) {
     p.hidden = p.dataset.why !== why;
   }
   byId("failed-reason").hidden = reason === undefined;
   byId("failed-reason").textContent = reason ?? "";
-  byId("failed-retry").hidden = why === "phone";
   failed.hidden = false;
 }
 
@@ -660,7 +654,8 @@ function boot(
   rememberBooting("booting");
   // On the slim image the coordinator installs the newest complete Python
   // set before Jupyter; a tablet's session, and a phone's, is the shell
-  // (with the snapshot's python) alone, and the desktop app's sandbox needs no page to install anything.
+  // (with the snapshot's python) alone, and the desktop app's sandbox
+  // needs no page to install anything.
   void pinsPromise.then((pins) => {
     // `?snapshot=capture&packages=a,b` (scripts/snapshot-local.ts): a
     // name pkg would refuse fails the capture before it starts.

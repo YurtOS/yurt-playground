@@ -299,11 +299,13 @@ snapshot on a desktop browser (and is ignored, with a note, anywhere else), and
 download comes with the 8.5 MB kernel.
 
 Measured with `scripts/measure-boot.ts` (headless, served locally, so the
-download is fast) on 2026-10-29; the phone rows on 2026-11-17, when a phone
-started restoring the tablet's snapshot (a tablet measured the same day took
-3.55 s / 3.47 s in Chromium and 2.99 s / 2.80 s in WebKit). "RAM to restore" is
-the peak resident memory of Chromium's renderer processes while the page
-restores and starts its shell, the page itself included.
+download is fast) on 2026-10-29, except the phone rows: those are from
+2026-11-17, when a phone started restoring the tablet's snapshot. An iPad Pro 11
+measured alongside them took 3.55 s / 3.47 s in Chromium and 2.99 s / 2.80 s in
+WebKit, about what the phone did and slower than its own row from 2026-10-29, so
+compare the phone rows with those figures, not with the tablet rows below. "RAM
+to restore" is the peak resident memory of Chromium's renderer processes while
+the page restores and starts its shell, the page itself included.
 
 | Platform                                        | Engine   | Time to a prompt, cold / warm | Jupyter ready |
 | ----------------------------------------------- | -------- | ----------------------------- | ------------- |

@@ -1055,6 +1055,9 @@ if [ "$pins_only" = 0 ]; then
       tabletSnapshot:*) key=tabletSnapshot ;;
       goSnapshot:*) key=goSnapshot ;;
       playwrightSnapshot:*) key=playwrightSnapshot ;;
+      # The phone's own kind is gone (it restores the tablet's): a train
+      # resumed across that change has nothing to recapture for it.
+      phoneSnapshot:*) continue ;;
       *) key=snapshot ;;
     esac
     case "$dropped_keys" in *" $key "*) continue ;; esac
