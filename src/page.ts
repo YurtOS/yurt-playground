@@ -79,7 +79,7 @@ import {
   type YurtTransport,
 } from "./agent_api.ts";
 import type { ExecOptions } from "./executions.ts";
-import type { SandboxFileMessage } from "./sandbox_file.ts";
+import { type SandboxFileMessage, sandboxFileOk } from "./sandbox_file.ts";
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -852,28 +852,28 @@ function wireSandboxFile(status: StatusLine): void {
   sandboxFileHeard = (message) => {
     if (message.type === "sandbox-saved") {
       console.log(
-        `[sandbox] sealed and encoded in ${message.ms} ms: ${message.blob.size} bytes`,
+        `[sandbox] saved ${message.name}: ${message.blob.size} bytes`,
       );
       downloadBlob(message.blob, message.name);
       return;
     }
     if (message.type !== "sandbox-done") return;
+    const ok = sandboxFileOk(message);
     console.log(
-      `[sandbox] ${message.action} ${
-        message.ok ? "done" : "failed"
-      } in ${message.ms} ms${
+      `[sandbox] ${message.action} ${message.outcome} in ${message.ms} ms${
         message.why === undefined ? "" : `: ${message.why}`
       }`,
     );
     mark.sandboxFileDone = JSON.stringify(message);
     busy(false);
+    const what = message.action === "save" ? "save sandbox" : "load sandbox";
     status.notice(
-      message.ok
+      ok
         ? message.action === "save" ? "sandbox saved" : "sandbox loaded"
-        : `${message.action === "save" ? "save" : "load"} sandbox: ${
-          message.why ?? "failed"
-        }${message.changed ? "" : " (nothing changed)"}`,
-      { error: !message.ok },
+        : `${what}: ${message.why ?? "failed"}${
+          message.outcome === "refused" ? " (nothing changed)" : ""
+        }`,
+      { error: !ok },
     );
   };
 }

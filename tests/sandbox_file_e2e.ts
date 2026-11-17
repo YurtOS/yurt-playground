@@ -2,7 +2,8 @@
  * Save sandbox and Load sandbox (yurt-playground#8), end to end: a file
  * made in the shell is saved with the sandbox, deleted, and back after
  * the downloaded zip is loaded -- in a new shell on the terminal and in a
- * Jupyter cell. A stale, a damaged and an oversized file are each refused
+ * Jupyter cell; a cell still running when Save seals ends at once. A
+ * stale, a damaged and an oversized file are each refused
  * with the running shell untouched (a shell variable set before is still
  * set after). Prints Save's and Load's times.
  *
@@ -18,7 +19,7 @@ import { launchBrowser } from "../scripts/browser.ts";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
 import { writeZip, ZipStreamReader } from "../src/snapshot_zip.ts";
-import type { SandboxFileMessage } from "../src/sandbox_file.ts";
+import { type SandboxFileMessage, sandboxFileOk } from "../src/sandbox_file.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BOOT_MS = 300_000;
@@ -143,14 +144,33 @@ if (import.meta.main) {
     // A file in the shell, and a variable only this shell has.
     await shell(page, "echo kept-8 > ~/kept.txt; X=old-shell");
 
+    // A cell that would run for minutes: Save stops its kernel, and the
+    // cell must end then, not at its own timeout.
+    await page.getByTestId("notebook-input").fill(
+      "import time; time.sleep(600)",
+    );
+    await page.getByTestId("notebook-execute").click();
+
     // Save: the download, and the session back with the file.
     const downloaded = page.waitForEvent("download", { timeout: BOOT_MS });
     const saveStarted = Date.now();
+    const cellEnded = page.waitForFunction(
+      () =>
+        /the sandbox was replaced/.test(
+          document.querySelector("[data-testid=notebook-output]")
+            ?.textContent ?? "",
+        ),
+      undefined,
+      { timeout: 60_000 },
+    );
     const saved = await sandboxFile(
       page,
       () => page.getByTestId("save-sandbox").click(),
     );
-    if (!saved.ok) throw new Error(`save failed: ${saved.why}`);
+    if (!sandboxFileOk(saved)) {
+      throw new Error(`save failed: ${JSON.stringify(saved)}`);
+    }
+    await cellEnded;
     const download = await downloaded;
     const zip = join(dir, download.suggestedFilename());
     await download.saveAs(zip);
@@ -172,7 +192,9 @@ if (import.meta.main) {
     const manifest = await manifestOf(zip);
     const built = manifest.builtFrom as Record<string, unknown>;
     const damaged = new Uint8Array(await Deno.readFile(zip));
-    damaged[Math.floor(damaged.byteLength / 2)] ^= 0xff;
+    // A byte of the stored manifest: inflate cannot notice, the CRC-32
+    // must (30-byte header, then the name).
+    damaged[30 + "snapshot.json".length + 2] ^= 0x01;
     await Deno.writeFile(join(dir, "damaged.zip"), damaged);
     const refusals: [string, RegExp][] = [
       [
@@ -182,7 +204,7 @@ if (import.meta.main) {
         }),
         /saved by another Yurt build \(kernelSha256/,
       ],
-      [join(dir, "damaged.zip"), /not a sandbox snapshot this page loads/],
+      [join(dir, "damaged.zip"), /snapshot\.json fails its CRC-32/],
       [
         await craft(dir, "huge.zip", { ...manifest, memoryBytes: 2 ** 31 }),
         /over the 1024 MiB this page loads/,
@@ -193,7 +215,7 @@ if (import.meta.main) {
         page,
         () => page.getByTestId("load-input").setInputFiles(path),
       );
-      if (done.ok || done.changed || !expect.test(done.why ?? "")) {
+      if (done.outcome !== "refused" || !expect.test(done.why ?? "")) {
         throw new Error(
           `${path}: not refused as ${expect}: ${JSON.stringify(done)}`,
         );
@@ -215,7 +237,9 @@ if (import.meta.main) {
       page,
       () => page.getByTestId("load-input").setInputFiles(zip),
     );
-    if (!loaded.ok) throw new Error(`load failed: ${loaded.why}`);
+    if (!sandboxFileOk(loaded)) {
+      throw new Error(`load failed: ${JSON.stringify(loaded)}`);
+    }
     await notebookReady(page, "after load");
     const loadMs = Date.now() - loadStarted;
     console.log(

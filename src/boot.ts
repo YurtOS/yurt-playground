@@ -517,20 +517,8 @@ export async function bootPlayground(
   };
   const kernelSha256 = await sha256Hex(kernel);
   env.kernelSha256?.(kernelSha256);
-  const sealImage = env.sealImage?.();
-  if (sealImage !== undefined) {
-    env.show("restoring the sandbox");
-    const started = performance.now();
-    const restored = await restorePlaygroundKernel(kernel, sealImage);
-    if (restored.processes.length !== 0) {
-      restored.host.dispose();
-      throw new Error("a saved sandbox must hold no process");
-    }
-    console.log(
-      `[sandbox] restored in ${Math.round(performance.now() - started)} ms`,
-    );
-    return await start(restored.host, true);
-  }
+  const fromSeal = await restoreSealImage(env, kernel);
+  if (fromSeal !== undefined) return await start(fromSeal, true);
   const saved = await env.savedSession?.().catch(() => undefined);
   if (saved !== undefined) {
     try {
@@ -628,6 +616,29 @@ export async function snapshotOrBoot<K>(
     );
     return { kernel: await boot(), restored: false };
   }
+}
+
+/** The kernel over Save's or Load's seal (`env.sealImage`), or undefined
+ * when there is none. Apart from {@link bootPlayground} so that nothing
+ * holds the image once the kernel has its copy, while the shell and
+ * Jupyter start. */
+async function restoreSealImage(
+  env: PlaygroundEnv,
+  kernel: Uint8Array,
+): Promise<KernelHostInterface | undefined> {
+  const image = env.sealImage?.();
+  if (image === undefined) return undefined;
+  env.show("restoring the sandbox");
+  const started = performance.now();
+  const restored = await restorePlaygroundKernel(kernel, image);
+  if (restored.processes.length !== 0) {
+    restored.host.dispose();
+    throw new Error("a saved sandbox must hold no process");
+  }
+  console.log(
+    `[sandbox] restored in ${Math.round(performance.now() - started)} ms`,
+  );
+  return restored.host;
 }
 
 /** A kernel over a sealed sandbox with no process in it: its filesystem is

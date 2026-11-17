@@ -81,6 +81,28 @@ export function memoryRefusal(
   return undefined;
 }
 
+/** Why a decoded seal is not one a Load restores, or undefined: what the
+ * page can check of the host's own fields. A seal with no process (every
+ * Save's) has no host wait; scratch the host would adopt lies inside the
+ * memory. The kernel state inside the memory is the kernel's question
+ * (yurt-playground#8). */
+export function sealRefusal(image: SandboxSealImage): string | undefined {
+  if (image.processes.length !== 0 || image.hostWaits.length !== 0) {
+    return `it holds ${image.processes.length} processes and ${image.hostWaits.length} host waits, not none`;
+  }
+  const bytes = image.kernelMemory.byteLength;
+  const outside = image.executor?.freeScratch.find(({ start, length }) =>
+    !Number.isSafeInteger(start) || !Number.isSafeInteger(length) ||
+    start < 0 || length < 0 || start + length > bytes
+  );
+  if (outside !== undefined) {
+    return `its executor scratch ${
+      JSON.stringify(outside)
+    } lies outside its ${bytes} bytes of memory`;
+  }
+  return undefined;
+}
+
 /** The seal image in a file the user picked, read and checked whole --
  * every entry's CRC-32 too, since no pin names its hash -- or
  * {@link LoadRefused} saying why not. A file of another build is refused
@@ -92,8 +114,9 @@ export async function decodeLoadedSnapshot(
   expected: SnapshotIdentity,
   smallDevice: boolean,
 ): Promise<SandboxSealImage> {
+  let image: SandboxSealImage;
   try {
-    return await decodeSandboxSnapshot(
+    image = await decodeSandboxSnapshot(
       body,
       expected,
       undefined,
@@ -117,36 +140,73 @@ export async function decodeLoadedSnapshot(
     }
     throw new LoadRefused(`not a sandbox snapshot this page loads: ${message}`);
   }
+  const why = sealRefusal(image);
+  if (why !== undefined) throw new LoadRefused(`this snapshot: ${why}`);
+  return image;
 }
 
-/** What Save and Load report to the page. `changed`: the sandbox was
- * replaced (a refusal leaves it as it was). */
+/** A seal on its way to the restore, which empties it as it takes the
+ * image: nothing else holds the (up to 1 GiB) memory once the new kernel
+ * has its copy. */
+export type SealBox = { image?: PageSeal };
+
+/** How a replace's boot ended: whether a shell came up, and what became
+ * of Jupyter there (`none`: a page that starts none, a phone's or
+ * tablet's); `error` is the boot's own report, when it made one. */
+export type ReplaceOutcome = {
+  up: boolean;
+  jupyter?: "ready" | "missing" | "failed" | "none";
+  error?: string;
+};
+
+/** Where a Save or a Load left the page's sandbox: `refused`, untouched;
+ * `restored`, the seal is running; `fresh`, the seal did not start and a
+ * fresh sandbox did; `none`, neither did. */
+export type SandboxOutcome = "refused" | "restored" | "fresh" | "none";
+
+/** What Save and Load report to the page. */
 export type SandboxFileMessage =
-  | { type: "sandbox-saved"; blob: Blob; name: string; ms: number }
+  | { type: "sandbox-saved"; blob: Blob; name: string }
   // The old sandbox goes now; a boot's reports follow for the new one.
   | { type: "sandbox-replacing"; action: "save" | "load" }
   | {
     type: "sandbox-done";
     action: "save" | "load";
-    ok: boolean;
-    changed: boolean;
+    outcome: SandboxOutcome;
+    /** Save: whether the file was handed over. */
+    saved?: boolean;
+    jupyter?: ReplaceOutcome["jupyter"];
+    /** Whatever was not as asked, for the user. */
     why?: string;
     ms: number;
   };
 
+/** Whether the user got what they asked for. */
+export function sandboxFileOk(
+  done: Extract<SandboxFileMessage, { type: "sandbox-done" }>,
+): boolean {
+  return done.outcome === "restored" &&
+    (done.jupyter === "ready" || done.jupyter === "none") &&
+    (done.action === "load" || done.saved === true);
+}
+
 /** What Save and Load need from the worker. */
 export type SandboxFileDeps = {
+  /** This page can replace its sandbox in place: the in-tab one, not a
+   * capture's, on a kernel whose root is its memory. */
+  canReplace: boolean;
   /** Stop every guest process and seal the running sandbox (it runs
-   * nothing more afterwards); undefined when this one cannot be saved. */
+   * nothing more afterwards); undefined when none runs that can. */
   seal: (() => Promise<PageSeal>) | undefined;
   pins: () => Promise<Pins>;
   /** A phone or tablet page. */
   smallDevice: boolean;
-  /** Drop the running sandbox and start the shell (and Jupyter) on
-   * `image` as a boot would: whether it came up. */
-  replace(image: SandboxSealImage): Promise<boolean>;
-  /** After a sandbox that did not come up: a fresh one, said so. */
-  startFresh(why: string): Promise<void>;
+  /** Drop the running sandbox and start the shell (and Jupyter) on the
+   * box's seal as a boot would, taking it out of the box. */
+  replace(box: SealBox): Promise<ReplaceOutcome>;
+  /** After a sandbox that did not come up: a fresh one, said so; whether
+   * its shell came up. */
+  startFresh(why: string): Promise<boolean>;
   post(message: SandboxFileMessage): void;
   now?: () => number;
 };
@@ -154,106 +214,151 @@ export type SandboxFileDeps = {
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
-/** Save sandbox: seal, hand the file over, restore the same seal in place.
- * A seal that fails has already stopped the shell, so a fresh sandbox
- * follows, said so. */
-export async function saveSandbox(deps: SandboxFileDeps): Promise<void> {
+/** Exactly one `sandbox-done` per Save or Load, whatever throws. */
+async function reported(
+  deps: SandboxFileDeps,
+  action: "save" | "load",
+  run: () => Promise<
+    Omit<
+      Extract<SandboxFileMessage, { type: "sandbox-done" }>,
+      "type" | "action" | "ms"
+    >
+  >,
+): Promise<void> {
   const now = deps.now ?? (() => performance.now());
   const started = now();
-  const done = (ok: boolean, changed: boolean, why?: string) =>
-    deps.post({
-      type: "sandbox-done",
-      action: "save",
-      ok,
-      changed,
-      ...(why === undefined ? {} : { why }),
-      ms: Math.round(now() - started),
-    });
-  if (deps.seal === undefined) {
-    done(false, false, "this sandbox cannot be saved");
-    return;
-  }
-  let image: PageSeal;
-  let blob: Blob;
+  let result: Awaited<ReturnType<typeof run>>;
   try {
-    image = await deps.seal();
+    result = await run();
   } catch (error) {
-    const why = `saving failed: ${errorText(error)}`;
-    deps.post({ type: "sandbox-replacing", action: "save" });
-    await deps.startFresh(why);
-    done(false, true, why);
-    return;
-  }
-  try {
-    blob = await encodeSandboxSnapshot(
-      image,
-      savedBuiltFrom(await deps.pins()),
-    );
-  } catch (error) {
-    // Sealed, but no file: the session still comes back on the seal.
-    deps.post({ type: "sandbox-replacing", action: "save" });
-    await comeBack(deps, image);
-    done(false, true, `saving failed: ${errorText(error)}`);
-    return;
+    // Not one of the outcomes run() reports itself: what is running now
+    // is unknown, so the user is told to reload.
+    result = {
+      outcome: "none",
+      why: `${errorText(error)}; reload the page for a fresh sandbox`,
+    };
   }
   deps.post({
-    type: "sandbox-saved",
-    blob,
-    name: savedFileName(new Date()),
+    type: "sandbox-done",
+    action,
+    ...result,
     ms: Math.round(now() - started),
   });
-  deps.post({ type: "sandbox-replacing", action: "save" });
-  const why = await comeBack(deps, image);
-  done(why === undefined, true, why);
 }
 
-/** Replace the sandbox with `image`; when it does not come up, a fresh
- * sandbox takes its place and the reason is returned. */
-async function comeBack(
+/** A fresh sandbox after one that did not start: `fresh` or `none`. */
+async function freshOrNone(
   deps: SandboxFileDeps,
-  image: SandboxSealImage,
-): Promise<string | undefined> {
-  if (await deps.replace(image)) return undefined;
-  const why = "the sealed sandbox did not start again";
-  await deps.startFresh(why);
-  return why;
+  why: string,
+): Promise<SandboxOutcome> {
+  try {
+    return await deps.startFresh(why) ? "fresh" : "none";
+  } catch {
+    return "none";
+  }
+}
+
+/** Replace the sandbox with the box's seal; when no shell comes up on it,
+ * a fresh sandbox takes its place. A shell whose Jupyter did not start
+ * stays: it is said, not replaced again. */
+async function replaceWith(
+  deps: SandboxFileDeps,
+  box: SealBox,
+  what: string,
+): Promise<{
+  outcome: SandboxOutcome;
+  jupyter?: ReplaceOutcome["jupyter"];
+  why?: string;
+}> {
+  let result: ReplaceOutcome;
+  try {
+    result = await deps.replace(box);
+  } catch (error) {
+    result = { up: false, error: errorText(error) };
+  } finally {
+    box.image = undefined;
+  }
+  if (result.up) {
+    return {
+      outcome: "restored",
+      jupyter: result.jupyter,
+      ...(result.jupyter === "missing"
+        ? { why: `${what} has no Python set, so Jupyter did not start` }
+        : result.jupyter === "failed"
+        ? { why: result.error ?? "Jupyter did not start" }
+        : {}),
+    };
+  }
+  const why = `${what} did not start${
+    result.error === undefined ? "" : `: ${result.error}`
+  }`;
+  return { outcome: await freshOrNone(deps, why), why };
+}
+
+/** Save sandbox: seal, hand the file over, restore the same seal in place.
+ * A seal that fails has already stopped the shell and leaves no way back:
+ * a fresh sandbox follows, said so. */
+export function saveSandbox(deps: SandboxFileDeps): Promise<void> {
+  return reported(deps, "save", async () => {
+    const seal = deps.seal;
+    if (!deps.canReplace || seal === undefined) {
+      return { outcome: "refused", why: "this sandbox cannot be saved" };
+    }
+    const box: SealBox = {};
+    try {
+      box.image = await seal();
+    } catch (error) {
+      const why = `saving failed: ${
+        errorText(error)
+      }; its shell had already stopped, so a fresh sandbox starts and this one's files are gone`;
+      deps.post({ type: "sandbox-replacing", action: "save" });
+      return { outcome: await freshOrNone(deps, why), saved: false, why };
+    }
+    let saved = false;
+    let failed: string | undefined;
+    try {
+      const blob = await encodeSandboxSnapshot(
+        box.image,
+        savedBuiltFrom(await deps.pins()),
+      );
+      deps.post({
+        type: "sandbox-saved",
+        blob,
+        name: savedFileName(new Date()),
+      });
+      saved = true;
+    } catch (error) {
+      // Sealed, but no file: the session still comes back on the seal.
+      failed = `saving failed: ${errorText(error)}`;
+    }
+    deps.post({ type: "sandbox-replacing", action: "save" });
+    const back = await replaceWith(deps, box, "the saved sandbox");
+    return { ...back, saved, why: failed ?? back.why };
+  });
 }
 
 /** Load sandbox: `file` read and checked whole while the running sandbox
  * is untouched; a refusal changes nothing. Then the sandbox is replaced by
  * it; one that does not come up gives way to a fresh sandbox. */
-export async function loadSandbox(
-  deps: SandboxFileDeps,
-  file: Blob,
-): Promise<void> {
-  const now = deps.now ?? (() => performance.now());
-  const started = now();
-  const done = (ok: boolean, changed: boolean, why?: string) =>
-    deps.post({
-      type: "sandbox-done",
-      action: "load",
-      ok,
-      changed,
-      ...(why === undefined ? {} : { why }),
-      ms: Math.round(now() - started),
-    });
-  // The running sandbox is what a loaded one replaces: none, nothing to do.
-  if (deps.seal === undefined) {
-    done(false, false, "this sandbox cannot load a snapshot");
-    return;
-  }
-  let image: SandboxSealImage;
-  try {
-    image = await decodeLoadedSnapshot(
-      file.stream(),
-      snapshotIdentity(await deps.pins()),
-      deps.smallDevice,
-    );
-  } catch (error) {
-    done(false, false, errorText(error));
-    return;
-  }
-  deps.post({ type: "sandbox-replacing", action: "load" });
-  const why = await comeBack(deps, image);
-  done(why === undefined, true, why);
+export function loadSandbox(deps: SandboxFileDeps, file: Blob): Promise<void> {
+  return reported(deps, "load", async () => {
+    if (!deps.canReplace) {
+      return {
+        outcome: "refused",
+        why: "this page cannot load a sandbox snapshot",
+      };
+    }
+    const box: SealBox = {};
+    try {
+      box.image = await decodeLoadedSnapshot(
+        file.stream(),
+        snapshotIdentity(await deps.pins()),
+        deps.smallDevice,
+      );
+    } catch (error) {
+      return { outcome: "refused", why: errorText(error) };
+    }
+    deps.post({ type: "sandbox-replacing", action: "load" });
+    return await replaceWith(deps, box, "the loaded sandbox");
+  });
 }

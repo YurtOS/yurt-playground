@@ -10,11 +10,14 @@ import {
   LoadRefused,
   loadSandbox,
   memoryRefusal,
+  type ReplaceOutcome,
   type SandboxFileDeps,
   type SandboxFileMessage,
+  sandboxFileOk,
   savedBuiltFrom,
   savedFileName,
   saveSandbox,
+  type SealBox,
 } from "../src/sandbox_file.ts";
 import { snapshotIdentity } from "../src/sandbox_snapshot.ts";
 
@@ -71,32 +74,50 @@ function manifestFor(memoryBytes: number, built = savedBuiltFrom(PINS)) {
   };
 }
 
-/** Deps that record what happened; `replaceOk` is what a restore gives. */
+/** Deps that record what happened. `outcome` is what a restore gives
+ * (or throws); `freshUp` whether a fresh sandbox comes up. */
 function harness(
-  { seal, replaceOk = true, small = false }: {
+  {
+    seal,
+    outcome = { up: true, jupyter: "ready" },
+    freshUp = true,
+    small = false,
+    canReplace = true,
+  }: {
     seal?: SandboxFileDeps["seal"];
-    replaceOk?: boolean;
+    outcome?: ReplaceOutcome | Error;
+    freshUp?: boolean | Error;
     small?: boolean;
+    canReplace?: boolean;
   } = {},
 ) {
   const posted: SandboxFileMessage[] = [];
   const replaced: SandboxSealImage[] = [];
   const fresh: string[] = [];
   const deps: SandboxFileDeps = {
+    canReplace,
     seal,
     pins: () => Promise.resolve(PINS),
     smallDevice: small,
-    replace: (image) => {
-      replaced.push(image);
-      return Promise.resolve(replaceOk);
+    replace: (box) => {
+      // The restore takes the seal out of the box.
+      replaced.push(box.image!);
+      box.image = undefined;
+      return outcome instanceof Error
+        ? Promise.reject(outcome)
+        : Promise.resolve(outcome);
     },
     startFresh: (why) => {
       fresh.push(why);
-      return Promise.resolve();
+      return freshUp instanceof Error
+        ? Promise.reject(freshUp)
+        : Promise.resolve(freshUp);
     },
     post: (message) => posted.push(message),
   };
   const done = () => {
+    const dones = posted.filter((m) => m.type === "sandbox-done");
+    assertEquals(dones.length, 1, "exactly one sandbox-done");
     const last = posted.at(-1);
     assert(last?.type === "sandbox-done", JSON.stringify(last?.type));
     return last;
@@ -125,7 +146,11 @@ Deno.test("Save seals, hands over a file Load takes, and restores the same seal 
   assertEquals(h.replaced, [sealed]);
   assertEquals(h.fresh, []);
   const done = h.done();
-  assertEquals([done.ok, done.changed, done.why], [true, true, undefined]);
+  assertEquals(
+    [done.outcome, done.saved, done.jupyter, done.why],
+    ["restored", true, "ready", undefined],
+  );
+  assert(sandboxFileOk(done));
   const saved = h.posted[0];
   assert(saved.type === "sandbox-saved");
   assert(/^yurt-sandbox-\d{4}-\d\d-\d\d-\d{4}\.zip$/.test(saved.name));
@@ -139,52 +164,144 @@ Deno.test("Save seals, hands over a file Load takes, and restores the same seal 
   );
 });
 
-Deno.test("a Save whose seal fails says so and starts a fresh sandbox (its shell is already gone)", async () => {
+Deno.test("a Save whose seal fails starts a fresh sandbox and says the files are gone", async () => {
   const h = harness({ seal: () => Promise.reject(new Error("stuck")) });
   await saveSandbox(h.deps);
   assertEquals(h.replaced, []);
-  assertEquals(h.fresh, ["saving failed: stuck"]);
+  assertEquals(h.fresh.length, 1);
   const done = h.done();
-  assertEquals([done.ok, done.changed], [false, true]);
+  assertEquals([done.outcome, done.saved], ["fresh", false]);
+  assert(/saving failed: stuck.*files are gone/.test(done.why ?? ""));
+  assert(!sandboxFileOk(done));
 });
 
-Deno.test("a sandbox that cannot seal is neither saved nor replaced by a load", async () => {
+Deno.test("a page that cannot replace its sandbox, or has none that seals, refuses with nothing changed", async () => {
   for (
-    const run of [
-      saveSandbox,
-      (d: SandboxFileDeps) => loadSandbox(d, new Blob()),
-    ]
+    const [h, run] of [
+      [harness(), saveSandbox],
+      [
+        harness({ seal: () => Promise.resolve(image()), canReplace: false }),
+        saveSandbox,
+      ],
+      [
+        harness({ canReplace: false }),
+        (d: SandboxFileDeps) => loadSandbox(d, new Blob()),
+      ],
+    ] as const
   ) {
-    const h = harness();
     await run(h.deps);
     assertEquals(h.replaced, []);
     assertEquals(h.fresh, []);
-    assertEquals([h.done().ok, h.done().changed], [false, false]);
+    assertEquals(h.done().outcome, "refused");
   }
 });
 
-Deno.test("Load replaces the sandbox with the file's seal", async () => {
+Deno.test("Load needs no running sandbox, only a page that can replace one", async () => {
   const sealed = image(3);
   const file = await savedFile(sealed);
-  const h = harness({ seal: () => Promise.reject(new Error("not used")) });
+  // No seal: the boot failed, and a Load is the way back.
+  const h = harness();
   await loadSandbox(h.deps, file);
   assertEquals(h.replaced, [sealed]);
   assertEquals(h.posted.map((m) => m.type), [
     "sandbox-replacing",
     "sandbox-done",
   ]);
-  assertEquals([h.done().ok, h.done().changed], [true, true]);
+  assertEquals([h.done().outcome, h.done().jupyter], ["restored", "ready"]);
+  assert(sandboxFileOk(h.done()));
 });
 
-Deno.test("a loaded seal that does not start gives way to a fresh sandbox, said so", async () => {
+Deno.test("a loaded seal whose shell comes up without Jupyter stays, but is not reported ok", async () => {
   const file = await savedFile();
-  const h = harness({
-    seal: () => Promise.reject(new Error("not used")),
-    replaceOk: false,
-  });
+  for (
+    const [outcome, expect] of [
+      [{ up: true, jupyter: "missing" }, /has no Python set/],
+      [
+        { up: true, jupyter: "failed", error: "Jupyter did not start: x" },
+        /Jupyter did not start: x/,
+      ],
+    ] as const
+  ) {
+    const h = harness({ outcome });
+    await loadSandbox(h.deps, file);
+    assertEquals(h.fresh, [], "a working shell is not replaced again");
+    const done = h.done();
+    assertEquals(done.outcome, "restored");
+    assert(!sandboxFileOk(done));
+    assert(expect.test(done.why ?? ""), done.why);
+  }
+  // A page with no Jupyter at all (a phone's): ok.
+  const h = harness({ outcome: { up: true, jupyter: "none" } });
   await loadSandbox(h.deps, file);
-  assertEquals(h.fresh.length, 1);
-  assertEquals([h.done().ok, h.done().changed], [false, true]);
+  assert(sandboxFileOk(h.done()));
+});
+
+Deno.test("a loaded seal that does not start, or whose restore throws, gives way to a fresh sandbox; one more failure is said too", async () => {
+  const file = await savedFile();
+  for (
+    const [outcome, freshUp, expect] of [
+      [{ up: false, error: "restore: bad memory" }, true, "fresh"],
+      [new Error("restore threw"), true, "fresh"],
+      [{ up: false }, false, "none"],
+      [{ up: false }, new Error("fresh threw"), "none"],
+    ] as const
+  ) {
+    const h = harness({ outcome, freshUp });
+    await loadSandbox(h.deps, file);
+    assertEquals(h.fresh.length, 1);
+    const done = h.done();
+    assertEquals(done.outcome, expect);
+    assert(/the loaded sandbox did not start/.test(done.why ?? ""), done.why);
+  }
+});
+
+Deno.test("a throw outside the outcomes still ends in exactly one sandbox-done", async () => {
+  const h = harness({ seal: () => Promise.resolve(image()) });
+  h.deps.pins = () => Promise.reject(new Error("pins gone"));
+  await loadSandbox(h.deps, await savedFile());
+  assertEquals(h.done().outcome, "refused");
+  const posted: SandboxFileMessage[] = [];
+  let throwOnce = true;
+  await saveSandbox({
+    ...h.deps,
+    pins: () => Promise.resolve(PINS),
+    post: (message) => {
+      if (message.type === "sandbox-saved" && throwOnce) {
+        throwOnce = false;
+        throw new Error("post threw");
+      }
+      posted.push(message);
+    },
+  });
+  const dones = posted.filter((m) => m.type === "sandbox-done");
+  assertEquals(dones.length, 1);
+  assert(dones[0].type === "sandbox-done");
+  assertEquals(dones[0].saved, false); // Past every inner catch: the outcome is unknown, and said so.
+  const later: SandboxFileMessage[] = [];
+  await loadSandbox({
+    ...h.deps,
+    pins: () => Promise.resolve(PINS),
+    post: (message) => {
+      if (message.type === "sandbox-replacing") throw new Error("post threw");
+      later.push(message);
+    },
+  }, await savedFile());
+  assertEquals(later.length, 1);
+  assert(later[0].type === "sandbox-done");
+  assertEquals(later[0].outcome, "none");
+  assert(/post threw; reload the page/.test(later[0].why ?? ""));
+});
+
+Deno.test("Save hands the restore its seal and keeps none", async () => {
+  let box: SealBox | undefined;
+  const h = harness({ seal: () => Promise.resolve(image()) });
+  h.deps.replace = (given) => {
+    box = given;
+    return Promise.resolve({ up: true, jupyter: "ready" });
+  };
+  await saveSandbox(h.deps);
+  assert(box !== undefined);
+  assertEquals(box.image, undefined, "emptied even when the restore did not");
 });
 
 /** Each refused file: no replace, no fresh sandbox, nothing changed, and
@@ -194,18 +311,43 @@ async function refusedUntouched(
   expect: RegExp,
   small = false,
 ): Promise<void> {
-  const h = harness({
-    seal: () => Promise.reject(new Error("not used")),
-    small,
-  });
+  const h = harness({ small });
   await loadSandbox(h.deps, file);
   assertEquals(h.replaced, [], `${expect}: replaced`);
   assertEquals(h.fresh, [], `${expect}: fresh`);
   assertEquals(h.posted.map((m) => m.type), ["sandbox-done"]);
   const done = h.done();
-  assertEquals([done.ok, done.changed], [false, false]);
+  assertEquals(done.outcome, "refused");
   assert(expect.test(done.why ?? ""), `${done.why} !~ ${expect}`);
 }
+
+Deno.test("a seal that holds host waits or scratch outside its memory is refused", async () => {
+  const memory = image().kernelMemory;
+  await refusedUntouched(
+    await storedZip({
+      ...manifestFor(memory.byteLength),
+      hostWaits: [{
+        parkKey: { $bigint: "1" },
+        ticket: { $bigint: "1" },
+        sourceKind: 1,
+        param: { $bigint: "0" },
+        pid: 1,
+        tid: 1,
+      }],
+    }, memory),
+    /holds 0 processes and 1 host waits/,
+  );
+  await refusedUntouched(
+    await storedZip({
+      ...manifestFor(memory.byteLength),
+      executor: {
+        contexts: [],
+        freeScratch: [{ start: memory.byteLength - 8, length: 64 }],
+      },
+    }, memory),
+    /executor scratch .* lies outside its/,
+  );
+});
 
 Deno.test("a file saved by another build is refused before anything changes, with what differs", async () => {
   const memory = image().kernelMemory;
