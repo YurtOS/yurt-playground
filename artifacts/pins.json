@@ -65,5 +65,57 @@
     "build": "scripts/build-playground-image.sh",
     "path": "ports/playground-image/build/dist/playground-slim.yurtimg",
     "sha256": "11cf89da081edd874da5d4aa52a4775c5d7c23a0e77b24b756b223d345e5387d"
+  },
+  "snapshot": {
+    "releaseRepo": "YurtOS/yurt-playground",
+    "release": "snapshot-playground-2026.11.17-cb7a4b7",
+    "format": 4,
+    "sha256": "35116d5e2548754346537ed2500cd0a2b3d0c881349ebee2f0db63827aba525a",
+    "size": 143316469,
+    "builtFrom": {
+      "kernelSha256": "341f8190425612d31851cdd5d34cf3a71b87ffd445eb4ad5ba8bd77fdad7fe58",
+      "kernelRev": "cb7a4b7abe4d1c5df7f1cf1ec94f6ed63f4e3418",
+      "sealVersion": 2,
+      "bootSetup": 2,
+      "imageSha256": "11cf89da081edd874da5d4aa52a4775c5d7c23a0e77b24b756b223d345e5387d",
+      "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
+      "pythonSet": "11cf89da081edd874da5d4aa52a4775c5d7c23a0e77b24b756b223d345e5387d/jupyter-kernel@0.0.1-yurt_0:c8e575a68c03a8e4+numpy@2.5.0-yurt_0:c3cc1743278a9763+python@3.14.7-yurt_0:ab01e884f08e0619+pyzmq@26.4.0-yurt_0:429b9bb415b7f5a2"
+    },
+    "memoryBytes": 622460928,
+    "contents": {
+      "packages": [
+        {
+          "name": "ca-certificates",
+          "version": "2026.9.25",
+          "build": "yurt_0"
+        },
+        {
+          "name": "git",
+          "version": "2.55.0",
+          "build": "yurt_0"
+        },
+        {
+          "name": "jupyter-kernel",
+          "version": "0.0.1",
+          "build": "yurt_0"
+        },
+        {
+          "name": "numpy",
+          "version": "2.5.0",
+          "build": "yurt_0"
+        },
+        {
+          "name": "python",
+          "version": "3.14.7",
+          "build": "yurt_0"
+        },
+        {
+          "name": "pyzmq",
+          "version": "26.4.0",
+          "build": "yurt_0"
+        }
+      ],
+      "remark": "BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz"
+    }
   }
 }
