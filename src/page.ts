@@ -79,6 +79,7 @@ import {
   type YurtTransport,
 } from "./agent_api.ts";
 import type { ExecOptions } from "./executions.ts";
+import type { SandboxFileMessage } from "./sandbox_file.ts";
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -94,6 +95,7 @@ type FromWorker =
   | { type: "snapshot-captured"; blob: Blob; ms: number }
   | { type: "linux-remark"; remark: string }
   | { type: "suspended"; why?: string }
+  | SandboxFileMessage
   | {
     type: "yurt-reply";
     req: number;
@@ -160,6 +162,19 @@ function savedAgentChat(): boolean {
 /** Seal the sandbox after an agent run; resolves to why it could not. Set at
  * boot. */
 let suspendSandbox: (() => Promise<string | undefined>) | undefined;
+
+/** Ask the coordinator to save the in-tab sandbox, or load a file into it
+ * (src/sandbox_file.ts); set at boot, never for the desktop app's. */
+let sandboxFile:
+  | ((
+    request: { type: "sandbox-save" } | {
+      type: "sandbox-load";
+      file: Blob;
+    },
+  ) => void)
+  | undefined;
+/** What the coordinator says about a save or a load; set once wired. */
+let sandboxFileHeard: (message: SandboxFileMessage) => void = () => {};
 
 /** A package install in the in-tab sandbox, once it boots: the coordinator
  * runs it (src/packages.ts), one install at a time with the automatic Python
@@ -242,6 +257,8 @@ const yurtState = (() => {
       set("running");
       byId("export-home").hidden = false;
       byId("upload-files").hidden = false;
+      byId("save-sandbox").hidden = sandboxFile === undefined;
+      byId("load-sandbox").hidden = sandboxFile === undefined;
       byId("packages-toggle").hidden = packageInstall === undefined;
       resolveReady();
     },
@@ -400,6 +417,9 @@ function boot(
   const worker = new Worker("/coordinator.bundle.js");
   attachGuestWorkerFactory(worker);
   let suspendAnswer: ((why?: string) => void) | undefined;
+  sandboxFile = kernelPorts === undefined
+    ? (request) => worker.postMessage(request)
+    : undefined;
   suspendSandbox = () =>
     new Promise((resolve) => {
       suspendAnswer = resolve;
@@ -609,6 +629,18 @@ function boot(
     // A capture ends in the sealed sandbox, with no Jupyter to wait for.
     // What this Linux holds, above the terminal (src/linux_remark.ts).
     if (msg.type === "suspended") suspendAnswer?.(msg.why);
+    // Save or Load replaces the sandbox: a boot's reports follow, and the
+    // cell waits for its Jupyter as at the first boot.
+    if (msg.type === "sandbox-replacing") {
+      booting = true;
+      notebookReady = false;
+      pythonMissing = false;
+      installingPython = false;
+      if (!noPython) notebook.installing("restoring the sandbox");
+    }
+    if (msg.type === "sandbox-saved" || msg.type === "sandbox-done") {
+      sandboxFileHeard(msg);
+    }
     if (msg.type === "linux-remark") {
       const note = byId("linux-remark");
       byId("linux-remark-text").textContent = msg.remark;
@@ -762,6 +794,11 @@ function uploadedSnapshotId(): string | undefined {
 /** `?snapshot=capture`'s result, saved as a download. */
 function saveSnapshot(blob: Blob, ms: number): void {
   console.log(`[snapshot] sealed and encoded in ${ms} ms: ${blob.size} bytes`);
+  downloadBlob(blob, "sandbox.seal.zip");
+}
+
+/** `blob` handed to the browser as a download named `name`. */
+function downloadBlob(blob: Blob, name: string): void {
   saveDownload(
     {
       createObjectURL: (file) => URL.createObjectURL(file),
@@ -777,8 +814,68 @@ function saveSnapshot(blob: Blob, ms: number): void {
       later: (run, ms) => setTimeout(run, ms),
     },
     blob,
-    "sandbox.seal.zip",
+    name,
   );
+}
+
+/** The "Save sandbox" and "Load sandbox" controls (src/sandbox_file.ts):
+ * one at a time, both disabled meanwhile; the outcome lands in the status
+ * line, and on `<html>` (`data-sandbox-file`, `data-sandbox-file-done`)
+ * for the acceptance test. */
+function wireSandboxFile(status: StatusLine): void {
+  const save = byId("save-sandbox") as HTMLButtonElement;
+  const load = byId("load-sandbox") as HTMLButtonElement;
+  const input = byId("load-input") as HTMLInputElement;
+  const mark = document.documentElement.dataset;
+  const busy = (on: boolean) => {
+    save.disabled = on;
+    load.disabled = on;
+    mark.sandboxFile = on ? "busy" : "idle";
+  };
+  save.addEventListener("click", () => {
+    if (sandboxFile === undefined || save.disabled) return;
+    busy(true);
+    status.notice("saving the sandbox");
+    sandboxFile({ type: "sandbox-save" });
+  });
+  load.addEventListener("click", () => input.click());
+  input.addEventListener("change", () => {
+    const file = input.files?.[0];
+    input.value = "";
+    if (file === undefined || sandboxFile === undefined || load.disabled) {
+      return;
+    }
+    busy(true);
+    status.notice(`checking ${file.name}`);
+    sandboxFile({ type: "sandbox-load", file });
+  });
+  sandboxFileHeard = (message) => {
+    if (message.type === "sandbox-saved") {
+      console.log(
+        `[sandbox] sealed and encoded in ${message.ms} ms: ${message.blob.size} bytes`,
+      );
+      downloadBlob(message.blob, message.name);
+      return;
+    }
+    if (message.type !== "sandbox-done") return;
+    console.log(
+      `[sandbox] ${message.action} ${
+        message.ok ? "done" : "failed"
+      } in ${message.ms} ms${
+        message.why === undefined ? "" : `: ${message.why}`
+      }`,
+    );
+    mark.sandboxFileDone = JSON.stringify(message);
+    busy(false);
+    status.notice(
+      message.ok
+        ? message.action === "save" ? "sandbox saved" : "sandbox loaded"
+        : `${message.action === "save" ? "save" : "load"} sandbox: ${
+          message.why ?? "failed"
+        }${message.changed ? "" : " (nothing changed)"}`,
+      { error: !message.ok },
+    );
+  };
 }
 
 /** The "Download home" control: `yurt.fs.export()` in a process of its
@@ -1033,6 +1130,7 @@ async function runPage(): Promise<void> {
   const status = createStatusLine(byId("status"));
   wireExportHome(status);
   wireUpload(status);
+  wireSandboxFile(status);
   // The desktop app runs the sandbox natively; only the in-tab kernel needs
   // cross-origin isolation, and a page served without it cannot boot at all
   // and goes to the explanation.

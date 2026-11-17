@@ -94,6 +94,13 @@ import {
   uploadedSnapshotPath,
 } from "./snapshot_source.ts";
 import { runQueue } from "./run_queue.ts";
+import {
+  loadSandbox,
+  type SandboxFileDeps,
+  type SandboxFileMessage,
+  saveSandbox,
+} from "./sandbox_file.ts";
+import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
 import { type BootedSession, workerPackageHost } from "./session_packages.ts";
 import {
   type MemoryRefusedMessage,
@@ -191,6 +198,11 @@ type ToWorker =
   // An agent run ended: seal the sandbox into browser storage. It runs nothing
   // more; the page reloads to resume it. Answered by `suspended`.
   | { type: "suspend" }
+  // Save sandbox / Load sandbox (src/sandbox_file.ts): answered by
+  // `sandbox-saved` (Save's file), `sandbox-replacing` when the sandbox is
+  // replaced (a boot's reports follow) and `sandbox-done`.
+  | { type: "sandbox-save" }
+  | { type: "sandbox-load"; file: Blob }
   // The extension's side of a DevTools connection (src/browser_bridge.ts):
   // a CDP message for the guest, or the connection ended there.
   | { type: "cdp-send"; conn: number; text: string }
@@ -250,6 +262,7 @@ type FromWorker =
   // What this Linux holds (src/linux_remark.ts), as the shell starts.
   | { type: "linux-remark"; remark: string }
   | { type: "suspended"; why?: string }
+  | SandboxFileMessage
   | {
     type: "pkg-reply";
     req: number;
@@ -572,6 +585,49 @@ async function captureStep(
  * did: boot, then the Python install, then Jupyter. Set by `start`. */
 let startFresh: (() => Promise<void>) | undefined;
 
+/** Drop the in-tab sandbox and start the shell and Jupyter on `image` (a
+ * seal with no process) the way the page's start did: whether its shell
+ * came up. Set by `start`; not for a capture or the desktop app. */
+let replaceSandbox: ((image: SandboxSealImage) => Promise<boolean>) | undefined;
+/** A phone or tablet page: Load takes less memory there. */
+let smallDevice = false;
+/** The worker's terminal, once `start` made it. */
+let sandboxTerm: PlaygroundTerm | undefined;
+
+/** Save sandbox and Load sandbox: in the kernel lifecycle's queue (after
+ * a Jupyter restart or a Python install, refused while a start runs) and
+ * the install queue's turn for the seal, so nothing is installed into a
+ * sandbox being sealed or dropped. */
+function sandboxFileDeps(): SandboxFileDeps {
+  const session = packageSession;
+  const seal = session?.seal;
+  return {
+    seal: seal === undefined || replaceSandbox === undefined
+      ? undefined
+      : () =>
+        installs(() => {
+          post({ type: "status", text: "saving the sandbox" });
+          return seal();
+        }),
+    pins: playgroundPins,
+    smallDevice,
+    replace: (image) => replaceSandbox!(image),
+    startFresh: async (why) => {
+      sandboxTerm?.write(`\r\n[${why}]\r\n`);
+      await startFresh!();
+    },
+    post: (message) => {
+      if (message.type === "sandbox-done") {
+        post({
+          type: "status",
+          text: message.ok ? "" : message.why ?? "failed",
+        });
+      }
+      post(message);
+    },
+  };
+}
+
 /** Install Python again, then start the kernel (`python-install`, or a
  * frontend restart while Python is missing). After a stalled install, in
  * a fresh sandbox: the stalled one may not answer. */
@@ -705,6 +761,25 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       });
     }
   }
+  if (msg.type === "sandbox-save" || msg.type === "sandbox-load") {
+    const action = msg.type === "sandbox-save" ? "save" : "load";
+    await lifecycle.restart(
+      () =>
+        msg.type === "sandbox-save"
+          ? saveSandbox(sandboxFileDeps())
+          : loadSandbox(sandboxFileDeps(), msg.file),
+      () =>
+        post({
+          type: "sandbox-done",
+          action,
+          ok: false,
+          changed: false,
+          why: "the sandbox is still starting",
+          ms: 0,
+        }),
+    );
+    return;
+  }
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });
@@ -802,7 +877,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   // install's stored-layer question, from one read. Made by each begin()
   // below, so a fresh sandbox asks again.
   let live: ReturnType<typeof liveAnswers>;
+  /** The seal `replaceSandbox` restores, while its boot runs. */
+  let sealed: SandboxSealImage | undefined;
   const term = workerTerm({ cols: msg.cols, rows: msg.rows });
+  sandboxTerm = term;
+  smallDevice = msg.tablet === true;
   const restoreKind: SnapshotKind = msg.snapshotKind ?? "desktop";
   runningKind = restoreKind;
   const env = {
@@ -840,6 +919,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       ? () => loadAgentSession(restoreKind)
       : undefined,
     dropSavedSession: dropAgentSession,
+    // Save's or Load's seal, taken once by the boot it starts.
+    sealImage: () => sealed,
     kernelSha256: (sha256: string) => runningKernelSha256 = sha256,
     // The terminal's `pkg` fetches through the page (src/pkg_relay.ts);
     // the desktop app's guest has the network itself.
@@ -1121,6 +1202,22 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         installed.freshFailed(bootError ?? "unknown");
       }
     };
+    if (!capturing) {
+      replaceSandbox = async (image) => {
+        sealed = image;
+        bootError = undefined;
+        // The old sandbox's shell is gone (sealed, or dropped now): its
+        // screen stays, and the new shell starts below it.
+        env.term.write("\r\n[restoring the sandbox]\r\n");
+        await installs(() => Promise.resolve(dropSandbox()));
+        try {
+          await lifecycle.start(begin);
+        } finally {
+          sealed = undefined;
+        }
+        return packageSession !== undefined;
+      };
+    }
   }
   await lifecycle.start(begin);
 });

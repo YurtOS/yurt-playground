@@ -108,6 +108,11 @@ export type PlaygroundEnv = {
   savedSession?: () => Promise<StoredSnapshot | undefined>;
   /** A saved session that would not resume: it is not tried again. */
   dropSavedSession?: () => Promise<void>;
+  /** A sandbox the page saved or the user loaded (Save / Load sandbox,
+   * src/sandbox_file.ts), checked already: restored instead of anything
+   * else, and a restore that fails fails the boot rather than booting
+   * anything in its place. */
+  sealImage?: () => SandboxSealImage | undefined;
   /** Fail rather than boot the image when the snapshot cannot be restored. */
   snapshotRequired?: boolean;
   /** The kernel's sha256, once loaded: a later seal records it. */
@@ -512,6 +517,20 @@ export async function bootPlayground(
   };
   const kernelSha256 = await sha256Hex(kernel);
   env.kernelSha256?.(kernelSha256);
+  const sealImage = env.sealImage?.();
+  if (sealImage !== undefined) {
+    env.show("restoring the sandbox");
+    const started = performance.now();
+    const restored = await restorePlaygroundKernel(kernel, sealImage);
+    if (restored.processes.length !== 0) {
+      restored.host.dispose();
+      throw new Error("a saved sandbox must hold no process");
+    }
+    console.log(
+      `[sandbox] restored in ${Math.round(performance.now() - started)} ms`,
+    );
+    return await start(restored.host, true);
+  }
   const saved = await env.savedSession?.().catch(() => undefined);
   if (saved !== undefined) {
     try {

@@ -936,6 +936,33 @@
                 >
                   Download home
                 </button>
+                <button
+                  type="button"
+                  id="save-sandbox"
+                  data-testid="save-sandbox"
+                  class="bar-action"
+                  hidden
+                  title="Save this sandbox's files and installed packages as a .zip you can load again later. The shell and Jupyter restart afterwards; running programs and Python variables are not kept."
+                >
+                  Save sandbox
+                </button>
+                <button
+                  type="button"
+                  id="load-sandbox"
+                  data-testid="load-sandbox"
+                  class="bar-action"
+                  hidden
+                  title="Replace this sandbox with one saved by Save sandbox. The file becomes the sandbox and its programs run here: load only files you trust. A file that is damaged or from another Yurt version is refused, and nothing changes."
+                >
+                  Load sandbox
+                </button>
+                <input
+                  type="file"
+                  id="load-input"
+                  data-testid="load-input"
+                  accept=".zip, application/zip"
+                  hidden
+                >
                 <span
                   id="net"
                   data-testid="net"
