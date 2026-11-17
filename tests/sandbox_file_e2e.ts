@@ -169,6 +169,40 @@ if (import.meta.main) {
     // Save: the download, and the session back with the file.
     const downloaded = page.waitForEvent("download", { timeout: BOOT_MS });
     const saveStarted = Date.now();
+    // Every status and control change while Save runs, with its time.
+    await page.evaluate(() => {
+      type Seen = { at: number; status: string; off: boolean[] };
+      const seen: Seen[] = [];
+      (globalThis as { __saveSeen?: Seen[] }).__saveSeen = seen;
+      const buttons = ["export-home", "upload-files"].map((id) =>
+        document.getElementById(id) as HTMLButtonElement
+      );
+      const look = () =>
+        seen.push({
+          at: Date.now(),
+          status: document.documentElement.dataset.yurtStatus ?? "",
+          off: buttons.map((button) => button.disabled),
+        });
+      // When the page had the file, in the page's own clock.
+      const log = console.log;
+      console.log = (...args: unknown[]) => {
+        if (String(args[0]).startsWith("[sandbox] saved ")) {
+          seen.push({ at: Date.now(), status: "<file>", off: [] });
+        }
+        log(...args);
+      };
+      const watch = new MutationObserver(look);
+      watch.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-yurt-status"],
+      });
+      for (const button of buttons) {
+        watch.observe(button, {
+          attributes: true,
+          attributeFilter: ["disabled"],
+        });
+      }
+    });
     const cellEnded = page.waitForFunction(
       () =>
         /the sandbox was replaced/.test(
@@ -186,6 +220,35 @@ if (import.meta.main) {
       throw new Error(`save failed: ${JSON.stringify(saved)}`);
     }
     await cellEnded;
+    // The sandbox is said to be going from the seal on, before its file;
+    // nothing that needs it can be used until it runs again.
+    const saveSeen = await page.evaluate(() =>
+      (globalThis as {
+        __saveSeen?: { at: number; status: string; off: boolean[] }[];
+      }).__saveSeen ?? []
+    );
+    const left = saveSeen.findIndex((entry) =>
+      entry.status !== "running" && entry.status !== "<file>"
+    );
+    const file = saveSeen.findIndex((entry) => entry.status === "<file>");
+    if (left < 0 || file < 0 || left > file) {
+      throw new Error(
+        `Save: the status left "running" only after the file: ${
+          JSON.stringify(saveSeen)
+        }`,
+      );
+    }
+    const usable = saveSeen.filter((entry) =>
+      entry.status !== "running" && entry.status !== "<file>" &&
+      entry.off.includes(false)
+    );
+    if (usable.length !== 0) {
+      throw new Error(
+        `Save: Download home or Upload usable while not running: ${
+          JSON.stringify(usable)
+        }`,
+      );
+    }
     const download = await downloaded;
     const zip = join(dir, download.suggestedFilename());
     await download.saveAs(zip);

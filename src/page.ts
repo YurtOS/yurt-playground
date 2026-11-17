@@ -241,9 +241,13 @@ const yurtState = (() => {
       return transport?.files;
     },
   };
+  /** Controls that need a running sandbox: each derives its own state
+   * from the status (and what it has in flight) when the status changes. */
+  const listeners = new Set<() => void>();
   const set = (next: YurtStatus) => {
     status = next;
     document.documentElement.dataset.yurtStatus = next;
+    for (const listener of listeners) listener();
   };
   set("idle");
   (globalThis as { yurt?: unknown }).yurt = createYurt(proxy, {
@@ -269,6 +273,11 @@ const yurtState = (() => {
     },
     connect(t: YurtTransport) {
       transport = t;
+    },
+    /** Run `render` now and on every status change. */
+    onChange(render: () => void) {
+      listeners.add(render);
+      render();
     },
   };
 })();
@@ -489,9 +498,12 @@ function boot(
         error,
       )
     );
+  /** This tab says it runs a sandbox (yurt-playground#84). */
+  let announced = desktop === undefined;
   const sandboxGone = () => {
     stopAnnouncing();
     stopAnnouncing = () => {};
+    announced = false;
     stopWatchingForAnotherSandbox();
   };
   const fail = (message: string) => {
@@ -634,13 +646,26 @@ function boot(
     // cell waits for its Jupyter as at the first boot.
     if (msg.type === "sandbox-replacing") {
       // Not running until the new one says so (its empty status): a
-      // driver's exec waits, and the controls that need a sandbox wait.
+      // driver's exec fails meanwhile ("the sandbox is not running"; it
+      // polls `yurt.status` for the new one), and the controls that need
+      // a sandbox are disabled. A reload now is a cut-off boot, as at Start.
       yurtState.set("booting");
       booting = true;
       notebookReady = false;
       pythonMissing = false;
       installingPython = false;
-      if (!noPython) notebook.installing("restoring the sandbox");
+      if (!noPython) {
+        notebook.installing(
+          msg.action === "save"
+            ? "saving the sandbox"
+            : "restoring the sandbox",
+        );
+      }
+      // A Load after one that left no sandbox: this tab runs one again.
+      if (!announced) {
+        stopAnnouncing = announceSandbox();
+        announced = true;
+      }
     }
     if (msg.type === "sandbox-saved" || msg.type === "sandbox-done") {
       sandboxFileHeard(msg);
@@ -652,7 +677,12 @@ function boot(
       endBoot(why);
       notebook.unavailable("no sandbox");
       yurtState.failed(why);
-      sandboxGone();
+      // Unlike a failed boot (sandboxGone): Load is still there and may
+      // bring one back, so this tab still watches the others; it only
+      // stops saying it runs one, until a Load starts.
+      stopAnnouncing();
+      stopAnnouncing = () => {};
+      announced = false;
     }
     if (msg.type === "linux-remark") {
       const note = byId("linux-remark");
@@ -840,13 +870,19 @@ function wireSandboxFile(status: StatusLine): void {
   const load = byId("load-sandbox") as HTMLButtonElement;
   const input = byId("load-input") as HTMLInputElement;
   const mark = document.documentElement.dataset;
+  /** A Save or a Load is in flight: one at a time. */
+  let inFlight = false;
+  // Save needs a running sandbox; Load does not (after a failed one it is
+  // the way back).
+  const render = () => {
+    save.disabled = inFlight || !yurtState.isRunning();
+    load.disabled = inFlight;
+  };
+  yurtState.onChange(render);
   const busy = (on: boolean) => {
-    save.disabled = on;
-    load.disabled = on;
-    // Their sandbox is going: nothing more goes in or out of it meanwhile.
-    (byId("export-home") as HTMLButtonElement).disabled = on;
-    (byId("upload-files") as HTMLButtonElement).disabled = on;
+    inFlight = on;
     mark.sandboxFile = on ? "busy" : "idle";
+    render();
   };
   save.addEventListener("click", () => {
     if (sandboxFile === undefined || save.disabled) return;
@@ -900,10 +936,14 @@ function wireSandboxFile(status: StatusLine): void {
  * flight; a failure lands in the status line. */
 function wireExportHome(status: StatusLine): void {
   const button = byId("export-home") as HTMLButtonElement;
+  let exporting = false;
+  const render = () => button.disabled = exporting || !yurtState.isRunning();
+  yurtState.onChange(render);
   button.addEventListener("click", async () => {
     const yurt = (globalThis as { yurt?: Yurt }).yurt;
-    if (yurt === undefined) return;
-    button.disabled = true;
+    if (yurt === undefined || button.disabled) return;
+    exporting = true;
+    render();
     try {
       await yurt.fs.export();
     } catch (error) {
@@ -914,7 +954,8 @@ function wireExportHome(status: StatusLine): void {
         { error: true },
       );
     } finally {
-      button.disabled = false;
+      exporting = false;
+      render();
     }
   });
 }
@@ -927,6 +968,8 @@ function wireUpload(status: StatusLine): void {
   const input = byId("upload-input") as HTMLInputElement;
   // One upload at a time, from the button or a drop.
   let busy = false;
+  const render = () => button.disabled = busy || !yurtState.isRunning();
+  yurtState.onChange(render);
   const upload = async (files: FileList | null) => {
     const yurt = (globalThis as { yurt?: Yurt }).yurt;
     if (yurt === undefined || files === null || files.length === 0) return;
@@ -941,7 +984,7 @@ function wireUpload(status: StatusLine): void {
       return;
     }
     busy = true;
-    button.disabled = true;
+    render();
     try {
       const written = await uploadFiles(
         yurt,
@@ -959,7 +1002,7 @@ function wireUpload(status: StatusLine): void {
       });
     } finally {
       busy = false;
-      button.disabled = false;
+      render();
       input.value = "";
     }
   };

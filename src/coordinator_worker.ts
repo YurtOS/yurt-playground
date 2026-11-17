@@ -616,13 +616,14 @@ function sandboxFileDeps(): SandboxFileDeps {
     // store, which this restore does not put back (src/root_store.ts).
     canReplace: replaceSandbox !== undefined &&
       rootStoreOf(KernelHostInterface) === undefined,
-    seal: packageSession?.seal === undefined ? undefined : async () => {
+    seal: packageSession?.seal === undefined ? undefined : async (sealing) => {
       let image: PageSeal | undefined;
       // The turn resolves to nothing: the install queue keeps its last
       // turn's value, which must not be the (up to 1 GiB) seal.
       await installs(async () => {
         const seal = packageSession?.seal;
         if (seal === undefined) throw new Error("no sandbox runs to save");
+        sealing();
         post({ type: "status", text: "saving the sandbox" });
         image = await seal();
       });

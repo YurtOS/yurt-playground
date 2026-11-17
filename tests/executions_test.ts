@@ -399,3 +399,24 @@ Deno.test("abandoning the registry (its sandbox was dropped) ends every pending 
   assertEquals(reg.active(), 0);
   assertEquals(spawned.length, 1);
 });
+
+Deno.test("a spawn still starting when the registry is abandoned ends with the reason too", async () => {
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => release = resolve);
+  const reg = new ExecutionRegistry(
+    async (line, io) => {
+      await started;
+      return new FakeProcess(line, io.stdin);
+    },
+    () => Promise.resolve(),
+    { pollMs: 5 },
+  );
+  const spawning = reg.spawn("sleep 600");
+  reg.abandon("the sandbox was replaced");
+  release();
+  const result = await reg.wait(await spawning);
+  assertEquals(
+    "error" in result ? result.error : undefined,
+    "the sandbox was replaced",
+  );
+});

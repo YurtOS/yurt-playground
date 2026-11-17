@@ -206,8 +206,10 @@ export type SandboxFileDeps = {
    * capture's, on a kernel whose root is its memory. */
   canReplace: boolean;
   /** Stop every guest process and seal the running sandbox (it runs
-   * nothing more afterwards); undefined when none runs that can. */
-  seal: (() => Promise<PageSeal>) | undefined;
+   * nothing more afterwards); undefined when none runs that can.
+   * `sealing` is called just before the seal begins, once nothing else
+   * (an install) can run first: from there the sandbox is going. */
+  seal: ((sealing: () => void) => Promise<PageSeal>) | undefined;
   pins: () => Promise<Pins>;
   /** A phone or tablet page. */
   smallDevice: boolean;
@@ -315,13 +317,20 @@ export function saveSandbox(deps: SandboxFileDeps): Promise<void> {
       return { outcome: "refused", why: "this sandbox cannot be saved" };
     }
     const box: SealBox = {};
+    let sealing = false;
     try {
-      box.image = await seal();
+      box.image = await seal(() => {
+        sealing = true;
+        deps.post({ type: "sandbox-replacing", action: "save" });
+      });
     } catch (error) {
+      if (!sealing) {
+        // Refused before it began: the sandbox is as it was.
+        return { outcome: "refused", saved: false, why: errorText(error) };
+      }
       const why = `saving failed: ${
         errorText(error)
       }; its shell had already stopped, so a fresh sandbox starts and this one's files are gone`;
-      deps.post({ type: "sandbox-replacing", action: "save" });
       return { outcome: await freshOrNone(deps, why), saved: false, why };
     }
     let saved = false;
@@ -341,7 +350,6 @@ export function saveSandbox(deps: SandboxFileDeps): Promise<void> {
       // Sealed, but no file: the session still comes back on the seal.
       failed = `saving failed: ${errorText(error)}`;
     }
-    deps.post({ type: "sandbox-replacing", action: "save" });
     const back = await replaceWith(deps, box, "the saved sandbox");
     return { ...back, saved, why: failed ?? back.why };
   });

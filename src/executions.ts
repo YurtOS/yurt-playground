@@ -306,8 +306,9 @@ export class ExecutionRegistry {
   /** Rejected by {@link abandon}: every wait ends with its reason. */
   #gone: Promise<never>;
   #abandon!: (why: Error) => void;
-  /** Set by {@link abandon}: no run polls a dropped kernel any more. */
-  #abandoned = false;
+  /** Set by {@link abandon}, with its reason: no run polls a dropped
+   * kernel any more. */
+  #abandoned: Error | undefined;
   /** Spawns in flight: counted against the limit before their process
    * exists, so concurrent calls cannot slip past it. */
   #starting = 0;
@@ -407,9 +408,9 @@ export class ExecutionRegistry {
     const tick = new Tick();
     const deadline = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     while (!exited) {
-      if (this.#abandoned) {
+      if (this.#abandoned !== undefined) {
         tick.cancel();
-        throw new Error("abandoned");
+        throw this.#abandoned;
       }
       stdout.push(process.takeStdout());
       stderr.push(process.takeStderr());
@@ -530,8 +531,8 @@ export class ExecutionRegistry {
    * dropSandbox): every execution still waited on ends now, with `why`,
    * rather than with whatever its dead kernel answers. */
   abandon(why: string): void {
-    this.#abandoned = true;
-    this.#abandon(new Error(why));
+    this.#abandoned = new Error(why);
+    this.#abandon(this.#abandoned);
   }
 
   /** The outcome, once there is one. A result read once is released. A

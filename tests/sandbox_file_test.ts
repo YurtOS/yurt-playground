@@ -126,9 +126,19 @@ function harness(
   return { deps, posted, replaced, fresh, done };
 }
 
+/** A worker's seal: it begins (`sealing`), then gives `image` or throws. */
+const sealOf = (
+  image: () => SandboxSealImage | Error,
+): NonNullable<SandboxFileDeps["seal"]> =>
+(sealing) => {
+  sealing();
+  const got = image();
+  return got instanceof Error ? Promise.reject(got) : Promise.resolve(got);
+};
+
 /** A file Save made of `sealed`. */
 async function savedFile(sealed = image()): Promise<Blob> {
-  const h = harness({ seal: () => Promise.resolve(sealed) });
+  const h = harness({ seal: sealOf(() => sealed) });
   await saveSandbox(h.deps);
   const saved = h.posted.find((m) => m.type === "sandbox-saved");
   assert(saved?.type === "sandbox-saved");
@@ -137,11 +147,13 @@ async function savedFile(sealed = image()): Promise<Blob> {
 
 Deno.test("Save seals, hands over a file Load takes, and restores the same seal in place", async () => {
   const sealed = image();
-  const h = harness({ seal: () => Promise.resolve(sealed) });
+  const h = harness({ seal: sealOf(() => sealed) });
   await saveSandbox(h.deps);
+  // The sandbox is going from the moment the seal begins, before the
+  // file is made.
   assertEquals(h.posted.map((m) => m.type), [
-    "sandbox-saved",
     "sandbox-replacing",
+    "sandbox-saved",
     "sandbox-done",
   ]);
   assertEquals(h.replaced, [sealed]);
@@ -152,7 +164,7 @@ Deno.test("Save seals, hands over a file Load takes, and restores the same seal 
     ["restored", true, "ready", undefined],
   );
   assert(sandboxFileOk(done));
-  const saved = h.posted[0];
+  const saved = h.posted[1];
   assert(saved.type === "sandbox-saved");
   assert(/^yurt-sandbox-\d{4}-\d\d-\d\d-\d{4}\.zip$/.test(saved.name));
   assertEquals(
@@ -166,7 +178,7 @@ Deno.test("Save seals, hands over a file Load takes, and restores the same seal 
 });
 
 Deno.test("a Save whose seal fails starts a fresh sandbox and says the files are gone", async () => {
-  const h = harness({ seal: () => Promise.reject(new Error("stuck")) });
+  const h = harness({ seal: sealOf(() => new Error("stuck")) });
   await saveSandbox(h.deps);
   assertEquals(h.replaced, []);
   assertEquals(h.fresh.length, 1);
@@ -176,12 +188,22 @@ Deno.test("a Save whose seal fails starts a fresh sandbox and says the files are
   assert(!sandboxFileOk(done));
 });
 
+Deno.test("a seal refused before it begins (no sandbox left to seal) changes nothing", async () => {
+  const h = harness({
+    seal: () => Promise.reject(new Error("no sandbox runs to save")),
+  });
+  await saveSandbox(h.deps);
+  assertEquals(h.fresh, [], "no fresh sandbox for one that never began");
+  assertEquals(h.posted.map((m) => m.type), ["sandbox-done"]);
+  assertEquals(h.done().outcome, "refused");
+});
+
 Deno.test("a page that cannot replace its sandbox, or has none that seals, refuses with nothing changed", async () => {
   for (
     const [h, run] of [
       [harness(), saveSandbox],
       [
-        harness({ seal: () => Promise.resolve(image()), canReplace: false }),
+        harness({ seal: sealOf(() => image()), canReplace: false }),
         saveSandbox,
       ],
       [
@@ -257,7 +279,7 @@ Deno.test("a loaded seal that does not start, or whose restore throws, gives way
 });
 
 Deno.test("a throw outside the outcomes still ends in exactly one sandbox-done", async () => {
-  const h = harness({ seal: () => Promise.resolve(image()) });
+  const h = harness({ seal: sealOf(() => image()) });
   h.deps.pins = () => Promise.reject(new Error("pins gone"));
   await loadSandbox(h.deps, await savedFile());
   assertEquals(h.done().outcome, "refused");
@@ -295,7 +317,7 @@ Deno.test("a throw outside the outcomes still ends in exactly one sandbox-done",
 
 Deno.test("Save hands the restore its seal and keeps none", async () => {
   let box: SealBox | undefined;
-  const h = harness({ seal: () => Promise.resolve(image()) });
+  const h = harness({ seal: sealOf(() => image()) });
   h.deps.replace = (given) => {
     box = given;
     return Promise.resolve({ up: true, jupyter: "ready" });
@@ -430,13 +452,13 @@ Deno.test("kernel memory smaller than the kernel's initial memory is refused bef
 });
 
 Deno.test("the page's memory bounds are the kernel host's own", async () => {
-  // Mirrored, not imported (the host does not export them): a kernel
-  // that moves either turns this red.
+  // Mirrored, not imported (the host exports neither from its module
+  // entry): a kernel that moves either turns this red. The kernel checkout
+  // is YURT_KERNEL_ROOT, as the other tests take it.
+  const root = Deno.env.get("YURT_KERNEL_ROOT") ??
+    new URL("../../yurtos-kernel", import.meta.url).pathname;
   const source = await Deno.readTextFile(
-    new URL(
-      "../../yurtos-kernel/packages/kernel-host-interface-js/kernel-host-interface/kernel_executor_pool.ts",
-      import.meta.url,
-    ),
+    `${root}/packages/kernel-host-interface-js/kernel-host-interface/kernel_executor_pool.ts`,
   );
   const pages = (name: string) =>
     Number(
