@@ -258,9 +258,10 @@ Deno.test("a message signed with the old fixed key is rejected; the launch key w
 });
 
 /** One port of a running ipykernel, as far as the page's dial sees it: the
- * ZMTP handshake, and on the shell port a kernel_info_reply to each
- * kernel_info_request signed with `key` (unless `silent`, a kernel busy
- * past the wait). */
+ * ZMTP handshake, and on the control port a kernel_info_reply to each
+ * kernel_info_request signed with `key` (unless `silent`). The shell port
+ * never answers: the kernel is busy with a cell, which must not keep a
+ * page from attaching. */
 class KernelPort {
   #incoming: Uint8Array[] = [
     encodeZmtpGreeting(true),
@@ -269,7 +270,7 @@ class KernelPort {
   #waiting: ((chunk: Uint8Array) => void) | undefined;
   #writes = 0;
   constructor(
-    readonly shell: boolean,
+    readonly control: boolean,
     readonly key: string,
     readonly silent: boolean,
   ) {}
@@ -282,7 +283,7 @@ class KernelPort {
   }
   async write(bytes: Uint8Array): Promise<void> {
     // The first two writes are the page's greeting and READY.
-    if (++this.#writes <= 2 || !this.shell || this.silent) return;
+    if (++this.#writes <= 2 || !this.control || this.silent) return;
     const request = await decodeJupyterMessage(
       decodeZmtpFrames(bytes),
       this.key,
@@ -309,13 +310,22 @@ class KernelPort {
   }
 }
 
+/** A port nothing listens on, as the desktop's dial sees one: a socket
+ * that opens and is closed at once. */
+const closedPort = {
+  write: () => Promise.resolve(),
+  read: () => Promise.resolve(new Uint8Array()),
+  close: () => Promise.resolve(),
+};
+
 /** A sandbox where another page left a kernel's connection file (the
  * desktop app's main page, when its Notebook page opens). `kernel`:
  * "answers" and "silent" listen on its ports; "gone" means nothing does.
- * Records every line spawned. */
+ * Records every line spawned and every port dialed. */
 function sharedSandbox(kernel: "answers" | "silent" | "gone") {
   const key = "the-first-page-s-key";
   const spawned: string[] = [];
+  const dialed: number[] = [];
   const files = new Map<string, Uint8Array>([
     [JUPYTER_PID_FILE, new TextEncoder().encode("105\n")],
     [JUPYTER_CONNECTION_FILE, connectionFor(key)],
@@ -324,23 +334,21 @@ function sharedSandbox(kernel: "answers" | "silent" | "gone") {
     terminal: { write: () => Promise.resolve() },
     spawn(line: string) {
       spawned.push(line);
-      if (line.startsWith("rm -f ")) {
-        files.delete(JUPYTER_CONNECTION_FILE);
-        files.delete(JUPYTER_PID_FILE);
-      }
       return Promise.resolve({ exited: Promise.resolve(0) });
     },
     readFile: (path: string) => Promise.resolve(files.get(path)),
     dialSandboxPort: (port: number) => {
-      if (kernel === "gone") throw new Error(`nothing listens on ${port}`);
-      return new KernelPort(port === 1, key, kernel === "silent");
+      dialed.push(port);
+      return kernel === "gone"
+        ? closedPort
+        : new KernelPort(port === 4, key, kernel === "silent");
     },
     onOutput: () => () => {},
   };
-  return { session, spawned };
+  return { session, spawned, dialed };
 }
 
-Deno.test("a running kernel in a shared sandbox is attached to, not launched over or killed", async () => {
+Deno.test("a running kernel, busy or not, is attached to, not launched over or killed", async () => {
   const { session, spawned } = sharedSandbox("answers");
   const transport = await startGuestKernel(session, undefined, { pollMs: 1 });
   await transport.close();
@@ -357,7 +365,7 @@ Deno.test("a running kernel that does not answer fails the start and is left alo
   assertEquals(spawned, [], "the other page's kernel is not stopped");
 });
 
-Deno.test("a connection file nothing listens behind is dropped before a fresh launch", async () => {
+Deno.test("a connection file nothing listens behind gets a fresh launch, and no file is removed for it", async () => {
   const { session, spawned } = sharedSandbox("gone");
   await assertRejects(
     () =>
@@ -367,17 +375,31 @@ Deno.test("a connection file nothing listens behind is dropped before a fresh la
       }),
     Error,
   );
+  // The launch line replaces the files itself; the attach removes none.
   assertEquals(
-    spawned[0],
-    `rm -f ${JUPYTER_CONNECTION_FILE} ${JUPYTER_PID_FILE}`,
-    "the stale files go first",
-  );
-  assertEquals(
-    spawned[1]?.includes("ipykernel_launcher"),
+    spawned[0]?.includes("ipykernel_launcher"),
     true,
-    `then the launch: ${spawned}`,
+    `the launch comes first: ${spawned}`,
   );
   assertEquals(spawned.some((line) => line.includes("kill")), false);
+});
+
+Deno.test("a connection file naming other ports than the host maps is not dialed", async () => {
+  const { session, spawned, dialed } = sharedSandbox("answers");
+  await assertRejects(
+    () =>
+      startGuestKernel(session, [11, 12, 13, 14, 15], {
+        pollMs: 1,
+        connect: { attempts: 1, delayMs: 1 },
+      }),
+    Error,
+  );
+  assertEquals(
+    dialed.filter((port) => port < 11),
+    [],
+    "the file's ports 1-5 are never dialed",
+  );
+  assertEquals(spawned[0]?.includes("ipykernel_launcher"), true);
 });
 
 Deno.test("typed at the prompt (the desktop's Notebook page), a running kernel is attached to", async () => {
@@ -411,7 +433,7 @@ Deno.test("typed at the prompt (the desktop's Notebook page), a running kernel i
         return Promise.resolve();
       },
     },
-    dialSandboxPort: (port: number) => new KernelPort(port === 1, key, false),
+    dialSandboxPort: (port: number) => new KernelPort(port === 4, key, false),
     onOutput(handler: (bytes: Uint8Array) => void) {
       handlers.add(handler);
       return () => handlers.delete(handler);
