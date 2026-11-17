@@ -37,3 +37,12 @@
   font-size: var(--jp-ui-font-size0, 11px);
   white-space: pre-wrap;
 }
+
+/* An HTML output's sandboxed frame (src/output_frame.ts): as wide as the
+ * output, as tall as its sizer reports, 0 until then so it grows once. */
+.yurt-OutputFrame iframe {
+  display: block;
+  width: 100%;
+  height: 0;
+  border: 0;
+}

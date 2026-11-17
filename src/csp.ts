@@ -20,7 +20,10 @@
  * beacon's script and report endpoint (src/web_analytics.ts). Scripts come from the origin
  * plus the inline bootstraps JupyterLite emits in its index pages, allowed
  * by hash; the WebAssembly kernel needs `'wasm-unsafe-eval'`. Styles allow
- * inline because JupyterLab sets them everywhere.
+ * inline because JupyterLab sets them everywhere. The JupyterLite pages also
+ * admit, by hash, the one script an HTML output's sandboxed frame runs
+ * ({@link OUTPUT_FRAME_SIZER_HASH}): a srcdoc frame inherits the page's
+ * policy, and `frame-src 'none'` still refuses every frame navigation.
  */
 
 import { PACKAGE_SOURCES } from "./packages.ts";
@@ -61,6 +64,13 @@ export async function inlineScriptHashes(html: string): Promise<string[]> {
   }
   return hashes;
 }
+
+/** The `'sha256-…'` source of the HTML output frame's sizer script,
+ * `OUTPUT_FRAME_SIZER` in jupyterlite/yurt-kernel/src/output_frame_sizer.ts.
+ * A literal: the desktop launcher runs src/ without that tree or the import
+ * map. tests/csp_test.ts checks it against the script. */
+export const OUTPUT_FRAME_SIZER_HASH =
+  "'sha256-+gxxj6zaCnYufU7FbsvsuVmNGY9iZ5AqAXhJbgofvVM='";
 
 /** Where the agent's model weights come from (src/llm_models.ts):
  * `huggingface.co` answers with a redirect to its CDN under `hf.co`, and a
@@ -132,11 +142,18 @@ export function documentPolicy(
   pathname: string,
   scriptHashes: string[],
 ): string {
-  const jupyter = pathname.startsWith(JUPYTER_PREFIX);
+  return pathname.startsWith(JUPYTER_PREFIX)
+    ? jupyterPolicy(scriptHashes)
+    : contentSecurityPolicy({ scriptHashes });
+}
+
+/** The JupyterLite pages' policy: eval for ajv, the origin and the packages
+ * path only, and the output frame's sizer. */
+function jupyterPolicy(scriptHashes: string[]): string {
   return contentSecurityPolicy({
-    scriptHashes,
-    allowEval: jupyter,
-    sameOriginOnly: jupyter,
+    scriptHashes: [...scriptHashes, OUTPUT_FRAME_SIZER_HASH],
+    allowEval: true,
+    sameOriginOnly: true,
   });
 }
 
@@ -165,13 +182,7 @@ export function headersFile(
   lines.push(`${JUPYTER_PREFIX}*`);
   lines.push("  ! Content-Security-Policy");
   lines.push(
-    `  Content-Security-Policy: ${
-      contentSecurityPolicy({
-        scriptHashes: jupyterScriptHashes,
-        allowEval: true,
-        sameOriginOnly: true,
-      })
-    }`,
+    `  Content-Security-Policy: ${jupyterPolicy(jupyterScriptHashes)}`,
   );
   return lines.join("\n") + "\n";
 }
