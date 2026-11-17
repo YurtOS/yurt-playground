@@ -3,12 +3,15 @@
  * frontend at /jupyter/ drives the real ipykernel inside the sandbox through
  * the Yurt kernel plugin. Also checks the home page's gating: a phone gets
  * the choices plus a note, its Notebook page boots no sandbox, and a page served without COOP/COEP lands on the
- * unsupported page.
+ * unsupported page. And that output runs no script in the page's origin
+ * (yurt-sandbox#382): neither a guest's `display(Javascript(...))` nor the
+ * stored outputs of a supplied notebook whose cells claim to be trusted.
  *
  * Run: deno run --allow-all tests/jupyterlite_e2e.ts (needs the pinned blobs
  * in artifacts/ and the site from jupyterlite/build.sh in public/jupyter/).
  */
-import { devices, type Page } from "playwright";
+import { Buffer } from "node:buffer";
+import { type Browser, devices, type Page } from "playwright";
 import { launchBrowser } from "../scripts/browser.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,6 +85,82 @@ async function waitForKernelIdle(page: Page, timeout: number): Promise<void> {
   }
 }
 
+/** A notebook someone hands the visitor: its cells claim to be trusted and
+ * carry a JavaScript output and an HTML output with script in it. */
+const TRUSTED_CLAIM_NOTEBOOK = {
+  cells: [
+    {
+      cell_type: "code",
+      execution_count: 1,
+      metadata: { trusted: true },
+      outputs: [{
+        output_type: "display_data",
+        metadata: {},
+        data: {
+          "application/javascript": "window.__trustedJs = 1;",
+          "text/html":
+            '<b id="trusted-html">x</b><script>window.__trustedJs = 2;</script>',
+          "text/plain": "trusted-claim",
+        },
+      }],
+      source: ["1"],
+    },
+  ],
+  metadata: {
+    kernelspec: {
+      display_name: "Python 3 (Yurt sandbox)",
+      language: "python",
+      name: "yurt",
+    },
+  },
+  nbformat: 4,
+  nbformat_minor: 5,
+};
+
+/** Upload {@link TRUSTED_CLAIM_NOTEBOOK} through the file browser, open it,
+ * and fail if its stored output rendered as trusted. The flag is the file's
+ * word only: JupyterLite has no notebook signatures to back it. */
+async function checkTrustedClaimIgnored(
+  browser: Browser,
+  url: string,
+): Promise<void> {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await page.goto(`${url}/jupyter/tree/index.html`, { waitUntil: "load" });
+  await page.locator(".jp-DirListing").first().waitFor({ timeout: 60_000 });
+  const chooser = page.waitForEvent("filechooser", { timeout: 20_000 });
+  await page.locator('[title="Upload Files"]').first().click();
+  await (await chooser).setFiles({
+    name: "trusted-claim.ipynb",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(TRUSTED_CLAIM_NOTEBOOK)),
+  });
+  await page.getByText("trusted-claim.ipynb").first().waitFor({
+    timeout: 30_000,
+  });
+  await page.goto(
+    `${url}/jupyter/notebooks/index.html?path=trusted-claim.ipynb`,
+    { waitUntil: "load" },
+  );
+  await page.locator(".jp-OutputArea-output").first().waitFor({
+    timeout: 60_000,
+  });
+  const rendered = await page.evaluate(() => ({
+    js: (globalThis as { __trustedJs?: number }).__trustedJs,
+    trusted: document.querySelectorAll(".jp-OutputArea-output.jp-mod-trusted")
+      .length,
+    raw: document.getElementById("trusted-html") !== null,
+  }));
+  if (rendered.js !== undefined || rendered.trusted > 0 || rendered.raw) {
+    fail(
+      `a supplied notebook's stored output rendered as trusted: ${
+        JSON.stringify(rendered)
+      }`,
+    );
+  }
+  await context.close();
+}
+
 if (import.meta.main) {
   await ensureBundle(
     Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel"),
@@ -148,6 +227,9 @@ if (import.meta.main) {
       await plainPage.close();
     }
     await plain.close();
+
+    await checkTrustedClaimIgnored(browser, server.url);
+    console.log("jupyterlite e2e: a notebook's trusted claim is ignored");
 
     const page = await browser.newPage();
     const started = Date.now();
@@ -219,6 +301,19 @@ if (import.meta.main) {
     );
     csp();
     console.log("jupyterlite e2e: notebook executed on the guest ipykernel");
+
+    // Guest output runs no script in the page's origin: the cell's own
+    // outputs are trusted, so only the missing JavaScript renderer stops it.
+    await runNewCell(
+      page,
+      'from IPython.display import Javascript; display(Javascript("window.__x = 1")); print("js-probe-done")',
+    );
+    await waitForLastOutput(page, "js-probe-done", 60_000);
+    await page.waitForTimeout(1_000);
+    if (await page.evaluate(() => "__x" in globalThis)) {
+      fail("a guest's display(Javascript(...)) ran in the page");
+    }
+    console.log("jupyterlite e2e: guest JavaScript output did not run");
 
     // Interrupt reaches the guest: a busy loop ends with KeyboardInterrupt
     // once the toolbar's stop button is pressed (#31).

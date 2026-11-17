@@ -654,4 +654,32 @@ const plugin: JupyterFrontEndPlugin<void> = {
   },
 };
 
-export default plugin;
+/**
+ * A code cell whose `metadata.trusted` is true renders its stored outputs
+ * unsanitized: raw HTML, and script for any renderer that runs it
+ * (@jupyterlab/cells CellModel). Jupyter Server keeps the flag only when the
+ * notebook's signature verifies; JupyterLite's in-browser drive has no
+ * signatures and keeps whatever the file says, so a notebook someone hands the
+ * visitor would render its outputs raw on open (yurt-sandbox#382). Every
+ * document load goes through the contents manager's `get`, so the flag is
+ * dropped there: stored outputs render sanitized, and outputs of cells run in
+ * this session are trusted as usual.
+ */
+const untrustOnLoad: JupyterFrontEndPlugin<void> = {
+  id: "@yurt/jupyterlite-yurt-kernel:untrust-on-load",
+  autoStart: true,
+  activate: (app: JupyterFrontEnd) => {
+    const contents = app.serviceManager.contents;
+    const get = contents.get.bind(contents);
+    contents.get = async (path, options) => {
+      const model = await get(path, options);
+      const cells = model.type === "notebook" ? model.content?.cells : null;
+      if (Array.isArray(cells)) {
+        for (const cell of cells) delete cell?.metadata?.trusted;
+      }
+      return model;
+    };
+  },
+};
+
+export default [plugin, untrustOnLoad];
