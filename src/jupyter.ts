@@ -264,6 +264,9 @@ const TYPED_CONNECTION_MARKER = 'YURT_JUPYTER_CONNECTION_""READY';
 
 type StartOptions = {
   pollMs?: number;
+  /** The attach's dial of a running kernel (see attachRunningKernel):
+   * tries and each try's bound. */
+  attach?: { dials?: number; dialMs?: number };
   /** The dial's retry budget -- production waits out a kernel that is
    * still binding its ports; a test that never dials says so instead of
    * paying the whole backoff (yurt-playground#123). */
@@ -338,7 +341,7 @@ export async function startGuestKernel(
   ports?: KernelPorts,
   options: StartOptions = {},
 ): Promise<JupyterTransport> {
-  const running = await attachRunningKernel(session, ports);
+  const running = await attachRunningKernel(session, ports, options.attach);
   if (running !== undefined) return running;
   const relaunches = isJavaScriptCore(
     options.userAgent ?? globalThis.navigator?.userAgent,
@@ -384,9 +387,13 @@ export async function startGuestKernel(
 async function attachRunningKernel(
   session: JupyterLaunchSession,
   ports: KernelPorts | undefined,
+  bounds: StartOptions["attach"] = {},
 ): Promise<JupyterTransport | undefined> {
-  // A look that cannot be made is "nothing found": the launch below makes
-  // the same reads and reports their failure as it always has.
+  const dials = bounds.dials ?? ATTACH_DIALS;
+  const dialMs = bounds.dialMs ?? ATTACH_DIAL_MS;
+  // A file read that fails is "nothing found": the launch below makes the
+  // same reads and reports their failure as it always has. A typed look
+  // that fails ends the start: the launch would type into the same shell.
   const readFile = session.readFile;
   const bytes = readFile !== undefined
     ? await Promise.resolve()
@@ -418,13 +425,13 @@ async function attachRunningKernel(
     try {
       transport = await withTimeout(
         opening,
-        ATTACH_DIAL_MS,
+        dialMs,
         "the dial of the running kernel's ports did not open",
       );
     } catch {
       opening.then((late) => late.close(), () => {});
       await Promise.all(dialed.map((conn) => conn.close().catch(() => {})));
-      if (dial >= ATTACH_DIALS) return undefined;
+      if (dial >= dials) return undefined;
       await new Promise((resolve) => setTimeout(resolve, ATTACH_RETRY_MS));
     }
   }
@@ -455,11 +462,12 @@ async function peekConnectionFileTyped(
   const typedMarker = marker.replace("DONE_", 'DONE_""');
   let text = "";
   let resolveOutput: (() => void) | undefined;
-  // The hush is released by the marker alone, and a look that outlasts
-  // its wait fails the start: no launch is typed behind a look still
-  // queued, whose late marker would show the screen in the middle of the
-  // launch's own hush, and the file (its key) never reaches the screen.
-  hushUntil(session, marker);
+  // A look that outlasts its wait fails the start: no launch is typed
+  // behind a look still queued, whose late marker would show the screen in
+  // the middle of the launch's own hush. The screen is shown again then: a
+  // terminal hidden for good is worse than the file printed late (its key
+  // is a running kernel's, readable in the guest anyway).
+  const release = hushUntil(session, marker);
   const remove = session.onOutput((chunk) => {
     text += new TextDecoder().decode(chunk);
     if (text.includes(marker)) resolveOutput?.();
@@ -477,6 +485,9 @@ async function peekConnectionFileTyped(
         "the shell did not answer the look at the kernel's connection file",
       );
     }
+  } catch (error) {
+    release();
+    throw error;
   } finally {
     remove();
   }

@@ -447,32 +447,39 @@ Deno.test("typed at the prompt (the desktop's Notebook page), a running kernel i
 
 Deno.test("a dial whose handshake never comes is closed when its try runs out, then a fresh launch", async () => {
   // A port that a non-kernel listener holds, and that never greets: each
-  // bounded try is abandoned whole, its sockets closed, and no transport
-  // is left behind; then the page launches.
-  let opened = 0;
-  let closed = 0;
+  // bounded try is abandoned whole, every socket it dialed closed, and no
+  // transport is left behind; then the page launches.
+  const conns: { closed: boolean }[] = [];
   const { session, spawned } = sharedSandbox("answers");
   session.dialSandboxPort = () => {
-    opened++;
     let release: ((bytes: Uint8Array) => void) | undefined;
-    return {
+    const conn = {
+      closed: false,
       write: () => Promise.resolve(),
       read: () => new Promise<Uint8Array>((resolve) => release = resolve),
       close: () => {
-        closed++;
+        conn.closed = true;
         release?.(new Uint8Array());
         return Promise.resolve();
       },
-    } as unknown as KernelPort;
+    };
+    conns.push(conn);
+    return conn as unknown as KernelPort;
   };
   await assertRejects(
     () =>
       startGuestKernel(session, undefined, {
         pollMs: 1,
         connect: { attempts: 1, delayMs: 1 },
+        attach: { dials: 2, dialMs: 20 },
       }),
     Error,
   );
-  assertEquals(opened > 0 && closed >= opened, true, `${closed} of ${opened}`);
+  assertEquals(conns.length, 10, "two tries, five ports each");
+  assertEquals(
+    conns.filter((conn) => !conn.closed).length,
+    0,
+    "every socket a try dialed was closed",
+  );
   assertEquals(spawned[0]?.includes("ipykernel_launcher"), true);
 });
