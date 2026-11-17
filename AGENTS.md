@@ -3,15 +3,17 @@
 Org-wide rules live in the `YurtOS/yurtos-rules` repository, not here. After
 this file, read its `AGENTS.md` and `org.md` in full, before changing anything.
 
-- Local: `~/work/yurtos/yurtos-rules` (a sibling checkout; read it, do not edit
-  it).
-- Claude cloud session: attach it read-only with `add_repo` (`owner: YurtOS`,
-  `repo: yurtos-rules`, `access: read`), clone it as the tool instructs into a
-  directory named exactly `yurtos-rules`, then `register_repo_root` (it rejects
-  any other final path segment).
-- If it cannot be obtained, stop. Do not read, edit or run anything else. Tell
-  the user the rules are missing and that this is an environment problem for
-  them to fix.
+It is a checkout named `yurtos-rules` next to this repository's primary checkout
+(read it, do not edit it): `~/work/yurtos/yurtos-rules` locally,
+`/home/user/yurtos-rules` in a Claude cloud session.
+
+- If it is missing in a Claude cloud session, attach it read-only with
+  `add_repo` (`owner: YurtOS`, `repo: yurtos-rules`, `access: read`), clone it
+  as the tool instructs into a directory named exactly `yurtos-rules`, then
+  `register_repo_root` (it rejects any other final path segment).
+- If none of these works, stop. Do not read, edit or run anything else. Tell the
+  user the rules are missing and that this is an environment problem for them to
+  fix.
 
 Skills load as `yurtos-rules:<skill>` only if the user has installed the Claude
 Code plugin on this machine
