@@ -231,14 +231,13 @@ Deno.test("a library directory inside another is walked once, with it", async ()
   }
 });
 
-Deno.test("a capture precompiles the Python it installed; the phone's has none", () => {
+Deno.test("a capture precompiles the Python it installed", () => {
   assertEquals(capturePrecompiles("desktop"), true);
   assertEquals(capturePrecompiles("tablet"), true);
-  assertEquals(capturePrecompiles("phone"), false);
   // Go's warms its build cache instead: it holds no Python.
   assertEquals(capturePrecompiles("go"), false);
   assertEquals(captureWarmsGo("go"), true);
-  for (const kind of ["desktop", "tablet", "phone"] as const) {
+  for (const kind of ["desktop", "tablet"] as const) {
     assertEquals(captureWarmsGo(kind), false);
   }
   // Playwright's stages playwright-core (src/playwright_setup.ts): no
@@ -246,7 +245,7 @@ Deno.test("a capture precompiles the Python it installed; the phone's has none",
   assertEquals(captureStagesPlaywright("playwright"), true);
   assertEquals(capturePrecompiles("playwright"), false);
   assertEquals(captureWarmsGo("playwright"), false);
-  for (const kind of ["desktop", "tablet", "phone", "go"] as const) {
+  for (const kind of ["desktop", "tablet", "go"] as const) {
     assertEquals(captureStagesPlaywright(kind), false);
   }
 });

@@ -852,11 +852,12 @@
           </p>
 
           <p id="phone-note" data-testid="phone-note" hidden>
-            This is a phone, so this page runs the Linux shell, with a small
-            snapshot made for phones, and an agent whose model runs on
-            OpenRouter: a phone tab has too little memory for more. Installing
-            more from <em>Packages</em> may run the tab out of memory. A desktop
-            browser, or the desktop app, runs all of it.
+            This is a phone, so this page runs the shell and Python, with the
+            snapshot made for tablets, and an agent whose model runs on
+            OpenRouter: Jupyter and a model in the tab need more memory than a
+            phone browser gives one tab. Installing more from
+            <em>Packages</em> may run the tab out of memory. A desktop browser,
+            or the desktop app, runs all of it.
           </p>
 
           <p
@@ -1031,9 +1032,9 @@
                     compiled to WebAssembly: a shell in about 2&nbsp;s (Jupyter
                     in about 5&nbsp;s on a desktop).
                     <span id="first-visit-note" data-testid="first-visit-note"
-                    >The first visit downloads it once, about 140 MB on a
-                      desktop, 100 MB on a tablet, 40 MB on a phone; later
-                      visits load it from the browser's cache.</span>
+                    >The first visit downloads it once, about 150 MB on a
+                      desktop, 85 MB on a tablet or phone; later visits load it
+                      from the browser's cache.</span>
                     <span id="offline-note"
                     >Programs in the sandbox have no network:
                       <code>pip install</code> and <code>wget</code> fail by

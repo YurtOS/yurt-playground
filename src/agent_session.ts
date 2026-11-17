@@ -89,9 +89,10 @@ export function sealedFrom(
 }
 
 /** The saved session, when it grew from `kind`'s snapshot. One from another
- * snapshot (an iPad's tablet-snapshot seal, now that its agent restores the
- * phone's) is not resumed and not read: its memory stays on disk, unread,
- * until the next seal replaces it. */
+ * snapshot (an iPhone's or iPad's seal of the phone's snapshot, which had no
+ * Python and is gone, now that their agent restores the tablet's) is not
+ * resumed and not read: its memory stays on disk, unread, until the next
+ * seal replaces it. */
 export async function loadAgentSession(
   kind: SnapshotKind,
 ): Promise<StoredSnapshot | undefined> {

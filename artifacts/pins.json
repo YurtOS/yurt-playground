@@ -155,38 +155,6 @@
       "remark": "BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter"
     }
   },
-  "phoneSnapshot": {
-    "releaseRepo": "YurtOS/yurt-playground",
-    "release": "snapshot-phone-playground-2026.11.17-cb7a4b7",
-    "format": 4,
-    "sha256": "86a4b93d1e8210f390bff31e5cc9f0675e3c90bb84308e01eb737a7cbc062f7e",
-    "size": 25988838,
-    "builtFrom": {
-      "kernelSha256": "341f8190425612d31851cdd5d34cf3a71b87ffd445eb4ad5ba8bd77fdad7fe58",
-      "kernelRev": "cb7a4b7abe4d1c5df7f1cf1ec94f6ed63f4e3418",
-      "sealVersion": 2,
-      "bootSetup": 2,
-      "imageSha256": "11cf89da081edd874da5d4aa52a4775c5d7c23a0e77b24b756b223d345e5387d",
-      "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
-      "pythonSet": null
-    },
-    "memoryBytes": 95879168,
-    "contents": {
-      "packages": [
-        {
-          "name": "ca-certificates",
-          "version": "2026.9.25",
-          "build": "yurt_0"
-        },
-        {
-          "name": "git",
-          "version": "2.55.0",
-          "build": "yurt_0"
-        }
-      ],
-      "remark": "BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter"
-    }
-  },
   "goSnapshot": {
     "releaseRepo": "YurtOS/yurt-playground",
     "release": "snapshot-go-playground-2026.11.17-cb7a4b7",

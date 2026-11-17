@@ -322,7 +322,7 @@ export async function touchKeysWork(page: Page): Promise<void> {
   );
 }
 
-/** The agent pane on a phone (#197): a phone boots now (its own small
+/** The agent pane on a phone (#197): a phone boots now (the tablet's
  * snapshot), so the pane offers the sandbox's Start and the agent's Run,
  * as on a tablet, with only models outside the tab (an in-tab one on the
  * list is not offered). WebGPU is stubbed, so it is the phone, not a
@@ -428,7 +428,7 @@ async function bootFailuresAreExplained(
   const reason = "fetch ./yurt_kernel.wasm failed: 503";
   // Phones: each one is told apart from a tablet or a desktop, and the bare
   // URL gains `platform=phone` before anything loads. A phone now boots,
-  // the shell only (its own small snapshot, or the image): a failed boot
+  // the shell only (the tablet's snapshot, or the image): a failed boot
   // explains itself as on any device, and the cell says no Jupyter here.
   const phones: {
     name: string;

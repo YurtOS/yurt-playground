@@ -139,11 +139,6 @@ export type StartDeps<S extends StartableSession> = {
    * once Python is there. It says its own success; its failure is posted
    * as a failed capture, not as a Jupyter that did not start. */
   capture?(session: S): Promise<void>;
-  /** What a capture needs before it seals: the Python it installs
-   * (`"set"`, the default: the desktop's set, the tablet's python), or
-   * nothing (`"none"`: the phone's, the image as it boots). Only with
-   * `capture`. */
-  captureNeeds?: "set" | "none";
   post(report: StartReport): void;
   /** How often "starting Jupyter (N s)" is posted. */
   tickMs?: number;
@@ -169,11 +164,6 @@ export async function startSandbox<S extends StartableSession>(
     deps.post({ type: "status", text: "" });
     deps.post({ type: "shell-ready" });
     return undefined;
-  }
-  // The phone's capture seals the image as it boots: nothing to probe
-  // for or install.
-  if (deps.capture !== undefined && deps.captureNeeds === "none") {
-    return await launchKernel(session, deps);
   }
   if (await probePython(session.process, deps.probeTimeoutMs) === false) {
     return await installThenLaunch(session, deps);
@@ -332,11 +322,11 @@ export function kernelLifecycle() {
 
 /** Whether a start restores a sealed sandbox (by default, `?snapshot=1`
  * or an uploaded one): only the in-tab sandbox (the desktop app's runs
- * natively). A phone or tablet too, its own kind (src/snapshot_pin.ts
+ * natively). A phone or tablet too, the tablet's kind (src/snapshot_pin.ts
  * SNAPSHOT_KINDS): the restore takes only a snapshot of the Python the
  * page asks the live index about (checkPythonSet, before the restore) --
- * none on a phone, python alone on a tablet -- so the desktop's 130 MB,
- * ~520 MiB one is refused there. */
+ * python alone there -- so the desktop's 130 MB, ~520 MiB one is refused
+ * there. */
 export function restoresSnapshot(start: {
   snapshot?: "restore" | "capture";
   native: boolean;

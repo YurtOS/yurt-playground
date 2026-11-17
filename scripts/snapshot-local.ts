@@ -20,7 +20,7 @@
  *   4. print `<site>/?snapshot=<commit sha>`.
  *
  * Usage: deno run -A scripts/snapshot-local.ts [--packages a,b]
- *          [--kind desktop|tablet|phone|go|playwright]
+ *          [--kind desktop|tablet|go|playwright]
  *          [--name NAME] [--file PATH] [--dry-run] [--site URL]
  *
  *   --packages  packages to install after the Python set, before the seal
@@ -28,10 +28,10 @@
  *               the Python set's alone, so these ride in its memory
  *   --kind      which snapshot (src/snapshot_pin.ts SNAPSHOT_KINDS):
  *               the desktop's (default: the Python set and Jupyter), the
- *               tablet's (`?snapshot=capture-tablet`: python alone) or the
- *               phone's (`?snapshot=capture-phone`: the image as it boots,
- *               no Python) or Go's (`?snapshot=capture-go`: the go package
- *               and its standard library compiled, no Python); the URL
+ *               tablet's (`?snapshot=capture-tablet`: python alone, which a
+ *               phone restores too), Go's (`?snapshot=capture-go`: the go
+ *               package and its standard library compiled, no Python) or
+ *               Playwright's (`?snapshot=capture-playwright`); the URL
  *               names its platform (and Go's `env=go`), and each restores
  *               only on a page of its kind
  *   --name      the ref's name (default <train>-<UTC time>); an existing
@@ -253,8 +253,7 @@ export async function siteIdentityProblem(
  * pins' identity and its Python. The desktop's holds the set the live
  * index offers, the tablet's python alone (`live`, livePythonSet's
  * answer for it), so an index it cannot read or one without that Python
- * is a problem; the phone's holds none (null), and asks the index
- * nothing. The tablet's and the phone's are the slim image's: a train
+ * is a problem. Every kind but the desktop's is the slim image's: a train
  * without one boots the full image, which holds the whole set. */
 export function captureBuild(
   pins: Pins,
@@ -265,12 +264,6 @@ export function captureBuild(
     return {
       ok: false,
       problem: `--kind ${kind} needs a train with a slim image (browserImage)`,
-    };
-  }
-  if (kind === "phone") {
-    return {
-      ok: true,
-      builtFrom: { ...snapshotIdentity(pins), pythonSet: null },
     };
   }
   const problem = captureSetProblem(live, kind);
@@ -317,11 +310,6 @@ async function main(): Promise<void> {
   const fileArg = option("--file");
   const site = option("--site") ?? DEFAULT_SITE;
   if (args.length > 0) die(`unknown arguments: ${args.join(" ")}`);
-  if (kind === "phone" && packages.length > 0) {
-    die(
-      "--kind phone takes no --packages: the phone's snapshot is the image as it boots",
-    );
-  }
   if (fileArg !== undefined && packages.length > 0) {
     die("--packages is for a capture; --file uploads one as it is");
   }

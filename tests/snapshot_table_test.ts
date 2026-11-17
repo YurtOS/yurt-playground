@@ -18,9 +18,9 @@ Deno.test("the README's snapshot table is the one artifacts/pins.json makes", as
 Deno.test("the snapshot table names each kind, and says when one is not pinned", () => {
   const table = snapshotTable({
     train: "t",
-    phoneSnapshot: {
+    tabletSnapshot: {
       releaseRepo: "YurtOS/yurt-playground",
-      release: "snapshot-phone-t",
+      release: "snapshot-tablet-t",
       format: 3,
       sha256: "a".repeat(64),
       size: 31_192_802,
@@ -31,19 +31,19 @@ Deno.test("the snapshot table names each kind, and says when one is not pinned",
         bootSetup: 2,
         imageSha256: "e".repeat(64),
         pythonSealSha256: null,
-        pythonSet: null,
+        pythonSet: "e/python@3.14.7-yurt_0:1",
       },
       memoryBytes: 142_671_872,
       restorePeakMiB: 400,
       contents: {
         packages: [],
-        remark: "BusyBox shell; no Python, no Jupyter",
+        remark: "BusyBox shell, Python 3.14.7; no Jupyter",
       },
     },
   });
   assertStringIncludes(
     table,
-    "| phone | phone (iPhone): `?platform=phone` | `snapshot-phone-t` | 31.2 MB in 2 parts | 136.1 MiB | 400 MiB | BusyBox shell; no Python, no Jupyter |",
+    "| tablet | tablet (iPad) and phone (iPhone): `?platform=tablet`, `?platform=phone` | `snapshot-tablet-t` | 31.2 MB in 2 parts | 136.1 MiB | 400 MiB | BusyBox shell, Python 3.14.7; no Jupyter |",
   );
   assertStringIncludes(
     table,
@@ -51,6 +51,6 @@ Deno.test("the snapshot table names each kind, and says when one is not pinned",
   );
   assertStringIncludes(
     table,
-    "| tablet | tablet (iPad): `?platform=tablet` | not pinned",
+    "| go | desktop browser that chose Go: `?platform=desktop&env=go` | not pinned",
   );
 });

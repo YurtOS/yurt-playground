@@ -33,8 +33,10 @@ import { watchCspViolations } from "./csp_watch.ts";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** A phone with `?start-anyway` gets the shell, the phone note and a cell
- * that says "not on phones", and no Python install: no status about it,
- * and not one request to the repository. */
+ * that says "no Jupyter on phones", and no Python install: no status about
+ * it, and no package downloaded. It reads the repository's index, as a
+ * tablet does: the python its snapshot holds is checked against it
+ * (src/snapshot_pin.ts checkPythonSet). */
 async function phoneInstallsNoPython(
   browser: Browser,
   url: string,
@@ -42,8 +44,13 @@ async function phoneInstallsNoPython(
   const phone = await browser.newContext(devices["iPhone 13"]);
   const fetched: string[] = [];
   phone.on("request", (request) => {
-    if (request.url().startsWith(PACKAGE_REPO_URL)) {
-      fetched.push(request.url());
+    const url = request.url();
+    // The index and its per-package metadata only: no package.
+    if (
+      url.startsWith(PACKAGE_REPO_URL) &&
+      !/\/index\.json(\.bundle)?$|\/packages\/[^/]+\.json$/.test(url)
+    ) {
+      fetched.push(url);
     }
   });
   const page = await showAllSections(await phone.newPage());
@@ -96,15 +103,17 @@ async function phoneInstallsNoPython(
   const problems = [
     state.statuses.some((s) => /Python|Jupyter/.test(s)) &&
     `status mentioned Python or Jupyter: ${JSON.stringify(state.statuses)}`,
-    fetched.length > 0 && `fetched from the repository: ${fetched}`,
+    fetched.length > 0 && `downloaded from the repository: ${fetched}`,
     state.echo !== "phone-shell" && `shell answered ${state.echo}`,
     !state.phoneNote && "phone note hidden",
-    state.cell !== "not on phones" && `the cell says ${state.cell}`,
+    state.cell !== "no Jupyter on phones" && `the cell says ${state.cell}`,
   ].filter(Boolean);
   if (problems.length > 0) {
     throw new Error(`phone ?start-anyway: ${problems.join("; ")}`);
   }
-  console.log("slim e2e: a phone with ?start-anyway ran the shell, no Python");
+  console.log(
+    "slim e2e: a phone with ?start-anyway ran the shell, no Python install",
+  );
   await phone.close();
 }
 
