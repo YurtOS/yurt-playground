@@ -117,12 +117,17 @@ const TRUSTED_CLAIM_NOTEBOOK = {
   nbformat_minor: 5,
 };
 
-/** Upload {@link TRUSTED_CLAIM_NOTEBOOK} through the file browser, open it,
- * and fail if its stored output rendered as trusted. The flag is the file's
- * word only: JupyterLite has no notebook signatures to back it. */
+/** Upload {@link TRUSTED_CLAIM_NOTEBOOK} through the file browser as
+ * `uploaded`, rename it to `name` when they differ, open it, and fail if its
+ * stored output rendered as trusted. The flag is the file's word only:
+ * JupyterLite has no notebook signatures to back it. A file uploaded under
+ * another extension keeps its stored type when renamed to .ipynb, and the
+ * notebook still opens from it. */
 async function checkTrustedClaimIgnored(
   browser: Browser,
   url: string,
+  uploaded: string,
+  name: string,
 ): Promise<void> {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -131,15 +136,24 @@ async function checkTrustedClaimIgnored(
   const chooser = page.waitForEvent("filechooser", { timeout: 20_000 });
   await page.locator('[title="Upload Files"]').first().click();
   await (await chooser).setFiles({
-    name: "trusted-claim.ipynb",
+    name: uploaded,
     mimeType: "application/json",
     buffer: Buffer.from(JSON.stringify(TRUSTED_CLAIM_NOTEBOOK)),
   });
-  await page.getByText("trusted-claim.ipynb").first().waitFor({
-    timeout: 30_000,
-  });
+  const item = page.locator(".jp-DirListing-item", { hasText: uploaded });
+  await item.waitFor({ timeout: 30_000 });
+  if (uploaded !== name) {
+    await item.click();
+    await page.keyboard.press("F2");
+    const editor = page.locator(".jp-DirListing-editor");
+    await editor.fill(name);
+    await editor.press("Enter");
+    await page.locator(".jp-DirListing-item", { hasText: name }).waitFor({
+      timeout: 30_000,
+    });
+  }
   await page.goto(
-    `${url}/jupyter/notebooks/index.html?path=trusted-claim.ipynb`,
+    `${url}/jupyter/notebooks/index.html?path=${name}`,
     { waitUntil: "load" },
   );
   await page.locator(".jp-OutputArea-output").first().waitFor({
@@ -153,7 +167,7 @@ async function checkTrustedClaimIgnored(
   }));
   if (rendered.js !== undefined || rendered.trusted > 0 || rendered.raw) {
     fail(
-      `a supplied notebook's stored output rendered as trusted: ${
+      `a supplied notebook's stored output rendered as trusted (${uploaded} opened as ${name}): ${
         JSON.stringify(rendered)
       }`,
     );
@@ -228,7 +242,18 @@ if (import.meta.main) {
     }
     await plain.close();
 
-    await checkTrustedClaimIgnored(browser, server.url);
+    await checkTrustedClaimIgnored(
+      browser,
+      server.url,
+      "trusted-claim.ipynb",
+      "trusted-claim.ipynb",
+    );
+    await checkTrustedClaimIgnored(
+      browser,
+      server.url,
+      "renamed-claim.json",
+      "renamed-claim.ipynb",
+    );
     console.log("jupyterlite e2e: a notebook's trusted claim is ignored");
 
     const page = await browser.newPage();

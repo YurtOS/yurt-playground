@@ -662,8 +662,8 @@ const plugin: JupyterFrontEndPlugin<void> = {
  * signatures and keeps whatever the file says, so a notebook someone hands the
  * visitor would render its outputs raw on open (yurt-sandbox#382). Every
  * document load goes through the contents manager's `get`, so the flag is
- * dropped there: stored outputs render sanitized, and outputs of cells run in
- * this session are trusted as usual.
+ * dropped there, from any JSON content with cells: stored outputs render
+ * sanitized, and outputs of cells run in this session are trusted as usual.
  */
 const untrustOnLoad: JupyterFrontEndPlugin<void> = {
   id: "@yurt/jupyterlite-yurt-kernel:untrust-on-load",
@@ -673,7 +673,13 @@ const untrustOnLoad: JupyterFrontEndPlugin<void> = {
     const get = contents.get.bind(contents);
     contents.get = async (path, options) => {
       const model = await get(path, options);
-      const cells = model.type === "notebook" ? model.content?.cells : null;
+      // By the content, not the stored type: the drive keeps an uploaded
+      // file's type `file` when it is renamed to .ipynb, and the notebook
+      // factory parses it all the same.
+      const content = model.content;
+      const cells = content !== null && typeof content === "object"
+        ? content.cells
+        : null;
       if (Array.isArray(cells)) {
         for (const cell of cells) delete cell?.metadata?.trusted;
       }
