@@ -119,18 +119,22 @@ every required hosted check on the PR is green.
   deno fmt --check
   deno lint
   deno check '**/*.ts'
-  deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
+  PLAYGROUND_REQUIRE_ARTIFACTS=1 YURT_KERNEL_ROOT=../yurtos-kernel \
+    deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
   ```
 
   `deno.json` resolves `@yurt/*` imports into a sibling `../yurtos-kernel`
-  checkout; CI checks it out at the pinned rev.
+  checkout; CI checks it out at the pinned rev. The tests need the pinned blobs
+  (`scripts/install-pinned-artifacts.sh`; CI prepares the rest in
+  `.github/actions/site-inputs`). Without `PLAYGROUND_REQUIRE_ARTIFACTS=1` some
+  artifact-backed tests skip instead of failing, and such a run is not a pass.
 - Hosted: `.github/workflows/ci.yml`.
 
 A pull request skips the slow acceptance scenes (`MERGE_TIER` in ci.yml:
-playground, jupyterlite, slim); they run on every push to main. Add the
-`ci:full` label to a pull request that changes what they cover (the boot, the
-terminal, the notebook pages, the slim image) so they run before the merge, and
-check main's run after merging one without it.
+playground, jupyterlite, slim, browser_bridge); they run on every push to main.
+Add the `ci:full` label to a pull request that changes what they cover (the
+boot, the terminal, the notebook pages, the slim image, the browser bridge) so
+they run before the merge, and check main's run after merging one without it.
 
 ### Hosted CI budget during draft review
 
@@ -193,6 +197,9 @@ mechanical-only PRs are org.md "Pull requests". On top of it, here:
 - `docs/` (specs, plans, ADRs) counts as prose, so it is free. Name regenerated
   output as generated in the PR description, as well as putting it in its own
   commit.
+- **Plan the split up front** into slices that each build, pass CI, and make
+  sense alone (e.g. refactor or plumbing → behavior → callers/migration →
+  cleanup). Keep the stack's overall goal in the first PR's description.
 - **Don't slice just to hit a number.** Splitting a cohesive change into PRs
   that can't be understood alone makes review harder, not easier. Split along
   real seams, not line counts.
