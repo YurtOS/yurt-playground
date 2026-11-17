@@ -321,6 +321,6 @@ Deno.test("a capture runs on the desktop page only; a phone or tablet page refus
   assertEquals(captureRefusal("desktop"), undefined);
   for (const platform of ["tablet", "phone"] as const) {
     const refusal = captureRefusal(platform);
-    assertEquals(refusal?.includes(`&platform=${platform}`), true, refusal);
+    assertEquals(refusal?.includes(`as the ${platform}'s`), true, refusal);
   }
 });

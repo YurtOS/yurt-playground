@@ -15,7 +15,7 @@ import type { Platform } from "./device.ts";
  * not the page's platform. */
 export function captureRefusal(platform: Platform): string | undefined {
   if (platform === "desktop") return undefined;
-  return `a snapshot capture runs on the desktop page only, and this is the ${platform}'s: drop &platform=${platform}, or capture in a desktop browser`;
+  return `a snapshot capture runs on the desktop page only, and this page runs as the ${platform}'s: capture in a desktop browser, at desktop size, without &platform`;
 }
 
 /** Where the outcome is marked: `<html>`'s dataset in the page
