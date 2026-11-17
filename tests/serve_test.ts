@@ -41,27 +41,43 @@ Deno.test("the bundle import map resolves a relative kernel root", () => {
 Deno.test("the bundle import map maps every package the kernel's browser host imports", async () => {
   // deno bundle takes public/import-map.json instead of the kernel's deno.json
   // imports, so a package the kernel host starts importing (hash-wasm, #4394)
-  // fails the page bundle until it is listed here too.
-  const { kernelPath, imports } = kernelImportMap("../yurtos-kernel");
-  const hostDir = join(
-    kernelPath,
-    "packages/kernel-host-interface-js/kernel-host-interface",
+  // fails the page bundle until it is listed here too. The scan covers the
+  // two kernel trees the map points into (@yurt/kernel-host-interface-js,
+  // @yurt/worker-bootstrap and @yurt/tar-image), test files excluded.
+  const { kernelPath, imports } = kernelImportMap(
+    Deno.env.get("YURT_KERNEL_ROOT") ?? "../yurtos-kernel",
   );
+  const roots = [
+    "packages/kernel-host-interface-js",
+    "packages/runner/src/vfs",
+  ].map((dir) => join(kernelPath, dir));
   const missing = new Set<string>();
-  for await (const entry of Deno.readDir(hostDir)) {
-    if (!entry.isFile || !entry.name.endsWith(".ts")) continue;
-    if (entry.name.endsWith("_test.ts")) continue;
-    const text = await Deno.readTextFile(join(hostDir, entry.name));
-    for (
-      const match of text.matchAll(
-        /^\s*(?:import|export)\b[^;]*?\bfrom\s+"([^"]+)"/gm,
-      )
-    ) {
-      const specifier = match[1];
-      if (/^(\.|\/|node:|npm:|jsr:|https?:)/.test(specifier)) continue;
-      if (!(specifier in imports)) missing.add(`${specifier} (${entry.name})`);
+  async function scan(dir: string): Promise<void> {
+    for await (const entry of Deno.readDir(dir)) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory) {
+        if (!/^(__tests__|tests?|node_modules)$/.test(entry.name)) {
+          await scan(path);
+        }
+        continue;
+      }
+      if (!entry.isFile || !entry.name.endsWith(".ts")) continue;
+      if (/[._]test\.ts$/.test(entry.name)) continue;
+      const text = await Deno.readTextFile(path);
+      for (
+        const match of text.matchAll(
+          /^\s*(?:import|export)\b[^;]*?\bfrom\s+"([^"]+)"/gm,
+        )
+      ) {
+        const specifier = match[1];
+        if (/^(\.|\/|node:|npm:|jsr:|https?:)/.test(specifier)) continue;
+        if (!(specifier in imports)) {
+          missing.add(`${specifier} (${path.slice(kernelPath.length + 1)})`);
+        }
+      }
     }
   }
+  for (const root of roots) await scan(root);
   assertEquals(
     [...missing].sort(),
     [],
