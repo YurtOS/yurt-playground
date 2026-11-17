@@ -374,12 +374,13 @@ export async function startGuestKernel(
  * finds a valid connection file first dials the ports it names, under its
  * key, and asks for kernel_info on the control channel, which ipykernel
  * answers from its control thread even while a cell runs. A kernel that
- * answers is attached to. One that cannot be dialed is taken for gone and
- * a fresh kernel is launched: the launch line replaces the files itself,
- * so nothing is removed here (a dial that failed for a passing reason must
- * not strand a live kernel without its pid file). A kernel that is dialed
- * but does not answer fails the start, and is not stopped: it may be
- * another page's. Undefined when there is nothing to attach to. */
+ * answers is attached to. One whose ports do not open in a few bounded
+ * tries is taken for gone and a fresh kernel is launched, which replaces
+ * the files (the desktop page cannot see the pid's liveness; a live kernel
+ * whose dial fails every try is then stranded, as before this look --
+ * yurt-playground#351 owns that). A kernel that is dialed but does not
+ * answer fails the start, and is not stopped: it may be another page's.
+ * Undefined when there is nothing to attach to. */
 async function attachRunningKernel(
   session: JupyterLaunchSession,
   ports: KernelPorts | undefined,
@@ -387,13 +388,11 @@ async function attachRunningKernel(
   // A look that cannot be made is "nothing found": the launch below makes
   // the same reads and reports their failure as it always has.
   const readFile = session.readFile;
-  const bytes = await Promise.resolve()
-    .then(() =>
-      readFile !== undefined
-        ? readFile(JUPYTER_CONNECTION_FILE)
-        : peekConnectionFileTyped(session)
-    )
-    .catch(() => undefined);
+  const bytes = readFile !== undefined
+    ? await Promise.resolve()
+      .then(() => readFile(JUPYTER_CONNECTION_FILE))
+      .catch(() => undefined)
+    : await peekConnectionFileTyped(session);
   if (bytes === undefined || bytes.byteLength === 0) return undefined;
   let connection: KernelConnection;
   try {
@@ -404,16 +403,27 @@ async function attachRunningKernel(
   }
   let transport: JupyterTransport | undefined;
   for (let dial = 1; transport === undefined; dial++) {
+    // A try that outlasts its bound is abandoned whole: the ports it
+    // dialed are closed (a handshake waiting on one then fails), and a
+    // transport that opens after all is closed too.
+    const dialed: SandboxPortConn[] = [];
+    const opening = createJupyterTransport(
+      (port) => {
+        const conn = session.dialSandboxPort(port);
+        dialed.push(conn);
+        return conn;
+      },
+      configOf(connection),
+    );
     try {
       transport = await withTimeout(
-        createJupyterTransport(
-          (port) => session.dialSandboxPort(port),
-          configOf(connection),
-        ),
+        opening,
         ATTACH_DIAL_MS,
         "the dial of the running kernel's ports did not open",
       );
     } catch {
+      opening.then((late) => late.close(), () => {});
+      await Promise.all(dialed.map((conn) => conn.close().catch(() => {})));
       if (dial >= ATTACH_DIALS) return undefined;
       await new Promise((resolve) => setTimeout(resolve, ATTACH_RETRY_MS));
     }
@@ -445,9 +455,10 @@ async function peekConnectionFileTyped(
   const typedMarker = marker.replace("DONE_", 'DONE_""');
   let text = "";
   let resolveOutput: (() => void) | undefined;
-  // The hush is released by the marker alone: if the look outlasts its
-  // wait, the file (its key) must still not reach the screen when the
-  // queued line finally runs.
+  // The hush is released by the marker alone, and a look that outlasts
+  // its wait fails the start: no launch is typed behind a look still
+  // queued, whose late marker would show the screen in the middle of the
+  // launch's own hush, and the file (its key) never reaches the screen.
   hushUntil(session, marker);
   const remove = session.onOutput((chunk) => {
     text += new TextDecoder().decode(chunk);
@@ -463,7 +474,7 @@ async function peekConnectionFileTyped(
       await withTimeout(
         new Promise<void>((resolve) => resolveOutput = resolve),
         PEEK_MS,
-        "the look at the kernel's connection file did not finish",
+        "the shell did not answer the look at the kernel's connection file",
       );
     }
   } finally {
@@ -477,8 +488,9 @@ async function peekConnectionFileTyped(
     : encoder.encode(output.slice(start, end + 1));
 }
 
-/** How long the typed look at the connection file may take. */
-const PEEK_MS = 10_000;
+/** How long the typed look at the connection file may take: as long as
+ * the launch's own wait for the file, which a busy shell holds up alike. */
+const PEEK_MS = (CONNECTION_FILE_WAIT_SECONDS + 10) * 1000;
 
 /** A connection file the page may dial: tcp, five valid ports and, when
  * the host maps fixed kernel ports, exactly those. Throws otherwise. */
