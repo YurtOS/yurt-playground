@@ -105,6 +105,21 @@ async function makeHead(): Promise<string> {
     `<script>${OUTPUT_FRAME_SIZER}</script></head>`;
 }
 
+/**
+ * The output without its `<meta http-equiv>` pragmas. A refresh to an outside
+ * URL is refused by `frame-src 'none'` anyway, but one to the frame itself
+ * (`content="0"`) would reload it forever, and with it the CPU. The parse is
+ * inert: nothing in a template loads or runs.
+ */
+function withoutPragmas(source: string): string {
+  const template = document.createElement("template");
+  template.innerHTML = source;
+  const pragmas = template.content.querySelectorAll("meta[http-equiv]");
+  if (pragmas.length === 0) return source;
+  for (const meta of Array.from(pragmas)) meta.remove();
+  return template.innerHTML;
+}
+
 /** A `text/html` output in a sandboxed frame sized to its content. */
 class OutputFrame extends Widget implements IRenderMime.IRenderer {
   constructor(options: IRenderMime.IRendererOptions) {
@@ -137,7 +152,7 @@ class OutputFrame extends Widget implements IRenderMime.IRenderer {
     this._frame.srcdoc = top +
       // jp-ThemedContainer: JupyterLab scopes some rendered-HTML rules under it.
       '<body class="jp-ThemedContainer"><div class="yurt-frame-body jp-RenderedHTMLCommon jp-RenderedHTML jp-OutputArea-output" data-mime-type="text/html">' +
-      source + "</div></body></html>";
+      withoutPragmas(source) + "</div></body></html>";
   }
 
   protected onAfterAttach(): void {
