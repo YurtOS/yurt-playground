@@ -70,17 +70,17 @@ many browser-only ones pile up. `--check` shows the desktop app as `BEHIND` (not
 installers again. Leave yurt-sandbox's `scripts/desktop-host-pins.env` at the
 desktop's train meanwhile: it describes the host, not the page.
 
-Each train also needs its own copyleft source release,
-`gpl-sources-playground-<train>` in this repository. It holds the corresponding
-source of the GPL, LGPL and MPL components in the train's images and snapshots,
-plus a `THIRD_PARTY_SOURCES.md`; the
-`gpl-sources-playground-2026.11.17-cb7a4b7.4` release shows the layout.
+Each train also needs its own copyleft source release, `gpl-sources-<train>` in
+this repository. It holds the corresponding source of the GPL, LGPL and MPL
+components in the train's images and snapshots, plus a `THIRD_PARTY_SOURCES.md`;
+the `gpl-sources-playground-2026.11.17-cb7a4b7.4` release shows the layout.
 `release-playground.sh` merges the pin PR and deploys from one prompt, and the
-snapshots are captured only after that, so cut the release once the snapshots
-are pinned. Then point the footer's "Third-party licenses and source" link in
-`public/index.html` at it (README's License section links the list of all such
-releases and needs no change). Until then the footer names the previous train's
-release. Nothing generates that release or checks the link's train yet.
+new snapshots, when a train needs them, are captured after that, so cut the
+release once the train's snapshots are pinned. Then point the footer's
+"Third-party licenses and source" link in `public/index.html` at it (README's
+License section links the list of all such releases and needs no change). Until
+then the footer names the previous train's release. Nothing generates that
+release or checks the link's train yet.
 
 ## The suspend/resume kernel
 
