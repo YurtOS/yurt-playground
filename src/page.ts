@@ -417,7 +417,8 @@ function boot(
   const worker = new Worker("/coordinator.bundle.js");
   attachGuestWorkerFactory(worker);
   let suspendAnswer: ((why?: string) => void) | undefined;
-  sandboxFile = kernelPorts === undefined
+  // The in-tab sandbox, and not a capture's, which ends sealed.
+  sandboxFile = kernelPorts === undefined && snapshotMode() !== "capture"
     ? (request) => worker.postMessage(request)
     : undefined;
   suspendSandbox = () =>
@@ -632,6 +633,9 @@ function boot(
     // Save or Load replaces the sandbox: a boot's reports follow, and the
     // cell waits for its Jupyter as at the first boot.
     if (msg.type === "sandbox-replacing") {
+      // Not running until the new one says so (its empty status): a
+      // driver's exec waits, and the controls that need a sandbox wait.
+      yurtState.set("booting");
       booting = true;
       notebookReady = false;
       pythonMissing = false;
@@ -640,6 +644,15 @@ function boot(
     }
     if (msg.type === "sandbox-saved" || msg.type === "sandbox-done") {
       sandboxFileHeard(msg);
+    }
+    // Neither the seal nor a fresh sandbox came up: the boot is over, and
+    // failed.
+    if (msg.type === "sandbox-done" && msg.outcome === "none") {
+      const why = msg.why ?? "no sandbox is running";
+      endBoot(why);
+      notebook.unavailable("no sandbox");
+      yurtState.failed(why);
+      sandboxGone();
     }
     if (msg.type === "linux-remark") {
       const note = byId("linux-remark");
@@ -830,6 +843,9 @@ function wireSandboxFile(status: StatusLine): void {
   const busy = (on: boolean) => {
     save.disabled = on;
     load.disabled = on;
+    // Their sandbox is going: nothing more goes in or out of it meanwhile.
+    (byId("export-home") as HTMLButtonElement).disabled = on;
+    (byId("upload-files") as HTMLButtonElement).disabled = on;
     mark.sandboxFile = on ? "busy" : "idle";
   };
   save.addEventListener("click", () => {

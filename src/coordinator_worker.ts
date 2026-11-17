@@ -1200,6 +1200,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     const transport = jupyter;
     packageSession = undefined;
     launchSession = undefined;
+    // A driver's wait on it ends with the reason, not the dead kernel's.
+    executions?.abandon(why);
     executions = undefined;
     jupyter = undefined;
     cdpBridge = undefined;

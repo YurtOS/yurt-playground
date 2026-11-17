@@ -83,6 +83,15 @@ async function sandboxFile(
   );
 }
 
+/** Pick `path` through the Load button's own file chooser. */
+async function chooseFile(page: Page, path: string): Promise<void> {
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.getByTestId("load-sandbox").click(),
+  ]);
+  await chooser.setFiles(path);
+}
+
 /** The manifest of a snapshot zip at `path`, parsed. */
 async function manifestOf(path: string): Promise<Record<string, unknown>> {
   const file = await Deno.open(path);
@@ -98,11 +107,13 @@ async function manifestOf(path: string): Promise<Record<string, unknown>> {
   }
 }
 
-/** A snapshot zip of `manifest` and 64 KiB of memory, at a new path. */
+/** A snapshot zip of `manifest` and `memoryBytes` of zeros, at a new
+ * path. */
 async function craft(
   dir: string,
   name: string,
   manifest: Record<string, unknown>,
+  memoryBytes = 65536,
 ): Promise<string> {
   const path = join(dir, name);
   const blob = await writeZip([
@@ -111,7 +122,11 @@ async function craft(
       bytes: new TextEncoder().encode(JSON.stringify(manifest)),
       deflate: false,
     },
-    { name: "kernel-memory", bytes: new Uint8Array(65536), deflate: true },
+    {
+      name: "kernel-memory",
+      bytes: new Uint8Array(memoryBytes),
+      deflate: true,
+    },
   ]);
   await Deno.writeFile(path, new Uint8Array(await blob.arrayBuffer()));
   return path;
@@ -213,7 +228,7 @@ if (import.meta.main) {
     for (const [path, expect] of refusals) {
       const done = await sandboxFile(
         page,
-        () => page.getByTestId("load-input").setInputFiles(path),
+        () => chooseFile(page, path),
       );
       if (done.outcome !== "refused" || !expect.test(done.why ?? "")) {
         throw new Error(
@@ -231,11 +246,57 @@ if (import.meta.main) {
       throw new Error(`a refusal is not said in the status line: ${status}`);
     }
 
+    // A file every check takes and the kernel cannot restore (its memory
+    // all zeros, the size the kernel starts with): the restore fails, a
+    // fresh sandbox takes its place, and that is said once, in the done.
+    const { executor: _executor, ...noExecutor } = manifest;
+    const broken = await craft(dir, "zeros.zip", {
+      ...noExecutor,
+      memoryBytes: 83 * 65536,
+    }, 83 * 65536);
+    await page.evaluate(() => {
+      const seen: string[] = [];
+      (globalThis as { __statusSeen?: string[] }).__statusSeen = seen;
+      const status = document.querySelector("#status")!;
+      new MutationObserver(() => seen.push(status.textContent ?? ""))
+        .observe(status, {
+          childList: true,
+          characterData: true,
+          subtree: true,
+        });
+    });
+    const fresh = await sandboxFile(page, () => chooseFile(page, broken));
+    if (
+      fresh.outcome !== "fresh" ||
+      !/the loaded sandbox did not start/.test(fresh.why ?? "")
+    ) {
+      throw new Error(
+        `zeros.zip: not a fresh sandbox: ${JSON.stringify(fresh)}`,
+      );
+    }
+    await notebookReady(page, "after a restore that failed");
+    const freshScreen = await shell(page, 'echo "[$Y]"; ls ~/kept.txt');
+    if (!freshScreen.includes("[]") || !/No such file/.test(freshScreen)) {
+      throw new Error(`zeros.zip: not a fresh, working shell:\n${freshScreen}`);
+    }
+    const seen = await page.evaluate(() =>
+      (globalThis as { __statusSeen?: string[] }).__statusSeen ?? []
+    );
+    const failures = seen.filter((text) => text.startsWith("failed"));
+    if (failures.length !== 0) {
+      throw new Error(
+        `zeros.zip: the failed restore was also said as a boot failure: ${
+          JSON.stringify(failures)
+        }`,
+      );
+    }
+    console.log(`${engine}: zeros.zip gave a fresh sandbox: ${fresh.why}`);
+
     // Load: the file is back, in a new shell and in the cell.
     const loadStarted = Date.now();
     const loaded = await sandboxFile(
       page,
-      () => page.getByTestId("load-input").setInputFiles(zip),
+      () => chooseFile(page, zip),
     );
     if (!sandboxFileOk(loaded)) {
       throw new Error(`load failed: ${JSON.stringify(loaded)}`);

@@ -31,6 +31,11 @@ import {
 const MIB = 1024 * 1024;
 const WASM_PAGE_BYTES = 64 * 1024;
 
+/** The least kernel memory a Load takes: the memory the kernel host
+ * starts a kernel with (`KERNEL_INITIAL_PAGES`, 83 pages of 64 KiB, in
+ * its kernel_executor_pool.ts), which its restore refuses to shrink. */
+export const LOAD_MEMORY_MIN_BYTES = 83 * WASM_PAGE_BYTES;
+
 /** The most kernel memory a Load allocates: the kernel's own maximum
  * (`KERNEL_MAXIMUM_PAGES`, 16,384 pages of 64 KiB, in the kernel's JS
  * host), which a restore could not grow past anyway. */
@@ -71,6 +76,11 @@ export function memoryRefusal(
   }
   if (bytes % WASM_PAGE_BYTES !== 0) {
     return `its kernel memory (${bytes} bytes) is not whole 64 KiB pages`;
+  }
+  if (bytes < LOAD_MEMORY_MIN_BYTES) {
+    return `its kernel memory is ${bytes} bytes, under the ${
+      (LOAD_MEMORY_MIN_BYTES / MIB).toFixed(1)
+    } MiB the kernel starts with`;
   }
   const max = smallDevice ? LOAD_MEMORY_MAX_SMALL_BYTES : LOAD_MEMORY_MAX_BYTES;
   if (bytes > max) {

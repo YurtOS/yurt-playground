@@ -385,3 +385,17 @@ Deno.test("the kernel's wait record keeps exit 9 and SIGKILL apart", () => {
   assertThrows(() => decodeWaitRecord(new Uint8Array(16)), Error, "32");
   assertEquals([...waitRequest(0x0102)], [2, 1, 0, 0, 1, 0, 0, 0]);
 });
+
+Deno.test("abandoning the registry (its sandbox was dropped) ends every pending wait with the reason", async () => {
+  const { reg, spawned } = registry();
+  const id = await reg.spawn("sleep 600");
+  const waiting = reg.wait(id);
+  reg.abandon("the sandbox was replaced");
+  const result = await waiting;
+  assertEquals(
+    "error" in result ? result.error : undefined,
+    "the sandbox was replaced",
+  );
+  assertEquals(reg.active(), 0);
+  assertEquals(spawned.length, 1);
+});

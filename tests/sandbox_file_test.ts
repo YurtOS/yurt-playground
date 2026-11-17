@@ -7,6 +7,7 @@ import {
   decodeLoadedSnapshot,
   LOAD_MEMORY_MAX_BYTES,
   LOAD_MEMORY_MAX_SMALL_BYTES,
+  LOAD_MEMORY_MIN_BYTES,
   LoadRefused,
   loadSandbox,
   memoryRefusal,
@@ -29,7 +30,7 @@ const PINS = {
   browserImage: { sha256: "ef".repeat(32) },
 } as unknown as Pins;
 
-function image(pages = 2): SandboxSealImage {
+function image(pages = 83): SandboxSealImage {
   const kernelMemory = new Uint8Array(pages * PAGE);
   for (let i = 0; i < kernelMemory.byteLength; i += 4093) {
     kernelMemory[i] = i % 251;
@@ -197,7 +198,7 @@ Deno.test("a page that cannot replace its sandbox, or has none that seals, refus
 });
 
 Deno.test("Load needs no running sandbox, only a page that can replace one", async () => {
-  const sealed = image(3);
+  const sealed = image(84);
   const file = await savedFile(sealed);
   // No seal: the boot failed, and a Load is the way back.
   const h = harness();
@@ -418,12 +419,41 @@ Deno.test("kernel memory too large for the device, or not whole pages, is refuse
   );
 });
 
+Deno.test("kernel memory smaller than the kernel's initial memory is refused before anything changes", async () => {
+  // What the kernel host's own restore refuses ("smaller than the
+  // module's initial memory"), refused by the page with nothing changed.
+  const small = LOAD_MEMORY_MIN_BYTES - PAGE;
+  await refusedUntouched(
+    await storedZip(manifestFor(small), new Uint8Array(small)),
+    /under the .* MiB the kernel starts with/,
+  );
+});
+
+Deno.test("the page's memory bounds are the kernel host's own", async () => {
+  // Mirrored, not imported (the host does not export them): a kernel
+  // that moves either turns this red.
+  const source = await Deno.readTextFile(
+    new URL(
+      "../../yurtos-kernel/packages/kernel-host-interface-js/kernel-host-interface/kernel_executor_pool.ts",
+      import.meta.url,
+    ),
+  );
+  const pages = (name: string) =>
+    Number(
+      source.match(new RegExp(`${name} = ([0-9_]+);`))![1].replace(/_/g, ""),
+    );
+  assertEquals(LOAD_MEMORY_MIN_BYTES, pages("KERNEL_INITIAL_PAGES") * PAGE);
+  assertEquals(LOAD_MEMORY_MAX_BYTES, pages("KERNEL_MAXIMUM_PAGES") * PAGE);
+});
+
 Deno.test("the memory bounds", () => {
   assertEquals(memoryRefusal(LOAD_MEMORY_MAX_BYTES, false), undefined);
   assert(memoryRefusal(LOAD_MEMORY_MAX_BYTES + PAGE, false));
   assertEquals(memoryRefusal(LOAD_MEMORY_MAX_SMALL_BYTES, true), undefined);
   assert(memoryRefusal(LOAD_MEMORY_MAX_SMALL_BYTES + PAGE, true));
   assert(memoryRefusal(0, false));
+  assertEquals(memoryRefusal(LOAD_MEMORY_MIN_BYTES, true), undefined);
+  assert(memoryRefusal(LOAD_MEMORY_MIN_BYTES - PAGE, true));
   assert(memoryRefusal(-PAGE, false));
 });
 
