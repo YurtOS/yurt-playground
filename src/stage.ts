@@ -480,8 +480,8 @@ function responseCap(mk: KernelHostInterface): number {
 
 const textDecoder = new TextDecoder();
 
-/** The kernel's drain records (yurtos-kernel `vfs/dirty.rs`, since
- * yurtos-kernel#4476): `u8 tag + 16-byte identity + u32 length + path`. A
+/** The kernel's drain records (yurtos-kernel `vfs/dirty.rs`):
+ * `u8 tag + 16-byte identity + u32 length + path`. A
  * `PATH` record names a path whose content or structure changed; an
  * `ATTR` record, an inode with several names whose attributes or link
  * count changed, with one visible name of it as a hint (empty when none
