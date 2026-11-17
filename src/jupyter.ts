@@ -337,6 +337,8 @@ export async function startGuestKernel(
   ports?: KernelPorts,
   options: StartOptions = {},
 ): Promise<JupyterTransport> {
+  const running = await attachRunningKernel(session);
+  if (running !== undefined) return running;
   const relaunches = isJavaScriptCore(
     options.userAgent ?? globalThis.navigator?.userAgent,
   );
@@ -361,6 +363,117 @@ export async function startGuestKernel(
       );
     }
   }
+}
+
+/** A kernel an earlier start left running in this sandbox. On the desktop
+ * every page shares the app's one native sandbox, and the kernel binds the
+ * host's fixed kernel ports: when the Notebook page opens after the main
+ * page started Jupyter, a second launch cannot bind them (ZMQError: Address
+ * in use) and waits out the whole connection-file bound. So a page that
+ * finds a connection file first dials the ports it names, under its key.
+ * The ZMTP handshake is answered by the kernel's I/O thread even while a
+ * cell runs, so a dial that opens means a live kernel: the page attaches,
+ * and if it does not answer kernel_info the start fails and says so. That
+ * kernel is never stopped or its files dropped here: it is another page's,
+ * and that would break the other page without a word. A dial that does not
+ * open means nothing listens there: the file is stale, it is dropped, and
+ * a fresh kernel is launched. Undefined when there is nothing to attach to. */
+async function attachRunningKernel(
+  session: JupyterLaunchSession,
+): Promise<JupyterTransport | undefined> {
+  // A look that cannot be made is "nothing found": the launch below makes
+  // the same reads and reports their failure as it always has.
+  const readFile = session.readFile;
+  const bytes = await Promise.resolve()
+    .then(() =>
+      readFile !== undefined
+        ? readFile(JUPYTER_CONNECTION_FILE)
+        : peekConnectionFileTyped(session)
+    )
+    .catch(() => undefined);
+  if (bytes === undefined || bytes.byteLength === 0) return undefined;
+  let connection: KernelConnection;
+  try {
+    connection = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return undefined;
+  }
+  let transport: JupyterTransport;
+  try {
+    transport = await createJupyterTransport(
+      (port) => session.dialSandboxPort(port),
+      configOf(connection),
+    );
+  } catch {
+    await clearKernelFiles(session);
+    return undefined;
+  }
+  try {
+    await waitForKernelInfo(transport);
+    return transport;
+  } catch (error) {
+    await transport.close().catch(() => {});
+    throw new Error(
+      "the Jupyter kernel already running in this sandbox (started by " +
+        `another page) did not answer: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+    );
+  }
+}
+
+/** The connection file's bytes, looked at once by a line typed into the
+ * user's shell (hushed), for a session that cannot read guest files itself
+ * -- the desktop's Notebook page; undefined when there is none. */
+async function peekConnectionFileTyped(
+  session: JupyterLaunchSession,
+): Promise<Uint8Array | undefined> {
+  const marker = `YURT_SHELL_DONE_${Math.random().toString(36).slice(2, 8)}`;
+  const typedMarker = marker.replace("DONE_", 'DONE_""');
+  let text = "";
+  let resolveOutput: (() => void) | undefined;
+  const release = hushUntil(session, marker);
+  const remove = session.onOutput((chunk) => {
+    text += new TextDecoder().decode(chunk);
+    if (text.includes(marker)) resolveOutput?.();
+  });
+  try {
+    await session.terminal.write(
+      encoder.encode(
+        `if [ -s ${JUPYTER_CONNECTION_FILE} ]; then cat ${JUPYTER_CONNECTION_FILE}; fi; echo ${typedMarker}\n`,
+      ),
+    );
+    if (!text.includes(marker)) {
+      await withTimeout(
+        new Promise<void>((resolve) => resolveOutput = resolve),
+        PEEK_MS,
+        "the look at the kernel's connection file did not finish",
+      );
+    }
+  } finally {
+    remove();
+    release();
+  }
+  const output = text.slice(0, text.indexOf(marker));
+  const start = output.indexOf("{");
+  const end = output.lastIndexOf("}");
+  return start < 0 || end < start
+    ? undefined
+    : encoder.encode(output.slice(start, end + 1));
+}
+
+/** How long the typed look at the connection file may take. */
+const PEEK_MS = 10_000;
+
+function configOf(connection: KernelConnection): JupyterConfig {
+  return {
+    key: connection.key,
+    shell: connection.shell_port,
+    iopub: connection.iopub_port,
+    stdin: connection.stdin_port,
+    control: connection.control_port,
+    heartbeat: connection.hb_port,
+  };
 }
 
 async function launchGuestKernel(
@@ -429,19 +542,11 @@ async function launchGuestKernel(
   } finally {
     release();
   }
-  const config: JupyterConfig = {
-    key: connection.key,
-    shell: connection.shell_port,
-    iopub: connection.iopub_port,
-    stdin: connection.stdin_port,
-    control: connection.control_port,
-    heartbeat: connection.hb_port,
-  };
   return await connectJupyterWithRetries(
     () =>
       createJupyterTransport(
         (port) => session.dialSandboxPort(port),
-        config,
+        configOf(connection),
       ),
     waitForKernelInfo,
     options.connect,
