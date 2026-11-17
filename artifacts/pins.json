@@ -223,5 +223,42 @@
       ],
       "remark": "BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter"
     }
+  },
+  "playwrightSnapshot": {
+    "releaseRepo": "YurtOS/yurt-playground",
+    "release": "snapshot-playwright-playground-2026.11.16-44de663",
+    "format": 4,
+    "sha256": "b338f7454f383b7cd5c42284072cdb68ebe87b75599d346c66666aff28239f96",
+    "size": 69803722,
+    "builtFrom": {
+      "kernelSha256": "144e6d21d599b5abf9f4594021be78e4a2eec96515bbaa2b8a49defe973711a4",
+      "kernelRev": "44de6635ce7df643e2064957741552cc5fe51ef4",
+      "sealVersion": 2,
+      "bootSetup": 2,
+      "imageSha256": "11cf89da081edd874da5d4aa52a4775c5d7c23a0e77b24b756b223d345e5387d",
+      "pythonSealSha256": "680163905597664c4f3a122d6176cbb912fd9ca56273b14c0d5424b066aa386e",
+      "pythonSet": "11cf89da081edd874da5d4aa52a4775c5d7c23a0e77b24b756b223d345e5387d/node@22.23.3-yurt_0:1edd880b8912bdbe"
+    },
+    "memoryBytes": 207814656,
+    "contents": {
+      "packages": [
+        {
+          "name": "ca-certificates",
+          "version": "2026.9.25",
+          "build": "yurt_0"
+        },
+        {
+          "name": "git",
+          "version": "2.55.0",
+          "build": "yurt_0"
+        },
+        {
+          "name": "node",
+          "version": "22.23.3",
+          "build": "yurt_0"
+        }
+      ],
+      "remark": "BusyBox shell, git 2.55.0, Node 22.23.3, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter"
+    }
   }
 }
