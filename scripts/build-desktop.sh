@@ -48,6 +48,18 @@ test -f dist/index.html || {
   echo "build-desktop: no dist/index.html; run: deno task build-static" >&2
   exit 1
 }
+# The pins compiled into the app name the kernel it runs; the host in
+# runtime/ boots only a kernel wasm of its own kernel rev. After a
+# browser-only train (scripts/release-playground.sh --browser-only) the
+# pinned host is an older kernel's, and a runtime/ installed before the
+# pins moved would pass the checks below: refuse, as
+# scripts/install-desktop-host.sh does.
+host_kernel=$(jq -r '.desktopHost.kernelRev // empty' artifacts/pins.json)
+kernel_rev=$(jq -r '.kernelWasm.rev // empty' artifacts/pins.json)
+if [[ -n "$host_kernel" && "$host_kernel" != "$kernel_rev" ]]; then
+  echo "build-desktop: the pinned desktop host was built for kernel ${host_kernel:0:12}, not the pinned ${kernel_rev:0:12} (a browser-only train moved the page alone); the desktop app of these pins comes with the next full train" >&2
+  exit 1
+fi
 runtime=runtime/$target
 for file in yurt-desktop-host yurt-runtime-wasmtime yurt_kernel.wasm playground.yurtimg; do
   test -f "$runtime/$file" || {

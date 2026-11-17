@@ -140,8 +140,7 @@ type ToWorker =
     capturePackages?: string[];
     // Which snapshot (src/snapshot_pin.ts SNAPSHOT_KINDS): the one a
     // restore takes (the device's), or the one a capture makes. The
-    // phone's capture comes with no `python` request (the image as it
-    // boots); the tablet's with python alone; the desktop's with the set.
+    // tablet's capture comes with python alone; the desktop's with the set.
     snapshotKind?: SnapshotKind;
     // A restore's Python, when the page installs none itself: what the
     // live index is asked about for the snapshot's check (a tablet's
@@ -422,9 +421,8 @@ type PythonRequest = {
  * in the kernel's place: a sealed sandbox runs nothing more. */
 async function captureSnapshot(
   session: Awaited<ReturnType<typeof bootPlayground>>,
-  /** The Python set the capture installed, as a layer key; null for the
-   * phone's capture, which installs none. */
-  pythonSet: string | null,
+  /** The Python set the capture installed, as a layer key. */
+  pythonSet: string,
   /** Packages to install after the Python set, before the seal
    * (`?snapshot=capture&packages=`): in the snapshot's memory only, so a
    * restore's checks are the Python set's alone. */
@@ -446,8 +444,7 @@ async function captureSnapshot(
     });
   }
   if (packages.length > 0) await installed.read();
-  // The phone's snapshot holds no Python to compile, nor Go's
-  // (capturePrecompiles).
+  // Go's snapshot holds no Python to compile (capturePrecompiles).
   if (capturePrecompiles(kind)) {
     // Bytecode for every module the packages ship as source only
     // (PRECOMPILE_PROGRAM): each start compiled them again, slow on Safari,
@@ -985,24 +982,16 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       installPython,
       startKernel: (session, relaunching) =>
         startGuestKernel(session, kernelPorts, { relaunching }),
-      captureNeeds: captureKind === "phone" ? "none" : "set",
       capture: msg.snapshot === "capture"
         ? (session) => {
-          const phone = captureKind === "phone";
-          // A snapshot without a Python set is a phone's, restored only by
-          // a page that asks about none: only the phone's capture may make
-          // one, and it installs nothing.
-          if (phone && python !== undefined) {
-            throw new Error("the phone's capture asks for no Python install");
-          }
-          // The phone's and the tablet's snapshots are the slim image's:
-          // the full image (a train without one) holds the whole set.
+          // Every snapshot but the desktop's is the slim image's: the full
+          // image (a train without one) holds the whole set.
           if (captureKind !== "desktop" && env.imagePath !== SLIM_IMAGE_PATH) {
             throw new Error(
               `the ${captureKind}'s capture needs the train's slim image (browserImage)`,
             );
           }
-          if (!phone && capturedSet === undefined) {
+          if (capturedSet === undefined) {
             throw new Error(
               `this capture installed no ${
                 captureKind === "go"
@@ -1010,12 +999,12 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
                   : captureKind === "playwright"
                   ? "node"
                   : "Python"
-              } (the phone's capture, without any, is ?snapshot=capture-phone)`,
+              }`,
             );
           }
           return captureSnapshot(
             session,
-            phone ? null : capturedSet!,
+            capturedSet,
             msg.capturePackages ?? [],
             captureKind,
           );

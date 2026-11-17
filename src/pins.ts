@@ -34,11 +34,10 @@ export type Pins = {
    * script read it, through parseSnapshotPin, so an entry of another shape
    * never breaks a default boot or a deploy. */
   snapshot?: unknown;
-  /** The tablet's, the phone's, and the desktop's Go and Playwright
+  /** The tablet's (a phone's too), and the desktop's Go and Playwright
    * snapshots (src/sandbox_snapshot.ts SNAPSHOT_KINDS), kept as written
    * like `snapshot`. */
   tabletSnapshot?: unknown;
-  phoneSnapshot?: unknown;
   goSnapshot?: unknown;
   playwrightSnapshot?: unknown;
 };
@@ -250,7 +249,6 @@ export function parsePins(raw: unknown): Pins {
     pythonSeal?: { sha256?: unknown } | null;
     snapshot?: unknown;
     tabletSnapshot?: unknown;
-    phoneSnapshot?: unknown;
     goSnapshot?: unknown;
     playwrightSnapshot?: unknown;
   };
@@ -293,9 +291,6 @@ export function parsePins(raw: unknown): Pins {
   if (value.snapshot !== undefined) pins.snapshot = value.snapshot;
   if (value.tabletSnapshot !== undefined) {
     pins.tabletSnapshot = value.tabletSnapshot;
-  }
-  if (value.phoneSnapshot !== undefined) {
-    pins.phoneSnapshot = value.phoneSnapshot;
   }
   if (value.goSnapshot !== undefined) pins.goSnapshot = value.goSnapshot;
   if (value.playwrightSnapshot !== undefined) {

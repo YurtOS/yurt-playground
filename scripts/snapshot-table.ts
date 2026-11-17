@@ -24,8 +24,8 @@ export const TABLE_END = "<!-- snapshot-table:end -->";
 
 const DEVICE = {
   desktop: "desktop browser (Mac, PC): `?platform=desktop`",
-  tablet: "tablet (iPad): `?platform=tablet`",
-  phone: "phone (iPhone): `?platform=phone`",
+  tablet:
+    "tablet (iPad) and phone (iPhone): `?platform=tablet`, `?platform=phone`",
   go: "desktop browser that chose Go: `?platform=desktop&env=go`",
   playwright:
     "desktop browser that chose Playwright: `?platform=desktop&env=playwright`",
@@ -70,7 +70,7 @@ export function snapshotTable(pins: Record<string, unknown>): string {
     "",
     `Train \`${pins.train}\`. Generated from artifacts/pins.json; \`deno run -A scripts/snapshot-table.ts\` rewrites it.`,
     "",
-    "The desktop's holds the Python set and starts the Notebook, the tablet's the interpreter alone, the phone's no Python; Go's, which a desktop browser restores when Go is chosen, holds the go package and its standard library already compiled, and no Python. A snapshot is sealed with no process in it, so nothing runs or is imported until a restore starts the shell (and, on a desktop, Jupyter). `deno run -A scripts/verify-snapshots.ts [--files] [--live]` checks each against its kind.",
+    "The desktop's holds the Python set and starts the Notebook, the tablet's, which a phone restores too, the interpreter alone; Go's, which a desktop browser restores when Go is chosen, holds the go package and its standard library already compiled, and no Python. A snapshot is sealed with no process in it, so nothing runs or is imported until a restore starts the shell (and, on a desktop, Jupyter). `deno run -A scripts/verify-snapshots.ts [--files] [--live]` checks each against its kind.",
     "",
     "| Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |",
     "| --- | --- | --- | --- | --- | --- | --- |",

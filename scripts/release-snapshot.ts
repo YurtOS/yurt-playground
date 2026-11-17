@@ -26,7 +26,8 @@
  * Usage: deno run -A scripts/release-snapshot.ts [--kind K] [--dry-run] [--resume] [--tag TAG]
  *        deno run -A scripts/release-snapshot.ts --check-pin [--kind K] [--pins PATH]
  *
- *   --kind     desktop (default), tablet, phone, go or playwright
+ *   --kind     desktop (default), tablet (a phone restores it too), go or
+ *              playwright
  *              (src/snapshot_pin.ts SNAPSHOT_KINDS); go's capture installs
  *              the go package and compiles its standard library into the
  *              build cache, the slow part (captureTimeoutMs); playwright's
@@ -244,10 +245,10 @@ export const PIN_REFUSED_EXIT = 3;
 export const PIN_REFUSED_MARKER = "snapshot pin refused: ";
 
 /** The page's answer for the Python a snapshot of `kind` under `pins`
- * holds now: the set (desktop), python alone (tablet), none (phone), or
- * Go's go package (go). */
+ * holds now: the set (desktop), python alone (tablet), Go's go package
+ * (go), or node (playwright). */
 export const liveSetOf = (pins: Pins, kind: SnapshotKind = "desktop") => () =>
-  kind === "phone" ? Promise.resolve(null) : livePythonSet(
+  livePythonSet(
     kind === "tablet"
       ? tabletPythonRequest(pins)
       : kind === "go"
@@ -264,8 +265,6 @@ export function captureSetProblem(
   live: string | null | undefined,
   kind: SnapshotKind = "desktop",
 ): string | undefined {
-  // The phone's holds no Python: nothing to ask the index about.
-  if (kind === "phone") return undefined;
   const what = kind === "go"
     ? "go package"
     : kind === "playwright"
@@ -319,7 +318,6 @@ export async function capture(
   const pins = JSON.parse(await Deno.readTextFile(pinsPath));
   delete pins.snapshot;
   delete pins.tabletSnapshot;
-  delete pins.phoneSnapshot;
   delete pins.goSnapshot;
   delete pins.playwrightSnapshot;
   const server = Deno.serve(
@@ -493,7 +491,7 @@ export function releaseNotes(
   ].join("\n");
 }
 
-/** `--kind desktop|tablet|phone|go|playwright` (default desktop), taken out of
+/** `--kind desktop|tablet|go|playwright` (default desktop), taken out of
  * `args`. */
 function kindOption(args: string[]): SnapshotKind {
   const at = args.indexOf("--kind");

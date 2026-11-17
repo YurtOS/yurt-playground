@@ -5,22 +5,21 @@
  *
  *   desktop  the Python set (src/python_install.ts PYTHON_SET: python,
  *            numpy, pyzmq, jupyter-kernel); the Notebook starts on it
- *   tablet   the interpreter alone (TABLET_PYTHON_SET); no Jupyter
- *   phone    no Python at all ("Python not on phones")
+ *   tablet   the interpreter alone (TABLET_PYTHON_SET); no Jupyter. A
+ *            phone restores it too
  *   go       the go package (GO_SET) and a warm build cache, no Python: a
  *            desktop page's with `?env=go`; a first build compiles no
  *            standard library package
  *
- * and they are ordered by what they hold: desktop > tablet > phone, and
- * go > phone, in download size, kernel memory and the RAM a restore
- * takes. A snapshot is
+ * and they are ordered by what they hold: desktop > tablet, in download
+ * size, kernel memory and the RAM a restore takes. A snapshot is
  * a seal with no process in it (src/sandbox_snapshot.ts refuses one with
  * any), so nothing is running or imported at capture: what differs is what
  * is installed (and precompiled) in its Linux, and what a restore starts.
  *
  * Usage: deno run -A scripts/verify-snapshots.ts [--files] [--live [--kind K]]
  *
- *   (none)   check artifacts/pins.json's four snapshot pins: present,
+ *   (none)   check artifacts/pins.json's snapshot pins: present,
  *            each kind's packages (the capture's pkg list), its Python set
  *            key, the sizes and their order. Exit 1 with one line per
  *            problem. Run it once a train's snapshots are pinned and
@@ -62,9 +61,8 @@ export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
   has: readonly string[];
   /** Packages it must not have. */
   lacks: readonly string[];
-  /** The packages its set key (`builtFrom.pythonSet`) names, or null:
-   * built with none. */
-  set: readonly string[] | null;
+  /** The packages its set key (`builtFrom.pythonSet`) names. */
+  set: readonly string[];
   /** python3 is on the PATH after a restore. */
   python: boolean;
   /** go is on the PATH after a restore, and a first build of a program
@@ -103,16 +101,6 @@ export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
     imports: [],
     notebook: false,
   },
-  phone: {
-    has: [],
-    lacks: [...PYTHON_SET, ...GO_SET, ...PLAYWRIGHT_SET],
-    set: null,
-    python: false,
-    go: false,
-    playwright: false,
-    imports: [],
-    notebook: false,
-  },
   go: {
     has: GO_SET,
     lacks: [...PYTHON_SET, ...PLAYWRIGHT_SET],
@@ -136,12 +124,10 @@ export const SNAPSHOT_EXPECTED: Record<SnapshotKind, {
 };
 
 /** Largest first: each kind of a chain holds less than the one before
- * it. Go's is beside the desktop's Python one, not below it: both are the
- * phone's image with more installed. */
+ * it. Go's and Playwright's are beside the desktop's Python one, not below
+ * it: each is the slim image with something else installed. */
 export const SNAPSHOT_SIZE_ORDERS: readonly (readonly SnapshotKind[])[] = [
-  ["desktop", "tablet", "phone"],
-  ["go", "phone"],
-  ["playwright", "phone"],
+  ["desktop", "tablet"],
 ];
 
 /** Kinds a train may leave unpinned even when complete: Go's is an
@@ -205,17 +191,15 @@ export function verifySnapshotPins(
       }
     }
     const set = pin.builtFrom.pythonSet;
-    if (expected.set !== null && set === null) {
+    if (set === null) {
       problems.push(`${kind}: built with no Python set`);
-    } else if (expected.set === null && set !== null) {
-      problems.push(`${kind}: built with a Python set (${set})`);
-    } else if (set !== null) {
+    } else {
       const inSet = new Set(
         set.slice(set.indexOf("/") + 1).split("+").map((part) =>
           part.slice(0, part.indexOf("@"))
         ),
       );
-      for (const name of expected.set!) {
+      for (const name of expected.set) {
         if (!inSet.has(name)) {
           problems.push(`${kind}: its Python set key lacks ${name}`);
         }
@@ -349,7 +333,6 @@ export function verifySnapshotProbe(
 const DESCRIPTOR: Record<SnapshotKind, string | undefined> = {
   desktop: undefined,
   tablet: "iPad Pro 11",
-  phone: "iPhone 13",
   go: undefined,
   playwright: undefined,
 };

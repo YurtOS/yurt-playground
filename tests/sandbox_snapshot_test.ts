@@ -390,10 +390,10 @@ Deno.test("a snapshot of another Python set than the live index offers is not re
   assertThrows(
     () => checkPythonSet(BUILT, null),
     SnapshotMismatch,
-    "this page installs no Python (a phone, a shell-only session, or no pins)",
+    "this page installs no Python (a shell-only session, or no pins)",
   );
-  // A phone's snapshot (?snapshot=capture-phone) holds no set: a page
-  // that installs none restores it, and only such a page.
+  // A snapshot with no set (no capture makes one now) restores only on a
+  // page that installs none.
   checkPythonSet({ ...BUILT, pythonSet: null }, null);
   assertThrows(
     () => checkPythonSet({ ...BUILT, pythonSet: null }, "img/python@1"),
@@ -863,7 +863,7 @@ Deno.test("each device's snapshot is its own pins.json entry", async () => {
     ...raw,
     snapshot: undefined,
     tabletSnapshot: undefined,
-    phoneSnapshot: undefined,
+    goSnapshot: undefined,
   });
   const entry = (pythonSet: string | null) => ({
     releaseRepo: "YurtOS/yurt-playground",
@@ -882,20 +882,20 @@ Deno.test("each device's snapshot is its own pins.json entry", async () => {
     ...pins,
     snapshot: entry("set"),
     tabletSnapshot: entry("python"),
-    phoneSnapshot: entry(null),
+    goSnapshot: entry("go"),
   };
   assertEquals(pinnedSnapshot(all).builtFrom.pythonSet, "set");
   assertEquals(pinnedSnapshot(all, "tablet").builtFrom.pythonSet, "python");
-  assertEquals(pinnedSnapshot(all, "phone").builtFrom.pythonSet, null);
-  assertEquals(pinnedSnapshot(all, "phone").memoryBytes, 4096);
+  assertEquals(pinnedSnapshot(all, "go").builtFrom.pythonSet, "go");
+  assertEquals(pinnedSnapshot(all, "go").memoryBytes, 4096);
   assertEquals(
-    pinnedSnapshot(all, "phone").contents?.remark,
+    pinnedSnapshot(all, "go").contents?.remark,
     "BusyBox shell, git 2.55.0; no Python, no Jupyter",
   );
   assertThrows(
-    () => pinnedSnapshot({ ...pins, snapshot: entry("set") }, "phone"),
+    () => pinnedSnapshot({ ...pins, snapshot: entry("set") }, "go"),
     SnapshotMismatch,
-    "the site pins no phone snapshot (phoneSnapshot)",
+    "the site pins no go snapshot (goSnapshot)",
   );
   assertThrows(
     () =>

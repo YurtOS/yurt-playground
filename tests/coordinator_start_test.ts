@@ -561,8 +561,8 @@ Deno.test("a capture whose Python install fails is a failed capture, not python-
 });
 
 Deno.test("only the in-tab sandbox restores a snapshot", () => {
-  // Every device restores its own kind (src/sandbox_snapshot.ts), a phone
-  // or tablet included: checkPythonSet keeps the desktop's off them.
+  // Every device restores its kind (src/sandbox_snapshot.ts), a phone or
+  // tablet the tablet's: checkPythonSet keeps the desktop's off them.
   assertEquals(restoresSnapshot({ snapshot: "restore", native: false }), true);
   assertEquals(
     restoresSnapshot({ snapshot: "restore", native: true }),
@@ -664,39 +664,11 @@ Deno.test("the probe says the Python set is there only when the kernel's package
   }
 });
 
-Deno.test("the phone's capture seals the image as it boots; no other capture seals without Python", async () => {
-  // ?snapshot=capture-phone on the slim image: no python3, nothing to
-  // probe for or install.
+Deno.test("no capture seals without Python", async () => {
   const bare = await guestRoot(false, []);
   try {
-    const order: string[] = [];
-    const posted: StartReport[] = [];
-    const lines: string[] = [];
-    const spawn = hostSpawner(bare);
-    await startSandbox({
-      boot: () =>
-        Promise.resolve(fakeSession((line, opts) => {
-          lines.push(line);
-          return spawn(line, opts);
-        })),
-      booted: () => {},
-      noJupyter: false,
-      captureNeeds: "none",
-      startKernel: () => {
-        order.push("kernel");
-        return Promise.resolve(transport);
-      },
-      capture: () => {
-        order.push("capture");
-        return Promise.resolve();
-      },
-      post: (report) => posted.push(report),
-    });
-    assertEquals(order, ["capture"]);
-    assertEquals(lines, [], "no probe");
-    assertEquals(posted.some((r) => r.type === "error"), false);
-    // Any other capture with nothing to install (the page's pins unread)
-    // fails rather than seal a snapshot without its Python.
+    // A capture with nothing to install (the page's pins unread) fails
+    // rather than seal a snapshot without its Python.
     const full: StartReport[] = [];
     let captured = 0;
     await startSandbox({

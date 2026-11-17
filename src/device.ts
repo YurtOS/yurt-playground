@@ -1,8 +1,8 @@
 /**
  * Which kind of device the page runs on. A phone or tablet tab has too
- * little memory for Jupyter: each gets the shell only, restoring its own
- * small snapshot (python alone on a tablet, no Python on a phone), and the
- * Notebook and JupyterLab pages boot nothing on a phone.
+ * little memory for Jupyter: each gets the shell only, restoring the
+ * tablet's snapshot (python alone, no Jupyter), and the Notebook and
+ * JupyterLab pages boot nothing on a phone.
  *
  * iPadOS Safari reports a Mac, at any width (a 13" iPad in landscape is
  * wider than many laptops). An iPad reports 5 touch points, a Mac 0
@@ -58,14 +58,14 @@ export function touchDevice(): boolean {
  * written one overrides the device -- as far as the device can run it. */
 export type Platform = "phone" | "tablet" | "desktop";
 
-/** The snapshot an agent-only sandbox (the Agent tab's own) restores: on an
- * iPad or iPhone the phone's, the smallest (no Python; the agent writes zsh),
- * since a tablet's tab also ran out of memory in the tablet's; a desktop's
- * agent keeps the tablet's, with Python. */
-export function agentSnapshotKind(
+/** The snapshot a page on `platform` restores (src/snapshot_pin.ts
+ * SNAPSHOT_KINDS): a desktop's own, with the Python set and Jupyter; on an
+ * iPhone or iPad the tablet's, python alone. The Agent tab's own sandbox
+ * restores the tablet's on every platform (src/page.ts). */
+export function platformSnapshotKind(
   platform: Platform,
-): "tablet" | "phone" {
-  return platform === "desktop" ? "tablet" : "phone";
+): "desktop" | "tablet" {
+  return platform === "desktop" ? "desktop" : "tablet";
 }
 
 const PLATFORM_ALIASES: Record<string, Platform> = {
@@ -93,7 +93,7 @@ export function parsePlatform(value: string | null): Platform | undefined {
  *
  * - none: the device's own, and the URL gains it (`redirect`);
  * - one the device can run (its own, or a smaller one: a desktop trying
- *   the phone's snapshot): that one;
+ *   the phone's page): that one;
  * - a bigger one than the device (the desktop's on a phone) or a value
  *   that is no platform: the device's own, with a `note` saying so. An
  *   asked platform is never written away from the URL.

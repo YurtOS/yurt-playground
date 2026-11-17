@@ -20,12 +20,12 @@ own.
 - **Boot.** The page restores a ready-made snapshot of a booted sandbox: a shell
   prompt in about 2 s and Jupyter ready in about 5 s on a desktop (measured in
   Chromium; WebKit, Safari's engine, takes about 8 s to Jupyter).
-- **First visit.** A desktop browser downloads about 138 MB once: the 7.2 MB
-  kernel and a 131 MB snapshot with Python and Jupyter. A tablet downloads about
-  101 MB, a phone about 38 MB. A repeat visit takes them from the browser's
-  cache.
-- **Phones and tablets boot too**: a phone gets the shell, a tablet the shell
-  and Python. Jupyter needs a desktop browser.
+- **First visit.** A desktop browser downloads about 152 MB once: the 8.5 MB
+  kernel and a 143 MB snapshot with Python and Jupyter. A tablet or phone
+  downloads about 86 MB: the kernel and a 77 MB snapshot with Python. A repeat
+  visit takes them from the browser's cache.
+- **Phones and tablets boot too**: both get the shell and Python. Jupyter needs
+  a desktop browser.
 - **Go, on a desktop.** Choose _Go_ on the start screen, or open `?env=go`: the
   sandbox comes with `go` and its standard library already compiled, so the
   first `go run` of a small program (one that imports `fmt`, `bufio`, `os`,
@@ -43,7 +43,7 @@ going, in [the roadmap](docs/ROADMAP.md).
 |                                    | Browser                                                               | Desktop app                                        |
 | ---------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------- |
 | Shell (BusyBox `ash`), git, `curl` | ✓                                                                     | ✓                                                  |
-| Python 3.14                        | ✓ (not on phones)                                                     | ✓                                                  |
+| Python 3.14                        | ✓                                                                     | ✓                                                  |
 | NumPy                              | ✓ desktop                                                             | ✓                                                  |
 | Jupyter Notebook and JupyterLab    | ✓ desktop                                                             | ✓                                                  |
 | Node.js 22, Gemini CLI             | as packages (Gemini CLI needs the desktop app's network for its API)  | ✓ in the image                                     |
@@ -66,8 +66,7 @@ The browser boots the **slim image** (23.5 MB): BusyBox 1.37.0 (151 applets,
 CA certificates, the `pkg` package client and a passwordless `sudo` for the
 default user. By default it restores a snapshot of that image instead of booting
 it: on a desktop with the Python set installed (or, when Go is chosen, with `go`
-and a warm build cache instead), on a tablet with Python alone, on a phone as it
-is.
+and a warm build cache instead), on a tablet or phone with Python alone.
 
 The desktop app and `yurt run playground` boot the **full image** (92 MB): the
 slim image plus the Python set, Node.js, Gemini CLI and Datasette.
@@ -139,9 +138,11 @@ curl -H "Authorization: Bearer $T" -X PUT --data-binary @data.csv "${U}api/fs/co
 Results are JSON, so a command's output is text there; binary output goes
 through a file. A process running as you on this machine is you: that is the
 whole of the access model. Errors are `{error, code}`; an `Origin` other than
-the launcher's own is refused, so no web page can reach it. The page's
-`window.yurt` and a `curl` share one registry: at most 16 running or stuck
-executions per sandbox, results kept ten minutes or until read.
+the launcher's own is refused, as is any `Host` but `127.0.0.1` or `localhost`
+on the launcher's port (DNS rebinding; a forwarded port or a proxy name gets a
+403), so no web page can reach it. The page's `window.yurt` and a `curl` share
+one registry: at most 16 running or stuck executions per sandbox, results kept
+ten minutes or until read.
 
 ## Playwright in the sandbox
 
@@ -277,17 +278,16 @@ Packages are signed and published in
 <!-- snapshot-table:start (scripts/snapshot-table.ts) -->
 <!-- deno-fmt-ignore-start -->
 
-Train `playground-2026.11.12-846dddb`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
+Train `playground-2026.11.17-cb7a4b7.4`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
 
-The desktop's holds the Python set and starts the Notebook, the tablet's the interpreter alone, the phone's no Python; Go's, which a desktop browser restores when Go is chosen, holds the go package and its standard library already compiled, and no Python. A snapshot is sealed with no process in it, so nothing runs or is imported until a restore starts the shell (and, on a desktop, Jupyter). `deno run -A scripts/verify-snapshots.ts [--files] [--live]` checks each against its kind.
+The desktop's holds the Python set and starts the Notebook, the tablet's, which a phone restores too, the interpreter alone; Go's, which a desktop browser restores when Go is chosen, holds the go package and its standard library already compiled, and no Python. A snapshot is sealed with no process in it, so nothing runs or is imported until a restore starts the shell (and, on a desktop, Jupyter). `deno run -A scripts/verify-snapshots.ts [--files] [--live]` checks each against its kind.
 
 | Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
 | --- | --- | --- | --- | --- | --- | --- |
-| desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.11.12-846dddb` | 137.3 MB in 7 parts | 395.3 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
-| tablet | tablet (iPad): `?platform=tablet` | `snapshot-tablet-playground-2026.11.12-846dddb` | 79.4 MB in 4 parts | 230.5 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
-| phone | phone (iPhone): `?platform=phone` | `snapshot-phone-playground-2026.11.12-846dddb` | 32.5 MB in 2 parts | 110.9 MiB | ? | BusyBox shell, git 2.55.0, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
-| go | desktop browser that chose Go: `?platform=desktop&env=go` | `snapshot-go-playground-2026.11.12-846dddb` | 212.2 MB in 11 parts | 687.1 MiB | ? | BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
-| playwright | desktop browser that chose Playwright: `?platform=desktop&env=playwright` | `snapshot-playwright-playground-2026.11.12-846dddb` | 68.7 MB in 4 parts | 199.6 MiB | ? | BusyBox shell, git 2.55.0, Node 22.23.3, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
+| desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.11.17-cb7a4b7` | 143.3 MB in 7 parts | 593.6 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
+| tablet | tablet (iPad) and phone (iPhone): `?platform=tablet`, `?platform=phone` | `snapshot-tablet-playground-2026.11.17-cb7a4b7` | 77.1 MB in 4 parts | 240.7 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
+| go | desktop browser that chose Go: `?platform=desktop&env=go` | `snapshot-go-playground-2026.11.17-cb7a4b7` | 233.5 MB in 12 parts | 798.8 MiB | ? | BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
+| playwright | desktop browser that chose Playwright: `?platform=desktop&env=playwright` | `snapshot-playwright-playground-2026.11.17-cb7a4b7` | 69.0 MB in 4 parts | 197.4 MiB | ? | BusyBox shell, git 2.55.0, Node 22.23.3, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
 
 <!-- deno-fmt-ignore-end -->
 <!-- snapshot-table:end -->
@@ -296,17 +296,21 @@ The page picks its platform from the device; `?platform=phone`, `tablet` or
 `desktop` overrides it as far as the device can run it, `?env=go` restores Go's
 snapshot on a desktop browser (and is ignored, with a note, anywhere else), and
 `?snapshot=0` boots the slim image instead of restoring a snapshot. Each
-download comes with the 7.2 MB kernel.
+download comes with the 8.5 MB kernel.
 
 Measured with `scripts/measure-boot.ts` (headless, served locally, so the
-download is fast) on 2026-10-29. "RAM to restore" is the peak resident memory of
-Chromium's renderer processes while the page restores and starts its shell, the
-page itself included.
+download is fast) on 2026-10-29, except the phone rows: those are from
+2026-11-17, when a phone started restoring the tablet's snapshot. An iPad Pro 11
+measured alongside them took 3.55 s / 3.47 s in Chromium and 2.99 s / 2.80 s in
+WebKit, about what the phone did and slower than its own row from 2026-10-29, so
+compare the phone rows with those figures, not with the tablet rows below. "RAM
+to restore" is the peak resident memory of Chromium's renderer processes while
+the page restores and starts its shell, the page itself included.
 
 | Platform                                        | Engine   | Time to a prompt, cold / warm | Jupyter ready |
 | ----------------------------------------------- | -------- | ----------------------------- | ------------- |
-| phone (iPhone 13)                               | Chromium | 0.96 s / 0.63 s               | none          |
-| phone (iPhone 13)                               | WebKit   | 0.74 s / 0.53 s               | none          |
+| phone (iPhone 13)                               | Chromium | 3.59 s / 2.96 s               | none          |
+| phone (iPhone 13)                               | WebKit   | 3.13 s / 2.82 s               | none          |
 | tablet (iPad Pro 11, iPadOS landscape and mini) | Chromium | 1.48-1.52 s / 1.06-1.07 s     | none          |
 | tablet (same three)                             | WebKit   | 1.11-1.15 s / 0.83-0.89 s     | none          |
 | desktop                                         | Chromium | 1.88 s / 1.48 s               | 5.2 s / 4.4 s |

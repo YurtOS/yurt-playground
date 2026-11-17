@@ -789,7 +789,15 @@ Deno.test("a seal's clean-up has its own budget, whatever the wait before it too
 });
 
 Deno.test("a saved agent session says which snapshot it grew from; an older one, the tablet's", () => {
-  assertEquals(sealedFrom({ memoryFile: "f", snapshotKind: "phone" }), "phone");
+  assertEquals(
+    sealedFrom({ memoryFile: "f", snapshotKind: "tablet" }),
+    "tablet",
+  );
+  // The phone's snapshot (no Python) is gone: its seals are not resumed.
+  assertEquals(
+    sealedFrom({ memoryFile: "f", snapshotKind: "phone" }),
+    undefined,
+  );
   assertEquals(sealedFrom({ memoryFile: "f" }), "tablet");
   assertEquals(sealedFrom(undefined), "tablet");
   assertEquals(sealedFrom({ snapshotKind: "nonsense" }), undefined);

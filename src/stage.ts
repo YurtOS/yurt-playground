@@ -480,8 +480,19 @@ function responseCap(mk: KernelHostInterface): number {
 
 const textDecoder = new TextDecoder();
 
+/** The kernel's drain records (yurtos-kernel `vfs/dirty.rs`):
+ * `u8 tag + 16-byte identity + u32 length + path`. A
+ * `PATH` record names a path whose content or structure changed; an
+ * `ATTR` record, an inode with several names whose attributes or link
+ * count changed, with one visible name of it as a hint (empty when none
+ * is visible). */
+const DIRTY_TAG_PATH = 0;
+const DIRTY_TAG_ATTR = 1;
+const DIRTY_RECORD_HEAD = 1 + 16 + 4;
+
 /** Every path the guest's filesystem marked as touched since the last
- * drain (creates, writes, renames, removals; one set), and the log empty
+ * drain (creates, writes, renames, removals, and the visible name of a
+ * linked inode whose attributes changed; one set), and the log empty
  * again. A path may no longer exist. */
 export function drainDirtyPaths(mk: KernelHostInterface): string[] {
   const paths: string[] = [];
@@ -502,12 +513,24 @@ export function drainDirtyPaths(mk: KernelHostInterface): string[] {
       response.byteLength,
     );
     let at = 0;
-    while (at + 4 <= written) {
-      const length = view.getUint32(at, true);
-      paths.push(
-        textDecoder.decode(response.subarray(at + 4, at + 4 + length)),
+    while (at < written) {
+      const tag = response[at];
+      const end = at + DIRTY_RECORD_HEAD > written
+        ? Infinity
+        : at + DIRTY_RECORD_HEAD + view.getUint32(at + 17, true);
+      if (
+        end > written ||
+        (tag !== DIRTY_TAG_PATH && tag !== DIRTY_TAG_ATTR)
+      ) {
+        throw new Error(
+          `drain dirty paths: a malformed record at byte ${at} of ${written}`,
+        );
+      }
+      const path = textDecoder.decode(
+        response.subarray(at + DIRTY_RECORD_HEAD, end),
       );
-      at += 4 + length;
+      if (tag === DIRTY_TAG_PATH || path !== "") paths.push(path);
+      at = end;
     }
   }
 }

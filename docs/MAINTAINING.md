@@ -52,6 +52,24 @@ verifies it, and asks before merging the pin PR that deploys the page.
 `--validate` builds everything and publishes nothing; `--pins-only` regenerates
 the pins from releases cut by hand.
 
+`--browser-only` cuts a train for the page alone, in about 30 minutes instead of
+one to two hours: the kernel wasm, the image and the Python seal, the pin PR and
+the deploy, but not yurt-sandbox's desktop host and CLI or the desktop
+installers. The desktop host and CLI pins are carried through unchanged, with
+the kernel rev and the train they were built for (`desktopHost.kernelRev`,
+`desktopHost.train`). The home page's download links resolve to the newest
+`desktop-<train>` release, which bundles its own kernel, image and runtime, so
+they keep serving the last full train's app. A desktop host boots only a kernel
+wasm of its own kernel rev, so `scripts/install-desktop-host.sh` and
+`scripts/build-desktop.sh` refuse to pair the carried host with the new kernel
+pin: no desktop app is built from a browser-only train's pins. Nothing tests the
+new image on the new kernel natively either (the image's smoke boots it through
+the pinned CLI, which carries its own older kernel), so cut a full train before
+many browser-only ones pile up. `--check` shows the desktop app as `BEHIND` (not
+`STALE`) until the next full train, which pins its own host and CLI and cuts the
+installers again. Leave yurt-sandbox's `scripts/desktop-host-pins.env` at the
+desktop's train meanwhile: it describes the host, not the page.
+
 ## The suspend/resume kernel
 
 The _Python 3 (Yurt, suspend/resume)_ kernelspec runs a CPython built so the
@@ -62,9 +80,9 @@ sandbox can be sealed (`scripts/build-python-seal.sh`);
 
 The page restores a sealed sandbox made for its device by default, instead of
 booting the slim image and installing into it: a desktop browser the one with
-the Python set and Jupyter (`snapshot` in the pins), a tablet one with python
-alone (`tabletSnapshot`), a phone the slim image as it boots, without Python
-(`phoneSnapshot`). A desktop browser that chooses Go on the start screen
+the Python set and Jupyter (`snapshot` in the pins), a tablet or phone the one
+with python alone (`tabletSnapshot`; a phone has had no snapshot of its own
+since 2026-11-17). A desktop browser that chooses Go on the start screen
 (`?env=go`) restores the Go one instead (`goSnapshot`): the slim image with the
 `go` package installed and its build cache already holding the standard library
 a small program imports (`GO_WARMUP_IMPORTS` in `src/capture_outcome.ts`), and
@@ -82,14 +100,14 @@ for each one's size and the memory it needs.
 A snapshot is the kernel's memory after an install in the browser, so it is
 captured locally rather than by the train:
 `deno run -A
-scripts/release-snapshot.ts --kind desktop|tablet|phone|go|playwright`,
+scripts/release-snapshot.ts --kind desktop|tablet|go|playwright`,
 from a clean checkout at its pushed head whose `artifacts/pins.json` names the
 train (with the pinned blobs installed, the sibling kernel checkout clean at the
 pinned rev, and Playwright's Chromium). It serves the page, runs
 `?snapshot=capture` in headless Chromium, checks that the file decodes in full
 and was built from the pinned kernel and image and the Python the live index
 offers, publishes it as the prerelease `snapshot-<train>`
-(`snapshot-tablet-<train>`, `snapshot-phone-<train>`, `snapshot-go-<train>`,
+(`snapshot-tablet-<train>`, `snapshot-go-<train>`,
 `snapshot-playwright-<train>`) and writes its pin, with its kernel memory and
 what it holds. Go's capture installs `go` with pkg and then builds a warm-up
 program as the login user, so `~/.cache/go-build` holds the compiled standard
@@ -137,10 +155,10 @@ repository's path, so the page asks the GitHub API's list of those refs first
 image). The manifest takes every check the pin does, each part is checked
 against it, and anything else boots the image as without the flag. `--file PATH`
 uploads an existing capture, `--dry-run` stops before the push. `--kind` picks
-the snapshot as above (`?snapshot=capture`, `capture-tablet`, `capture-phone`,
-`capture-go`); each restores only on a page of its kind, since a page refuses a
-snapshot whose Python is not the one it asks the live index about (none on a
-phone, python alone on a tablet, the go package for Go), and the printed URL
+the snapshot as above (`?snapshot=capture`, `capture-tablet`, `capture-go`,
+`capture-playwright`); each restores only on a page of its kind, since a page
+refuses a snapshot whose Python is not the one it asks the live index about
+(python alone on a tablet or phone, the go package for Go), and the printed URL
 names its platform (and Go's `env=go`). `--before-deploy` turns the site check
 into a note, for a snapshot of pins that a pending deploy brings. List the
 uploads with `git ls-remote origin 'refs/snapshots/*'`; delete one with
