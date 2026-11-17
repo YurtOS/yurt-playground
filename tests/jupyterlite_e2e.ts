@@ -220,11 +220,45 @@ async function checkHtmlOutputIsolation(page: Page): Promise<void> {
       refresh("md")
     }')); print("refresh-probe", "done")`,
   );
+  // Swallowed here only so a red run, whose page has left, fails below with
+  // the page's URL; the output is asserted after that.
   await waitForLastOutput(page, "refresh-probe done", 60_000).catch(() => {});
   await page.waitForTimeout(3_000);
   if (page.url() !== notebookUrl || leaks.length > 0) {
     fail(
       `a guest's meta refresh left the page: ${page.url()}, requests ${leaks}`,
+    );
+  }
+  await waitForLastOutput(page, "refresh-probe done", 1_000);
+  await page.locator(".jp-OutputArea-output iframe").last().waitFor({
+    timeout: 1_000,
+  }).catch(() => fail("the refresh probe's HTML output has no frame"));
+
+  // A refresh to the frame itself would reload it forever; and the frame's
+  // own policy holds where the page's would not (Chrome inherits the page's
+  // 'self' for scripts; WebKit loaded an outside image from such a frame).
+  const requested: string[] = [];
+  // Finished, not issued: Chrome reports a load that its CSP then refuses.
+  page.on("requestfinished", (request) => {
+    if (request.url().includes("frame-probe")) requested.push(request.url());
+  });
+  let navigations = 0;
+  page.on("framenavigated", (frame) => {
+    if (frame !== page.mainFrame()) navigations++;
+  });
+  await runNewCell(
+    page,
+    `from IPython.display import HTML; display(HTML('<meta http-equiv="refresh" content="0"><script src="/jupyter/config-utils.js?frame-probe"></script><img src="https://leak.example/?frame-probe">reload-probe')); print("reload-probe", "done")`,
+  );
+  await waitForLastOutput(page, "reload-probe done", 60_000);
+  await page.waitForTimeout(1_000);
+  navigations = 0;
+  await page.waitForTimeout(2_000);
+  if (navigations > 0 || requested.length > 0 || leaks.length > 0) {
+    fail(
+      `an output frame reloaded itself ${navigations} times in 2 s; loaded: ${[
+        ...new Set([...requested, ...leaks]),
+      ]}`,
     );
   }
 
@@ -289,6 +323,12 @@ async function checkHtmlOutputIsolation(page: Page): Promise<void> {
         .backgroundColor,
       font: getComputedStyle(document.querySelector(".yurt-frame-body")!)
         .fontFamily,
+      // Its own policy: the page's is not enough in every browser (WebKit
+      // loaded an outside image from such a frame), and Chrome's inherited
+      // one already refuses the probes above, so they cannot tell.
+      policy: document.querySelector<HTMLMetaElement>(
+        'meta[http-equiv="Content-Security-Policy"]',
+      )?.content ?? "",
       origin: (() => {
         try {
           return localStorage.length >= 0 ? "storage reachable" : "";
@@ -307,6 +347,12 @@ async function checkHtmlOutputIsolation(page: Page): Promise<void> {
   }
   if (inner.font !== outer.font) {
     fail(`the frame's font ${inner.font} is not the page's ${outer.font}`);
+  }
+  if (
+    !inner.policy.startsWith("default-src 'none'; script-src 'sha256-") ||
+    !inner.policy.includes("img-src data:;")
+  ) {
+    fail(`the output frame lacks its own policy: "${inner.policy}"`);
   }
   if (inner.origin !== "opaque") {
     fail(`the output frame has the page's origin: ${inner.origin}`);
