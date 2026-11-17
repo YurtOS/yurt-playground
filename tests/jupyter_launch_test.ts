@@ -9,8 +9,17 @@ import {
   JUPYTER_PID_FILE,
   startGuestKernel,
 } from "../src/jupyter.ts";
-import { encodeJupyterMessage } from "../src/jupyter_protocol.ts";
-import { decodeJupyterChannelMessage } from "../src/jupyter_transport.ts";
+import {
+  decodeJupyterMessage,
+  encodeJupyterMessage,
+} from "../src/jupyter_protocol.ts";
+import {
+  decodeJupyterChannelMessage,
+  decodeZmtpFrames,
+  encodeZmtpGreeting,
+  encodeZmtpMessage,
+  encodeZmtpReady,
+} from "../src/jupyter_transport.ts";
 import { stripAnsi } from "../src/notebook.ts";
 
 const KEY = "test-key";
@@ -246,4 +255,231 @@ Deno.test("a message signed with the old fixed key is rejected; the launch key w
     await decodeJupyterChannelMessage([topic, ...genuine], used),
     { ...message, buffers: [] },
   );
+});
+
+/** One port of a running ipykernel, as far as the page's dial sees it: the
+ * ZMTP handshake, and on the control port a kernel_info_reply to each
+ * kernel_info_request signed with `key` (unless `silent`). The shell port
+ * never answers: the kernel is busy with a cell, which must not keep a
+ * page from attaching. */
+class KernelPort {
+  #incoming: Uint8Array[] = [
+    encodeZmtpGreeting(true),
+    encodeZmtpReady(),
+  ];
+  #waiting: ((chunk: Uint8Array) => void) | undefined;
+  #writes = 0;
+  constructor(
+    readonly control: boolean,
+    readonly key: string,
+    readonly silent: boolean,
+  ) {}
+  #push(bytes: Uint8Array): void {
+    if (this.#waiting !== undefined) {
+      const waiting = this.#waiting;
+      this.#waiting = undefined;
+      waiting(bytes);
+    } else this.#incoming.push(bytes);
+  }
+  async write(bytes: Uint8Array): Promise<void> {
+    // The first two writes are the page's greeting and READY.
+    if (++this.#writes <= 2 || !this.control || this.silent) return;
+    const request = await decodeJupyterMessage(
+      decodeZmtpFrames(bytes),
+      this.key,
+    );
+    if (request.header.msg_type !== "kernel_info_request") return;
+    const reply = await encodeJupyterMessage({
+      header: { ...request.header, msg_type: "kernel_info_reply" },
+      parent_header: request.header,
+      metadata: {},
+      content: { status: "ok" },
+    }, this.key);
+    this.#push(encodeZmtpMessage(reply));
+  }
+  async read(length: number): Promise<Uint8Array> {
+    const next = this.#incoming.shift() ??
+      await new Promise<Uint8Array>((resolve) => this.#waiting = resolve);
+    // At most `length` bytes, as a socket read gives; the rest waits.
+    if (next.length > length) this.#incoming.unshift(next.slice(length));
+    return next.slice(0, length);
+  }
+  close(): Promise<void> {
+    this.#waiting?.(new Uint8Array());
+    return Promise.resolve();
+  }
+}
+
+/** A port nothing listens on, as the desktop's dial sees one: a socket
+ * that opens and is closed at once. */
+const closedPort = {
+  write: () => Promise.resolve(),
+  read: () => Promise.resolve(new Uint8Array()),
+  close: () => Promise.resolve(),
+};
+
+/** A sandbox where another page left a kernel's connection file (the
+ * desktop app's main page, when its Notebook page opens). `kernel`:
+ * "answers" and "silent" listen on its ports; "gone" means nothing does.
+ * Records every line spawned and every port dialed. */
+function sharedSandbox(kernel: "answers" | "silent" | "gone") {
+  const key = "the-first-page-s-key";
+  const spawned: string[] = [];
+  const dialed: number[] = [];
+  const files = new Map<string, Uint8Array>([
+    [JUPYTER_PID_FILE, new TextEncoder().encode("105\n")],
+    [JUPYTER_CONNECTION_FILE, connectionFor(key)],
+  ]);
+  const session = {
+    terminal: { write: () => Promise.resolve() },
+    spawn(line: string) {
+      spawned.push(line);
+      return Promise.resolve({ exited: Promise.resolve(0) });
+    },
+    readFile: (path: string) => Promise.resolve(files.get(path)),
+    dialSandboxPort: (port: number) => {
+      dialed.push(port);
+      return kernel === "gone"
+        ? closedPort
+        : new KernelPort(port === 4, key, kernel === "silent");
+    },
+    onOutput: () => () => {},
+  };
+  return { session, spawned, dialed };
+}
+
+Deno.test("a running kernel, busy or not, is attached to, not launched over or killed", async () => {
+  const { session, spawned } = sharedSandbox("answers");
+  const transport = await startGuestKernel(session, undefined, { pollMs: 1 });
+  await transport.close();
+  assertEquals(spawned, [], "nothing launched, stopped or removed");
+});
+
+Deno.test("a running kernel that does not answer fails the start and is left alone", async () => {
+  const { session, spawned } = sharedSandbox("silent");
+  await assertRejects(
+    () => startGuestKernel(session, undefined, { pollMs: 1 }),
+    Error,
+    "the Jupyter kernel already running in this sandbox",
+  );
+  assertEquals(spawned, [], "the other page's kernel is not stopped");
+});
+
+Deno.test("a connection file nothing listens behind gets a fresh launch, and no file is removed for it", async () => {
+  const { session, spawned } = sharedSandbox("gone");
+  await assertRejects(
+    () =>
+      startGuestKernel(session, undefined, {
+        pollMs: 1,
+        connect: { attempts: 1, delayMs: 1 },
+      }),
+    Error,
+  );
+  // The launch line replaces the files itself; the attach removes none.
+  assertEquals(
+    spawned[0]?.includes("ipykernel_launcher"),
+    true,
+    `the launch comes first: ${spawned}`,
+  );
+  assertEquals(spawned.some((line) => line.includes("kill")), false);
+});
+
+Deno.test("a connection file naming other ports than the host maps is not dialed", async () => {
+  const { session, spawned, dialed } = sharedSandbox("answers");
+  await assertRejects(
+    () =>
+      startGuestKernel(session, [11, 12, 13, 14, 15], {
+        pollMs: 1,
+        connect: { attempts: 1, delayMs: 1 },
+      }),
+    Error,
+  );
+  assertEquals(
+    dialed.filter((port) => port < 11),
+    [],
+    "the file's ports 1-5 are never dialed",
+  );
+  assertEquals(spawned[0]?.includes("ipykernel_launcher"), true);
+});
+
+Deno.test("typed at the prompt (the desktop's Notebook page), a running kernel is attached to", async () => {
+  // No `spawn`, no `readFile`: the page looks at the connection file with a
+  // line typed into the shell, as the desktop's Notebook page does.
+  const key = "the-first-page-s-key";
+  const typed: string[] = [];
+  const handlers = new Set<(bytes: Uint8Array) => void>();
+  const session = {
+    terminal: {
+      write(bytes: Uint8Array) {
+        const line = new TextDecoder().decode(bytes);
+        typed.push(line);
+        const marker = line.match(/echo (YURT_SHELL_DONE_)""(\w+)/);
+        if (marker !== null) {
+          const shown = line.includes(`cat ${JUPYTER_CONNECTION_FILE}`)
+            ? new TextDecoder().decode(connectionFor(key))
+            : "";
+          const reply = new TextEncoder().encode(
+            `${line}${shown}\n${marker[1]}${marker[2]}\n$ `,
+          );
+          for (const handler of handlers) handler(reply);
+        } else if (line.includes('YURT_JUPYTER_CONNECTION_""READY')) {
+          // A launch's wait for its own file: none comes, so a page that
+          // launched (instead of attaching) fails here at once.
+          const reply = new TextEncoder().encode(
+            "KERNEL_LOG\n(nothing)\nYURT_JUPYTER_CONNECTION_READY\n$ ",
+          );
+          for (const handler of handlers) handler(reply);
+        }
+        return Promise.resolve();
+      },
+    },
+    dialSandboxPort: (port: number) => new KernelPort(port === 4, key, false),
+    onOutput(handler: (bytes: Uint8Array) => void) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+  };
+  const transport = await startGuestKernel(session);
+  await transport.close();
+  assertEquals(typed.length, 1, `only the look was typed: ${typed}`);
+  assertEquals(typed[0].includes("ipykernel_launcher"), false);
+});
+
+Deno.test("a dial whose handshake never comes is closed when its try runs out, then a fresh launch", async () => {
+  // A port that a non-kernel listener holds, and that never greets: each
+  // bounded try is abandoned whole, every socket it dialed closed, and no
+  // transport is left behind; then the page launches.
+  const conns: { closed: boolean }[] = [];
+  const { session, spawned } = sharedSandbox("answers");
+  session.dialSandboxPort = () => {
+    let release: ((bytes: Uint8Array) => void) | undefined;
+    const conn = {
+      closed: false,
+      write: () => Promise.resolve(),
+      read: () => new Promise<Uint8Array>((resolve) => release = resolve),
+      close: () => {
+        conn.closed = true;
+        release?.(new Uint8Array());
+        return Promise.resolve();
+      },
+    };
+    conns.push(conn);
+    return conn as unknown as KernelPort;
+  };
+  await assertRejects(
+    () =>
+      startGuestKernel(session, undefined, {
+        pollMs: 1,
+        connect: { attempts: 1, delayMs: 1 },
+        attach: { dials: 2, dialMs: 20 },
+      }),
+    Error,
+  );
+  assertEquals(conns.length, 10, "two tries, five ports each");
+  assertEquals(
+    conns.filter((conn) => !conn.closed).length,
+    0,
+    "every socket a try dialed was closed",
+  );
+  assertEquals(spawned[0]?.includes("ipykernel_launcher"), true);
 });

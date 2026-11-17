@@ -2,6 +2,7 @@ import type { SandboxPortConn } from "@yurt/kernel-host-interface-js";
 import {
   createJupyterTransport,
   type JupyterConfig,
+  type JupyterRequestChannel,
   type JupyterTransport,
 } from "./jupyter_transport.ts";
 import { isJavaScriptCore } from "./boot.ts";
@@ -263,6 +264,9 @@ const TYPED_CONNECTION_MARKER = 'YURT_JUPYTER_CONNECTION_""READY';
 
 type StartOptions = {
   pollMs?: number;
+  /** The attach's dial of a running kernel (see attachRunningKernel):
+   * tries and each try's bound. */
+  attach?: { dials?: number; dialMs?: number };
   /** The dial's retry budget -- production waits out a kernel that is
    * still binding its ports; a test that never dials says so instead of
    * paying the whole backoff (yurt-playground#123). */
@@ -337,6 +341,8 @@ export async function startGuestKernel(
   ports?: KernelPorts,
   options: StartOptions = {},
 ): Promise<JupyterTransport> {
+  const running = await attachRunningKernel(session, ports, options.attach);
+  if (running !== undefined) return running;
   const relaunches = isJavaScriptCore(
     options.userAgent ?? globalThis.navigator?.userAgent,
   );
@@ -361,6 +367,179 @@ export async function startGuestKernel(
       );
     }
   }
+}
+
+/** A kernel an earlier start left running in this sandbox. On the desktop
+ * every page shares the app's one native sandbox, and the kernel binds the
+ * host's fixed kernel ports: when the Notebook page opens after the main
+ * page started Jupyter, a second launch cannot bind them (ZMQError: Address
+ * in use) and waits out the whole connection-file bound. So a page that
+ * finds a valid connection file first dials the ports it names, under its
+ * key, and asks for kernel_info on the control channel, which ipykernel
+ * answers from its control thread even while a cell runs. A kernel that
+ * answers is attached to. One whose ports do not open in a few bounded
+ * tries is taken for gone and a fresh kernel is launched, which replaces
+ * the files (the desktop page cannot see the pid's liveness; a live kernel
+ * whose dial fails every try is then stranded, as before this look --
+ * yurt-playground#351 owns that). A kernel that is dialed but does not
+ * answer fails the start, and is not stopped: it may be another page's.
+ * Undefined when there is nothing to attach to. */
+async function attachRunningKernel(
+  session: JupyterLaunchSession,
+  ports: KernelPorts | undefined,
+  bounds: StartOptions["attach"] = {},
+): Promise<JupyterTransport | undefined> {
+  const dials = bounds.dials ?? ATTACH_DIALS;
+  const dialMs = bounds.dialMs ?? ATTACH_DIAL_MS;
+  // A file read that fails is "nothing found": the launch below makes the
+  // same reads and reports their failure as it always has. A typed look
+  // that fails ends the start: the launch would type into the same shell.
+  const readFile = session.readFile;
+  const bytes = readFile !== undefined
+    ? await Promise.resolve()
+      .then(() => readFile(JUPYTER_CONNECTION_FILE))
+      .catch(() => undefined)
+    : await peekConnectionFileTyped(session);
+  if (bytes === undefined || bytes.byteLength === 0) return undefined;
+  let connection: KernelConnection;
+  try {
+    connection = JSON.parse(new TextDecoder().decode(bytes));
+    checkConnection(connection, ports);
+  } catch {
+    return undefined;
+  }
+  let transport: JupyterTransport | undefined;
+  for (let dial = 1; transport === undefined; dial++) {
+    // A try that outlasts its bound is abandoned whole: the ports it
+    // dialed are closed (a handshake waiting on one then fails), and a
+    // transport that opens after all is closed too.
+    const dialed: SandboxPortConn[] = [];
+    const opening = createJupyterTransport(
+      (port) => {
+        const conn = session.dialSandboxPort(port);
+        dialed.push(conn);
+        return conn;
+      },
+      configOf(connection),
+    );
+    try {
+      transport = await withTimeout(
+        opening,
+        dialMs,
+        "the dial of the running kernel's ports did not open",
+      );
+    } catch {
+      opening.then((late) => late.close(), () => {});
+      await Promise.all(dialed.map((conn) => conn.close().catch(() => {})));
+      if (dial >= dials) return undefined;
+      await new Promise((resolve) => setTimeout(resolve, ATTACH_RETRY_MS));
+    }
+  }
+  try {
+    await waitForKernelInfo(transport, "control");
+    return transport;
+  } catch (error) {
+    await transport.close().catch(() => {});
+    throw new Error(
+      "the Jupyter kernel already running in this sandbox did not answer: " +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+}
+
+/** The attach's dial: how many tries, each bounded, and the pause between. */
+const ATTACH_DIALS = 3;
+const ATTACH_DIAL_MS = 5_000;
+const ATTACH_RETRY_MS = 300;
+
+/** The connection file's bytes, looked at once by a line typed into the
+ * user's shell (hushed), for a session that cannot read guest files itself
+ * -- the desktop's Notebook page; undefined when there is none. */
+async function peekConnectionFileTyped(
+  session: JupyterLaunchSession,
+): Promise<Uint8Array | undefined> {
+  const marker = `YURT_SHELL_DONE_${Math.random().toString(36).slice(2, 8)}`;
+  const typedMarker = marker.replace("DONE_", 'DONE_""');
+  let text = "";
+  let resolveOutput: (() => void) | undefined;
+  // A look that outlasts its wait fails the start: no launch is typed
+  // behind a look still queued, whose late marker would show the screen in
+  // the middle of the launch's own hush. The screen is shown again then: a
+  // terminal hidden for good is worse than the file printed late (its key
+  // is a running kernel's, readable in the guest anyway).
+  const release = hushUntil(session, marker);
+  const remove = session.onOutput((chunk) => {
+    text += new TextDecoder().decode(chunk);
+    if (text.includes(marker)) resolveOutput?.();
+  });
+  try {
+    await session.terminal.write(
+      encoder.encode(
+        `if [ -s ${JUPYTER_CONNECTION_FILE} ]; then cat ${JUPYTER_CONNECTION_FILE}; fi; echo ${typedMarker}\n`,
+      ),
+    );
+    if (!text.includes(marker)) {
+      await withTimeout(
+        new Promise<void>((resolve) => resolveOutput = resolve),
+        PEEK_MS,
+        "the shell did not answer the look at the kernel's connection file",
+      );
+    }
+  } catch (error) {
+    release();
+    throw error;
+  } finally {
+    remove();
+  }
+  const output = text.slice(0, text.indexOf(marker));
+  const start = output.indexOf("{");
+  const end = output.lastIndexOf("}");
+  return start < 0 || end < start
+    ? undefined
+    : encoder.encode(output.slice(start, end + 1));
+}
+
+/** How long the typed look at the connection file may take: as long as
+ * the launch's own wait for the file, which a busy shell holds up alike. */
+const PEEK_MS = (CONNECTION_FILE_WAIT_SECONDS + 10) * 1000;
+
+/** A connection file the page may dial: tcp, five valid ports and, when
+ * the host maps fixed kernel ports, exactly those. Throws otherwise. */
+function checkConnection(
+  connection: KernelConnection,
+  ports?: KernelPorts,
+): void {
+  if (connection.transport !== "tcp") {
+    throw new Error("Jupyter transport is not tcp");
+  }
+  const named = [
+    connection.shell_port,
+    connection.iopub_port,
+    connection.stdin_port,
+    connection.control_port,
+    connection.hb_port,
+  ];
+  for (const port of named) {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error("Jupyter connection file has an invalid port");
+    }
+  }
+  if (ports !== undefined && named.some((port, i) => port !== ports[i])) {
+    throw new Error(
+      "Jupyter connection file names other ports than the host's",
+    );
+  }
+}
+
+function configOf(connection: KernelConnection): JupyterConfig {
+  return {
+    key: connection.key,
+    shell: connection.shell_port,
+    iopub: connection.iopub_port,
+    stdin: connection.stdin_port,
+    control: connection.control_port,
+    heartbeat: connection.hb_port,
+  };
 }
 
 async function launchGuestKernel(
@@ -429,19 +608,11 @@ async function launchGuestKernel(
   } finally {
     release();
   }
-  const config: JupyterConfig = {
-    key: connection.key,
-    shell: connection.shell_port,
-    iopub: connection.iopub_port,
-    stdin: connection.stdin_port,
-    control: connection.control_port,
-    heartbeat: connection.hb_port,
-  };
   return await connectJupyterWithRetries(
     () =>
       createJupyterTransport(
         (port) => session.dialSandboxPort(port),
-        config,
+        configOf(connection),
       ),
     waitForKernelInfo,
     options.connect,
@@ -600,22 +771,7 @@ async function readConnectionFile(
     const connection = JSON.parse(
       text.slice(jsonStart, jsonEnd + 1),
     ) as KernelConnection;
-    if (connection.transport !== "tcp") {
-      throw new Error("Jupyter transport is not tcp");
-    }
-    for (
-      const port of [
-        connection.shell_port,
-        connection.iopub_port,
-        connection.stdin_port,
-        connection.control_port,
-        connection.hb_port,
-      ]
-    ) {
-      if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        throw new Error("Jupyter connection file has an invalid port");
-      }
-    }
+    checkConnection(connection);
     return connection;
   } finally {
     remove();
@@ -738,7 +894,12 @@ export function interruptKernel(transport: JupyterTransport): Promise<void> {
   }, "control");
 }
 
-async function waitForKernelInfo(transport: JupyterTransport): Promise<void> {
+/** Ask for kernel_info and wait for the reply. On `control` ipykernel
+ * answers from its control thread even while a cell runs on shell. */
+async function waitForKernelInfo(
+  transport: JupyterTransport,
+  channel: JupyterRequestChannel = "shell",
+): Promise<void> {
   const msgId = crypto.randomUUID();
   let unsubscribe: (() => void) | undefined;
   const result = new Promise<void>((resolve, reject) => {
@@ -763,7 +924,7 @@ async function waitForKernelInfo(transport: JupyterTransport): Promise<void> {
       parent_header: {},
       metadata: {},
       content: {},
-    }).catch((error) => {
+    }, channel).catch((error) => {
       unsubscribe?.();
       unsubscribe = undefined;
       reject(error);
