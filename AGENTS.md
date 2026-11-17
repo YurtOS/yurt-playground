@@ -197,9 +197,9 @@ mechanical-only PRs are org.md "Pull requests". On top of it, here:
 - `docs/` (specs, plans, ADRs) counts as prose, so it is free. Name regenerated
   output as generated in the PR description, as well as putting it in its own
   commit.
-- Each slice builds, passes CI, and makes sense alone (e.g. refactor or
-  plumbing → behavior → callers/migration → cleanup). Keep the stack's overall
-  goal in the first PR's description.
+- Each slice builds, passes CI, and makes sense alone (e.g. refactor or plumbing
+  → behavior → callers/migration → cleanup). Keep the stack's overall goal in
+  the first PR's description.
 - **Don't slice just to hit a number.** Splitting a cohesive change into PRs
   that can't be understood alone makes review harder, not easier. Split along
   real seams, not line counts.
