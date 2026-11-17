@@ -23,6 +23,7 @@ import { INotebookTracker, NotebookActions } from "@jupyterlab/notebook";
 import type { KernelMessage } from "@jupyterlab/services";
 import { IKernel, IKernelClient, IKernelSpecs } from "@jupyterlite/services";
 import { ISignal, Signal } from "@lumino/signaling";
+import { outputFramePlugin } from "./output_frame";
 
 type RequestChannel = "shell" | "control" | "stdin";
 type Channel = RequestChannel | "iopub";
@@ -688,4 +689,4 @@ const untrustOnLoad: JupyterFrontEndPlugin<void> = {
   },
 };
 
-export default [plugin, untrustOnLoad];
+export default [plugin, untrustOnLoad, outputFramePlugin];

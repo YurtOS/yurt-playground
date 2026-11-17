@@ -6,6 +6,8 @@
  * unsupported page. And that output runs no script in the page's origin
  * (yurt-sandbox#382): neither a guest's `display(Javascript(...))` nor the
  * stored outputs of a supplied notebook whose cells claim to be trusted.
+ * And that HTML output cannot navigate or restyle the page: it renders in a
+ * sandboxed frame that keeps its styling and fits its content.
  *
  * Run: deno run --allow-all tests/jupyterlite_e2e.ts (needs the pinned blobs
  * in artifacts/ and the site from jupyterlite/build.sh in public/jupyter/).
@@ -26,12 +28,14 @@ function fail(message: string): never {
   throw new Error(message);
 }
 
-/** Insert a cell below the active one, type `code` into it, and run it. */
+/** Insert a cell below the active one, put `code` into it, and run it. The
+ * code is inserted, not typed: typing goes through the editor's bracket and
+ * quote auto-closing, which garbles a payload like `{...}` in a string. */
 async function runNewCell(page: Page, code: string): Promise<void> {
   await page.keyboard.press("Escape");
   await page.keyboard.press("b");
   await page.keyboard.press("Enter");
-  await page.keyboard.type(code);
+  await page.keyboard.insertText(code);
   await page.keyboard.press("Shift+Enter");
 }
 
@@ -173,6 +177,141 @@ async function checkTrustedClaimIgnored(
     );
   }
   await context.close();
+}
+
+/** What pandas' `Styler._repr_html_` emits for a two-row table with one
+ * highlighted cell: a `<style>` block keyed on the table's generated ids. */
+const STYLER_HTML = `<style type="text/css">
+#T_yurt_row1_col1 {
+  background-color: #ffd54f;
+}
+#T_yurt caption { font-weight: bold; }
+</style>
+<table id="T_yurt">
+  <caption>styler-probe</caption>
+  <thead><tr><th class="blank level0">&nbsp;</th><th id="T_yurt_level0_col0" class="col_heading level0 col0">city</th><th id="T_yurt_level0_col1" class="col_heading level0 col1">temp</th></tr></thead>
+  <tbody>
+    <tr><th id="T_yurt_level0_row0" class="row_heading level0 row0">0</th><td id="T_yurt_row0_col0" class="data row0 col0">Oslo</td><td id="T_yurt_row0_col1" class="data row0 col1">3.5</td></tr>
+    <tr><th id="T_yurt_level0_row1" class="row_heading level0 row1">1</th><td id="T_yurt_row1_col0" class="data row1 col0">Pune</td><td id="T_yurt_row1_col1" class="data row1 col1">31.2</td></tr>
+  </tbody>
+</table>`;
+
+/**
+ * Guest HTML output stays inside a sandboxed frame (yurt-sandbox#382): a meta
+ * refresh neither navigates the page nor reaches its outside URL, a `<style>`
+ * does not restyle the page, and a pandas Styler table keeps its CSS in a
+ * frame sized to it. Markdown output carries the same payloads and renders
+ * sanitized.
+ */
+async function checkHtmlOutputIsolation(page: Page): Promise<void> {
+  const notebookUrl = page.url();
+  const leaks: string[] = [];
+  await page.route("https://leak.example/**", (route) => {
+    leaks.push(route.request().url());
+    return route.fulfill({ contentType: "text/html", body: "leaked" });
+  });
+  const refresh = (to: string) =>
+    `<meta http-equiv="refresh" content="0;url=https://leak.example/?${to}">`;
+  await runNewCell(
+    page,
+    `from IPython.display import HTML, Markdown; display(HTML('${
+      refresh("html")
+    }refresh-probe')); display(Markdown('${
+      refresh("md")
+    }')); print("refresh-probe", "done")`,
+  );
+  await waitForLastOutput(page, "refresh-probe done", 60_000).catch(() => {});
+  await page.waitForTimeout(3_000);
+  if (page.url() !== notebookUrl || leaks.length > 0) {
+    fail(
+      `a guest's meta refresh left the page: ${page.url()}, requests ${leaks}`,
+    );
+  }
+
+  const style =
+    "<style>body{background:rgb(1, 2, 3) !important}.jp-Notebook{outline:9px solid rgb(4, 5, 6)}</style>";
+  await runNewCell(
+    page,
+    `from IPython.display import HTML, Markdown; display(HTML('${style}style-probe')); display(Markdown('${style}')); print("style-probe", "done")`,
+  );
+  await waitForLastOutput(page, "style-probe done", 60_000);
+  await page.waitForTimeout(1_000);
+  const restyled = await page.evaluate(() => ({
+    body: getComputedStyle(document.body).backgroundColor,
+    notebook: getComputedStyle(document.querySelector(".jp-Notebook")!)
+      .outlineColor,
+  }));
+  if (
+    restyled.body === "rgb(1, 2, 3)" || restyled.notebook === "rgb(4, 5, 6)"
+  ) {
+    fail(`a guest's <style> restyled the page: ${JSON.stringify(restyled)}`);
+  }
+
+  await runNewCell(
+    page,
+    `from IPython.display import HTML, Markdown; display(HTML(${
+      JSON.stringify(STYLER_HTML)
+    })); print("styler-probe", "done")`,
+  );
+  await waitForLastOutput(page, "styler-probe done", 60_000);
+  const frame = page.locator(".jp-OutputArea-output iframe").last();
+  await frame.waitFor({ timeout: 10_000 }).catch(() =>
+    fail("the Styler table is not rendered in a frame")
+  );
+  const sandbox = (await frame.getAttribute("sandbox")) ?? "";
+  if (
+    !(await frame.evaluate((node) => node.hasAttribute("sandbox"))) ||
+    /allow-same-origin|allow-top-navigation/.test(sandbox)
+  ) {
+    fail(`the output frame's sandbox is not isolating: "${sandbox}"`);
+  }
+  // The frame grows to its content: wait for its sizer, then compare.
+  await page.waitForFunction(
+    () => {
+      const frames = document.querySelectorAll(".jp-OutputArea-output iframe");
+      return (frames[frames.length - 1] as HTMLElement).offsetHeight > 40;
+    },
+    undefined,
+    { timeout: 10_000 },
+  ).catch(() => fail("the Styler table's frame was not sized to it"));
+  const outer = await frame.evaluate((node) => ({
+    height: (node as HTMLElement).offsetHeight,
+    font: getComputedStyle(
+      document.querySelector(".jp-MarkdownOutput")!,
+    ).fontFamily,
+  }));
+  const inner = await (await (await frame.elementHandle())!.contentFrame())!
+    .evaluate(() => ({
+      height: document.documentElement.getBoundingClientRect().height,
+      scrolls: document.documentElement.scrollHeight >
+        document.documentElement.clientHeight + 1,
+      cell: getComputedStyle(document.getElementById("T_yurt_row1_col1")!)
+        .backgroundColor,
+      font: getComputedStyle(document.querySelector(".yurt-frame-body")!)
+        .fontFamily,
+      origin: (() => {
+        try {
+          return localStorage.length >= 0 ? "storage reachable" : "";
+        } catch {
+          return "opaque";
+        }
+      })(),
+    }));
+  if (inner.cell !== "rgb(255, 213, 79)") {
+    fail(`the Styler table lost its CSS: highlighted cell is ${inner.cell}`);
+  }
+  if (Math.abs(inner.height - outer.height) > 1 || inner.scrolls) {
+    fail(
+      `the Styler frame is not sized to its table: frame ${outer.height}px, content ${inner.height}px`,
+    );
+  }
+  if (inner.font !== outer.font) {
+    fail(`the frame's font ${inner.font} is not the page's ${outer.font}`);
+  }
+  if (inner.origin !== "opaque") {
+    fail(`the output frame has the page's origin: ${inner.origin}`);
+  }
+  await page.unroute("https://leak.example/**");
 }
 
 if (import.meta.main) {
@@ -339,6 +478,11 @@ if (import.meta.main) {
       fail("a guest's display(Javascript(...)) ran in the page");
     }
     console.log("jupyterlite e2e: guest JavaScript output did not run");
+
+    await checkHtmlOutputIsolation(page);
+    console.log(
+      "jupyterlite e2e: HTML output stays in its sandboxed, sized frame",
+    );
 
     // Interrupt reaches the guest: a busy loop ends with KeyboardInterrupt
     // once the toolbar's stop button is pressed (#31).
