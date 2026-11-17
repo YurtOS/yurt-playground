@@ -20,8 +20,8 @@ Deno.test("snapshot-local prints a URL the page restores, and only for an id", (
     `https://yurt-playground.pages.dev/?snapshot=${ID}&platform=desktop`,
   );
   assertEquals(
-    restoreUrl("https://yurt-playground.pages.dev/", ID, "phone"),
-    `https://yurt-playground.pages.dev/?snapshot=${ID}&platform=phone`,
+    restoreUrl("https://yurt-playground.pages.dev/", ID, "tablet"),
+    `https://yurt-playground.pages.dev/?snapshot=${ID}&platform=tablet`,
   );
   // Go's restores on a desktop page that asks for Go.
   assertEquals(
@@ -37,7 +37,6 @@ Deno.test("snapshot-local captures with the page's own capture query", () => {
     captureQuery(["pandas", "scipy"], "desktop"),
     "start&snapshot=capture&packages=pandas,scipy",
   );
-  assertEquals(captureQuery([], "phone"), "start&snapshot=capture-phone");
   assertEquals(captureQuery([], "tablet"), "start&snapshot=capture-tablet");
   assertEquals(captureQuery([], "go"), "start&snapshot=capture-go");
 });
@@ -102,7 +101,7 @@ Deno.test("snapshot-local refuses a checkout whose build the site does not run",
   );
 });
 
-Deno.test("snapshot-local expects each kind's own Python: the set, python alone, none", async () => {
+Deno.test("snapshot-local expects each kind's own Python: the set, python alone", async () => {
   const raw = JSON.parse(
     await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
   );
@@ -117,16 +116,8 @@ Deno.test("snapshot-local expects each kind's own Python: the set, python alone,
       assertEquals(captureBuild(pins, kind, live).ok, false, String(live));
     }
   }
-  // The phone's: no Python, whatever the index says (it is not asked).
-  for (const live of [null, undefined, NO_COMPLETE_SET, set]) {
-    assertEquals(captureBuild(pins, "phone", live), {
-      ok: true,
-      builtFrom: { ...snapshotIdentity(pins), pythonSet: null },
-    });
-  }
-  // The tablet's and the phone's are the slim image's.
+  // The tablet's (a phone's too) is the slim image's.
   const full = { ...pins, browserImage: undefined };
-  assertEquals(captureBuild(full, "phone", null).ok, false);
   assertEquals(captureBuild(full, "tablet", set).ok, false);
 });
 

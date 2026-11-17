@@ -30,12 +30,12 @@ What you can use today.
   the page restores a snapshot of a booted sandbox made for its device instead
   of booting and installing: a desktop browser gets the shell, Python and
   Jupyter (a prompt in about 2 s, Jupyter in about 5 s once the 131 MB snapshot
-  is downloaded), a tablet the shell and Python, a phone the shell. The first
-  visit downloads the snapshot once; later visits take it from the browser's
-  cache. `?snapshot=0` boots the slim image instead.
-- **Phones and tablets boot.** Each gets a snapshot sized for its memory, and a
-  key bar under the terminal adds Paste, history and cursor keys that the
-  on-screen keyboard lacks.
+  is downloaded), a tablet or phone the shell and Python. The first visit
+  downloads the snapshot once; later visits take it from the browser's cache.
+  `?snapshot=0` boots the slim image instead.
+- **Phones and tablets boot.** Both get the tablet's snapshot, sized for their
+  memory (the shell and Python, no Jupyter), and a key bar under the terminal
+  adds Paste, history and cursor keys that the on-screen keyboard lacks.
 - **A slim browser image that installs Python itself.** The tab loads 23.5 MB
   (the shell, the command-line tools, `sudo` and `pkg`) instead of 144 MB, and
   every page that runs Python installs the newest Python set from the signed
@@ -174,17 +174,18 @@ Bigger directions. Each needs design work, and the order is not fixed.
 - **On the desktop**, the root filesystem is also held in memory, and changes to
   it are written to disk at sync points (an explicit `sync`, or when the sandbox
   stops). Host folders you mount are on disk directly.
-- **Tablets run the shell and Python**, with no Jupyter or agent pane.
-  **Phones** run the shell only. The Notebook and JupyterLab pages do not start
+- **Tablets and phones run the shell and Python**, with no Jupyter, and an agent
+  whose model runs on OpenRouter. The Notebook and JupyterLab pages do not start
   a sandbox on a phone.
 - **Go is a package, not part of the image.** Go programs run on one thread, and
   signals reach them only between system calls; in the browser the first
   `go build` takes about 17 minutes.
 - **Gemini CLI is slow to start the first time in the browser**, after it is
   installed; it starts faster in the desktop app.
-- **The first visit downloads a lot**: about 138 MB on a desktop (the kernel and
-  the snapshot with Python and Jupyter), about 101 MB on a tablet and 38 MB on a
-  phone. A later visit takes them from the browser's cache.
+- **The first visit downloads a lot**: about 152 MB on a desktop (the kernel and
+  the snapshot with Python and Jupyter), and about 86 MB on a tablet or phone
+  (the kernel and the snapshot with Python). A later visit takes them from the
+  browser's cache.
 
 ## How it ships
 

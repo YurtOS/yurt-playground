@@ -2383,7 +2383,6 @@ printf 'DROPPED=%s\\n' "\${snapshot_dropped:-0}"
 case "$*" in
   "run -A scripts/release-snapshot.ts --check-pin") kind=desktop ;;
   "run -A scripts/release-snapshot.ts --check-pin --kind tablet") kind=tablet ;;
-  "run -A scripts/release-snapshot.ts --check-pin --kind phone") kind=phone ;;
   "run -A scripts/release-snapshot.ts --check-pin --kind go") kind=go ;;
   "run -A scripts/release-snapshot.ts --check-pin --kind playwright") kind=playwright ;;
   *) exit 9 ;;
@@ -2423,7 +2422,7 @@ Deno.test("a train carries the snapshot pin --check-pin accepts into its new pin
   assertEquals(run.state.steps.snapshot, { dropped: null });
 });
 
-Deno.test("a train carries every device's snapshot pin, each checked by its own kind", async () => {
+Deno.test("a train carries every device's snapshot pin, each checked by its own kind, and drops the retired phone's", async () => {
   const run = await pinsWrite(
     `[ "$kind" = tablet ] || exit 0
 echo 'snapshot pin refused: built from bootSetup 1, not 2' >&2; exit 3`,
@@ -2439,7 +2438,8 @@ echo 'snapshot pin refused: built from bootSetup 1, not 2' >&2; exit 3`,
   );
   assertEquals(run.code, 0, run.output);
   assertEquals(run.pins.snapshot, { release: "d" });
-  assertEquals(run.pins.phoneSnapshot, { release: "p" });
+  // The phone restores the tablet's: its own kind is gone.
+  assertEquals("phoneSnapshot" in run.pins, false);
   assertEquals(run.pins.goSnapshot, { release: "g" });
   assertEquals("tabletSnapshot" in run.pins, false);
   assertStringIncludes(
@@ -2503,7 +2503,7 @@ echo 'snapshot pin refused: the snapshot holds node@1, the live index offers nod
   );
 });
 
-Deno.test("a resumed train keeps an earlier run's dropped tablet or phone pin until it is back", async () => {
+Deno.test("a resumed train keeps an earlier run's dropped tablet pin until it is back", async () => {
   // The earlier run dropped the tablet's; this one keeps the desktop's.
   const still = await pinsWrite(
     "exit 0",
@@ -2535,6 +2535,19 @@ Deno.test("a resumed train keeps an earlier run's dropped tablet or phone pin un
   );
   assertEquals(back.code, 0, back.output);
   assertEquals(back.state.steps.snapshot, { dropped: null });
+});
+
+Deno.test("a resumed train forgets an earlier run's dropped phone pin: that kind is gone", async () => {
+  // Started before the phone restored the tablet's snapshot, resumed after:
+  // no desktop pin either, so the line would otherwise stay as the
+  // desktop's and ask for a phone recapture that --kind phone refuses.
+  const run = await pinsWrite(
+    "exit 0",
+    { steps: { snapshot: { dropped: "phoneSnapshot: built from x, not y" } } },
+    { snapshots: { tabletSnapshot: { release: "t" } } },
+  );
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.state.steps.snapshot, { dropped: null });
 });
 
 Deno.test("a resumed train that drops another pin keeps an earlier run's record of a pin still absent", async () => {

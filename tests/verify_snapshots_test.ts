@@ -59,7 +59,7 @@ function pin(
   };
 }
 
-/** Four kinds as a train pins them: desktop > tablet > phone, go > phone. */
+/** Three kinds as a train pins them: desktop > tablet, and Go beside them. */
 function fixture(): Record<string, Record<string, unknown>> {
   return {
     snapshot: pin(
@@ -80,14 +80,6 @@ function fixture(): Record<string, Record<string, unknown>> {
       399_245_312,
       94_664_921,
       1267,
-    ),
-    phoneSnapshot: pin(
-      "snapshot-phone-t",
-      [],
-      null,
-      142_671_872,
-      31_212_448,
-      630,
     ),
     goSnapshot: pin(
       "snapshot-go-t",
@@ -136,7 +128,7 @@ Deno.test("a pinned but unmeasured Go snapshot is still refused when the train i
   ]);
 });
 
-Deno.test("a train's four snapshots pass", () => {
+Deno.test("a train's three snapshots pass", () => {
   assertEquals(verifySnapshotPins(fixture()), []);
 });
 
@@ -147,34 +139,19 @@ Deno.test("on a kernel whose root is a YurtFS store, a pin of a zip without the 
     sequence: "7",
     hash: "2".repeat(64),
   };
-  for (const key of ["snapshot", "tabletSnapshot", "goSnapshot"]) {
+  for (const key of ["snapshot", "goSnapshot"]) {
     pins[key].store = { identity, files: 2, bytes: 640, pieceBytes: 600 };
   }
   // Undefined (a kernel not asked) takes either, as acceptedSnapshot.
   assertEquals(verifySnapshotPins(pins), []);
-  // Today's kernel restores none of the three that carry one.
+  // Today's kernel restores neither of the two that carry one.
   assertEquals(verifySnapshotPins(pins, { rootStore: false }), [
     "desktop: the pinned snapshot carries a YurtFS root store, and this kernel keeps its root filesystem in its memory",
-    "tablet: the pinned snapshot carries a YurtFS root store, and this kernel keeps its root filesystem in its memory",
     "go: the pinned snapshot carries a YurtFS root store, and this kernel keeps its root filesystem in its memory",
   ]);
   assertEquals(verifySnapshotPins(pins, { rootStore: true }), [
-    "phone: the pinned snapshot holds the kernel memory alone, and this kernel's root filesystem is a YurtFS store that it does not hold; capture it again",
+    "tablet: the pinned snapshot holds the kernel memory alone, and this kernel's root filesystem is a YurtFS store that it does not hold; capture it again",
   ]);
-});
-
-Deno.test("a phone snapshot with Python in it is refused", () => {
-  const problems = problemsWith("phoneSnapshot", (pin) => {
-    pin.contents.packages.push(release("python", "3.14.7"));
-  });
-  assertEquals(problems, ["phone: holds python"]);
-});
-
-Deno.test("a phone snapshot built with a Python set is refused", () => {
-  const problems = problemsWith("phoneSnapshot", (pin) => {
-    pin.builtFrom.pythonSet = `${IMAGE}/python@3.14.7-yurt_0:3`;
-  });
-  assertStringIncludes(problems.join("\n"), "phone: built with a Python set");
 });
 
 Deno.test("a desktop snapshot without numpy is refused", () => {
@@ -242,30 +219,12 @@ Deno.test("the desktop's Python snapshot with go in it is refused", () => {
   );
 });
 
-Deno.test("a Go snapshot is held to be larger than the phone's, not to the desktop's order", () => {
-  // Larger or smaller than the desktop's Python one: either is fine.
-  assertEquals(
-    problemsWith("goSnapshot", (pin) => {
-      pin.memoryBytes = 600_000_000;
-      pin.restorePeakMiB = 2600;
-      pin.size = 140_000_000;
-    }),
-    [],
-  );
-  assertEquals(
-    problemsWith("goSnapshot", (pin) => {
-      pin.memoryBytes = 142_671_872;
-    }),
-    ["memoryBytes: go (142671872) is not larger than phone (142671872)"],
-  );
-});
-
-Deno.test("a phone snapshot as large as the tablet's is refused", () => {
-  const problems = problemsWith("phoneSnapshot", (pin) => {
-    pin.memoryBytes = 399_245_312;
+Deno.test("a tablet snapshot as large as the desktop's is refused", () => {
+  const problems = problemsWith("tabletSnapshot", (pin) => {
+    pin.memoryBytes = 546_701_312;
   });
   assertEquals(problems, [
-    "memoryBytes: tablet (399245312) is not larger than phone (399245312)",
+    "memoryBytes: desktop (546701312) is not larger than tablet (546701312)",
   ]);
 });
 
@@ -275,7 +234,7 @@ Deno.test("the Playwright snapshot is optional, holds node and loads playwright-
   assertEquals(OPTIONAL_KINDS.includes("playwright"), true);
   assertEquals(SNAPSHOT_EXPECTED.playwright.has, ["node"]);
   assertEquals(SNAPSHOT_EXPECTED.playwright.playwright, true);
-  for (const kind of ["desktop", "tablet", "phone", "go"] as const) {
+  for (const kind of ["desktop", "tablet", "go"] as const) {
     assertEquals(SNAPSHOT_EXPECTED[kind].playwright, false);
   }
   assertEquals(verifySnapshotPins(fixture()), []);
@@ -300,34 +259,24 @@ Deno.test("the Playwright snapshot is optional, holds node and loads playwright-
   ]);
 });
 
-Deno.test("the order holds across a kind that is not pinned", () => {
-  const pins = fixture();
-  delete pins.tabletSnapshot;
-  delete pins.goSnapshot;
-  (pins.phoneSnapshot as unknown as Pinned).restorePeakMiB = 3000;
-  assertEquals(verifySnapshotPins(pins, { complete: false }), [
-    "restorePeakMiB: desktop (2459) is not larger than phone (3000)",
-  ]);
-});
-
 Deno.test("a missing or unmeasured snapshot is refused only when the train is complete", () => {
   const pins = fixture();
   delete pins.tabletSnapshot;
-  delete (pins.phoneSnapshot as unknown as Pinned).restorePeakMiB;
+  delete (pins.snapshot as unknown as Pinned).restorePeakMiB;
   assertEquals(verifySnapshotPins(pins), [
+    "desktop: the pin records no restorePeakMiB (scripts/measure-boot.ts)",
     "tablet: no tabletSnapshot pin",
-    "phone: the pin records no restorePeakMiB (scripts/measure-boot.ts)",
   ]);
   assertEquals(verifySnapshotPins(pins, { complete: false }), []);
 });
 
 Deno.test("a live probe is held to its kind", () => {
   const probe: SnapshotProbe = {
-    kind: "phone",
+    kind: "tablet",
     restored: true,
     restoredBytes: 1,
     processes: [],
-    python: false,
+    python: true,
     go: false,
     playwright: false,
     goCompiled: null,
@@ -338,8 +287,8 @@ Deno.test("a live probe is held to its kind", () => {
     df: "",
   };
   assertEquals(verifySnapshotProbe(probe), []);
-  assertEquals(verifySnapshotProbe({ ...probe, python: true }), [
-    "phone: python3 is on the PATH",
+  assertEquals(verifySnapshotProbe({ ...probe, python: false }), [
+    "tablet: python3 is not on the PATH",
   ]);
   assertEquals(
     verifySnapshotProbe({
@@ -352,7 +301,7 @@ Deno.test("a live probe is held to its kind", () => {
     ["desktop: import zmq fails"],
   );
   assertEquals(verifySnapshotProbe({ ...probe, restored: false }), [
-    "phone: not restored from its snapshot",
+    "tablet: not restored from its snapshot",
   ]);
 });
 
@@ -413,8 +362,8 @@ Deno.test("compiledPackages reads the packages go build -x compiled", () => {
 
 Deno.test("a pin of another format than the page's is refused", () => {
   const pins = fixture();
-  (pins.phoneSnapshot as Record<string, unknown>).format = 3;
+  (pins.tabletSnapshot as Record<string, unknown>).format = 3;
   assertEquals(verifySnapshotPins(pins), [
-    "phone: the pinned snapshot is format 3, not 4: a gzip of the kernel memory, from before the zip; capture it again",
+    "tablet: the pinned snapshot is format 3, not 4: a gzip of the kernel memory, from before the zip; capture it again",
   ]);
 });

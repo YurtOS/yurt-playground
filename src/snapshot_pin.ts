@@ -21,27 +21,26 @@ export const SANDBOX_SNAPSHOT_NAME = "snapshot/sandbox.seal.zip";
 export const SANDBOX_SNAPSHOT_PATH = `./${SANDBOX_SNAPSHOT_NAME}`;
 
 /**
- * Which snapshot a device restores by default (until a boot of the slim
- * image fits a phone again), each made from the slim image: a desktop the
- * one with the Python set and Jupyter installed; a tablet the one with
- * python alone installed; a phone the image as it boots, without Python.
+ * Which snapshot a device restores by default, each made from the slim
+ * image: a desktop the one with the Python set and Jupyter installed; a
+ * tablet or phone the tablet's, with python alone installed
+ * (src/device.ts platformSnapshotKind).
  * A desktop that asks for Go (`?env=go`, or Go on the start screen:
  * src/device.ts chooseEnv) restores the Go one instead: the go package and
  * a build cache that already holds the standard library it compiled, no
  * Python. Each has its own
  * pins.json entry, file, capture mode and release tag; the checks are the
- * same. A phone's or tablet's page asks for no Python set, so it restores
- * only a snapshot without one (checkPythonSet); a Go page asks about the
- * go package (`builtFrom.pythonSet` then holds that package's layer key).
+ * same. A phone's or tablet's page asks the live index about python
+ * alone (checkPythonSet); a Go page asks about the go package
+ * (`builtFrom.pythonSet` then holds that package's layer key).
  */
-export type SnapshotKind = "desktop" | "tablet" | "phone" | "go" | "playwright";
+export type SnapshotKind = "desktop" | "tablet" | "go" | "playwright";
 
 export const SNAPSHOT_KINDS: Record<SnapshotKind, {
   /** Its artifacts/pins.json entry. */
   pinKey:
     | "snapshot"
     | "tabletSnapshot"
-    | "phoneSnapshot"
     | "goSnapshot"
     | "playwrightSnapshot";
   /** Its file in the site, published in parts. */
@@ -52,7 +51,6 @@ export const SNAPSHOT_KINDS: Record<SnapshotKind, {
   capture:
     | "capture"
     | "capture-tablet"
-    | "capture-phone"
     | "capture-go"
     | "capture-playwright";
   /** Its release tag, before the train. */
@@ -71,13 +69,6 @@ export const SNAPSHOT_KINDS: Record<SnapshotKind, {
     asset: "tablet.seal.zip",
     capture: "capture-tablet",
     tagPrefix: "snapshot-tablet-",
-  },
-  phone: {
-    pinKey: "phoneSnapshot",
-    name: "snapshot/phone.seal.zip",
-    asset: "phone.seal.zip",
-    capture: "capture-phone",
-    tagPrefix: "snapshot-phone-",
   },
   go: {
     pinKey: "goSnapshot",
@@ -271,9 +262,9 @@ export function checkPythonSet(
   if (live === undefined || live === builtFrom.pythonSet) return;
   throw new SnapshotMismatch(
     live === null
-      // No request at all, the index not asked: a phone, a shell-only
+      // No request at all, the index not asked: a shell-only
       // session, or a page without its pins.
-      ? `this page installs no Python (a phone, a shell-only session, or no pins), and the snapshot holds ${builtFrom.pythonSet}`
+      ? `this page installs no Python (a shell-only session, or no pins), and the snapshot holds ${builtFrom.pythonSet}`
       : builtFrom.pythonSet === null
       ? `the snapshot holds no Python set, the live index offers ${live}`
       : `the snapshot's Python set is ${builtFrom.pythonSet}, the live index offers ${live}`,

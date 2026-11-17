@@ -1,12 +1,13 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  agentSnapshotKind,
   chooseEnv,
   choosePlatform,
   parsePlatform,
+  platformSnapshotKind,
   withEnv,
   withPlatform,
 } from "../src/device.ts";
+import { TABLET_PYTHON_SET } from "../src/snapshot_pin.ts";
 
 Deno.test("a page with no ?platform= runs as its device and writes it into the URL", () => {
   for (const device of ["phone", "tablet", "desktop"] as const) {
@@ -113,8 +114,10 @@ Deno.test("withEnv writes Go into the URL and Python out of it", () => {
   );
 });
 
-Deno.test("the agent's own sandbox is the phone's snapshot on an iPad or iPhone, the tablet's on a desktop", () => {
-  assertEquals(agentSnapshotKind("phone"), "phone");
-  assertEquals(agentSnapshotKind("tablet"), "phone");
-  assertEquals(agentSnapshotKind("desktop"), "tablet");
+Deno.test("a phone restores the tablet's snapshot, with python, like a tablet", () => {
+  assertEquals(platformSnapshotKind("phone"), "tablet");
+  assertEquals(platformSnapshotKind("tablet"), "tablet");
+  assertEquals(platformSnapshotKind("desktop"), "desktop");
+  // The tablet's snapshot is the one that installs python.
+  assertEquals(TABLET_PYTHON_SET.includes("python"), true);
 });

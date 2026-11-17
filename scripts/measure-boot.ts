@@ -210,8 +210,8 @@ if (import.meta.main) {
       };
       await typeAndWait("echo READY-$((6*7))", /READY-42/);
       const seconds = (performance.now() - started) / 1000;
-      // Python as the page's kind should have it: none on a phone, python
-      // alone on a tablet, the set (and Jupyter) on a desktop.
+      // Python as the page's kind should have it: python alone on a phone
+      // or tablet, the set (and Jupyter) on a desktop.
       await typeAndWait(
         "command -v python3 >/dev/null && echo PY-$((1+1))-yes || echo PY-$((1+1))-no",
         /PY-2-(yes|no)/,
