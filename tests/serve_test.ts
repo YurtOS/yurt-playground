@@ -38,6 +38,37 @@ Deno.test("the bundle import map resolves a relative kernel root", () => {
   }
 });
 
+Deno.test("the bundle import map maps every package the kernel's browser host imports", async () => {
+  // deno bundle takes public/import-map.json instead of the kernel's deno.json
+  // imports, so a package the kernel host starts importing (hash-wasm, #4394)
+  // fails the page bundle until it is listed here too.
+  const { kernelPath, imports } = kernelImportMap("../yurtos-kernel");
+  const hostDir = join(
+    kernelPath,
+    "packages/kernel-host-interface-js/kernel-host-interface",
+  );
+  const missing = new Set<string>();
+  for await (const entry of Deno.readDir(hostDir)) {
+    if (!entry.isFile || !entry.name.endsWith(".ts")) continue;
+    if (entry.name.endsWith("_test.ts")) continue;
+    const text = await Deno.readTextFile(join(hostDir, entry.name));
+    for (
+      const match of text.matchAll(
+        /^\s*(?:import|export)\b[^;]*?\bfrom\s+"([^"]+)"/gm,
+      )
+    ) {
+      const specifier = match[1];
+      if (/^(\.|\/|node:|npm:|jsr:|https?:)/.test(specifier)) continue;
+      if (!(specifier in imports)) missing.add(`${specifier} (${entry.name})`);
+    }
+  }
+  assertEquals(
+    [...missing].sort(),
+    [],
+    "packages missing from kernelImportMap",
+  );
+});
+
 Deno.test("playground HTTP responses carry COOP/COEP", async () => {
   const res = await handlePlaygroundRequest(new Request("http://playground/"));
   assertEquals(res.headers.get("Cross-Origin-Opener-Policy"), isolation.coop);
