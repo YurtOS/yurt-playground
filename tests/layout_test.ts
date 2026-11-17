@@ -403,6 +403,17 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
     /<a\s([^>]*data-testid="footer-release-notes"[^>]*)>/,
   )?.[1] ?? "";
   assertEquals(footerNotes.includes(`href="${notes}"`), true);
+  // The images ship GPL, LGPL and MPL programs (BusyBox, Git, make, ...);
+  // the footer points at the release that carries their source and the
+  // third-party license list.
+  const footerSources = footer.match(
+    /<a\s([^>]*data-testid="footer-third-party"[^>]*)>([^<]*)<\/a>/,
+  );
+  assertEquals(footerSources?.[2], "Third-party licenses and source");
+  assertMatch(
+    footerSources?.[1] ?? "",
+    /href="https:\/\/github\.com\/YurtOS\/yurt-playground\/releases\/tag\/gpl-sources-playground-[^"]+"/,
+  );
   // verify.js finds the two links and the train label by these ids.
   assertEquals(navNotes.includes('id="release-notes-link"'), true);
   assertEquals(footerNotes.includes('id="footer-release-notes"'), true);
