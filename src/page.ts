@@ -27,6 +27,7 @@ import { restoreAfterSignIn } from "./openrouter.ts";
 import { mountSidebar } from "./sidebar.ts";
 import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
+  captureRefusal,
   finishCapture,
   markBootEnded,
   saveDownload,
@@ -1298,6 +1299,17 @@ async function runPage(): Promise<void> {
     "click",
     () => location.reload(),
   );
+  // A capture on a phone or tablet page would wait forever: say so, where
+  // scripts/release-snapshot.ts and the reader look, and boot nothing.
+  const refusal = snapshotMode() === "capture"
+    ? captureRefusal(platform)
+    : undefined;
+  if (refusal !== undefined) {
+    markBootEnded(document.documentElement.dataset, true, refusal);
+    status.failure("failed");
+    showFailure("error", refusal);
+    return;
+  }
   // The workspace opens with one action; `?start` (the old terminal page's
   // redirect, and the acceptance tests) skips it.
   if (start === null || new URL(location.href).searchParams.has("start")) {
