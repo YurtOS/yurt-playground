@@ -9,13 +9,9 @@ this file, read its `AGENTS.md` and `org.md` in full, before changing anything.
   `repo: yurtos-rules`, `access: read`), clone it as the tool instructs into a
   directory named exactly `yurtos-rules`, then `register_repo_root` (it rejects
   any other final path segment).
-- If it cannot be obtained, continue read-only work. Before any change beyond
-  the minimum below, tell the user the rules are missing and ask.
-
-Minimum without the rules: work in a linked worktree on a task branch
-(`git worktree add .worktrees/<task> -b <task-branch>`), never in the primary
-checkout; never commit or push to the default branch; never merge without
-explicit permission; ask before touching any remote or shared service.
+- If it cannot be obtained, stop. Do not read, edit or run anything else. Tell
+  the user the rules are missing and that this is an environment problem for
+  them to fix.
 
 Skills load as `yurtos-rules:<skill>` only if the user has installed the Claude
 Code plugin on this machine
@@ -92,24 +88,19 @@ Kernel primitives stay in `yurtos-kernel`. Image composition stays in
 - Pins are git SHA + sha256 in `artifacts/pins.json`. Blobs (`*.wasm`,
   `*.yurtimg`) are gitignored.
 
-## KISS: the simplest thing that works
+## KISS: additions for this repository
 
-Prefer the simplest implementation that satisfies the plan and passes the gates.
-Complexity has to be earned by a locked decision, a failing test, or a measured
-number — never by anticipation.
+org.md "KISS, except where security says otherwise" applies in full, including
+its security carve-out. On top of it, here:
 
-- **Solve the case in front of you.** No configuration knobs, options bags, or
-  abstraction layers added for a caller that doesn't exist yet. This is one page
-  booting one sandbox; when a second consumer appears, generalize then.
+- A locked decision above earns complexity the way the spec does in org.md.
+- This is one page booting one sandbox; when a second consumer appears,
+  generalize then.
 - **Fewest moving parts.** No framework, bundler, or state-management layer
   where a module and the DOM will do. Prefer a direct call into the kernel's JS
   host over a wrapper of our own, and one more function over one more module —
   unless the larger structure is what makes the code readable.
-- **No defensive paths for states that cannot occur.** If an invariant holds,
-  throw on its violation instead of inventing a recovery path nothing exercises.
-  A silent `catch` that hides a broken boot is worse than a loud failure.
-- **Optimize on evidence.** Caching, prefetching, and worker tricks require a
-  measurement that demonstrates the win.
+- A silent `catch` that hides a broken boot is worse than a loud failure.
 - **Simplify before review.** Delete the debug flag, the dead branch, and the
   helper that ended up with one caller. Reviewers read the diff you leave, so a
   smaller one is a faster merge.
@@ -117,19 +108,33 @@ number — never by anticipation.
 Simple is not terse or clever: clear names, obvious control flow, and a comment
 that says _why_ beat a compact expression that has to be decoded.
 
-## The bar: CI green = done
+## Verification
 
-`.github/workflows/ci.yml` is the gate: `deno fmt --check`, `deno lint`,
-`deno check '**/*.ts'`, `deno test --no-check` (with read/write/env/net/run). CI
-checks out `yurtos-kernel` at the pinned rev so `@yurt/*` imports resolve. A
-change is not done until that job is green. Do not claim completion from a local
-pass alone.
+What "done" means is org.md "Done means verified": these local checks pass and
+every required hosted check on the PR is green.
+
+- Local, the commands `.github/workflows/ci.yml` runs:
+
+  ```sh
+  deno fmt --check
+  deno lint
+  deno check '**/*.ts'
+  PLAYGROUND_REQUIRE_ARTIFACTS=1 YURT_KERNEL_ROOT=../yurtos-kernel \
+    deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
+  ```
+
+  `deno.json` resolves `@yurt/*` imports into a sibling `../yurtos-kernel`
+  checkout; CI checks it out at the pinned rev. The tests need the pinned blobs
+  (`scripts/install-pinned-artifacts.sh`; CI prepares the rest in
+  `.github/actions/site-inputs`). Without `PLAYGROUND_REQUIRE_ARTIFACTS=1` some
+  artifact-backed tests skip instead of failing, and such a run is not a pass.
+- Hosted: `.github/workflows/ci.yml`.
 
 A pull request skips the slow acceptance scenes (`MERGE_TIER` in ci.yml:
-playground, jupyterlite, slim); they run on every push to main. Add the
-`ci:full` label to a pull request that changes what they cover (the boot, the
-terminal, the notebook pages, the slim image) so they run before the merge, and
-check main's run after merging one without it.
+playground, jupyterlite, slim, browser_bridge); they run on every push to main.
+Add the `ci:full` label to a pull request that changes what they cover (the
+boot, the terminal, the notebook pages, the slim image, the browser bridge) so
+they run before the merge, and check main's run after merging one without it.
 
 ### Hosted CI budget during draft review
 
@@ -166,24 +171,14 @@ round.
   link to this section and the instruction to follow it in their briefs,
   including reviewer briefs.
 
-## Development procedure (non-trivial work)
+## Development procedure: additions for this repository
 
-Always work in your own worktree. Follow the superpowers loop:
+The procedure is org.md "Workflow" (superpowers loop, red test first, review by
+both a Claude and a Codex agent) and "Merge authority". On top of it, here:
 
-1. **Brainstorm** — `superpowers:brainstorming`.
-2. **Plan** — `superpowers:writing-plans`. Plans live under
-   `docs/superpowers/plans/YYYY-MM-DD-<slug>.md`. Specs under
-   `docs/superpowers/specs/`.
-3. **Implement with TDD** — `superpowers:test-driven-development`. Red test
-   first. Playwright specs live under `tests/`. They run the installed Google
-   Chrome through `scripts/browser.ts`; `PLAYGROUND_BROWSER=chromium` runs
-   Playwright's own build instead (after `playwright install chromium`).
-4. **Verify** — `superpowers:verification-before-completion`.
-5. **Request review** — `superpowers:requesting-code-review`.
-6. **Receive review** — `superpowers:receiving-code-review`.
-
-Never merge a pull request unless the user has explicitly ordered that merge in
-the current task.
+- Playwright specs live under `tests/`. They run the installed Google Chrome
+  through `scripts/browser.ts`; `PLAYGROUND_BROWSER=chromium` runs Playwright's
+  own build instead (after `playwright install chromium`).
 
 ## Code standards
 
@@ -194,48 +189,31 @@ the current task.
 - Comments are short and explain non-obvious constraints, not the change
   history.
 
-## Keep PRs reviewable
+## Keep PRs reviewable: additions for this repository
 
-A PR must be reviewable as a single cohesive unit — one idea, one test strategy
-— that one reviewer (human or agent) can hold in mind and check in one pass.
-Size is a proxy for that, not the goal. Aim for roughly **1000 lines of new or
-changed logic**, weighted by review cost: tests count at about half (repetitive
-tests are cheap to check), while mechanical moves, renames, formatting-only
-changes, `docs/` (specs, plans, ADRs) and other prose-only files, and
-regenerated output (ABI codegen, lockfiles, vendored or generated fixtures) are
-free. Regenerated output must be isolated in its own commit and named as
-generated in the PR description. Huge PRs cannot be reviewed, so they get
-rubber-stamped or stall.
+PR size, how test lines are counted and reported, stacking and retargeting, and
+mechanical-only PRs are org.md "Pull requests". On top of it, here:
 
-This is a soft target, not a hard cap. Going over is fine, up to roughly 2-3k
-weighted lines, when the PR is one cohesive change that doesn't split cleanly;
-say why in the PR description. Beyond that, ask the user before opening it.
-
-- **Plan the split up front.** During `superpowers:writing-plans`, cut the work
-  into slices that each build, pass CI, and make sense alone (e.g. refactor or
-  plumbing → behavior → callers/migration → cleanup). Do not write the whole
-  change and slice it afterwards.
+- `docs/` (specs, plans, ADRs) counts as prose, so it is free. Name regenerated
+  output as generated in the PR description, as well as putting it in its own
+  commit.
+- Each slice builds, passes CI, and makes sense alone (e.g. refactor or plumbing
+  → behavior → callers/migration → cleanup). Keep the stack's overall goal in
+  the first PR's description.
 - **Don't slice just to hit a number.** Splitting a cohesive change into PRs
   that can't be understood alone makes review harder, not easier. Split along
   real seams, not line counts.
-- **Stack the PRs.** Each slice is its own PR based on the previous slice's
-  branch (the first on `main`); say "Stack: N/M, depends on #X" in each
-  description and keep the stack's overall goal in the first PR. Retarget to
-  `main` as lower PRs merge. Never merge a PR without an explicit order from the
-  user.
-- **Mechanical changes ride alone.** Renames, moves, and formatting-only changes
-  go in their own PR so reviewers can skim them; don't mix them with logic
-  changes.
 - Size is never a reason to skip tests or the red-test-first rule; a slice's
   tests ship in that slice.
 - If a PR you're working on is already well over the target, say so to the user
   and propose a split rather than adding to it.
 
-## Conventions
+## Conventions: additions for this repository
 
-- Commits: short imperative subject (`feat:`, `fix:`, `docs:`, `chore:`).
-- Do not add files outside the documented layout without a reason. Do not create
-  markdown files speculatively.
+Commit messages, plan and spec paths and markdown files follow org.md
+"Conventions". On top of it, here:
+
+- Do not add files outside the documented layout without a reason.
 - Never commit `artifacts/*.wasm` or `artifacts/*.yurtimg`.
 
 ## When in doubt
