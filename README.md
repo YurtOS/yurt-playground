@@ -279,7 +279,7 @@ Packages are signed and published in
 <!-- snapshot-table:start (scripts/snapshot-table.ts) -->
 <!-- deno-fmt-ignore-start -->
 
-Train `playground-2026.11.17-cb7a4b7.3`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
+Train `playground-2026.11.17-cb7a4b7.4`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
 
 The desktop's holds the Python set and starts the Notebook, the tablet's the interpreter alone, the phone's no Python; Go's, which a desktop browser restores when Go is chosen, holds the go package and its standard library already compiled, and no Python. A snapshot is sealed with no process in it, so nothing runs or is imported until a restore starts the shell (and, on a desktop, Jupyter). `deno run -A scripts/verify-snapshots.ts [--files] [--live]` checks each against its kind.
 
