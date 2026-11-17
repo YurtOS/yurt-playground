@@ -1,5 +1,7 @@
 # Local Agent Feasibility (#140, phase 0)
 
+Tracker: https://github.com/YurtOS/yurt-playground/issues/140
+
 ## Question
 
 Can a small instruction model run in the playground tab through WebGPU, beside a
