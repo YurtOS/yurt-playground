@@ -286,7 +286,7 @@ The desktop's holds the Python set and starts the Notebook, the tablet's the int
 | Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
 | --- | --- | --- | --- | --- | --- | --- |
 | desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.11.17-cb7a4b7` | 143.3 MB in 7 parts | 593.6 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
-| tablet | tablet (iPad): `?platform=tablet` | not pinned: boots the image | | | | |
+| tablet | tablet (iPad): `?platform=tablet` | `snapshot-tablet-playground-2026.11.17-cb7a4b7` | 77.1 MB in 4 parts | 240.7 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
 | phone | phone (iPhone): `?platform=phone` | not pinned: boots the image | | | | |
 | go | desktop browser that chose Go: `?platform=desktop&env=go` | not pinned: boots the image | | | | |
 | playwright | desktop browser that chose Playwright: `?platform=desktop&env=playwright` | not pinned: the desktop's, with a live install | | | | |
