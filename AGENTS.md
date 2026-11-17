@@ -41,9 +41,6 @@ If a rule here and an org rule disagree, stop and tell the user.
 - **Languages:** TypeScript on Deno (`deno.json`).
 - **Docs:** [`README.md`](./README.md) for what the playground is today,
   [`docs/MAINTAINING.md`](./docs/MAINTAINING.md) for releasing and snapshots.
-  The original plan,
-  [`docs/superpowers/plans/2026-08-17-browser-yurt-playground.md`](./docs/superpowers/plans/2026-08-17-browser-yurt-playground.md),
-  is history.
 
 ## Sibling repos (do not reimplement here)
 
