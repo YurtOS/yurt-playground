@@ -183,7 +183,8 @@ if (import.meta.main) {
           status: document.documentElement.dataset.yurtStatus ?? "",
           off: buttons.map((button) => button.disabled),
         });
-      // When the page had the file, in the page's own clock.
+      // When the page had the file, in the page's own clock. Both hooks
+      // come off once read (__saveUnhook).
       const log = console.log;
       console.log = (...args: unknown[]) => {
         if (String(args[0]).startsWith("[sandbox] saved ")) {
@@ -196,6 +197,10 @@ if (import.meta.main) {
         attributes: true,
         attributeFilter: ["data-yurt-status"],
       });
+      (globalThis as { __saveUnhook?: () => void }).__saveUnhook = () => {
+        watch.disconnect();
+        console.log = log;
+      };
       for (const button of buttons) {
         watch.observe(button, {
           attributes: true,
@@ -222,11 +227,12 @@ if (import.meta.main) {
     await cellEnded;
     // The sandbox is said to be going from the seal on, before its file;
     // nothing that needs it can be used until it runs again.
-    const saveSeen = await page.evaluate(() =>
-      (globalThis as {
+    const saveSeen = await page.evaluate(() => {
+      (globalThis as { __saveUnhook?: () => void }).__saveUnhook?.();
+      return (globalThis as {
         __saveSeen?: { at: number; status: string; off: boolean[] }[];
-      }).__saveSeen ?? []
-    );
+      }).__saveSeen ?? [];
+    });
     const left = saveSeen.findIndex((entry) =>
       entry.status !== "running" && entry.status !== "<file>"
     );

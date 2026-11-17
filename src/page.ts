@@ -593,6 +593,14 @@ function boot(
       if (!notebookReady && installingPython && msg.text !== "") {
         notebook.installing(msg.text);
       }
+      // A Save or Load whose sandbox did not come up: the cell waits for
+      // the fresh one now, not for the one it was saving or restoring.
+      if (
+        !notebookReady && !noPython &&
+        msg.text.startsWith("starting a fresh sandbox")
+      ) {
+        notebook.installing(msg.text);
+      }
       status.progress(msg.text || "running");
       if (booting) rememberBooting(msg.text || "running");
       if (msg.text === "") yurtState.running();
@@ -646,8 +654,9 @@ function boot(
     // cell waits for its Jupyter as at the first boot.
     if (msg.type === "sandbox-replacing") {
       // Not running until the new one says so (its empty status): a
-      // driver's exec fails meanwhile ("the sandbox is not running"; it
-      // polls `yurt.status` for the new one), and the controls that need
+      // driver's exec fails meanwhile ("the sandbox is being sealed", then
+      // "the sandbox is not running"; it polls `yurt.status` for the new
+      // one), and the controls that need
       // a sandbox are disabled. A reload now is a cut-off boot, as at Start.
       yurtState.set("booting");
       booting = true;
