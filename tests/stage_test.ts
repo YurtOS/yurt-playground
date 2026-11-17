@@ -9,6 +9,7 @@ import {
 import { handlePlaygroundRequest } from "../src/serve.ts";
 import { loadPins, resolveArtifacts } from "../src/pins.ts";
 import {
+  drainDirtyPaths,
   stageYurtimg,
   vfsReadWhole,
   vfsStat,
@@ -841,5 +842,83 @@ Deno.test("a failed or malformed layout probe stops staging instead of choosing 
         `rc ${rc}: ${entry.path} staged through the legacy head`,
       );
     }
+  }
+});
+
+Deno.test({
+  name:
+    "drainDirtyPaths returns the path of a file created since the last drain, from the pinned kernel (#337)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const pinned = await pinnedKernel();
+    if (!pinned) return;
+    const { mk } = pinned;
+    drainDirtyPaths(mk);
+    const path = new TextEncoder().encode("/drained-337");
+    const open = new Uint8Array(12 + path.length);
+    const view = new DataView(open.buffer);
+    view.setUint32(0, 0o101, true); // O_WRONLY | O_CREAT
+    view.setUint32(4, 0o644, true);
+    view.setUint32(8, path.length, true);
+    open.set(path, 12);
+    const fd = Number(mk.syscall(METHOD.KERNEL_FS_OPEN, open, 0).rc);
+    assert(fd >= 0, `open: rc=${fd}`);
+    const fdBytes = new Uint8Array(4);
+    new DataView(fdBytes.buffer).setUint32(0, fd, true);
+    mk.syscall(METHOD.KERNEL_FS_CLOSE, fdBytes, 0);
+    assertEquals(drainDirtyPaths(mk), ["/drained-337"]);
+    assertEquals(drainDirtyPaths(mk), []);
+  },
+});
+
+Deno.test("drainDirtyPaths reads tagged records: a PATH's path, an ATTR's name hint when it has one", () => {
+  const enc = new TextEncoder();
+  /** One record: tag, 16-byte identity, u32 length, path. */
+  const record = (tag: number, path: string) => {
+    const bytes = enc.encode(path);
+    const out = new Uint8Array(21 + bytes.length);
+    out[0] = tag;
+    out.fill(9, 1, 17);
+    new DataView(out.buffer).setUint32(17, bytes.length, true);
+    out.set(bytes, 21);
+    return out;
+  };
+  const drains = [
+    [record(0, "/usr/bin/a"), record(0, "/etc"), record(1, "/usr/lib/b")],
+    [record(1, "")],
+    [],
+  ].map((records) => {
+    const out = new Uint8Array(records.reduce((n, r) => n + r.length, 0));
+    let at = 0;
+    for (const r of records) {
+      out.set(r, at);
+      at += r.length;
+    }
+    return out;
+  });
+  const kernel = {
+    scratchLen: 64 * 1024,
+    syscall(method: number) {
+      assertEquals(method, 26);
+      const response = drains.shift()!;
+      return { rc: BigInt(response.length), response };
+    },
+    // deno-lint-ignore no-explicit-any
+  } as any;
+  assertEquals(drainDirtyPaths(kernel), ["/usr/bin/a", "/etc", "/usr/lib/b"]);
+  assertEquals(drains.length, 0);
+  // A record cut short, or of a tag this page does not know: said, never
+  // read as paths.
+  for (const bad of [record(0, "/usr").subarray(0, 23), record(2, "/usr")]) {
+    drains.push(bad);
+    let threw = "";
+    try {
+      drainDirtyPaths(kernel);
+    } catch (error) {
+      threw = String(error);
+    }
+    assert(threw.includes("a malformed record at byte 0"), threw);
+    drains.length = 0;
   }
 });
