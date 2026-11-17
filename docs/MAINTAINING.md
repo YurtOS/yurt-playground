@@ -70,6 +70,14 @@ many browser-only ones pile up. `--check` shows the desktop app as `BEHIND` (not
 installers again. Leave yurt-sandbox's `scripts/desktop-host-pins.env` at the
 desktop's train meanwhile: it describes the host, not the page.
 
+Each train also needs its own copyleft source release, before the page is
+deployed with the new pins: `gpl-sources-playground-<train>` in this repository,
+with the corresponding source of the GPL, LGPL and MPL components in its images
+and snapshots and a `THIRD_PARTY_SOURCES.md` (the
+`gpl-sources-playground-2026.11.17-cb7a4b7.4` release shows the layout). Then
+point the footer's "Third-party licenses and source" link in `public/index.html`
+at it. Nothing generates that release or checks the link's train yet.
+
 ## The suspend/resume kernel
 
 The _Python 3 (Yurt, suspend/resume)_ kernelspec runs a CPython built so the
