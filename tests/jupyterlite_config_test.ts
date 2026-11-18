@@ -20,7 +20,7 @@ Deno.test("the JavaScript output renderer is disabled in JupyterLite", async () 
 
 Deno.test("no output renderer that fetches a URL the notebook names is loaded", async () => {
   // The page's policy allows its own origin, so a renderer in the page that
-  // fetches what a notebook names makes the page do it (follow-up to #360):
+  // fetches what a notebook names makes the page do it:
   // - @jupyterlab/vega5-extension fetches a Vega or Vega-Lite spec's
   //   `data.url`; its output falls back to the bundle's image or text.
   // - @jupyterlab/mermaid-extension lays diagrams out in the page, where an

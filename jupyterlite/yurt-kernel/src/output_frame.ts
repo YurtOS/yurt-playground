@@ -34,8 +34,9 @@
  * Markdown, outputs and cells alike, renders sanitized in the page: the
  * sanitizer drops `meta`, `style`, `link` and `base`, and it keeps its math
  * typesetting, which a frame would lose. The app's sanitizer also drops
- * every URL the markup would fetch, except a `data:` one (markdown_urls.ts). SVG output is already
- * an `<img>` and LaTeX is typeset text, so neither inserts raw HTML.
+ * every URL the markup would fetch, except a `data:` one (markdown_urls.ts).
+ * SVG output is already an `<img>` and LaTeX is typeset text, so neither
+ * inserts raw HTML.
  */
 import type {
   JupyterFrontEnd,
@@ -180,10 +181,12 @@ class OutputFrame extends Widget implements IRenderMime.IRenderer {
 export function activateOutputFrames(
   _app: JupyterFrontEnd,
   rendermime: IRenderMimeRegistry,
-  sanitizer: IRenderMime.ISanitizer,
   themes: IThemeManager | null,
+  sanitizer: IRenderMime.ISanitizer | null,
 ): void {
-  refuseUrlsIn(sanitizer);
+  // The token is optional so that the frames never depend on it; when it is
+  // provided, rendermime holds the same instance.
+  if (sanitizer !== null) refuseUrlsIn(sanitizer);
   refuseUrlsIn(rendermime.sanitizer);
   // JupyterLab's Table of Contents lists a code cell's output headings by
   // parsing its HTML outputs (sanitized, images kept) into an element in the
@@ -228,7 +231,7 @@ export function activateOutputFrames(
 export const outputFramePlugin: JupyterFrontEndPlugin<void> = {
   id: "@yurt/jupyterlite-yurt-kernel:html-output-frames",
   autoStart: true,
-  requires: [IRenderMimeRegistry, ISanitizer],
-  optional: [IThemeManager],
+  requires: [IRenderMimeRegistry],
+  optional: [IThemeManager, ISanitizer],
   activate: activateOutputFrames,
 };

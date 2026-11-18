@@ -405,6 +405,9 @@ async function checkSharedNotebookSettles(
   await context.close();
 }
 
+/** The shared notebook of the Markdown scene; its probe names the file. */
+const MARKDOWN_NOTEBOOK = "markdown-probe.ipynb";
+
 /** A 1x1 PNG: a `data:` image, the one image source Markdown keeps. */
 const DATA_PNG =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
@@ -442,7 +445,7 @@ function markdownProbe(host: string, where: string): string {
     `<input type="image" src="&#8195;data:/../../own-origin-probe.png?md-${where}-emsp">`,
     // An ASCII space: JupyterLab takes it for a local path and loads the
     // named file from the drive as a blob: URL.
-    '<img alt="md-space" src=" data:/../markdown-probe.ipynb">',
+    `<img alt="md-space" src=" data:/../${MARKDOWN_NOTEBOOK}">`,
     // The Table of Contents renders a Markdown heading on its own.
     `# md-heading ![h](${own("heading")})`,
     `$\\style{background:url(${own("mathjax")})}{y}$`,
@@ -583,8 +586,8 @@ function renderedProbes(page: Page) {
 
 /**
  * Nothing in a notebook's Markdown, and no Vega output, makes the page fetch
- * a URL (the follow-up to #360): Markdown renders in the page, where its
- * policy allows the own origin, so every URL but a `data:` one is refused;
+ * a URL: Markdown renders in the page, where its policy allows the own
+ * origin, so every URL but a `data:` one is refused;
  * Vega would fetch its `data.url`, so it does not render. Checked when a
  * shared notebook opens (its Markdown cell and stored outputs) and after
  * Run All makes the outputs again (trusted), with math still typeset and
@@ -599,8 +602,8 @@ export async function checkMarkdownAndVegaFetchNothing(
   const page = await openSupplied(
     context,
     url,
-    "markdown-probe.ipynb",
-    "markdown-probe.ipynb",
+    MARKDOWN_NOTEBOOK,
+    MARKDOWN_NOTEBOOK,
     markdownNotebook(new URL(url).host),
   );
   await waitForMarkdown(page, "md-probe-stored");
