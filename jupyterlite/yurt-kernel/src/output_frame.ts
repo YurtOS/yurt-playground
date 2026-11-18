@@ -21,6 +21,13 @@
  * - `allow-popups` (and escaping the sandbox) so a link in an output still
  *   opens, in a new tab, as before.
  *
+ * Untrusted output (a stored output of a notebook someone supplied, #336)
+ * is sanitized first, as JupyterLab does inline: raw, it could still reload
+ * its own frame forever (a self-refresh, also in a nested srcdoc frame),
+ * which no rewrite of the markup closed for good. A trusted output, from a
+ * cell the visitor ran, may do that inside its frame, like a `while True`
+ * they ran; clearing it stops it, and reopened it is untrusted.
+ *
  * The frame gets the page's look: JupyterLab's rendered-HTML rules and the
  * theme's `--jp-*` variables, collected from the page's style sheets, and the
  * theme's color scheme. A theme change renders every frame again.
@@ -105,25 +112,12 @@ async function makeHead(): Promise<string> {
     `<script>${OUTPUT_FRAME_SIZER}</script></head>`;
 }
 
-/**
- * The output with its `<meta http-equiv>` pragmas made inert. A refresh to an
- * outside URL is refused by `frame-src 'none'` anyway, but one to the frame
- * itself (`content="0"`) would reload it forever, and with it the CPU. No
- * parse: a check that parses differently from the frame (a template, with
- * scripting off) misses `<col><meta ...>` and `<noscript>` tricks. The
- * tokenizer makes the attribute name only from this literal ASCII text, so
- * renaming every occurrence leaves no pragma; visible text that says
- * "http-equiv" changes too.
- */
-function withoutPragmas(source: string): string {
-  return source.replace(/http-equiv/gi, "data-inert-http-equiv");
-}
-
 /** A `text/html` output in a sandboxed frame sized to its content. */
 class OutputFrame extends Widget implements IRenderMime.IRenderer {
   constructor(options: IRenderMime.IRendererOptions) {
     super();
     this._mimeType = options.mimeType;
+    this._sanitizer = options.sanitizer;
     this.addClass("yurt-OutputFrame");
     this._frame = document.createElement("iframe");
     this._frame.setAttribute("sandbox", OUTPUT_FRAME_SANDBOX);
@@ -134,7 +128,8 @@ class OutputFrame extends Widget implements IRenderMime.IRenderer {
   }
 
   async renderModel(model: IRenderMime.IMimeModel): Promise<void> {
-    this._source = String(model.data[this._mimeType]);
+    const source = String(model.data[this._mimeType]);
+    this._source = model.trusted ? source : this._sanitizer.sanitize(source);
     await this.render();
   }
 
@@ -151,7 +146,7 @@ class OutputFrame extends Widget implements IRenderMime.IRenderer {
     this._frame.srcdoc = top +
       // jp-ThemedContainer: JupyterLab scopes some rendered-HTML rules under it.
       '<body class="jp-ThemedContainer"><div class="yurt-frame-body jp-RenderedHTMLCommon jp-RenderedHTML jp-OutputArea-output" data-mime-type="text/html">' +
-      withoutPragmas(source) + "</div></body></html>";
+      source + "</div></body></html>";
   }
 
   protected onAfterAttach(): void {
@@ -181,6 +176,7 @@ class OutputFrame extends Widget implements IRenderMime.IRenderer {
   };
 
   private _mimeType: string;
+  private _sanitizer: IRenderMime.ISanitizer;
   private _frame: HTMLIFrameElement;
   private _source: string | undefined;
   private _stale = false;
