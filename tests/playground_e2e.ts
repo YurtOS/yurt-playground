@@ -378,27 +378,35 @@ export async function touchKeysWork(page: Page): Promise<void> {
 
   // The terminal's own replies are not the next input: a cursor position
   // query answered while Ctrl is held leaves it held for the letter typed
-  // after it. The query runs a second after Enter, while Ctrl is held, and
-  // `read` takes the reply (ESC [ row ; col R) off the tty, so ash never
-  // reads it as typed input; by the time keys-reply shows, it was answered.
+  // after it. The query goes out two seconds after Enter, and Ctrl is held
+  // before that (keys-reply not shown yet). `read -n` puts the tty in raw
+  // mode and takes the reply (ESC [ row ; col R) up to its R, so ash never
+  // reads it as typed input, and keys-reply shows only if a reply came.
   await prompt();
   await page.keyboard.type(
-    "sleep 1; printf '\\033[6n'; read -rs -t 5 -d R x; echo keys-reply\n",
+    "sleep 2; printf '\\033[6n'; read -rs -t 5 -n 32 -d R x;" +
+      ' [ -n "$x" ] && echo keys-reply\n',
   );
+  const replied = (seen: string[]) =>
+    seen.some((line) => /^(\^\[\[\d+;\d+R?)?keys-reply$/.test(line));
   await tap("ctrl");
+  if (replied(await lines())) throw new Error("Ctrl held after the reply");
   // The tty may echo the reply (^[[row;col, with or without its R) before
-  // read takes it.
-  await waitFor(
-    "query answered",
-    (seen) => seen.some((line) => /^(\^\[\[\d+;\d+R?)?keys-reply$/.test(line)),
-  );
+  // read turns echo off.
+  await waitFor("query answered", replied);
   if (await ctrlPressed() !== "true") {
     throw new Error("a terminal reply let Ctrl go");
   }
-  // Ctrl-C at the empty prompt: a fresh one.
+  // Ctrl-C at the empty prompt: ash shows ^C and a fresh prompt (the bare
+  // prompt before it would match prompt() too early).
   await page.keyboard.type("c");
   if (await ctrlPressed() !== "false") throw new Error("Ctrl still held");
-  await prompt();
+  await waitFor(
+    "Ctrl-C at the prompt",
+    (seen) =>
+      /^\S*[$#] \^C$/.test(seen.at(-2) ?? "") &&
+      /^\S*[$#]$/.test(seen.at(-1) ?? ""),
+  );
 
   // Esc reaches the guest: od shows it as 033, after a Ctrl-D at the start
   // of a line ends od's input.

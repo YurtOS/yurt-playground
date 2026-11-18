@@ -156,8 +156,8 @@ function withTouchKeys(
   // Ctrl is sticky: a tap holds it (aria-pressed) for the next input, a
   // second tap lets it go. That input releases it; only a single character
   // with a control character (a letter typed on the iOS keyboard) becomes
-  // that character. Longer input (a paste, dictation, a composed word, Esc
-  // or Tab) passes unchanged. xterm's own replies (cursor reports, device
+  // that character. Anything else (a paste, dictation, a composed word,
+  // Esc, Tab) passes unchanged. xterm's own replies (cursor reports, device
   // attributes, focus and mouse reports) come through onData too, as an
   // escape sequence: they pass without releasing it, and so do the arrow
   // keys, the only sequences on the bar. A bracketed paste starts with one
