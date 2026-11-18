@@ -226,6 +226,12 @@ const RELOAD_PROBES = [
   `<img src="https://leak.example/?reload-probe-${i}">${payload}`
 );
 
+/** Images on the playground's own origin, absolute and relative: the
+ * page's policy allows them, the output frame's does not, so any request
+ * for one means output markup was laid out in the page (#360 review). */
+const OWN_ORIGIN_PROBE =
+  '<img src="/own-origin-probe.png?absolute"><img src="own-origin-probe.png?relative">';
+
 /** A notebook someone shares: `outputs` stored, or none and code that makes
  * the same outputs when the visitor runs it. */
 function sharedNotebook(stored: boolean): unknown {
@@ -236,7 +242,7 @@ function sharedNotebook(stored: boolean): unknown {
       execution_count: stored ? 1 : null,
       metadata: {},
       outputs: stored
-        ? RELOAD_PROBES.map((html) => ({
+        ? [...RELOAD_PROBES, OWN_ORIGIN_PROBE].map((html) => ({
           output_type: "display_data",
           metadata: {},
           data: { "text/html": html, "text/plain": "reload-probe" },
@@ -244,7 +250,9 @@ function sharedNotebook(stored: boolean): unknown {
         : [],
       source: [
         "from IPython.display import HTML\n",
-        `for h in ${JSON.stringify(RELOAD_PROBES)}: display(HTML(h))\n`,
+        `for h in ${
+          JSON.stringify([...RELOAD_PROBES, OWN_ORIGIN_PROBE])
+        }: display(HTML(h))\n`,
       ],
     }],
   };
@@ -323,13 +331,20 @@ async function checkSettles(
   }
 }
 
-/** Requests that reach the network for leak.example (a refused load never
- * gets here). */
+/** Requests that reach the network for leak.example or for the own-origin
+ * probe images: routed ones, and every one that finished, since a request
+ * JupyterLite's service worker makes for the page (all of /jupyter/'s
+ * same-origin loads) never meets a route. A refused load finishes neither
+ * way. */
 async function routeLeaks(context: BrowserContext): Promise<string[]> {
   const leaks: string[] = [];
+  const probe = /^https:\/\/leak\.example\/|\/own-origin-probe\.png/;
   await context.route("https://leak.example/**", (route) => {
     leaks.push(route.request().url());
     return route.fulfill({ contentType: "text/html", body: "leaked" });
+  });
+  context.on("requestfinished", (request) => {
+    if (probe.test(request.url())) leaks.push(request.url());
   });
   return leaks;
 }
@@ -460,10 +475,12 @@ async function checkHtmlOutputIsolation(page: Page): Promise<void> {
   await runNewCell(
     page,
     `from IPython.display import HTML, Markdown; display(HTML(${
-      JSON.stringify(REQUEST_PROBE)
+      JSON.stringify(REQUEST_PROBE + OWN_ORIGIN_PROBE)
     })); display(Markdown(${
-      JSON.stringify(REQUEST_PROBE)
-    })); print("request-probe", "done")`,
+      // Markdown output renders sanitized in the page, as markdown cells
+      // do, so the page's policy (its own origin) applies there; only the
+      // outside requests are refused (tracked separately).
+      JSON.stringify(REQUEST_PROBE)})); print("request-probe", "done")`,
   );
   // Swallowed here only so a red run, whose page has left, fails below with
   // the page's URL; the output is asserted after that.
