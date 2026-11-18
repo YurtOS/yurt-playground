@@ -141,7 +141,7 @@ function harness(
     seal,
     pins: () => Promise.resolve(PINS),
     key: () => Promise.resolve({ key: TEST_KEY, scope }),
-    held: () => Promise.resolve([TEST_KEY]),
+    held: () => Promise.resolve({ keys: [TEST_KEY], scope }),
     smallDevice: small,
     replace: (box) => {
       // The restore takes the seal out of the box.
@@ -636,7 +636,8 @@ Deno.test("a file signed with a key the worker still holds loads, whichever key 
   const h = harness();
   // Signed while the store was down (OTHER_KEY standing in for the
   // session key), loaded once it is back (TEST_KEY current).
-  h.deps.held = () => Promise.resolve([TEST_KEY, OTHER_KEY]);
+  h.deps.held = () =>
+    Promise.resolve({ keys: [TEST_KEY, OTHER_KEY], scope: "persistent" });
   await loadSandbox(
     h.deps,
     await storedZip(manifestFor(memory.byteLength), memory, OTHER_KEY),

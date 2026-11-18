@@ -267,8 +267,9 @@ export type SandboxFileDeps = {
   /** This origin's save key (src/save_key.ts saveKeys): what Save signs
    * with, and its scope. */
   key: () => Promise<SaveKey>;
-  /** Every key a Load checks against (saveKeys held). */
-  held: () => Promise<CryptoKey[]>;
+  /** Every key a Load checks against, and the current key's scope
+   * (saveKeys held). */
+  held: () => Promise<{ keys: CryptoKey[]; scope: SaveKeyScope }>;
   /** A phone or tablet page. */
   smallDevice: boolean;
   /** Drop the running sandbox and start the shell (and Jupyter) on the
@@ -442,8 +443,7 @@ export function loadSandbox(deps: SandboxFileDeps, file: Blob): Promise<void> {
     let keys: CryptoKey[];
     let scope: SaveKeyScope;
     try {
-      keys = await deps.held();
-      scope = (await deps.key()).scope;
+      ({ keys, scope } = await deps.held());
     } catch (error) {
       return {
         outcome: "refused",

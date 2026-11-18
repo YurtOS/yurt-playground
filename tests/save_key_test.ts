@@ -105,7 +105,7 @@ Deno.test("a file signed while the store was down still loads once it is back: L
   const tag = await signBytes(during.key, bytes("saved while down"));
   down = false;
   assertEquals((await keys.key()).scope, "persistent");
-  const held = await keys.held();
+  const { keys: held } = await keys.held();
   assertEquals(held.length, 2);
   assert(
     (await Promise.all(
@@ -152,4 +152,21 @@ Deno.test("a session key that could not be made is tried again, not kept as a fa
   } finally {
     subtle.generateKey = real;
   }
+});
+
+Deno.test("concurrent calls with the store down share one session key, and held() keeps it", async () => {
+  const keys = saveKeys(() => {
+    throw new Error("blocked");
+  });
+  const [a, b] = await Promise.all([keys.key(), keys.key()]);
+  assert(a.key === b.key, "one session key");
+  const { keys: held } = await keys.held();
+  assert(held.includes(a.key));
+});
+
+Deno.test("held() gives its keys and their scope from one look", async () => {
+  const store = memoryStore();
+  const { keys: held, scope } = await saveKeys(() => store).held();
+  assertEquals(scope, "persistent");
+  assertEquals(held.length, 1);
 });

@@ -127,6 +127,8 @@ export function saveKeys(
   let persistent: CryptoKey | undefined;
   /** The worker's key for while the store fails, once made. */
   let session: CryptoKey | undefined;
+  /** Its making, shared by concurrent calls; cleared when it fails. */
+  let making: Promise<CryptoKey> | undefined;
   /** The store attempt under way, shared by every call. */
   let attempt: Promise<CryptoKey> | undefined;
   /** That attempt has outlasted the bound: calls do not wait for it. */
@@ -153,9 +155,13 @@ export function saveKeys(
     return started;
   };
   const sessionKey = async (): Promise<SaveKey> => {
-    // Not kept when it fails: the next call makes one again.
-    session ??= await make();
-    return { key: session, scope: "session" };
+    // One for the worker, however many calls ask at once; not kept when
+    // it fails: the next call makes one again.
+    making ??= make().then((key) => session = key, (error) => {
+      making = undefined;
+      throw error;
+    });
+    return { key: await making, scope: "session" };
   };
   return {
     /** The key to sign with: the store's, or the worker's session key
@@ -172,26 +178,32 @@ export function saveKeys(
           pending,
           new Promise<never>((_, reject) => {
             timer = setTimeout(() => {
-              overdue = true;
+              // Only for the attempt it timed, not a newer one.
+              if (attempt === pending) overdue = true;
               reject(new Error("the key store did not answer"));
             }, timeoutMs);
           }),
         ]);
         return { key, scope: "persistent" };
       } catch {
+        clearTimeout(timer);
         return await sessionKey();
       } finally {
         clearTimeout(timer);
       }
     },
-    /** Every key a file this worker would load may be signed with: the
-     * one {@link key} gives now, and the session key if one was made. */
-    async held(): Promise<CryptoKey[]> {
-      const now = (await this.key()).key;
-      return session === undefined || session === now ? [now] : [
-        now,
-        session,
-      ];
+    /** Every key a file this worker would load may be signed with (the
+     * one {@link key} gives now, and the session key if one was made), and
+     * that key's scope: from one look. */
+    async held(): Promise<{ keys: CryptoKey[]; scope: SaveKeyScope }> {
+      const { key, scope } = await this.key();
+      return {
+        keys: session === undefined || session === key ? [key] : [
+          key,
+          session,
+        ],
+        scope,
+      };
     },
   };
 }
