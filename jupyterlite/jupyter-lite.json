@@ -3,6 +3,10 @@
   "jupyter-config-data": {
     "appName": "Yurt playground",
     "defaultKernelName": "yurt",
-    "disabledExtensions": ["@jupyterlab/javascript-extension"]
+    "disabledExtensions": [
+      "@jupyterlab/javascript-extension",
+      "@jupyterlab/vega5-extension",
+      "@jupyterlab/mermaid-extension"
+    ]
   }
 }

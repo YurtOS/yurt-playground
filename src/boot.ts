@@ -18,6 +18,8 @@ import { baseToolsHeld } from "./image_tools.ts";
 import {
   GUEST_MEMORY_RESERVATION_BYTES,
   type GuestMemoryPlan,
+  KERNEL_MEMORY_RESERVATION_BYTES,
+  kernelMemoryForRestore,
   planGuestMemory,
   PROBE_LIMIT_BYTES,
 } from "./guest_memory_reservation.ts";
@@ -405,10 +407,15 @@ export function isJavaScriptCore(
 export function playgroundHostState(
   userAgent: string | undefined = globalThis.navigator?.userAgent,
   reservationBytes: number = GUEST_MEMORY_RESERVATION_BYTES,
+  kernelMemoryBytes?: number,
 ):
   & ReturnType<typeof defaultHostState>
-  & { guestMemoryReservationBytes?: number } {
-  // Kernels older than yurtos-kernel#3115 do not read the field.
+  & {
+    guestMemoryReservationBytes?: number;
+    kernelMemoryMaximumBytes?: number;
+  } {
+  // Kernels older than yurtos-kernel#3115 do not read the reservation, and
+  // those older than #4239 not the kernel memory's maximum: both are hints.
   // Only JavaScriptCore runs out of shared-memory reservations.
   if (!isJavaScriptCore(userAgent)) {
     return defaultHostState();
@@ -416,6 +423,10 @@ export function playgroundHostState(
   return {
     ...defaultHostState(),
     guestMemoryReservationBytes: reservationBytes,
+    // Unset is the kernel host's default (1 GiB).
+    ...(kernelMemoryBytes !== undefined &&
+      kernelMemoryBytes !== KERNEL_MEMORY_RESERVATION_BYTES &&
+      { kernelMemoryMaximumBytes: kernelMemoryBytes }),
   };
 }
 
@@ -432,7 +443,8 @@ export async function plannedPlaygroundHostState(
   if (!isJavaScriptCore(userAgent)) return playgroundHostState(userAgent);
   const planned = await plan();
   console.info(
-    `[memory] ${planned.reservationBytes / (1024 * 1024)} MiB per process` +
+    `[memory] ${planned.reservationBytes / (1024 * 1024)} MiB per process, ` +
+      `${planned.kernelMemoryBytes / (1024 * 1024)} MiB for the kernel` +
       (planned.availableBytes === undefined
         ? " (no probe)"
         : `; ${planned.availableBytes >= PROBE_LIMIT_BYTES ? "at least " : ""}${
@@ -440,7 +452,11 @@ export async function plannedPlaygroundHostState(
         } MiB ` +
           `free to reserve, room for ${planned.processes} processes`),
   );
-  return playgroundHostState(userAgent, planned.reservationBytes);
+  return playgroundHostState(
+    userAgent,
+    planned.reservationBytes,
+    planned.kernelMemoryBytes,
+  );
 }
 
 /** Load a kernel for an in-browser sandbox. Every page and worker goes
@@ -465,19 +481,29 @@ export async function restorePlaygroundKernel(
     expect: StoreIdentity;
   },
 ): Promise<Awaited<ReturnType<typeof KernelHostInterface.restore>>> {
-  if (store !== undefined) {
-    return store.api.restore(
-      kernel,
-      image,
-      store,
-      await plannedPlaygroundHostState(),
-    );
-  }
-  return KernelHostInterface.restore(
-    kernel,
-    image,
+  const state = restoreHostState(
     await plannedPlaygroundHostState(),
+    image.kernelMemory.byteLength,
   );
+  if (store !== undefined) {
+    return store.api.restore(kernel, image, store, state);
+  }
+  return KernelHostInterface.restore(kernel, image, state);
+}
+
+/** `state` for restoring `imageBytes` of sealed kernel memory: without its
+ *  smaller kernel maximum when the image would not fit under it with room
+ *  to grow ({@link kernelMemoryForRestore}). */
+export function restoreHostState<
+  T extends { kernelMemoryMaximumBytes?: number },
+>(state: T, imageBytes: number): T {
+  const kernelMemoryMaximumBytes = kernelMemoryForRestore(
+    state.kernelMemoryMaximumBytes,
+    imageBytes,
+  );
+  if (kernelMemoryMaximumBytes === state.kernelMemoryMaximumBytes) return state;
+  const { kernelMemoryMaximumBytes: _dropped, ...rest } = state;
+  return rest as T;
 }
 
 export async function bootPlayground(
