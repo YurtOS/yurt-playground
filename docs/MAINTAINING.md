@@ -42,6 +42,68 @@ branch: a branch older than this preview mode carries the old workflow, which
 deploys to production. Previews carry the production headers (`dist/_headers`:
 the CSP and cross-origin isolation).
 
+## Rolling back production
+
+Production is whatever the last production deploy published. Only a dispatch of
+`deploy-pages.yml` from main with no `ref` makes one (`scripts/deploy-target.sh`
+decides), and it builds the commit main pointed at when it was dispatched
+(`GITHUB_SHA`). The workflow has no input that names a commit: `ref` takes a
+branch and publishes it only as a preview, never main, and a dispatch from a tag
+or any ref that is not a branch is refused. So the current workflow cannot put
+an older commit back into production. Do not try it by dispatching from a branch
+at an old commit either: a commit from before the preview mode (#269) runs its
+own, older workflow, which is written to publish that branch to production.
+There are two ways back.
+
+- **Fast: Cloudflare's rollback.** First cancel every `deploy-pages.yml` run
+  that has not completed (`gh run list -w deploy-pages.yml`, any status but
+  `completed`, then `gh run cancel <id>`): a production one would publish main's
+  head over the rollback, and cancelling a preview does no harm. Then, in the
+  Cloudflare dashboard, open the Pages project that serves
+  `yurt-playground.pages.dev`, then its deployments list, and choose _Rollback_
+  on an earlier production deployment. Cloudflare serves that deployment's files
+  again, as they were built; nothing is rebuilt. Who has dashboard access to
+  that project: _owner to fill in_. Main still holds the bad change, so the next
+  production dispatch publishes it again: follow up with a revert before anyone
+  deploys.
+- **Through main: a revert.** Open a pull request that reverts the change, let
+  its CI pass, merge it, then dispatch production
+  (`gh workflow run deploy-pages.yml --ref main`). That takes about 20 minutes:
+  PR CI and the deploy take about 10 minutes each.
+
+Then check what production serves. `integrity.json` names the commit the live
+site was built from:
+
+```sh
+curl -fsS https://yurt-playground.pages.dev/integrity.json | jq -r .commit
+```
+
+After a revert and a deploy it is main's head; after a Cloudflare rollback, the
+commit of the deployment you rolled back to. Cloudflare switches a few seconds
+after the deploy says it is complete, so check again if the first answer is the
+old one. The `--check` mode of `scripts/release-playground.sh` compares the same
+commit, and the site's `pins.json`, with main. After a Cloudflare rollback its
+`deployed commit` row reads stale until the revert is merged and deployed, and
+so does `deployed pins` if the change you rolled back moved
+`artifacts/pins.json`.
+
+Two inputs change the live page with no deploy, and neither path above rolls
+them back:
+
+- `config/agent-models.json` on this repository's main, which the page reads at
+  load through raw.githubusercontent.com (`src/agent_models_config.ts`): the
+  agent's models and prompts. Merging a change to it is live within about five
+  minutes (GitHub's raw cache). Revert it with a pull request; no deploy needed.
+- YurtOS/yurt-packages' main, which the page reads live for every install
+  (`PACKAGE_REPO_URL` in `src/packages.ts`): `pkg install`, and the Python the
+  page asks the index about. A pinned snapshot whose Python set the index no
+  longer offers is refused, and the page boots the image and installs instead.
+  Undo it in yurt-packages.
+
+A rolled-back page reads both as they are now, not as they were when it was
+built. After a rollback, try the agent pane and a `pkg install` on it, and
+revert the model list too if it depends on the change you rolled back.
+
 ## Releasing a train
 
 A release of the page, kernel, images, desktop app and CLI together is one
