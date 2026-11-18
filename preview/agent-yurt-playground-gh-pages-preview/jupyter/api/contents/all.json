@@ -1,0 +1,43 @@
+{
+  "content": [
+    {
+      "content": null,
+      "created": "2026-11-18T09:01:57.674397Z",
+      "format": null,
+      "hash": null,
+      "hash_algorithm": null,
+      "last_modified": "2026-11-18T09:01:57.674397Z",
+      "mimetype": null,
+      "name": "suspend-resume.ipynb",
+      "path": "suspend-resume.ipynb",
+      "size": 1779,
+      "type": "notebook",
+      "writable": true
+    },
+    {
+      "content": null,
+      "created": "2026-11-18T09:01:57.674449Z",
+      "format": null,
+      "hash": null,
+      "hash_algorithm": null,
+      "last_modified": "2026-11-18T09:01:57.674449Z",
+      "mimetype": null,
+      "name": "welcome.ipynb",
+      "path": "welcome.ipynb",
+      "size": 835,
+      "type": "notebook",
+      "writable": true
+    }
+  ],
+  "created": "2026-11-18T09:12:42.655614Z",
+  "format": "json",
+  "hash": null,
+  "hash_algorithm": null,
+  "last_modified": "2026-11-18T09:12:42.656008Z",
+  "mimetype": null,
+  "name": "",
+  "path": "",
+  "size": null,
+  "type": "directory",
+  "writable": true
+}

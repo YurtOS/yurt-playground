@@ -1,0 +1,12 @@
+{
+  "commit": "28a63da07a0d4455df98e20cfe3e4cc59c5526b4",
+  "files": {
+    "boot.bundle.js": "ee397418e95185cc8f2eeb5235a7eb9501ef16e983520f686f29d247bfba4d9b",
+    "coordinator.bundle.js": "35c330747642ec1ca44c52fd37a3266d8aae0f036906a9bd199ff37919512d25",
+    "worker_bootstrap.js": "d8b61f2e32d880d25b54135dc209e2e771cfccc13c0c9546ac1195c056fa7d75",
+    "playground-bridge.js": "171dc7978a28391488660991994edb39d87aebc55b131d17ffc0ca83c71cf33a",
+    "yurt_kernel.wasm": "341f8190425612d31851cdd5d34cf3a71b87ffd445eb4ad5ba8bd77fdad7fe58",
+    "playground.yurtimg": "6acab645a8f9f135b717b21ca0e8400d1d59b2c7821a59fa1bcdaf1a885c0fa8",
+    "playground-slim.yurtimg": "11cf89da081edd874da5d4aa52a4775c5d7c23a0e77b24b756b223d345e5387d"
+  }
+}
