@@ -7,7 +7,8 @@
  * (yurt-sandbox#382): neither a guest's `display(Javascript(...))` nor the
  * stored outputs of a supplied notebook whose cells claim to be trusted.
  * And that HTML output cannot navigate or restyle the page: it renders in a
- * sandboxed frame that keeps its styling and fits its content.
+ * sandboxed frame that keeps its styling and fits its content. And that
+ * neither a notebook's Markdown nor a Vega output makes the page fetch a URL.
  *
  * Run: deno run --allow-all tests/jupyterlite_e2e.ts (needs the pinned blobs
  * in artifacts/ and the site from jupyterlite/build.sh in public/jupyter/).
@@ -335,13 +336,13 @@ async function checkSettles(
 }
 
 /** Requests that reach the network for leak.example or for the own-origin
- * probe images: routed ones, and every one that finished, since a request
- * JupyterLite's service worker makes for the page (all of /jupyter/'s
- * same-origin loads) never meets a route. A refused load finishes neither
- * way. */
+ * probes (images, and the Vega data files): routed ones, and every one that
+ * finished, since a request JupyterLite's service worker makes for the page
+ * (all of /jupyter/'s same-origin loads) never meets a route. A refused load
+ * finishes neither way. */
 async function routeLeaks(context: BrowserContext): Promise<string[]> {
   const leaks: string[] = [];
-  const probe = /^https:\/\/leak\.example\/|\/own-origin-probe\.png/;
+  const probe = /^https:\/\/leak\.example\/|\/own-origin-probe\./;
   await context.route("https://leak.example/**", (route) => {
     leaks.push(route.request().url());
     return route.fulfill({ contentType: "text/html", body: "leaked" });
@@ -402,6 +403,236 @@ async function checkSharedNotebookSettles(
   await stored.locator(".jp-Dialog button.jp-mod-accept").click();
   await checkSettles(stored, watch, leaks, "the same output, trusted", true);
   await context.close();
+}
+
+/** The shared notebook of the Markdown scene; its probe names the file. */
+const MARKDOWN_NOTEBOOK = "markdown-probe.ipynb";
+
+/** A 1x1 PNG: a `data:` image, the one image source Markdown keeps. */
+const DATA_PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+/**
+ * Markdown that names the playground's own origin, which the page's policy
+ * allows, in every way Markdown can make the page fetch it: an image by
+ * absolute path, relative path (JupyterLab resolves it to the notebook's
+ * files), protocol-relative and full URL; `srcset`, `<picture><source>`, a
+ * video's `src` and `poster`, an audio `src`, an image button, CSS `url()`
+ * in a style attribute, and a `<link>`. Each URL says where it came from
+ * (`where`) and what it is. Also math, which must still typeset, and a
+ * `data:` image, which must still render.
+ */
+function markdownProbe(host: string, where: string): string {
+  const own = (what: string) => `/own-origin-probe.png?md-${where}-${what}`;
+  return [
+    `md-probe-${where} $x^2$`,
+    `![md-absolute](${own("absolute")})`,
+    `![md-relative](${own("relative").slice(1)})`,
+    `<img src="//${host}${own("protocol-relative")}">`,
+    `<img src="http://${host}${own("full")}">`,
+    `<img srcset="${own("srcset")} 1x">`,
+    `<picture><source srcset="${own("source")}"><img alt="p"></picture>`,
+    `<video src="${own("video")}" poster="${own("poster")}"></video>`,
+    `<audio src="${own("audio")}"></audio>`,
+    `<input type="image" src="${own("input")}">`,
+    `<div style="background:url(${own("style")})">s</div>`,
+    `<ul style="list-style-image:url('${own("list-style")}')"><li>l</li></ul>`,
+    `<link rel="stylesheet" href="${own("link")}">`,
+    `![md-data-image](data:image/png;base64,${DATA_PNG})`,
+    // Unicode spaces before "data:", which the URL parser does not strip.
+    `<img src="&#160;data:/../../own-origin-probe.png?md-${where}-nbsp">`,
+    `<img src="&#65279;data:/x/own-origin-probe.png?md-${where}-bom">`,
+    `<input type="image" src="&#8195;data:/../../own-origin-probe.png?md-${where}-emsp">`,
+    // An ASCII space: JupyterLab takes it for a local path and loads the
+    // named file from the drive as a blob: URL.
+    `<img alt="md-space" src=" data:/../${MARKDOWN_NOTEBOOK}">`,
+    // The Table of Contents renders a Markdown heading on its own.
+    `# md-heading ![h](${own("heading")})`,
+    `$\\style{background:url(${own("mathjax")})}{y}$`,
+    "```mermaid\n" + mermaidProbe(own("mermaid")) + "\n```",
+  ].join("\n\n");
+}
+
+/** A Mermaid diagram with an image node: Mermaid lays diagrams out in the
+ * page, where the image loads under the page's policy. */
+function mermaidProbe(url: string): string {
+  return `flowchart LR\n  M@{ img: "${url}", label: "m", pos: "t", w: 30, h: 30 }`;
+}
+
+/** Vega-Lite and Vega outputs that load their data from the playground's own
+ * origin, with a PNG to fall back to, and a Mermaid output with an image on
+ * it. */
+function fetchingOutputs(where: string): Record<string, unknown>[] {
+  const data = (what: string) => `/own-origin-probe.json?vega-${where}-${what}`;
+  return [
+    {
+      "text/vnd.mermaid": mermaidProbe(
+        `/own-origin-probe.png?mermaid-output-${where}`,
+      ),
+      "text/plain": "mermaid-probe",
+    },
+    {
+      "application/vnd.vegalite.v5+json": {
+        data: { url: data("lite") },
+        mark: "point",
+        encoding: { x: { field: "a", type: "quantitative" } },
+      },
+      "image/png": DATA_PNG,
+      "text/plain": "vega-probe",
+    },
+    {
+      "application/vnd.vega.v5+json": {
+        data: [{ name: "table", url: data("vega") }],
+        marks: [{ type: "symbol", from: { data: "table" } }],
+      },
+      "image/png": DATA_PNG,
+      "text/plain": "vega-probe",
+    },
+  ];
+}
+
+/** A notebook someone shares: a Markdown cell, and a code cell whose stored
+ * outputs are Markdown, Vega and Mermaid, and whose code makes them again. */
+function markdownNotebook(host: string): unknown {
+  return {
+    ...TRUSTED_CLAIM_NOTEBOOK,
+    cells: [
+      {
+        cell_type: "markdown",
+        metadata: {},
+        // A pasted image: JupyterLab shows it as a data: URL.
+        attachments: { "probe.png": { "image/png": DATA_PNG } },
+        source: [
+          markdownProbe(host, "cell"),
+          "\n\n![md-attachment](attachment:probe.png)",
+        ],
+      },
+      {
+        cell_type: "code",
+        execution_count: 1,
+        metadata: {},
+        outputs: [
+          { "text/markdown": markdownProbe(host, "stored") },
+          ...fetchingOutputs("stored"),
+        ].map((data) => ({ output_type: "display_data", metadata: {}, data })),
+        source: [
+          "from IPython.display import Markdown, display\n",
+          `display(Markdown(${JSON.stringify(markdownProbe(host, "run"))}))\n`,
+          `for b in ${
+            JSON.stringify(fetchingOutputs("run"))
+          }: display(b, raw=True)\n`,
+        ],
+      },
+    ],
+  };
+}
+
+/** Wait until the page shows `marker` in rendered Markdown, every cell is
+ * done, and MathJax has typeset the probes; then let loads finish. */
+async function waitForMarkdown(page: Page, marker: string): Promise<void> {
+  await page.waitForFunction(
+    (want) =>
+      [...document.querySelectorAll(".jp-RenderedMarkdown")].some((node) =>
+        node.textContent?.includes(want)
+      ) &&
+      [...document.querySelectorAll(".jp-InputPrompt")].every((node) =>
+        !node.textContent?.includes("*")
+      ),
+    marker,
+    { timeout: 120_000 },
+  );
+  await page.waitForTimeout(3_000);
+}
+
+/** The rendered probes: typeset math, `data:` images that loaded, and Vega
+ * outputs (which should have fallen back to their PNG). */
+function renderedProbes(page: Page) {
+  return page.evaluate(() => ({
+    // Typeset formulas in the Markdown cell and in Markdown output apart.
+    math: [".jp-MarkdownCell", ".jp-OutputArea"].map((where) =>
+      document.querySelectorAll(
+        `${where} .jp-RenderedMarkdown mjx-container`,
+      ).length
+    ),
+    // Mermaid fences as code, and no diagram drawn.
+    mermaidCode: document.querySelectorAll(
+      ".jp-RenderedMarkdown pre code.language-mermaid",
+    ).length,
+    mermaidDrawn: document.querySelectorAll(".jp-RenderedMermaid").length,
+    // Every URL left on an element that loads one by itself.
+    kept: [
+      ...document.querySelectorAll(
+        ".jp-RenderedMarkdown [src], .jp-RenderedMarkdown [poster]",
+      ),
+    ].flatMap((node) =>
+      ["src", "poster"].map((name) => node.getAttribute(name) ?? "")
+    ).filter((url) => url !== "" && !/^(data|attachment):/.test(url)),
+    dataImages: [
+      ...document.querySelectorAll<HTMLImageElement>(
+        'img[alt="md-data-image"]',
+      ),
+    ].filter((image) => image.complete && image.naturalWidth > 0).length,
+    attachment: [
+      ...document.querySelectorAll<HTMLImageElement>(
+        'img[alt="md-attachment"]',
+      ),
+    ].filter((image) =>
+      image.src.startsWith("data:") && image.complete && image.naturalWidth > 0
+    ).length,
+    vega: document.querySelectorAll(".vega-embed").length,
+    fallback: document.querySelectorAll(".jp-RenderedImage img").length,
+  }));
+}
+
+/**
+ * Nothing in a notebook's Markdown, and no Vega output, makes the page fetch
+ * a URL: Markdown renders in the page, where its policy allows the own
+ * origin, so every URL but a `data:` one is refused;
+ * Vega would fetch its `data.url`, so it does not render. Checked when a
+ * shared notebook opens (its Markdown cell and stored outputs) and after
+ * Run All makes the outputs again (trusted), with math still typeset and
+ * `data:` images still shown.
+ */
+export async function checkMarkdownAndVegaFetchNothing(
+  browser: Browser,
+  url: string,
+): Promise<void> {
+  const context = await browser.newContext();
+  const leaks = await routeLeaks(context);
+  const page = await openSupplied(
+    context,
+    url,
+    MARKDOWN_NOTEBOOK,
+    MARKDOWN_NOTEBOOK,
+    markdownNotebook(new URL(url).host),
+  );
+  await waitForMarkdown(page, "md-probe-stored");
+  await waitForMarkdown(page, "md-probe-cell");
+  const opened = { leaks: leaks.splice(0), ...(await renderedProbes(page)) };
+  await waitForKernelIdle(page, 480_000);
+  await page.locator(".lm-MenuBar-itemLabel", { hasText: /^Run$/ }).click();
+  await page.locator(".lm-Menu-itemLabel", { hasText: /^Run All Cells$/ })
+    .click();
+  await waitForMarkdown(page, "md-probe-run");
+  const ran = { leaks: leaks.splice(0), ...(await renderedProbes(page)) };
+  await context.close();
+  // Each phase: two Markdown renderings (the cell and an output), each with
+  // two typeset formulas, a Mermaid fence left as code and a data: image;
+  // the cell's attachment shown; the two Vega outputs shown as their PNG.
+  for (const [what, seen] of [["opened", opened], ["Run All", ran]] as const) {
+    if (
+      seen.leaks.length > 0 || seen.kept.length > 0 ||
+      seen.math.some((n) => n < 2) ||
+      seen.mermaidCode < 2 || seen.mermaidDrawn > 0 || seen.dataImages < 2 ||
+      seen.vega > 0 || seen.fallback < 2 || seen.attachment !== 1
+    ) {
+      fail(
+        `a shared notebook's Markdown or Vega, ${what}: ${
+          JSON.stringify({ opened, ran })
+        }`,
+      );
+    }
+  }
 }
 
 /** What pandas' `Styler._repr_html_` emits for a two-row table with one
@@ -481,9 +712,11 @@ async function checkHtmlOutputIsolation(page: Page): Promise<void> {
       JSON.stringify(REQUEST_PROBE + OWN_ORIGIN_PROBE)
     })); display(Markdown(${
       // Markdown output renders sanitized in the page, as markdown cells
-      // do, so the page's policy (its own origin) applies there; only the
-      // outside requests are refused (tracked separately).
-      JSON.stringify(REQUEST_PROBE)})); print("request-probe", "done")`,
+      // do, and keeps no URL but a data: one, so own-origin images are
+      // refused there too.
+      JSON.stringify(
+        REQUEST_PROBE + OWN_ORIGIN_PROBE,
+      )})); print("request-probe", "done")`,
   );
   // Swallowed here only so a red run, whose page has left, fails below with
   // the page's URL; the output is asserted after that.
@@ -638,6 +871,8 @@ export async function webkitScenes(url: string): Promise<void> {
   try {
     await checkSharedNotebookSettles(browser, url);
     console.log("jupyterlite e2e: webkit: shared notebook output settles");
+    await checkMarkdownAndVegaFetchNothing(browser, url);
+    console.log("jupyterlite e2e: webkit: Markdown and Vega fetch nothing");
     const page = await browser.newPage();
     await page.goto(`${url}/jupyter/notebooks/index.html?path=welcome.ipynb`, {
       waitUntil: "load",
@@ -733,6 +968,8 @@ if (import.meta.main) {
     );
     await checkSharedNotebookSettles(browser, server.url);
     console.log("jupyterlite e2e: a notebook's trusted claim is ignored");
+    await checkMarkdownAndVegaFetchNothing(browser, server.url);
+    console.log("jupyterlite e2e: Markdown and Vega fetch nothing");
 
     const page = await browser.newPage();
     const started = Date.now();
