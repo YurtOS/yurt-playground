@@ -9,8 +9,8 @@
  * puts the guests back on the relay and turns this red
  * (src/guest_port_policy.ts). The coordinator must also have measured
  * what the tab can reserve before building its kernel (#270). On an
- * emulated iPad, the terminal's touch key bar recalls history and pastes
- * (#273). Run: `deno run --allow-all tests/webkit_e2e.ts` (needs the
+ * emulated iPad, the terminal's touch key bar sends Esc, Tab and Ctrl,
+ * recalls history and pastes (#273). Run: `deno run --allow-all tests/webkit_e2e.ts` (needs the
  * kernel checkout and pinned artifacts like playground_e2e.ts).
  */
 import { devices, webkit } from "playwright";
