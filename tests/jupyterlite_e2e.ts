@@ -126,12 +126,6 @@ const TRUSTED_CLAIM_NOTEBOOK = {
   nbformat_minor: 5,
 };
 
-/** Upload {@link TRUSTED_CLAIM_NOTEBOOK} through the file browser as
- * `uploaded`, rename it to `name` when they differ, open it, and fail if its
- * stored output rendered as trusted. The flag is the file's word only:
- * JupyterLite has no notebook signatures to back it. A file uploaded under
- * another extension keeps its stored type when renamed to .ipynb, and the
- * notebook still opens from it. */
 /** Upload `notebook` through the file browser as `uploaded`, rename it to
  * `name` when they differ, and open it in a new page of `context`. */
 async function openSupplied(
@@ -167,12 +161,16 @@ async function openSupplied(
     `${url}/jupyter/notebooks/index.html?path=${name}`,
     { waitUntil: "load" },
   );
-  await page.locator(".jp-OutputArea-output").first().waitFor({
-    timeout: 60_000,
-  });
+  await page.locator(".jp-Notebook").first().waitFor({ timeout: 60_000 });
   return page;
 }
 
+/** Upload {@link TRUSTED_CLAIM_NOTEBOOK} through the file browser as
+ * `uploaded`, rename it to `name` when they differ, open it, and fail if its
+ * stored output rendered as trusted. The flag is the file's word only:
+ * JupyterLite has no notebook signatures to back it. A file uploaded under
+ * another extension keeps its stored type when renamed to .ipynb, and the
+ * notebook still opens from it. */
 async function checkTrustedClaimIgnored(
   browser: Browser,
   url: string,
@@ -187,6 +185,9 @@ async function checkTrustedClaimIgnored(
     name,
     TRUSTED_CLAIM_NOTEBOOK,
   );
+  await page.locator(".jp-OutputArea-output").first().waitFor({
+    timeout: 60_000,
+  });
   const rendered = await page.evaluate(() => ({
     js: (globalThis as { __trustedJs?: number }).__trustedJs,
     trusted: document.querySelectorAll(".jp-OutputArea-output.jp-mod-trusted")
@@ -203,74 +204,157 @@ async function checkTrustedClaimIgnored(
   await context.close();
 }
 
-/** Stored HTML outputs that would reload their frame forever if rendered
- * raw: a self-refresh, one hidden from a template parse by `<col>` or by
- * `<noscript>` (parsed with scripting on in the frame), and one in a nested
- * srcdoc frame with its name entity-encoded. Each reports every load of its
- * document as a refused `<img>`. */
+/** HTML outputs that reload their frame forever wherever a meta refresh may
+ * run: a self-refresh, ones a template parse would miss (`<col>`,
+ * `<noscript>` parsed with scripting on), and nested srcdoc frames, one with
+ * its name entity-encoded and one in a closed shadow root, where neither the
+ * page nor the frame can see it. Each reports every load of its documents as
+ * an image the frame's policy refuses (both browsers forward that report to
+ * the page's console). */
 const SELF_REFRESH = '<meta http-equiv="refresh" content="0">';
+const nestedRefresh = (name: string, tag: string) =>
+  `<iframe srcdoc="<meta ${name}=refresh content=0><img src=https://leak.example/?reload-probe-${tag}>"></iframe>`;
 const RELOAD_PROBES = [
   SELF_REFRESH,
   `<col>${SELF_REFRESH}`,
   `<noscript><style></noscript>${SELF_REFRESH}</style></noscript>`,
-  '<iframe srcdoc="<meta http&#45;equiv=refresh content=0><img src=https://leak.example/?reload-probe-nested>"></iframe>',
+  nestedRefresh("http&#45;equiv", "nested"),
+  `<div><template shadowrootmode="closed">${
+    nestedRefresh("http-equiv", "shadow")
+  }</template></div>`,
 ].map((payload, i) =>
   `<img src="https://leak.example/?reload-probe-${i}">${payload}`
 );
 
-/** A supplied notebook's stored HTML renders sanitized in its frame, so
- * nothing in it reloads a frame forever (yurt-sandbox#382, #360 review). */
-async function checkSuppliedOutputsSettle(
-  browser: Browser,
-  url: string,
-): Promise<void> {
-  const notebook = {
+/** A notebook someone shares: `outputs` stored, or none and code that makes
+ * the same outputs when the visitor runs it. */
+function sharedNotebook(stored: boolean): unknown {
+  return {
     ...TRUSTED_CLAIM_NOTEBOOK,
     cells: [{
       cell_type: "code",
-      execution_count: 1,
+      execution_count: stored ? 1 : null,
       metadata: {},
-      outputs: RELOAD_PROBES.map((html) => ({
-        output_type: "display_data",
-        metadata: {},
-        data: { "text/html": html, "text/plain": "reload-probe" },
-      })),
-      source: ["1"],
+      outputs: stored
+        ? RELOAD_PROBES.map((html) => ({
+          output_type: "display_data",
+          metadata: {},
+          data: { "text/html": html, "text/plain": "reload-probe" },
+        }))
+        : [],
+      source: [
+        "from IPython.display import HTML\n",
+        `for h in ${JSON.stringify(RELOAD_PROBES)}: display(HTML(h))\n`,
+      ],
     }],
   };
-  const context = await browser.newContext();
-  let loads = 0;
+}
+
+/** Counts every load the reload probes report in `context`. */
+function watchReloads(context: BrowserContext) {
   const seen = new Set<string>();
-  // Both browsers report a frame's refused loads, nested ones too, here.
+  const watch = { seen, loads: 0 };
   context.on("console", (message) => {
     const probe = /reload-probe-(\w+)/.exec(message.text());
     if (probe === null) return;
-    loads++;
+    watch.loads++;
     seen.add(probe[1]);
   });
-  const page = await openSupplied(
-    context,
-    url,
-    "reload-probes.ipynb",
-    "reload-probes.ipynb",
-    notebook,
-  );
-  // Every output has rendered once before the count starts.
-  const deadline = Date.now() + 60_000;
-  while (!["0", "1", "2", "3"].every((i) => seen.has(i))) {
+  return watch;
+}
+
+/** Wait until every probe has rendered (`raw`: the nested ones too, which
+ * only unsanitized output has), then fail if any frame loads again in the
+ * next 2 s, if the page left, or if a request left. */
+async function checkSettles(
+  page: Page,
+  watch: { seen: Set<string>; loads: number },
+  leaks: string[],
+  what: string,
+  raw: boolean,
+): Promise<void> {
+  const url = page.url();
+  const want = [
+    ...RELOAD_PROBES.map((_, i) => String(i)),
+    ...(raw ? ["nested", "shadow"] : []),
+  ];
+  const deadline = Date.now() + 120_000;
+  while (!want.every((tag) => watch.seen.has(tag))) {
     if (Date.now() > deadline) {
-      fail(`the supplied reload probes did not all render: ${[...seen]}`);
+      fail(`${what}: the reload probes did not all render: ${[...watch.seen]}`);
     }
     await page.waitForTimeout(250);
   }
   await page.waitForTimeout(1_000);
-  loads = 0;
+  watch.loads = 0;
   await page.waitForTimeout(2_000);
-  if (loads > 0) {
+  if (watch.loads > 0 || page.url() !== url || leaks.length > 0) {
     fail(
-      `a supplied notebook's output reloaded its frame ${loads} times in 2 s`,
+      `${what}: frames loaded ${watch.loads} more times in 2 s; page ${page.url()}; requests ${leaks}`,
     );
   }
+}
+
+/** Requests that reach the network for leak.example (a refused load never
+ * gets here). */
+async function routeLeaks(context: BrowserContext): Promise<string[]> {
+  const leaks: string[] = [];
+  await context.route("https://leak.example/**", (route) => {
+    leaks.push(route.request().url());
+    return route.fulfill({ contentType: "text/html", body: "leaked" });
+  });
+  return leaks;
+}
+
+/**
+ * A notebook someone shares can't make any frame reload itself
+ * (yurt-sandbox#382, the owner's finding on #360), whether its HTML comes
+ * from stored outputs (rendered sanitized), fresh outputs of its code under
+ * Run All, or the stored outputs once the visitor trusts the notebook (both
+ * rendered raw).
+ */
+async function checkSharedNotebookSettles(
+  browser: Browser,
+  url: string,
+): Promise<void> {
+  const context = await browser.newContext();
+  const watch = watchReloads(context);
+  const leaks = await routeLeaks(context);
+  const stored = await openSupplied(
+    context,
+    url,
+    "shared-stored.ipynb",
+    "shared-stored.ipynb",
+    sharedNotebook(true),
+  );
+  await checkSettles(
+    stored,
+    watch,
+    leaks,
+    "a shared notebook's stored output",
+    false,
+  );
+  const page = await openSupplied(
+    context,
+    url,
+    "shared-code.ipynb",
+    "shared-code.ipynb",
+    sharedNotebook(false),
+  );
+  await waitForKernelIdle(page, 480_000);
+  watch.seen.clear();
+  await page.locator(".lm-MenuBar-itemLabel", { hasText: /^Run$/ }).click();
+  await page.locator(".lm-Menu-itemLabel", { hasText: /^Run All Cells$/ })
+    .click();
+  await checkSettles(page, watch, leaks, "a shared notebook's Run All", true);
+  await page.close();
+  await stored.bringToFront();
+  await stored.locator(".lm-MenuBar-itemLabel", { hasText: /^File$/ }).click();
+  await stored.locator(".lm-Menu-itemLabel", { hasText: /^Trust Notebook$/ })
+    .click();
+  watch.seen.clear();
+  await stored.locator(".jp-Dialog button.jp-mod-accept").click();
+  await checkSettles(stored, watch, leaks, "the same output, trusted", true);
   await context.close();
 }
 
@@ -291,44 +375,85 @@ const STYLER_HTML = `<style type="text/css">
   </tbody>
 </table>`;
 
+/** Every way an output could make the browser fetch something without a
+ * click: images, CSS `url()` in a rule, an attribute and an `@import`, link
+ * hints, a poster, a meta refresh. */
+const REQUEST_PROBE = [
+  '<img src="https://leak.example/?request-img">',
+  '<img srcset="https://leak.example/?request-srcset 1x">',
+  '<div style="background:url(https://leak.example/?request-attr)">a</div>',
+  "<style>@import url(https://leak.example/?request-import);",
+  ".r{background:url(https://leak.example/?request-rule)}</style>",
+  '<div class="r">b</div>',
+  '<link rel="stylesheet" href="https://leak.example/?request-css">',
+  '<link rel="prefetch" href="https://leak.example/?request-prefetch">',
+  '<link rel="preload" as="image" href="https://leak.example/?request-preload">',
+  '<link rel="preconnect" href="https://leak.example/">',
+  '<link rel="dns-prefetch" href="https://leak.example/">',
+  '<video poster="https://leak.example/?request-poster"></video>',
+  '<meta http-equiv="refresh" content="0;url=https://leak.example/?request-refresh">',
+  "request-probe",
+].join("");
+
+/** A table taller and one wider than any first height and width. */
+const LONG_TABLE = "<table>" +
+  Array.from({ length: 80 }, (_, i) => `<tr><td>row ${i}</td></tr>`).join("") +
+  "</table>";
+const WIDE_TABLE = "<table><tr>" +
+  Array.from({ length: 40 }, (_, i) => `<td>column-${i}-value</td>`).join("") +
+  "</tr></table>";
+
+/** The last output frame's wrapper, frame and document metrics. */
+async function lastFrame(page: Page) {
+  const wrapper = page.locator(".yurt-OutputFrame").last();
+  const handle = await wrapper.locator("iframe").elementHandle();
+  const document = (await handle!.contentFrame())!;
+  return { wrapper, document };
+}
+
 /**
- * Guest HTML output stays inside a sandboxed frame (yurt-sandbox#382): a meta
- * refresh neither navigates the page nor reaches its outside URL, a `<style>`
- * does not restyle the page, and a pandas Styler table keeps its CSS in a
- * frame sized to it. Markdown output carries the same payloads and renders
- * sanitized.
+ * Guest HTML output stays inside a sandboxed frame that runs no script
+ * (yurt-sandbox#382): no request leaves for anything in it, a meta refresh
+ * neither navigates the page nor anything else, a `<style>` does not restyle
+ * the page, a pandas Styler table keeps its CSS, and long and wide output
+ * scrolls in a frame whose height the visitor drags. Markdown output carries
+ * the same payloads and renders sanitized.
  */
 async function checkHtmlOutputIsolation(page: Page): Promise<void> {
   const notebookUrl = page.url();
-  const leaks: string[] = [];
-  await page.route("https://leak.example/**", (route) => {
-    leaks.push(route.request().url());
-    return route.fulfill({ contentType: "text/html", body: "leaked" });
-  });
-  const refresh = (to: string) =>
-    `<meta http-equiv="refresh" content="0;url=https://leak.example/?${to}">`;
+  const leaks = await routeLeaks(page.context());
+  // Any finished request off the site's origin.
+  const origin = new URL(notebookUrl).origin;
+  const left: string[] = [];
+  const onRequest = (request: { url(): string }) => {
+    if (!request.url().startsWith(origin)) left.push(request.url());
+  };
+  page.on("requestfinished", onRequest);
   await runNewCell(
     page,
-    `from IPython.display import HTML, Markdown; display(HTML('${
-      refresh("html")
-    }refresh-probe')); display(Markdown('${
-      refresh("md")
-    }')); print("refresh-probe", "done")`,
+    `from IPython.display import HTML, Markdown; display(HTML(${
+      JSON.stringify(REQUEST_PROBE)
+    })); display(Markdown(${
+      JSON.stringify(REQUEST_PROBE)
+    })); print("request-probe", "done")`,
   );
   // Swallowed here only so a red run, whose page has left, fails below with
   // the page's URL; the output is asserted after that.
-  await waitForLastOutput(page, "refresh-probe done", 60_000).catch(() => {});
+  await waitForLastOutput(page, "request-probe done", 60_000).catch(() => {});
   await page.waitForTimeout(3_000);
-  if (page.url() !== notebookUrl || leaks.length > 0) {
+  page.off("requestfinished", onRequest);
+  if (page.url() !== notebookUrl || leaks.length > 0 || left.length > 0) {
     fail(
-      `a guest's meta refresh left the page: ${page.url()}, requests ${leaks}`,
+      `an output left the page or made requests: ${page.url()}, ${[
+        ...new Set([...leaks, ...left]),
+      ]}`,
     );
   }
-  await waitForLastOutput(page, "refresh-probe done", 1_000);
+  await waitForLastOutput(page, "request-probe done", 1_000);
   await page.locator(".jp-CodeCell:has(.jp-OutputArea-output)").last()
-    .locator("iframe").first()
+    .locator(".yurt-OutputFrame iframe").first()
     .waitFor({ timeout: 1_000 })
-    .catch(() => fail("the refresh probe's HTML output has no frame"));
+    .catch(() => fail("the request probe's HTML output has no frame"));
 
   const style =
     "<style>body{background:rgb(1, 2, 3) !important}.jp-Notebook{outline:9px solid rgb(4, 5, 6)}</style>";
@@ -348,6 +473,11 @@ async function checkHtmlOutputIsolation(page: Page): Promise<void> {
   ) {
     fail(`a guest's <style> restyled the page: ${JSON.stringify(restyled)}`);
   }
+  // A one-line output is a small frame, not a big empty box.
+  const short = await (await lastFrame(page)).wrapper.evaluate((node) =>
+    node.getBoundingClientRect().height
+  );
+  if (short > 60) fail(`a one-line output's frame is ${short}px tall`);
 
   await runNewCell(
     page,
@@ -356,76 +486,122 @@ async function checkHtmlOutputIsolation(page: Page): Promise<void> {
     })); print("styler-probe", "done")`,
   );
   await waitForLastOutput(page, "styler-probe done", 60_000);
-  const frame = page.locator(".jp-OutputArea-output iframe").last();
-  await frame.waitFor({ timeout: 10_000 }).catch(() =>
-    fail("the Styler table is not rendered in a frame")
+  const styler = await lastFrame(page);
+  const sandbox = await styler.wrapper.locator("iframe").getAttribute(
+    "sandbox",
   );
-  const sandbox = (await frame.getAttribute("sandbox")) ?? "";
-  if (
-    !(await frame.evaluate((node) => node.hasAttribute("sandbox"))) ||
-    /allow-same-origin|allow-top-navigation/.test(sandbox)
-  ) {
-    fail(`the output frame's sandbox is not isolating: "${sandbox}"`);
+  if (sandbox !== "allow-popups allow-popups-to-escape-sandbox") {
+    fail(`the output frame's sandbox is "${sandbox}"`);
   }
-  // The frame grows to its content: wait for its sizer, then compare.
-  await page.waitForFunction(
-    () => {
-      const frames = document.querySelectorAll(".jp-OutputArea-output iframe");
-      return (frames[frames.length - 1] as HTMLElement).offsetHeight > 40;
-    },
-    undefined,
-    { timeout: 10_000 },
-  ).catch(() => fail("the Styler table's frame was not sized to it"));
-  const outer = await frame.evaluate((node) => ({
-    height: (node as HTMLElement).offsetHeight,
-    font: getComputedStyle(
-      document.querySelector(".jp-MarkdownOutput")!,
-    ).fontFamily,
+  const font = await page.evaluate(() =>
+    getComputedStyle(document.querySelector(".jp-MarkdownOutput")!).fontFamily
+  );
+  const inner = await styler.document.evaluate(() => ({
+    cell: getComputedStyle(document.getElementById("T_yurt_row1_col1")!)
+      .backgroundColor,
+    font: getComputedStyle(document.querySelector(".yurt-frame-body")!)
+      .fontFamily,
+    // Its own policy, on top of the page's that a srcdoc frame inherits.
+    policy: document.querySelector<HTMLMetaElement>(
+      'meta[http-equiv="Content-Security-Policy"]',
+    )?.content ?? "",
+    origin: (() => {
+      try {
+        return localStorage.length >= 0 ? "storage reachable" : "";
+      } catch {
+        return "opaque";
+      }
+    })(),
   }));
-  const inner = await (await (await frame.elementHandle())!.contentFrame())!
-    .evaluate(() => ({
-      height: document.documentElement.getBoundingClientRect().height,
-      scrolls: document.documentElement.scrollHeight >
-        document.documentElement.clientHeight + 1,
-      cell: getComputedStyle(document.getElementById("T_yurt_row1_col1")!)
-        .backgroundColor,
-      font: getComputedStyle(document.querySelector(".yurt-frame-body")!)
-        .fontFamily,
-      // Its own policy: the page's is not enough in every browser (WebKit
-      // loaded an outside image from such a frame), and Chrome's inherited
-      // one already refuses the probes above, so they cannot tell.
-      policy: document.querySelector<HTMLMetaElement>(
-        'meta[http-equiv="Content-Security-Policy"]',
-      )?.content ?? "",
-      origin: (() => {
-        try {
-          return localStorage.length >= 0 ? "storage reachable" : "";
-        } catch {
-          return "opaque";
-        }
-      })(),
-    }));
   if (inner.cell !== "rgb(255, 213, 79)") {
     fail(`the Styler table lost its CSS: highlighted cell is ${inner.cell}`);
   }
-  if (Math.abs(inner.height - outer.height) > 1 || inner.scrolls) {
-    fail(
-      `the Styler frame is not sized to its table: frame ${outer.height}px, content ${inner.height}px`,
-    );
-  }
-  if (inner.font !== outer.font) {
-    fail(`the frame's font ${inner.font} is not the page's ${outer.font}`);
+  if (inner.font !== font) {
+    fail(`the frame's font ${inner.font} is not the page's ${font}`);
   }
   if (
-    !inner.policy.startsWith("default-src 'none'; script-src 'sha256-") ||
-    !inner.policy.includes("img-src data:;")
+    !inner.policy.startsWith("default-src 'none'; style-src 'unsafe-inline'")
   ) {
     fail(`the output frame lacks its own policy: "${inner.policy}"`);
   }
   if (inner.origin !== "opaque") {
     fail(`the output frame has the page's origin: ${inner.origin}`);
   }
-  await page.unroute("https://leak.example/**");
+
+  // A long table scrolls in its frame, and dragging the frame's corner
+  // makes it taller; a wide one scrolls sideways.
+  await runNewCell(
+    page,
+    `from IPython.display import HTML; display(HTML(${
+      JSON.stringify(LONG_TABLE)
+    })); print("long-probe", "done")`,
+  );
+  await waitForLastOutput(page, "long-probe done", 60_000);
+  const long = await lastFrame(page);
+  const scrolled = await long.document.evaluate(() => {
+    const root = document.scrollingElement!;
+    root.scrollTop = 300;
+    return { top: root.scrollTop, more: root.scrollHeight > root.clientHeight };
+  });
+  if (!scrolled.more || scrolled.top < 100) {
+    fail(
+      `a long table does not scroll in its frame: ${JSON.stringify(scrolled)}`,
+    );
+  }
+  // Its grip must be on screen to be dragged.
+  await long.wrapper.evaluate((node) =>
+    node.scrollIntoView({ block: "center" })
+  );
+  const box = (await long.wrapper.boundingBox())!;
+  await page.mouse.move(box.x + box.width - 3, box.y + box.height - 3);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 3, box.y + box.height + 147, {
+    steps: 8,
+  });
+  await page.mouse.up();
+  const resized = (await long.wrapper.boundingBox())!.height;
+  if (resized < box.height + 100) {
+    fail(
+      `dragging the frame's corner did not resize it: ${box.height} -> ${resized}`,
+    );
+  }
+  await runNewCell(
+    page,
+    `from IPython.display import HTML; display(HTML(${
+      JSON.stringify(WIDE_TABLE)
+    })); print("wide-probe", "done")`,
+  );
+  await waitForLastOutput(page, "wide-probe done", 60_000);
+  const wide = await (await lastFrame(page)).document.evaluate(() => {
+    const root = document.scrollingElement!;
+    root.scrollLeft = 300;
+    return root.scrollLeft;
+  });
+  if (wide < 100) fail(`a wide table does not scroll sideways: ${wide}`);
+  await page.context().unroute("https://leak.example/**");
+}
+
+/** The isolation scenes in Playwright's WebKit (JUPYTERLITE_E2E_WEBKIT=1):
+ * the CI scene runs Chrome only. */
+export async function webkitScenes(url: string): Promise<void> {
+  const { webkit } = await import("playwright");
+  const browser = await webkit.launch();
+  console.log(`jupyterlite e2e: webkit ${browser.version()}`);
+  try {
+    await checkSharedNotebookSettles(browser, url);
+    console.log("jupyterlite e2e: webkit: shared notebook output settles");
+    const page = await browser.newPage();
+    await page.goto(`${url}/jupyter/notebooks/index.html?path=welcome.ipynb`, {
+      waitUntil: "load",
+    });
+    await page.locator(".jp-Notebook").first().waitFor({ timeout: 60_000 });
+    await waitForKernelIdle(page, 480_000);
+    await page.locator(".jp-Cell").last().click();
+    await checkHtmlOutputIsolation(page);
+    console.log("jupyterlite e2e: webkit: HTML output isolation");
+  } finally {
+    await browser.close();
+  }
 }
 
 if (import.meta.main) {
@@ -507,7 +683,7 @@ if (import.meta.main) {
       "renamed-claim.json",
       "renamed-claim.ipynb",
     );
-    await checkSuppliedOutputsSettle(browser, server.url);
+    await checkSharedNotebookSettles(browser, server.url);
     console.log("jupyterlite e2e: a notebook's trusted claim is ignored");
 
     const page = await browser.newPage();
@@ -596,7 +772,7 @@ if (import.meta.main) {
 
     await checkHtmlOutputIsolation(page);
     console.log(
-      "jupyterlite e2e: HTML output stays in its sandboxed, sized frame",
+      "jupyterlite e2e: HTML output stays in its sandboxed frame",
     );
 
     // Interrupt reaches the guest: a busy loop ends with KeyboardInterrupt
@@ -623,6 +799,10 @@ if (import.meta.main) {
     await runNewCell(page, "x");
     await waitForLastOutput(page, "NameError", 120_000);
     console.log("jupyterlite e2e: restart replaced the guest kernel");
+
+    if (Deno.env.get("JUPYTERLITE_E2E_WEBKIT") === "1") {
+      await webkitScenes(server.url);
+    }
   } finally {
     await browser.close();
     await server.shutdown();
