@@ -29,10 +29,12 @@ export function launchOptions(
 }
 
 /** Launch the selected browser and print which one, with its version. */
-export async function launchBrowser(): Promise<Browser> {
+export async function launchBrowser(
+  options: LaunchOptions = {},
+): Promise<Browser> {
   const selected = parseBrowser(Deno.env.get("PLAYGROUND_BROWSER"));
   const { chromium } = await import("playwright");
-  const browser = await chromium.launch(launchOptions(selected));
+  const browser = await chromium.launch(launchOptions(selected, options));
   const name = selected === "chrome" ? "Google Chrome" : "Playwright Chromium";
   console.log(`browser: ${name} ${browser.version()}`);
   return browser;
