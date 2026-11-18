@@ -31,10 +31,11 @@
  * theme's `--jp-*` variables, collected from the page's style sheets, and the
  * theme's color scheme. A theme change renders every frame again.
  *
- * Markdown outputs render sanitized, as markdown cells do: the sanitizer drops
- * `meta`, `style`, `link` and `base`, and they keep their math typesetting,
- * which a frame would lose. SVG output is already an `<img>` and LaTeX is
- * typeset text, so neither inserts raw HTML.
+ * Markdown, outputs and cells alike, renders sanitized in the page: the
+ * sanitizer drops `meta`, `style`, `link` and `base`, and it keeps its math
+ * typesetting, which a frame would lose. Every URL it would fetch, except a
+ * `data:` one, is dropped as well (markdown_urls.ts). SVG output is already
+ * an `<img>` and LaTeX is typeset text, so neither inserts raw HTML.
  */
 import type {
   JupyterFrontEnd,
@@ -45,6 +46,7 @@ import { CodeCell } from "@jupyterlab/cells";
 import { IRenderMimeRegistry, MimeModel } from "@jupyterlab/rendermime";
 import type { IRenderMime } from "@jupyterlab/rendermime-interfaces";
 import { Widget } from "@lumino/widgets";
+import { refuseUrls } from "./markdown_urls";
 
 const OUTPUT_FRAME_SANDBOX = "allow-popups allow-popups-to-escape-sandbox";
 
@@ -173,7 +175,22 @@ class OutputFrame extends Widget implements IRenderMime.IRenderer {
   private _source: string | undefined;
 }
 
-/** Install the frame renderer for `text/html` and the sanitized markdown. */
+/** `sanitizer`, then {@link refuseUrls} on what it keeps. */
+function refusingUrls(
+  sanitizer: IRenderMime.ISanitizer,
+): IRenderMime.ISanitizer {
+  return {
+    sanitize: (dirty, options) =>
+      refuseUrls(sanitizer.sanitize(dirty, options)),
+    getAutolink: () => sanitizer.getAutolink?.() ?? true,
+    allowNamedProperties: sanitizer.allowNamedProperties,
+    allowCommandLinker: sanitizer.allowCommandLinker,
+  };
+}
+
+/** Install the frame renderer for `text/html`, and the markdown renderer
+ * that sanitizes everything and fetches nothing. Markdown cells use it too:
+ * a notebook's renderers are a copy of these. */
 export function activateOutputFrames(
   _app: JupyterFrontEnd,
   rendermime: IRenderMimeRegistry,
@@ -198,7 +215,10 @@ export function activateOutputFrames(
     {
       ...markdown,
       createRenderer: (options) => {
-        const renderer = markdown.createRenderer(options);
+        const renderer = markdown.createRenderer({
+          ...options,
+          sanitizer: refusingUrls(options.sanitizer),
+        });
         const render = renderer.renderModel.bind(renderer);
         renderer.renderModel = (model) =>
           render(

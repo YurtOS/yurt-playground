@@ -488,7 +488,12 @@ function markdownNotebook(host: string): unknown {
       {
         cell_type: "markdown",
         metadata: {},
-        source: [markdownProbe(host, "cell")],
+        // A pasted image: JupyterLab shows it as a data: URL.
+        attachments: { "probe.png": { "image/png": DATA_PNG } },
+        source: [
+          markdownProbe(host, "cell"),
+          "\n\n![md-attachment](attachment:probe.png)",
+        ],
       },
       {
         cell_type: "code",
@@ -538,6 +543,13 @@ function renderedProbes(page: Page) {
         'img[alt="md-data-image"]',
       ),
     ].filter((image) => image.complete && image.naturalWidth > 0).length,
+    attachment: [
+      ...document.querySelectorAll<HTMLImageElement>(
+        'img[alt="md-attachment"]',
+      ),
+    ].filter((image) =>
+      image.src.startsWith("data:") && image.complete && image.naturalWidth > 0
+    ).length,
     vega: document.querySelectorAll(".vega-embed").length,
     fallback: document.querySelectorAll(".jp-RenderedImage img").length,
   }));
@@ -576,12 +588,12 @@ export async function checkMarkdownAndVegaFetchNothing(
   const ran = { leaks: leaks.splice(0), ...(await renderedProbes(page)) };
   await context.close();
   // Each phase: two Markdown renderings (the cell and an output), each with
-  // a typeset formula and a data: image, and the two Vega outputs shown as
-  // their PNG.
+  // a typeset formula and a data: image, the cell's attachment shown, and
+  // the two Vega outputs shown as their PNG.
   for (const [what, seen] of [["opened", opened], ["Run All", ran]] as const) {
     if (
       seen.leaks.length > 0 || seen.math < 2 || seen.dataImages < 2 ||
-      seen.vega > 0 || seen.fallback < 2
+      seen.vega > 0 || seen.fallback < 2 || seen.attachment !== 1
     ) {
       fail(
         `a shared notebook's Markdown or Vega, ${what}: ${
