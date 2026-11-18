@@ -105,7 +105,8 @@ you choose otherwise. What does leave it, and where it goes:
   the page reads the index and installs packages, and the agent's model list,
   `config/agent-models.json` in this repository, read at every page load. A
   shared snapshot link (`?snapshot=<id>`) also asks `api.github.com` which
-  snapshots this repository published, then downloads that snapshot from it.
+  snapshots this repository published, then downloads that snapshot from
+  `raw.githubusercontent.com`.
 - **Hugging Face** serves the in-tab model's weights, downloaded when you start
   the agent with that model. The model runs in the tab.
 - **OpenRouter**, only when you choose an OpenRouter model for the agent: your
@@ -122,9 +123,10 @@ Nothing else leaves the browser, and the page's Content Security Policy
 desktop app is different: its sandbox runs natively on your machine and has the
 network. The sandbox's files live in the tab's memory. What the page keeps
 between visits stays in this browser's storage (Cache Storage, IndexedDB, the
-origin private file system and localStorage): downloaded packages, model weights
-and snapshot parts, a sealed agent session and its chat, your OpenRouter key and
-the last model list. Clearing the site's data in the browser removes them.
+origin private file system and localStorage). Among them: downloaded packages,
+model weights and snapshot parts; the sealed sandboxes of the agent (with its
+chat), the suspend/resume Notebook and the snapshot demo; your OpenRouter key
+and the last model list. Clearing the site's data in the browser removes them.
 
 ## Driving the sandbox from a program
 
