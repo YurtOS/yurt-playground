@@ -1,35 +1,23 @@
 /**
- * Markdown fetches nothing (follow-up to #360, yurt-sandbox#382).
+ * Sanitized markup fetches nothing.
  *
- * Markdown, a notebook's cells and `text/markdown` output alike, renders
- * sanitized in the playground page itself, not in a frame, so that its math
- * still typesets. JupyterLab's sanitizer keeps image, media and CSS URLs, and
- * the page's policy allows its own origin, the notebook's files included. So
- * a shared notebook's Markdown could make the page fetch a URL as soon as it
- * renders. {@link refuseUrls} runs on the sanitizer's output, before
- * JupyterLab puts it into the page, and drops every URL the browser would
- * load without a click unless it is a `data:` URL:
+ * Markdown, cells and `text/markdown` output alike, renders sanitized in the
+ * page itself (so its math typesets), where the page's policy allows its own
+ * origin. JupyterLab's sanitizer keeps image, media and CSS URLs, so
+ * {@link refuseUrlsIn} makes the app's one sanitizer also drop every URL the
+ * browser would load without a click, unless it is a `data:` URL:
  *
  * - `src`, `srcset`, `poster`, `background`, `data` and `xlink:href` on any
  *   element, and `href` on anything but a link (`a`, `area`);
- * - a style attribute's declarations that hold a URL (`url()`, `image()`,
- *   `image-set()`, `cross-fade()`, `src()`, `element()`).
+ * - style declarations holding `url()`, `image()`, `image-set()`,
+ *   `cross-fade()`, `src()` or `element()`.
  *
- * Of these, JupyterLab's sanitizer keeps `src` (img, video, audio, input),
- * `poster` (video) and style; it drops `srcset`, `<source>`'s URLs, `<link>`,
- * `<style>` and `<meta>`. The rest are covered in case its rules change.
- *
- * One exception: an `img` keeps an `attachment:` source. JupyterLab replaces
- * it with the cell's attachment as a `data:` URL, or leaves it as is, which no
- * browser fetches.
- *
- * Links (`a`, `area`) keep their `href`: they load nothing until clicked.
- *
- * Mermaid fences are not drawn: Mermaid lays a diagram out in the page,
- * outside the sanitizer, where an image node loads. jupyter-lite.json
- * disables its extension, and Vega's, which fetches `data.url`
- * (tests/jupyterlite_config_test.ts says why).
+ * Of these the sanitizer keeps `src`, `poster` and style; the rest are
+ * covered in case its rules change. An `img` keeps an `attachment:` source,
+ * which JupyterLab replaces with the cell attachment's `data:` URL (an
+ * unresolved one loads nothing).
  */
+import type { IRenderMime } from "@jupyterlab/rendermime-interfaces";
 
 /** Attributes whose URL the browser fetches without a click. */
 const FETCHED = new Set([
@@ -47,8 +35,11 @@ const CSS_FETCH = /(?:url|image|image-set|cross-fade|src|element)\s*\(/i;
 /** A `data:` URL as the CSSOM serializes it. */
 const CSS_DATA_URL = /url\("data:(?:[^"\\]|\\.)*"\)/gi;
 
+/** Nothing may come before the scheme: the URL parser strips leading
+ * controls and spaces, but JupyterLab then takes " data:x" for a drive path,
+ * and a Unicode space makes it a relative URL. */
 function isData(url: string): boolean {
-  return /^\s*data:/i.test(url);
+  return /^data:/i.test(url);
 }
 
 /** Whether `element` may keep `name="value"`. */
@@ -62,7 +53,8 @@ function keeps(element: Element, name: string, value: string): boolean {
   }
   if (name === "srcset") return false;
   if (
-    name === "src" && element.localName === "img" && /^attachment:/i.test(value)
+    name === "src" && element.localName === "img" &&
+    /^attachment:/i.test(value)
   ) {
     return true;
   }
@@ -94,5 +86,32 @@ export function refuseUrls(html: string): string {
     }
     if (style.length === 0) element.removeAttribute("style");
   }
+  // The parser drops a newline right after <pre> or <textarea> and the
+  // serializer does not write it back, so a leading blank line would be lost.
+  for (
+    const element of Array.from(doc.body.querySelectorAll("pre, textarea"))
+  ) {
+    const first = element.firstChild;
+    if (
+      first?.nodeType === Node.TEXT_NODE && first.textContent!.startsWith("\n")
+    ) {
+      first.textContent = "\n" + first.textContent;
+    }
+  }
   return doc.body.innerHTML;
 }
+
+/**
+ * Make `sanitizer` refuse URLs too. The app has one sanitizer: rendermime's
+ * renderers (a notebook's are a copy, so its Markdown cells too) and the
+ * Table of Contents, which renders a Markdown heading to find its id, both
+ * use it.
+ */
+export function refuseUrlsIn(sanitizer: IRenderMime.ISanitizer): void {
+  if (patched.has(sanitizer)) return;
+  patched.add(sanitizer);
+  const sanitize = sanitizer.sanitize.bind(sanitizer);
+  sanitizer.sanitize = (dirty, options) => refuseUrls(sanitize(dirty, options));
+}
+
+const patched = new WeakSet<IRenderMime.ISanitizer>();

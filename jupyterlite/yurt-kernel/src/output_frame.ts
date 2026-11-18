@@ -33,20 +33,20 @@
  *
  * Markdown, outputs and cells alike, renders sanitized in the page: the
  * sanitizer drops `meta`, `style`, `link` and `base`, and it keeps its math
- * typesetting, which a frame would lose. Every URL it would fetch, except a
- * `data:` one, is dropped as well (markdown_urls.ts). SVG output is already
+ * typesetting, which a frame would lose. The app's sanitizer also drops
+ * every URL the markup would fetch, except a `data:` one (markdown_urls.ts). SVG output is already
  * an `<img>` and LaTeX is typeset text, so neither inserts raw HTML.
  */
 import type {
   JupyterFrontEnd,
   JupyterFrontEndPlugin,
 } from "@jupyterlab/application";
-import { IThemeManager } from "@jupyterlab/apputils";
+import { ISanitizer, IThemeManager } from "@jupyterlab/apputils";
 import { CodeCell } from "@jupyterlab/cells";
 import { IRenderMimeRegistry, MimeModel } from "@jupyterlab/rendermime";
 import type { IRenderMime } from "@jupyterlab/rendermime-interfaces";
 import { Widget } from "@lumino/widgets";
-import { refuseUrls } from "./markdown_urls";
+import { refuseUrlsIn } from "./markdown_urls";
 
 const OUTPUT_FRAME_SANDBOX = "allow-popups allow-popups-to-escape-sandbox";
 
@@ -175,27 +175,16 @@ class OutputFrame extends Widget implements IRenderMime.IRenderer {
   private _source: string | undefined;
 }
 
-/** `sanitizer`, then {@link refuseUrls} on what it keeps. */
-function refusingUrls(
-  sanitizer: IRenderMime.ISanitizer,
-): IRenderMime.ISanitizer {
-  return {
-    sanitize: (dirty, options) =>
-      refuseUrls(sanitizer.sanitize(dirty, options)),
-    getAutolink: () => sanitizer.getAutolink?.() ?? true,
-    allowNamedProperties: sanitizer.allowNamedProperties,
-    allowCommandLinker: sanitizer.allowCommandLinker,
-  };
-}
-
-/** Install the frame renderer for `text/html`, and the markdown renderer
- * that sanitizes everything and fetches nothing. Markdown cells use it too:
- * a notebook's renderers are a copy of these. */
+/** Install the frame renderer for `text/html` and the sanitized markdown,
+ * and make the app's sanitizer refuse URLs. */
 export function activateOutputFrames(
   _app: JupyterFrontEnd,
   rendermime: IRenderMimeRegistry,
+  sanitizer: IRenderMime.ISanitizer,
   themes: IThemeManager | null,
 ): void {
+  refuseUrlsIn(sanitizer);
+  refuseUrlsIn(rendermime.sanitizer);
   // JupyterLab's Table of Contents lists a code cell's output headings by
   // parsing its HTML outputs (sanitized, images kept) into an element in the
   // page, where the page's policy loads them (#360 review). No output markup
@@ -215,10 +204,7 @@ export function activateOutputFrames(
     {
       ...markdown,
       createRenderer: (options) => {
-        const renderer = markdown.createRenderer({
-          ...options,
-          sanitizer: refusingUrls(options.sanitizer),
-        });
+        const renderer = markdown.createRenderer(options);
         const render = renderer.renderModel.bind(renderer);
         renderer.renderModel = (model) =>
           render(
@@ -242,7 +228,7 @@ export function activateOutputFrames(
 export const outputFramePlugin: JupyterFrontEndPlugin<void> = {
   id: "@yurt/jupyterlite-yurt-kernel:html-output-frames",
   autoStart: true,
-  requires: [IRenderMimeRegistry],
+  requires: [IRenderMimeRegistry, ISanitizer],
   optional: [IThemeManager],
   activate: activateOutputFrames,
 };
