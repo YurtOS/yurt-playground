@@ -18,6 +18,7 @@
   "dependencies": {
     "@jupyterlab/application": "^4.6.0",
     "@jupyterlab/apputils": "^4.7.3",
+    "@jupyterlab/cells": "^4.6.3",
     "@jupyterlab/notebook": "^4.6.0",
     "@jupyterlab/rendermime": "^4.6.3",
     "@jupyterlab/rendermime-interfaces": "^3.14.3",
