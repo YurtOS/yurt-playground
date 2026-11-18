@@ -181,6 +181,18 @@ export type BuildOptions = {
   ghPagesPreview?: boolean;
 };
 
+/** The device snapshots a build publishes when it has them: every kind,
+ * and on a GitHub Pages preview only {@link PREVIEW_SNAPSHOT_KINDS}. */
+export function publishedSnapshotKinds(
+  options: BuildOptions,
+): readonly SnapshotKind[] {
+  return options.ghPagesPreview
+    ? SNAPSHOT_KIND_NAMES.filter((kind) =>
+      PREVIEW_SNAPSHOT_KINDS.includes(kind)
+    )
+    : SNAPSHOT_KIND_NAMES;
+}
+
 /** The beacon token a build uses: the committed one when the build asked
  * for analytics, otherwise none. */
 export function beaconToken(
@@ -253,12 +265,7 @@ export async function buildStaticSite(
   // the pinned ones, which scripts/install-pinned-artifacts.sh fetched.
   // Optional; a page without its own boots the image.
   const pins = await loadPins(join(artifactsDir, "pins.json"));
-  for (const kind of SNAPSHOT_KIND_NAMES) {
-    if (
-      options.ghPagesPreview && !PREVIEW_SNAPSHOT_KINDS.includes(kind)
-    ) {
-      continue;
-    }
+  for (const kind of publishedSnapshotKinds(options)) {
     const { name, pinKey } = SNAPSHOT_KINDS[kind];
     const snapshotPath = join(publicDir, name);
     const snapshot = await Deno.stat(snapshotPath).then(

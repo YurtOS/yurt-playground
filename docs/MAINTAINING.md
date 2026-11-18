@@ -58,11 +58,13 @@ What a GitHub Pages preview is not:
 
 - GitHub Pages sends no headers. Cross-origin isolation comes from a service
   worker (`scripts/gh-pages-preview/`): a page's first visit registers it and
-  reloads once. The CSP is a `<meta>` in each page, without `frame-ancestors`
-  and with none for the workers, and there is no Permissions-Policy.
-  JupyterLite's own service worker is turned off there, so it cannot take
-  `jupyter/` from the isolation worker. **Do not use a GitHub Pages preview to
-  test security or isolation changes.**
+  reloads once. (A browser that opened a Notebook page on a preview built before
+  JupyterLite's worker was turned off keeps that worker on `jupyter/`; clear the
+  site's data once.) The CSP is a `<meta>` in each page, without
+  `frame-ancestors` and with none for the workers, and there is no
+  Permissions-Policy. JupyterLite's own service worker is turned off there, so
+  it cannot take `jupyter/` from the isolation worker. **Do not use a GitHub
+  Pages preview to test security or isolation changes.**
 - It has only the desktop snapshot, for the 1 GB site limit: a desktop browser's
   Notebook and Lab pages require it, and every other page boots the image as it
   does when no snapshot is pinned (a phone and a tablet, Go, Playwright). A

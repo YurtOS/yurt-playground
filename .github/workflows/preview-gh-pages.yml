@@ -89,10 +89,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      # The build publishes only the desktop snapshot (PREVIEW_SNAPSHOT_KINDS
-      # in scripts/lib/gh_pages_preview.ts): the four are 500 MB of a 1 GB
-      # site, and a desktop Notebook page requires that one.
-      YURT_INSTALL_SNAPSHOT: "1"
+      # Only the desktop snapshot (pin key `snapshot`), the one a preview
+      # publishes (PREVIEW_SNAPSHOT_KINDS in scripts/lib/gh_pages_preview.ts):
+      # the four are 500 MB of a 1 GB site, and a desktop Notebook page
+      # requires that one.
+      YURT_INSTALL_SNAPSHOT: snapshot
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -376,4 +376,10 @@ Deno.test("a preview publishes the snapshot a desktop Notebook page requires", a
   assertStringIncludes(bridge, 'snapshotKind: "desktop" as const');
   assertStringIncludes(bridge, "snapshotRequired: true");
   assertEquals(PREVIEW_SNAPSHOT_KINDS, ["desktop"]);
+  const { publishedSnapshotKinds } = await import("../scripts/build-static.ts");
+  const { SNAPSHOT_KIND_NAMES } = await import("../src/sandbox_snapshot.ts");
+  assertEquals(publishedSnapshotKinds({ ghPagesPreview: true }), ["desktop"]);
+  // Production publishes every kind it has.
+  assertEquals(publishedSnapshotKinds({}), SNAPSHOT_KIND_NAMES);
+  assertEquals(SNAPSHOT_KIND_NAMES.length, 4);
 });
