@@ -123,10 +123,11 @@ Nothing else leaves the browser, and the page's Content Security Policy
 desktop app is different: its sandbox runs natively on your machine and has the
 network. The sandbox's files live in the tab's memory. What the page keeps
 between visits stays in this browser's storage (Cache Storage, IndexedDB, the
-origin private file system and localStorage). Among them: downloaded packages,
+origin private file system and localStorage). It includes downloaded packages,
 model weights and snapshot parts; the sealed sandboxes of the agent (with its
-chat), the suspend/resume Notebook and the snapshot demo; your OpenRouter key
-and the last model list. Clearing the site's data in the browser removes them.
+chat), the suspend/resume notebook and the snapshot demo; your OpenRouter key
+and the last model list. Clearing the site's data in the browser removes all of
+it.
 
 ## Driving the sandbox from a program
 
