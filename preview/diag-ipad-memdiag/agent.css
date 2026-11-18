@@ -1,0 +1,242 @@
+/* The home page's agent pane (#140; src/agent_pane.ts builds its DOM). The
+ * page's inline sheet defines the variables it uses. */
+#agent[hidden] {
+  display: none;
+}
+#agent-intro {
+  padding: 14px 12px 16px;
+}
+#agent-intro p {
+  margin: 0 0 12px;
+  color: var(--muted);
+  max-width: 70ch;
+}
+#agent-intro .row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+#agent-intro progress {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  margin-top: 12px;
+  accent-color: var(--ochre);
+}
+#agent-intro progress[hidden] {
+  display: none;
+}
+#agent-installed {
+  display: block;
+  margin: 8px;
+}
+#agent-installed[hidden] {
+  display: none;
+}
+#agent-model,
+#agent-key,
+#agent-signout,
+#agent-installed {
+  font: inherit;
+  color: var(--text);
+  background: var(--ground);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+#agent-intro input:focus-visible,
+#agent-intro select:focus-visible {
+  outline: 2px solid var(--ochre);
+  outline-offset: 2px;
+}
+/* The pasted key, on its own line under the model. Its width is its `size`
+ * (agent_pane.ts: its placeholder's length, and room for a browser's key
+ * icon), and never wider than the pane. */
+#agent-key {
+  display: block;
+  margin-top: 10px;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+#agent-key::placeholder {
+  color: var(--muted);
+}
+#agent-key[hidden] {
+  display: none;
+}
+/* iOS zooms the page into a focused field whose text is under 16px. */
+@media (pointer: coarse) {
+  #agent input,
+  #agent select,
+  #agent textarea {
+    font-size: 16px;
+  }
+}
+/* Sign-out, under the cost line: a quiet button in the controls' frame. */
+#agent-signout {
+  margin-top: 10px;
+  background: transparent;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+#agent-start {
+  font: inherit;
+  color: #161a21;
+  background: var(--ochre);
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 16px;
+  cursor: pointer;
+}
+#agent-start:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+#agent-intro p.cost {
+  margin: 10px 0 0;
+}
+#agent-intro p.unsupported {
+  margin: 0;
+  color: var(--text);
+  border-left: 3px solid var(--ember);
+  padding-left: 10px;
+}
+#agent-context {
+  color: var(--muted);
+}
+#agent-task {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 52px;
+  resize: vertical;
+  margin: 0;
+  padding: 10px 12px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+}
+#agent .actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+}
+#agent .actions .hint {
+  color: var(--muted);
+}
+#agent-run {
+  font: inherit;
+  color: #161a21;
+  background: var(--sky);
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+#agent-run:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+#agent-transcript {
+  list-style: none;
+  margin: 0;
+  padding: 0 12px;
+}
+#agent-transcript:not(:empty) {
+  border-top: 1px solid var(--rule);
+  padding: 10px 12px 12px;
+}
+#agent-transcript li + li {
+  margin-top: 10px;
+}
+#agent-transcript .head {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+}
+#agent-transcript .head > div {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  /* A command or answer of several lines keeps its line breaks. */
+  white-space: pre-wrap;
+}
+#agent-transcript .meta {
+  color: var(--muted);
+  white-space: nowrap;
+}
+#agent-transcript .call b {
+  color: var(--ochre);
+  font-weight: 400;
+}
+#agent-transcript pre {
+  margin: 6px 0 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#agent-transcript pre.live {
+  margin: 0;
+  color: var(--muted);
+}
+#agent-transcript pre.live:empty::before {
+  content: "thinking\2026";
+}
+#agent-transcript pre.result {
+  max-height: 12em;
+  overflow: auto;
+  padding: 6px 10px;
+  color: var(--muted);
+  background: var(--ground);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+#agent-transcript .answer {
+  font-family: var(--serif);
+  font-size: 1.1rem;
+  color: var(--text);
+}
+#agent-transcript .invalid,
+#agent-transcript .stopped {
+  color: var(--ember);
+}
+#agent-transcript .note {
+  color: var(--muted);
+}
+#agent-intro p.unsupported {
+  margin-bottom: 12px;
+}
+#agent-transcript li.user {
+  color: var(--text);
+  font-weight: 600;
+  margin-top: 12px;
+}
+/* The pane fills the window; the task box fits its text. */
+.views > #agent:not(.view-off) {
+  min-height: calc(100vh - 44px);
+}
+#agent-task {
+  field-sizing: content;
+  min-height: 7lh;
+  max-height: 50vh;
+}
+#agent-transcript li.stats {
+  color: var(--muted);
+  font-size: 12px;
+}
+/* Its own scrollbar: the box and Run stay in view however long the chat gets. */
+#agent-transcript {
+  max-height: calc(100vh - 400px);
+  min-height: 200px;
+  overflow-y: auto;
+}
+@media (max-width: 720px) {
+  #agent-transcript {
+    max-height: 60vh;
+  }
+}
