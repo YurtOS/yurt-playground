@@ -46,27 +46,34 @@ pinned inputs and checks) and publishes it to the `gh-pages` branch under
 `preview/<folder>/`, at
 `https://yurtos.github.io/yurt-playground/preview/<folder>/`: the branch name
 lowercased, each run of other characters than letters and digits one hyphen,
-none leading or trailing (`agent/foo_Bar` → `agent-foo-bar`). The run waits
-until Pages serves the new build and links it in its summary. The second deletes
-that folder. Neither touches anything else on `gh-pages` (the release notes,
-`ci/`, other previews), and `main` is refused. The branch must contain the
-preview build (`--gh-pages-preview`, this section's change): merge main into an
-older branch first.
+none leading or trailing (`agent/foo_Bar` → `agent-foo-bar`); a folder that
+holds another branch's preview is refused. It runs only when dispatched from
+main. The run waits until Pages serves the new build and links it in its
+summary. The second deletes that folder. Neither touches anything else on
+`gh-pages` (the release notes, `ci/`, other previews), and `main` is refused.
+The branch must contain the preview build (`--gh-pages-preview`, this section's
+change): merge main into an older branch first.
 
 What a GitHub Pages preview is not:
 
 - GitHub Pages sends no headers. Cross-origin isolation comes from a service
   worker (`scripts/gh-pages-preview/`): a page's first visit registers it and
   reloads once. The CSP is a `<meta>` in each page, without `frame-ancestors`
-  and with none for the workers, and there is no Permissions-Policy. **Do not
-  use a GitHub Pages preview to test security or isolation changes.**
+  and with none for the workers, and there is no Permissions-Policy.
+  JupyterLite's own service worker is turned off there, so it cannot take
+  `jupyter/` from the isolation worker. **Do not use a GitHub Pages preview to
+  test security or isolation changes.**
 - It has no device snapshots: the 1 GB site limit. Each page boots the image as
   it does when no snapshot is pinned. A preview is about 220 MB (the image
   parts, the kernel, Python, JupyterLite, the agent's runtime); the snapshots
   alone are 500 MB more.
-- Every preview, and the release notes, share the origin
-  `https://yurtos.github.io`: their storage (the saved sandboxes, the agent's
-  downloaded model) is shared too.
+- Every preview shares the origin `https://yurtos.github.io` with the others,
+  the release notes and the other YurtOS repositories' Pages sites
+  (yurt-packages, yurt-crates). So their storage is shared (the saved sandboxes,
+  the agent's downloaded model, and the OpenRouter key the agent keeps in
+  `localStorage`: any page there can read it), and the CSP's `'self'` admits
+  scripts, workers and requests from all of them. Do not enter a real key on a
+  preview.
 - Pages' CDN caches each file for 10 minutes: after a republish, reload hard or
   wait.
 

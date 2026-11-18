@@ -2,10 +2,10 @@
 // same-origin responses get the isolation headers production's _headers
 // gives them (src/serve.ts ISOLATION_HEADERS), so its pages and workers are
 // cross-origin isolated. Cross-origin requests are not touched: under
-// require-corp they pass by CORS, as on production. Paths under `/api/` are
-// left to JupyterLite's own service worker, which imports this one
-// (scripts/lib/gh_pages_preview.ts) and answers its drive there; nothing
-// else on the site lives under one.
+// require-corp they pass by CORS, as on production. Its scope is the whole
+// preview, jupyter/ included (scripts/lib/gh_pages_preview.ts turns off
+// JupyterLite's own worker), and a Worker's script is matched by its own URL,
+// so the coordinators a JupyterLite page starts from the root get it too.
 const ISOLATION = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp",
@@ -17,15 +17,7 @@ self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
-  if (
-    request.method !== "GET" || url.origin !== self.location.origin ||
-    url.pathname.includes("/api/")
-  ) {
-    return;
-  }
-  // First answer wins: JupyterLite's listener, registered after this one,
-  // would otherwise fetch the same request a second time.
-  event.stopImmediatePropagation();
+  if (request.method !== "GET" || url.origin !== self.location.origin) return;
   event.respondWith(isolated(request));
 });
 

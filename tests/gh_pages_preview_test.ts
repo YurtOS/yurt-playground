@@ -6,6 +6,7 @@
 import { assertEquals, assertMatch, assertStringIncludes } from "@std/assert";
 import { join } from "node:path";
 import {
+  JUPYTER_SERVICE_WORKER_PLUGIN,
   metaPolicy,
   PREVIEW_FILES,
   previewDocument,
@@ -187,9 +188,17 @@ Deno.test("a preview is published to its folder, and nothing else on gh-pages ch
     assertEquals(first.code, 0, first.err);
     assertEquals(await pagesTree(bare), {
       ...before,
+      "preview/agent-x/.preview-branch": "agent/x\n",
       "preview/agent-x/index.html": "one\n",
       "preview/agent-x/jupyter/index.html": "lab\n",
     });
+    // Another branch whose name makes the same folder is refused, both
+    // ways.
+    for (const args of [["publish", site], ["remove"]]) {
+      const other = await publish(bare, dir, args, "0", { BRANCH: "agent-x" });
+      assertEquals(other.code, 2, other.err);
+      assertStringIncludes(other.err, "holds the preview of agent/x");
+    }
     // A new publish replaces the folder: a file the new build lacks goes.
     await Deno.remove(join(site, "jupyter"), { recursive: true });
     await Deno.writeTextFile(join(site, "index.html"), "two\n");
@@ -197,6 +206,7 @@ Deno.test("a preview is published to its folder, and nothing else on gh-pages ch
     assertEquals(second.code, 0, second.err);
     assertEquals(await pagesTree(bare), {
       ...before,
+      "preview/agent-x/.preview-branch": "agent/x\n",
       "preview/agent-x/index.html": "two\n",
     });
     const subject = await run(
@@ -292,7 +302,7 @@ Deno.test("a preview page carries its CSP as a <meta>, without what a <meta> can
   );
 });
 
-Deno.test("a preview build adds the isolation worker to every page and to JupyterLite's worker", async () => {
+Deno.test("a preview build adds the isolation worker to every page and turns off JupyterLite's", async () => {
   const dir = await Deno.makeTempDir();
   try {
     await Deno.mkdir(join(dir, "jupyter/lab"), { recursive: true });
@@ -306,7 +316,15 @@ Deno.test("a preview build adds the isolation worker to every page and to Jupyte
     ) {
       await Deno.writeTextFile(join(dir, file), page);
     }
-    await Deno.writeTextFile(join(dir, "jupyter/service-worker.js"), "lite();");
+    await Deno.writeTextFile(
+      join(dir, "jupyter/jupyter-lite.json"),
+      JSON.stringify({
+        "jupyter-config-data": {
+          appName: "Yurt playground",
+          disabledExtensions: ["@jupyterlab/javascript-extension"],
+        },
+      }),
+    );
     await Deno.writeTextFile(join(dir, "_headers"), "/*\n");
     await writeGhPagesPreview(dir);
     for (const file of PREVIEW_FILES) {
@@ -328,8 +346,18 @@ Deno.test("a preview build adds the isolation worker to every page and to Jupyte
       );
     }
     assertEquals(
-      await Deno.readTextFile(join(dir, "jupyter/service-worker.js")),
-      'importScripts("../isolation-sw.js");\nlite();',
+      JSON.parse(
+        await Deno.readTextFile(join(dir, "jupyter/jupyter-lite.json")),
+      ),
+      {
+        "jupyter-config-data": {
+          appName: "Yurt playground",
+          disabledExtensions: [
+            "@jupyterlab/javascript-extension",
+            JUPYTER_SERVICE_WORKER_PLUGIN,
+          ],
+        },
+      },
     );
     assertEquals(
       await Deno.stat(join(dir, "_headers")).then(() => true, () => false),

@@ -26,12 +26,16 @@
   // Nothing after this script runs: the page would see no isolation and
   // send itself to unsupported.html before the reload.
   self.stop();
+  // Reloaded either way: a worker that cannot register leaves the flag set,
+  // so the next load gives up and the page says it is not isolated.
+  const reload = () => {
+    sessionStorage.setItem(RELOADED, "1");
+    location.reload();
+  };
   navigator.serviceWorker.register(new URL("isolation-sw.js", script))
     .then(() => navigator.serviceWorker.ready)
-    .then(() => {
-      sessionStorage.setItem(RELOADED, "1");
-      location.reload();
-    }, (error) => {
+    .then(reload, (error) => {
       console.error("preview isolation: cannot register the worker", error);
+      reload();
     });
 })();

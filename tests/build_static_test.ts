@@ -132,6 +132,7 @@ Deno.test("static build writes every file the pages need", async () => {
       "unsupported.html",
       "snapshot.html",
       "jupyter/service-worker.js",
+      "jupyter/jupyter-lite.json",
       "jupyter/lab/index.html",
     ]
   ) {

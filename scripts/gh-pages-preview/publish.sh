@@ -57,13 +57,21 @@ if [[ "$mode" == publish ]]; then
   fi
 fi
 
-auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')")
+# For every git command, the lazy blob fetches of the sparse checkout
+# included, and on no command line.
+basic=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+[[ -z "${GITHUB_ACTIONS:-}" ]] || echo "::add-mask::$basic"
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
+# Which branch a folder holds: two branch names can make one folder name.
+marker=.preview-branch
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 attempt() {
   rm -rf "$work/pages"
-  git "${auth[@]}" clone --quiet --depth 1 --filter=blob:none --sparse \
+  git clone --quiet --depth 1 --filter=blob:none --sparse \
     --branch gh-pages "${PAGES_REMOTE:-https://github.com/$REPO.git}" "$work/pages"
   cd "$work/pages"
   git sparse-checkout set "$dir"
@@ -73,10 +81,14 @@ attempt() {
     echo "::warning::there is no preview at $dir"
     return 0
   fi
+  if [[ -e "$dir/$marker" ]] && [[ "$(cat "$dir/$marker")" != "$BRANCH" ]]; then
+    die "$dir holds the preview of $(cat "$dir/$marker"), not of $BRANCH"
+  fi
   git rm -r -q --ignore-unmatch -- "$dir"
   if [[ "$mode" == publish ]]; then
     mkdir -p "$dir"
     cp -R "$site/." "$dir/"
+    printf '%s\n' "$BRANCH" > "$dir/$marker"
     git add -- "$dir"
   fi
   if git diff --cached --quiet; then
@@ -90,7 +102,7 @@ attempt() {
   else
     git commit -q -m "preview: remove $BRANCH"
   fi
-  git "${auth[@]}" push --quiet origin HEAD:gh-pages
+  git push --quiet origin HEAD:gh-pages
 }
 
 # Each attempt in a subshell of its own, as a plain command: inside an `if`

@@ -30,6 +30,14 @@ env:
 permissions:
   contents: read
 
+# One run per branch at a time, in the order asked, from the build to the
+# push, so the last one asked is the one that lands; a newer run replaces
+# one still waiting. Other branches' previews push to other folders, and
+# publish.sh retries a push one of them got in before.
+concurrency:
+  group: preview-gh-pages-${{ inputs.ref }}
+  cancel-in-progress: false
+
 jobs:
   target:
     name: preview target
@@ -53,8 +61,12 @@ jobs:
         id: target
         env:
           INPUT_REF: ${{ inputs.ref }}
+        # The publishing jobs run this commit's publish.sh with a write
+        # token: only main's.
         run: |
           set -euo pipefail
+          [ "$GITHUB_REF" = refs/heads/main ] ||
+            { echo "::error::dispatch from main: --ref main -f ref=<branch>"; exit 1; }
           bash scripts/gh-pages-preview/target.sh > target.txt
           cat target.txt
           cat target.txt >> "$GITHUB_OUTPUT"
@@ -122,13 +134,6 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
-      pages: read
-    # One run per preview at a time, in the order asked; a newer run
-    # replaces one still waiting. Previews of other branches push to other
-    # folders, and the script retries a push one of them got in before.
-    concurrency:
-      group: gh-pages-preview-${{ needs.target.outputs.folder }}
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -154,26 +159,22 @@ jobs:
           bash tools/scripts/gh-pages-preview/publish.sh publish site
       - name: Wait for Pages, then link the preview
         env:
-          GH_TOKEN: ${{ github.token }}
           URL: ${{ needs.target.outputs.url }}
           BRANCH: ${{ needs.target.outputs.branch }}
         run: |
           set -euo pipefail
           # The push starts a Pages build; the preview is live once the site
-          # serves this build's integrity.json.
-          # A query of its own per try: Pages' CDN caches each URL for 10
-          # minutes.
+          # serves this build's integrity.json. A query of its own per try:
+          # Pages' CDN caches each URL for 10 minutes.
           commit=$(jq -er .commit site/integrity.json)
           served=""
           for try in $(seq 60); do
-            build=$(gh api "repos/$GITHUB_REPOSITORY/pages/builds/latest" --jq '.status')
-            [ "$build" != errored ] || { echo "::error::the Pages build failed"; exit 1; }
             served=$(curl -fsS "${URL}integrity.json?run=$GITHUB_RUN_ID-$try" | jq -r .commit) || served=""
             [ "$served" != "$commit" ] || break
             sleep 10
           done
           [ "$served" = "$commit" ] ||
-            { echo "::error::$URL does not serve $commit after 10 minutes"; exit 1; }
+            { echo "::error::$URL does not serve $commit after 10 minutes (see the Pages builds)"; exit 1; }
           echo "Preview: $URL"
           {
             echo "### Preview: <$URL>"
@@ -189,9 +190,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
-    concurrency:
-      group: gh-pages-preview-${{ needs.target.outputs.folder }}
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
