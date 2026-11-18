@@ -40,19 +40,19 @@ going, in [the roadmap](docs/ROADMAP.md).
 
 ## What works today
 
-|                                    | Browser                                                               | Desktop app                                        |
-| ---------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------- |
-| Shell (BusyBox `ash`), git, `curl` | ✓                                                                     | ✓                                                  |
-| Python 3.14                        | ✓                                                                     | ✓                                                  |
-| NumPy                              | ✓ desktop                                                             | ✓                                                  |
-| Jupyter Notebook and JupyterLab    | ✓ desktop                                                             | ✓                                                  |
-| Node.js 22, Gemini CLI             | as packages (Gemini CLI needs the desktop app's network for its API)  | ✓ in the image                                     |
-| Go, `gh`, clang (C and C++)        | as packages, desktop (`gh` needs the desktop app's network)           | as packages                                        |
-| Runs in                            | the tab (WebAssembly, no server)                                      | the native Yurt runtime on your machine            |
-| Boots                              | the slim image, or a snapshot of it with Python installed             | the full image                                     |
-| Network from inside the sandbox    | none, by design; `pkg` reaches its repository through the page        | yes (Python verifies TLS; BusyBox `wget` does not) |
-| Works offline                      | yes, after the sandbox is up                                          | yes                                                |
-| Needs                              | a browser with cross-origin isolation (Chrome, Edge, Firefox, Safari) | macOS (Apple Silicon) or Debian/Ubuntu             |
+|                                    | Browser                                                              | Desktop app                                        |
+| ---------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------- |
+| Shell (BusyBox `ash`), git, `curl` | ✓                                                                    | ✓                                                  |
+| Python 3.14                        | ✓                                                                    | ✓                                                  |
+| NumPy                              | ✓ desktop                                                            | ✓                                                  |
+| Jupyter Notebook and JupyterLab    | ✓ desktop                                                            | ✓                                                  |
+| Node.js 22, Gemini CLI             | as packages (Gemini CLI needs the desktop app's network for its API) | ✓ in the image                                     |
+| Go, `gh`, clang (C and C++)        | as packages, desktop (`gh` needs the desktop app's network)          | as packages                                        |
+| Runs in                            | the tab (WebAssembly, no server)                                     | the native Yurt runtime on your machine            |
+| Boots                              | the slim image, or a snapshot of it with Python installed            | the full image                                     |
+| Network from inside the sandbox    | none, by design; `pkg` reaches its repository through the page       | yes (Python verifies TLS; BusyBox `wget` does not) |
+| Works offline                      | yes, after the sandbox is up                                         | yes                                                |
+| Needs                              | Chrome or Edge (desktop), or Safari (Mac, iPhone, iPad); not Firefox | macOS (Apple Silicon) or Debian/Ubuntu             |
 
 In the browser, files live in the tab's memory: a reload starts a fresh sandbox
 (_Download home_ saves your home directory first). Planned, not done yet: files
@@ -169,7 +169,11 @@ needs the **Yurt browser bridge** extension.
 
    It opens a tab, prints its title and saves a screenshot in the sandbox's
    home. A script of your own starts with
-   `const browser = await require("yurt-chrome").connect();`.
+   `const browser = await require("yurt-chrome").connect();` and opens its tabs
+   in the browser's own profile, as the example does:
+   `const page = await browser.contexts()[0].newPage();`. `browser.newPage()`
+   fails with "the Yurt bridge drives tabs in this browser's own profile only
+   (no new contexts)".
 5. To try it against a local server (`deno task serve`, port 4173), load a copy
    of the extension whose `manifest.json` also lists `"http://127.0.0.1:4173/"`
    and `"http://127.0.0.1:4173/?*"` in `externally_connectable.matches`.

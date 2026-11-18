@@ -464,9 +464,29 @@ Deno.test("the page's instructions hold outside Chrome and without a token", asy
     html.indexOf("</details>", html.indexOf('data-testid="proof"')),
   );
   assertEquals(proof.includes("in Chrome."), false, "Chrome-only timing");
-  for (const browser of ["Chrome", "Safari", "Firefox"]) {
+  for (const browser of ["Chrome", "Edge", "Safari"]) {
     assertEquals(proof.includes(browser), true, `the proof names ${browser}`);
   }
+});
+
+Deno.test("no page claims Firefox, and the home page sends it to its reason", async () => {
+  // The owner, 2026-11-18: Firefox is not supported (the sandbox's workers
+  // never signal ready there).
+  const read = (path: string) =>
+    Deno.readTextFile(new URL(`../${path}`, import.meta.url));
+  assertEquals(/firefox/i.test(await read("public/index.html")), false);
+  const unsupported = await read("public/unsupported.html");
+  assertEquals(unsupported.includes('<p id="firefox"'), true);
+  assertEquals(unsupported.includes("Firefox is not supported"), true);
+  // It names the browsers to use instead.
+  assertMatch(
+    unsupported,
+    /Chrome or Edge on a desktop, or in\s+Safari on a Mac, iPhone or iPad/,
+  );
+  assertEquals(
+    (await read("src/page.ts")).includes("./unsupported.html#firefox"),
+    true,
+  );
 });
 
 Deno.test("the start screen offers Python, Go or Playwright, hidden until the page shows it", async () => {

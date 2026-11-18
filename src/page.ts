@@ -53,6 +53,7 @@ import {
   choosePlatform,
   deviceClass,
   type Env,
+  isFirefox,
   type Platform,
   platformSnapshotKind,
   withEnv,
@@ -1072,6 +1073,12 @@ async function runPage(): Promise<void> {
   if (chosenEnv.note !== undefined) {
     notes.push(chosenEnv.note);
     showNotes();
+  }
+  if (desktop === undefined && isFirefox(navigator.userAgent)) {
+    status.failure("Firefox is not supported");
+    yurtState.failed("Firefox is not supported");
+    globalThis.location.replace("./unsupported.html#firefox");
+    throw new Error("Firefox is not supported");
   }
   if (desktop === undefined && globalThis.crossOriginIsolated !== true) {
     status.failure("need COOP/COEP");
