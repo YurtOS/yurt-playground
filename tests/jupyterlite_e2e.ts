@@ -279,15 +279,32 @@ async function checkSettles(
     ...(raw ? ["nested", "shadow"] : []),
   ];
   const deadline = Date.now() + 120_000;
-  // The reports alone could come from the first-height guess, which lays
-  // the sanitized markup out in the page: a frame per probe must exist too.
-  const framed = () =>
-    page.locator(".yurt-OutputFrame iframe").count().then((n) =>
-      n >= RELOAD_PROBES.length
-    );
+  // A report alone may come from the first-height guess, which lays the
+  // sanitized markup out in the page: each probe must be in a frame too.
+  const framed = async () => {
+    const tags = new Set<string>();
+    for (const frame of await page.locator(".yurt-OutputFrame iframe").all()) {
+      const inner = await (await frame.elementHandle())!.contentFrame();
+      for (
+        const src of await inner?.evaluate(() =>
+          Array.from(document.images).map((image) =>
+            image.src
+          )
+        ) ?? []
+      ) {
+        const tag = /reload-probe-(\d+)/.exec(src)?.[1];
+        if (tag !== undefined) tags.add(tag);
+      }
+    }
+    return RELOAD_PROBES.every((_, i) => tags.has(String(i)));
+  };
   while (!want.every((tag) => watch.seen.has(tag)) || !(await framed())) {
     if (Date.now() > deadline) {
-      fail(`${what}: the reload probes did not all render: ${[...watch.seen]}`);
+      fail(
+        `${what}: the reload probes did not all render in frames (reported: ${[
+          ...watch.seen,
+        ]})`,
+      );
     }
     await page.waitForTimeout(250);
   }
