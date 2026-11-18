@@ -71,6 +71,15 @@
         color: var(--text);
         margin-bottom: 8px;
       }
+      /* src/page.ts sends Firefox here as #firefox: its reason, instead of
+         the isolation one. */
+      #firefox:not(:target) {
+        display: none;
+      }
+      /* Its own rule: a browser without :has() drops the whole rule. */
+      main:has(#firefox:target) #isolation {
+        display: none;
+      }
       a:focus-visible,
       summary:focus-visible {
         outline: 2px solid var(--ochre);
@@ -83,15 +92,18 @@
       <a class="wordmark" href="./">Yurt</a>
       <section class="pane">
         <h1>This page cannot boot the sandbox</h1>
+        <p id="firefox" data-testid="unsupported-firefox">
+          Firefox is not supported: the sandbox's workers do not start in it.
+        </p>
         <p>
           Open the playground at
           <a href="https://yurt-playground.pages.dev/"
-          >yurt-playground.pages.dev</a> in a current browser (Chrome, Edge,
-          Firefox or Safari, phones included). Or run it on your machine: the
+          >yurt-playground.pages.dev</a> in Chrome or Edge on a desktop, or in
+          Safari on a Mac, iPhone or iPad. Or run it on your machine: the
           <a href="https://github.com/YurtOS/yurt-playground/releases/latest"
           >desktop app and the command line</a> need none of this.
         </p>
-        <details>
+        <details id="isolation">
           <summary>Why this happened</summary>
           <p>
             The playground runs a whole Linux sandbox inside the tab, on

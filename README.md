@@ -40,19 +40,19 @@ going, in [the roadmap](docs/ROADMAP.md).
 
 ## What works today
 
-|                                    | Browser                                                               | Desktop app                                        |
-| ---------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------- |
-| Shell (BusyBox `ash`), git, `curl` | ✓                                                                     | ✓                                                  |
-| Python 3.14                        | ✓                                                                     | ✓                                                  |
-| NumPy                              | ✓ desktop                                                             | ✓                                                  |
-| Jupyter Notebook and JupyterLab    | ✓ desktop                                                             | ✓                                                  |
-| Node.js 22, Gemini CLI             | as packages (Gemini CLI needs the desktop app's network for its API)  | ✓ in the image                                     |
-| Go, `gh`, clang (C and C++)        | as packages, desktop (`gh` needs the desktop app's network)           | as packages                                        |
-| Runs in                            | the tab (WebAssembly, no server)                                      | the native Yurt runtime on your machine            |
-| Boots                              | the slim image, or a snapshot of it with Python installed             | the full image                                     |
-| Network from inside the sandbox    | none, by design; `pkg` reaches its repository through the page        | yes (Python verifies TLS; BusyBox `wget` does not) |
-| Works offline                      | yes, after the sandbox is up                                          | yes                                                |
-| Needs                              | a browser with cross-origin isolation (Chrome, Edge, Firefox, Safari) | macOS (Apple Silicon) or Debian/Ubuntu             |
+|                                    | Browser                                                              | Desktop app                                        |
+| ---------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------- |
+| Shell (BusyBox `ash`), git, `curl` | ✓                                                                    | ✓                                                  |
+| Python 3.14                        | ✓                                                                    | ✓                                                  |
+| NumPy                              | ✓ desktop                                                            | ✓                                                  |
+| Jupyter Notebook and JupyterLab    | ✓ desktop                                                            | ✓                                                  |
+| Node.js 22, Gemini CLI             | as packages (Gemini CLI needs the desktop app's network for its API) | ✓ in the image                                     |
+| Go, `gh`, clang (C and C++)        | as packages, desktop (`gh` needs the desktop app's network)          | as packages                                        |
+| Runs in                            | the tab (WebAssembly, no server)                                     | the native Yurt runtime on your machine            |
+| Boots                              | the slim image, or a snapshot of it with Python installed            | the full image                                     |
+| Network from inside the sandbox    | none, by design; `pkg` reaches its repository through the page       | yes (Python verifies TLS; BusyBox `wget` does not) |
+| Works offline                      | yes, after the sandbox is up                                         | yes                                                |
+| Needs                              | Chrome or Edge (desktop), or Safari (Mac, iPhone, iPad); not Firefox | macOS (Apple Silicon) or Debian/Ubuntu             |
 
 In the browser, files live in the tab's memory: a reload starts a fresh sandbox
 (_Download home_ saves your home directory first). Planned, not done yet: files
@@ -85,8 +85,49 @@ Contact Ofer at [ofersa@gmail.com](mailto:ofersa@gmail.com), or
 ## The agent's model
 
 The home page's agent runs a model in the tab, on WebGPU: Gemma 4, whose weights
-download once from Hugging Face and then stay in the browser. Nothing you type
-leaves your computer. A browser without WebGPU is told so.
+download once from Hugging Face and then stay in the browser. With that model,
+nothing you type leaves your computer. A browser without WebGPU is told so. The
+agent can also run a model on OpenRouter, with your own OpenRouter account (the
+only choice on a tablet or phone); then your task and what the agent reads in
+the sandbox go to OpenRouter (see [Privacy](#privacy)).
+
+## Privacy
+
+The sandbox runs in the tab, and what you do in it stays in this browser unless
+you choose otherwise. What does leave it, and where it goes:
+
+- **Cloudflare** hosts the site. The production site
+  (`yurt-playground.pages.dev`) counts page views with Cloudflare Web Analytics,
+  which sets no cookies (`src/web_analytics.ts`); previews, local serving and
+  the desktop app do not.
+- **GitHub** (`raw.githubusercontent.com`) serves the package repository,
+  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), from which
+  the page reads the index and installs packages, and the agent's model list,
+  `config/agent-models.json` in this repository, read at every page load. A
+  shared snapshot link (`?snapshot=<id>`) also asks `api.github.com` which
+  snapshots this repository published, then downloads that snapshot from
+  `raw.githubusercontent.com`.
+- **Hugging Face** serves the in-tab model's weights, downloaded when you start
+  the agent with that model. The model runs in the tab.
+- **OpenRouter**, only when you choose an OpenRouter model for the agent: your
+  task and what the agent sees in the sandbox (the output of its commands, the
+  files it reads) go to OpenRouter under your account. Your OpenRouter key is
+  kept in this browser's storage and sent only to `openrouter.ai`.
+- **The sites a Playwright program opens**, only when you choose Playwright and
+  allow it in the Yurt browser bridge extension's window: the program drives
+  tabs in your browser, which load what it asks for, with your browser's
+  sign-ins ([Playwright in the sandbox](#playwright-in-the-sandbox)).
+
+Nothing else leaves the browser, and the page's Content Security Policy
+(`src/csp.ts`) lets it connect only to its own site and the addresses above. The
+desktop app is different: its sandbox runs natively on your machine and has the
+network. The sandbox's files live in the tab's memory. What the page keeps
+between visits stays in this browser's storage (Cache Storage, IndexedDB, the
+origin private file system and localStorage). It includes downloaded packages,
+model weights and snapshot parts; the sealed sandboxes of the agent (with its
+chat), the suspend/resume notebook and the snapshot demo; your OpenRouter key
+and the last model list. Clearing the site's data in the browser removes all of
+it.
 
 ## Driving the sandbox from a program
 
@@ -169,7 +210,11 @@ needs the **Yurt browser bridge** extension.
 
    It opens a tab, prints its title and saves a screenshot in the sandbox's
    home. A script of your own starts with
-   `const browser = await require("yurt-chrome").connect();`.
+   `const browser = await require("yurt-chrome").connect();` and opens its tabs
+   in the browser's own profile, as the example does:
+   `const page = await browser.contexts()[0].newPage();`. `browser.newPage()`
+   fails with an error ending in "the Yurt bridge drives tabs in this browser's
+   own profile only (no new contexts)".
 5. To try it against a local server (`deno task serve`, port 4173), load a copy
    of the extension whose `manifest.json` also lists `"http://127.0.0.1:4173/"`
    and `"http://127.0.0.1:4173/?*"` in `externally_connectable.matches`.

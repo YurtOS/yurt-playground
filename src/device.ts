@@ -51,6 +51,14 @@ export function touchDevice(): boolean {
     (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
 
+/** Firefox, and the Gecko browsers built from it: their user agent carries
+ * a `Firefox/` token. Firefox on iOS is WebKit and says `FxiOS/` instead.
+ * The in-tab sandbox does not start there (the kernel's workers never
+ * signal ready), so the page sends it to unsupported.html. */
+export function isFirefox(userAgent: string): boolean {
+  return /\bFirefox\//.test(userAgent);
+}
+
 /** Which kind of page this is: what it starts (the shell only on a phone
  * or tablet, Jupyter on a desktop) and which snapshot it restores
  * (src/snapshot_pin.ts SNAPSHOT_KINDS). `?platform=` says it in the
