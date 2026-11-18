@@ -436,6 +436,15 @@ function markdownProbe(host: string, where: string): string {
     `<ul style="list-style-image:url('${own("list-style")}')"><li>l</li></ul>`,
     `<link rel="stylesheet" href="${own("link")}">`,
     `![md-data-image](data:image/png;base64,${DATA_PNG})`,
+    // Unicode spaces before "data:", which the URL parser does not strip.
+    `<img src="&#160;data:/../../own-origin-probe.png?md-${where}-nbsp">`,
+    `<img src="&#65279;data:/x/own-origin-probe.png?md-${where}-bom">`,
+    `<input type="image" src="&#8195;data:/../../own-origin-probe.png?md-${where}-emsp">`,
+    // An ASCII space: JupyterLab takes it for a local path and loads the
+    // named file from the drive as a blob: URL.
+    '<img alt="md-space" src=" data:/../markdown-probe.ipynb">',
+    // The Table of Contents renders a Markdown heading on its own.
+    `# md-heading ![h](${own("heading")})`,
     `$\\style{background:url(${own("mathjax")})}{y}$`,
     "```mermaid\n" + mermaidProbe(own("mermaid")) + "\n```",
   ].join("\n\n");
@@ -536,8 +545,25 @@ async function waitForMarkdown(page: Page, marker: string): Promise<void> {
  * outputs (which should have fallen back to their PNG). */
 function renderedProbes(page: Page) {
   return page.evaluate(() => ({
-    math: document.querySelectorAll(".jp-RenderedMarkdown mjx-container")
-      .length,
+    // Typeset formulas in the Markdown cell and in Markdown output apart.
+    math: [".jp-MarkdownCell", ".jp-OutputArea"].map((where) =>
+      document.querySelectorAll(
+        `${where} .jp-RenderedMarkdown mjx-container`,
+      ).length
+    ),
+    // Mermaid fences as code, and no diagram drawn.
+    mermaidCode: document.querySelectorAll(
+      ".jp-RenderedMarkdown pre code.language-mermaid",
+    ).length,
+    mermaidDrawn: document.querySelectorAll(".jp-RenderedMermaid").length,
+    // Every URL left on an element that loads one by itself.
+    kept: [
+      ...document.querySelectorAll(
+        ".jp-RenderedMarkdown [src], .jp-RenderedMarkdown [poster]",
+      ),
+    ].flatMap((node) =>
+      ["src", "poster"].map((name) => node.getAttribute(name) ?? "")
+    ).filter((url) => url !== "" && !/^(data|attachment):/.test(url)),
     dataImages: [
       ...document.querySelectorAll<HTMLImageElement>(
         'img[alt="md-data-image"]',
@@ -588,11 +614,13 @@ export async function checkMarkdownAndVegaFetchNothing(
   const ran = { leaks: leaks.splice(0), ...(await renderedProbes(page)) };
   await context.close();
   // Each phase: two Markdown renderings (the cell and an output), each with
-  // a typeset formula and a data: image, the cell's attachment shown, and
-  // the two Vega outputs shown as their PNG.
+  // two typeset formulas, a Mermaid fence left as code and a data: image;
+  // the cell's attachment shown; the two Vega outputs shown as their PNG.
   for (const [what, seen] of [["opened", opened], ["Run All", ran]] as const) {
     if (
-      seen.leaks.length > 0 || seen.math < 2 || seen.dataImages < 2 ||
+      seen.leaks.length > 0 || seen.kept.length > 0 ||
+      seen.math.some((n) => n < 2) ||
+      seen.mermaidCode < 2 || seen.mermaidDrawn > 0 || seen.dataImages < 2 ||
       seen.vega > 0 || seen.fallback < 2 || seen.attachment !== 1
     ) {
       fail(
