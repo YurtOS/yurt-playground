@@ -7,7 +7,8 @@
     "contentsAllJsonFile": "all.json",
     "defaultKernelName": "yurt",
     "disabledExtensions": [
-      "@jupyterlab/javascript-extension"
+      "@jupyterlab/javascript-extension",
+      "@jupyterlite/application-extension:service-worker-manager"
     ],
     "faviconUrl": "./lab/favicon.ico",
     "federated_extensions": [
