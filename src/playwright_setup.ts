@@ -28,7 +28,8 @@ export const YURT_CHROME_MODULE =
 const cdpUrl = "http://127.0.0.1:9222";
 module.exports = {
   cdpUrl,
-  /** This browser, as a Playwright Browser: newPage() opens a tab. */
+  /** This browser, as a Playwright Browser: contexts()[0].newPage() opens a
+   *  tab (the bridge refuses a new context, so browser.newPage() fails). */
   connect: () => require("playwright-core").chromium.connectOverCDP(cdpUrl),
 };
 `;

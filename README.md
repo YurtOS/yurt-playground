@@ -172,8 +172,8 @@ needs the **Yurt browser bridge** extension.
    `const browser = await require("yurt-chrome").connect();` and opens its tabs
    in the browser's own profile, as the example does:
    `const page = await browser.contexts()[0].newPage();`. `browser.newPage()`
-   fails with "the Yurt bridge drives tabs in this browser's own profile only
-   (no new contexts)".
+   fails with an error ending in "the Yurt bridge drives tabs in this browser's
+   own profile only (no new contexts)".
 5. To try it against a local server (`deno task serve`, port 4173), load a copy
    of the extension whose `manifest.json` also lists `"http://127.0.0.1:4173/"`
    and `"http://127.0.0.1:4173/?*"` in `externally_connectable.matches`.
