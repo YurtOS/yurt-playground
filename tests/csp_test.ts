@@ -1,6 +1,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   contentSecurityPolicy,
+  cspSources,
   documentPolicy,
   headersFile,
   inlineScriptHashes,
@@ -108,4 +109,34 @@ Deno.test("_headers detaches the strict policy before the JupyterLite one", () =
     ["https://raw.githubusercontent.com/YurtOS/yurt-packages/;"],
   );
   assertEquals(lines.length, 6);
+});
+
+Deno.test("the page's privacy note names whoever each connect-src source belongs to", async () => {
+  // Every other origin the page may reach, with the analytics beacon on as
+  // in production: a new one fails here until the page's note says who it
+  // is. README.md's Privacy section says the same, and is kept in step by
+  // hand (a test reading Markdown would have to join ci.yml's docs-only
+  // checks).
+  const owners: [RegExp, string][] = [
+    [/^https:\/\/(huggingface\.co|\*\.hf\.co)$/, "Hugging Face"],
+    [/^https:\/\/openrouter\.ai$/, "OpenRouter"],
+    [/^https:\/\/(raw\.githubusercontent\.com|api\.github\.com)\//, "GitHub"],
+    [/^https:\/\/cloudflareinsights\.com$/, "Cloudflare"],
+  ];
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const start = html.indexOf('data-testid="privacy"');
+  const note = html.slice(start, html.indexOf("</section>", start));
+  assertEquals(start > 0, true, "the page has a privacy note");
+  const sources = cspSources(
+    contentSecurityPolicy({ webAnalytics: true }),
+    "connect-src",
+  ).filter((source) => source !== "'self'");
+  assertEquals(sources.length, 7, sources.join(" "));
+  for (const source of sources) {
+    const owner = owners.find(([pattern]) => pattern.test(source))?.[1];
+    assertEquals(owner !== undefined, true, `no owner for ${source}`);
+    assertStringIncludes(note, `<strong>${owner}</strong>`, source);
+  }
 });

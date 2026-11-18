@@ -1469,6 +1469,65 @@ yurt stop web</pre>
             </section>
             <section
               class="strip"
+              id="privacy"
+              aria-labelledby="privacy-title"
+              data-view="about"
+              data-testid="privacy"
+            >
+              <h2 id="privacy-title">Privacy</h2>
+              <p>
+                The sandbox runs in this tab, and what you do in it stays in
+                this browser unless you choose otherwise. What does leave it,
+                and where it goes:
+              </p>
+              <ul>
+                <li>
+                  <strong>Cloudflare</strong> hosts this site, and counts page
+                  views on it with Cloudflare Web Analytics, which sets no
+                  cookies. Previews and the desktop app count nothing.
+                </li>
+                <li>
+                  <strong>GitHub</strong> serves the package repository, from
+                  which the page reads the index and installs packages, and the
+                  agent's model list, read at every page load. A shared snapshot
+                  link also asks GitHub which snapshots this repository
+                  published, then downloads that snapshot from it.
+                </li>
+                <li>
+                  <strong>Hugging Face</strong> serves the in-tab model's
+                  weights, downloaded when you start the agent with that model.
+                  The model runs in this tab.
+                </li>
+                <li>
+                  <strong>OpenRouter</strong>, only when you choose an
+                  OpenRouter model for the agent: your task and what the agent
+                  sees in the sandbox (the output of its commands, the files it
+                  reads) go to OpenRouter under your account. Your OpenRouter
+                  key is kept in this browser and sent only to OpenRouter.
+                </li>
+                <li>
+                  <strong>The sites a Playwright program opens</strong>, only
+                  when you choose Playwright and allow it in the Yurt browser
+                  bridge extension's window: the program drives tabs in your
+                  browser, which load what it asks for, with your browser's
+                  sign-ins.
+                </li>
+              </ul>
+              <p>
+                Nothing else leaves the browser: the page's security policy lets
+                it connect only to this site and those sources. The sandbox's
+                files live in the tab's memory. What the page keeps between
+                visits stays in this browser's storage. It includes downloaded
+                packages, model weights and snapshot parts; the sealed sandboxes
+                of the agent (with its chat), the suspend/resume notebook and
+                the snapshot demo; your OpenRouter key and the last model list.
+                Clearing this site's data in the browser removes all of it. The
+                desktop app is different: its sandbox runs natively on your
+                machine and has the network.
+              </p>
+            </section>
+            <section
+              class="strip"
               id="partner"
               aria-labelledby="partner-title"
               data-view="about"
