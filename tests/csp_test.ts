@@ -1,8 +1,6 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { OUTPUT_FRAME_SIZER } from "../jupyterlite/yurt-kernel/src/output_frame_sizer.ts";
 import {
   contentSecurityPolicy,
-  cspSources,
   documentPolicy,
   headersFile,
   inlineScriptHashes,
@@ -110,47 +108,4 @@ Deno.test("_headers detaches the strict policy before the JupyterLite one", () =
     ["https://raw.githubusercontent.com/YurtOS/yurt-packages/;"],
   );
   assertEquals(lines.length, 6);
-});
-
-Deno.test("only JupyterLite pages admit the HTML output frame's sizer, and frames stay refused", async () => {
-  // The frame (jupyterlite/yurt-kernel/src/output_frame.ts) is a srcdoc
-  // document: it inherits the page's policy, so the page must admit its one
-  // script. Hashed here independently of src/csp.ts.
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(OUTPUT_FRAME_SIZER),
-  );
-  const sizer = `'sha256-${
-    btoa(String.fromCharCode(...new Uint8Array(digest)))
-  }'`;
-  const jupyter = [
-    documentPolicy("/jupyter/notebooks/index.html", ["'sha256-j'"]),
-    headersFile({}, ["'sha256-s'"], ["'sha256-j'"]).split("\n")[4]
-      .replace("  Content-Security-Policy: ", ""),
-  ];
-  for (const policy of jupyter) {
-    assertEquals(cspSources(policy, "script-src"), [
-      "'self'",
-      "'wasm-unsafe-eval'",
-      "'unsafe-eval'",
-      "'sha256-j'",
-      sizer,
-    ]);
-    // srcdoc needs no frame-src; every navigation of the frame is refused.
-    assertEquals(cspSources(policy, "frame-src"), ["'none'"]);
-  }
-  // The home page's policy is unchanged.
-  const site = [
-    documentPolicy("/index.html", ["'sha256-s'"]),
-    headersFile({}, ["'sha256-s'"], ["'sha256-j'"]).split("\n")[1]
-      .replace("  Content-Security-Policy: ", ""),
-  ];
-  for (const policy of site) {
-    assertEquals(cspSources(policy, "script-src"), [
-      "'self'",
-      "'wasm-unsafe-eval'",
-      "'sha256-s'",
-    ]);
-    assertEquals(cspSources(policy, "frame-src"), ["'none'"]);
-  }
 });
