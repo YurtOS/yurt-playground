@@ -322,7 +322,12 @@ export function allocationCensus(config: CensusConfig): void {
         new.target,
       ) as WebAssembly.Memory;
     } catch (error) {
-      release(pages);
+      // Give back what admit() took. Not release(): that ignores a probe's.
+      if (shared === undefined) early.live -= pages;
+      else {
+        Atomics.sub(shared, at(S_LIVE), pages);
+        Atomics.sub(shared, H_LIVE, pages);
+      }
       throw error;
     }
     add(S_MEMS, 1);
