@@ -28,7 +28,10 @@ import {
 } from "../src/integrity.ts";
 import { loadPins, type Pins } from "../src/pins.ts";
 import { checkSnapshotFile, kernelRootIsStore } from "./lib/snapshot_file.ts";
-import { writeGhPagesPreview } from "./lib/gh_pages_preview.ts";
+import {
+  PREVIEW_SNAPSHOT_KINDS,
+  writeGhPagesPreview,
+} from "./lib/gh_pages_preview.ts";
 import {
   BEACON_PAGES,
   WEB_ANALYTICS_TOKEN,
@@ -172,7 +175,8 @@ export type BuildOptions = {
   webAnalytics?: boolean;
   /** A GitHub Pages preview (`--gh-pages-preview`,
    * .github/workflows/preview-gh-pages.yml): the isolation service worker
-   * and a `<meta>` CSP in every page, since Pages sends no `_headers`
+   * and a `<meta>` CSP in every page, since Pages sends no `_headers`, and
+   * only the snapshots in PREVIEW_SNAPSHOT_KINDS
    * (scripts/lib/gh_pages_preview.ts). Never with analytics. */
   ghPagesPreview?: boolean;
 };
@@ -250,6 +254,11 @@ export async function buildStaticSite(
   // Optional; a page without its own boots the image.
   const pins = await loadPins(join(artifactsDir, "pins.json"));
   for (const kind of SNAPSHOT_KIND_NAMES) {
+    if (
+      options.ghPagesPreview && !PREVIEW_SNAPSHOT_KINDS.includes(kind)
+    ) {
+      continue;
+    }
     const { name, pinKey } = SNAPSHOT_KINDS[kind];
     const snapshotPath = join(publicDir, name);
     const snapshot = await Deno.stat(snapshotPath).then(

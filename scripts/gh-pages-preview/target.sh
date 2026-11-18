@@ -18,9 +18,11 @@ die() {
   exit 1
 }
 
+# The name as given, never `refs/heads/<b>`: the workflow's concurrency
+# group is the raw input, so one branch has one spelling.
 branch=${INPUT_REF:-}
-branch=${branch#refs/heads/}
 [[ -n "$branch" ]] || die "pass ref: <branch>"
+[[ "$branch" != refs/* ]] || die "pass the branch name, not '$branch'"
 # A branch name git accepts, in characters that are safe in an output line,
 # a URL and the job summary.
 if ! [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]] ||

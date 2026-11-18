@@ -9,6 +9,7 @@ import {
   JUPYTER_SERVICE_WORKER_PLUGIN,
   metaPolicy,
   PREVIEW_FILES,
+  PREVIEW_SNAPSHOT_KINDS,
   previewDocument,
   writeGhPagesPreview,
 } from "../scripts/lib/gh_pages_preview.ts";
@@ -64,15 +65,14 @@ Deno.test("a branch previews in a folder named after it", async () => {
         "agent/yurt-playground-gh-pages-preview",
         "agent-yurt-playground-gh-pages-preview",
       ],
-      ["refs/heads/Fix/Touch_Keys", "fix-touch-keys"],
+      ["Fix/Touch_Keys", "fix-touch-keys"],
       ["a_b/--c", "a-b-c"],
       ["x.y_", "x-y"],
     ]
   ) {
     const t = await target(ref);
     assertEquals(t.code, 0, `${ref}: ${t.err}`);
-    const branch = ref.replace(/^refs\/heads\//, "");
-    assertEquals(t.out, { branch, ref: `refs/heads/${branch}`, folder }, ref);
+    assertEquals(t.out, { branch: ref, ref: `refs/heads/${ref}`, folder }, ref);
   }
 });
 
@@ -83,6 +83,7 @@ Deno.test("main, and what is not a branch, are never previewed", async () => {
       "main",
       "MAIN",
       "refs/heads/main",
+      "refs/heads/agent/x",
       "a b",
       "x;rm -rf /",
       "a/.lock",
@@ -366,4 +367,13 @@ Deno.test("a preview build adds the isolation worker to every page and turns off
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("a preview publishes the snapshot a desktop Notebook page requires", async () => {
+  // src/lite_bridge.ts restores the desktop snapshot with no fallback to
+  // the image: a preview without it has no desktop Jupyter kernel.
+  const bridge = await Deno.readTextFile(path("../src/lite_bridge.ts"));
+  assertStringIncludes(bridge, 'snapshotKind: "desktop" as const');
+  assertStringIncludes(bridge, "snapshotRequired: true");
+  assertEquals(PREVIEW_SNAPSHOT_KINDS, ["desktop"]);
 });

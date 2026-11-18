@@ -9,7 +9,7 @@ name: Preview on GitHub Pages
 # from a <meta> (scripts/lib/gh_pages_preview.ts), and there is no
 # Permissions-Policy: header, security and isolation changes keep the
 # Cloudflare preview (deploy-pages.yml; docs/MAINTAINING.md "Previews").
-# The site leaves out the device snapshots, for GitHub Pages' 1 GB limit.
+# The site has only the desktop snapshot, for GitHub Pages' 1 GB limit.
 
 on:
   workflow_dispatch:
@@ -88,14 +88,18 @@ jobs:
     if: ${{ !inputs.remove && needs.target.outputs.ref != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      # The build publishes only the desktop snapshot (PREVIEW_SNAPSHOT_KINDS
+      # in scripts/lib/gh_pages_preview.ts): the four are 500 MB of a 1 GB
+      # site, and a desktop Notebook page requires that one.
+      YURT_INSTALL_SNAPSHOT: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           path: playground
           ref: ${{ needs.target.outputs.ref }}
-      # The same pinned inputs and checks as deploy-pages.yml, without
-      # YURT_INSTALL_SNAPSHOT: the snapshots are 500 MB of a 1 GB site.
+      # The same pinned inputs and checks as deploy-pages.yml.
       - uses: ./playground/.github/actions/site-inputs
         with:
           token: ${{ secrets.REPO_READ_TOKEN }}
@@ -180,7 +184,7 @@ jobs:
             echo "### Preview: <$URL>"
             echo
             echo "Branch \`$BRANCH\` at \`$commit\`, on GitHub Pages:"
-            echo "no Permissions-Policy and only a <meta> CSP; no device snapshots."
+            echo "no Permissions-Policy and only a <meta> CSP; the desktop snapshot only."
           } >> "$GITHUB_STEP_SUMMARY"
 
   remove:

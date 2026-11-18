@@ -22,12 +22,19 @@
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { documentPolicy, inlineScriptHashes } from "../../src/csp.ts";
+import type { SnapshotKind } from "../../src/snapshot_pin.ts";
 
 const shimDir = join(
   dirname(fileURLToPath(import.meta.url)),
   "..",
   "gh-pages-preview",
 );
+
+/** The device snapshots a preview publishes: GitHub Pages refuses a site over
+ * 1 GB, and all of them are over 500 MB. The desktop one only, 143 MB, since
+ * a desktop browser's Notebook and Lab pages require it
+ * (src/lite_bridge.ts); the other pages boot the image without theirs. */
+export const PREVIEW_SNAPSHOT_KINDS: readonly SnapshotKind[] = ["desktop"];
 
 /** The registration script and its service worker, at the site's root. */
 export const PREVIEW_FILES = ["isolation.js", "isolation-sw.js"];

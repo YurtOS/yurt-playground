@@ -63,10 +63,12 @@ What a GitHub Pages preview is not:
   JupyterLite's own service worker is turned off there, so it cannot take
   `jupyter/` from the isolation worker. **Do not use a GitHub Pages preview to
   test security or isolation changes.**
-- It has no device snapshots: the 1 GB site limit. Each page boots the image as
-  it does when no snapshot is pinned. A preview is about 220 MB (the image
-  parts, the kernel, Python, JupyterLite, the agent's runtime); the snapshots
-  alone are 500 MB more.
+- It has only the desktop snapshot, for the 1 GB site limit: a desktop browser's
+  Notebook and Lab pages require it, and every other page boots the image as it
+  does when no snapshot is pinned (a phone and a tablet, Go, Playwright). A
+  preview is about 375 MB (the image parts, the kernel, Python, JupyterLite, the
+  agent's runtime, the desktop snapshot); the other three snapshots would be 380
+  MB more.
 - Every preview shares the origin `https://yurtos.github.io` with the others,
   the release notes and the other YurtOS repositories' Pages sites
   (yurt-packages, yurt-crates). So their storage is shared (the saved sandboxes,
@@ -77,7 +79,7 @@ What a GitHub Pages preview is not:
 - Pages' CDN caches each file for 10 minutes: after a republish, reload hard or
   wait.
 
-Clean up. The publish refuses a site over 900 MB, so a fourth preview needs an
+Clean up. The publish refuses a site over 900 MB, so a third preview needs an
 old one removed. List them, then remove those whose branch is merged or gone:
 
 ```sh
