@@ -7,13 +7,18 @@
  *
  * The key is an HMAC-SHA-256 CryptoKey made once per origin and kept in
  * IndexedDB as the CryptoKey itself, never as bytes: it is
- * non-extractable, so nothing (no page script, no guest, no notebook
- * output) can read it out, only ask this origin's code to sign with it.
- * Clearing the site's data loses it, and with it the files saved before.
+ * non-extractable, so nothing can read it out. It can still be used: any
+ * script running on this origin can open the store and sign with it. That
+ * is accepted, because such script already controls the page; what keeps
+ * guest code and notebook output from running script here is the guest's
+ * wasm boundary and #336 (no JS output renderer, no trusted notebooks).
+ * Clearing the site's data loses the key, and with it the files saved
+ * before.
  *
- * Where IndexedDB is refused (storage blocked for the site), the key is
- * made for this worker alone: a Save still works, and says that its file
- * loads only until the tab is closed.
+ * Where IndexedDB is refused (storage blocked for the site) or does not
+ * answer, the key is made for this worker alone: a Save still works, and
+ * says that its file loads only in this tab until it is reloaded or
+ * closed.
  */
 
 /** The IndexedDB database and store that keep the key (the page's own
@@ -102,32 +107,58 @@ export function indexedDbKeyStore(
   };
 }
 
+/** How long a key store may take to answer before this call makes do
+ * with a session key: an IndexedDB open that never settles must not hold
+ * a Save. */
+export const KEY_STORE_TIMEOUT_MS = 5_000;
+
 /** The origin's key, made on first use; the same one for every later
- * call. A store that throws (storage refused) gives a key for this
- * worker alone, said so by its scope. */
-export function saveKeys(store: () => KeyStore) {
-  let held: Promise<SaveKey> | undefined;
+ * call once the store has given it. A store that fails or does not
+ * answer in time gives this call the worker's session key (said so by
+ * its scope), and is asked again on the next call: a transient error is
+ * not a blocked site for the worker's whole life. */
+export function saveKeys(
+  store: () => KeyStore,
+  { timeoutMs = KEY_STORE_TIMEOUT_MS } = {},
+) {
+  /** The store's key, once it has given one. */
+  let persistent: CryptoKey | undefined;
+  /** The key for while the store fails: one per worker. */
+  let session: Promise<CryptoKey> | undefined;
   const make = () =>
     crypto.subtle.generateKey(ALGORITHM, false, [
       "sign",
       "verify",
     ]) as Promise<CryptoKey>;
-  const load = async (): Promise<SaveKey> => {
-    try {
-      const keys = store();
-      const kept = await keys.get() ??
-        await keys.putIfAbsent(await make());
-      return { key: kept, scope: "persistent" };
-    } catch {
-      return { key: await make(), scope: "session" };
-    }
+  const fromStore = async (): Promise<CryptoKey> => {
+    const keys = store();
+    return await keys.get() ?? await keys.putIfAbsent(await make());
   };
   return {
     /** The key, made (and kept) if there is none yet: what Save signs
      * with, and Load checks with. */
-    key(): Promise<SaveKey> {
-      held ??= load();
-      return held;
+    async key(): Promise<SaveKey> {
+      if (persistent !== undefined) {
+        return { key: persistent, scope: "persistent" };
+      }
+      let timer: number | undefined;
+      try {
+        persistent = await Promise.race([
+          fromStore(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("the key store did not answer")),
+              timeoutMs,
+            );
+          }),
+        ]);
+        return { key: persistent, scope: "persistent" };
+      } catch {
+        session ??= make();
+        return { key: await session, scope: "session" };
+      } finally {
+        clearTimeout(timer);
+      }
     },
   };
 }

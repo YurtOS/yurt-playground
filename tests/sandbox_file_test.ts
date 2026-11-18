@@ -548,7 +548,7 @@ Deno.test("only a file this browser signed loads: unsigned or another browser's 
   for (const key of [null, OTHER_KEY]) {
     await refusedUntouched(
       await storedZip(manifestFor(memory.byteLength), memory, key),
-      new RegExp(NOT_SAVED_HERE),
+      new RegExp(RegExp.escape(NOT_SAVED_HERE)),
     );
     // Before the build check: a stale file says it is not this browser's.
     await refusedUntouched(
@@ -560,12 +560,12 @@ Deno.test("only a file this browser signed loads: unsigned or another browser's 
         memory,
         key,
       ),
-      new RegExp(NOT_SAVED_HERE),
+      new RegExp(RegExp.escape(NOT_SAVED_HERE)),
     );
     // Before the allocation: 4 PiB named, none allocated.
     await refusedUntouched(
       await storedZip(manifestFor(2 ** 52), new Uint8Array(), key),
-      new RegExp(NOT_SAVED_HERE),
+      new RegExp(RegExp.escape(NOT_SAVED_HERE)),
     );
   }
 });
@@ -576,7 +576,7 @@ Deno.test("a signed file edited afterwards is refused: its manifest, or its memo
   // One field of the manifest changed, the signature kept.
   await refusedUntouched(
     await rawZip({ ...manifest, kernelToken: { $bigint: "4661" } }, memory),
-    new RegExp(NOT_SAVED_HERE),
+    new RegExp(RegExp.escape(NOT_SAVED_HERE)),
   );
   // One byte of the memory changed, the signed manifest kept (the zip's
   // own CRC is the new bytes', so only the signature can tell).
@@ -598,4 +598,34 @@ Deno.test("Save signs its file, and says when the key lives only in this tab", a
     await saveSandbox(h.deps);
     assertEquals(h.done().keyScope, scope);
   }
+});
+
+Deno.test("Save takes the key before it seals: a key that cannot be had leaves the sandbox as it was", async () => {
+  let sealed = false;
+  const h = harness({
+    seal: (sealing) => {
+      sealed = true;
+      sealing();
+      return Promise.resolve(image());
+    },
+  });
+  h.deps.key = () => Promise.reject(new Error("no key"));
+  await saveSandbox(h.deps);
+  assertEquals(sealed, false, "not sealed");
+  assertEquals(h.done().outcome, "refused");
+  assertEquals(h.fresh, []);
+});
+
+Deno.test("a tab whose key is a session one says so when it cannot load a file", async () => {
+  const memory = image().kernelMemory;
+  const h = harness({ scope: "session" });
+  await loadSandbox(
+    h.deps,
+    await storedZip(manifestFor(memory.byteLength), memory, OTHER_KEY),
+  );
+  assertEquals(h.done().outcome, "refused");
+  assert(
+    /can't use this browser's saved-sandbox key/.test(h.done().why ?? ""),
+    h.done().why,
+  );
 });

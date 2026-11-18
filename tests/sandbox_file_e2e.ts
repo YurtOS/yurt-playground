@@ -330,7 +330,7 @@ if (import.meta.main) {
     // must (30-byte header, then the name).
     damaged[30 + "snapshot.json".length + 2] ^= 0x01;
     await Deno.writeFile(join(dir, "damaged.zip"), damaged);
-    const notSavedHere = new RegExp(NOT_SAVED_HERE);
+    const notSavedHere = new RegExp(RegExp.escape(NOT_SAVED_HERE));
     const refusals: [string, RegExp][] = [
       // Not this browser's: no signature, or a signed one edited after.
       [
@@ -538,7 +538,9 @@ if (import.meta.main) {
           );
         }
         const said = await tab.locator("#status").textContent() ?? "";
-        if (!said.includes("only until this tab is closed")) {
+        if (
+          !said.includes("only in this tab, until it is reloaded or closed")
+        ) {
           throw new Error(`the session-only save is not said: ${said}`);
         }
         const tabZip = join(dir, "blocked.zip");

@@ -934,7 +934,7 @@ function wireSandboxFile(status: StatusLine): void {
         ? message.action === "load"
           ? "sandbox loaded"
           : message.keyScope === "session"
-          ? "sandbox saved; this browser keeps no data for this site, so the file loads only until this tab is closed"
+          ? "sandbox saved; this browser keeps no data for this site, so the file loads only in this tab, until it is reloaded or closed"
           : "sandbox saved; only this browser can load it"
         : `${what}: ${message.why ?? "failed"}${
           message.outcome === "refused" ? " (nothing changed)" : ""

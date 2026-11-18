@@ -90,5 +90,9 @@ export async function launchWithStorageBlocked(): Promise<BrowserContext> {
   console.log(
     `browser: ${selected} ${context.browser()?.version()} (site data blocked)`,
   );
+  // The profile goes with the browser.
+  context.on("close", () => {
+    Deno.remove(profile, { recursive: true }).catch(() => {});
+  });
   return context;
 }

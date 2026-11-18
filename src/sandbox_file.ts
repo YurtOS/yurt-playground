@@ -19,7 +19,6 @@
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
 import type { Pins } from "./pins.ts";
 import type { PageSeal } from "./root_store.ts";
-import { sha256Hex } from "./integrity.ts";
 import {
   type SaveKey,
   type SaveKeyScope,
@@ -31,6 +30,7 @@ import {
   decodeSandboxSnapshot,
   encodeSandboxSnapshot,
   manifestSigningBytes,
+  memoryHasher,
   type SnapshotIdentity,
   snapshotIdentity,
   SnapshotMismatch,
@@ -61,7 +61,13 @@ export class LoadRefused extends Error {}
  * elsewhere, or signed with a key this browser no longer has (its site
  * data was cleared). */
 export const NOT_SAVED_HERE =
-  "This file wasn't saved in this browser, so it can't be loaded";
+  "This file wasn't saved in this browser (or this site's data was cleared since), so it can't be loaded";
+
+/** The same refusal in a tab whose key is a session one (the site's
+ * storage refused or not answering): files saved before, in this browser,
+ * cannot be checked here. */
+export const NOT_SAVED_IN_TAB =
+  "This tab can't use this browser's saved-sandbox key (the site's storage is blocked or not answering), so it loads only files saved in this tab since it was last loaded";
 
 /** What a saved file records it was built from: the page's build. Its
  * packages are its own, so it names no Python set, and a Load asks the
@@ -144,6 +150,8 @@ export async function decodeLoadedSnapshot(
   let image: SandboxSealImage;
   /** The memory's sha256 the signature covers. */
   let signedMemory: string | undefined;
+  /** The memory as read, hashed as it comes. */
+  const memoryHash = await memoryHasher();
   try {
     image = await decodeSandboxSnapshot(
       body,
@@ -167,6 +175,7 @@ export async function decodeLoadedSnapshot(
         }
         signedMemory = manifest.memorySha256;
       },
+      (chunk) => memoryHash.update(chunk),
     );
   } catch (error) {
     if (error instanceof LoadRefused) throw error;
@@ -181,7 +190,7 @@ export async function decodeLoadedSnapshot(
     throw new LoadRefused(`not a sandbox snapshot this page loads: ${message}`);
   }
   // The memory is the signed one, byte for byte, before it is restored.
-  if (await sha256Hex(image.kernelMemory) !== signedMemory) {
+  if (memoryHash.digest("hex") !== signedMemory) {
     throw new LoadRefused(
       "This file was changed after it was saved, so it can't be loaded",
     );
@@ -357,6 +366,17 @@ export function saveSandbox(deps: SandboxFileDeps): Promise<void> {
     if (!deps.canReplace || seal === undefined) {
       return { outcome: "refused", why: "this sandbox cannot be saved" };
     }
+    // The key first, while the sandbox still runs: a key store that fails
+    // or hangs never leaves it sealed.
+    let saveKey: SaveKey;
+    try {
+      saveKey = await deps.key();
+    } catch (error) {
+      return {
+        outcome: "refused",
+        why: `no key to sign the file with: ${errorText(error)}`,
+      };
+    }
     const box: SealBox = {};
     let sealing = false;
     try {
@@ -376,10 +396,8 @@ export function saveSandbox(deps: SandboxFileDeps): Promise<void> {
     }
     let saved = false;
     let failed: string | undefined;
-    let keyScope: SaveKeyScope | undefined;
+    const { key, scope: keyScope } = saveKey;
     try {
-      const { key, scope } = await deps.key();
-      keyScope = scope;
       const blob = await encodeSandboxSnapshot(
         box.image,
         savedBuiltFrom(await deps.pins()),
@@ -397,12 +415,7 @@ export function saveSandbox(deps: SandboxFileDeps): Promise<void> {
       failed = `saving failed: ${errorText(error)}`;
     }
     const back = await replaceWith(deps, box, "the saved sandbox");
-    return {
-      ...back,
-      saved,
-      ...(keyScope === undefined ? {} : { keyScope }),
-      why: failed ?? back.why,
-    };
+    return { ...back, saved, keyScope, why: failed ?? back.why };
   });
 }
 
@@ -418,15 +431,22 @@ export function loadSandbox(deps: SandboxFileDeps, file: Blob): Promise<void> {
       };
     }
     const box: SealBox = {};
+    const { key, scope } = await deps.key();
     try {
       box.image = await decodeLoadedSnapshot(
         file.stream(),
         snapshotIdentity(await deps.pins()),
         deps.smallDevice,
-        (await deps.key()).key,
+        key,
       );
     } catch (error) {
-      return { outcome: "refused", why: errorText(error) };
+      const why = errorText(error);
+      return {
+        outcome: "refused",
+        why: scope === "session" && why === NOT_SAVED_HERE
+          ? NOT_SAVED_IN_TAB
+          : why,
+      };
     }
     deps.post({ type: "sandbox-replacing", action: "load" });
     return await replaceWith(deps, box, "the loaded sandbox");

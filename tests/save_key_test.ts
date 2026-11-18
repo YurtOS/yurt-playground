@@ -63,3 +63,32 @@ Deno.test("a signature verifies only for its key and its bytes", async () => {
   assert(!await verifyBytes(mine, bytes("manifest"), "00".repeat(32)));
   assert(!await verifyBytes(mine, bytes("manifest"), "not hex"));
 });
+
+Deno.test("a store that fails once is tried again: a transient error is not a session for the worker's life", async () => {
+  const store = memoryStore();
+  let fail = true;
+  const keys = saveKeys(() => {
+    if (fail) {
+      fail = false;
+      throw new Error("connection lost");
+    }
+    return store;
+  });
+  assertEquals((await keys.key()).scope, "session");
+  const next = await keys.key();
+  assertEquals(next.scope, "persistent");
+  assert(next.key === await store.get());
+});
+
+Deno.test("a store that never answers is given up on in time, for this call", async () => {
+  const keys = saveKeys(() => ({
+    get: () => new Promise<CryptoKey | undefined>(() => {}),
+    putIfAbsent: () => new Promise<CryptoKey>(() => {}),
+  }), { timeoutMs: 20 });
+  const started = Date.now();
+  const got = await keys.key();
+  assertEquals(got.scope, "session");
+  assert(Date.now() - started < 1000);
+  // While it keeps failing, the session key stays the same one.
+  assert((await keys.key()).key === got.key);
+});
