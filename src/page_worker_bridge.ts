@@ -1,5 +1,5 @@
 import { guestWorkerStart } from "./guest_worker.ts";
-import { listenMemCensus } from "./mem_census.ts";
+import { installMemCensus, listenMemCensus } from "./mem_census.ts";
 export const CREATE_GUEST_WORKER = "yurt-create-guest-worker";
 export const TERMINATE_GUEST_WORKER = "yurt-terminate";
 export const GUEST_WORKER_ERROR = "yurt-guest-worker-error";
@@ -178,6 +178,7 @@ export function attachGuestWorkerFactory(coordinator: Worker): void {
   try {
     if (!(globalThis as unknown as Record<string, unknown>).__memStats) {
       listenMemCensus();
+      installMemCensus("page");
     }
   } catch { /* no BroadcastChannel */ }
   coordinator.addEventListener("message", (event: MessageEvent) => {
