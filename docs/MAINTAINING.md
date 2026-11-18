@@ -52,13 +52,14 @@ branch and publishes it only as a preview, never main, and a dispatch from a tag
 or any ref that is not a branch is refused. So the current workflow cannot put
 an older commit back into production. Do not try it by dispatching from a branch
 at an old commit either: a commit from before the preview mode (#269) runs its
-own, older workflow, which publishes that branch to production. There are two
-ways back.
+own, older workflow, which is written to publish that branch to production.
+There are two ways back.
 
-- **Fast: Cloudflare's rollback.** First cancel any production deploy that is
-  still queued or running (`gh run list -w deploy-pages.yml`, then
-  `gh run cancel <id>`): it would publish main's head over the rollback. Then,
-  in the Cloudflare dashboard, open the Pages project that serves
+- **Fast: Cloudflare's rollback.** First cancel every `deploy-pages.yml` run
+  that has not completed (`gh run list -w deploy-pages.yml`, any status but
+  `completed`, then `gh run cancel <id>`): a production one would publish main's
+  head over the rollback, and cancelling a preview does no harm. Then, in the
+  Cloudflare dashboard, open the Pages project that serves
   `yurt-playground.pages.dev`, then its deployments list, and choose _Rollback_
   on an earlier production deployment. Cloudflare serves that deployment's files
   again, as they were built; nothing is rebuilt. Who has dashboard access to
