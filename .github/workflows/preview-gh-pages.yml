@@ -1,0 +1,211 @@
+name: Preview on GitHub Pages
+
+# A branch's UI change, published for a look on a real device at
+# https://yurtos.github.io/yurt-playground/preview/<folder>/, next to the
+# release notes on the gh-pages branch, which it never touches. Only
+# dispatched: `gh workflow run preview-gh-pages.yml --ref main -f ref=<branch>`,
+# and with `-f remove=true` to delete that preview. GitHub Pages sends no
+# headers, so cross-origin isolation comes from a service worker and the CSP
+# from a <meta> (scripts/lib/gh_pages_preview.ts), and there is no
+# Permissions-Policy: header, security and isolation changes keep the
+# Cloudflare preview (deploy-pages.yml; docs/MAINTAINING.md "Previews").
+# The site leaves out the device snapshots, for GitHub Pages' 1 GB limit.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch to preview (never main).
+        required: true
+        type: string
+      remove:
+        description: Delete this branch's preview instead of publishing it.
+        required: false
+        default: false
+        type: boolean
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+jobs:
+  target:
+    name: preview target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pages: read
+    outputs:
+      branch: ${{ steps.target.outputs.branch }}
+      ref: ${{ steps.target.outputs.ref }}
+      folder: ${{ steps.target.outputs.folder }}
+      url: ${{ steps.url.outputs.url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/gh-pages-preview/target.sh
+          sparse-checkout-cone-mode: false
+      - name: Decide the folder
+        id: target
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          bash scripts/gh-pages-preview/target.sh > target.txt
+          cat target.txt
+          cat target.txt >> "$GITHUB_OUTPUT"
+      # The site's address as Pages serves it (a custom domain, if one is
+      # ever set), not a guess.
+      - name: Ask Pages for the site's address
+        id: url
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FOLDER: ${{ steps.target.outputs.folder }}
+        run: |
+          set -euo pipefail
+          base=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .html_url)
+          [ -n "$base" ] || { echo "::error::Pages has no address"; exit 1; }
+          echo "url=${base%/}/preview/$FOLDER/" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: target
+    if: ${{ !inputs.remove && needs.target.outputs.ref != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: playground
+          ref: ${{ needs.target.outputs.ref }}
+      # The same pinned inputs and checks as deploy-pages.yml, without
+      # YURT_INSTALL_SNAPSHOT: the snapshots are 500 MB of a 1 GB site.
+      - uses: ./playground/.github/actions/site-inputs
+        with:
+          token: ${{ secrets.REPO_READ_TOKEN }}
+      - name: Verify playground
+        timeout-minutes: 12
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+        run: |
+          deno fmt --check
+          deno lint
+          deno check '**/*.ts'
+          deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
+      - name: Build the preview site
+        working-directory: playground
+        env:
+          YURT_KERNEL_ROOT: ../yurtos-kernel
+        # A branch from before this workflow has no --gh-pages-preview and
+        # fails here: merge main into it first.
+        run: |
+          set -euo pipefail
+          GITHUB_SHA=$(git rev-parse HEAD) deno task build-static --gh-pages-preview
+          test -f dist/isolation-sw.js
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: preview-site
+          path: playground/dist
+          retention-days: 1
+          if-no-files-found: error
+
+  # Writes to the repository, so it runs none of the branch's code: only
+  # the publish script of the commit the workflow was dispatched from.
+  publish:
+    needs: [target, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pages: read
+    # One run per preview at a time, in the order asked; a newer run
+    # replaces one still waiting. Previews of other branches push to other
+    # folders, and the script retries a push one of them got in before.
+    concurrency:
+      group: gh-pages-preview-${{ needs.target.outputs.folder }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/gh-pages-preview/publish.sh
+          sparse-checkout-cone-mode: false
+          path: tools
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: preview-site
+          path: site
+      - name: Publish to gh-pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FOLDER: ${{ needs.target.outputs.folder }}
+          BRANCH: ${{ needs.target.outputs.branch }}
+        run: |
+          set -euo pipefail
+          # integrity.json names the commit the site was built from.
+          COMMIT=$(jq -er .commit site/integrity.json)
+          export COMMIT
+          bash tools/scripts/gh-pages-preview/publish.sh publish site
+      - name: Wait for Pages, then link the preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ needs.target.outputs.url }}
+          BRANCH: ${{ needs.target.outputs.branch }}
+        run: |
+          set -euo pipefail
+          # The push starts a Pages build; the preview is live once the site
+          # serves this build's integrity.json.
+          # A query of its own per try: Pages' CDN caches each URL for 10
+          # minutes.
+          commit=$(jq -er .commit site/integrity.json)
+          served=""
+          for try in $(seq 60); do
+            build=$(gh api "repos/$GITHUB_REPOSITORY/pages/builds/latest" --jq '.status')
+            [ "$build" != errored ] || { echo "::error::the Pages build failed"; exit 1; }
+            served=$(curl -fsS "${URL}integrity.json?run=$GITHUB_RUN_ID-$try" | jq -r .commit) || served=""
+            [ "$served" != "$commit" ] || break
+            sleep 10
+          done
+          [ "$served" = "$commit" ] ||
+            { echo "::error::$URL does not serve $commit after 10 minutes"; exit 1; }
+          echo "Preview: $URL"
+          {
+            echo "### Preview: <$URL>"
+            echo
+            echo "Branch \`$BRANCH\` at \`$commit\`, on GitHub Pages:"
+            echo "no Permissions-Policy and only a <meta> CSP; no device snapshots."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  remove:
+    needs: target
+    if: ${{ inputs.remove && needs.target.outputs.folder != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: gh-pages-preview-${{ needs.target.outputs.folder }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/gh-pages-preview/publish.sh
+          sparse-checkout-cone-mode: false
+          path: tools
+      - name: Remove from gh-pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FOLDER: ${{ needs.target.outputs.folder }}
+          BRANCH: ${{ needs.target.outputs.branch }}
+        run: |
+          set -euo pipefail
+          bash tools/scripts/gh-pages-preview/publish.sh remove
+          echo "### Removed the preview of \`$BRANCH\` (preview/$FOLDER/)" >> "$GITHUB_STEP_SUMMARY"

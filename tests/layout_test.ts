@@ -298,7 +298,14 @@ Deno.test("workflows authenticate every private sibling checkout", async () => {
   // The default GITHUB_TOKEN cannot read a *different* private repository, so
   // each YurtOS sibling checkout needs an explicit token. Without one the job
   // dies at "remote: Repository not found" before any step runs.
-  for (const file of ["ci.yml", "deploy-pages.yml", "release-desktop.yml"]) {
+  for (
+    const file of [
+      "ci.yml",
+      "deploy-pages.yml",
+      "preview-gh-pages.yml",
+      "release-desktop.yml",
+    ]
+  ) {
     const workflow = await workflowSource(file);
     const siblings = workflow.match(/repository: YurtOS\/\S+/g) ?? [];
     assertEquals(siblings.length > 0, true, `${file} checks out no sibling`);
@@ -325,7 +332,14 @@ Deno.test("the site workflows fetch the pinned blobs, none builds them", async (
   // image needs the guest toolchain plus hours of port builds, so a workflow
   // that rebuilt either could never satisfy artifacts/pins.json. All consume
   // the published releases through the same script.
-  for (const file of ["ci.yml", "deploy-pages.yml", "release-desktop.yml"]) {
+  for (
+    const file of [
+      "ci.yml",
+      "deploy-pages.yml",
+      "preview-gh-pages.yml",
+      "release-desktop.yml",
+    ]
+  ) {
     const workflow = await workflowSource(file);
     assertEquals(
       workflow.includes("scripts/install-pinned-artifacts.sh"),
@@ -733,9 +747,10 @@ Deno.test("deployment workflow publishes an isolated static site", async () => {
 });
 
 Deno.test("every workflow restricts its token to reading the repository", async () => {
-  // Nothing here pushes or writes to the repository, and a public repository
-  // runs these on pull requests from strangers. The cross-repo and Cloudflare
-  // credentials are named secrets, not the workflow token.
+  // A public repository runs these on pull requests from strangers. The
+  // cross-repo and Cloudflare credentials are named secrets, not the workflow
+  // token. A job that writes asks for it itself: the desktop release, and
+  // the GitHub Pages preview's publishing jobs, and no other.
   for (
     const entry of Deno.readDirSync(
       new URL("../.github/workflows", import.meta.url),
@@ -748,6 +763,38 @@ Deno.test("every workflow restricts its token to reading the repository", async 
       workflow.includes("\npermissions:\n  contents: read\n"),
       true,
       `${entry.name} does not restrict the workflow token to contents: read`,
+    );
+    const writers = [...workflow.matchAll(
+      /\n {2}([\w-]+):\n(?: {4}.*\n|\n)*? {6}contents: write\n/g,
+    )].map((match) => match[1]);
+    assertEquals(
+      writers,
+      ({
+        "preview-gh-pages.yml": ["publish", "remove"],
+        "release-desktop.yml": ["release"],
+      } as Record<string, string[]>)[entry.name] ?? [],
+      `${entry.name}: jobs that write to the repository`,
+    );
+  }
+});
+
+Deno.test("the GitHub Pages preview writes only from jobs that run none of the branch's code", async () => {
+  // A branch's code runs in the build job, with a read-only token; the jobs
+  // that push to gh-pages check out only the publish script, from the
+  // commit the workflow was dispatched from.
+  const workflow = await Deno.readTextFile(
+    new URL("../.github/workflows/preview-gh-pages.yml", import.meta.url),
+  );
+  const jobs = workflow.split(/\n {2}(?=[\w-]+:\n)/);
+  for (const name of ["publish", "remove"]) {
+    const job = jobs.find((text) => text.startsWith(`${name}:`));
+    assertEquals(job !== undefined, true, name);
+    assertEquals(job!.includes("needs.target.outputs.ref"), false, name);
+    assertEquals(job!.includes("deno"), false, name);
+    assertEquals(
+      job!.includes("sparse-checkout: scripts/gh-pages-preview/publish.sh"),
+      true,
+      name,
     );
   }
 });

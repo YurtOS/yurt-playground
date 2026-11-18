@@ -28,6 +28,7 @@ import {
 } from "../src/integrity.ts";
 import { loadPins, type Pins } from "../src/pins.ts";
 import { checkSnapshotFile, kernelRootIsStore } from "./lib/snapshot_file.ts";
+import { writeGhPagesPreview } from "./lib/gh_pages_preview.ts";
 import {
   BEACON_PAGES,
   WEB_ANALYTICS_TOKEN,
@@ -169,6 +170,11 @@ export type BuildOptions = {
    * production Pages deploy asks for it: previews, CI and the desktop app
    * (whose own CSP, src/desktop.ts, would refuse the beacon) build without. */
   webAnalytics?: boolean;
+  /** A GitHub Pages preview (`--gh-pages-preview`,
+   * .github/workflows/preview-gh-pages.yml): the isolation service worker
+   * and a `<meta>` CSP in every page, since Pages sends no `_headers`
+   * (scripts/lib/gh_pages_preview.ts). Never with analytics. */
+  ghPagesPreview?: boolean;
 };
 
 /** The beacon token a build uses: the committed one when the build asked
@@ -285,6 +291,7 @@ export async function buildStaticSite(
   );
   await writeLlmRuntime();
   await writeSiteDocuments(distDir, beaconToken(options.webAnalytics ?? false));
+  if (options.ghPagesPreview) await writeGhPagesPreview(distDir);
 }
 
 /** The last step of the build: the beacon in the pages that carry it and
@@ -392,11 +399,15 @@ export async function siteHeaders(
 }
 
 if (import.meta.main) {
-  const unknown = Deno.args.filter((arg) => arg !== "--web-analytics");
+  const flags = ["--web-analytics", "--gh-pages-preview"];
+  const unknown = Deno.args.filter((arg) => !flags.includes(arg));
   if (unknown.length > 0) {
     throw new Error(`build-static: unknown arguments ${unknown.join(" ")}`);
   }
-  await buildStaticSite({
-    webAnalytics: Deno.args.includes("--web-analytics"),
-  });
+  const webAnalytics = Deno.args.includes("--web-analytics");
+  const ghPagesPreview = Deno.args.includes("--gh-pages-preview");
+  if (webAnalytics && ghPagesPreview) {
+    throw new Error("build-static: a preview never counts visitors");
+  }
+  await buildStaticSite({ webAnalytics, ghPagesPreview });
 }

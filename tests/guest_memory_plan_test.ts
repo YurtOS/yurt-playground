@@ -277,7 +277,7 @@ Deno.test("the probe Worker is the engine's own, not a coordinator's guest proxy
     const bytes = await probeAvailableBytes(
       () =>
         spawnProbeWorker(
-          new URL(`../public${PROBE_SCRIPT_PATH}`, import.meta.url),
+          new URL(`../public/${PROBE_SCRIPT_PATH}`, import.meta.url),
         ),
       { settleMs: 0 },
     );
@@ -312,8 +312,8 @@ Deno.test("the static site ships the probe script at the path boot asks for", ()
   const build = Deno.readTextFileSync(
     new URL("../scripts/build-static.ts", import.meta.url),
   );
-  assertEquals(PROBE_SCRIPT_PATH, "/memory-probe.js");
-  assert(build.includes(`"${PROBE_SCRIPT_PATH.slice(1)}"`));
+  assertEquals(PROBE_SCRIPT_PATH, "./memory-probe.js");
+  assert(build.includes(`"${PROBE_SCRIPT_PATH.slice(2)}"`));
   const page = Deno.readTextFileSync(
     new URL("../public/memory-probe.html", import.meta.url),
   );

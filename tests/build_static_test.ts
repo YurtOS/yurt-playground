@@ -6,6 +6,7 @@ import {
 } from "../src/integrity.ts";
 import { cspSources, inlineScriptHashes } from "../src/csp.ts";
 import { StoreLogWriter } from "../src/store_log.ts";
+import { PREVIEW_FILES } from "../scripts/lib/gh_pages_preview.ts";
 
 Deno.test("static build emits isolated playground deployment", async () => {
   const script = await Deno.readTextFile(
@@ -110,6 +111,35 @@ Deno.test("static build writes every file the pages need", async () => {
   ) {
     const stat = await Deno.stat(new URL(`dist/jupyter/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/jupyter/${file} is empty`);
+  }
+  // A production build carries nothing of the GitHub Pages preview's
+  // (scripts/lib/gh_pages_preview.ts): no isolation worker, the pages and
+  // JupyterLite's worker as they are in public/.
+  for (const file of PREVIEW_FILES) {
+    assertEquals(
+      await Deno.stat(new URL(`dist/${file}`, repoRoot)).then(
+        () => true,
+        () => false,
+      ),
+      false,
+      file,
+    );
+  }
+  for (
+    const file of [
+      "index.html",
+      "terminal.html",
+      "unsupported.html",
+      "snapshot.html",
+      "jupyter/service-worker.js",
+      "jupyter/lab/index.html",
+    ]
+  ) {
+    assertEquals(
+      await Deno.readFile(new URL(`dist/${file}`, repoRoot)),
+      await Deno.readFile(new URL(`public/${file}`, repoRoot)),
+      file,
+    );
   }
   // A 404.html stops Pages' SPA fallback, so a path the site does not have
   // says so instead of serving a broken copy of the home page (#73).

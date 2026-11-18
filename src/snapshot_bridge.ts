@@ -18,6 +18,7 @@ import type {
   NotebookKernelFromWorker,
   SnapshotState,
 } from "./notebook_kernel_worker.ts";
+import { siteUrl } from "./site_url.ts";
 
 export type { SnapshotState };
 
@@ -56,7 +57,7 @@ let bridge: SnapshotKernelBridge | undefined;
 
 /** One sandbox per page: every kernel the frontend starts shares it. */
 export function startSnapshotKernel(
-  workerUrl = "/notebook_kernel.bundle.js",
+  workerUrl = siteUrl("./notebook_kernel.bundle.js"),
 ): SnapshotKernelBridge {
   if (bridge !== undefined) return bridge;
   refuseOnPhone(document);

@@ -15,7 +15,7 @@ fetches the pinned kernel and images into `artifacts/`. CI
 `deno check`, and the tests. The pre-commit hook (`scripts/install-hooks.sh`)
 runs the fast tests.
 
-## Previewing a branch
+## Previews
 
 A merge to main deploys nothing. The site deploys only when asked: a dispatch of
 `.github/workflows/deploy-pages.yml` from main publishes production,
@@ -25,21 +25,80 @@ gh workflow run deploy-pages.yml --ref main
 ```
 
 and runs queue one at a time, so the newest dispatch lands last. To try a branch
-on a real device before it merges, publish it as a preview:
+on a real device before it merges, publish it as a preview. There are two kinds.
+
+- **GitHub Pages, for UI changes:** the page, the terminal, layout, text, the
+  notebook pages. Use it by default.
+- **Cloudflare Pages, for header, security and isolation changes:** anything
+  that touches `_headers`, the CSP (`src/csp.ts`), Permissions-Policy,
+  COOP/COEP, the service workers or the snapshots. Only Cloudflare serves the
+  production headers.
+
+### GitHub Pages
+
+```sh
+gh workflow run preview-gh-pages.yml --ref main -f ref=<branch>
+gh workflow run preview-gh-pages.yml --ref main -f ref=<branch> -f remove=true
+```
+
+The first builds and verifies the branch as the production deploy does (the same
+pinned inputs and checks) and publishes it to the `gh-pages` branch under
+`preview/<folder>/`, at
+`https://yurtos.github.io/yurt-playground/preview/<folder>/`: the branch name
+lowercased, each run of other characters than letters and digits one hyphen,
+none leading or trailing (`agent/foo_Bar` → `agent-foo-bar`). The run waits
+until Pages serves the new build and links it in its summary. The second deletes
+that folder. Neither touches anything else on `gh-pages` (the release notes,
+`ci/`, other previews), and `main` is refused. The branch must contain the
+preview build (`--gh-pages-preview`, this section's change): merge main into an
+older branch first.
+
+What a GitHub Pages preview is not:
+
+- GitHub Pages sends no headers. Cross-origin isolation comes from a service
+  worker (`scripts/gh-pages-preview/`): a page's first visit registers it and
+  reloads once. The CSP is a `<meta>` in each page, without `frame-ancestors`
+  and with none for the workers, and there is no Permissions-Policy. **Do not
+  use a GitHub Pages preview to test security or isolation changes.**
+- It has no device snapshots: the 1 GB site limit. Each page boots the image as
+  it does when no snapshot is pinned. A preview is about 220 MB (the image
+  parts, the kernel, Python, JupyterLite, the agent's runtime); the snapshots
+  alone are 500 MB more.
+- Every preview, and the release notes, share the origin
+  `https://yurtos.github.io`: their storage (the saved sandboxes, the agent's
+  downloaded model) is shared too.
+- Pages' CDN caches each file for 10 minutes: after a republish, reload hard or
+  wait.
+
+Clean up. The publish refuses a site over 900 MB, so a fourth preview needs an
+old one removed. List them, then remove those whose branch is merged or gone:
+
+```sh
+gh api repos/YurtOS/yurt-playground/contents/preview --jq '.[].name'
+gh workflow run preview-gh-pages.yml --ref main -f ref=<branch> -f remove=true
+```
+
+A removed preview stays in the `gh-pages` history; identical files across
+previews (the same pins) are stored once. If that history ever grows too large,
+rewriting `gh-pages` is the owner's call: the release notes live there too.
+
+### Cloudflare Pages
 
 ```sh
 gh workflow run deploy-pages.yml --ref main -f ref=<branch>
 ```
 
 It builds and verifies that branch exactly as the production deploy does (the
-snapshot included) and publishes it at its Cloudflare branch alias,
-`https://<alias>.yurt-playground.pages.dev`: the branch name lowercased, every
-other character a hyphen, cut to 28 characters, with no leading or trailing
-hyphen (`agent/foo_Bar` → `agent-foo-bar`). The run's summary links the exact
-URL. Production is never the target: the preview path refuses `main` and the
-Pages project's production branch. Run it from main (`--ref main`), not from the
-branch: a branch older than this preview mode carries the old workflow, which
-deploys to production. Previews carry the production headers (`dist/_headers`:
+snapshot included) and publishes it on Cloudflare. Open the deployment's own
+hash URL (`https://<hash>.yurt-playground.pages.dev`, "This deployment alone" in
+the run's summary), not the branch alias: a branch alias was blocked by name by
+an ISP's filter, and a phone hung on it. The alias is the branch name
+lowercased, every other character a hyphen, cut to 28 characters, with no
+leading or trailing hyphen (`agent/foo_Bar` → `agent-foo-bar`). Production is
+never the target: the preview path refuses `main` and the Pages project's
+production branch. Run it from main (`--ref main`), not from the branch: a
+branch older than this preview mode carries the old workflow, which deploys to
+production. Cloudflare previews carry the production headers (`dist/_headers`:
 the CSP and cross-origin isolation).
 
 ## Rolling back production
