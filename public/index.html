@@ -1314,9 +1314,9 @@ yurt stop web</pre>
                     moves while a cell runs. The page's security policy lets it
                     fetch only from this site and a few named sources: the
                     package repository on GitHub, Hugging Face for the agent's
-                    in-tab model, OpenRouter when you run the agent there, the
-                    agent's model list and shared snapshots on GitHub. The
-                    sandbox itself has no network: when
+                    in-tab model, OpenRouter when you run the agent there, and
+                    shared snapshots on GitHub. The sandbox itself has no
+                    network: when
                     <code>pkg</code> installs a package, this page fetches files
                     from the package repository for it, and only from there.
                   </p>
@@ -1486,9 +1486,8 @@ yurt stop web</pre>
                 </li>
                 <li>
                   <strong>GitHub</strong> serves the package repository, from
-                  which the page reads the index and installs packages, and the
-                  agent's model list, read at every page load. A shared snapshot
-                  link also asks GitHub which snapshots this repository
+                  which the page reads the index and installs packages. A shared
+                  snapshot link also asks GitHub which snapshots this repository
                   published, then downloads that snapshot from it.
                 </li>
                 <li>
@@ -1518,10 +1517,10 @@ yurt stop web</pre>
                 visits stays in this browser's storage. It includes downloaded
                 packages, model weights and snapshot parts; the sealed sandboxes
                 of the agent (with its chat), the suspend/resume notebook and
-                the snapshot demo; your OpenRouter key and the last model list.
-                Clearing this site's data in the browser removes all of it. The
-                desktop app is different: its sandbox runs natively on your
-                machine and has the network.
+                the snapshot demo; and your OpenRouter key. Clearing this site's
+                data in the browser removes all of it. The desktop app is
+                different: its sandbox runs natively on your machine and has the
+                network.
               </p>
             </section>
             <section
