@@ -6,7 +6,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { KernelHostInterface } from "@yurt/kernel-host-interface-js";
+import { KernelHostInterface, METHOD } from "@yurt/kernel-host-interface-js";
 import { MIN_GUEST_MEMORY_RESERVATION_BYTES } from "../src/guest_memory_reservation.ts";
 import { playgroundHostState } from "../src/boot.ts";
 import { handlePlaygroundRequest } from "../src/serve.ts";
@@ -61,15 +61,26 @@ Deno.test({
     assertEquals(state.kernelMemoryMaximumBytes, 512 * MIB);
     const mk = await KernelHostInterface.load(wasm, state);
     try {
-      // A file written into the kernel's ramfs reads back: the kernel booted
-      // and serves calls, whether or not this host honours the field.
+      // A file written into the kernel's ramfs reads back through the
+      // kernel's VFS: the kernel booted and serves calls with this state.
       const enc = new TextEncoder();
-      const path = enc.encode("/tmp-kernel-memory-probe");
+      const path = "/tmp-kernel-memory-probe";
       const content = enc.encode("512 MiB\n");
-      mk.registerRamfsFile(path, content);
-      assert(
-        mk.listProcesses().length >= 0,
-        "the kernel answers after load",
+      mk.registerRamfsFile(enc.encode(path), content);
+      const pathBytes = enc.encode(path);
+      const open = new Uint8Array(12 + pathBytes.length);
+      new DataView(open.buffer).setUint32(8, pathBytes.length, true);
+      open.set(pathBytes, 12);
+      const fd = Number(mk.syscall(METHOD.KERNEL_FS_OPEN, open, 0).rc);
+      assert(fd >= 0, `open ${path}: ${fd}`);
+      const fdBytes = new Uint8Array(4);
+      new DataView(fdBytes.buffer).setUint32(0, fd, true);
+      const read = mk.syscall(METHOD.KERNEL_FS_READ, fdBytes, 64);
+      mk.syscall(METHOD.KERNEL_FS_CLOSE, fdBytes, 0);
+      assertEquals(Number(read.rc), content.length);
+      assertEquals(
+        new TextDecoder().decode(read.response.subarray(0, content.length)),
+        "512 MiB\n",
       );
     } finally {
       mk.dispose();

@@ -19,6 +19,7 @@ import {
   GUEST_MEMORY_RESERVATION_BYTES,
   type GuestMemoryPlan,
   KERNEL_MEMORY_RESERVATION_BYTES,
+  kernelMemoryForRestore,
   planGuestMemory,
   PROBE_LIMIT_BYTES,
 } from "./guest_memory_reservation.ts";
@@ -480,19 +481,29 @@ export async function restorePlaygroundKernel(
     expect: StoreIdentity;
   },
 ): Promise<Awaited<ReturnType<typeof KernelHostInterface.restore>>> {
-  if (store !== undefined) {
-    return store.api.restore(
-      kernel,
-      image,
-      store,
-      await plannedPlaygroundHostState(),
-    );
-  }
-  return KernelHostInterface.restore(
-    kernel,
-    image,
+  const state = restoreHostState(
     await plannedPlaygroundHostState(),
+    image.kernelMemory.byteLength,
   );
+  if (store !== undefined) {
+    return store.api.restore(kernel, image, store, state);
+  }
+  return KernelHostInterface.restore(kernel, image, state);
+}
+
+/** `state` for restoring `imageBytes` of sealed kernel memory: without its
+ *  smaller kernel maximum when the image would not fit under it with room
+ *  to grow ({@link kernelMemoryForRestore}). */
+export function restoreHostState<
+  T extends { kernelMemoryMaximumBytes?: number },
+>(state: T, imageBytes: number): T {
+  const kernelMemoryMaximumBytes = kernelMemoryForRestore(
+    state.kernelMemoryMaximumBytes,
+    imageBytes,
+  );
+  if (kernelMemoryMaximumBytes === state.kernelMemoryMaximumBytes) return state;
+  const { kernelMemoryMaximumBytes: _dropped, ...rest } = state;
+  return rest as T;
 }
 
 export async function bootPlayground(

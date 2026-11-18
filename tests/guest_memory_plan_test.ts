@@ -2,6 +2,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   plannedPlaygroundHostState,
   playgroundHostState,
+  restoreHostState,
 } from "../src/boot.ts";
 import {
   GUEST_MEMORY_RESERVATION_BYTES,
@@ -15,6 +16,7 @@ import {
   type ProbeWorker,
   RESERVATION_HEADROOM_BYTES,
   reservationForAvailableBytes,
+  RESTORE_KERNEL_HEADROOM_BYTES,
   SMALL_CAP_KERNEL_MEMORY_BYTES,
   spawnProbeWorker,
   UNPROBED_RESERVATION_BYTES,
@@ -363,5 +365,52 @@ Deno.test("an iPad or iPhone tab gives its kernel 512 MiB; a desktop or unmeasur
   assertEquals(
     playgroundHostState(CHROME_UA).kernelMemoryMaximumBytes,
     undefined,
+  );
+});
+
+Deno.test("a restore whose sealed kernel would not fit the planned 512 MiB with room to grow uses the default", () => {
+  // A saved session keeps the size it was sealed at (under a 1 GiB kernel,
+  // before this tab planned 512 MiB). A host refuses an image larger than
+  // its maximum, and the page's fallbacks then discard the saved state.
+  const planned = playgroundHostState(
+    IPAD_UA,
+    MIN_GUEST_MEMORY_RESERVATION_BYTES,
+    SMALL_CAP_KERNEL_MEMORY_BYTES,
+  );
+  const fits = SMALL_CAP_KERNEL_MEMORY_BYTES - RESTORE_KERNEL_HEADROOM_BYTES;
+  assertEquals(
+    restoreHostState(planned, fits).kernelMemoryMaximumBytes,
+    SMALL_CAP_KERNEL_MEMORY_BYTES,
+  );
+  for (const image of [fits + 1, 600 * MIB, 1000 * MIB]) {
+    const state = restoreHostState(planned, image);
+    assertEquals(state.kernelMemoryMaximumBytes, undefined, String(image));
+    // Everything else is kept: the guests' reservation in particular.
+    assertEquals(
+      state.guestMemoryReservationBytes,
+      planned.guestMemoryReservationBytes,
+    );
+  }
+  // A plan with no smaller maximum is untouched.
+  const desktop = playgroundHostState(IPAD_DESKTOP_UA);
+  assertEquals(restoreHostState(desktop, 900 * MIB), desktop);
+});
+
+Deno.test("the tablet snapshot an iPad or iPhone restores fits the 512 MiB kernel with room to grow", async () => {
+  // Every iOS tab restores the tablet snapshot (#352). Should a train grow
+  // its kernel past this, iOS would quietly fall back to the 1 GiB default.
+  const pins = JSON.parse(
+    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
+  );
+  const sealed = pins.tabletSnapshot?.memoryBytes;
+  assert(
+    typeof sealed === "number" && sealed > 0,
+    "pins.tabletSnapshot.memoryBytes",
+  );
+  assert(
+    sealed + RESTORE_KERNEL_HEADROOM_BYTES <= SMALL_CAP_KERNEL_MEMORY_BYTES,
+    `tablet snapshot kernel ${(sealed / MIB).toFixed(0)} MiB + ` +
+      `${RESTORE_KERNEL_HEADROOM_BYTES / MIB} MiB > ` +
+      `${SMALL_CAP_KERNEL_MEMORY_BYTES / MIB} MiB`,
   );
 });

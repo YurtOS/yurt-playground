@@ -69,6 +69,29 @@ export const PROBE_LIMIT_BYTES = KERNEL_MEMORY_RESERVATION_BYTES +
  *  coordinator, which is there too. */
 export const PROBE_SCRIPT_PATH = "./memory-probe.js";
 
+/** Room a restored kernel keeps above its sealed image to grow into: the
+ *  snapshot's own working set plus a session's installs. */
+export const RESTORE_KERNEL_HEADROOM_BYTES = 128 * MIB;
+
+/**
+ * The kernel memory maximum to restore `imageBytes` of sealed kernel memory
+ * with, given the one planned for this tab (`undefined`: the host's default,
+ * 1 GiB). A saved session or snapshot keeps the size it was sealed at, and a
+ * kernel host refuses an image larger than its maximum, which the page's
+ * fallbacks answer by discarding the saved state. So an image that leaves
+ * less than {@link RESTORE_KERNEL_HEADROOM_BYTES} under the planned maximum
+ * restores with the default instead.
+ */
+export function kernelMemoryForRestore(
+  plannedBytes: number | undefined,
+  imageBytes: number,
+): number | undefined {
+  if (plannedBytes === undefined) return undefined;
+  return imageBytes + RESTORE_KERNEL_HEADROOM_BYTES <= plannedBytes
+    ? plannedBytes
+    : undefined;
+}
+
 /** The reservation this page's guests get, and the kernel's. */
 export type GuestMemoryPlan = {
   reservationBytes: number;
