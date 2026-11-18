@@ -13,7 +13,12 @@
  * in artifacts/ and the site from jupyterlite/build.sh in public/jupyter/).
  */
 import { Buffer } from "node:buffer";
-import { type Browser, devices, type Page } from "playwright";
+import {
+  type Browser,
+  type BrowserContext,
+  devices,
+  type Page,
+} from "playwright";
 import { launchBrowser } from "../scripts/browser.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -127,13 +132,15 @@ const TRUSTED_CLAIM_NOTEBOOK = {
  * JupyterLite has no notebook signatures to back it. A file uploaded under
  * another extension keeps its stored type when renamed to .ipynb, and the
  * notebook still opens from it. */
-async function checkTrustedClaimIgnored(
-  browser: Browser,
+/** Upload `notebook` through the file browser as `uploaded`, rename it to
+ * `name` when they differ, and open it in a new page of `context`. */
+async function openSupplied(
+  context: BrowserContext,
   url: string,
   uploaded: string,
   name: string,
-): Promise<void> {
-  const context = await browser.newContext();
+  notebook: unknown,
+): Promise<Page> {
   const page = await context.newPage();
   await page.goto(`${url}/jupyter/tree/index.html`, { waitUntil: "load" });
   await page.locator(".jp-DirListing").first().waitFor({ timeout: 60_000 });
@@ -142,7 +149,7 @@ async function checkTrustedClaimIgnored(
   await (await chooser).setFiles({
     name: uploaded,
     mimeType: "application/json",
-    buffer: Buffer.from(JSON.stringify(TRUSTED_CLAIM_NOTEBOOK)),
+    buffer: Buffer.from(JSON.stringify(notebook)),
   });
   const item = page.locator(".jp-DirListing-item", { hasText: uploaded });
   await item.waitFor({ timeout: 30_000 });
@@ -163,6 +170,23 @@ async function checkTrustedClaimIgnored(
   await page.locator(".jp-OutputArea-output").first().waitFor({
     timeout: 60_000,
   });
+  return page;
+}
+
+async function checkTrustedClaimIgnored(
+  browser: Browser,
+  url: string,
+  uploaded: string,
+  name: string,
+): Promise<void> {
+  const context = await browser.newContext();
+  const page = await openSupplied(
+    context,
+    url,
+    uploaded,
+    name,
+    TRUSTED_CLAIM_NOTEBOOK,
+  );
   const rendered = await page.evaluate(() => ({
     js: (globalThis as { __trustedJs?: number }).__trustedJs,
     trusted: document.querySelectorAll(".jp-OutputArea-output.jp-mod-trusted")
@@ -174,6 +198,67 @@ async function checkTrustedClaimIgnored(
       `a supplied notebook's stored output rendered as trusted (${uploaded} opened as ${name}): ${
         JSON.stringify(rendered)
       }`,
+    );
+  }
+  await context.close();
+}
+
+/** Stored HTML outputs that would reload their frame forever if rendered
+ * raw: a self-refresh, one hidden from a template parse by `<col>` or by
+ * `<noscript>` (parsed with scripting on in the frame), and one in a nested
+ * srcdoc frame with its name entity-encoded. Each reports every load of its
+ * document as a refused `<img>`. */
+const SELF_REFRESH = '<meta http-equiv="refresh" content="0">';
+const RELOAD_PROBES = [
+  SELF_REFRESH,
+  `<col>${SELF_REFRESH}`,
+  `<noscript><style></noscript>${SELF_REFRESH}</style></noscript>`,
+  '<iframe srcdoc="<meta http&#45;equiv=refresh content=0><img src=https://leak.example/?reload-probe-nested>"></iframe>',
+].map((payload, i) =>
+  `<img src="https://leak.example/?reload-probe-${i}">${payload}`
+);
+
+/** A supplied notebook's stored HTML renders sanitized in its frame, so
+ * nothing in it reloads a frame forever (yurt-sandbox#382, #360 review). */
+async function checkSuppliedOutputsSettle(
+  browser: Browser,
+  url: string,
+): Promise<void> {
+  const notebook = {
+    ...TRUSTED_CLAIM_NOTEBOOK,
+    cells: [{
+      cell_type: "code",
+      execution_count: 1,
+      metadata: {},
+      outputs: RELOAD_PROBES.map((html) => ({
+        output_type: "display_data",
+        metadata: {},
+        data: { "text/html": html, "text/plain": "reload-probe" },
+      })),
+      source: ["1"],
+    }],
+  };
+  const context = await browser.newContext();
+  let loads = 0;
+  // Both browsers report a frame's refused loads, nested ones too, here.
+  context.on("console", (message) => {
+    if (message.text().includes("reload-probe")) loads++;
+  });
+  const page = await openSupplied(
+    context,
+    url,
+    "reload-probes.ipynb",
+    "reload-probes.ipynb",
+    notebook,
+  );
+  await page.waitForTimeout(3_000);
+  const first = loads;
+  loads = 0;
+  await page.waitForTimeout(2_000);
+  if (first === 0) fail("the supplied reload probes did not render");
+  if (loads > 0) {
+    fail(
+      `a supplied notebook's output reloaded its frame ${loads} times in 2 s`,
     );
   }
   await context.close();
@@ -235,44 +320,24 @@ async function checkHtmlOutputIsolation(page: Page): Promise<void> {
     .waitFor({ timeout: 1_000 })
     .catch(() => fail("the refresh probe's HTML output has no frame"));
 
-  // A refresh to the frame itself would reload it forever, also when markup
-  // parses differently in the frame than in a check (a <col>, or <noscript>
-  // with scripting on). And the frame's own policy holds where the page's
-  // would not (WebKit loaded an outside image from such a frame).
+  // The frame's own policy holds where the page's would not (WebKit loaded
+  // an outside image from such a frame).
   const requested: string[] = [];
   // Finished, not issued: Chrome reports a load that its CSP then refuses.
   const onRequest = (request: { url(): string }) => {
     if (request.url().includes("frame-probe")) requested.push(request.url());
   };
-  let navigations = 0;
-  const onNavigation = (frame: unknown) => {
-    if (frame !== page.mainFrame()) navigations++;
-  };
   page.on("requestfinished", onRequest);
-  page.on("framenavigated", onNavigation);
-  const self = '<meta http-equiv="refresh" content="0">';
-  const reloads = [
-    `${self}<script src="/jupyter/config-utils.js?frame-probe"></script><img src="https://leak.example/?frame-probe">`,
-    `<col>${self}`,
-    `<noscript><style></noscript>${self}</style></noscript>`,
-  ];
   await runNewCell(
     page,
-    `from IPython.display import HTML\nfor h in ${
-      JSON.stringify(reloads)
-    }: display(HTML(h))\nprint("reload-probe", "done")`,
+    `from IPython.display import HTML; display(HTML('<script src="/jupyter/config-utils.js?frame-probe"></script><img src="https://leak.example/?frame-probe">frame-probe')); print("frame-probe", "done")`,
   );
-  await waitForLastOutput(page, "reload-probe done", 60_000);
-  await page.waitForTimeout(1_000);
-  navigations = 0;
+  await waitForLastOutput(page, "frame-probe done", 60_000);
   await page.waitForTimeout(2_000);
   page.off("requestfinished", onRequest);
-  page.off("framenavigated", onNavigation);
-  if (navigations > 0 || requested.length > 0 || leaks.length > 0) {
+  if (requested.length > 0 || leaks.length > 0) {
     fail(
-      `output frames reloaded themselves ${navigations} times in 2 s; loaded: ${[
-        ...new Set([...requested, ...leaks]),
-      ]}`,
+      `an output frame loaded ${[...new Set([...requested, ...leaks])]}`,
     );
   }
 
@@ -453,6 +518,7 @@ if (import.meta.main) {
       "renamed-claim.json",
       "renamed-claim.ipynb",
     );
+    await checkSuppliedOutputsSettle(browser, server.url);
     console.log("jupyterlite e2e: a notebook's trusted claim is ignored");
 
     const page = await browser.newPage();
