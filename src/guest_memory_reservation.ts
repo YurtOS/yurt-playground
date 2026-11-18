@@ -27,7 +27,11 @@
  * a run of commands under a simulated iOS cap got no further at 64 MiB than
  * at 128 MiB. So a probe that under-counts (a disposed kernel not yet
  * collected, or a probe whose every allocation failed) never takes a page
- * below it.
+ * below it. *
+ * A tab whose probe stops short of {@link PROBE_LIMIT_BYTES} has a small cap
+ * (iOS), and its kernel reserves {@link SMALL_CAP_KERNEL_MEMORY_BYTES}
+ * instead of the default 1 GiB (yurtos-kernel#4239). The guests are still
+ * sized as beside 1 GiB, so the half GiB it gives back is headroom.
  */
 
 const MIB = 1024 * 1024;
@@ -38,9 +42,15 @@ export const GUEST_MEMORY_RESERVATION_BYTES = 256 * MIB;
 /** The smallest reservation offered: what CPython needs here (ipykernel
  *  81 MiB, a 2000x2000 NumPy matmul 98 MiB), with room to grow. */
 export const MIN_GUEST_MEMORY_RESERVATION_BYTES = 128 * MIB;
-/** The kernel's own shared memory maximum (the kernel host's
- *  `KERNEL_MAXIMUM_PAGES`, 16384 wasm pages). */
+/** The kernel's own shared memory maximum where the tab's cap is large
+ *  (the kernel host's default, `KERNEL_MAXIMUM_PAGES`, 16384 wasm pages). */
 export const KERNEL_MEMORY_RESERVATION_BYTES = 1024 * MIB;
+/** The kernel's memory maximum where the tab's cap is small (an iPhone or
+ *  iPad, about 4 GiB): half of it goes back to the guests. The tablet and
+ *  phone snapshots' kernels use about 250 MiB of it, and about 225 MiB after
+ *  `pkg install python` (yurtos-kernel#4239). The kernel host passes it on
+ *  as `HostState.kernelMemoryMaximumBytes`. */
+export const SMALL_CAP_KERNEL_MEMORY_BYTES = 512 * MIB;
 /** Room kept free beside the kernel and the guests: a snapshot restore's
  *  buffers and killed guests that linger with their memories. */
 export const RESERVATION_HEADROOM_BYTES = 512 * MIB;
@@ -59,9 +69,12 @@ export const PROBE_LIMIT_BYTES = KERNEL_MEMORY_RESERVATION_BYTES +
  *  coordinator, which is there too. */
 export const PROBE_SCRIPT_PATH = "./memory-probe.js";
 
-/** The reservation this page's guests get. */
+/** The reservation this page's guests get, and the kernel's. */
 export type GuestMemoryPlan = {
   reservationBytes: number;
+  /** The kernel memory's maximum: {@link KERNEL_MEMORY_RESERVATION_BYTES},
+   *  or {@link SMALL_CAP_KERNEL_MEMORY_BYTES} under a small cap. */
+  kernelMemoryBytes: number;
   /** What the probe could reserve, or `undefined` when it could not run. */
   availableBytes?: number;
   /** How many processes of `reservationBytes` fit beside the kernel. */
@@ -77,6 +90,14 @@ export type GuestMemoryPlan = {
 export function reservationForAvailableBytes(
   availableBytes: number,
 ): GuestMemoryPlan {
+  // The probe stops at PROBE_LIMIT_BYTES: a tab that could not reserve that
+  // much has a small cap (iOS), and its kernel takes the smaller maximum.
+  const kernelMemoryBytes = availableBytes < PROBE_LIMIT_BYTES
+    ? SMALL_CAP_KERNEL_MEMORY_BYTES
+    : KERNEL_MEMORY_RESERVATION_BYTES;
+  // The guests are sized as beside a 1 GiB kernel either way: what the
+  // smaller kernel gives back is headroom (a restore's buffers, an exec's
+  // transient copies, lingering killed guests), not more or larger guests.
   const room = availableBytes - KERNEL_MEMORY_RESERVATION_BYTES -
     RESERVATION_HEADROOM_BYTES;
   let reservationBytes = GUEST_MEMORY_RESERVATION_BYTES;
@@ -88,6 +109,7 @@ export function reservationForAvailableBytes(
   }
   return {
     reservationBytes,
+    kernelMemoryBytes,
     availableBytes,
     processes: Math.max(0, Math.floor(room / reservationBytes)),
   };
@@ -193,5 +215,10 @@ export async function planGuestMemory(
 ): Promise<GuestMemoryPlan> {
   const available = await probe().catch(() => undefined);
   if (available !== undefined) return reservationForAvailableBytes(available);
-  return { reservationBytes: UNPROBED_RESERVATION_BYTES };
+  // Unmeasured, the kernel keeps its default: a Mac's desktop snapshot holds
+  // more kernel memory than the small maximum.
+  return {
+    reservationBytes: UNPROBED_RESERVATION_BYTES,
+    kernelMemoryBytes: KERNEL_MEMORY_RESERVATION_BYTES,
+  };
 }
