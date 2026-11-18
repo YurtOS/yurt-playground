@@ -21,9 +21,8 @@
  *
  * With no script in the frame, the page cannot learn the height of its
  * content (an opaque origin), so the frame scrolls and the visitor sets its
- * height with a resize handle. Its first height is a guess: the output's
- * sanitized markup, laid out hidden in the page with the same rules, as
- * JupyterLab renders any untrusted output there; never its raw markup.
+ * height with a resize handle. Its first height is a guess from the
+ * markup's text ({@link firstHeight}).
  *
  * Untrusted output (a stored output of a notebook someone supplied, #336) is
  * also sanitized before it is framed, as JupyterLab does inline.
@@ -52,8 +51,27 @@ const OUTPUT_FRAME_SANDBOX = "allow-popups allow-popups-to-escape-sandbox";
  * box, and a long table takes part of the screen and scrolls. */
 const MIN_HEIGHT = 44;
 const MAX_FIRST_HEIGHT = 480;
-/** Room for the frame's sideways scroll bar when the guess overflows. */
-const SCROLLBAR = 17;
+/** About one rendered line of output, and the room around them (the frame's
+ * padding, its sideways scroll bar, the resize grip's strip). */
+const LINE_PX = 24;
+const AROUND_PX = 24;
+
+/**
+ * The frame's first height, guessed from the output's markup as a string:
+ * a line for each tag that starts one (a table row, paragraph, list item,
+ * heading, break, block), clamped. Nothing from an output is ever parsed
+ * into the page, not even sanitized: an element there would load what the
+ * page's policy allows (its own origin) and the frame's refuses (#360
+ * review). The visitor drags the frame taller or shorter.
+ */
+function firstHeight(source: string): number {
+  const lines = 1 +
+    (source.match(/<(tr|p|li|br|h[1-6]|div|pre|caption)\b/gi)?.length ?? 0);
+  return Math.min(
+    Math.max(lines * LINE_PX + AROUND_PX, MIN_HEIGHT),
+    MAX_FIRST_HEIGHT,
+  );
+}
 
 /** Frames on the page, rendered again when the theme changes. */
 const live = new Set<OutputFrame>();
@@ -130,48 +148,16 @@ class OutputFrame extends Widget implements IRenderMime.IRenderer {
   async renderModel(model: IRenderMime.IMimeModel): Promise<void> {
     const source = String(model.data[this._mimeType]);
     this._source = model.trusted ? source : this._sanitizer.sanitize(source);
-    this._fitted = false;
+    this.node.style.height = `${firstHeight(this._source)}px`;
     this.render();
   }
 
   render(): void {
     if (this._source === undefined) return;
-    // The first height is measured from a layout, which a hidden output
-    // (a notebook in a background tab) does not have: wait until it shows.
-    this._stale = !this.isVisible;
-    if (this._stale) return;
-    if (!this._fitted) {
-      this._fit(this._source);
-      this._fitted = true;
-    }
     this._frame.srcdoc = (head ??= makeHead()) +
       // jp-ThemedContainer: JupyterLab scopes some rendered-HTML rules under it.
       '<body class="jp-ThemedContainer"><div class="yurt-frame-body jp-RenderedHTMLCommon jp-RenderedHTML jp-OutputArea-output" data-mime-type="text/html">' +
       this._source + "</div></body></html>";
-  }
-
-  /** The first height: the sanitized markup's, laid out hidden here. */
-  private _fit(source: string): void {
-    const probe = document.createElement("div");
-    probe.className =
-      "yurt-OutputFrame-probe jp-RenderedHTMLCommon jp-RenderedHTML";
-    probe.innerHTML = this._sanitizer.sanitize(source);
-    this.node.appendChild(probe);
-    const wide = probe.scrollWidth > probe.clientWidth ? SCROLLBAR : 0;
-    const grip = parseFloat(getComputedStyle(this.node).paddingBottom);
-    const height = Math.ceil(probe.scrollHeight) + wide + grip;
-    probe.remove();
-    this.node.style.height = `${
-      Math.min(Math.max(height, MIN_HEIGHT), MAX_FIRST_HEIGHT)
-    }px`;
-  }
-
-  protected onAfterAttach(): void {
-    if (this._stale) this.render();
-  }
-
-  protected onAfterShow(): void {
-    if (this._stale) this.render();
   }
 
   dispose(): void {
@@ -184,8 +170,6 @@ class OutputFrame extends Widget implements IRenderMime.IRenderer {
   private _sanitizer: IRenderMime.ISanitizer;
   private _frame: HTMLIFrameElement;
   private _source: string | undefined;
-  private _fitted = false;
-  private _stale = false;
 }
 
 /** Install the frame renderer for `text/html` and the sanitized markdown. */

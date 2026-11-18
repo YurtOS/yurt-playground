@@ -42,7 +42,6 @@
  * measure its content, so the frame scrolls and the wrapper has a resize
  * handle: its first height is a guess, set inline, between these bounds. */
 .yurt-OutputFrame {
-  position: relative;
   box-sizing: border-box;
   resize: vertical;
   overflow: hidden;
@@ -57,13 +56,4 @@
   width: 100%;
   height: 100%;
   border: 0;
-}
-/* The hidden layout of the output's sanitized markup that the guess reads. */
-.yurt-OutputFrame-probe {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  visibility: hidden;
-  overflow: auto;
 }
