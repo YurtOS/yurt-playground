@@ -35,7 +35,8 @@ What you can use today.
   `?snapshot=0` boots the slim image instead.
 - **Phones and tablets boot.** Both get the tablet's snapshot, sized for their
   memory (the shell and Python, no Jupyter), and a key bar under the terminal
-  adds Paste, history and cursor keys that the on-screen keyboard lacks.
+  adds Esc, Tab, a sticky Ctrl, history and cursor keys and Paste, which the
+  on-screen keyboard lacks.
 - **A slim browser image that installs Python itself.** The tab loads 23.5 MB
   (the shell, the command-line tools, `sudo` and `pkg`) instead of 144 MB, and
   every page that runs Python installs the newest Python set from the signed
