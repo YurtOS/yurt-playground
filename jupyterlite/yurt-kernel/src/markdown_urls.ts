@@ -120,7 +120,8 @@ export function sanitizeKeepingUrls(
   sanitizer: IRenderMime.ISanitizer,
   dirty: string,
 ): string {
-  return (unpatched.get(sanitizer) ?? sanitizer.sanitize)(dirty);
+  const original = unpatched.get(sanitizer);
+  return original ? original(dirty) : sanitizer.sanitize(dirty);
 }
 
 /** Each patched sanitizer's own `sanitize`. */
