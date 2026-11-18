@@ -376,6 +376,48 @@ export async function phoneAgentHasTheSandbox(
   await phone.close();
 }
 
+/** Firefox's UA, on a Chromium page: the page tells Firefox by its UA. */
+const FIREFOX_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:140.0) Gecko/20100101 Firefox/140.0";
+
+/** Firefox cannot run the sandbox (its workers never signal ready), so the
+ * home page sends it to unsupported.html with that reason, not the
+ * isolation one; any other browser that lands there sees the isolation
+ * reason only. */
+async function firefoxIsSentToItsReason(
+  browser: Browser,
+  url: string,
+): Promise<void> {
+  const firefox = await browser.newContext({ userAgent: FIREFOX_UA });
+  try {
+    const page = await firefox.newPage();
+    await page.goto(`${url}/?start=1`, { waitUntil: "domcontentloaded" });
+    await page.getByTestId("unsupported-firefox").waitFor({
+      state: "visible",
+      timeout: 30_000,
+    });
+    if (new URL(page.url()).pathname !== "/unsupported.html") {
+      throw new Error(`Firefox landed on ${page.url()}`);
+    }
+    if (await page.locator("#isolation").isVisible()) {
+      throw new Error("Firefox is shown the isolation reason");
+    }
+  } finally {
+    await firefox.close();
+  }
+  const other = await browser.newPage();
+  try {
+    await other.goto(`${url}/unsupported.html`, { waitUntil: "load" });
+    await other.locator("#isolation").waitFor({ state: "visible" });
+    if (await other.getByTestId("unsupported-firefox").isVisible()) {
+      throw new Error("the Firefox reason shows without #firefox");
+    }
+  } finally {
+    await other.close();
+  }
+  console.log("playground e2e: Firefox is sent to unsupported.html#firefox");
+}
+
 /** iPadOS Safari asks for the desktop site: its UA is a Mac Safari's. */
 const IPADOS_SAFARI_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
@@ -1430,6 +1472,7 @@ if (import.meta.main) {
     await bootFailuresAreExplained(browser, server.url);
     await tabletIsShellOnly(browser, server.url);
     await phoneAgentHasTheSandbox(browser, server.url);
+    await firefoxIsSentToItsReason(browser, server.url);
   } finally {
     await browser.close();
     await server.shutdown();
