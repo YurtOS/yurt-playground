@@ -2,10 +2,14 @@
  * Save sandbox and Load sandbox (yurt-playground#8), end to end: a file
  * made in the shell is saved with the sandbox, deleted, and back after
  * the downloaded zip is loaded -- in a new shell on the terminal and in a
- * Jupyter cell; a cell still running when Save seals ends at once. A
- * stale, a damaged and an oversized file are each refused
- * with the running shell untouched (a shell variable set before is still
- * set after). Prints Save's and Load's times.
+ * Jupyter cell; a cell still running when Save seals ends at once. Only a
+ * file this browser saved loads (yurtos-kernel#5021): an unsigned one, one
+ * edited after it was saved (its manifest or its memory), and the same
+ * file in another browser profile are each refused, as are a stale, a
+ * damaged and an oversized one, with the running shell untouched (a shell
+ * variable set before is still set after). The key outlives a reload. With
+ * the site's data blocked, Save still works and says its file loads only
+ * in that tab, and Load takes it there. Prints Save's and Load's times.
  *
  * Run: `deno run --allow-all tests/sandbox_file_e2e.ts` (the runner's Chrome) or with
  * `E2E_ENGINE=webkit`; needs the kernel checkout, the pinned artifacts and
@@ -15,11 +19,18 @@
 import { type Page, webkit } from "playwright";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { launchBrowser } from "../scripts/browser.ts";
+import { launchBrowser, launchWithStorageBlocked } from "../scripts/browser.ts";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
 import { writeZip, ZipStreamReader } from "../src/snapshot_zip.ts";
-import { type SandboxFileMessage, sandboxFileOk } from "../src/sandbox_file.ts";
+import {
+  NOT_SAVED_HERE,
+  type SandboxFileMessage,
+  sandboxFileOk,
+} from "../src/sandbox_file.ts";
+import { manifestSigningBytes } from "../src/sandbox_snapshot.ts";
+import { sha256Hex } from "../src/integrity.ts";
+import { SAVE_KEY_DB, SAVE_KEY_ID, SAVE_KEY_STORE } from "../src/save_key.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BOOT_MS = 300_000;
@@ -107,13 +118,48 @@ async function manifestOf(path: string): Promise<Record<string, unknown>> {
   }
 }
 
-/** A snapshot zip of `manifest` and `memoryBytes` of zeros, at a new
- * path. */
+/** `manifest` signed for `memory` with this browser's key, the way a Save
+ * signs: in the page, since the key never leaves its origin. What only
+ * this origin's own code can do. */
+async function signInPage(
+  page: Page,
+  manifest: Record<string, unknown>,
+  memory: Uint8Array,
+): Promise<Record<string, unknown>> {
+  const { signature: _signature, ...rest } = manifest;
+  const withMemory = { ...rest, memorySha256: await sha256Hex(memory) };
+  const signature = await page.evaluate(
+    async ({ bytes, db, store, id }) => {
+      const key = await new Promise<CryptoKey>((resolve, reject) => {
+        const open = indexedDB.open(db);
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const get = open.result.transaction(store).objectStore(store).get(id);
+          get.onerror = () => reject(get.error);
+          get.onsuccess = () => resolve(get.result);
+        };
+      });
+      const tag = new Uint8Array(
+        await crypto.subtle.sign("HMAC", key, new Uint8Array(bytes)),
+      );
+      return [...tag].map((b) => b.toString(16).padStart(2, "0")).join("");
+    },
+    {
+      bytes: [...manifestSigningBytes(withMemory)],
+      db: SAVE_KEY_DB,
+      store: SAVE_KEY_STORE,
+      id: SAVE_KEY_ID,
+    },
+  );
+  return { ...withMemory, signature };
+}
+
+/** A snapshot zip of `manifest` and `memory`, at a new path. */
 async function craft(
   dir: string,
   name: string,
   manifest: Record<string, unknown>,
-  memoryBytes = 65536,
+  memory: Uint8Array,
 ): Promise<string> {
   const path = join(dir, name);
   const blob = await writeZip([
@@ -122,11 +168,7 @@ async function craft(
       bytes: new TextEncoder().encode(JSON.stringify(manifest)),
       deflate: false,
     },
-    {
-      name: "kernel-memory",
-      bytes: new Uint8Array(memoryBytes),
-      deflate: true,
-    },
+    { name: "kernel-memory", bytes: memory, deflate: true },
   ]);
   await Deno.writeFile(path, new Uint8Array(await blob.arrayBuffer()));
   return path;
@@ -275,22 +317,65 @@ if (import.meta.main) {
     // Refused, each before anything changes.
     const manifest = await manifestOf(zip);
     const built = manifest.builtFrom as Record<string, unknown>;
+    const { executor: _executor, ...noExecutor } = manifest;
+    /** The memory a crafted file carries: zeros, the size the kernel
+     * starts with (no executor scratch then lies outside it). */
+    const zeros = new Uint8Array(83 * 65536);
+    const base = { ...noExecutor, memoryBytes: zeros.byteLength };
+    const signedZeros = await signInPage(page, base, zeros);
+    const editedMemory = zeros.slice();
+    editedMemory[65536] = 1;
     const damaged = new Uint8Array(await Deno.readFile(zip));
     // A byte of the stored manifest: inflate cannot notice, the CRC-32
     // must (30-byte header, then the name).
     damaged[30 + "snapshot.json".length + 2] ^= 0x01;
     await Deno.writeFile(join(dir, "damaged.zip"), damaged);
+    const notSavedHere = new RegExp(NOT_SAVED_HERE);
     const refusals: [string, RegExp][] = [
+      // Not this browser's: no signature, or a signed one edited after.
       [
-        await craft(dir, "stale.zip", {
-          ...manifest,
-          builtFrom: { ...built, kernelSha256: "00".repeat(32) },
-        }),
-        /saved by another Yurt build \(kernelSha256/,
+        await craft(
+          dir,
+          "unsigned.zip",
+          (({ signature: _s, ...m }) => m)(
+            { ...base, signature: undefined },
+          ),
+          zeros,
+        ),
+        notSavedHere,
+      ],
+      [
+        await craft(dir, "edited-manifest.zip", {
+          ...signedZeros,
+          kernelToken: { $bigint: "1" },
+        }, zeros),
+        notSavedHere,
+      ],
+      [
+        await craft(dir, "edited-memory.zip", signedZeros, editedMemory),
+        /changed after it was saved/,
       ],
       [join(dir, "damaged.zip"), /snapshot\.json fails its CRC-32/],
+      // This browser's, and refused all the same by the checks after.
       [
-        await craft(dir, "huge.zip", { ...manifest, memoryBytes: 2 ** 31 }),
+        await craft(
+          dir,
+          "stale.zip",
+          await signInPage(page, {
+            ...base,
+            builtFrom: { ...built, kernelSha256: "00".repeat(32) },
+          }, zeros),
+          zeros,
+        ),
+        /saved by another Yurt build \(kernelSha256/,
+      ],
+      [
+        await craft(
+          dir,
+          "huge.zip",
+          await signInPage(page, { ...base, memoryBytes: 2 ** 31 }, zeros),
+          zeros,
+        ),
         /over the 1024 MiB this page loads/,
       ],
     ];
@@ -315,14 +400,10 @@ if (import.meta.main) {
       throw new Error(`a refusal is not said in the status line: ${status}`);
     }
 
-    // A file every check takes and the kernel cannot restore (its memory
-    // all zeros, the size the kernel starts with): the restore fails, a
-    // fresh sandbox takes its place, and that is said once, in the done.
-    const { executor: _executor, ...noExecutor } = manifest;
-    const broken = await craft(dir, "zeros.zip", {
-      ...noExecutor,
-      memoryBytes: 83 * 65536,
-    }, 83 * 65536);
+    // A file every check takes and the kernel cannot restore (signed here,
+    // its memory all zeros): the restore fails, a fresh sandbox takes its
+    // place, and that is said once, in the done.
+    const broken = await craft(dir, "zeros.zip", signedZeros, zeros);
     await page.evaluate(() => {
       const seen: string[] = [];
       (globalThis as { __statusSeen?: string[] }).__statusSeen = seen;
@@ -397,6 +478,90 @@ if (import.meta.main) {
       undefined,
       { timeout: 120_000 },
     );
+
+    // The key outlives a reload (a new worker, the same IndexedDB): the
+    // file still loads.
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await notebookReady(page, "after a reload");
+    const reloaded = await sandboxFile(page, () => chooseFile(page, zip));
+    if (!sandboxFileOk(reloaded)) {
+      throw new Error(`load after a reload: ${JSON.stringify(reloaded)}`);
+    }
+    await notebookReady(page, "after a load after a reload");
+    if (!(await shell(page, "cat ~/kept.txt")).includes("kept-8")) {
+      throw new Error("the file is not back after a reload's Load");
+    }
+    console.log(`${engine}: the key outlived a reload`);
+
+    // Another browser profile has its own key: the same file is refused
+    // there, and its sandbox is untouched.
+    const otherContext = await browser.newContext();
+    const other = await otherContext.newPage();
+    await other.goto(`${server.url}/?start`, { waitUntil: "domcontentloaded" });
+    await notebookReady(other, "another profile's boot");
+    await shell(other, "Z=other-profile");
+    const elsewhere = await sandboxFile(other, () => chooseFile(other, zip));
+    if (
+      elsewhere.outcome !== "refused" ||
+      !notSavedHere.test(elsewhere.why ?? "")
+    ) {
+      throw new Error(
+        `another profile took the file: ${JSON.stringify(elsewhere)}`,
+      );
+    }
+    if (!(await shell(other, 'echo "[$Z]"')).includes("[other-profile]")) {
+      throw new Error("another profile's refusal changed its sandbox");
+    }
+    await otherContext.close();
+    console.log(`${engine}: another profile refused it: ${elsewhere.why}`);
+
+    // Site data blocked (Chrome's own setting; not a WebKit option here):
+    // Save signs with a key for this tab alone and says so, and Load takes
+    // the file in that tab.
+    if (engine !== "webkit") {
+      const blocked = await launchWithStorageBlocked();
+      try {
+        const tab = await blocked.newPage();
+        await tab.goto(`${server.url}/?start`, {
+          waitUntil: "domcontentloaded",
+        });
+        await notebookReady(tab, "a boot with site data blocked");
+        await shell(tab, "echo blocked-8 > ~/kept.txt");
+        const tabDownload = tab.waitForEvent("download", { timeout: BOOT_MS });
+        const tabSaved = await sandboxFile(
+          tab,
+          () => tab.getByTestId("save-sandbox").click(),
+        );
+        if (!sandboxFileOk(tabSaved) || tabSaved.keyScope !== "session") {
+          throw new Error(
+            `save with site data blocked: ${JSON.stringify(tabSaved)}`,
+          );
+        }
+        const said = await tab.locator("#status").textContent() ?? "";
+        if (!said.includes("only until this tab is closed")) {
+          throw new Error(`the session-only save is not said: ${said}`);
+        }
+        const tabZip = join(dir, "blocked.zip");
+        await (await tabDownload).saveAs(tabZip);
+        await notebookReady(tab, "after a save with site data blocked");
+        await shell(tab, "rm ~/kept.txt");
+        const tabLoaded = await sandboxFile(tab, () => chooseFile(tab, tabZip));
+        if (!sandboxFileOk(tabLoaded)) {
+          throw new Error(
+            `load with site data blocked: ${JSON.stringify(tabLoaded)}`,
+          );
+        }
+        await notebookReady(tab, "after a load with site data blocked");
+        if (!(await shell(tab, "cat ~/kept.txt")).includes("blocked-8")) {
+          throw new Error("the file is not back with site data blocked");
+        }
+        console.log(
+          `${engine}: site data blocked: saved and loaded in the tab`,
+        );
+      } finally {
+        await blocked.close();
+      }
+    }
     console.log(
       `${engine}: PASS (save ${saveMs} ms, load ${loadMs} ms, total ${
         Date.now() - started

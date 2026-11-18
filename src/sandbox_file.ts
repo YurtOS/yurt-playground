@@ -19,10 +19,18 @@
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
 import type { Pins } from "./pins.ts";
 import type { PageSeal } from "./root_store.ts";
+import { sha256Hex } from "./integrity.ts";
+import {
+  type SaveKey,
+  type SaveKeyScope,
+  signBytes,
+  verifyBytes,
+} from "./save_key.ts";
 import {
   type BuiltFrom,
   decodeSandboxSnapshot,
   encodeSandboxSnapshot,
+  manifestSigningBytes,
   type SnapshotIdentity,
   snapshotIdentity,
   SnapshotMismatch,
@@ -48,6 +56,12 @@ export const LOAD_MEMORY_MAX_SMALL_BYTES = 512 * MIB;
 
 /** A file Load does not take, said for the user; nothing changed. */
 export class LoadRefused extends Error {}
+
+/** Load's refusal of a file this browser did not sign: unsigned, signed
+ * elsewhere, or signed with a key this browser no longer has (its site
+ * data was cleared). */
+export const NOT_SAVED_HERE =
+  "This file wasn't saved in this browser, so it can't be loaded";
 
 /** What a saved file records it was built from: the page's build. Its
  * packages are its own, so it names no Python set, and a Load asks the
@@ -123,8 +137,13 @@ export async function decodeLoadedSnapshot(
   body: ReadableStream<Uint8Array<ArrayBuffer>>,
   expected: SnapshotIdentity,
   smallDevice: boolean,
+  /** This browser's key (src/save_key.ts): only a file it signed loads,
+   * and that is checked before anything else in the file is believed. */
+  key: CryptoKey,
 ): Promise<SandboxSealImage> {
   let image: SandboxSealImage;
+  /** The memory's sha256 the signature covers. */
+  let signedMemory: string | undefined;
   try {
     image = await decodeSandboxSnapshot(
       body,
@@ -137,6 +156,17 @@ export async function decodeLoadedSnapshot(
       },
       false,
       true,
+      async (manifest) => {
+        const tag = manifest.signature;
+        if (
+          typeof tag !== "string" ||
+          typeof manifest.memorySha256 !== "string" ||
+          !await verifyBytes(key, manifestSigningBytes(manifest), tag)
+        ) {
+          throw new LoadRefused(NOT_SAVED_HERE);
+        }
+        signedMemory = manifest.memorySha256;
+      },
     );
   } catch (error) {
     if (error instanceof LoadRefused) throw error;
@@ -149,6 +179,12 @@ export async function decodeLoadedSnapshot(
       );
     }
     throw new LoadRefused(`not a sandbox snapshot this page loads: ${message}`);
+  }
+  // The memory is the signed one, byte for byte, before it is restored.
+  if (await sha256Hex(image.kernelMemory) !== signedMemory) {
+    throw new LoadRefused(
+      "This file was changed after it was saved, so it can't be loaded",
+    );
   }
   const why = sealRefusal(image);
   if (why !== undefined) throw new LoadRefused(`this snapshot: ${why}`);
@@ -185,6 +221,9 @@ export type SandboxFileMessage =
     outcome: SandboxOutcome;
     /** Save: whether the file was handed over. */
     saved?: boolean;
+    /** Save: where the key that signed it lives. `session`: storage is
+     * refused here, so the file loads only until this tab is closed. */
+    keyScope?: SaveKeyScope;
     jupyter?: ReplaceOutcome["jupyter"];
     /** Whatever was not as asked, for the user. */
     why?: string;
@@ -211,6 +250,8 @@ export type SandboxFileDeps = {
    * (an install) can run first: from there the sandbox is going. */
   seal: ((sealing: () => void) => Promise<PageSeal>) | undefined;
   pins: () => Promise<Pins>;
+  /** This origin's save key (src/save_key.ts saveKeys). */
+  key: () => Promise<SaveKey>;
   /** A phone or tablet page. */
   smallDevice: boolean;
   /** Drop the running sandbox and start the shell (and Jupyter) on the
@@ -335,10 +376,15 @@ export function saveSandbox(deps: SandboxFileDeps): Promise<void> {
     }
     let saved = false;
     let failed: string | undefined;
+    let keyScope: SaveKeyScope | undefined;
     try {
+      const { key, scope } = await deps.key();
+      keyScope = scope;
       const blob = await encodeSandboxSnapshot(
         box.image,
         savedBuiltFrom(await deps.pins()),
+        undefined,
+        (bytes) => signBytes(key, bytes),
       );
       deps.post({
         type: "sandbox-saved",
@@ -351,7 +397,12 @@ export function saveSandbox(deps: SandboxFileDeps): Promise<void> {
       failed = `saving failed: ${errorText(error)}`;
     }
     const back = await replaceWith(deps, box, "the saved sandbox");
-    return { ...back, saved, why: failed ?? back.why };
+    return {
+      ...back,
+      saved,
+      ...(keyScope === undefined ? {} : { keyScope }),
+      why: failed ?? back.why,
+    };
   });
 }
 
@@ -372,6 +423,7 @@ export function loadSandbox(deps: SandboxFileDeps, file: Blob): Promise<void> {
         file.stream(),
         snapshotIdentity(await deps.pins()),
         deps.smallDevice,
+        (await deps.key()).key,
       );
     } catch (error) {
       return { outcome: "refused", why: errorText(error) };

@@ -67,3 +67,28 @@ export async function launchWithExtension(
   console.log(`extension: ${id}`);
   return context;
 }
+
+/** The selected browser on a fresh profile whose settings block site data
+ *  (cookies, and with them IndexedDB, the Cache API and localStorage) for
+ *  every site, as a user who chose "Block all cookies" has it: the case
+ *  where a page can keep nothing between visits. */
+export async function launchWithStorageBlocked(): Promise<BrowserContext> {
+  const selected = parseBrowser(Deno.env.get("PLAYGROUND_BROWSER"));
+  const { chromium } = await import("playwright");
+  const profile = await Deno.makeTempDir({ prefix: "yurt-no-storage-" });
+  await Deno.mkdir(`${profile}/Default`, { recursive: true });
+  await Deno.writeTextFile(
+    `${profile}/Default/Preferences`,
+    JSON.stringify({
+      profile: { default_content_setting_values: { cookies: 2 } },
+    }),
+  );
+  const context = await chromium.launchPersistentContext(
+    profile,
+    launchOptions(selected, { headless: true }),
+  );
+  console.log(
+    `browser: ${selected} ${context.browser()?.version()} (site data blocked)`,
+  );
+  return context;
+}

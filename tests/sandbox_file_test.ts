@@ -2,7 +2,9 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
 import type { Pins } from "../src/pins.ts";
 import { writeZip } from "../src/snapshot_zip.ts";
-import { FORMAT } from "../src/sandbox_snapshot.ts";
+import { FORMAT, manifestSigningBytes } from "../src/sandbox_snapshot.ts";
+import { sha256Hex } from "../src/integrity.ts";
+import { signBytes } from "../src/save_key.ts";
 import {
   decodeLoadedSnapshot,
   LOAD_MEMORY_MAX_BYTES,
@@ -11,6 +13,7 @@ import {
   LoadRefused,
   loadSandbox,
   memoryRefusal,
+  NOT_SAVED_HERE,
   type ReplaceOutcome,
   type SandboxFileDeps,
   type SandboxFileMessage,
@@ -23,6 +26,15 @@ import {
 import { snapshotIdentity } from "../src/sandbox_snapshot.ts";
 
 const PAGE = 64 * 1024;
+
+/** This "browser's" save key, and another browser's. */
+const newKey = () =>
+  crypto.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+    "verify",
+  ]) as Promise<CryptoKey>;
+const TEST_KEY = await newKey();
+const OTHER_KEY = await newKey();
 
 const PINS = {
   kernelWasm: { sha256: "ab".repeat(32), rev: "a".repeat(40) },
@@ -48,7 +60,34 @@ function image(pages = 83): SandboxSealImage {
 
 /** A zip with `manifest` as written and `memory` stored, not deflated:
  * a flipped byte there is caught by the CRC-32 alone. */
-function storedZip(
+/** `manifest`, signed for `memory` with `key` as a Save signs it (none:
+ * unsigned). */
+async function signed(
+  manifest: Record<string, unknown>,
+  memory: Uint8Array,
+  key: CryptoKey | null = TEST_KEY,
+): Promise<Record<string, unknown>> {
+  if (key === null) return manifest;
+  const withMemory = { ...manifest, memorySha256: await sha256Hex(memory) };
+  return {
+    ...withMemory,
+    signature: await signBytes(key, manifestSigningBytes(withMemory)),
+  };
+}
+
+/** A zip of `manifest` (signed with `key` unless null) and `memory`
+ * stored, not deflated: a flipped byte there is caught by the CRC-32
+ * alone. */
+async function storedZip(
+  manifest: Record<string, unknown>,
+  memory: Uint8Array,
+  key: CryptoKey | null = TEST_KEY,
+): Promise<Blob> {
+  return await rawZip(await signed(manifest, memory, key), memory);
+}
+
+/** A zip of `manifest` as given, and `memory`. */
+function rawZip(
   manifest: Record<string, unknown>,
   memory: Uint8Array,
 ): Promise<Blob> {
@@ -84,12 +123,14 @@ function harness(
     freshUp = true,
     small = false,
     canReplace = true,
+    scope = "persistent",
   }: {
     seal?: SandboxFileDeps["seal"];
     outcome?: ReplaceOutcome | Error;
     freshUp?: boolean | Error;
     small?: boolean;
     canReplace?: boolean;
+    scope?: "persistent" | "session";
   } = {},
 ) {
   const posted: SandboxFileMessage[] = [];
@@ -99,6 +140,7 @@ function harness(
     canReplace,
     seal,
     pins: () => Promise.resolve(PINS),
+    key: () => Promise.resolve({ key: TEST_KEY, scope }),
     smallDevice: small,
     replace: (box) => {
       // The restore takes the seal out of the box.
@@ -172,6 +214,7 @@ Deno.test("Save seals, hands over a file Load takes, and restores the same seal 
       saved.blob.stream(),
       snapshotIdentity(PINS),
       false,
+      TEST_KEY,
     ),
     sealed,
   );
@@ -486,6 +529,7 @@ Deno.test("decodeLoadedSnapshot refuses with LoadRefused only", async () => {
         new Blob(["x"]).stream(),
         snapshotIdentity(PINS),
         false,
+        TEST_KEY,
       ),
     LoadRefused,
   );
@@ -496,4 +540,62 @@ Deno.test("the saved file's name says when it was saved", () => {
     savedFileName(new Date(2026, 10, 17, 9, 5)),
     "yurt-sandbox-2026-11-17-0905.zip",
   );
+});
+
+Deno.test("only a file this browser signed loads: unsigned or another browser's is refused first, before any other check or allocation", async () => {
+  const memory = image().kernelMemory;
+  // Unsigned, and signed by another browser.
+  for (const key of [null, OTHER_KEY]) {
+    await refusedUntouched(
+      await storedZip(manifestFor(memory.byteLength), memory, key),
+      new RegExp(NOT_SAVED_HERE),
+    );
+    // Before the build check: a stale file says it is not this browser's.
+    await refusedUntouched(
+      await storedZip(
+        manifestFor(memory.byteLength, {
+          ...savedBuiltFrom(PINS),
+          kernelSha256: "00".repeat(32),
+        }),
+        memory,
+        key,
+      ),
+      new RegExp(NOT_SAVED_HERE),
+    );
+    // Before the allocation: 4 PiB named, none allocated.
+    await refusedUntouched(
+      await storedZip(manifestFor(2 ** 52), new Uint8Array(), key),
+      new RegExp(NOT_SAVED_HERE),
+    );
+  }
+});
+
+Deno.test("a signed file edited afterwards is refused: its manifest, or its memory", async () => {
+  const memory = image().kernelMemory;
+  const manifest = await signed(manifestFor(memory.byteLength), memory);
+  // One field of the manifest changed, the signature kept.
+  await refusedUntouched(
+    await rawZip({ ...manifest, kernelToken: { $bigint: "4661" } }, memory),
+    new RegExp(NOT_SAVED_HERE),
+  );
+  // One byte of the memory changed, the signed manifest kept (the zip's
+  // own CRC is the new bytes', so only the signature can tell).
+  const edited = memory.slice();
+  edited[PAGE] ^= 0x01;
+  await refusedUntouched(
+    await rawZip(manifest, edited),
+    /changed after it was saved/,
+  );
+  // As signed, it loads.
+  const h = harness();
+  await loadSandbox(h.deps, await rawZip(manifest, memory));
+  assertEquals(h.done().outcome, "restored");
+});
+
+Deno.test("Save signs its file, and says when the key lives only in this tab", async () => {
+  for (const scope of ["persistent", "session"] as const) {
+    const h = harness({ seal: sealOf(() => image()), scope });
+    await saveSandbox(h.deps);
+    assertEquals(h.done().keyScope, scope);
+  }
 });

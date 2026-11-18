@@ -105,6 +105,7 @@ import {
 } from "./sandbox_file.ts";
 import { KernelHostInterface } from "@yurt/kernel-host-interface-js";
 import { type PageSeal, rootStoreOf } from "./root_store.ts";
+import { indexedDbKeyStore, saveKeys } from "./save_key.ts";
 import { type BootedSession, workerPackageHost } from "./session_packages.ts";
 import {
   type MemoryRefusedMessage,
@@ -599,6 +600,9 @@ let sandboxScope = new AbortController();
  * seal with no process) the way the page's start did: whether its shell
  * came up. Set by `start`; not for a capture or the desktop app. */
 let replaceSandbox: ((box: SealBox) => Promise<ReplaceOutcome>) | undefined;
+/** This origin's save key: what Save signs with and Load checks
+ * (src/save_key.ts). */
+const sandboxKeys = saveKeys(() => indexedDbKeyStore());
 /** A phone or tablet page: Load takes less memory there. */
 let smallDevice = false;
 /** The worker's terminal, once `start` made it. */
@@ -630,6 +634,7 @@ function sandboxFileDeps(): SandboxFileDeps {
       return image!;
     },
     pins: playgroundPins,
+    key: () => sandboxKeys.key(),
     smallDevice,
     replace: (box) => replaceSandbox!(box),
     startFresh: async (why) => {
