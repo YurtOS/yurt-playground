@@ -295,6 +295,10 @@ export function allocationCensus(config: CensusConfig): void {
       return Reflect.construct(NativeMemory, [descriptor], new.target);
     }
     const pages = Number(descriptor.maximum ?? descriptor.initial);
+    // An invalid descriptor reserves nothing: let the engine throw.
+    if (!Number.isFinite(pages)) {
+      return Reflect.construct(NativeMemory, [descriptor], new.target);
+    }
     // Collect only when it would not fit: a `deref` before the GC in the
     // same job would keep its target alive through that GC.
     let admitted = admit(pages);
