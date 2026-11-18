@@ -85,8 +85,46 @@ Contact Ofer at [ofersa@gmail.com](mailto:ofersa@gmail.com), or
 ## The agent's model
 
 The home page's agent runs a model in the tab, on WebGPU: Gemma 4, whose weights
-download once from Hugging Face and then stay in the browser. Nothing you type
-leaves your computer. A browser without WebGPU is told so.
+download once from Hugging Face and then stay in the browser. With that model,
+nothing you type leaves your computer. A browser without WebGPU is told so. The
+agent can also run a model on OpenRouter, with your own OpenRouter account (the
+only choice on a tablet or phone); then your task and what the agent reads in
+the sandbox go to OpenRouter (see [Privacy](#privacy)).
+
+## Privacy
+
+The sandbox runs in the tab, and what you do in it stays in this browser unless
+you choose otherwise. What does leave it, and where it goes:
+
+- **Cloudflare** hosts the site. The production site
+  (`yurt-playground.pages.dev`) counts page views with Cloudflare Web Analytics,
+  which sets no cookies (`src/web_analytics.ts`); previews, local serving and
+  the desktop app do not.
+- **GitHub** (`raw.githubusercontent.com`) serves the package repository,
+  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), whose index
+  the page reads when the sandbox starts and from which it installs packages,
+  and the agent's model list, `config/agent-models.json` in this repository,
+  read at every page load. A shared snapshot link (`?snapshot=<id>`) also asks
+  `api.github.com` which snapshots this repository published.
+- **Hugging Face** serves the in-tab model's weights, downloaded when you start
+  the agent with that model. The model runs in the tab.
+- **OpenRouter**, only when you choose an OpenRouter model for the agent: your
+  task and what the agent sees in the sandbox (the output of its commands, the
+  files it reads) go to OpenRouter under your account. Your OpenRouter key is
+  kept in this browser's storage and sent only to `openrouter.ai`.
+- **The sites a Playwright program opens**, only when you choose Playwright and
+  allow it in the Yurt browser bridge extension's window: the program drives
+  tabs in your browser, which load what it asks for, with your browser's
+  sign-ins ([Playwright in the sandbox](#playwright-in-the-sandbox)).
+
+Nothing else leaves the browser, and the page's Content Security Policy
+(`src/csp.ts`) lets it connect only to its own site and the addresses above. The
+desktop app is different: its sandbox runs natively on your machine and has the
+network. The sandbox's files live in the tab's memory. What the page keeps
+between visits stays in this browser's storage (Cache Storage, IndexedDB, the
+origin private file system and localStorage): downloaded packages, model weights
+and snapshot parts, a sealed agent session and its chat. Clearing the site's
+data in the browser removes them.
 
 ## Driving the sandbox from a program
 
