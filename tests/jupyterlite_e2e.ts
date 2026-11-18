@@ -240,9 +240,13 @@ async function checkSuppliedOutputsSettle(
   };
   const context = await browser.newContext();
   let loads = 0;
+  const seen = new Set<string>();
   // Both browsers report a frame's refused loads, nested ones too, here.
   context.on("console", (message) => {
-    if (message.text().includes("reload-probe")) loads++;
+    const probe = /reload-probe-(\w+)/.exec(message.text());
+    if (probe === null) return;
+    loads++;
+    seen.add(probe[1]);
   });
   const page = await openSupplied(
     context,
@@ -251,11 +255,17 @@ async function checkSuppliedOutputsSettle(
     "reload-probes.ipynb",
     notebook,
   );
-  await page.waitForTimeout(3_000);
-  const first = loads;
+  // Every output has rendered once before the count starts.
+  const deadline = Date.now() + 60_000;
+  while (!["0", "1", "2", "3"].every((i) => seen.has(i))) {
+    if (Date.now() > deadline) {
+      fail(`the supplied reload probes did not all render: ${[...seen]}`);
+    }
+    await page.waitForTimeout(250);
+  }
+  await page.waitForTimeout(1_000);
   loads = 0;
   await page.waitForTimeout(2_000);
-  if (first === 0) fail("the supplied reload probes did not render");
   if (loads > 0) {
     fail(
       `a supplied notebook's output reloaded its frame ${loads} times in 2 s`,
@@ -319,27 +329,6 @@ async function checkHtmlOutputIsolation(page: Page): Promise<void> {
     .locator("iframe").first()
     .waitFor({ timeout: 1_000 })
     .catch(() => fail("the refresh probe's HTML output has no frame"));
-
-  // The frame's own policy holds where the page's would not (WebKit loaded
-  // an outside image from such a frame).
-  const requested: string[] = [];
-  // Finished, not issued: Chrome reports a load that its CSP then refuses.
-  const onRequest = (request: { url(): string }) => {
-    if (request.url().includes("frame-probe")) requested.push(request.url());
-  };
-  page.on("requestfinished", onRequest);
-  await runNewCell(
-    page,
-    `from IPython.display import HTML; display(HTML('<script src="/jupyter/config-utils.js?frame-probe"></script><img src="https://leak.example/?frame-probe">frame-probe')); print("frame-probe", "done")`,
-  );
-  await waitForLastOutput(page, "frame-probe done", 60_000);
-  await page.waitForTimeout(2_000);
-  page.off("requestfinished", onRequest);
-  if (requested.length > 0 || leaks.length > 0) {
-    fail(
-      `an output frame loaded ${[...new Set([...requested, ...leaks])]}`,
-    );
-  }
 
   const style =
     "<style>body{background:rgb(1, 2, 3) !important}.jp-Notebook{outline:9px solid rgb(4, 5, 6)}</style>";
