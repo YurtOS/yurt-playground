@@ -1,14 +1,11 @@
 /**
  * Which models the agent pane offers on each platform, read at page load
- * from `config/agent-models.json` on this repository's main, through
- * raw.githubusercontent.com. A change to that file alone builds and deploys
- * nothing (ci.yml ignores it, and no merge deploys; its pull request runs only
- * the checks, which validate it), so a model or a prompt changes with one
- * merged pull request (GitHub's raw cache serves it within about five
- * minutes).
- * There is no built-in list. A browser keeps the last list it loaded, so a
- * load while GitHub is slow or down (the agent's own resume reloads among
- * them) offers what that list did; never having loaded one, it offers none.
+ * from `config/agent-models.json` beside the page: scripts/build-static.ts
+ * copies the committed file into the site, and the dev server serves it from
+ * the checkout. So a change to it, like any change to the page, goes live
+ * only with a deploy; merging it changes nothing a visitor gets (#368).
+ * There is no built-in list and no kept copy: a load that cannot read the
+ * file offers no model.
  *
  *   {
  *     "desktop": { "local": ["E4B", "E2B"],
@@ -27,11 +24,10 @@
  * being the default. A platform left out offers no model.
  */
 import type { Platform } from "./device.ts";
-import { SNAPSHOT_SOURCE } from "./snapshot_source.ts";
+import { siteUrl } from "./site_url.ts";
 
-/** The list, in this repository. */
+/** The list: its path in this repository and in the built site. */
 export const AGENT_MODELS_PATH = "config/agent-models.json";
-export const AGENT_MODELS_URL = `${SNAPSHOT_SOURCE}main/${AGENT_MODELS_PATH}`;
 
 export type OpenrouterEntry = { id: string; label: string };
 export type PlatformModels = {
@@ -117,39 +113,21 @@ export function parseAgentModels(json: unknown): AgentModelsConfig | undefined {
   return config;
 }
 
-const LAST_LIST_STORAGE = "yurt-agent-models";
-
-function lastList(): AgentModelsConfig | undefined {
-  try {
-    const saved = localStorage.getItem(LAST_LIST_STORAGE);
-    return saved === null ? undefined : parseAgentModels(JSON.parse(saved));
-  } catch {
-    return undefined;
-  }
-}
-
-/** The published config; if it cannot be read now (offline, missing,
- * malformed, slow), the last one this browser read; else undefined. */
+/** The deployed config; undefined if it cannot be read (offline, missing,
+ * malformed, slow). */
 export async function fetchAgentModels(
-  url = AGENT_MODELS_URL,
+  url = siteUrl(AGENT_MODELS_PATH),
   timeoutMs = 4000,
 ): Promise<AgentModelsConfig | undefined> {
   try {
     const response = await fetch(url, {
+      // Revalidated, so a load after a deploy reads that deploy's list.
       cache: "no-cache",
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!response.ok) return lastList();
-    const json = await response.json();
-    const config = parseAgentModels(json);
-    if (config === undefined) return lastList();
-    try {
-      localStorage.setItem(LAST_LIST_STORAGE, JSON.stringify(json));
-    } catch {
-      // Storage blocked: the next load fetches again anyway.
-    }
-    return config;
+    if (!response.ok) return undefined;
+    return parseAgentModels(await response.json());
   } catch {
-    return lastList();
+    return undefined;
   }
 }

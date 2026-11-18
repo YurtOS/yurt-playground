@@ -157,22 +157,20 @@ commit, and the site's `pins.json`, with main. After a Cloudflare rollback its
 so does `deployed pins` if the change you rolled back moved
 `artifacts/pins.json`.
 
-Two inputs change the live page with no deploy, and neither path above rolls
-them back:
+The agent's models and prompts, `config/agent-models.json`, are part of the
+site: the static build copies the file in and the page reads it from its own
+origin (`src/agent_models_config.ts`). Changing the agent config therefore needs
+a deploy, like any change to the page; merging it changes nothing live, and a
+rollback takes it back with the rest of the deployment.
 
-- `config/agent-models.json` on this repository's main, which the page reads at
-  load through raw.githubusercontent.com (`src/agent_models_config.ts`): the
-  agent's models and prompts. Merging a change to it is live within about five
-  minutes (GitHub's raw cache). Revert it with a pull request; no deploy needed.
-- YurtOS/yurt-packages' main, which the page reads live for every install
-  (`PACKAGE_REPO_URL` in `src/packages.ts`): `pkg install`, and the Python the
-  page asks the index about. A pinned snapshot whose Python set the index no
-  longer offers is refused, and the page boots the image and installs instead.
-  Undo it in yurt-packages.
-
-A rolled-back page reads both as they are now, not as they were when it was
-built. After a rollback, try the agent pane and a `pkg install` on it, and
-revert the model list too if it depends on the change you rolled back.
+One input changes the live page with no deploy, and neither path above rolls it
+back: YurtOS/yurt-packages' main, which the page reads live for every install
+(`PACKAGE_REPO_URL` in `src/packages.ts`): `pkg install`, and the Python the
+page asks the index about. That is on purpose: a published package is available
+at once. A pinned snapshot whose Python set the index no longer offers is
+refused, and the page boots the image and installs instead. Undo it in
+yurt-packages. A rolled-back page reads the index as it is now, not as it was
+when the page was built, so try a `pkg install` on it after a rollback.
 
 ## Releasing a train
 

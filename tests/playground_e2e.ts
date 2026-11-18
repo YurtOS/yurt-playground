@@ -9,8 +9,7 @@ import { startPlaygroundServer } from "../src/serve.ts";
 import { EXECUTE_TIMEOUT_MS } from "../src/jupyter_protocol.ts";
 import { watchCspViolations } from "./csp_watch.ts";
 import { PACKAGE_REPO_URL } from "../src/packages.ts";
-import { AGENT_MODELS_URL } from "../src/agent_models_config.ts";
-import { withPrompts } from "./agent_models_fixture.ts";
+import { AGENT_MODELS_ROUTE, withPrompts } from "./agent_models_fixture.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -100,7 +99,7 @@ async function tabletIsShellOnly(
 ): Promise<void> {
   const context = await browser.newContext(devices["iPad Pro 11"]);
   // A list that names an in-tab model for tablets too: it is not offered.
-  await context.route(AGENT_MODELS_URL, (route) =>
+  await context.route(AGENT_MODELS_ROUTE, (route) =>
     route.fulfill({
       contentType: "application/json",
       headers: { "access-control-allow-origin": "*" },
@@ -471,7 +470,7 @@ export async function phoneAgentHasTheSandbox(
   url: string,
 ): Promise<void> {
   const phone = await browser.newContext(devices["iPhone 13"]);
-  await phone.route(AGENT_MODELS_URL, (route) =>
+  await phone.route(AGENT_MODELS_ROUTE, (route) =>
     route.fulfill({
       contentType: "application/json",
       headers: { "access-control-allow-origin": "*" },

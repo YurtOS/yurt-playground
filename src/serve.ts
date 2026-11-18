@@ -73,6 +73,8 @@ const ARTIFACT_FILES: Record<string, string> = {
   "/playground.yurtimg": join(artifactsDir, "playground.yurtimg"),
   "/playground-slim.yurtimg": join(artifactsDir, "playground-slim.yurtimg"),
   "/xterm.css": XTERM_CSS_PATH,
+  // The agent's model list (src/agent_models_config.ts), as the build ships it.
+  "/config/agent-models.json": join(repoRoot, "config/agent-models.json"),
 };
 
 const PLAYWRIGHT_ASSETS: Record<
