@@ -189,11 +189,12 @@ async function tabletIsShellOnly(
  * Ctrl or arrow keys. `page` shows a running shell on an emulated touch
  * device. The keys sit in one row of touch targets that scrolls sideways
  * when the screen is narrower (an iPhone in portrait) and never widens the
- * page. Esc reaches the guest (`cat -v` shows `^[`), Tab completes a
+ * page. Esc reaches the guest (`od -c` shows 033), Tab completes a
  * command in ash, a held Ctrl turns the next letter typed into its control
- * character (Ctrl-C stops a `sleep`, Ctrl-D ends a shell) and a second tap
- * lets it go, ↑ and ↓ walk ash's history, ← and → move the cursor along the
- * line, Paste puts the clipboard on the command line, a refused or empty
+ * character (Ctrl-C stops a `sleep`, Ctrl-D ends a shell; the terminal's
+ * own reply to a query is not that letter) and a second tap lets it go,
+ * ↑ and ↓ walk ash's history, ← and → move the cursor along the line,
+ * Paste puts the clipboard on the command line, a refused or empty
  * clipboard is said in the bar, and the terminal keeps the focus (the iOS
  * keyboard) through every tap. The clipboard is stubbed: neither headless
  * engine has one a test can fill and read the same way. */
@@ -374,6 +375,30 @@ export async function touchKeysWork(page: Page): Promise<void> {
   if (await ctrlPressed() !== "false") throw new Error("Ctrl not let go");
   await page.keyboard.type("echo keys-let-go\n");
   await waitFor("Ctrl let go", (seen) => count(seen, "keys-let-go") === 1);
+
+  // The terminal's own replies are not the next input: a cursor position
+  // query answered while Ctrl is held leaves it held for the letter typed
+  // after it. The query runs a second after Enter, while Ctrl is held, and
+  // `read` takes the reply (ESC [ row ; col R) off the tty, so ash never
+  // reads it as typed input; by the time keys-reply shows, it was answered.
+  await prompt();
+  await page.keyboard.type(
+    "sleep 1; printf '\\033[6n'; read -rs -t 5 -d R x; echo keys-reply\n",
+  );
+  await tap("ctrl");
+  // The tty may echo the reply (^[[row;col, with or without its R) before
+  // read takes it.
+  await waitFor(
+    "query answered",
+    (seen) => seen.some((line) => /^(\^\[\[\d+;\d+R?)?keys-reply$/.test(line)),
+  );
+  if (await ctrlPressed() !== "true") {
+    throw new Error("a terminal reply let Ctrl go");
+  }
+  // Ctrl-C at the empty prompt: a fresh one.
+  await page.keyboard.type("c");
+  if (await ctrlPressed() !== "false") throw new Error("Ctrl still held");
+  await prompt();
 
   // Esc reaches the guest: od shows it as 033, after a Ctrl-D at the start
   // of a line ends od's input.

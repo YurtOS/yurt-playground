@@ -154,10 +154,14 @@ function withTouchKeys(
     return button;
   };
   // Ctrl is sticky: a tap holds it (aria-pressed) for the next input, a
-  // second tap lets it go. That input, whatever it is, releases it; only a
-  // single character with a control character (a letter typed on the iOS
-  // keyboard) becomes that character. Longer input (a paste, dictation, a
-  // composed word, another key on the bar) passes unchanged.
+  // second tap lets it go. That input releases it; only a single character
+  // with a control character (a letter typed on the iOS keyboard) becomes
+  // that character. Longer input (a paste, dictation, a composed word, Esc
+  // or Tab) passes unchanged. xterm's own replies (cursor reports, device
+  // attributes, focus and mouse reports) come through onData too, as an
+  // escape sequence: they pass without releasing it, and so do the arrow
+  // keys, the only sequences on the bar. A bracketed paste starts with one
+  // as well, but is input.
   const ctrl = key("Ctrl", "Control", "ctrl", () => hold(!held));
   let held = false;
   const hold = (on: boolean) => {
@@ -170,7 +174,9 @@ function withTouchKeys(
   };
   hold(false);
   const control = (data: string) => {
-    if (!held) return data;
+    const sequence = data.length > 1 && data.startsWith("\x1b") &&
+      !data.startsWith("\x1b[200~");
+    if (!held || sequence) return data;
     hold(false);
     return controlCharacter(data) ?? data;
   };
