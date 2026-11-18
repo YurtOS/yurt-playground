@@ -280,23 +280,28 @@ async function checkSettles(
   ];
   const deadline = Date.now() + 120_000;
   // A report alone may come from the first-height guess, which lays the
-  // sanitized markup out in the page: each probe must be in a frame too.
+  // sanitized markup out in the page: each probe must be in a frame too,
+  // and for `raw` a nested frame, which no sanitized document has (the
+  // frames of a re-render may still hold the sanitized ones).
   const framed = async () => {
     const tags = new Set<string>();
     for (const frame of await page.locator(".yurt-OutputFrame iframe").all()) {
       const inner = await (await frame.elementHandle())!.contentFrame();
-      for (
-        const src of await inner?.evaluate(() =>
-          Array.from(document.images).map((image) =>
-            image.src
-          )
-        ) ?? []
-      ) {
-        const tag = /reload-probe-(\d+)/.exec(src)?.[1];
+      const found = await inner?.evaluate(() => [
+        ...Array.from(document.images).map((image) => image.src),
+        ...Array.from(document.querySelectorAll("iframe")).map((nested) =>
+          nested.srcdoc
+        ),
+      ]) ?? [];
+      for (const text of found) {
+        const tag = /reload-probe-(\d+|nested)/.exec(text)?.[1];
         if (tag !== undefined) tags.add(tag);
       }
     }
-    return RELOAD_PROBES.every((_, i) => tags.has(String(i)));
+    return [
+      ...RELOAD_PROBES.map((_, i) => String(i)),
+      ...(raw ? ["nested"] : []),
+    ].every((tag) => tags.has(tag));
   };
   while (!want.every((tag) => watch.seen.has(tag)) || !(await framed())) {
     if (Date.now() > deadline) {
