@@ -25,8 +25,9 @@
  * is sanitized first, as JupyterLab does inline: raw, it could still reload
  * its own frame forever (a self-refresh, also in a nested srcdoc frame),
  * which no rewrite of the markup closed for good. A trusted output, from a
- * cell the visitor ran, may do that inside its frame, like a `while True`
- * they ran; clearing it stops it, and reopened it is untrusted.
+ * cell the visitor ran (Run All on a supplied notebook included), may do
+ * that inside its frame, like a loop they ran: it can stall the tab but not
+ * leave the frame, and reloading the tab reopens it untrusted, sanitized.
  *
  * The frame gets the page's look: JupyterLab's rendered-HTML rules and the
  * theme's `--jp-*` variables, collected from the page's style sheets, and the
@@ -69,7 +70,14 @@ async function sha256(text: string): Promise<string> {
 function pageCss(): string {
   const rules: string[] = [];
   for (const sheet of Array.from(document.styleSheets)) {
-    for (const rule of Array.from(sheet.cssRules)) {
+    let list: CSSRuleList;
+    try {
+      list = sheet.cssRules;
+    } catch {
+      // Another origin's sheet (one an extension injects): not JupyterLab's.
+      continue;
+    }
+    for (const rule of Array.from(list)) {
       if (
         rule instanceof CSSStyleRule &&
         rule.selectorText.includes("jp-RenderedHTML")
