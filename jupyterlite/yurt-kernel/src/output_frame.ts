@@ -31,20 +31,23 @@
  * theme's `--jp-*` variables, collected from the page's style sheets, and the
  * theme's color scheme. A theme change renders every frame again.
  *
- * Markdown outputs render sanitized, as markdown cells do: the sanitizer drops
- * `meta`, `style`, `link` and `base`, and they keep their math typesetting,
- * which a frame would lose. SVG output is already an `<img>` and LaTeX is
- * typeset text, so neither inserts raw HTML.
+ * Markdown, outputs and cells alike, renders sanitized in the page: the
+ * sanitizer drops `meta`, `style`, `link` and `base`, and it keeps its math
+ * typesetting, which a frame would lose. The app's sanitizer also drops
+ * every URL the markup would fetch, except a `data:` one (markdown_urls.ts).
+ * SVG output is already an `<img>` and LaTeX is typeset text, so neither
+ * inserts raw HTML.
  */
 import type {
   JupyterFrontEnd,
   JupyterFrontEndPlugin,
 } from "@jupyterlab/application";
-import { IThemeManager } from "@jupyterlab/apputils";
+import { ISanitizer, IThemeManager } from "@jupyterlab/apputils";
 import { CodeCell } from "@jupyterlab/cells";
 import { IRenderMimeRegistry, MimeModel } from "@jupyterlab/rendermime";
 import type { IRenderMime } from "@jupyterlab/rendermime-interfaces";
 import { Widget } from "@lumino/widgets";
+import { refuseUrlsIn, sanitizeKeepingUrls } from "./markdown_urls";
 
 const OUTPUT_FRAME_SANDBOX = "allow-popups allow-popups-to-escape-sandbox";
 
@@ -148,7 +151,10 @@ class OutputFrame extends Widget implements IRenderMime.IRenderer {
 
   async renderModel(model: IRenderMime.IMimeModel): Promise<void> {
     const source = String(model.data[this._mimeType]);
-    this._source = model.trusted ? source : this._sanitizer.sanitize(source);
+    // Sanitized as JupyterLab does, URLs kept: the frame refuses them.
+    this._source = model.trusted
+      ? source
+      : sanitizeKeepingUrls(this._sanitizer, source);
     this.node.style.height = `${firstHeight(this._source)}px`;
     this.render();
   }
@@ -173,12 +179,18 @@ class OutputFrame extends Widget implements IRenderMime.IRenderer {
   private _source: string | undefined;
 }
 
-/** Install the frame renderer for `text/html` and the sanitized markdown. */
+/** Install the frame renderer for `text/html` and the sanitized markdown,
+ * and make the app's sanitizer refuse URLs. */
 export function activateOutputFrames(
   _app: JupyterFrontEnd,
   rendermime: IRenderMimeRegistry,
   themes: IThemeManager | null,
+  sanitizer: IRenderMime.ISanitizer | null,
 ): void {
+  // The token is optional so that the frames never depend on it; when it is
+  // provided, rendermime holds the same instance.
+  if (sanitizer !== null) refuseUrlsIn(sanitizer);
+  refuseUrlsIn(rendermime.sanitizer);
   // JupyterLab's Table of Contents lists a code cell's output headings by
   // parsing its HTML outputs (sanitized, images kept) into an element in the
   // page, where the page's policy loads them (#360 review). No output markup
@@ -223,6 +235,6 @@ export const outputFramePlugin: JupyterFrontEndPlugin<void> = {
   id: "@yurt/jupyterlite-yurt-kernel:html-output-frames",
   autoStart: true,
   requires: [IRenderMimeRegistry],
-  optional: [IThemeManager],
+  optional: [IThemeManager, ISanitizer],
   activate: activateOutputFrames,
 };
