@@ -436,14 +436,29 @@ function markdownProbe(host: string, where: string): string {
     `<ul style="list-style-image:url('${own("list-style")}')"><li>l</li></ul>`,
     `<link rel="stylesheet" href="${own("link")}">`,
     `![md-data-image](data:image/png;base64,${DATA_PNG})`,
+    `$\\style{background:url(${own("mathjax")})}{y}$`,
+    "```mermaid\n" + mermaidProbe(own("mermaid")) + "\n```",
   ].join("\n\n");
 }
 
+/** A Mermaid diagram with an image node: Mermaid lays diagrams out in the
+ * page, where the image loads under the page's policy. */
+function mermaidProbe(url: string): string {
+  return `flowchart LR\n  M@{ img: "${url}", label: "m", pos: "t", w: 30, h: 30 }`;
+}
+
 /** Vega-Lite and Vega outputs that load their data from the playground's own
- * origin, with a PNG to fall back to. */
-function vegaOutputs(where: string): Record<string, unknown>[] {
+ * origin, with a PNG to fall back to, and a Mermaid output with an image on
+ * it. */
+function fetchingOutputs(where: string): Record<string, unknown>[] {
   const data = (what: string) => `/own-origin-probe.json?vega-${where}-${what}`;
   return [
+    {
+      "text/vnd.mermaid": mermaidProbe(
+        `/own-origin-probe.png?mermaid-output-${where}`,
+      ),
+      "text/plain": "mermaid-probe",
+    },
     {
       "application/vnd.vegalite.v5+json": {
         data: { url: data("lite") },
@@ -465,7 +480,7 @@ function vegaOutputs(where: string): Record<string, unknown>[] {
 }
 
 /** A notebook someone shares: a Markdown cell, and a code cell whose stored
- * outputs are Markdown and Vega, and whose code makes them again. */
+ * outputs are Markdown, Vega and Mermaid, and whose code makes them again. */
 function markdownNotebook(host: string): unknown {
   return {
     ...TRUSTED_CLAIM_NOTEBOOK,
@@ -481,13 +496,13 @@ function markdownNotebook(host: string): unknown {
         metadata: {},
         outputs: [
           { "text/markdown": markdownProbe(host, "stored") },
-          ...vegaOutputs("stored"),
+          ...fetchingOutputs("stored"),
         ].map((data) => ({ output_type: "display_data", metadata: {}, data })),
         source: [
           "from IPython.display import Markdown, display\n",
           `display(Markdown(${JSON.stringify(markdownProbe(host, "run"))}))\n`,
           `for b in ${
-            JSON.stringify(vegaOutputs("run"))
+            JSON.stringify(fetchingOutputs("run"))
           }: display(b, raw=True)\n`,
         ],
       },
