@@ -14,7 +14,9 @@
  * The counters live in one SharedArrayBuffer the page makes and hands to
  * each Worker it, or a Worker, starts: as the first message, which the
  * census in the Worker takes before the Worker's own listeners see it. So a
- * reservation in any realm is checked synchronously against the tab's total,
+ * reservation in any realm (once its counters arrived; before that, against
+ * its own total, and `attach` counts what got through) is checked
+ * synchronously against the tab's total,
  * as iOS WebKit checks it against the one WebContent process's cap of about
  * 4 GiB (src/guest_memory_reservation.ts): a shared memory that would take
  * the live total past {@link CensusConfig.capBytes} is refused with the
@@ -62,7 +64,7 @@ export type CensusReading = {
   /** The most reserved at once while no reservation probe ran. */
   peakReservedBytes: number;
   /** Reservations refused at the cap, the probe's own left out; each is
-   *  logged as a `[census] simulated iOS cap` warning in its realm. */
+   *  logged as a `[census]` warning in its realm. */
   refused: number;
   /** Per realm kind: page, coordinator, guest, probe, other. */
   kinds: Record<string, RealmTotals>;
@@ -135,6 +137,12 @@ export function allocationCensus(config: CensusConfig): void {
     const overCap = early.live > 0 && live > capPages ? 1 : 0;
     if (shared[at(S_KIND)] !== 3) {
       Atomics.add(shared, H_REFUSED, early.refused + overCap);
+      if (overCap) {
+        console.warn(
+          `[census] simulated iOS cap: passed by reservations made before ` +
+            `this realm's counters arrived`,
+        );
+      }
     }
     add(S_BIG, early.big);
     add(S_BIG_KIB, early.bigKiB);
@@ -237,7 +245,10 @@ export function allocationCensus(config: CensusConfig): void {
       early.live -= pages;
       return;
     }
-    // A terminated Worker's pages were released by `terminate()`.
+    // A terminated Worker's pages were released by `terminate()`, and so
+    // are the probe's: its memories become garbage the moment it answers,
+    // while the coordinator is terminating it.
+    if (Atomics.load(shared, at(S_KIND)) === 3) return;
     if (Atomics.load(shared, at(S_DEAD)) !== 0) return;
     Atomics.sub(shared, at(S_LIVE), pages);
     Atomics.sub(shared, H_LIVE, pages);
@@ -352,7 +363,8 @@ export function allocationCensus(config: CensusConfig): void {
       }
       // Assumes a Worker is not terminated while it is reserving or
       // releasing: only the coordinator (never terminated) and the probe
-      // (terminated after it answers) reserve here. A Worker cut off
+      // (which reserves only before it answers, and whose releases are
+      // left to this) reserve here. A Worker cut off
       // between its slot update and the tab total's could count its pages
       // twice or not at all.
       override terminate() {
