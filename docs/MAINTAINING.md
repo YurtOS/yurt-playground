@@ -131,6 +131,18 @@ every snapshot (`YURT_INSTALL_SNAPSHOT=1`), and a problem with one never fails
 the deploy. CI's jupyterlite scene fetches only the desktop's
 (`YURT_INSTALL_SNAPSHOT=snapshot`): the notebook cannot start without it.
 
+Never add `&platform` to a capture URL. The capture kind alone (`capture`,
+`capture-tablet`, `capture-go`, `capture-playwright`) picks what is captured,
+and every kind is captured on a desktop page, at desktop size, as
+`release-snapshot.ts` runs it (`?start&snapshot=capture-tablet`). A phone or
+tablet page (`&platform=phone|tablet`, or a real phone or tablet) is shell-only
+(`noPython` in `src/page.ts`), so the capture's Python install never starts: the
+page refuses such a capture and says why (#356); before that it booted to
+"running" and stopped there without a word. Typical times for a by-hand
+`?start&snapshot=capture-tablet` in desktop Chrome: about 67 s to a 78 MB zip,
+of which about 32 s installing, 9 s precompiling and 4 s sealing; the desktop
+`?start&snapshot=capture` took about 110 s for 143 MB.
+
 To try another snapshot without a pin or a deploy, capture and upload it
 locally:
 
