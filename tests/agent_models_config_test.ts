@@ -1,9 +1,11 @@
 import { assertEquals } from "@std/assert";
 import {
-  AGENT_MODELS_URL,
+  AGENT_MODELS_PATH,
   fetchAgentModels,
   parseAgentModels,
 } from "../src/agent_models_config.ts";
+import { siteUrl } from "../src/site_url.ts";
+import { SNAPSHOT_SOURCE } from "../src/snapshot_source.ts";
 
 Deno.test("the config is read per platform, keeping only well-formed entries", () => {
   assertEquals(
@@ -42,17 +44,37 @@ Deno.test("a file that is not an object is no config", () => {
   }
 });
 
-Deno.test("the config is config/agent-models.json on main", () => {
-  assertEquals(
-    AGENT_MODELS_URL,
-    "https://raw.githubusercontent.com/YurtOS/yurt-playground/main/config/agent-models.json",
-  );
+Deno.test("the page reads the list from its own site, never from main (#368)", async () => {
+  const original = globalThis.fetch;
+  const asked: string[] = [];
+  try {
+    globalThis.fetch = (input) => {
+      asked.push(String(input instanceof Request ? input.url : input));
+      return Promise.resolve(Response.json({}));
+    };
+    await fetchAgentModels();
+  } finally {
+    globalThis.fetch = original;
+  }
+  // The file the deploy built in (scripts/build-static.ts), beside the
+  // bundles: a merge to main changes nothing a visitor gets.
+  assertEquals(asked, [siteUrl(AGENT_MODELS_PATH)]);
+  assertEquals(AGENT_MODELS_PATH, "config/agent-models.json");
+  assertEquals(asked[0].startsWith(SNAPSHOT_SOURCE), false);
 });
 
-Deno.test("a list that cannot be read now is the last one read; never read, none", async () => {
+Deno.test("a list that cannot be read now is none, even after one was read", async () => {
   const original = globalThis.fetch;
   try {
-    localStorage.removeItem("yurt-agent-models");
+    globalThis.fetch = () =>
+      Promise.resolve(
+        Response.json({ tablet: { openrouter: [{ id: "a/b" }] } }),
+      );
+    assertEquals(await fetchAgentModels(), {
+      tablet: { openrouter: [{ id: "a/b", label: "a/b" }] },
+    });
+    // No list kept from an earlier load: what the page offers is the
+    // deployed file's, or nothing.
     globalThis.fetch = () =>
       Promise.resolve(new Response("nope", { status: 404 }));
     assertEquals(await fetchAgentModels(), undefined);
@@ -60,20 +82,10 @@ Deno.test("a list that cannot be read now is the last one read; never read, none
     assertEquals(await fetchAgentModels(), undefined);
     globalThis.fetch = () => Promise.reject(new TypeError("offline"));
     assertEquals(await fetchAgentModels(), undefined);
-    globalThis.fetch = () =>
-      Promise.resolve(
-        Response.json({ tablet: { openrouter: [{ id: "a/b" }] } }),
-      );
-    const read = { tablet: { openrouter: [{ id: "a/b", label: "a/b" }] } };
-    assertEquals(await fetchAgentModels(), read);
-    globalThis.fetch = () => Promise.reject(new TypeError("offline"));
-    assertEquals(await fetchAgentModels(), read);
-    globalThis.fetch = () =>
-      Promise.resolve(new Response("nope", { status: 503 }));
-    assertEquals(await fetchAgentModels(), read);
+    globalThis.fetch = () => Promise.resolve(Response.json([]));
+    assertEquals(await fetchAgentModels(), undefined);
   } finally {
     globalThis.fetch = original;
-    localStorage.removeItem("yurt-agent-models");
   }
 });
 

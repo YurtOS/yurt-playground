@@ -27,6 +27,7 @@ import {
   SLIM_IMAGE_NAME,
 } from "../src/integrity.ts";
 import { loadPins, type Pins } from "../src/pins.ts";
+import { AGENT_MODELS_PATH } from "../src/agent_models_config.ts";
 import { checkSnapshotFile, kernelRootIsStore } from "./lib/snapshot_file.ts";
 import {
   PREVIEW_SNAPSHOT_KINDS,
@@ -239,6 +240,15 @@ export async function buildStaticSite(
   await copyTree(jupyter, join(distDir, JUPYTER_DIR));
   // The page reads the pins for its hash checks, then the blobs.
   await copyFiles(["pins.json", "yurt_kernel.wasm"], artifactsDir, distDir);
+  // The agent's model list ships with the page it belongs to: only a deploy
+  // changes it (src/agent_models_config.ts, #368).
+  await Deno.mkdir(join(distDir, dirname(AGENT_MODELS_PATH)), {
+    recursive: true,
+  });
+  await Deno.copyFile(
+    join(repoRoot, AGENT_MODELS_PATH),
+    join(distDir, AGENT_MODELS_PATH),
+  );
   // Cloudflare Pages refuses files over 25 MiB; the image ships in parts.
   // The full image stays in the site: with no slim pin, the suspend/resume
   // kernel stages its Python standard library from it (on a slim site it
