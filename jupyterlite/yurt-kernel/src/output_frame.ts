@@ -106,18 +106,17 @@ async function makeHead(): Promise<string> {
 }
 
 /**
- * The output without its `<meta http-equiv>` pragmas. A refresh to an outside
- * URL is refused by `frame-src 'none'` anyway, but one to the frame itself
- * (`content="0"`) would reload it forever, and with it the CPU. The parse is
- * inert: nothing in a template loads or runs.
+ * The output with its `<meta http-equiv>` pragmas made inert. A refresh to an
+ * outside URL is refused by `frame-src 'none'` anyway, but one to the frame
+ * itself (`content="0"`) would reload it forever, and with it the CPU. No
+ * parse: a check that parses differently from the frame (a template, with
+ * scripting off) misses `<col><meta ...>` and `<noscript>` tricks. The
+ * tokenizer makes the attribute name only from this literal ASCII text, so
+ * renaming every occurrence leaves no pragma; visible text that says
+ * "http-equiv" changes too.
  */
 function withoutPragmas(source: string): string {
-  const template = document.createElement("template");
-  template.innerHTML = source;
-  const pragmas = template.content.querySelectorAll("meta[http-equiv]");
-  if (pragmas.length === 0) return source;
-  for (const meta of Array.from(pragmas)) meta.remove();
-  return template.innerHTML;
+  return source.replace(/http-equiv/gi, "data-inert-http-equiv");
 }
 
 /** A `text/html` output in a sandboxed frame sized to its content. */

@@ -230,33 +230,47 @@ async function checkHtmlOutputIsolation(page: Page): Promise<void> {
     );
   }
   await waitForLastOutput(page, "refresh-probe done", 1_000);
-  await page.locator(".jp-OutputArea-output iframe").last().waitFor({
-    timeout: 1_000,
-  }).catch(() => fail("the refresh probe's HTML output has no frame"));
+  await page.locator(".jp-CodeCell:has(.jp-OutputArea-output)").last()
+    .locator("iframe").first()
+    .waitFor({ timeout: 1_000 })
+    .catch(() => fail("the refresh probe's HTML output has no frame"));
 
-  // A refresh to the frame itself would reload it forever; and the frame's
-  // own policy holds where the page's would not (Chrome inherits the page's
-  // 'self' for scripts; WebKit loaded an outside image from such a frame).
+  // A refresh to the frame itself would reload it forever, also when markup
+  // parses differently in the frame than in a check (a <col>, or <noscript>
+  // with scripting on). And the frame's own policy holds where the page's
+  // would not (WebKit loaded an outside image from such a frame).
   const requested: string[] = [];
   // Finished, not issued: Chrome reports a load that its CSP then refuses.
-  page.on("requestfinished", (request) => {
+  const onRequest = (request: { url(): string }) => {
     if (request.url().includes("frame-probe")) requested.push(request.url());
-  });
+  };
   let navigations = 0;
-  page.on("framenavigated", (frame) => {
+  const onNavigation = (frame: unknown) => {
     if (frame !== page.mainFrame()) navigations++;
-  });
+  };
+  page.on("requestfinished", onRequest);
+  page.on("framenavigated", onNavigation);
+  const self = '<meta http-equiv="refresh" content="0">';
+  const reloads = [
+    `${self}<script src="/jupyter/config-utils.js?frame-probe"></script><img src="https://leak.example/?frame-probe">`,
+    `<col>${self}`,
+    `<noscript><style></noscript>${self}</style></noscript>`,
+  ];
   await runNewCell(
     page,
-    `from IPython.display import HTML; display(HTML('<meta http-equiv="refresh" content="0"><script src="/jupyter/config-utils.js?frame-probe"></script><img src="https://leak.example/?frame-probe">reload-probe')); print("reload-probe", "done")`,
+    `from IPython.display import HTML\nfor h in ${
+      JSON.stringify(reloads)
+    }: display(HTML(h))\nprint("reload-probe", "done")`,
   );
   await waitForLastOutput(page, "reload-probe done", 60_000);
   await page.waitForTimeout(1_000);
   navigations = 0;
   await page.waitForTimeout(2_000);
+  page.off("requestfinished", onRequest);
+  page.off("framenavigated", onNavigation);
   if (navigations > 0 || requested.length > 0 || leaks.length > 0) {
     fail(
-      `an output frame reloaded itself ${navigations} times in 2 s; loaded: ${[
+      `output frames reloaded themselves ${navigations} times in 2 s; loaded: ${[
         ...new Set([...requested, ...leaks]),
       ]}`,
     );
