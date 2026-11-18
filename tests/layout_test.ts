@@ -453,7 +453,7 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
 
 Deno.test("the page's instructions hold outside Chrome and without a token", async () => {
   // yurt-playground#154: `yurt pull` reads a public release now, and the
-  // proof is read in Safari and Firefox as well.
+  // proof is read in Edge and Safari as well.
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
   );
