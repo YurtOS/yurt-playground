@@ -47,7 +47,7 @@ import { CodeCell } from "@jupyterlab/cells";
 import { IRenderMimeRegistry, MimeModel } from "@jupyterlab/rendermime";
 import type { IRenderMime } from "@jupyterlab/rendermime-interfaces";
 import { Widget } from "@lumino/widgets";
-import { refuseUrlsIn } from "./markdown_urls";
+import { refuseUrlsIn, sanitizeKeepingUrls } from "./markdown_urls";
 
 const OUTPUT_FRAME_SANDBOX = "allow-popups allow-popups-to-escape-sandbox";
 
@@ -151,7 +151,10 @@ class OutputFrame extends Widget implements IRenderMime.IRenderer {
 
   async renderModel(model: IRenderMime.IMimeModel): Promise<void> {
     const source = String(model.data[this._mimeType]);
-    this._source = model.trusted ? source : this._sanitizer.sanitize(source);
+    // Sanitized as JupyterLab does, URLs kept: the frame refuses them.
+    this._source = model.trusted
+      ? source
+      : sanitizeKeepingUrls(this._sanitizer, source);
     this.node.style.height = `${firstHeight(this._source)}px`;
     this.render();
   }

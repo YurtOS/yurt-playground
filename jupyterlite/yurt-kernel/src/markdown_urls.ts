@@ -108,10 +108,23 @@ export function refuseUrls(html: string): string {
  * use it.
  */
 export function refuseUrlsIn(sanitizer: IRenderMime.ISanitizer): void {
-  if (patched.has(sanitizer)) return;
-  patched.add(sanitizer);
+  if (unpatched.has(sanitizer)) return;
   const sanitize = sanitizer.sanitize.bind(sanitizer);
+  unpatched.set(sanitizer, sanitize);
   sanitizer.sanitize = (dirty, options) => refuseUrls(sanitize(dirty, options));
 }
 
-const patched = new WeakSet<IRenderMime.ISanitizer>();
+/** `sanitizer` as JupyterLab made it, URLs kept: only for markup that goes
+ * into an output frame, whose own policy and sandbox refuse them. */
+export function sanitizeKeepingUrls(
+  sanitizer: IRenderMime.ISanitizer,
+  dirty: string,
+): string {
+  return (unpatched.get(sanitizer) ?? sanitizer.sanitize)(dirty);
+}
+
+/** Each patched sanitizer's own `sanitize`. */
+const unpatched = new WeakMap<
+  IRenderMime.ISanitizer,
+  IRenderMime.ISanitizer["sanitize"]
+>();
