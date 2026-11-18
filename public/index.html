@@ -1487,11 +1487,11 @@ yurt stop web</pre>
                   cookies. Previews and the desktop app count nothing.
                 </li>
                 <li>
-                  <strong>GitHub</strong> serves the package repository, whose
-                  index the page reads when the sandbox starts and from which it
-                  installs packages, and the agent's model list, read at every
-                  page load. A shared snapshot link also asks GitHub which
-                  snapshots this repository published.
+                  <strong>GitHub</strong> serves the package repository, from
+                  which the page reads the index and installs packages, and the
+                  agent's model list, read at every page load. A shared snapshot
+                  link also asks GitHub which snapshots this repository
+                  published, then downloads that snapshot from it.
                 </li>
                 <li>
                   <strong>Hugging Face</strong> serves the in-tab model's
@@ -1519,9 +1519,10 @@ yurt stop web</pre>
                 files live in the tab's memory. What the page keeps between
                 visits stays in this browser's storage: downloaded packages,
                 model weights and snapshot parts, a sealed agent session and its
-                chat. Clearing this site's data in the browser removes them. The
-                desktop app is different: its sandbox runs natively on your
-                machine and has the network.
+                chat, your OpenRouter key and the last model list. Clearing this
+                site's data in the browser removes them. The desktop app is
+                different: its sandbox runs natively on your machine and has the
+                network.
               </p>
             </section>
             <section

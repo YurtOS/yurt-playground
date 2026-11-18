@@ -101,11 +101,11 @@ you choose otherwise. What does leave it, and where it goes:
   which sets no cookies (`src/web_analytics.ts`); previews, local serving and
   the desktop app do not.
 - **GitHub** (`raw.githubusercontent.com`) serves the package repository,
-  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), whose index
-  the page reads when the sandbox starts and from which it installs packages,
-  and the agent's model list, `config/agent-models.json` in this repository,
-  read at every page load. A shared snapshot link (`?snapshot=<id>`) also asks
-  `api.github.com` which snapshots this repository published.
+  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), from which
+  the page reads the index and installs packages, and the agent's model list,
+  `config/agent-models.json` in this repository, read at every page load. A
+  shared snapshot link (`?snapshot=<id>`) also asks `api.github.com` which
+  snapshots this repository published, then downloads that snapshot from it.
 - **Hugging Face** serves the in-tab model's weights, downloaded when you start
   the agent with that model. The model runs in the tab.
 - **OpenRouter**, only when you choose an OpenRouter model for the agent: your
@@ -123,8 +123,8 @@ desktop app is different: its sandbox runs natively on your machine and has the
 network. The sandbox's files live in the tab's memory. What the page keeps
 between visits stays in this browser's storage (Cache Storage, IndexedDB, the
 origin private file system and localStorage): downloaded packages, model weights
-and snapshot parts, a sealed agent session and its chat. Clearing the site's
-data in the browser removes them.
+and snapshot parts, a sealed agent session and its chat, your OpenRouter key and
+the last model list. Clearing the site's data in the browser removes them.
 
 ## Driving the sandbox from a program
 

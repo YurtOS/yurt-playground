@@ -113,8 +113,9 @@ Deno.test("_headers detaches the strict policy before the JupyterLite one", () =
 
 Deno.test("the page's privacy note names whoever each connect-src source belongs to", async () => {
   // Every other origin the page may reach, with the analytics beacon on as
-  // in production: a new one fails here until the note (and README.md's
-  // Privacy section) says who it is.
+  // in production: a new one fails here until the page's note says who it
+  // is. README.md's Privacy section says the same, and is kept in step by
+  // hand (a test reading Markdown runs in ci.yml's docs-only checks).
   const owners: [RegExp, string][] = [
     [/^https:\/\/(huggingface\.co|\*\.hf\.co)$/, "Hugging Face"],
     [/^https:\/\/openrouter\.ai$/, "OpenRouter"],
