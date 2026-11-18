@@ -2,6 +2,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   plannedPlaygroundHostState,
   playgroundHostState,
+  restoreHostState,
 } from "../src/boot.ts";
 import {
   GUEST_MEMORY_RESERVATION_BYTES,
@@ -15,6 +16,8 @@ import {
   type ProbeWorker,
   RESERVATION_HEADROOM_BYTES,
   reservationForAvailableBytes,
+  RESTORE_KERNEL_HEADROOM_BYTES,
+  SMALL_CAP_KERNEL_MEMORY_BYTES,
   spawnProbeWorker,
   UNPROBED_RESERVATION_BYTES,
   WANTED_PROCESSES,
@@ -95,7 +98,10 @@ Deno.test("V8 and SpiderMonkey never probe and keep the whole sandbox budget", a
   let probed = false;
   const state = await plannedPlaygroundHostState(CHROME_UA, () => {
     probed = true;
-    return Promise.resolve({ reservationBytes: 32 * MIB });
+    return Promise.resolve({
+      reservationBytes: 32 * MIB,
+      kernelMemoryBytes: KERNEL_MEMORY_RESERVATION_BYTES,
+    });
   });
   assertEquals(probed, false);
   assertEquals(state, playgroundHostState(CHROME_UA));
@@ -318,4 +324,93 @@ Deno.test("the static site ships the probe script at the path boot asks for", ()
     new URL("../public/memory-probe.html", import.meta.url),
   );
   assert(page.includes('src="./memory-probe.js"'));
+});
+
+Deno.test("an iPad or iPhone tab gives its kernel 512 MiB; a desktop or unmeasured tab keeps the default", async () => {
+  // yurtos-kernel#4239: the kernel's fixed 1 GiB was a quarter of an iOS
+  // tab's ~4 GiB cap, and its snapshots' kernels use about 250 MiB of it.
+  for (const ua of [IPAD_UA, IPHONE_UA, IOS_CHROME_UA, IPAD_DESKTOP_UA]) {
+    const state = await plannedPlaygroundHostState(
+      ua,
+      () => planGuestMemory(() => Promise.resolve(IOS_EMPTY_TAB_BYTES)),
+    );
+    assertEquals(
+      state.kernelMemoryMaximumBytes,
+      SMALL_CAP_KERNEL_MEMORY_BYTES,
+      ua,
+    );
+    // The guests are sized as before: the half GiB is headroom.
+    assertEquals(
+      state.guestMemoryReservationBytes,
+      MIN_GUEST_MEMORY_RESERVATION_BYTES,
+      ua,
+    );
+  }
+  assertEquals(SMALL_CAP_KERNEL_MEMORY_BYTES, 512 * MIB);
+  // macOS Safari: the probe reached its limit, so the cap is large and the
+  // kernel host's default (1 GiB) stands; a Mac's desktop snapshot holds
+  // more kernel memory than 512 MiB.
+  const desktop = await plannedPlaygroundHostState(
+    IPAD_DESKTOP_UA,
+    () => planGuestMemory(() => Promise.resolve(PROBE_LIMIT_BYTES)),
+  );
+  assertEquals(desktop.kernelMemoryMaximumBytes, undefined);
+  // No probe: unmeasured, so no smaller kernel.
+  const unprobed = await plannedPlaygroundHostState(
+    IPAD_UA,
+    () => planGuestMemory(() => Promise.resolve(undefined)),
+  );
+  assertEquals(unprobed.kernelMemoryMaximumBytes, undefined);
+  // V8 and SpiderMonkey never set it.
+  assertEquals(
+    playgroundHostState(CHROME_UA).kernelMemoryMaximumBytes,
+    undefined,
+  );
+});
+
+Deno.test("a restore whose sealed kernel would not fit the planned 512 MiB with room to grow uses the default", () => {
+  // A saved session keeps the size it was sealed at (under a 1 GiB kernel,
+  // before this tab planned 512 MiB). A host refuses an image larger than
+  // its maximum, and the page's fallbacks then discard the saved state.
+  const planned = playgroundHostState(
+    IPAD_UA,
+    MIN_GUEST_MEMORY_RESERVATION_BYTES,
+    SMALL_CAP_KERNEL_MEMORY_BYTES,
+  );
+  const fits = SMALL_CAP_KERNEL_MEMORY_BYTES - RESTORE_KERNEL_HEADROOM_BYTES;
+  assertEquals(
+    restoreHostState(planned, fits).kernelMemoryMaximumBytes,
+    SMALL_CAP_KERNEL_MEMORY_BYTES,
+  );
+  for (const image of [fits + 1, 600 * MIB, 1000 * MIB]) {
+    const state = restoreHostState(planned, image);
+    assertEquals(state.kernelMemoryMaximumBytes, undefined, String(image));
+    // Everything else is kept: the guests' reservation in particular.
+    assertEquals(
+      state.guestMemoryReservationBytes,
+      planned.guestMemoryReservationBytes,
+    );
+  }
+  // A plan with no smaller maximum is untouched.
+  const desktop = playgroundHostState(IPAD_DESKTOP_UA);
+  assertEquals(restoreHostState(desktop, 900 * MIB), desktop);
+});
+
+Deno.test("the tablet snapshot an iPad or iPhone restores fits the 512 MiB kernel with room to grow", async () => {
+  // Every iOS tab restores the tablet snapshot (#352). Should a train grow
+  // its kernel past this, iOS would quietly fall back to the 1 GiB default.
+  const pins = JSON.parse(
+    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
+  );
+  const sealed = pins.tabletSnapshot?.memoryBytes;
+  assert(
+    typeof sealed === "number" && sealed > 0,
+    "pins.tabletSnapshot.memoryBytes",
+  );
+  assert(
+    sealed + RESTORE_KERNEL_HEADROOM_BYTES <= SMALL_CAP_KERNEL_MEMORY_BYTES,
+    `tablet snapshot kernel ${(sealed / MIB).toFixed(0)} MiB + ` +
+      `${RESTORE_KERNEL_HEADROOM_BYTES / MIB} MiB > ` +
+      `${SMALL_CAP_KERNEL_MEMORY_BYTES / MIB} MiB`,
+  );
 });
