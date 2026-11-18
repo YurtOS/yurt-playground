@@ -17,7 +17,9 @@
  *
  * - the coordinator's buffers of 1 MiB or more during the first python3
  *   exec stay under {@link FIRST_EXEC_COORDINATOR_BUDGET_BYTES};
- * - no reservation was refused and the live total never reached the cap.
+ * - no shared-memory reservation was refused at the simulated cap: the
+ *   census admits one only while the live total stays under it, so a
+ *   refusal is how reaching the cap shows (the peak is logged).
  *
  * Run: `deno run --allow-all tests/memory_budget_e2e.ts` (needs the kernel
  * checkout, the pinned artifacts and the pinned tablet snapshot in
@@ -126,7 +128,12 @@ function exec(page: Page, cmd: string): Promise<Result> {
       typeof b === "string" ? b : new TextDecoder().decode(b);
     let result;
     try {
-      result = await yurt.exec(cmd);
+      result = await Promise.race([
+        yurt.exec(cmd),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("no answer in 120 s")), 120_000)
+        ),
+      ]);
     } catch (error) {
       return { code: -1, stdout: "", stderr: String(error) };
     }
@@ -277,7 +284,11 @@ if (import.meta.main) {
 
     // A failed command above leaves no REPL to wait for.
     if (problems.length > 0) {
-      throw new Error(`memory budget: ${problems.join("; ")}`);
+      const now = await census(page);
+      throw new Error(
+        `memory budget: ${problems.join("; ")} ` +
+          `(${now.refused} reservations refused at the simulated cap)`,
+      );
     }
     // The REPL, typed into the terminal as a person would.
     await page.locator("#term").click();
@@ -306,12 +317,6 @@ if (import.meta.main) {
         `${end.refused} reservations refused at the simulated cap: ${
           JSON.stringify(logs.filter((l) => l.includes("simulated iOS cap")))
         }`,
-      );
-    }
-    if (end.peakReservedBytes >= SIMULATED_CAP_BYTES) {
-      problems.push(
-        `live reservations reached ${mib(end.peakReservedBytes)}, ` +
-          `the cap is ${mib(SIMULATED_CAP_BYTES)}`,
       );
     }
     if (problems.length > 0) {

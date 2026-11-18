@@ -4,8 +4,8 @@
  * simulated iOS cap on shared `WebAssembly.Memory` reservations.
  *
  * {@link allocationCensus} runs first in every realm: in the page through
- * `addInitScript`, in each Worker prepended to its script by a route
- * ({@link censusSource}). It counts, per realm, the buffers of 1 MiB or more
+ * `addInitScript`, in each Worker in front of its script, as the scene's
+ * server serves it ({@link censusSource}). It counts, per realm, the buffers of 1 MiB or more
  * made by the `ArrayBuffer`, `SharedArrayBuffer` and typed-array
  * constructors (a view on an existing buffer allocates nothing and is not
  * counted) and by `slice`, and every shared memory's maximum, which an
@@ -18,15 +18,21 @@
  * as iOS WebKit checks it against the one WebContent process's cap of about
  * 4 GiB (src/guest_memory_reservation.ts): a shared memory that would take
  * the live total past {@link CensusConfig.capBytes} is refused with the
- * engine's RangeError.
+ * engine's RangeError. Room is taken with one compare-and-swap on that
+ * total, so two realms cannot both take the last of it.
  *
  * A reservation stays live until its realm collects the memory (a WeakRef,
- * swept on every reservation and by a FinalizationRegistry) or the Worker
- * that made it is terminated. Before refusing, the census runs a full GC
- * when the browser exposes one (`--js-flags=--expose-gc`) and sweeps again,
- * as JavaScriptCore collects before it refuses a memory. A memory another
- * realm still holds after its maker dropped it counts as released: the
- * total can only under-count such a memory, never invent one.
+ * swept by a FinalizationRegistry) or the Worker that made it is
+ * terminated. When a reservation would not fit, the census first runs a
+ * full GC if the browser exposes one (`--js-flags=--expose-gc`) and sweeps,
+ * as JavaScriptCore collects before it refuses a memory.
+ *
+ * Limits: a memory another realm still holds after its maker dropped it
+ * counts as released, so the total can under-count such a memory but never
+ * invents one. Buffers made by `Response.arrayBuffer()`, `Blob.arrayBuffer()`,
+ * structured clone (`postMessage`, `structuredClone`) or a typed array's
+ * `map`/`filter` are not counted: a copy moved to one of those would not
+ * show here.
  */
 
 /** What every realm's census is started with. */
@@ -62,15 +68,6 @@ export type CensusReading = {
   kinds: Record<string, RealmTotals>;
 };
 
-/** Realm kinds, by the script a Worker runs. */
-export const REALM_KINDS = [
-  "page",
-  "coordinator",
-  "guest",
-  "probe",
-  "other",
-] as const;
-
 /**
  * The census, installed in the realm it runs in. Self-contained: it is
  * also serialized with `toString()` into each Worker's script.
@@ -86,7 +83,7 @@ export function allocationCensus(config: CensusConfig): void {
   const H_NEXT = 0, H_LIVE = 1, H_PEAK = 2, H_REFUSED = 3, H_PROBES = 4;
   const SLOTS = 16, STRIDE = 8, MAX_REALMS = 1000;
   const S_KIND = 0, S_LIVE = 1, S_BIG = 2, S_BIG_KIB = 3, S_MEMS = 4;
-  const S_BIG_MAX_KIB = 5;
+  const S_BIG_MAX_KIB = 5, S_DEAD = 6;
   const NativeSAB = SharedArrayBuffer;
   const isPage = typeof (globalThis as { document?: unknown }).document ===
     "object";
@@ -221,8 +218,14 @@ export function allocationCensus(config: CensusConfig): void {
   const NativeMemory = WebAssembly.Memory;
   const held: { ref: WeakRef<object>; pages: number }[] = [];
   const release = (pages: number) => {
-    add(S_LIVE, -pages);
-    if (shared !== undefined) Atomics.sub(shared, H_LIVE, pages);
+    if (shared === undefined) {
+      early.live -= pages;
+      return;
+    }
+    // A terminated Worker's pages were released by `terminate()`.
+    if (Atomics.load(shared, at(S_DEAD)) !== 0) return;
+    Atomics.sub(shared, at(S_LIVE), pages);
+    Atomics.sub(shared, H_LIVE, pages);
   };
   const sweep = () => {
     for (let i = held.length - 1; i >= 0; i--) {
@@ -235,6 +238,25 @@ export function allocationCensus(config: CensusConfig): void {
   const collected = new FinalizationRegistry(() => sweep());
   const liveNow = () =>
     shared === undefined ? early.live : Atomics.load(shared, H_LIVE);
+  /** Take `pages` from the tab's total if they fit under the cap: one
+   *  compare-and-swap, so two realms cannot both take the last room. */
+  const admit = (pages: number): boolean => {
+    if (shared === undefined) {
+      if (early.live + pages > capPages) return false;
+      early.live += pages;
+      return true;
+    }
+    for (;;) {
+      const seen = Atomics.load(shared, H_LIVE);
+      if (seen + pages > capPages) return false;
+      if (
+        Atomics.compareExchange(shared, H_LIVE, seen, seen + pages) === seen
+      ) {
+        Atomics.add(shared, at(S_LIVE), pages);
+        return true;
+      }
+    }
+  };
   const gc = (globalThis as { gc?: () => void }).gc;
   const Memory = function (
     this: unknown,
@@ -243,16 +265,19 @@ export function allocationCensus(config: CensusConfig): void {
     if (new.target === undefined) {
       throw new TypeError("WebAssembly.Memory must be called with new");
     }
-    if (descriptor?.shared !== true) {
+    if (!descriptor?.shared) {
       return Reflect.construct(NativeMemory, [descriptor], new.target);
     }
     const pages = Number(descriptor.maximum ?? descriptor.initial);
-    sweep();
-    if (liveNow() + pages > capPages && gc !== undefined) {
+    // Collect only when it would not fit: a `deref` before the GC in the
+    // same job would keep its target alive through that GC.
+    let admitted = admit(pages);
+    if (!admitted && gc !== undefined) {
       gc();
       sweep();
+      admitted = admit(pages);
     }
-    if (liveNow() + pages > capPages) {
+    if (!admitted) {
       // The probe measures the cap by reaching it: its refusal is its answer.
       const probe = shared !== undefined && shared[at(S_KIND)] === 3;
       if (shared !== undefined && !probe) Atomics.add(shared, H_REFUSED, 1);
@@ -262,14 +287,18 @@ export function allocationCensus(config: CensusConfig): void {
       if (!probe) console.warn(`[census] ${why}`);
       throw new RangeError(`WebAssembly.Memory(): ${why}`);
     }
-    const memory = Reflect.construct(
-      NativeMemory,
-      [descriptor],
-      new.target,
-    ) as WebAssembly.Memory;
+    let memory: WebAssembly.Memory;
+    try {
+      memory = Reflect.construct(
+        NativeMemory,
+        [descriptor],
+        new.target,
+      ) as WebAssembly.Memory;
+    } catch (error) {
+      release(pages);
+      throw error;
+    }
     add(S_MEMS, 1);
-    add(S_LIVE, pages);
-    if (shared !== undefined) Atomics.add(shared, H_LIVE, pages);
     notePeak();
     held.push({ ref: new WeakRef(memory), pages });
     collected.register(memory, null);
@@ -309,6 +338,7 @@ export function allocationCensus(config: CensusConfig): void {
         super.terminate();
         if (shared === undefined || this.#slot < 0) return;
         const base = SLOTS + this.#slot * STRIDE;
+        Atomics.store(shared, base + S_DEAD, 1);
         Atomics.sub(shared, H_LIVE, Atomics.exchange(shared, base + S_LIVE, 0));
         if (Atomics.load(shared, base + S_KIND) === 3) {
           Atomics.sub(shared, H_PROBES, 1);
