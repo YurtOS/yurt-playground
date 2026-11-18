@@ -92,7 +92,16 @@ export function allocationCensus(config: CensusConfig): void {
   let shared: Int32Array | undefined;
   let slot = -1;
   // What this realm did before its slot arrived.
-  const early = { live: 0, big: 0, bigKiB: 0, bigMaxKiB: 0, mems: 0 };
+  // Before then, a reservation is checked against this realm's own total
+  // only; `attach` counts what that let through.
+  const early = {
+    live: 0,
+    big: 0,
+    bigKiB: 0,
+    bigMaxKiB: 0,
+    mems: 0,
+    refused: 0,
+  };
   const at = (field: number) => SLOTS + slot * STRIDE + field;
   const add = (field: number, n: number) => {
     if (shared === undefined) {
@@ -120,7 +129,13 @@ export function allocationCensus(config: CensusConfig): void {
     shared = new Int32Array(buffer);
     slot = index;
     add(S_LIVE, early.live);
-    Atomics.add(shared, H_LIVE, early.live);
+    const live = Atomics.add(shared, H_LIVE, early.live) + early.live;
+    // Fail closed: a reservation let through before the tab's total was
+    // known, that takes it past the cap, counts as a refusal.
+    const overCap = early.live > 0 && live > capPages ? 1 : 0;
+    if (shared[at(S_KIND)] !== 3) {
+      Atomics.add(shared, H_REFUSED, early.refused + overCap);
+    }
     add(S_BIG, early.big);
     add(S_BIG_KIB, early.bigKiB);
     add(S_MEMS, early.mems);
@@ -280,7 +295,8 @@ export function allocationCensus(config: CensusConfig): void {
     if (!admitted) {
       // The probe measures the cap by reaching it: its refusal is its answer.
       const probe = shared !== undefined && shared[at(S_KIND)] === 3;
-      if (shared !== undefined && !probe) Atomics.add(shared, H_REFUSED, 1);
+      if (shared === undefined) early.refused++;
+      else if (!probe) Atomics.add(shared, H_REFUSED, 1);
       const why = `simulated iOS cap: ${pages * PAGE_BYTES / 2 ** 20} MiB ` +
         `asked with ${liveNow() * PAGE_BYTES / 2 ** 20} MiB live in ` +
         `${slot < 0 ? "?" : KINDS[shared![at(S_KIND)]]}`;
@@ -334,6 +350,11 @@ export function allocationCensus(config: CensusConfig): void {
         if (kind === 3) Atomics.add(shared, H_PROBES, 1);
         super.postMessage({ __yurtCensus: shared.buffer, slot: index });
       }
+      // Assumes a Worker is not terminated while it is reserving or
+      // releasing: only the coordinator (never terminated) and the probe
+      // (terminated after it answers) reserve here. A Worker cut off
+      // between its slot update and the tab total's could count its pages
+      // twice or not at all.
       override terminate() {
         super.terminate();
         if (shared === undefined || this.#slot < 0) return;
