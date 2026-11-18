@@ -304,10 +304,13 @@ async function checkSettles(
       for (const text of found) {
         const tag = /reload-probe-(\d+|nested)/.exec(text)?.[1];
         if (tag !== undefined) tags.add(tag);
+        if (text.includes("own-origin-probe")) tags.add("own-origin");
       }
     }
+    // The own-origin images too, so their (refused) loads are tested.
     return [
       ...RELOAD_PROBES.map((_, i) => String(i)),
+      "own-origin",
       ...(raw ? ["nested"] : []),
     ].every((tag) => tags.has(tag));
   };

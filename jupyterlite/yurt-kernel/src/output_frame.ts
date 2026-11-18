@@ -41,6 +41,7 @@ import type {
   JupyterFrontEndPlugin,
 } from "@jupyterlab/application";
 import { IThemeManager } from "@jupyterlab/apputils";
+import { CodeCell } from "@jupyterlab/cells";
 import { IRenderMimeRegistry, MimeModel } from "@jupyterlab/rendermime";
 import type { IRenderMime } from "@jupyterlab/rendermime-interfaces";
 import { Widget } from "@lumino/widgets";
@@ -178,6 +179,12 @@ export function activateOutputFrames(
   rendermime: IRenderMimeRegistry,
   themes: IThemeManager | null,
 ): void {
+  // JupyterLab's Table of Contents lists a code cell's output headings by
+  // parsing its HTML outputs (sanitized, images kept) into an element in the
+  // page, where the page's policy loads them (#360 review). No output markup
+  // enters the page, so code cells offer no headings, whatever the ToC's
+  // settings say (overrides.json turns its output scan off as well).
+  CodeCell.prototype.getHeadings = () => Promise.resolve([]);
   rendermime.addFactory(
     {
       safe: true,
