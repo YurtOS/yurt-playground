@@ -1,4 +1,5 @@
 import { guestWorkerStart } from "./guest_worker.ts";
+import { siteUrl } from "./site_url.ts";
 export const CREATE_GUEST_WORKER = "yurt-create-guest-worker";
 export const TERMINATE_GUEST_WORKER = "yurt-terminate";
 export const GUEST_WORKER_ERROR = "yurt-guest-worker-error";
@@ -182,7 +183,7 @@ export function attachGuestWorkerFactory(coordinator: Worker): void {
     // WorkerHost sees a failed spawn rather than silence.
     let start: [string, WorkerOptions];
     try {
-      start = guestWorkerStart(request.url, self.location.origin);
+      start = guestWorkerStart(request.url, siteUrl("./"));
     } catch (error) {
       fail(error instanceof Error ? error.message : String(error));
       control.close();

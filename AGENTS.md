@@ -86,7 +86,9 @@ Kernel primitives stay in `yurtos-kernel`. Image composition stays in
   kernel, `yurt`, relaying to the guest `ipykernel`. JupyterLite's own kernels
   (Pyodide, xeus) never ship: the kernel is not replaced, only fronted.
 - GitHub Pages cannot set COOP/COEP. Local `scripts/serve.ts` and Cloudflare
-  Pages (or equivalent) can.
+  Pages (or equivalent) can. A GitHub Pages preview of a UI change gets them
+  from a service worker in its own build only (`--gh-pages-preview`,
+  `docs/MAINTAINING.md` "Previews"); production never carries it.
 - Pins are git SHA + sha256 in `artifacts/pins.json`. Blobs (`*.wasm`,
   `*.yurtimg`) are gitignored.
 
@@ -165,10 +167,11 @@ round.
   local checks before running once more at the corrected final head. Repeat this
   only for an actual failed final round; a successful run does not authorize
   speculative reruns.
-- A preview deploy (`deploy-pages.yml` with `ref`, see `docs/MAINTAINING.md`) is
-  not CI: dispatch one only when the user asks or the change needs a real-device
-  check, once, at the final head. `regenerate-jupyter-payload.yml` and
-  `release-desktop.yml` belong to releases, not draft review.
+- A preview deploy (`preview-gh-pages.yml`, or `deploy-pages.yml` with `ref`,
+  see `docs/MAINTAINING.md` "Previews") is not CI: dispatch one only when the
+  user asks or the change needs a real-device check, once, at the final head.
+  `regenerate-jupyter-payload.yml` and `release-desktop.yml` belong to releases,
+  not draft review.
 - This applies to every session and any agents or subagents it starts. Put a
   link to this section and the instruction to follow it in their briefs,
   including reviewer briefs.

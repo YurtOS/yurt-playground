@@ -27,6 +27,7 @@ import type {
   JupyterChannel,
   JupyterRequestChannel,
 } from "./jupyter_transport.ts";
+import { siteUrl } from "./site_url.ts";
 
 export type PlaygroundKernelBridge = {
   /** Resolves once the current guest ipykernel answered kernel_info: the
@@ -62,7 +63,7 @@ let bridge: PlaygroundKernelBridge | undefined;
 
 /** One sandbox per page: every kernel the frontend starts shares it. */
 export function startPlaygroundKernel(
-  coordinatorUrl = "/coordinator.bundle.js",
+  coordinatorUrl = siteUrl("./coordinator.bundle.js"),
 ): PlaygroundKernelBridge {
   if (bridge !== undefined) return bridge;
   refuseOnPhone(document);

@@ -29,6 +29,10 @@ import {
 import { loadPins, type Pins } from "../src/pins.ts";
 import { checkSnapshotFile, kernelRootIsStore } from "./lib/snapshot_file.ts";
 import {
+  PREVIEW_SNAPSHOT_KINDS,
+  writeGhPagesPreview,
+} from "./lib/gh_pages_preview.ts";
+import {
   BEACON_PAGES,
   WEB_ANALYTICS_TOKEN,
   withBeacon,
@@ -169,7 +173,25 @@ export type BuildOptions = {
    * production Pages deploy asks for it: previews, CI and the desktop app
    * (whose own CSP, src/desktop.ts, would refuse the beacon) build without. */
   webAnalytics?: boolean;
+  /** A GitHub Pages preview (`--gh-pages-preview`,
+   * .github/workflows/preview-gh-pages.yml): the isolation service worker
+   * and a `<meta>` CSP in every page, since Pages sends no `_headers`, and
+   * only the snapshots in PREVIEW_SNAPSHOT_KINDS
+   * (scripts/lib/gh_pages_preview.ts). Never with analytics. */
+  ghPagesPreview?: boolean;
 };
+
+/** The device snapshots a build publishes when it has them: every kind,
+ * and on a GitHub Pages preview only {@link PREVIEW_SNAPSHOT_KINDS}. */
+export function publishedSnapshotKinds(
+  options: BuildOptions,
+): readonly SnapshotKind[] {
+  return options.ghPagesPreview
+    ? SNAPSHOT_KIND_NAMES.filter((kind) =>
+      PREVIEW_SNAPSHOT_KINDS.includes(kind)
+    )
+    : SNAPSHOT_KIND_NAMES;
+}
 
 /** The beacon token a build uses: the committed one when the build asked
  * for analytics, otherwise none. */
@@ -243,7 +265,7 @@ export async function buildStaticSite(
   // the pinned ones, which scripts/install-pinned-artifacts.sh fetched.
   // Optional; a page without its own boots the image.
   const pins = await loadPins(join(artifactsDir, "pins.json"));
-  for (const kind of SNAPSHOT_KIND_NAMES) {
+  for (const kind of publishedSnapshotKinds(options)) {
     const { name, pinKey } = SNAPSHOT_KINDS[kind];
     const snapshotPath = join(publicDir, name);
     const snapshot = await Deno.stat(snapshotPath).then(
@@ -285,6 +307,7 @@ export async function buildStaticSite(
   );
   await writeLlmRuntime();
   await writeSiteDocuments(distDir, beaconToken(options.webAnalytics ?? false));
+  if (options.ghPagesPreview) await writeGhPagesPreview(distDir);
 }
 
 /** The last step of the build: the beacon in the pages that carry it and
@@ -392,11 +415,15 @@ export async function siteHeaders(
 }
 
 if (import.meta.main) {
-  const unknown = Deno.args.filter((arg) => arg !== "--web-analytics");
+  const flags = ["--web-analytics", "--gh-pages-preview"];
+  const unknown = Deno.args.filter((arg) => !flags.includes(arg));
   if (unknown.length > 0) {
     throw new Error(`build-static: unknown arguments ${unknown.join(" ")}`);
   }
-  await buildStaticSite({
-    webAnalytics: Deno.args.includes("--web-analytics"),
-  });
+  const webAnalytics = Deno.args.includes("--web-analytics");
+  const ghPagesPreview = Deno.args.includes("--gh-pages-preview");
+  if (webAnalytics && ghPagesPreview) {
+    throw new Error("build-static: a preview never counts visitors");
+  }
+  await buildStaticSite({ webAnalytics, ghPagesPreview });
 }

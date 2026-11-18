@@ -81,6 +81,7 @@ import {
   type YurtTransport,
 } from "./agent_api.ts";
 import type { ExecOptions } from "./executions.ts";
+import { siteUrl } from "./site_url.ts";
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -399,7 +400,7 @@ function boot(
   const term = createPlaygroundTerminal(byId("term"));
   // Classic worker: Chrome will not start a nested *module* Worker.
   // A classic coordinator can spawn the module guest bootstrap.
-  const worker = new Worker("/coordinator.bundle.js");
+  const worker = new Worker(siteUrl("./coordinator.bundle.js"));
   attachGuestWorkerFactory(worker);
   let suspendAnswer: ((why?: string) => void) | undefined;
   suspendSandbox = () =>

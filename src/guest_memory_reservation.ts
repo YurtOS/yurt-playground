@@ -55,8 +55,9 @@ export const PROBE_UNIT_BYTES = 32 * MIB;
 export const PROBE_LIMIT_BYTES = KERNEL_MEMORY_RESERVATION_BYTES +
   RESERVATION_HEADROOM_BYTES +
   WANTED_PROCESSES * GUEST_MEMORY_RESERVATION_BYTES;
-/** The probe Worker's script, served at the site root. */
-export const PROBE_SCRIPT_PATH = "/memory-probe.js";
+/** The probe Worker's script, served at the site root: relative to the
+ *  coordinator, which is there too. */
+export const PROBE_SCRIPT_PATH = "./memory-probe.js";
 
 /** The reservation this page's guests get. */
 export type GuestMemoryPlan = {

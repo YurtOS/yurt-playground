@@ -6,11 +6,11 @@
  *
  * - `yurt`: the unmodified ipykernel running inside the Yurt sandbox on
  *   this page. Messages are relayed verbatim to the guest's ZMQ sockets
- *   through the playground's coordinator Worker (`/playground-bridge.js`);
+ *   through the playground's coordinator Worker (`playground-bridge.js`);
  *   nothing executes in the browser.
  * - `yurt-snapshot`: one CPython process in a sandbox that can be suspended
  *   (sealed into IndexedDB) and resumed, mid-cell, through
- *   `/snapshot-bridge.js`. A floating panel carries the two buttons.
+ *   `snapshot-bridge.js`. A floating panel carries the two buttons.
  *
  * Both bridges present the same send/receive pair, so one kernel class
  * serves both specs.
@@ -32,7 +32,7 @@ type PendingRequest = {
   resolve: () => void;
 };
 
-/** Shape of `/playground-bridge.js` (see `src/lite_bridge.ts`). */
+/** Shape of `playground-bridge.js` (see `src/lite_bridge.ts`). */
 type PlaygroundKernelBridge = {
   /** The first boot, then the latest restart. */
   readonly ready: Promise<void>;
@@ -52,7 +52,7 @@ type SnapshotState =
   | { state: "suspended"; sealedAt: number; bytes: number; ms: number }
   | { state: "resuming" };
 
-/** Shape of `/snapshot-bridge.js` (see `src/snapshot_bridge.ts`). */
+/** Shape of `snapshot-bridge.js` (see `src/snapshot_bridge.ts`). */
 type SnapshotKernelBridge = PlaygroundKernelBridge & {
   /** The worker's failures; absent from a bridge older than it. */
   onError?(listener: (text: string) => void): () => void;
@@ -72,8 +72,18 @@ type SnapshotBridgeModule = {
   startSnapshotKernel(workerUrl?: string): SnapshotKernelBridge;
 };
 
-const BRIDGE_URL = "/playground-bridge.js";
-const SNAPSHOT_BRIDGE_URL = "/snapshot-bridge.js";
+/** The playground's site root: the JupyterLite site is its `jupyter/`, so
+ * one level above the lite base URL. The same build serves `/` in
+ * production and a path on a GitHub Pages preview; set at activation. */
+let siteRoot: URL | undefined;
+
+function siteFile(name: string): string {
+  if (siteRoot === undefined) throw new Error("the plugin is not active");
+  return new URL(name, siteRoot).href;
+}
+
+const BRIDGE_FILE = "playground-bridge.js";
+const SNAPSHOT_BRIDGE_FILE = "snapshot-bridge.js";
 const MAX_TRACKED_REQUESTS = 4096;
 /** ipykernel answers interrupt_request from its control thread even while
  * a cell runs, so a missing reply means a wedged kernel; do not hang the
@@ -91,7 +101,7 @@ function bridge(): Promise<PlaygroundKernelBridge> {
   if (bridgePromise === undefined) {
     // Same-origin runtime import: the bridge is built by the playground's
     // deno bundle, not by this extension's webpack.
-    bridgePromise = import(/* webpackIgnore: true */ BRIDGE_URL).then(
+    bridgePromise = import(/* webpackIgnore: true */ siteFile(BRIDGE_FILE)).then(
       (module: BridgeModule) => module.startPlaygroundKernel(),
     );
   }
@@ -102,7 +112,7 @@ function bridge(): Promise<PlaygroundKernelBridge> {
 function snapshotBridge(): Promise<SnapshotKernelBridge> {
   if (snapshotBridgePromise === undefined) {
     snapshotBridgePromise = import(
-      /* webpackIgnore: true */ SNAPSHOT_BRIDGE_URL
+      /* webpackIgnore: true */ siteFile(SNAPSHOT_BRIDGE_FILE)
     ).then((module: SnapshotBridgeModule) => {
       const b = module.startSnapshotKernel();
       mountSnapshotPanel(b);
@@ -603,6 +613,10 @@ const plugin: JupyterFrontEndPlugin<void> = {
     kernelspecs: IKernelSpecs,
     client: IKernelClient,
   ) => {
+    siteRoot = new URL(
+      "../",
+      new URL(app.serviceManager.serverSettings.baseUrl, location.href),
+    );
     // JupyterLite's kernel client implements interrupt by cancelling the
     // cells it has queued; the kernel itself is never told. The frontend's
     // KernelConnection calls this method, so wrap it: the guest kernel
