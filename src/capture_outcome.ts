@@ -6,6 +6,18 @@
  * the browser as a download.
  */
 
+import type { Platform } from "./device.ts";
+
+/** Why a capture refuses to run on a page of `platform`, or undefined when it
+ * may. Only a desktop page captures: a phone or tablet page is shell-only and
+ * never starts the capture's install, so without this it waited forever,
+ * silently (#356). The kind (`capture-tablet`, ...) picks what is captured,
+ * not the page's platform. */
+export function captureRefusal(platform: Platform): string | undefined {
+  if (platform === "desktop") return undefined;
+  return `a snapshot capture runs on the desktop page only, and this page runs as the ${platform}'s: capture in a desktop browser, at desktop size, without &platform`;
+}
+
 /** Where the outcome is marked: `<html>`'s dataset in the page
  * (`data-snapshot-capture`, `data-snapshot-capture-error`). */
 export type CaptureMark = {

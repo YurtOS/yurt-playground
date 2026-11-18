@@ -27,6 +27,7 @@ import { restoreAfterSignIn } from "./openrouter.ts";
 import { mountSidebar } from "./sidebar.ts";
 import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
 import {
+  captureRefusal,
   finishCapture,
   markBootEnded,
   saveDownload,
@@ -1107,6 +1108,13 @@ async function runPage(): Promise<void> {
   const refused = desktop === undefined &&
     !new URL(location.href).searchParams.has("start-anyway") &&
     cutOff !== undefined;
+  // A capture in the tab on a phone or tablet page would never start its
+  // install (shell-only, below) and wait forever (#356). The desktop app's
+  // sandbox is native and has no such limit.
+  const captureRefused = desktop === undefined &&
+      snapshotMode() === "capture"
+    ? captureRefusal(platform)
+    : undefined;
   const phone = device === "phone";
   // A phone, like a tablet, restores the tablet's snapshot (python alone)
   // and starts no Jupyter: the page installs no Python set there. The
@@ -1160,7 +1168,9 @@ async function runPage(): Promise<void> {
     start: () => document.getElementById("start-sandbox")?.click(),
     // Playwright's sandbox hides the pane (applyEnv) and its yurt() refuses;
     // no fixed note, so switching back to Python leaves a working pane.
-    unavailable: refused ? "no sandbox" : undefined,
+    unavailable: refused || captureRefused !== undefined
+      ? "no sandbox"
+      : undefined,
     // Only the in-tab sandbox seals; `?suspend=0` keeps it running.
     reload: reloadOnPurpose,
     resumeRun: () => ownReload,
@@ -1298,6 +1308,16 @@ async function runPage(): Promise<void> {
     "click",
     () => location.reload(),
   );
+  // A refused capture boots nothing; say why where
+  // scripts/release-snapshot.ts and the reader look.
+  if (captureRefused !== undefined) {
+    markBootEnded(document.documentElement.dataset, true, captureRefused);
+    status.failure("failed");
+    showFailure("error", captureRefused);
+    notebook.unavailable("no sandbox");
+    yurtState.failed(captureRefused);
+    return;
+  }
   // The workspace opens with one action; `?start` (the old terminal page's
   // redirect, and the acceptance tests) skips it.
   if (start === null || new URL(location.href).searchParams.has("start")) {
