@@ -46,23 +46,29 @@ the CSP and cross-origin isolation).
 
 Production is whatever the last production deploy published. Only a dispatch of
 `deploy-pages.yml` from main with no `ref` makes one (`scripts/deploy-target.sh`
-decides), and it builds the commit main points at when the run starts
+decides), and it builds the commit main pointed at when it was dispatched
 (`GITHUB_SHA`). The workflow has no input that names a commit: `ref` takes a
 branch and publishes it only as a preview, never main, and a dispatch from a tag
-or any ref that is not a branch is refused. So the workflow cannot put an older
-commit back into production. There are two ways back.
+or any ref that is not a branch is refused. So the current workflow cannot put
+an older commit back into production. Do not try it by dispatching from a branch
+at an old commit either: a commit from before the preview mode (#269) runs its
+own, older workflow, which publishes that branch to production. There are two
+ways back.
 
-- **Fast: Cloudflare's rollback.** In the Cloudflare dashboard, open the Pages
-  project that serves `yurt-playground.pages.dev`, then its deployments list,
-  and choose _Rollback_ on an earlier production deployment. Cloudflare serves
-  that deployment's files again, as they were built; nothing is rebuilt. Who has
-  dashboard access to that project: _owner to fill in_. Main still holds the bad
-  change, so the next production dispatch publishes it again: follow up with a
-  revert before anyone deploys.
+- **Fast: Cloudflare's rollback.** First cancel any production deploy that is
+  still queued or running (`gh run list -w deploy-pages.yml`, then
+  `gh run cancel <id>`): it would publish main's head over the rollback. Then,
+  in the Cloudflare dashboard, open the Pages project that serves
+  `yurt-playground.pages.dev`, then its deployments list, and choose _Rollback_
+  on an earlier production deployment. Cloudflare serves that deployment's files
+  again, as they were built; nothing is rebuilt. Who has dashboard access to
+  that project: _owner to fill in_. Main still holds the bad change, so the next
+  production dispatch publishes it again: follow up with a revert before anyone
+  deploys.
 - **Through main: a revert.** Open a pull request that reverts the change, let
   its CI pass, merge it, then dispatch production
   (`gh workflow run deploy-pages.yml --ref main`). That takes about 20 minutes:
-  PR CI runs about 6-9 minutes and the deploy about 9-11.
+  PR CI and the deploy take about 10 minutes each.
 
 Then check what production serves. `integrity.json` names the commit the live
 site was built from:
@@ -72,13 +78,13 @@ curl -fsS https://yurt-playground.pages.dev/integrity.json | jq -r .commit
 ```
 
 After a revert and a deploy it is main's head; after a Cloudflare rollback, the
-commit of the deployment you rolled back to.
-`scripts/release-playground.sh
---check` compares the same commit, and the site's
-`pins.json`, with main (`deployed commit`, `deployed pins`): after a Cloudflare
-rollback both rows read stale until the revert is merged and deployed.
-Cloudflare switches a few seconds after the deploy says it is complete, so check
-again if the first answer is the old one.
+commit of the deployment you rolled back to. Cloudflare switches a few seconds
+after the deploy says it is complete, so check again if the first answer is the
+old one. The `--check` mode of `scripts/release-playground.sh` compares the same
+commit, and the site's `pins.json`, with main. After a Cloudflare rollback its
+`deployed commit` row reads stale until the revert is merged and deployed, and
+so does `deployed pins` if the change you rolled back moved
+`artifacts/pins.json`.
 
 Two inputs change the live page with no deploy, and neither path above rolls
 them back:
@@ -92,6 +98,10 @@ them back:
   page asks the index about. A pinned snapshot whose Python set the index no
   longer offers is refused, and the page boots the image and installs instead.
   Undo it in yurt-packages.
+
+A rolled-back page reads both as they are now, not as they were when it was
+built. After a rollback, try the agent pane and a `pkg install` on it, and
+revert the model list too if it depends on the change you rolled back.
 
 ## Releasing a train
 
