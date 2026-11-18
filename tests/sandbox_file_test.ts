@@ -141,6 +141,7 @@ function harness(
     seal,
     pins: () => Promise.resolve(PINS),
     key: () => Promise.resolve({ key: TEST_KEY, scope }),
+    held: () => Promise.resolve([TEST_KEY]),
     smallDevice: small,
     replace: (box) => {
       // The restore takes the seal out of the box.
@@ -214,7 +215,7 @@ Deno.test("Save seals, hands over a file Load takes, and restores the same seal 
       saved.blob.stream(),
       snapshotIdentity(PINS),
       false,
-      TEST_KEY,
+      [TEST_KEY],
     ),
     sealed,
   );
@@ -529,7 +530,7 @@ Deno.test("decodeLoadedSnapshot refuses with LoadRefused only", async () => {
         new Blob(["x"]).stream(),
         snapshotIdentity(PINS),
         false,
-        TEST_KEY,
+        [TEST_KEY],
       ),
     LoadRefused,
   );
@@ -628,4 +629,33 @@ Deno.test("a tab whose key is a session one says so when it cannot load a file",
     /can't use this browser's saved-sandbox key/.test(h.done().why ?? ""),
     h.done().why,
   );
+});
+
+Deno.test("a file signed with a key the worker still holds loads, whichever key is current", async () => {
+  const memory = image().kernelMemory;
+  const h = harness();
+  // Signed while the store was down (OTHER_KEY standing in for the
+  // session key), loaded once it is back (TEST_KEY current).
+  h.deps.held = () => Promise.resolve([TEST_KEY, OTHER_KEY]);
+  await loadSandbox(
+    h.deps,
+    await storedZip(manifestFor(memory.byteLength), memory, OTHER_KEY),
+  );
+  assertEquals(h.done().outcome, "restored");
+});
+
+Deno.test("a Load whose key cannot be had changes nothing and says so", async () => {
+  const memory = image().kernelMemory;
+  const h = harness();
+  h.deps.held = () => Promise.reject(new Error("no entropy"));
+  await loadSandbox(
+    h.deps,
+    await storedZip(manifestFor(memory.byteLength), memory),
+  );
+  assertEquals(h.done().outcome, "refused");
+  assert(
+    /no key to check the file with/.test(h.done().why ?? ""),
+    h.done().why,
+  );
+  assertEquals(h.replaced, []);
 });

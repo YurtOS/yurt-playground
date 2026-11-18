@@ -92,3 +92,64 @@ Deno.test("a store that never answers is given up on in time, for this call", as
   // While it keeps failing, the session key stays the same one.
   assert((await keys.key()).key === got.key);
 });
+
+Deno.test("a file signed while the store was down still loads once it is back: Load checks every key this worker holds", async () => {
+  const store = memoryStore();
+  let down = true;
+  const keys = saveKeys(() => {
+    if (down) throw new Error("connection lost");
+    return store;
+  });
+  const during = await keys.key();
+  assertEquals(during.scope, "session");
+  const tag = await signBytes(during.key, bytes("saved while down"));
+  down = false;
+  assertEquals((await keys.key()).scope, "persistent");
+  const held = await keys.held();
+  assertEquals(held.length, 2);
+  assert(
+    (await Promise.all(
+      held.map((key) => verifyBytes(key, bytes("saved while down"), tag)),
+    )).some(Boolean),
+  );
+});
+
+Deno.test("a store that timed out is not waited for again, and is asked once at a time", async () => {
+  let opens = 0;
+  const keys = saveKeys(() => {
+    opens++;
+    return {
+      get: () => new Promise<CryptoKey | undefined>(() => {}),
+      putIfAbsent: () => new Promise<CryptoKey>(() => {}),
+    };
+  }, { timeoutMs: 50 });
+  await keys.key();
+  const started = Date.now();
+  await Promise.all([keys.key(), keys.key()]);
+  assert(Date.now() - started < 40, "the second wait is not the full bound");
+  assertEquals(opens, 1);
+});
+
+Deno.test("a session key that could not be made is tried again, not kept as a failure", async () => {
+  const real = crypto.subtle.generateKey.bind(crypto.subtle);
+  let failNext = true;
+  const subtle = crypto.subtle as { generateKey: typeof real };
+  subtle.generateKey = ((...args: Parameters<typeof real>) => {
+    if (failNext) {
+      failNext = false;
+      return Promise.reject(new Error("no entropy"));
+    }
+    return real(...args);
+  }) as typeof real;
+  try {
+    const keys = saveKeys(() => {
+      throw new Error("blocked");
+    });
+    let threw = false;
+    await keys.key().catch(() => threw = true);
+    assert(threw);
+    assertEquals((await keys.key()).scope, "session");
+  } finally {
+    subtle.generateKey = real;
+  }
+});

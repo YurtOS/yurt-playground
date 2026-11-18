@@ -113,52 +113,85 @@ export function indexedDbKeyStore(
 export const KEY_STORE_TIMEOUT_MS = 5_000;
 
 /** The origin's key, made on first use; the same one for every later
- * call once the store has given it. A store that fails or does not
- * answer in time gives this call the worker's session key (said so by
- * its scope), and is asked again on the next call: a transient error is
- * not a blocked site for the worker's whole life. */
+ * call once the store has given it. A store that fails or does not answer
+ * in time gives the call the worker's session key (said so by its scope);
+ * it is asked again on a later call, one attempt at a time, and once an
+ * attempt has outlasted the bound no call waits for it again. The session
+ * key stays held after the store comes back, so a file signed with it
+ * still loads in this worker ({@link held}). */
 export function saveKeys(
   store: () => KeyStore,
   { timeoutMs = KEY_STORE_TIMEOUT_MS } = {},
 ) {
   /** The store's key, once it has given one. */
   let persistent: CryptoKey | undefined;
-  /** The key for while the store fails: one per worker. */
-  let session: Promise<CryptoKey> | undefined;
+  /** The worker's key for while the store fails, once made. */
+  let session: CryptoKey | undefined;
+  /** The store attempt under way, shared by every call. */
+  let attempt: Promise<CryptoKey> | undefined;
+  /** That attempt has outlasted the bound: calls do not wait for it. */
+  let overdue = false;
   const make = () =>
     crypto.subtle.generateKey(ALGORITHM, false, [
       "sign",
       "verify",
     ]) as Promise<CryptoKey>;
-  const fromStore = async (): Promise<CryptoKey> => {
-    const keys = store();
-    return await keys.get() ?? await keys.putIfAbsent(await make());
+  const ask = () => {
+    if (attempt !== undefined) return attempt;
+    overdue = false;
+    const started = (async () => {
+      const keys = store();
+      return await keys.get() ?? await keys.putIfAbsent(await make());
+    })();
+    attempt = started;
+    started.then(
+      (key) => persistent = key,
+      () => {},
+    ).finally(() => {
+      if (attempt === started) attempt = undefined;
+    });
+    return started;
+  };
+  const sessionKey = async (): Promise<SaveKey> => {
+    // Not kept when it fails: the next call makes one again.
+    session ??= await make();
+    return { key: session, scope: "session" };
   };
   return {
-    /** The key, made (and kept) if there is none yet: what Save signs
-     * with, and Load checks with. */
+    /** The key to sign with: the store's, or the worker's session key
+     * while the store fails. */
     async key(): Promise<SaveKey> {
       if (persistent !== undefined) {
         return { key: persistent, scope: "persistent" };
       }
+      const pending = ask();
+      if (overdue) return await sessionKey();
       let timer: number | undefined;
       try {
-        persistent = await Promise.race([
-          fromStore(),
+        const key = await Promise.race([
+          pending,
           new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () => reject(new Error("the key store did not answer")),
-              timeoutMs,
-            );
+            timer = setTimeout(() => {
+              overdue = true;
+              reject(new Error("the key store did not answer"));
+            }, timeoutMs);
           }),
         ]);
-        return { key: persistent, scope: "persistent" };
+        return { key, scope: "persistent" };
       } catch {
-        session ??= make();
-        return { key: await session, scope: "session" };
+        return await sessionKey();
       } finally {
         clearTimeout(timer);
       }
+    },
+    /** Every key a file this worker would load may be signed with: the
+     * one {@link key} gives now, and the session key if one was made. */
+    async held(): Promise<CryptoKey[]> {
+      const now = (await this.key()).key;
+      return session === undefined || session === now ? [now] : [
+        now,
+        session,
+      ];
     },
   };
 }

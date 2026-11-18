@@ -143,9 +143,10 @@ export async function decodeLoadedSnapshot(
   body: ReadableStream<Uint8Array<ArrayBuffer>>,
   expected: SnapshotIdentity,
   smallDevice: boolean,
-  /** This browser's key (src/save_key.ts): only a file it signed loads,
-   * and that is checked before anything else in the file is believed. */
-  key: CryptoKey,
+  /** The keys this browser may have signed it with (src/save_key.ts
+   * saveKeys held): only a file one of them signed loads, and that is
+   * checked before anything else in the file is believed. */
+  keys: CryptoKey[],
 ): Promise<SandboxSealImage> {
   let image: SandboxSealImage;
   /** The memory's sha256 the signature covers. */
@@ -169,7 +170,11 @@ export async function decodeLoadedSnapshot(
         if (
           typeof tag !== "string" ||
           typeof manifest.memorySha256 !== "string" ||
-          !await verifyBytes(key, manifestSigningBytes(manifest), tag)
+          !(await Promise.all(
+            keys.map((key) =>
+              verifyBytes(key, manifestSigningBytes(manifest), tag)
+            ),
+          )).includes(true)
         ) {
           throw new LoadRefused(NOT_SAVED_HERE);
         }
@@ -259,8 +264,11 @@ export type SandboxFileDeps = {
    * (an install) can run first: from there the sandbox is going. */
   seal: ((sealing: () => void) => Promise<PageSeal>) | undefined;
   pins: () => Promise<Pins>;
-  /** This origin's save key (src/save_key.ts saveKeys). */
+  /** This origin's save key (src/save_key.ts saveKeys): what Save signs
+   * with, and its scope. */
   key: () => Promise<SaveKey>;
+  /** Every key a Load checks against (saveKeys held). */
+  held: () => Promise<CryptoKey[]>;
   /** A phone or tablet page. */
   smallDevice: boolean;
   /** Drop the running sandbox and start the shell (and Jupyter) on the
@@ -431,13 +439,23 @@ export function loadSandbox(deps: SandboxFileDeps, file: Blob): Promise<void> {
       };
     }
     const box: SealBox = {};
-    const { key, scope } = await deps.key();
+    let keys: CryptoKey[];
+    let scope: SaveKeyScope;
+    try {
+      keys = await deps.held();
+      scope = (await deps.key()).scope;
+    } catch (error) {
+      return {
+        outcome: "refused",
+        why: `no key to check the file with: ${errorText(error)}`,
+      };
+    }
     try {
       box.image = await decodeLoadedSnapshot(
         file.stream(),
         snapshotIdentity(await deps.pins()),
         deps.smallDevice,
-        key,
+        keys,
       );
     } catch (error) {
       const why = errorText(error);

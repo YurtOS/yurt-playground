@@ -635,6 +635,7 @@ function sandboxFileDeps(): SandboxFileDeps {
     },
     pins: playgroundPins,
     key: () => sandboxKeys.key(),
+    held: () => sandboxKeys.held(),
     smallDevice,
     replace: (box) => replaceSandbox!(box),
     startFresh: async (why) => {
