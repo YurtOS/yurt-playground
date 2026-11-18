@@ -1,7 +1,6 @@
-// config/agent-models.json, the list the live page reads (src/
-// agent_models_config.ts). A pull request that changes only that file runs
-// only ci.yml's checks job, which runs this file on every run: the list
-// must parse whole, and every platform that offers a model must say how.
+// config/agent-models.json, the list the built site carries (src/
+// agent_models_config.ts): it must parse whole, and every platform that
+// offers a model must say how.
 import { assert, assertEquals } from "@std/assert";
 import {
   AGENT_MODELS_PATH,

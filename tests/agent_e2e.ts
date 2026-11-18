@@ -23,11 +23,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { DEMO_TEXT_PATH } from "../src/agent.ts";
-import {
-  AGENT_MODELS_URL,
-  type AgentModelsConfig,
-} from "../src/agent_models_config.ts";
-import { withPrompts } from "./agent_models_fixture.ts";
+import type { AgentModelsConfig } from "../src/agent_models_config.ts";
+import { AGENT_MODELS_ROUTE, withPrompts } from "./agent_models_fixture.ts";
 import { ISOLATION_HEADERS, startPlaygroundServer } from "../src/serve.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -96,7 +93,7 @@ async function withModels(
   bare = false,
 ): Promise<void> {
   await context.route(
-    AGENT_MODELS_URL,
+    AGENT_MODELS_ROUTE,
     (route) =>
       config === "missing"
         ? route.fulfill({ status: 404, body: "not found" })

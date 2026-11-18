@@ -78,11 +78,18 @@ Deno.test("static build writes every file the pages need", async () => {
       // The Playwright demo's (src/playwright_assets.ts).
       "playwright-core.tgz",
       "yurt-browser-bridge.zip",
+      // The agent's model list, which the page reads from its own site.
+      "config/agent-models.json",
     ]
   ) {
     const stat = await Deno.stat(new URL(`dist/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/${file} is empty`);
   }
+  // The list as committed: a deploy ships the tree it was built from (#368).
+  assertEquals(
+    await Deno.readTextFile(new URL("dist/config/agent-models.json", repoRoot)),
+    await Deno.readTextFile(new URL("config/agent-models.json", repoRoot)),
+  );
   // The extension's zip holds what Load unpacked needs.
   const listing = new TextDecoder().decode(
     (await new Deno.Command("unzip", {

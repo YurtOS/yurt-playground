@@ -103,6 +103,18 @@ Deno.test("playground HTTP responses carry COOP/COEP", async () => {
   assertEquals(html.includes('data-testid="start-sandbox"'), true);
 });
 
+Deno.test("the dev server serves the agent's model list from config/ (#368)", () => {
+  assertEquals(
+    resolvePlaygroundPath("/config/agent-models.json"),
+    join(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "config",
+      "agent-models.json",
+    ),
+  );
+});
+
 Deno.test("path resolver rejects a .. segment", () => {
   assertEquals(resolvePlaygroundPath("/foo/../index.html"), null);
   assertEquals(resolvePlaygroundPath("/../../pins.json"), null);
