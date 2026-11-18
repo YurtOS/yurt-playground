@@ -27,9 +27,27 @@ type Census = {
   failures: string[];
 };
 
-export function installMemCensus(realm: string): void {
+/** Which hooks to install: `?census=` on the page, `census=` in a Worker's
+ *  name. Absent: all of them (`mem,ta,tabuf,ab,sab,slice`); `none`: none. */
+export const CENSUS_ALL = "mem,ta,tabuf,ab,sab,slice";
+export function censusFlags(spec: string | null | undefined): Set<string> {
+  if (spec === null || spec === undefined || spec === "") {
+    spec = CENSUS_ALL;
+  }
+  return new Set(spec.split(",").map((f) => f.trim()).filter(Boolean));
+}
+/** The `census=` part of a Worker name such as `kmem=512;census=mem`. */
+export function censusOfName(name: string | undefined): string | undefined {
+  return /(?:^|;)census=([^;]*)/.exec(name ?? "")?.[1];
+}
+
+export function installMemCensus(
+  realm: string,
+  flags: Set<string> = censusFlags(undefined),
+): void {
   const scope = globalThis as unknown as Record<string, unknown>;
   if (scope.__memCensus) return;
+  (scope as Record<string, unknown>).__memCensusFlags = [...flags].join(",");
   const Original = WebAssembly.Memory;
   const census: Census = {
     realm,
@@ -66,6 +84,13 @@ export function installMemCensus(realm: string): void {
     census.bufLiveMiB -= mib;
   });
   const BIG = 1024 * 1024;
+  /** Count a typed array's bytes without touching `.buffer`. */
+  const noteBytes = (bytes: number) => {
+    if (bytes < BIG) return;
+    const mib = Math.round(bytes / MIB);
+    census.bufMade++;
+    census.bufMadeMiB += mib;
+  };
   const noteBuffer = (buffer: ArrayBufferLike, what: string) => {
     const bytes = buffer.byteLength;
     if (bytes < BIG) return;
@@ -104,14 +129,20 @@ export function installMemCensus(realm: string): void {
           !(typeof SharedArrayBuffer !== "undefined" &&
             args[0] instanceof SharedArrayBuffer)
         ) {
-          const buffer = bufferOf(value);
-          if (buffer) noteBuffer(buffer, name);
+          if (flags.has("tabuf") || name.endsWith("ArrayBuffer")) {
+            const buffer = bufferOf(value);
+            if (buffer) noteBuffer(buffer, name);
+          } else {
+            noteBytes((value as Uint8Array).byteLength);
+          }
         }
         return value;
       },
     }) as unknown as T;
   for (
-    const name of ["Uint8Array", "Int32Array", "Uint32Array", "Float64Array"]
+    const name of flags.has("ta")
+      ? ["Uint8Array", "Int32Array", "Uint32Array", "Float64Array"]
+      : []
   ) {
     const Ctor = (globalThis as unknown as Record<string, object>)[name];
     (globalThis as unknown as Record<string, object>)[name] = wrapCtor(
@@ -120,12 +151,14 @@ export function installMemCensus(realm: string): void {
       (v) => (v as Uint8Array).buffer,
     );
   }
-  globalThis.ArrayBuffer = wrapCtor(
-    "ArrayBuffer",
-    ArrayBuffer,
-    (v) => v as ArrayBuffer,
-  );
-  if (typeof SharedArrayBuffer !== "undefined") {
+  if (flags.has("ab")) {
+    globalThis.ArrayBuffer = wrapCtor(
+      "ArrayBuffer",
+      ArrayBuffer,
+      (v) => v as ArrayBuffer,
+    );
+  }
+  if (flags.has("sab") && typeof SharedArrayBuffer !== "undefined") {
     globalThis.SharedArrayBuffer = wrapCtor(
       "SharedArrayBuffer",
       SharedArrayBuffer,
@@ -136,35 +169,39 @@ export function installMemCensus(realm: string): void {
     slice: (...a: unknown[]) => Uint8Array;
   };
   const originalSlice = TypedArrayProto.slice;
-  TypedArrayProto.slice = function (this: Uint8Array, ...a: unknown[]) {
-    try {
-      const out = originalSlice.apply(this, a);
-      noteBuffer(out.buffer, "slice");
-      return out;
-    } catch (error) {
-      if (error instanceof RangeError) {
-        census.bufFailed++;
-        noteFailure(`TypedArray.slice(${this.byteLength} B)`, error);
-        publish();
+  if (flags.has("slice")) {
+    TypedArrayProto.slice = function (this: Uint8Array, ...a: unknown[]) {
+      try {
+        const out = originalSlice.apply(this, a);
+        noteBuffer(out.buffer, "slice");
+        return out;
+      } catch (error) {
+        if (error instanceof RangeError) {
+          census.bufFailed++;
+          noteFailure(`TypedArray.slice(${this.byteLength} B)`, error);
+          publish();
+        }
+        throw error;
       }
-      throw error;
-    }
-  };
+    };
+  }
   const abSlice = ArrayBuffer.prototype.slice;
-  ArrayBuffer.prototype.slice = function (this: ArrayBuffer, ...a) {
-    try {
-      const out = abSlice.apply(this, a as [number?, number?]);
-      noteBuffer(out, "ab.slice");
-      return out;
-    } catch (error) {
-      if (error instanceof RangeError) {
-        census.bufFailed++;
-        noteFailure(`ArrayBuffer.slice(${this.byteLength} B)`, error);
-        publish();
+  if (flags.has("slice")) {
+    ArrayBuffer.prototype.slice = function (this: ArrayBuffer, ...a) {
+      try {
+        const out = abSlice.apply(this, a as [number?, number?]);
+        noteBuffer(out, "ab.slice");
+        return out;
+      } catch (error) {
+        if (error instanceof RangeError) {
+          census.bufFailed++;
+          noteFailure(`ArrayBuffer.slice(${this.byteLength} B)`, error);
+          publish();
+        }
+        throw error;
       }
-      throw error;
-    }
-  };
+    };
+  }
   const registry = new FinalizationRegistry((key: string) => {
     const [kind, mib] = key.split(":");
     census.live--;
@@ -192,40 +229,42 @@ export function installMemCensus(realm: string): void {
       } catch { /* closed */ }
     }, 200);
   };
-  WebAssembly.Memory = new Proxy(Original, {
-    construct(target, args, newTarget) {
-      const d = (args[0] ?? {}) as WebAssembly.MemoryDescriptor;
-      const pages = d.shared ? (d.maximum ?? d.initial) : d.initial;
-      const mib = Math.round((pages * 65536) / MIB);
-      let memory: WebAssembly.Memory;
-      try {
-        memory = Reflect.construct(target, args, newTarget);
-      } catch (error) {
-        census.failed++;
-        census.lastFailure = `${d.shared ? "shared" : "plain"} ` +
-          `${d.initial}/${d.maximum} pages: ${String(error)} ` +
-          `(live ${census.live}, ${census.liveMiB} MiB)`;
-        noteFailure(
-          `new WebAssembly.Memory(${d.initial}/${d.maximum}${
-            d.shared ? " shared" : ""
-          })`,
-          error,
-        );
+  if (flags.has("mem")) {
+    WebAssembly.Memory = new Proxy(Original, {
+      construct(target, args, newTarget) {
+        const d = (args[0] ?? {}) as WebAssembly.MemoryDescriptor;
+        const pages = d.shared ? (d.maximum ?? d.initial) : d.initial;
+        const mib = Math.round((pages * 65536) / MIB);
+        let memory: WebAssembly.Memory;
+        try {
+          memory = Reflect.construct(target, args, newTarget);
+        } catch (error) {
+          census.failed++;
+          census.lastFailure = `${d.shared ? "shared" : "plain"} ` +
+            `${d.initial}/${d.maximum} pages: ${String(error)} ` +
+            `(live ${census.live}, ${census.liveMiB} MiB)`;
+          noteFailure(
+            `new WebAssembly.Memory(${d.initial}/${d.maximum}${
+              d.shared ? " shared" : ""
+            })`,
+            error,
+          );
+          publish();
+          throw error;
+        }
+        const key = `${d.shared ? "s" : "p"}:${mib}`;
+        census.made++;
+        census.madeMiB += mib;
+        census.live++;
+        census.liveMiB += mib;
+        census.peakLiveMiB = Math.max(census.peakLiveMiB, census.liveMiB);
+        census.sizes[key] = (census.sizes[key] ?? 0) + 1;
+        registry.register(memory, key);
         publish();
-        throw error;
-      }
-      const key = `${d.shared ? "s" : "p"}:${mib}`;
-      census.made++;
-      census.madeMiB += mib;
-      census.live++;
-      census.liveMiB += mib;
-      census.peakLiveMiB = Math.max(census.peakLiveMiB, census.liveMiB);
-      census.sizes[key] = (census.sizes[key] ?? 0) + 1;
-      registry.register(memory, key);
-      publish();
-      return memory;
-    },
-  });
+        return memory;
+      },
+    });
+  }
   // Report the collections the registry sees too.
   setInterval(publish, 2000);
 }

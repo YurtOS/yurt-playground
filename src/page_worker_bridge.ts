@@ -1,5 +1,9 @@
 import { guestWorkerStart } from "./guest_worker.ts";
-import { installMemCensus, listenMemCensus } from "./mem_census.ts";
+import {
+  censusFlags,
+  installMemCensus,
+  listenMemCensus,
+} from "./mem_census.ts";
 export const CREATE_GUEST_WORKER = "yurt-create-guest-worker";
 export const TERMINATE_GUEST_WORKER = "yurt-terminate";
 export const GUEST_WORKER_ERROR = "yurt-guest-worker-error";
@@ -178,7 +182,10 @@ export function attachGuestWorkerFactory(coordinator: Worker): void {
   try {
     if (!(globalThis as unknown as Record<string, unknown>).__memStats) {
       listenMemCensus();
-      installMemCensus("page");
+      installMemCensus(
+        "page",
+        censusFlags(new URL(location.href).searchParams.get("census")),
+      );
     }
   } catch { /* no BroadcastChannel */ }
   coordinator.addEventListener("message", (event: MessageEvent) => {
@@ -202,6 +209,9 @@ export function attachGuestWorkerFactory(coordinator: Worker): void {
       control.close();
       return;
     }
+    // PREVIEW ONLY: the guest's census hooks follow the page's `?census=`.
+    const census = new URL(location.href).searchParams.get("census");
+    if (census !== null) start[1] = { ...start[1], name: `census=${census}` };
     const guest = new Worker(...start);
     workers.created++;
     guestPortCounts()[request.direct ? "direct" : "relay"]++;

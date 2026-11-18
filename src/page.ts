@@ -400,9 +400,14 @@ function boot(
   // PREVIEW ONLY: `?kmem=<MiB>` reserves that much kernel memory instead
   // of 1 GiB (src/mem_census_coordinator.ts).
   const kmem = new URL(location.href).searchParams.get("kmem");
+  const census = new URL(location.href).searchParams.get("census");
+  const workerName = [
+    kmem === null ? "" : `kmem=${kmem}`,
+    census === null ? "" : `census=${census}`,
+  ].filter(Boolean).join(";");
   const worker = new Worker(
     "/coordinator.bundle.js",
-    kmem === null ? undefined : { name: `kmem=${kmem}` },
+    workerName === "" ? undefined : { name: workerName },
   );
   attachGuestWorkerFactory(worker);
   let suspendAnswer: ((why?: string) => void) | undefined;
