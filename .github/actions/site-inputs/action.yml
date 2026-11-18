@@ -33,7 +33,7 @@ runs:
         token: ${{ inputs.token }}
         # PREVIEW ONLY: cb7a4b7 + yurtos-kernel#4238 (JS host exec copies).
         # The kernel wasm and the snapshots stay the pinned ones.
-        ref: preview/cb7a4b7-4238
+        ref: preview/cb7a4b7-4238-kmem
         path: yurtos-kernel
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:

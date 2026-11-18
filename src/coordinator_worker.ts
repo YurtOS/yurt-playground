@@ -1,4 +1,5 @@
 /// <reference lib="deno.worker" />
+import "./mem_census_coordinator.ts";
 /**
  * Browser coordinator. WorkerHost.spawnRootLeader uses Atomics.wait, which
  * is legal here and illegal on the window thread.

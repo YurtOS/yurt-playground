@@ -397,7 +397,13 @@ function boot(
   const term = createPlaygroundTerminal(byId("term"));
   // Classic worker: Chrome will not start a nested *module* Worker.
   // A classic coordinator can spawn the module guest bootstrap.
-  const worker = new Worker("/coordinator.bundle.js");
+  // PREVIEW ONLY: `?kmem=<MiB>` reserves that much kernel memory instead
+  // of 1 GiB (src/mem_census_coordinator.ts).
+  const kmem = new URL(location.href).searchParams.get("kmem");
+  const worker = new Worker(
+    "/coordinator.bundle.js",
+    kmem === null ? undefined : { name: `kmem=${kmem}` },
+  );
   attachGuestWorkerFactory(worker);
   let suspendAnswer: ((why?: string) => void) | undefined;
   suspendSandbox = () =>

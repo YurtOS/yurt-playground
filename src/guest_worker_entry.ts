@@ -4,6 +4,7 @@
  * kernel's bootstrap, served over the port the page hands it instead of
  * the page itself (see `adoptGuestPort`).
  */
+import "./mem_census_guest.ts";
 import "@yurt/worker-bootstrap";
 import { adoptGuestPort } from "./page_worker_bridge.ts";
 

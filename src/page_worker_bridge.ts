@@ -1,4 +1,5 @@
 import { guestWorkerStart } from "./guest_worker.ts";
+import { listenMemCensus } from "./mem_census.ts";
 export const CREATE_GUEST_WORKER = "yurt-create-guest-worker";
 export const TERMINATE_GUEST_WORKER = "yurt-terminate";
 export const GUEST_WORKER_ERROR = "yurt-guest-worker-error";
@@ -167,6 +168,18 @@ export function parseCreateGuestWorkerMessage(
 }
 
 export function attachGuestWorkerFactory(coordinator: Worker): void {
+  // PREVIEW ONLY (src/mem_census.ts): live guest Workers on this page.
+  const workers = ((globalThis as unknown as Record<string, unknown>)
+    .__yurtGuestWorkers ??= { created: 0, terminated: 0, errored: 0 }) as {
+      created: number;
+      terminated: number;
+      errored: number;
+    };
+  try {
+    if (!(globalThis as unknown as Record<string, unknown>).__memStats) {
+      listenMemCensus();
+    }
+  } catch { /* no BroadcastChannel */ }
   coordinator.addEventListener("message", (event: MessageEvent) => {
     const request = parseCreateGuestWorkerMessage(event.data);
     if (request === undefined) return;
@@ -189,6 +202,7 @@ export function attachGuestWorkerFactory(coordinator: Worker): void {
       return;
     }
     const guest = new Worker(...start);
+    workers.created++;
     guestPortCounts()[request.direct ? "direct" : "relay"]++;
     let relay: MessageChannel | undefined;
     if (request.direct) {
@@ -205,6 +219,7 @@ export function attachGuestWorkerFactory(coordinator: Worker): void {
       guest.postMessage({ type: GUEST_WORKER_PORT }, [relay.port2]);
     }
     guest.onerror = (event) => {
+      workers.errored++;
       fail(event.message || "guest worker failed");
     };
     control.onmessage = (controlEvent) => {
@@ -213,6 +228,7 @@ export function attachGuestWorkerFactory(coordinator: Worker): void {
           TERMINATE_GUEST_WORKER
       ) {
         guest.terminate();
+        workers.terminated++;
         control.close();
         if (relay !== undefined) {
           relay.port1.close();
