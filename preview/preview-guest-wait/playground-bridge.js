@@ -39236,7 +39236,8 @@ function startPlaygroundKernel(coordinatorUrl = siteUrl("./coordinator.bundle.js
       // Python set and the kernel, and says so if it cannot: installing them
       // took a minute or more on every visit. A tablet has too little memory
       // for that snapshot, and its own holds no kernel, so it installs.
-      ...desktop === void 0 && deviceClass() === "desktop" ? {
+      // preview: the iPad tries the desktop snapshot too.
+      ...desktop === void 0 && deviceClass() !== void 0 ? {
         snapshot: "restore",
         snapshotKind: "desktop",
         snapshotRequired: true
