@@ -3,6 +3,7 @@
  * Browser coordinator. WorkerHost.spawnRootLeader uses Atomics.wait, which
  * is legal here and illegal on the window thread.
  */
+import type { Platform } from "./device.ts";
 import { shLine, stagePlaywright } from "./playwright_setup.ts";
 import type { CdpBridge } from "./cdp_bridge.ts";
 import {
@@ -94,6 +95,7 @@ import {
   uploadedSnapshotPath,
 } from "./snapshot_source.ts";
 import { runQueue } from "./run_queue.ts";
+import { type NetworkStatus, TabNetwork } from "./network.ts";
 import { type BootedSession, workerPackageHost } from "./session_packages.ts";
 import {
   type MemoryRefusedMessage,
@@ -127,6 +129,13 @@ type ToWorker =
     python?: PythonRequest;
     // A tablet or phone: installs over 16 MiB are refused there.
     tablet?: boolean;
+    // What the page runs as (src/device.ts): a phone's kernel takes the
+    // small cap's memory maximum (src/guest_memory_reservation.ts).
+    platform?: Platform;
+    // The kernel keeps its default 1 GiB maximum even under a small cap
+    // (src/device.ts fullKernelMemory): a tablet, a phone on `?memory=1g`,
+    // a Notebook page restoring the desktop's snapshot.
+    fullKernelMemory?: boolean;
     // `?snapshot=1`: restore the sealed sandbox (src/sandbox_snapshot.ts)
     // instead of booting the image; `?snapshot=capture`: boot and install
     // as usual, then seal instead of starting Jupyter and hand the file
@@ -154,6 +163,12 @@ type ToWorker =
     // DevTools endpoint at 127.0.0.1:9222 (src/cdp_bridge.ts) whose
     // messages go to the page as `cdp-*`.
     cdpBridge?: boolean;
+    // The network relay's origin (src/network_config.ts): the in-tab
+    // sandbox gets a TCP backend and DNS through it, off until `network`
+    // turns it on (src/network.ts).
+    networkRelay?: string;
+    // The tab's user had the network on before a reload: on from the start.
+    networkOn?: boolean;
   }
   // Install Python again after a failed install (the cell's Install), then
   // start the kernel. Answered like a boot: status, then notebook-ready or
@@ -194,10 +209,57 @@ type ToWorker =
   // The extension's side of a DevTools connection (src/browser_bridge.ts):
   // a CDP message for the guest, or the connection ended there.
   | { type: "cdp-send"; conn: number; text: string }
-  | { type: "cdp-close"; conn: number };
+  | { type: "cdp-close"; conn: number }
+  // The page's network toggle, and its "cut all connections".
+  | { type: "network"; on: boolean }
+  | { type: "network-cut" }
+  // A relay token the coordinator asked for (`network-token`): the page
+  // passes Turnstile, which only it can, then asks the relay.
+  | {
+    type: "network-token-reply";
+    req: number;
+    token?: string;
+    ttl?: number;
+    error?: string;
+  };
 
 /** The guest's DevTools endpoint, once the shell's boot started it. */
 let cdpBridge: CdpBridge | undefined;
+
+/** The in-tab sandbox's network, when a relay is configured. */
+let network: TabNetwork | undefined;
+/** Relay tokens asked of the page, by request number. */
+const tokenRequests = new Map<
+  number,
+  {
+    resolve: (t: { token: string; ttl: number }) => void;
+    reject: (e: Error) => void;
+  }
+>();
+let nextTokenRequest = 1;
+/** Past the page's own Turnstile deadline: a page that never answers
+ * leaves no request behind. */
+const PAGE_TOKEN_DEADLINE_MS = 90_000;
+function pageToken(): Promise<{ token: string; ttl: number }> {
+  return new Promise((resolve, reject) => {
+    const req = nextTokenRequest++;
+    const timer = setTimeout(() => {
+      tokenRequests.delete(req);
+      reject(new Error("the page gave no relay token"));
+    }, PAGE_TOKEN_DEADLINE_MS);
+    tokenRequests.set(req, {
+      resolve: (t) => {
+        clearTimeout(timer);
+        resolve(t);
+      },
+      reject: (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    });
+    post({ type: "network-token", req });
+  });
+}
 
 /** Recorded with a seal: a kernel memory means something only to its binary. */
 let runningKernelSha256: string | undefined;
@@ -235,6 +297,9 @@ type FromWorker =
   | { type: "cdp-open"; conn: number }
   | { type: "cdp-message"; conn: number; text: string }
   | { type: "cdp-close"; conn: number }
+  // The network's state for the page's indicator (src/network.ts).
+  | { type: "network-status"; status: NetworkStatus }
+  | { type: "network-token"; req: number }
   | {
     type: "yurt-reply";
     req: number;
@@ -673,6 +738,24 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     cdpBridge?.close(msg.conn);
     return;
   }
+  if (msg.type === "network") {
+    network?.setEnabled(msg.on);
+    return;
+  }
+  if (msg.type === "network-cut") {
+    network?.tcp.cutAll();
+    return;
+  }
+  if (msg.type === "network-token-reply") {
+    const waiter = tokenRequests.get(msg.req);
+    tokenRequests.delete(msg.req);
+    if (msg.token !== undefined && msg.ttl !== undefined) {
+      waiter?.resolve({ token: msg.token, ttl: msg.ttl });
+    } else {
+      waiter?.reject(new Error(msg.error ?? "no relay token"));
+    }
+    return;
+  }
   await serveYurt(msg);
   await servePackages(msg);
   if (msg.type === "pkg-read-installed") await installed.read();
@@ -798,6 +881,14 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   }
   if (msg.type !== "start") return;
   kernelPorts = msg.kernelPorts;
+  if (kernelPorts === undefined && msg.networkRelay !== undefined) {
+    network ??= new TabNetwork(
+      msg.networkRelay,
+      pageToken,
+      (status) => post({ type: "network-status", status }),
+    );
+    if (msg.networkOn === true) network.setEnabled(true);
+  }
   // The live index's answers for this boot: a snapshot's check and the
   // install's stored-layer question, from one read. Made by each begin()
   // below, so a fresh sandbox asks again.
@@ -807,6 +898,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   runningKind = restoreKind;
   const env = {
     isolated: msg.isolated,
+    platform: msg.platform,
+    fullKernelMemory: msg.fullKernelMemory === true,
     // The slim image when the train pins one; the desktop app's native
     // sandbox reads no image here.
     imagePath: kernelPorts === undefined
@@ -857,6 +950,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         started: (bridge: CdpBridge) => cdpBridge = bridge,
       }
       : undefined,
+    network,
   };
   // The slim image's Python: the coordinator installs the set itself, so
   // every page that boots a sandbox gets the same install.

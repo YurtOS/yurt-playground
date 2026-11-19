@@ -2,10 +2,15 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   chooseEnv,
   choosePlatform,
+  fullKernelMemory,
   isFirefox,
+  largeMemoryAsked,
+  memoryParam,
+  notebookStart,
   parsePlatform,
   platformSnapshotKind,
   withEnv,
+  withMemory,
   withPlatform,
 } from "../src/device.ts";
 import { TABLET_PYTHON_SET } from "../src/snapshot_pin.ts";
@@ -140,4 +145,90 @@ Deno.test("Firefox and its Gecko builds are told apart from every other browser"
   ];
   for (const ua of firefox) assertEquals(isFirefox(ua), true, ua);
   for (const ua of others) assertEquals(isFirefox(ua), false, ua);
+});
+
+const DESKTOP_SNAPSHOT_START = {
+  snapshot: "restore",
+  snapshotKind: "desktop",
+  snapshotRequired: true,
+  fullKernelMemory: true,
+} as const;
+
+Deno.test("a tablet's Notebook restores the desktop snapshot with a 1 GiB kernel; a phone's does not", () => {
+  // Jupyter ran on a real iPad (Safari, iPadOS 26.6) from the desktop's
+  // snapshot beside a 1 GiB kernel; installing the set in the tab instead
+  // crashed it.
+  for (const asked of [null, "1g"]) {
+    assertEquals(notebookStart("tablet", asked, false), DESKTOP_SNAPSHOT_START);
+    assertEquals(
+      notebookStart("desktop", asked, false),
+      DESKTOP_SNAPSHOT_START,
+    );
+  }
+  // A phone: nothing without ?memory=1g (its page refuses first,
+  // src/bridge_status.ts refuseOnPhone), the tablet's path with it.
+  assertEquals(notebookStart("phone", null, false), {});
+  assertEquals(notebookStart("phone", "512m", false), {});
+  assertEquals(notebookStart("phone", "1g", false), DESKTOP_SNAPSHOT_START);
+  assertEquals(notebookStart("phone", "1G", false), DESKTOP_SNAPSHOT_START);
+  // The desktop app's sandbox is native: no snapshot asked for anywhere.
+  for (const device of ["phone", "tablet", "desktop"] as const) {
+    assertEquals(notebookStart(device, "1g", true), {});
+  }
+});
+
+Deno.test("a phone's kernel keeps 1 GiB only on ?memory=1g; a tablet's and a desktop's always", () => {
+  assertEquals(fullKernelMemory("phone", null), false);
+  assertEquals(fullKernelMemory("phone", "2g"), false);
+  assertEquals(fullKernelMemory("phone", "1g"), true);
+  for (const platform of ["tablet", "desktop"] as const) {
+    for (const asked of [null, "1g", "nonsense"]) {
+      assertEquals(fullKernelMemory(platform, asked), true, platform);
+    }
+  }
+  assertEquals(largeMemoryAsked(undefined), false);
+  assertEquals(largeMemoryAsked("1G"), true);
+});
+
+Deno.test("?memory=1g is read from the URL and carried on to the Notebook links", () => {
+  assertEquals(memoryParam("https://pg.example/?platform=phone"), null);
+  assertEquals(
+    memoryParam("https://pg.example/?platform=phone&memory=1g#x"),
+    "1g",
+  );
+  assertEquals(
+    withMemory(
+      "https://pg.example/jupyter/notebooks/index.html?path=welcome.ipynb",
+      "1g",
+    ),
+    "https://pg.example/jupyter/notebooks/index.html?path=welcome.ipynb&memory=1g",
+  );
+  assertEquals(
+    withMemory("https://pg.example/jupyter/lab/index.html", "1G"),
+    "https://pg.example/jupyter/lab/index.html?memory=1g",
+  );
+  // No ask: the link is left as it is.
+  assertEquals(
+    withMemory("https://pg.example/jupyter/lab/index.html", null),
+    "https://pg.example/jupyter/lab/index.html",
+  );
+});
+
+Deno.test("the Notebook pages ask the coordinator what notebookStart says, for the device and ?memory=", async () => {
+  const bridge = await Deno.readTextFile(
+    new URL("../src/lite_bridge.ts", import.meta.url),
+  );
+  assertStringIncludes(
+    bridge,
+    "...notebookStart(deviceClass(), memoryParam(), desktop !== undefined)",
+  );
+  // The home page carries ?memory=1g on to the links and to its own kernel.
+  const page = await Deno.readTextFile(
+    new URL("../src/page.ts", import.meta.url),
+  );
+  assertStringIncludes(page, "link.href = withMemory(link.href, memoryAsked)");
+  assertStringIncludes(
+    page,
+    "fullKernelMemory: fullKernelMemory(platform, memoryParam())",
+  );
 });

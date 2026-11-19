@@ -146,4 +146,28 @@ Deno.test("the Notebook pages boot nothing on a phone, and say why", () => {
   assertEquals(line.textContent, `Yurt sandbox: ${PHONE_REFUSAL}`);
   assert(/desktop browser/.test(line.textContent));
   assert(/the home page runs the shell here/.test(line.textContent));
+  assert(/\?memory=1g/.test(line.textContent));
+});
+
+Deno.test("on ?memory=1g a phone's Notebook pages boot, as a tablet's do", () => {
+  for (const asked of ["1g", "1G"]) {
+    const { doc, body } = fakeDocument();
+    refuseOnPhone(doc, "phone", asked);
+    assertEquals(body.length, 0, asked);
+  }
+  // Any other value is no ask.
+  for (const asked of [null, "512m", "2g", ""]) {
+    const { doc } = fakeDocument();
+    assertThrows(
+      () => refuseOnPhone(doc, "phone", asked),
+      Error,
+      PHONE_REFUSAL,
+    );
+  }
+  // A tablet boots with it or without.
+  for (const asked of [null, "1g"]) {
+    const { doc, body } = fakeDocument();
+    refuseOnPhone(doc, "tablet", asked);
+    assertEquals(body.length, 0);
+  }
 });

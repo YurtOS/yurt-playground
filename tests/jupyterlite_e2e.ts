@@ -37,7 +37,7 @@ function fail(message: string): never {
 /** Insert a cell below the active one, put `code` into it, and run it. The
  * code is inserted, not typed: typing goes through the editor's bracket and
  * quote auto-closing, which garbles a payload like `{...}` in a string. */
-async function runNewCell(page: Page, code: string): Promise<void> {
+export async function runNewCell(page: Page, code: string): Promise<void> {
   await page.keyboard.press("Escape");
   await page.keyboard.press("b");
   await page.keyboard.press("Enter");
@@ -47,7 +47,7 @@ async function runNewCell(page: Page, code: string): Promise<void> {
 
 /** Wait until the notebook's last output area contains `text` and no cell
  * is still running. */
-async function waitForLastOutput(
+export async function waitForLastOutput(
   page: Page,
   text: string,
   timeout: number,
@@ -71,7 +71,10 @@ async function waitForLastOutput(
  * the name and the status are required. A sandbox that cannot start says so on
  * the page's status line (src/bridge_status.ts) and never becomes idle: that
  * fails at once, with the page's words, instead of at the timeout. */
-async function waitForKernelIdle(page: Page, timeout: number): Promise<void> {
+export async function waitForKernelIdle(
+  page: Page,
+  timeout: number,
+): Promise<void> {
   const outcome = await page.waitForFunction(
     (statusId) => {
       const line = document.getElementById(statusId);
@@ -933,6 +936,38 @@ if (import.meta.main) {
     );
     if (coordinators.length > 0) {
       fail(`a phone's Notebook page started a sandbox: ${coordinators}`);
+    }
+    // On `?memory=1g` the home page carries the ask on to its links, and
+    // the Notebook page boots, as a tablet's does: no refusal, and the
+    // coordinator that restores the desktop's snapshot is fetched.
+    await phonePage.goto(`${server.url}/?memory=1g`, { waitUntil: "load" });
+    const carried = await phonePage.getByTestId("choose-notebook")
+      .getAttribute("href");
+    if (
+      carried === null ||
+      new URL(carried, server.url).searchParams.get("memory") !== "1g"
+    ) {
+      fail(`a phone's Notebook link on ?memory=1g is ${carried}`);
+    }
+    await phonePage.goto(
+      `${server.url}/jupyter/notebooks/index.html?path=welcome.ipynb&memory=1g`,
+      { waitUntil: "load" },
+    );
+    for (
+      const until = Date.now() + 60_000;
+      coordinators.length === 0 && Date.now() < until;
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (coordinators.length === 0) {
+      fail("a phone's Notebook page on ?memory=1g started no sandbox");
+    }
+    const refusal = await phonePage.evaluate(() =>
+      document.querySelector("[data-testid=yurt-bridge-status]")
+        ?.textContent ?? ""
+    );
+    if (refusal.includes("do not run on phones")) {
+      fail(`a phone's Notebook page on ?memory=1g refused: ${refusal}`);
     }
     await phone.close();
 

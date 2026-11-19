@@ -1,4 +1,4 @@
-// The kernel memory's maximum the playground plans for an iPad or iPhone tab
+// The kernel memory's maximum the playground plans for an iPhone tab
 // (yurtos-kernel#4239) travels as `HostState.kernelMemoryMaximumBytes`. A
 // kernel host older than #4239 has no such option, and the playground ships
 // its pinned host until the pin moves: there the field must be ignored, and
@@ -14,9 +14,9 @@ import { loadPins, resolveArtifacts } from "../src/pins.ts";
 
 const MIB = 1024 * 1024;
 const repoRoot = join(fileURLToPath(import.meta.url), "../..");
-const IPAD_UA =
-  "Mozilla/5.0 (iPad; CPU OS 18_7 like Mac OS X) AppleWebKit/605.1.15 " +
-  "(KHTML, like Gecko) Version/26.6.1 Mobile/15E148 Safari/604.1";
+const IPHONE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) " +
+  "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6.1 Mobile/15E148 " +
+  "Safari/604.1";
 
 /** The pinned kernel wasm, or `null` when the artifacts are not resolvable
  *  here (a failure when `PLAYGROUND_REQUIRE_ARTIFACTS=1`, as in CI). */
@@ -47,14 +47,14 @@ async function pinnedKernelWasm(): Promise<Uint8Array | null> {
 
 Deno.test({
   name:
-    "the pinned kernel host loads and runs with an iPad's 512 MiB kernel memory in its host state",
+    "the pinned kernel host loads and runs with an iPhone's 512 MiB kernel memory in its host state",
   sanitizeOps: false,
   sanitizeResources: false,
   async fn() {
     const wasm = await pinnedKernelWasm();
     if (!wasm) return;
     const state = playgroundHostState(
-      IPAD_UA,
+      IPHONE_UA,
       MIN_GUEST_MEMORY_RESERVATION_BYTES,
       512 * MIB,
     );
