@@ -719,7 +719,17 @@ async function restoreSealImage(
   if (image === undefined) return undefined;
   env.show("restoring the sandbox");
   const started = performance.now();
-  const restored = await restorePlaygroundKernel(kernel, image);
+  // The same host state as every other restore: the tab's platform and
+  // memory plan, and the network's TCP backend (else a loaded sandbox
+  // has no network until a reload).
+  const restored = await restorePlaygroundKernel(
+    kernel,
+    image,
+    undefined,
+    env.platform,
+    env.fullKernelMemory,
+    env.network,
+  );
   if (restored.processes.length !== 0) {
     restored.host.dispose();
     throw new Error("a saved sandbox must hold no process");
