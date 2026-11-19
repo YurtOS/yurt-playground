@@ -22,6 +22,7 @@ import {
 import {
   answerTokenRequest,
   networkWanted,
+  pageSessionStorage,
   settleWithin,
   shareInFlight,
 } from "../src/network_toggle.ts";
@@ -622,4 +623,24 @@ Deno.test("page: a token request without a relay is answered with why", async ()
     req: 7,
     error: "Error: no relay",
   }]);
+});
+
+Deno.test("site data blocked: sessionStorage that throws on read is no storage", () => {
+  const own = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    get() {
+      throw new DOMException(
+        "Access is denied for this document.",
+        "SecurityError",
+      );
+    },
+  });
+  try {
+    assertEquals(pageSessionStorage(), null);
+    assertEquals(networkWanted(pageSessionStorage() ?? undefined, true), false);
+  } finally {
+    if (own) Object.defineProperty(globalThis, "sessionStorage", own);
+    else delete (globalThis as { sessionStorage?: Storage }).sessionStorage;
+  }
 });

@@ -159,6 +159,17 @@ export function relayToken(
   return pendingToken();
 }
 
+/** This page's sessionStorage, or null where reading it throws: with site
+ * data blocked, Chrome refuses the property itself (a SecurityError), and a
+ * throw there would stop the boot. */
+export function pageSessionStorage(): Storage | null {
+  try {
+    return globalThis.sessionStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether this load starts with the network on: only `ownReload` (the
  * page reloaded itself to resume its sandbox) after the user had turned it
  * on. Any other load forgets the choice. Off when storage cannot say. */
@@ -203,7 +214,7 @@ export function wireNetworkToggle(
     message: { type: "network"; on: boolean } | { type: "network-cut" },
   ) => void,
   /** Where the choice is kept for the page's own reload; null: nowhere. */
-  storage: Storage | null = globalThis.sessionStorage,
+  storage: Storage | null = pageSessionStorage(),
 ): NetworkControls {
   const { toggle, open, cut, note } = elements;
   let on = initiallyOn;
