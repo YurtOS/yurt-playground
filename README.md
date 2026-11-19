@@ -381,4 +381,7 @@ Yurt's own code (this repository, the kernel, runtime and tooling) is licensed
 under Apache-2.0; see [LICENSE](LICENSE). Most of those repositories are not
 public yet, and this site and the releases ship them as binaries. The guest SDK
 and its runtime libraries, which are linked into programs built for Yurt, are
-MIT-licensed. Third-party software in the images keeps its own license.
+MIT-licensed. Third-party software in the images keeps its own license; the
+[third-party licenses and source](https://github.com/YurtOS/yurt-playground/releases?q=gpl-sources-playground&expanded=true)
+releases, one per train, list each component and carry the source of the GPL,
+LGPL and MPL ones.
