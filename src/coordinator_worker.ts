@@ -3,6 +3,7 @@
  * Browser coordinator. WorkerHost.spawnRootLeader uses Atomics.wait, which
  * is legal here and illegal on the window thread.
  */
+import type { Platform } from "./device.ts";
 import { shLine, stagePlaywright } from "./playwright_setup.ts";
 import type { CdpBridge } from "./cdp_bridge.ts";
 import {
@@ -127,6 +128,9 @@ type ToWorker =
     python?: PythonRequest;
     // A tablet or phone: installs over 16 MiB are refused there.
     tablet?: boolean;
+    // What the page runs as (src/device.ts): a phone's kernel takes the
+    // small cap's memory maximum (src/guest_memory_reservation.ts).
+    platform?: Platform;
     // The kernel keeps its default 1 GiB maximum even under a small cap
     // (src/device.ts fullKernelMemory): a tablet, a phone on `?memory=1g`,
     // a Notebook page restoring the desktop's snapshot.
@@ -811,6 +815,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   runningKind = restoreKind;
   const env = {
     isolated: msg.isolated,
+    platform: msg.platform,
     fullKernelMemory: msg.fullKernelMemory === true,
     // The slim image when the train pins one; the desktop app's native
     // sandbox reads no image here.

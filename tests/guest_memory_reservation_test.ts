@@ -86,11 +86,11 @@ Deno.test("every in-browser kernel load and restore goes through the playground'
     "load",
     "restore",
   ]);
-  // Both size the reservation from what the tab can reserve (#270).
+  // Both size the reservation from what the tab can reserve (#270), and
+  // the kernel's maximum from the page's platform (a phone's is smaller).
   assert(
-    boot.includes(
-      "await plannedPlaygroundHostState(undefined, undefined, fullKernelMemory)",
-    ),
+    /KernelHostInterface\.load\(\s*kernel,\s*await plannedPlaygroundHostState\(\s*undefined,\s*undefined,\s*platform,\s*fullKernelMemory,?\s*\),\s*\)/
+      .test(boot),
   );
   assert(
     /KernelHostInterface\.load\(\s*kernel,\s*await plannedPlaygroundHostState\(/
@@ -99,7 +99,7 @@ Deno.test("every in-browser kernel load and restore goes through the playground'
   // A restore takes the same plan, less a smaller kernel maximum its
   // sealed image would not fit (restoreHostState, yurtos-kernel#4239).
   assert(
-    /const state = restoreHostState\(\s*await plannedPlaygroundHostState\(undefined, undefined, fullKernelMemory\),/
+    /const state = restoreHostState\(\s*await plannedPlaygroundHostState\(\s*undefined,\s*undefined,\s*platform,\s*fullKernelMemory,?\s*\),/
       .test(boot),
   );
   assert(
@@ -128,13 +128,14 @@ Deno.test("the Notebook pages' snapshot kernel keeps 1 GiB where the page asks f
     "notebook_kernel_worker.ts takes it in its start message",
   );
   assert(
-    /loadPlaygroundKernel\(\s*kernel,\s*fullKernelMemoryAsked,?\s*\)/.test(
-      worker,
-    ),
+    /loadPlaygroundKernel\(\s*kernel,\s*undefined,\s*fullKernelMemoryAsked,?\s*\)/
+      .test(
+        worker,
+      ),
     "notebook_kernel_worker.ts boots with it",
   );
   assert(
-    /restorePlaygroundKernel\(\s*kernel,\s*stored\.image,\s*undefined,\s*fullKernelMemoryAsked,?\s*\)/
+    /restorePlaygroundKernel\(\s*kernel,\s*stored\.image,\s*undefined,\s*undefined,\s*fullKernelMemoryAsked,?\s*\)/
       .test(worker),
     "notebook_kernel_worker.ts restores with it",
   );

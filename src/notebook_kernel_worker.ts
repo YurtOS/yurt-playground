@@ -1022,7 +1022,11 @@ async function bootFresh(
   kernelSha256: string,
 ): Promise<Live> {
   status("booting the kernel");
-  const mk = await loadPlaygroundKernel(kernel, fullKernelMemoryAsked);
+  const mk = await loadPlaygroundKernel(
+    kernel,
+    undefined,
+    fullKernelMemoryAsked,
+  );
   // A suspended kernel is disposed with its guests, so a watch never
   // outlives the kernel it watches.
   watchGuestMemoryRefusals(mk, () => post(memoryRefusedMessage()));
@@ -1066,6 +1070,7 @@ async function restoreStored(
   const restored = await restorePlaygroundKernel(
     kernel,
     stored.image,
+    undefined,
     undefined,
     fullKernelMemoryAsked,
   ).catch(

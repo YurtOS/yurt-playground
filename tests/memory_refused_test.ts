@@ -234,7 +234,7 @@ Deno.test("the snapshot demo and both notebook kernels show the banner (#213)", 
       `${worker} watches its booted and its restored kernel`,
     );
     assert(
-      /loadPlaygroundKernel\(kernel(, \w+)?\);\n(.*\n){0,3}.*watchGuestMemoryRefusals\(mk,/
+      /loadPlaygroundKernel\(\s*kernel(,\s*\w+)*,?\s*\);\n(.*\n){0,3}.*watchGuestMemoryRefusals\(mk,/
         .test(text),
       `${worker} watches the booted kernel before its guest starts`,
     );

@@ -733,6 +733,7 @@ function boot(
         : undefined,
       snapshotKind: kind,
       tablet: smallDevice,
+      platform,
       // A tablet's kernel, and a phone's on `?memory=1g`, keep 1 GiB.
       fullKernelMemory: fullKernelMemory(platform, memoryParam()),
       snapshot: snapshotMode(),
