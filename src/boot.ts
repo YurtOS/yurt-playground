@@ -14,6 +14,7 @@ import {
   type SandboxFiles,
 } from "./installed_list.ts";
 import { linuxRemark } from "./linux_remark.ts";
+import type { Platform } from "./device.ts";
 import { baseToolsHeld } from "./image_tools.ts";
 import {
   GUEST_MEMORY_RESERVATION_BYTES,
@@ -112,6 +113,9 @@ export type PlaygroundEnv = {
   dropSavedSession?: () => Promise<void>;
   /** Fail rather than boot the image when the snapshot cannot be restored. */
   snapshotRequired?: boolean;
+  /** What the page runs as (src/device.ts): a phone's kernel takes the
+   * small cap's maximum ({@link plannedPlaygroundHostState}). */
+  platform?: Platform;
   /** The kernel's sha256, once loaded: a later seal records it. */
   kernelSha256?: (sha256: string) => void;
   fetchBytes: (path: string) => Promise<Uint8Array>;
@@ -433,15 +437,18 @@ export function playgroundHostState(
 /**
  * The host state for a kernel this page is about to build: on
  * JavaScriptCore, with the per-process reservation sized from what the tab
- * can still reserve right now ({@link planGuestMemory}, #270); elsewhere
+ * can still reserve right now ({@link planGuestMemory}, #270), and on a
+ * phone (`platform`, the page's) the small cap's kernel maximum; elsewhere
  * {@link playgroundHostState} as it is.
  */
 export async function plannedPlaygroundHostState(
   userAgent: string | undefined = globalThis.navigator?.userAgent,
-  plan: () => Promise<GuestMemoryPlan> = () => planGuestMemory(),
+  plan: (phone: boolean) => Promise<GuestMemoryPlan> = (phone) =>
+    planGuestMemory(undefined, phone),
+  platform?: Platform,
 ): Promise<ReturnType<typeof playgroundHostState>> {
   if (!isJavaScriptCore(userAgent)) return playgroundHostState(userAgent);
-  const planned = await plan();
+  const planned = await plan(platform === "phone");
   console.info(
     `[memory] ${planned.reservationBytes / (1024 * 1024)} MiB per process, ` +
       `${planned.kernelMemoryBytes / (1024 * 1024)} MiB for the kernel` +
@@ -462,11 +469,15 @@ export async function plannedPlaygroundHostState(
 /** Load a kernel for an in-browser sandbox. Every page and worker goes
  *  through this or {@link restorePlaygroundKernel}, so on JavaScriptCore
  *  each one reserves what {@link plannedPlaygroundHostState} picks per
- *  guest process. */
+ *  guest process. `platform`: what the page runs as, when it says. */
 export async function loadPlaygroundKernel(
   kernel: Uint8Array,
+  platform?: Platform,
 ): Promise<KernelHostInterface> {
-  return KernelHostInterface.load(kernel, await plannedPlaygroundHostState());
+  return KernelHostInterface.load(
+    kernel,
+    await plannedPlaygroundHostState(undefined, undefined, platform),
+  );
 }
 
 /** Restore a sealed in-browser sandbox; see {@link loadPlaygroundKernel}. */
@@ -480,9 +491,10 @@ export async function restorePlaygroundKernel(
     target: StoreRestoreTarget;
     expect: StoreIdentity;
   },
+  platform?: Platform,
 ): Promise<Awaited<ReturnType<typeof KernelHostInterface.restore>>> {
   const state = restoreHostState(
-    await plannedPlaygroundHostState(),
+    await plannedPlaygroundHostState(undefined, undefined, platform),
     image.kernelMemory.byteLength,
   );
   if (store !== undefined) {
@@ -546,7 +558,12 @@ export async function bootPlayground(
       }
       env.show("resuming your session");
       const started = performance.now();
-      const restored = await restorePlaygroundKernel(kernel, saved.image);
+      const restored = await restorePlaygroundKernel(
+        kernel,
+        saved.image,
+        undefined,
+        env.platform,
+      );
       if (restored.processes.length !== 0) {
         restored.host.dispose();
         throw new Error("a saved session must hold no process");
@@ -563,7 +580,10 @@ export async function bootPlayground(
   }
   const bootImage = async () => {
     env.show("compiling kernel");
-    return await start(await loadPlaygroundKernel(kernel), false);
+    return await start(
+      await loadPlaygroundKernel(kernel, env.platform),
+      false,
+    );
   };
   const snapshotPath = env.snapshotPath;
   if (snapshotPath === undefined) return await bootImage();
@@ -758,6 +778,7 @@ export async function restoreSnapshot(
         target: store.target,
         expect: store.expect.identity,
       },
+      env.platform,
     );
     if (restored.processes.length !== 0) {
       restored.host.dispose();

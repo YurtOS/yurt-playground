@@ -729,6 +729,7 @@ function boot(
         : undefined,
       snapshotKind: kind,
       tablet: smallDevice,
+      platform,
       snapshot: snapshotMode(),
       snapshotId: uploadedSnapshotId(),
       capturePackages: extra,

@@ -67,8 +67,8 @@ export function isFirefox(userAgent: string): boolean {
 export type Platform = "phone" | "tablet" | "desktop";
 
 /** The snapshot a page on `platform` restores (src/snapshot_pin.ts
- * SNAPSHOT_KINDS): a desktop's own, with the Python set and Jupyter; on an
- * iPhone or iPad the tablet's, python alone. The Agent tab's own sandbox
+ * SNAPSHOT_KINDS): a desktop's own, with the Python set and Jupyter; on a
+ * phone or tablet the tablet's, python alone. The Agent tab's own sandbox
  * restores the tablet's on every platform (src/page.ts). */
 export function platformSnapshotKind(
   platform: Platform,
