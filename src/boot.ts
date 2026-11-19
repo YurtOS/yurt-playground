@@ -444,9 +444,9 @@ export function playgroundHostState(
  * JavaScriptCore, with the per-process reservation sized from what the tab
  * can still reserve right now ({@link planGuestMemory}, #270), and on a
  * phone (`platform`, the page's) the small cap's kernel maximum; elsewhere
- * {@link playgroundHostState} as it is. `fullKernelMemory`: the kernel
- * keeps the default 1 GiB maximum even under a small cap, on a phone too
- * (`?memory=1g`); the guests are sized as beside 1 GiB either way.
+ * {@link playgroundHostState} as it is. `fullKernelMemory` (a phone on
+ * `?memory=1g`): the phone plans as any other device, so its kernel keeps
+ * the default maximum.
  */
 export async function plannedPlaygroundHostState(
   userAgent: string | undefined = globalThis.navigator?.userAgent,
@@ -456,10 +456,8 @@ export async function plannedPlaygroundHostState(
   fullKernelMemory = false,
 ): Promise<ReturnType<typeof playgroundHostState>> {
   if (!isJavaScriptCore(userAgent)) return playgroundHostState(userAgent);
-  const measured = await plan(platform === "phone" && !fullKernelMemory);
-  const planned = fullKernelMemory
-    ? { ...measured, kernelMemoryBytes: KERNEL_MEMORY_RESERVATION_BYTES }
-    : measured;
+  // A phone on `?memory=1g` plans as any other device does.
+  const planned = await plan(platform === "phone" && !fullKernelMemory);
   console.info(
     `[memory] ${planned.reservationBytes / (1024 * 1024)} MiB per process, ` +
       `${planned.kernelMemoryBytes / (1024 * 1024)} MiB for the kernel` +
