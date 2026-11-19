@@ -17,10 +17,13 @@
  * the GitHub API's list of its snapshot refs ({@link SNAPSHOT_REFS_API})
  * says the repository published them (src/snapshot_source.ts). On the
  * deployed site only, once its token is set: the Cloudflare Web Analytics
- * beacon's script and report endpoint (src/web_analytics.ts). Outside
- * JupyterLite only, once src/network_config.ts names one: the network relay
- * (src/network_config.ts), which the sandbox's connections go through
- * when its user turns the network on. Scripts come from the origin
+ * beacon's script and report endpoint (src/web_analytics.ts). On every
+ * page, once src/network_config.ts names one: the network relay, which the
+ * sandbox's connections go through when its user turns the network on,
+ * and Turnstile's script and frame, which a token needs. That is no way
+ * out for notebook output: no output runs script in the page (HTML renders
+ * in a sandboxed frame without scripts, JavaScript output is off), and a
+ * token grants only the relay's public ports, never the host. Scripts come from the origin
  * plus the inline bootstraps JupyterLite emits in its index pages, allowed
  * by hash; the WebAssembly kernel needs `'wasm-unsafe-eval'`. Styles allow
  * inline because JupyterLab sets them everywhere.
@@ -84,13 +87,13 @@ export type CspOptions = {
    */
   allowEval?: boolean;
   /** No model, downloaded or local, and no uploaded snapshot: `connect-src` is the
-   * origin and the packages repository's path only. */
+   * origin, the packages repository's path and the network relay only. */
   sameOriginOnly?: boolean;
   /** The deployed site's Cloudflare Web Analytics beacon
    * (src/web_analytics.ts): its script and its report endpoint. */
   webAnalytics?: boolean;
   /** The network relay's origin; the configured one when unset, none when
-   * null. Not with `sameOriginOnly`. */
+   * null. */
   networkRelay?: string | null;
 };
 
@@ -121,6 +124,9 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
       ...(options.sameOriginOnly ? [] : [SNAPSHOT_SOURCE, SNAPSHOT_REFS_API]),
       ...(options.webAnalytics ? [BEACON_REPORT_ORIGIN] : []),
       ...(relay === undefined ? [] : relaySources(relay)),
+      // Turnstile's script, when a service worker fetches it for the page
+      // (JupyterLite's does: its own fetch answers to this directive).
+      ...(relay === undefined ? [] : [TURNSTILE_ORIGIN]),
     ].join(" "),
     "worker-src 'self'",
     // Turnstile's challenge frame, with a relay; nothing else frames.
@@ -132,9 +138,9 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
   ].join("; ");
 }
 
-/** The relay the policy admits: the configured one, outside JupyterLite. */
+/** The relay the policy admits: the configured one, unless null. */
 function relayFor(options: CspOptions): string | undefined {
-  if (options.sameOriginOnly || options.networkRelay === null) return undefined;
+  if (options.networkRelay === null) return undefined;
   return options.networkRelay ?? CONFIGURED_RELAY;
 }
 

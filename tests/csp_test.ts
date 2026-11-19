@@ -57,7 +57,7 @@ Deno.test("the policy keeps every request on the origin but the models', the pac
   );
 });
 
-Deno.test("JupyterLite documents reach the origin and the packages path only", () => {
+Deno.test("JupyterLite documents reach the origin, the packages path and the network relay only", () => {
   for (
     const policy of [
       documentPolicy("/jupyter/notebooks/index.html", []),
@@ -65,14 +65,30 @@ Deno.test("JupyterLite documents reach the origin and the packages path only", (
     ]
   ) {
     // On the slim image these pages install Python from the repository
-    // before their kernel starts: that one path, and no model host.
+    // before their kernel starts: that one path, no model host, and the
+    // relay with its Turnstile check for the sandbox's network (#384).
+    assertEquals(cspSources(policy, "connect-src"), [
+      "'self'",
+      "https://raw.githubusercontent.com/YurtOS/yurt-packages/",
+      "https://yurt-relay.ofersa.workers.dev",
+      "wss://yurt-relay.ofersa.workers.dev",
+      "https://challenges.cloudflare.com",
+    ]);
+    assertEquals(cspSources(policy, "frame-src"), [
+      "https://challenges.cloudflare.com",
+    ]);
     assertEquals(
-      policy.split("; ").filter((d) => d.includes("http")),
-      [
-        "connect-src 'self' https://raw.githubusercontent.com/YurtOS/yurt-packages/",
-      ],
+      cspSources(policy, "script-src").filter((s) => s.includes("http")),
+      ["https://challenges.cloudflare.com"],
     );
   }
+  assertEquals(
+    contentSecurityPolicy({ sameOriginOnly: true, networkRelay: null })
+      .split("; ").filter((d) => d.includes("http")),
+    [
+      "connect-src 'self' https://raw.githubusercontent.com/YurtOS/yurt-packages/",
+    ],
+  );
   assertStringIncludes(
     documentPolicy("/index.html", []),
     "connect-src 'self' https://huggingface.co",
@@ -106,11 +122,18 @@ Deno.test("_headers detaches the strict policy before the JupyterLite one", () =
   assertEquals(lines[2].includes("'unsafe-eval'"), false);
   assertEquals(lines[3], "/jupyter/*");
   assertEquals(lines[4], "  ! Content-Security-Policy");
-  assertStringIncludes(lines[5], "'unsafe-eval' 'sha256-j'");
+  assertStringIncludes(lines[5], "'unsafe-eval'");
+  assertStringIncludes(lines[5], "'sha256-j'");
   assertStringIncludes(lines[2], "https://huggingface.co");
   assertEquals(
     lines[5].match(/https:\/\/\S+/g),
-    ["https://raw.githubusercontent.com/YurtOS/yurt-packages/;"],
+    [
+      "https://challenges.cloudflare.com",
+      "https://raw.githubusercontent.com/YurtOS/yurt-packages/",
+      "https://yurt-relay.ofersa.workers.dev",
+      "https://challenges.cloudflare.com;",
+      "https://challenges.cloudflare.com;",
+    ],
   );
   assertEquals(lines.length, 6);
 });
@@ -127,6 +150,7 @@ Deno.test("the page's privacy note names whoever each connect-src source belongs
     [/^https:\/\/(raw\.githubusercontent\.com|api\.github\.com)\//, "GitHub"],
     [/^https:\/\/cloudflareinsights\.com$/, "Cloudflare"],
     [/^(https|wss):\/\/yurt-relay\.ofersa\.workers\.dev$/, "Yurt's relay"],
+    [/^https:\/\/challenges\.cloudflare\.com$/, "Cloudflare"],
   ];
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
@@ -138,7 +162,7 @@ Deno.test("the page's privacy note names whoever each connect-src source belongs
     contentSecurityPolicy({ webAnalytics: true }),
     "connect-src",
   ).filter((source) => source !== "'self'");
-  assertEquals(sources.length, 9, sources.join(" "));
+  assertEquals(sources.length, 10, sources.join(" "));
   for (const source of sources) {
     const owner = owners.find(([pattern]) => pattern.test(source))?.[1];
     assertEquals(owner !== undefined, true, `no owner for ${source}`);

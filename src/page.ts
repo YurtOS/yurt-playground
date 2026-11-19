@@ -87,10 +87,10 @@ import {
 import type { ExecOptions } from "./executions.ts";
 import { siteUrl } from "./site_url.ts";
 import {
+  answerTokenRequest,
   loadNetwork,
   type NetworkControls,
   networkWanted,
-  relayToken,
   wireNetworkToggle,
 } from "./network_toggle.ts";
 import type { NetworkStatus } from "./network.ts";
@@ -654,26 +654,11 @@ function boot(
     }
     if (msg.type === "network-status") networkControls?.show(msg.status);
     if (msg.type === "network-token") {
-      const req = msg.req;
-      void relayPromise.then(async (network) => {
-        if (network === undefined) throw new Error("no relay");
-        return await relayToken(network, byId("network-human"));
-      }).then(
-        ({ token, ttl }) =>
-          worker.postMessage({
-            type: "network-token-reply",
-            req,
-            token,
-            ttl,
-          }),
-        (error) => {
-          console.warn(`[network] no token: ${error}`);
-          worker.postMessage({
-            type: "network-token-reply",
-            req,
-            error: String(error),
-          });
-        },
+      answerTokenRequest(
+        worker,
+        relayPromise,
+        () => byId("network-human"),
+        msg.req,
       );
     }
     if (msg.type === "cell-stream") notebook.stream(msg.id, msg.chunk);

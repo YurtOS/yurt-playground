@@ -20,6 +20,7 @@ import {
   TURNSTILE_ORIGIN,
 } from "../src/network_config.ts";
 import {
+  answerTokenRequest,
   networkWanted,
   settleWithin,
   shareInFlight,
@@ -313,10 +314,15 @@ Deno.test("network config: the deployed relay, and Turnstile, are admitted", () 
     ),
   );
   assertEquals(cspSources(policy, "frame-src"), [TURNSTILE_ORIGIN]);
-  // The JupyterLite pages get no network.
+  // The JupyterLite pages too (#384), though without the models.
   const lite = contentSecurityPolicy({ sameOriginOnly: true });
-  assert(!/wss?:/.test(cspSources(lite, "connect-src").join(" ")));
-  assertEquals(cspSources(lite, "frame-src"), ["'none'"]);
+  assert(
+    cspSources(lite, "connect-src").includes(
+      "wss://yurt-relay.ofersa.workers.dev",
+    ),
+  );
+  assertEquals(cspSources(lite, "frame-src"), [TURNSTILE_ORIGIN]);
+  assert(!cspSources(lite, "connect-src").includes("https://openrouter.ai"));
 });
 
 Deno.test("network config: with no relay, no toggle and no policy", () => {
@@ -341,7 +347,7 @@ Deno.test("network config: with no relay, no toggle and no policy", () => {
   );
 });
 
-Deno.test("network config: a relay is admitted in connect-src outside JupyterLite", () => {
+Deno.test("network config: a relay is admitted in connect-src, JupyterLite's too", () => {
   const relay = "https://relay.example";
   assertEquals(relaySources(relay), [relay, "wss://relay.example"]);
   const page = cspSources(
@@ -357,7 +363,7 @@ Deno.test("network config: a relay is admitted in connect-src outside JupyterLit
     contentSecurityPolicy({ networkRelay: relay, sameOriginOnly: true }),
     "connect-src",
   );
-  assert(!lite.includes(relay));
+  assert(lite.includes(relay) && lite.includes("wss://relay.example"));
   const local = cspSources(
     withRelay(contentSecurityPolicy(), "http://127.0.0.1:9"),
     "connect-src",
@@ -597,4 +603,23 @@ Deno.test("network: turning it on starts the first token's check at once", async
   assertEquals(await network.relay.token(), "t");
   assertEquals(asked, 1);
   network.setEnabled(false);
+});
+
+Deno.test("page: a token request without a relay is answered with why", async () => {
+  const posted: unknown[] = [];
+  answerTokenRequest(
+    { postMessage: (m) => posted.push(m) },
+    Promise.resolve(undefined),
+    () => {
+      throw new Error("no widget without a relay");
+    },
+    7,
+  );
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  assertEquals(posted, [{
+    type: "network-token-reply",
+    req: 7,
+    error: "Error: no relay",
+  }]);
 });
