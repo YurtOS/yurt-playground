@@ -264,9 +264,12 @@ const ESRCH = 3;
 const SIGKILL = 9;
 const MIB = 1024 * 1024;
 
-const DEFAULT_ENV: Record<string, string> = {
+export const DEFAULT_ENV: Record<string, string> = {
   HOME: LOGIN_HOME,
-  PATH: "/bin:/usr/bin:/usr/local/bin",
+  // The user's own programs last (`pip install --user` puts its scripts
+  // in ~/.local/bin), as the image's /etc/profile has it; the page runs
+  // /bin/sh directly, which reads no profile.
+  PATH: `/bin:/usr/bin:/usr/local/bin:${LOGIN_HOME}/.local/bin`,
   PYTHONHOME: "/usr/local",
   PWD: LOGIN_HOME,
   USER: LOGIN_USER,
