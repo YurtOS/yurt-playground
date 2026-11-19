@@ -132,6 +132,10 @@ type ToWorker =
     // What the page runs as (src/device.ts): a phone's kernel takes the
     // small cap's memory maximum (src/guest_memory_reservation.ts).
     platform?: Platform;
+    // The kernel keeps its default 1 GiB maximum even under a small cap
+    // (src/device.ts fullKernelMemory): a tablet, a phone on `?memory=1g`,
+    // a Notebook page restoring the desktop's snapshot.
+    fullKernelMemory?: boolean;
     // `?snapshot=1`: restore the sealed sandbox (src/sandbox_snapshot.ts)
     // instead of booting the image; `?snapshot=capture`: boot and install
     // as usual, then seal instead of starting Jupyter and hand the file
@@ -895,6 +899,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const env = {
     isolated: msg.isolated,
     platform: msg.platform,
+    fullKernelMemory: msg.fullKernelMemory === true,
     // The slim image when the train pins one; the desktop app's native
     // sandbox reads no image here.
     imagePath: kernelPorts === undefined

@@ -7,6 +7,7 @@
  * extension at runtime for the `yurt-snapshot` kernelspec.
  */
 import { refuseOnPhone } from "./bridge_status.ts";
+import { deviceClass, fullKernelMemory, memoryParam } from "./device.ts";
 import { mountMemoryRefusedBanner } from "./memory_refused.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
 import type { JupyterMessage } from "./jupyter_protocol.ts";
@@ -125,6 +126,8 @@ export function startSnapshotKernel(
   worker.postMessage({
     type: "start",
     isolated: globalThis.crossOriginIsolated === true,
+    // A tablet's kernel, and a phone's on `?memory=1g`, keep 1 GiB.
+    fullKernelMemory: fullKernelMemory(deviceClass(), memoryParam()),
   });
   bridge = {
     get ready() {

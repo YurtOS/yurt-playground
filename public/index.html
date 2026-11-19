@@ -846,9 +846,10 @@
           <p id="mobile-note" data-testid="mobile-note" hidden>
             This looks like a tablet, so this page runs the shell and Python,
             with a snapshot made for tablets, and an agent whose model runs on
-            OpenRouter: Jupyter and a model in the tab need more memory than a
-            tablet browser gives one tab. A desktop browser, or the desktop app,
-            runs all of it.
+            OpenRouter: a model in the tab needs more memory than a tablet
+            browser gives one tab. Jupyter runs on the Notebook and JupyterLab
+            pages, each in a sandbox of its own. A desktop browser, or the
+            desktop app, runs all of it.
           </p>
 
           <p id="phone-note" data-testid="phone-note" hidden>
@@ -857,7 +858,9 @@
             OpenRouter: Jupyter and a model in the tab need more memory than a
             phone browser gives one tab. Installing more from
             <em>Packages</em> may run the tab out of memory. A desktop browser,
-            or the desktop app, runs all of it.
+            or the desktop app, runs all of it. To try Jupyter here anyway, with
+            the 1 GiB kernel a tablet gets, add <code>?memory=1g</code> to the
+            URL and open the Notebook or JupyterLab.
           </p>
 
           <p

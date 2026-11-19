@@ -6,7 +6,7 @@
  * `jupyterlite/` extension at runtime, so every sandbox concern stays in the
  * deno-built bundles.
  */
-import { deviceClass } from "./device.ts";
+import { deviceClass, memoryParam, notebookStart } from "./device.ts";
 import { desktopInfo } from "./native.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
 import {
@@ -149,17 +149,12 @@ export function startPlaygroundKernel(
       rows: 24,
       isolated: globalThis.crossOriginIsolated === true,
       kernelPorts: desktop?.kernelPorts,
-      // A desktop browser starts from the default snapshot, which holds the
-      // Python set and the kernel, and says so if it cannot: installing them
-      // took a minute or more on every visit. A tablet has too little memory
-      // for that snapshot, and its own holds no kernel, so it installs.
-      ...(desktop === undefined && deviceClass() === "desktop"
-        ? {
-          snapshot: "restore" as const,
-          snapshotKind: "desktop" as const,
-          snapshotRequired: true,
-        }
-        : {}),
+      // A desktop or tablet browser (or a phone on `?memory=1g`) starts
+      // from the desktop's snapshot, which holds the Python set and the
+      // kernel, with the kernel's full 1 GiB, and says so if it cannot:
+      // installing them took a minute or more on every visit, and ran an
+      // iPad tab out of memory.
+      ...notebookStart(deviceClass(), memoryParam(), desktop !== undefined),
       python: desktop !== undefined
         ? undefined
         : await pins.then((p) =>

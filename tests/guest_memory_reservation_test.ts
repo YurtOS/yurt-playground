@@ -89,17 +89,50 @@ Deno.test("every in-browser kernel load and restore goes through the playground'
   // Both size the reservation from what the tab can reserve (#270), and
   // the kernel's maximum from the page's platform (a phone's is smaller).
   assert(
-    /KernelHostInterface\.load\(kernel, \{\s*\.\.\.await plannedPlaygroundHostState\(undefined, undefined, platform\),/
+    /KernelHostInterface\.load\(kernel, \{\s*\.\.\.await plannedPlaygroundHostState\(\s*undefined,\s*undefined,\s*platform,\s*fullKernelMemory,?\s*\),/
       .test(boot),
   );
   // A restore takes the same plan, less a smaller kernel maximum its
   // sealed image would not fit (restoreHostState, yurtos-kernel#4239).
   assert(
-    /const state = restoreHostState\(\s*\{\s*\.\.\.await plannedPlaygroundHostState\(undefined, undefined, platform\),/
+    /const state = restoreHostState\(\s*\{\s*\.\.\.await plannedPlaygroundHostState\(\s*undefined,\s*undefined,\s*platform,\s*fullKernelMemory,?\s*\),/
       .test(boot),
   );
   assert(
     /KernelHostInterface\.restore\(\s*kernel,\s*image,\s*state\s*\)/
       .test(boot),
+  );
+});
+
+Deno.test("the Notebook pages' snapshot kernel keeps 1 GiB where the page asks for it", () => {
+  // The `yurt-snapshot` kernelspec (src/snapshot_bridge.ts) boots its own
+  // kernel in src/notebook_kernel_worker.ts. A phone on `?memory=1g` (and a
+  // tablet) gets the 1 GiB kernel there too, as on the ipykernel's
+  // coordinator (src/device.ts fullKernelMemory).
+  const read = (name: string) =>
+    Deno.readTextFileSync(new URL(`../src/${name}`, import.meta.url));
+  const bridge = read("snapshot_bridge.ts");
+  assert(
+    bridge.includes(
+      "fullKernelMemory: fullKernelMemory(deviceClass(), memoryParam())",
+    ),
+    "snapshot_bridge.ts sends the page's ask",
+  );
+  const worker = read("notebook_kernel_worker.ts");
+  assert(
+    /fullKernelMemory\?: boolean;/.test(worker),
+    "notebook_kernel_worker.ts takes it in its start message",
+  );
+  assert(
+    /loadPlaygroundKernel\(\s*kernel,\s*undefined,\s*fullKernelMemoryAsked,?\s*\)/
+      .test(
+        worker,
+      ),
+    "notebook_kernel_worker.ts boots with it",
+  );
+  assert(
+    /restorePlaygroundKernel\(\s*kernel,\s*stored\.image,\s*undefined,\s*undefined,\s*fullKernelMemoryAsked,?\s*\)/
+      .test(worker),
+    "notebook_kernel_worker.ts restores with it",
   );
 });

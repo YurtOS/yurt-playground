@@ -117,6 +117,11 @@ export type PlaygroundEnv = {
   /** What the page runs as (src/device.ts): a phone's kernel takes the
    * small cap's maximum ({@link plannedPlaygroundHostState}). */
   platform?: Platform;
+  /** Keep the kernel host's default 1 GiB kernel maximum even under a
+   * small cap (src/device.ts fullKernelMemory): a tablet, a phone on
+   * `?memory=1g`, and every Notebook page that restores the desktop's
+   * snapshot. */
+  fullKernelMemory?: boolean;
   /** The kernel's sha256, once loaded: a later seal records it. */
   kernelSha256?: (sha256: string) => void;
   fetchBytes: (path: string) => Promise<Uint8Array>;
@@ -443,16 +448,20 @@ export function playgroundHostState(
  * JavaScriptCore, with the per-process reservation sized from what the tab
  * can still reserve right now ({@link planGuestMemory}, #270), and on a
  * phone (`platform`, the page's) the small cap's kernel maximum; elsewhere
- * {@link playgroundHostState} as it is.
+ * {@link playgroundHostState} as it is. `fullKernelMemory` (a phone on
+ * `?memory=1g`): the phone plans as any other device, so its kernel keeps
+ * the default maximum.
  */
 export async function plannedPlaygroundHostState(
   userAgent: string | undefined = globalThis.navigator?.userAgent,
   plan: (phone: boolean) => Promise<GuestMemoryPlan> = (phone) =>
     planGuestMemory(undefined, phone),
   platform?: Platform,
+  fullKernelMemory = false,
 ): Promise<ReturnType<typeof playgroundHostState>> {
   if (!isJavaScriptCore(userAgent)) return playgroundHostState(userAgent);
-  const planned = await plan(platform === "phone");
+  // A phone on `?memory=1g` plans as any other device does.
+  const planned = await plan(platform === "phone" && !fullKernelMemory);
   console.info(
     `[memory] ${planned.reservationBytes / (1024 * 1024)} MiB per process, ` +
       `${planned.kernelMemoryBytes / (1024 * 1024)} MiB for the kernel` +
@@ -473,14 +482,21 @@ export async function plannedPlaygroundHostState(
 /** Load a kernel for an in-browser sandbox. Every page and worker goes
  *  through this or {@link restorePlaygroundKernel}, so on JavaScriptCore
  *  each one reserves what {@link plannedPlaygroundHostState} picks per
- *  guest process. `platform`: what the page runs as, when it says. */
+ *  guest process. `platform`: what the page runs as, when it says;
+ *  `fullKernelMemory`: see {@link PlaygroundEnv}. */
 export async function loadPlaygroundKernel(
   kernel: Uint8Array,
   platform?: Platform,
+  fullKernelMemory = false,
   network?: TabNetwork,
 ): Promise<KernelHostInterface> {
   return KernelHostInterface.load(kernel, {
-    ...await plannedPlaygroundHostState(undefined, undefined, platform),
+    ...await plannedPlaygroundHostState(
+      undefined,
+      undefined,
+      platform,
+      fullKernelMemory,
+    ),
     ...(network !== undefined && { tcp: network.tcp }),
   });
 }
@@ -497,11 +513,17 @@ export async function restorePlaygroundKernel(
     expect: StoreIdentity;
   },
   platform?: Platform,
+  fullKernelMemory = false,
   network?: TabNetwork,
 ): Promise<Awaited<ReturnType<typeof KernelHostInterface.restore>>> {
   const state = restoreHostState(
     {
-      ...await plannedPlaygroundHostState(undefined, undefined, platform),
+      ...await plannedPlaygroundHostState(
+        undefined,
+        undefined,
+        platform,
+        fullKernelMemory,
+      ),
       // A restored sandbox's connections come back closed: the kernel
       // holds none of this backend's handles.
       ...(network !== undefined && { tcp: network.tcp }),
@@ -574,6 +596,7 @@ export async function bootPlayground(
         saved.image,
         undefined,
         env.platform,
+        env.fullKernelMemory,
         env.network,
       );
       if (restored.processes.length !== 0) {
@@ -593,7 +616,12 @@ export async function bootPlayground(
   const bootImage = async () => {
     env.show("compiling kernel");
     return await start(
-      await loadPlaygroundKernel(kernel, env.platform, env.network),
+      await loadPlaygroundKernel(
+        kernel,
+        env.platform,
+        env.fullKernelMemory,
+        env.network,
+      ),
       false,
     );
   };
@@ -791,6 +819,7 @@ export async function restoreSnapshot(
         expect: store.expect.identity,
       },
       env.platform,
+      env.fullKernelMemory,
       env.network,
     );
     if (restored.processes.length !== 0) {
