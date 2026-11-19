@@ -222,8 +222,11 @@
       }
       .pane .bar {
         display: flex;
+        /* A phone is narrower than the controls: they go on to another
+         * line, since the pane clips whatever runs past its edge. */
+        flex-wrap: wrap;
         align-items: center;
-        gap: 14px;
+        gap: 6px 14px;
         padding: 6px 12px;
         border-bottom: 1px solid var(--rule);
         color: var(--muted);
@@ -244,6 +247,7 @@
         color: var(--ember);
       }
       .bar-action {
+        white-space: nowrap;
         font: inherit;
         color: var(--muted);
         background: none;
