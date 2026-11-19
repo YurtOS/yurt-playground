@@ -14,10 +14,13 @@ import {
   type SandboxFiles,
 } from "./installed_list.ts";
 import { linuxRemark } from "./linux_remark.ts";
+import type { Platform } from "./device.ts";
 import { baseToolsHeld } from "./image_tools.ts";
 import {
   GUEST_MEMORY_RESERVATION_BYTES,
   type GuestMemoryPlan,
+  KERNEL_MEMORY_RESERVATION_BYTES,
+  kernelMemoryForRestore,
   planGuestMemory,
   PROBE_LIMIT_BYTES,
 } from "./guest_memory_reservation.ts";
@@ -63,6 +66,7 @@ import {
   startCdpBridge,
 } from "./cdp_bridge.ts";
 import { parsePins, type Pins } from "./pins.ts";
+import { RESOLV_CONF, type TabNetwork } from "./network.ts";
 import {
   checkPythonSet,
   decodeSandboxSnapshot,
@@ -110,6 +114,14 @@ export type PlaygroundEnv = {
   dropSavedSession?: () => Promise<void>;
   /** Fail rather than boot the image when the snapshot cannot be restored. */
   snapshotRequired?: boolean;
+  /** What the page runs as (src/device.ts): a phone's kernel takes the
+   * small cap's maximum ({@link plannedPlaygroundHostState}). */
+  platform?: Platform;
+  /** Keep the kernel host's default 1 GiB kernel maximum even under a
+   * small cap (src/device.ts fullKernelMemory): a tablet, a phone on
+   * `?memory=1g`, and every Notebook page that restores the desktop's
+   * snapshot. */
+  fullKernelMemory?: boolean;
   /** The kernel's sha256, once loaded: a later seal records it. */
   kernelSha256?: (sha256: string) => void;
   fetchBytes: (path: string) => Promise<Uint8Array>;
@@ -150,6 +162,9 @@ export type PlaygroundEnv = {
     handlers: CdpBridgeHandlers;
     started: (bridge: CdpBridge) => void;
   };
+  /** The tab's network through the relay (src/network.ts): its TCP
+   * backend goes into the kernel, and its DNS serves the guest. */
+  network?: TabNetwork;
 };
 
 export type PlaygroundSession = {
@@ -249,9 +264,12 @@ const ESRCH = 3;
 const SIGKILL = 9;
 const MIB = 1024 * 1024;
 
-const DEFAULT_ENV: Record<string, string> = {
+export const DEFAULT_ENV: Record<string, string> = {
   HOME: LOGIN_HOME,
-  PATH: "/bin:/usr/bin:/usr/local/bin",
+  // The user's own programs last (`pip install --user` puts its scripts
+  // in ~/.local/bin), as the image's /etc/profile has it; the page runs
+  // /bin/sh directly, which reads no profile.
+  PATH: `/bin:/usr/bin:/usr/local/bin:${LOGIN_HOME}/.local/bin`,
   PYTHONHOME: "/usr/local",
   PWD: LOGIN_HOME,
   USER: LOGIN_USER,
@@ -405,10 +423,15 @@ export function isJavaScriptCore(
 export function playgroundHostState(
   userAgent: string | undefined = globalThis.navigator?.userAgent,
   reservationBytes: number = GUEST_MEMORY_RESERVATION_BYTES,
+  kernelMemoryBytes?: number,
 ):
   & ReturnType<typeof defaultHostState>
-  & { guestMemoryReservationBytes?: number } {
-  // Kernels older than yurtos-kernel#3115 do not read the field.
+  & {
+    guestMemoryReservationBytes?: number;
+    kernelMemoryMaximumBytes?: number;
+  } {
+  // Kernels older than yurtos-kernel#3115 do not read the reservation, and
+  // those older than #4239 not the kernel memory's maximum: both are hints.
   // Only JavaScriptCore runs out of shared-memory reservations.
   if (!isJavaScriptCore(userAgent)) {
     return defaultHostState();
@@ -416,23 +439,35 @@ export function playgroundHostState(
   return {
     ...defaultHostState(),
     guestMemoryReservationBytes: reservationBytes,
+    // Unset is the kernel host's default (1 GiB).
+    ...(kernelMemoryBytes !== undefined &&
+      kernelMemoryBytes !== KERNEL_MEMORY_RESERVATION_BYTES &&
+      { kernelMemoryMaximumBytes: kernelMemoryBytes }),
   };
 }
 
 /**
  * The host state for a kernel this page is about to build: on
  * JavaScriptCore, with the per-process reservation sized from what the tab
- * can still reserve right now ({@link planGuestMemory}, #270); elsewhere
- * {@link playgroundHostState} as it is.
+ * can still reserve right now ({@link planGuestMemory}, #270), and on a
+ * phone (`platform`, the page's) the small cap's kernel maximum; elsewhere
+ * {@link playgroundHostState} as it is. `fullKernelMemory` (a phone on
+ * `?memory=1g`): the phone plans as any other device, so its kernel keeps
+ * the default maximum.
  */
 export async function plannedPlaygroundHostState(
   userAgent: string | undefined = globalThis.navigator?.userAgent,
-  plan: () => Promise<GuestMemoryPlan> = () => planGuestMemory(),
+  plan: (phone: boolean) => Promise<GuestMemoryPlan> = (phone) =>
+    planGuestMemory(undefined, phone),
+  platform?: Platform,
+  fullKernelMemory = false,
 ): Promise<ReturnType<typeof playgroundHostState>> {
   if (!isJavaScriptCore(userAgent)) return playgroundHostState(userAgent);
-  const planned = await plan();
+  // A phone on `?memory=1g` plans as any other device does.
+  const planned = await plan(platform === "phone" && !fullKernelMemory);
   console.info(
-    `[memory] ${planned.reservationBytes / (1024 * 1024)} MiB per process` +
+    `[memory] ${planned.reservationBytes / (1024 * 1024)} MiB per process, ` +
+      `${planned.kernelMemoryBytes / (1024 * 1024)} MiB for the kernel` +
       (planned.availableBytes === undefined
         ? " (no probe)"
         : `; ${planned.availableBytes >= PROBE_LIMIT_BYTES ? "at least " : ""}${
@@ -440,17 +475,33 @@ export async function plannedPlaygroundHostState(
         } MiB ` +
           `free to reserve, room for ${planned.processes} processes`),
   );
-  return playgroundHostState(userAgent, planned.reservationBytes);
+  return playgroundHostState(
+    userAgent,
+    planned.reservationBytes,
+    planned.kernelMemoryBytes,
+  );
 }
 
 /** Load a kernel for an in-browser sandbox. Every page and worker goes
  *  through this or {@link restorePlaygroundKernel}, so on JavaScriptCore
  *  each one reserves what {@link plannedPlaygroundHostState} picks per
- *  guest process. */
+ *  guest process. `platform`: what the page runs as, when it says;
+ *  `fullKernelMemory`: see {@link PlaygroundEnv}. */
 export async function loadPlaygroundKernel(
   kernel: Uint8Array,
+  platform?: Platform,
+  fullKernelMemory = false,
+  network?: TabNetwork,
 ): Promise<KernelHostInterface> {
-  return KernelHostInterface.load(kernel, await plannedPlaygroundHostState());
+  return KernelHostInterface.load(kernel, {
+    ...await plannedPlaygroundHostState(
+      undefined,
+      undefined,
+      platform,
+      fullKernelMemory,
+    ),
+    ...(network !== undefined && { tcp: network.tcp }),
+  });
 }
 
 /** Restore a sealed in-browser sandbox; see {@link loadPlaygroundKernel}. */
@@ -464,20 +515,43 @@ export async function restorePlaygroundKernel(
     target: StoreRestoreTarget;
     expect: StoreIdentity;
   },
+  platform?: Platform,
+  fullKernelMemory = false,
+  network?: TabNetwork,
 ): Promise<Awaited<ReturnType<typeof KernelHostInterface.restore>>> {
-  if (store !== undefined) {
-    return store.api.restore(
-      kernel,
-      image,
-      store,
-      await plannedPlaygroundHostState(),
-    );
-  }
-  return KernelHostInterface.restore(
-    kernel,
-    image,
-    await plannedPlaygroundHostState(),
+  const state = restoreHostState(
+    {
+      ...await plannedPlaygroundHostState(
+        undefined,
+        undefined,
+        platform,
+        fullKernelMemory,
+      ),
+      // A restored sandbox's connections come back closed: the kernel
+      // holds none of this backend's handles.
+      ...(network !== undefined && { tcp: network.tcp }),
+    },
+    image.kernelMemory.byteLength,
   );
+  if (store !== undefined) {
+    return store.api.restore(kernel, image, store, state);
+  }
+  return KernelHostInterface.restore(kernel, image, state);
+}
+
+/** `state` for restoring `imageBytes` of sealed kernel memory: without its
+ *  smaller kernel maximum when the image would not fit under it with room
+ *  to grow ({@link kernelMemoryForRestore}). */
+export function restoreHostState<
+  T extends { kernelMemoryMaximumBytes?: number },
+>(state: T, imageBytes: number): T {
+  const kernelMemoryMaximumBytes = kernelMemoryForRestore(
+    state.kernelMemoryMaximumBytes,
+    imageBytes,
+  );
+  if (kernelMemoryMaximumBytes === state.kernelMemoryMaximumBytes) return state;
+  const { kernelMemoryMaximumBytes: _dropped, ...rest } = state;
+  return rest as T;
 }
 
 export async function bootPlayground(
@@ -520,7 +594,14 @@ export async function bootPlayground(
       }
       env.show("resuming your session");
       const started = performance.now();
-      const restored = await restorePlaygroundKernel(kernel, saved.image);
+      const restored = await restorePlaygroundKernel(
+        kernel,
+        saved.image,
+        undefined,
+        env.platform,
+        env.fullKernelMemory,
+        env.network,
+      );
       if (restored.processes.length !== 0) {
         restored.host.dispose();
         throw new Error("a saved session must hold no process");
@@ -537,7 +618,15 @@ export async function bootPlayground(
   }
   const bootImage = async () => {
     env.show("compiling kernel");
-    return await start(await loadPlaygroundKernel(kernel), false);
+    return await start(
+      await loadPlaygroundKernel(
+        kernel,
+        env.platform,
+        env.fullKernelMemory,
+        env.network,
+      ),
+      false,
+    );
   };
   const snapshotPath = env.snapshotPath;
   if (snapshotPath === undefined) return await bootImage();
@@ -732,6 +821,9 @@ export async function restoreSnapshot(
         target: store.target,
         expect: store.expect.identity,
       },
+      env.platform,
+      env.fullKernelMemory,
+      env.network,
     );
     if (restored.processes.length !== 0) {
       restored.host.dispose();
@@ -877,13 +969,23 @@ async function startPlayground(
       console.warn(`[cdp bridge] not started: ${error}`);
     }
   }
+  const stopNetwork = env.network?.attach(
+    mk,
+    () =>
+      writeRamfsFile(
+        mk,
+        "/etc/resolv.conf",
+        new TextEncoder().encode(RESOLV_CONF),
+      ),
+  );
   const relay: PkgRelay | undefined = pkgRelay === undefined &&
-      cdp === undefined
+      cdp === undefined && stopNetwork === undefined
     ? undefined
     : {
       stop() {
         pkgRelay?.stop();
         cdp?.stop();
+        stopNetwork?.();
       },
     };
   try {

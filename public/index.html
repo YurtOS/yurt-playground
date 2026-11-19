@@ -30,7 +30,7 @@
       content="The Yurt playground: a shell and a Python cell running in a browser tab"
     />
     <meta name="twitter:card" content="summary_large_image" />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./xterm.css" />
     <style>
       :root {
@@ -222,8 +222,11 @@
       }
       .pane .bar {
         display: flex;
+        /* A phone is narrower than the controls: they go on to another
+         * line, since the pane clips whatever runs past its edge. */
+        flex-wrap: wrap;
         align-items: center;
-        gap: 14px;
+        gap: 6px 14px;
         padding: 6px 12px;
         border-bottom: 1px solid var(--rule);
         color: var(--muted);
@@ -244,6 +247,7 @@
         color: var(--ember);
       }
       .bar-action {
+        white-space: nowrap;
         font: inherit;
         color: var(--muted);
         background: none;
@@ -846,9 +850,10 @@
           <p id="mobile-note" data-testid="mobile-note" hidden>
             This looks like a tablet, so this page runs the shell and Python,
             with a snapshot made for tablets, and an agent whose model runs on
-            OpenRouter: Jupyter and a model in the tab need more memory than a
-            tablet browser gives one tab. A desktop browser, or the desktop app,
-            runs all of it.
+            OpenRouter: a model in the tab needs more memory than a tablet
+            browser gives one tab. Jupyter runs on the Notebook and JupyterLab
+            pages, each in a sandbox of its own. A desktop browser, or the
+            desktop app, runs all of it.
           </p>
 
           <p id="phone-note" data-testid="phone-note" hidden>
@@ -857,7 +862,9 @@
             OpenRouter: Jupyter and a model in the tab need more memory than a
             phone browser gives one tab. Installing more from
             <em>Packages</em> may run the tab out of memory. A desktop browser,
-            or the desktop app, runs all of it.
+            or the desktop app, runs all of it. To try Jupyter here anyway, with
+            the 1 GiB kernel a tablet gets, add <code>?memory=1g</code> to the
+            URL and open the Notebook or JupyterLab.
           </p>
 
           <p
@@ -936,6 +943,29 @@
                 >
                   Download home
                 </button>
+                <button
+                  type="button"
+                  id="network-toggle"
+                  data-testid="network-toggle"
+                  class="bar-action"
+                  aria-pressed="false"
+                  hidden
+                  title="Let programs in this sandbox reach the internet through Yurt's relay."
+                >
+                  Network: off
+                </button>
+                <span id="network-open" data-testid="network-open" hidden
+                >0 open</span>
+                <button
+                  type="button"
+                  id="network-cut"
+                  data-testid="network-cut"
+                  class="bar-action"
+                  hidden
+                  title="Close every connection the sandbox has open."
+                >
+                  Cut connections
+                </button>
                 <span
                   id="net"
                   data-testid="net"
@@ -943,6 +973,14 @@
                   title="This tab's network state. The sandbox keeps working without it."
                 >online</span>
               </div>
+              <p id="network-note" data-testid="network-note" hidden>
+                Traffic leaves through Yurt's relay, which sees destination
+                names and how much data you send, not its contents (TLS is end
+                to end). Only ports 80, 443 and 9418, to public addresses; never
+                your local network.
+              </p>
+              <!-- Turnstile's widget, when the relay's check needs the visitor. -->
+              <div id="network-human" data-testid="network-human"></div>
               <div id="packages" data-testid="packages" hidden>
                 <p>
                   Install a package from
@@ -1036,11 +1074,12 @@
                       desktop, 85 MB on a tablet or phone; later visits load it
                       from the browser's cache.</span>
                     <span id="offline-note"
-                    >Programs in the sandbox have no network:
-                      <code>pip install</code> and <code>wget</code> fail by
-                      design (the desktop app, under Install, has both). <code
-                      >sudo pkg install</code>
-                      works: this page fetches signed packages for it.</span>
+                    >Programs in the sandbox have no network until you turn it
+                      on (Network, above the terminal), through Yurt's relay;
+                      then <code>pip install</code> and <code>curl</code> work.
+                      <code>sudo pkg install</code>
+                      works either way: this page fetches signed packages for
+                      it.</span>
                   </p>
                 </div>
                 <div id="failed" data-testid="boot-failed" hidden>
@@ -1266,8 +1305,8 @@ yurt stop web</pre>
               </summary>
               <p>
                 No badge can prove it, so here is what a server-backed fake
-                could not survive. Each takes under a minute, in Chrome, Edge,
-                Firefox or Safari.
+                could not survive. Each takes under a minute, in Chrome, Edge or
+                Safari.
               </p>
               <div class="checks">
                 <article class="check">
@@ -1275,7 +1314,7 @@ yurt stop web</pre>
                   <p>
                     Start the sandbox and wait for the cell to say <code
                     >ready</code>. After the sandbox is up, turn off Wi-Fi (or,
-                    in Chrome, Edge and Firefox, pick
+                    in Chrome and Edge, pick
                     <kbd>Offline</kbd> in the developer tools' <kbd
                     >Network</kbd>
                     panel). Run another cell.
@@ -1291,11 +1330,10 @@ yurt stop web</pre>
                   <p>
                     Watch this tab in the browser's task manager: in Chrome and
                     Edge,
-                    <kbd>Shift</kbd>+<kbd>Esc</kbd>; in Firefox,
-                    <code>about:processes</code>; for Safari, macOS's Activity
-                    Monitor, which lists each tab's web content process. Its
-                    memory climbs by hundreds of MB as the sandbox boots, and
-                    its CPU spikes when a cell runs.
+                    <kbd>Shift</kbd>+<kbd>Esc</kbd>; for Safari, macOS's
+                    Activity Monitor, which lists each tab's web content
+                    process. Its memory climbs by hundreds of MB as the sandbox
+                    boots, and its CPU spikes when a cell runs.
                   </p>
                   <p>A thin client stays flat.</p>
                 </article>
@@ -1305,20 +1343,19 @@ yurt stop web</pre>
                     While the sandbox runs, list the page's workers: in Chrome,
                     visit
                     <code>chrome://inspect/#workers</code> (in Edge,
-                    <code>edge://inspect/#workers</code>); in Firefox,
-                    <code>about:debugging#/runtime/this-firefox</code>; in
-                    Safari, the Web Inspector's <kbd>Sources</kbd> tab. The
-                    coordinator and the guest workers are listed with their
-                    script URLs, and you can attach a debugger.
+                    <code>edge://inspect/#workers</code>); in Safari, the Web
+                    Inspector's <kbd>Sources</kbd> tab. The coordinator and the
+                    guest workers are listed with their script URLs, and you can
+                    attach a debugger.
                   </p>
                   <p>
                     In the developer tools' <kbd>Network</kbd> panel, nothing
                     moves while a cell runs. The page's security policy lets it
                     fetch only from this site and a few named sources: the
                     package repository on GitHub, Hugging Face for the agent's
-                    in-tab model, OpenRouter when you run the agent there, the
-                    agent's model list and shared snapshots on GitHub. The
-                    sandbox itself has no network: when
+                    in-tab model, OpenRouter when you run the agent there, and
+                    shared snapshots on GitHub. The sandbox itself has no
+                    network: when
                     <code>pkg</code> installs a package, this page fetches files
                     from the package repository for it, and only from there.
                   </p>
@@ -1465,6 +1502,73 @@ yurt stop web</pre>
                 no server running your code. It is meant for in-browser coding
                 environments, running AI-agent tools away from your machine,
                 offline notebooks, and sandboxes embedded in your own product.
+              </p>
+            </section>
+            <section
+              class="strip"
+              id="privacy"
+              aria-labelledby="privacy-title"
+              data-view="about"
+              data-testid="privacy"
+            >
+              <h2 id="privacy-title">Privacy</h2>
+              <p>
+                The sandbox runs in this tab, and what you do in it stays in
+                this browser unless you choose otherwise. What does leave it,
+                and where it goes:
+              </p>
+              <ul>
+                <li>
+                  <strong>Cloudflare</strong> hosts this site, and counts page
+                  views on it with Cloudflare Web Analytics, which sets no
+                  cookies. Previews and the desktop app count nothing. When you
+                  turn the sandbox's network on, Cloudflare Turnstile checks
+                  this browser before the relay lets it in.
+                </li>
+                <li>
+                  <strong>Yurt's relay</strong>, only when you turn the
+                  sandbox's network on: the sandbox's connections go out through
+                  it. It sees which names are looked up, which addresses are
+                  reached and how much data passes, not the contents (TLS is end
+                  to end).
+                </li>
+                <li>
+                  <strong>GitHub</strong> serves the package repository, from
+                  which the page reads the index and installs packages. A shared
+                  snapshot link also asks GitHub which snapshots this repository
+                  published, then downloads that snapshot from it.
+                </li>
+                <li>
+                  <strong>Hugging Face</strong> serves the in-tab model's
+                  weights, downloaded when you start the agent with that model.
+                  The model runs in this tab.
+                </li>
+                <li>
+                  <strong>OpenRouter</strong>, only when you choose an
+                  OpenRouter model for the agent: your task and what the agent
+                  sees in the sandbox (the output of its commands, the files it
+                  reads) go to OpenRouter under your account. Your OpenRouter
+                  key is kept in this browser and sent only to OpenRouter.
+                </li>
+                <li>
+                  <strong>The sites a Playwright program opens</strong>, only
+                  when you choose Playwright and allow it in the Yurt browser
+                  bridge extension's window: the program drives tabs in your
+                  browser, which load what it asks for, with your browser's
+                  sign-ins.
+                </li>
+              </ul>
+              <p>
+                Nothing else leaves the browser: the page's security policy lets
+                it connect only to this site and those sources. The sandbox's
+                files live in the tab's memory. What the page keeps between
+                visits stays in this browser's storage. It includes downloaded
+                packages, model weights and snapshot parts; the sealed sandboxes
+                of the agent (with its chat), the suspend/resume notebook and
+                the snapshot demo; and your OpenRouter key. Clearing this site's
+                data in the browser removes all of it. The desktop app is
+                different: its sandbox runs natively on your machine and has the
+                network.
               </p>
             </section>
             <section

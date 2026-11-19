@@ -2,6 +2,7 @@ import { assertEquals } from "@std/assert";
 import {
   type CaptureMark,
   capturePrecompiles,
+  captureRefusal,
   captureStagesPlaywright,
   captureWarmsGo,
   DOWNLOAD_URL_KEEP_MS,
@@ -314,4 +315,12 @@ Deno.test("Go's warm-up fails when go does, or when go keeps its cache elsewhere
   const elsewhere = await warmUp({ goenvCache: "/root/.cache/go-build" });
   assertEquals(elsewhere.code !== 0, true);
   assertEquals(elsewhere.args, undefined, "nothing was built");
+});
+
+Deno.test("a capture runs on the desktop page only; a phone or tablet page refuses it, naming the platform (#356)", () => {
+  assertEquals(captureRefusal("desktop"), undefined);
+  for (const platform of ["tablet", "phone"] as const) {
+    const refusal = captureRefusal(platform);
+    assertEquals(refusal?.includes(`as the ${platform}'s`), true, refusal);
+  }
 });

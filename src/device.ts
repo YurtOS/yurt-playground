@@ -1,8 +1,9 @@
 /**
- * Which kind of device the page runs on. A phone or tablet tab has too
- * little memory for Jupyter: each gets the shell only, restoring the
- * tablet's snapshot (python alone, no Jupyter), and the Notebook and
- * JupyterLab pages boot nothing on a phone.
+ * Which kind of device the page runs on. A phone's or tablet's home page
+ * runs the shell only, restoring the tablet's snapshot (python alone, no
+ * Jupyter). A tablet's Notebook and JupyterLab pages run Jupyter from the
+ * desktop's snapshot, in a sandbox of their own with a 1 GiB kernel; a
+ * phone's boot nothing unless `?memory=1g` ({@link fullKernelMemory}).
  *
  * iPadOS Safari reports a Mac, at any width (a 13" iPad in landscape is
  * wider than many laptops). An iPad reports 5 touch points, a Mac 0
@@ -51,6 +52,14 @@ export function touchDevice(): boolean {
     (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
 
+/** Firefox, and the Gecko browsers built from it: their user agent carries
+ * a `Firefox/` token. Firefox on iOS is WebKit and says `FxiOS/` instead.
+ * The in-tab sandbox does not start there (the kernel's workers never
+ * signal ready), so the page sends it to unsupported.html. */
+export function isFirefox(userAgent: string): boolean {
+  return /\bFirefox\//.test(userAgent);
+}
+
 /** Which kind of page this is: what it starts (the shell only on a phone
  * or tablet, Jupyter on a desktop) and which snapshot it restores
  * (src/snapshot_pin.ts SNAPSHOT_KINDS). `?platform=` says it in the
@@ -59,8 +68,8 @@ export function touchDevice(): boolean {
 export type Platform = "phone" | "tablet" | "desktop";
 
 /** The snapshot a page on `platform` restores (src/snapshot_pin.ts
- * SNAPSHOT_KINDS): a desktop's own, with the Python set and Jupyter; on an
- * iPhone or iPad the tablet's, python alone. The Agent tab's own sandbox
+ * SNAPSHOT_KINDS): a desktop's own, with the Python set and Jupyter; on a
+ * phone or tablet the tablet's, python alone. The Agent tab's own sandbox
  * restores the tablet's on every platform (src/page.ts). */
 export function platformSnapshotKind(
   platform: Platform,
@@ -208,5 +217,80 @@ export function withEnv(href: string, env: Env): string {
   const url = new URL(href);
   if (env === "python") url.searchParams.delete("env");
   else url.searchParams.set("env", env);
+  return url.href;
+}
+
+/** `?memory=` (case aside): `1g` gives a phone's page what a tablet's has
+ * ({@link fullKernelMemory}); anything else, or none, changes nothing. */
+export const MEMORY_PARAM = "memory";
+
+/** Whether `?memory=` (`asked`) asks for the 1 GiB kernel. */
+export function largeMemoryAsked(asked: string | null | undefined): boolean {
+  return asked?.toLowerCase() === "1g";
+}
+
+/** `?memory=` in `href`, or null when it has none (or there is no URL). */
+export function memoryParam(
+  href: string | undefined = globalThis.location?.href,
+): string | null {
+  return href === undefined
+    ? null
+    : new URL(href).searchParams.get(MEMORY_PARAM);
+}
+
+/**
+ * Whether a page running as `platform` gives its kernel the kernel host's
+ * default 1 GiB maximum. A desktop and a tablet always do: an iPad's
+ * Notebook ran numpy beside a 1 GiB kernel. A phone's kernel takes the
+ * smaller maximum an iPhone tab's cap leaves room for
+ * (src/guest_memory_reservation.ts SMALL_CAP_KERNEL_MEMORY_BYTES) and runs
+ * no Jupyter, unless `?memory=1g` (`asked`) says to try what a tablet runs.
+ */
+export function fullKernelMemory(
+  platform: Platform,
+  asked: string | null | undefined,
+): boolean {
+  return platform !== "phone" || largeMemoryAsked(asked);
+}
+
+/**
+ * What the Notebook and JupyterLab pages (src/lite_bridge.ts) ask the
+ * coordinator for on `device`, given `?memory=` (`asked`): wherever they
+ * run Jupyter in the tab ({@link fullKernelMemory}), the desktop's snapshot,
+ * which holds the Python set and the Jupyter kernel, with no fallback to
+ * the image (installing them took a minute or more on every visit, and on
+ * an iPad the install ran the tab out of memory) and the kernel's full
+ * 1 GiB. A phone without `?memory=1g`, and the desktop app (`nativeApp`,
+ * whose sandbox is native), ask for none of it.
+ */
+export function notebookStart(
+  device: Platform,
+  asked: string | null | undefined,
+  nativeApp: boolean,
+): {
+  snapshot?: "restore";
+  snapshotKind?: "desktop";
+  snapshotRequired?: true;
+  fullKernelMemory?: true;
+} {
+  if (nativeApp || !fullKernelMemory(device, asked)) return {};
+  return {
+    snapshot: "restore",
+    snapshotKind: "desktop",
+    snapshotRequired: true,
+    fullKernelMemory: true,
+  };
+}
+
+/** `href` with `?memory=1g` set when `asked` asks for it, every other
+ * parameter and the fragment kept: the home page's Notebook and JupyterLab
+ * links carry it on. */
+export function withMemory(
+  href: string,
+  asked: string | null | undefined,
+): string {
+  if (!largeMemoryAsked(asked)) return href;
+  const url = new URL(href);
+  url.searchParams.set(MEMORY_PARAM, "1g");
   return url.href;
 }

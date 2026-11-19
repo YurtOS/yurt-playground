@@ -5,7 +5,15 @@
  * gives its own.
  */
 import { DEMO_TASK, systemPrompt } from "../src/agent.ts";
-import type { AgentModelsConfig } from "../src/agent_models_config.ts";
+import {
+  AGENT_MODELS_PATH,
+  type AgentModelsConfig,
+} from "../src/agent_models_config.ts";
+
+/** The page's request for its model list, for `route`: the file at the
+ * site's root, never a copy elsewhere (#368). */
+export const AGENT_MODELS_ROUTE = (url: URL): boolean =>
+  url.pathname === `/${AGENT_MODELS_PATH}`;
 
 /** The built-in prompt as the list's lines, `{tools}` for the sandbox. */
 export const PROMPT_LINES = systemPrompt(true).split("\n").map((line, i) =>

@@ -37,3 +37,23 @@
   font-size: var(--jp-ui-font-size0, 11px);
   white-space: pre-wrap;
 }
+
+/* An HTML output's sandboxed frame (src/output_frame.ts). The page cannot
+ * measure its content, so the frame scrolls and the wrapper has a resize
+ * handle: its first height is a guess, set inline, between these bounds. */
+.yurt-OutputFrame {
+  box-sizing: border-box;
+  resize: vertical;
+  overflow: hidden;
+  min-height: 44px;
+  max-height: 90vh;
+  /* The resize grip's strip: WebKit gives a grip under the frame to the
+   * frame, so the frame must not cover it. */
+  padding-bottom: 12px;
+}
+.yurt-OutputFrame iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}

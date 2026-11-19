@@ -31,11 +31,10 @@ Deno.test("the Markdown-only classifier", () => {
   assertEquals(isDocsOnly(["docs/x.md", "src/x.ts"]), false);
   // public/ is the deployed site, so Markdown there ships.
   assertEquals(isDocsOnly(["public/demo/README.md"]), false);
-  // The agent's model list ships by being merged: the page reads it from main.
-  assertEquals(isDocsOnly(["config/agent-models.json"]), true);
-  assertEquals(isDocsOnly(["config/agent-models.json", "README.md"]), true);
-  assertEquals(isDocsOnly(["config/other.json"]), false);
-  assertEquals(isDocsOnly(["config/agent-models.json", "src/page.ts"]), false);
+  // The agent's model list is built into the site and ships by a deploy, like
+  // any page input (#368): its pull request runs the whole tier.
+  assertEquals(isDocsOnly(["config/agent-models.json"]), false);
+  assertEquals(isDocsOnly(["config/agent-models.json", "README.md"]), false);
   // Fail closed: no list, or one the API may have cut short.
   assertEquals(isDocsOnly([]), false);
   assertEquals(isDocsOnly([""]), false);
@@ -106,24 +105,8 @@ Deno.test("every test that reads Markdown runs in checks", async () => {
   assertEquals(readsMarkdown.sort(), [...MARKDOWN_TESTS].sort());
 });
 
-Deno.test("the agent's model list alone builds nothing, and is validated", async () => {
+Deno.test("the agent's model list is a site input: every push to main tests it (#368)", async () => {
   const ci = await workflow();
-  // A push to main that changes only the list starts no CI run (no push
-  // deploys at all: deploy-pages.yml runs only when dispatched).
-  assertMatch(
-    ci,
-    new RegExp(
-      "\\n  push:\\n    branches: \\[main\\]\\n(?:    #[^\\n]*\\n)*" +
-        "    paths-ignore: \\[config/agent-models\\.json\\]\\n",
-    ),
-  );
-  // Its pull request runs only the checks job, which validates it on every
-  // run: a step of its own, with no `if:`.
-  assertMatch(
-    checksJob(ci),
-    new RegExp(
-      "\\n      - name: [^\\n]+\\n        run: deno test --no-check " +
-        "--allow-read tests/agent_models_file_test\\.ts\\n",
-    ),
-  );
+  assertEquals(ci.includes("paths-ignore"), false);
+  assertEquals(ci.includes("agent-models"), false);
 });
