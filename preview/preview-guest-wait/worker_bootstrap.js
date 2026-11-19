@@ -5080,7 +5080,7 @@ var CheckpointState = class {
 // ../yurtos-kernel/packages/kernel-host-interface-js/kernel-host-interface/guest_wait.ts
 var GUEST_WAIT_SLICE_MS = 1e3;
 function guestWait(view, index, value, timeoutMs) {
-  if (timeoutMs !== void 0 && timeoutMs !== Infinity) {
+  if (timeoutMs !== void 0 && Number.isFinite(timeoutMs)) {
     return Atomics.wait(view, index, value, timeoutMs);
   }
   for (let sliced = false; ; sliced = true) {

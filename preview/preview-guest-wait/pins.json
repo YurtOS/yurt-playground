@@ -2,7 +2,7 @@
   "train": "playground-2026.11.18-ac8686f",
   "kernelWasm": {
     "repo": "YurtOS/yurtos-kernel",
-    "rev": "c016facb6122bf7763df258e34d2e2cb8567f3d5",
+    "rev": "ac8686f3f6066b6d3c7be0a19e8158ec5dff2d8b",
     "releaseRepo": "YurtOS/yurt-sandbox",
     "release": "kernel-wasm-playground-2026.11.18-ac8686f",
     "build": "scripts/build-kernel-wasm.sh",
@@ -74,7 +74,7 @@
     "size": 77912432,
     "builtFrom": {
       "kernelSha256": "1a976c46cac6d4c1aab457edfde55161d22b0c10cfaf805826815b2f4497af11",
-      "kernelRev": "c016facb6122bf7763df258e34d2e2cb8567f3d5",
+      "kernelRev": "ac8686f3f6066b6d3c7be0a19e8158ec5dff2d8b",
       "sealVersion": 2,
       "bootSetup": 2,
       "imageSha256": "7b2be15952b0a913d5c5f448e7cb646632623d38ec7cdf68bd0c0737776af33e",
@@ -111,7 +111,7 @@
     "size": 143406441,
     "builtFrom": {
       "kernelSha256": "1a976c46cac6d4c1aab457edfde55161d22b0c10cfaf805826815b2f4497af11",
-      "kernelRev": "c016facb6122bf7763df258e34d2e2cb8567f3d5",
+      "kernelRev": "ac8686f3f6066b6d3c7be0a19e8158ec5dff2d8b",
       "sealVersion": 2,
       "bootSetup": 2,
       "imageSha256": "7b2be15952b0a913d5c5f448e7cb646632623d38ec7cdf68bd0c0737776af33e",
@@ -163,7 +163,7 @@
     "size": 69060696,
     "builtFrom": {
       "kernelSha256": "1a976c46cac6d4c1aab457edfde55161d22b0c10cfaf805826815b2f4497af11",
-      "kernelRev": "c016facb6122bf7763df258e34d2e2cb8567f3d5",
+      "kernelRev": "ac8686f3f6066b6d3c7be0a19e8158ec5dff2d8b",
       "sealVersion": 2,
       "bootSetup": 2,
       "imageSha256": "7b2be15952b0a913d5c5f448e7cb646632623d38ec7cdf68bd0c0737776af33e",
@@ -200,7 +200,7 @@
     "size": 233662180,
     "builtFrom": {
       "kernelSha256": "1a976c46cac6d4c1aab457edfde55161d22b0c10cfaf805826815b2f4497af11",
-      "kernelRev": "c016facb6122bf7763df258e34d2e2cb8567f3d5",
+      "kernelRev": "ac8686f3f6066b6d3c7be0a19e8158ec5dff2d8b",
       "sealVersion": 2,
       "bootSetup": 2,
       "imageSha256": "7b2be15952b0a913d5c5f448e7cb646632623d38ec7cdf68bd0c0737776af33e",
