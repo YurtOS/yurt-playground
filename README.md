@@ -24,8 +24,10 @@ own.
   kernel and a 143 MB snapshot with Python and Jupyter. A tablet or phone
   downloads about 86 MB: the kernel and a 77 MB snapshot with Python. A repeat
   visit takes them from the browser's cache.
-- **Phones and tablets boot too**: both get the shell and Python. Jupyter needs
-  a desktop browser.
+- **Phones and tablets boot too**: both get the shell and Python. On a tablet
+  the Notebook and JupyterLab run too, each restoring the desktop's snapshot in
+  a sandbox of its own with a 1 GiB kernel. A phone's kernel gets 512 MiB and no
+  Jupyter; `?memory=1g` gives it what a tablet gets, to try.
 - **Go, on a desktop.** Choose _Go_ on the start screen, or open `?env=go`: the
   sandbox comes with `go` and its standard library already compiled, so the
   first `go run` of a small program (one that imports `fmt`, `bufio`, `os`,
@@ -57,7 +59,7 @@ going, in [the roadmap](docs/ROADMAP.md).
 In the browser, files live in the tab's memory: a reload starts a fresh sandbox
 (_Download home_ saves your home directory first). Planned, not done yet: files
 that survive a reload, Python native extensions loaded at run time, and Jupyter
-on tablets. The [roadmap](docs/ROADMAP.md) has the rest.
+on phones by default. The [roadmap](docs/ROADMAP.md) has the rest.
 
 ### What is in the sandbox
 
@@ -322,12 +324,12 @@ Packages are signed and published in
 
 Train `playground-2026.11.18-ac8686f`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
 
-The desktop's holds the Python set and starts the Notebook, the tablet's, which a phone restores too, the interpreter alone; Go's, which a desktop browser restores when Go is chosen, holds the go package and its standard library already compiled, and no Python. A snapshot is sealed with no process in it, so nothing runs or is imported until a restore starts the shell (and, on a desktop, Jupyter). `deno run -A scripts/verify-snapshots.ts [--files] [--live]` checks each against its kind.
+The desktop's holds the Python set and starts the Notebook, the tablet's, which a phone's home page restores too (a tablet's Notebook and JupyterLab restore the desktop's), the interpreter alone; Go's, which a desktop browser restores when Go is chosen, holds the go package and its standard library already compiled, and no Python. A snapshot is sealed with no process in it, so nothing runs or is imported until a restore starts the shell (and, on a desktop, Jupyter). `deno run -A scripts/verify-snapshots.ts [--files] [--live]` checks each against its kind.
 
 | Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
 | --- | --- | --- | --- | --- | --- | --- |
-| desktop | desktop browser (Mac, PC): `?platform=desktop` | `snapshot-playground-2026.11.18-ac8686f` | 143.4 MB in 7 parts | 593.7 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
-| tablet | tablet (iPad) and phone (iPhone): `?platform=tablet`, `?platform=phone` | `snapshot-tablet-playground-2026.11.18-ac8686f` | 77.9 MB in 4 parts | 241.4 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
+| desktop | desktop browser (Mac, PC): `?platform=desktop`; the Notebook and JupyterLab on a tablet (iPad), and on a phone with `?memory=1g` | `snapshot-playground-2026.11.18-ac8686f` | 143.4 MB in 7 parts | 593.7 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
+| tablet | home page on a tablet (iPad) and phone (iPhone): `?platform=tablet`, `?platform=phone` | `snapshot-tablet-playground-2026.11.18-ac8686f` | 77.9 MB in 4 parts | 241.4 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
 | go | desktop browser that chose Go: `?platform=desktop&env=go` | `snapshot-go-playground-2026.11.18-ac8686f` | 233.7 MB in 12 parts | 798.8 MiB | ? | BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
 | playwright | desktop browser that chose Playwright: `?platform=desktop&env=playwright` | `snapshot-playwright-playground-2026.11.18-ac8686f` | 69.1 MB in 4 parts | 197.4 MiB | ? | BusyBox shell, git 2.55.0, Node 22.23.3, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
 
@@ -335,10 +337,12 @@ The desktop's holds the Python set and starts the Notebook, the tablet's, which 
 <!-- snapshot-table:end -->
 
 The page picks its platform from the device; `?platform=phone`, `tablet` or
-`desktop` overrides it as far as the device can run it, `?env=go` restores Go's
-snapshot on a desktop browser (and is ignored, with a note, anywhere else), and
-`?snapshot=0` boots the slim image instead of restoring a snapshot. Each
-download comes with the 8.5 MB kernel.
+`desktop` overrides it as far as the device can run it, `?memory=1g` gives a
+phone's kernel the 1 GiB a tablet's has and lets its Notebook and JupyterLab
+restore the desktop's snapshot (the home page carries it on to those links),
+`?env=go` restores Go's snapshot on a desktop browser (and is ignored, with a
+note, anywhere else), and `?snapshot=0` boots the slim image instead of
+restoring a snapshot. Each download comes with the 8.5 MB kernel.
 
 Measured with `scripts/measure-boot.ts` (headless, served locally, so the
 download is fast) on 2026-10-29, except the phone rows: those are from

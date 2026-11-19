@@ -116,6 +116,9 @@ export type NotebookKernelToWorker =
     isolated: boolean;
     /** Seal this often while a cell runs; 0 disables. */
     sealEveryMs?: number;
+    /** Keep the kernel's default 1 GiB maximum even under a small cap: a
+     * tablet, or a phone on `?memory=1g` (src/device.ts fullKernelMemory). */
+    fullKernelMemory?: boolean;
   }
   | {
     type: "jupyter-send";
@@ -616,6 +619,8 @@ function finishCell(frame: Exclude<GuestFrame, { t: "ready" }>): void {
 // ── Periodic seals ──────────────────────────────────────────────────────
 
 let sealEveryMs = DEFAULT_SEAL_EVERY_MS;
+/** The start message's `fullKernelMemory`: every boot and restore takes it. */
+let fullKernelMemoryAsked = false;
 let sealTimer: number | undefined;
 /** The tick in flight, so a Suspend click waits for it instead of being
  *  dropped (`sealing` was a double-click guard before ticks existed). */
@@ -1017,7 +1022,11 @@ async function bootFresh(
   kernelSha256: string,
 ): Promise<Live> {
   status("booting the kernel");
-  const mk = await loadPlaygroundKernel(kernel);
+  const mk = await loadPlaygroundKernel(
+    kernel,
+    undefined,
+    fullKernelMemoryAsked,
+  );
   // A suspended kernel is disposed with its guests, so a watch never
   // outlives the kernel it watches.
   watchGuestMemoryRefusals(mk, () => post(memoryRefusedMessage()));
@@ -1058,7 +1067,13 @@ async function restoreStored(
   kernel: Uint8Array,
   stored: StoredSnapshot,
 ): Promise<Live> {
-  const restored = await restorePlaygroundKernel(kernel, stored.image).catch(
+  const restored = await restorePlaygroundKernel(
+    kernel,
+    stored.image,
+    undefined,
+    undefined,
+    fullKernelMemoryAsked,
+  ).catch(
     (error) => {
       // Refused before there was a host to watch: say so here.
       if (isGuestMemoryRefusal(error)) post(memoryRefusedMessage());
@@ -1353,6 +1368,7 @@ self.onmessage = async (event: MessageEvent<NotebookKernelToWorker>) => {
     switch (msg.type) {
       case "start":
         if (msg.sealEveryMs !== undefined) sealEveryMs = msg.sealEveryMs;
+        fullKernelMemoryAsked = msg.fullKernelMemory === true;
         try {
           await start(msg.isolated);
         } catch (error) {

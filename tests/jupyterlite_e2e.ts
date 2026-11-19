@@ -934,6 +934,38 @@ if (import.meta.main) {
     if (coordinators.length > 0) {
       fail(`a phone's Notebook page started a sandbox: ${coordinators}`);
     }
+    // On `?memory=1g` the home page carries the ask on to its links, and
+    // the Notebook page boots, as a tablet's does: no refusal, and the
+    // coordinator that restores the desktop's snapshot is fetched.
+    await phonePage.goto(`${server.url}/?memory=1g`, { waitUntil: "load" });
+    const carried = await phonePage.getByTestId("choose-notebook")
+      .getAttribute("href");
+    if (
+      carried === null ||
+      new URL(carried, server.url).searchParams.get("memory") !== "1g"
+    ) {
+      fail(`a phone's Notebook link on ?memory=1g is ${carried}`);
+    }
+    await phonePage.goto(
+      `${server.url}/jupyter/notebooks/index.html?path=welcome.ipynb&memory=1g`,
+      { waitUntil: "load" },
+    );
+    for (
+      const until = Date.now() + 60_000;
+      coordinators.length === 0 && Date.now() < until;
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (coordinators.length === 0) {
+      fail("a phone's Notebook page on ?memory=1g started no sandbox");
+    }
+    const refusal = await phonePage.evaluate(() =>
+      document.querySelector("[data-testid=yurt-bridge-status]")
+        ?.textContent ?? ""
+    );
+    if (refusal.includes("do not run on phones")) {
+      fail(`a phone's Notebook page on ?memory=1g refused: ${refusal}`);
+    }
     await phone.close();
 
     // A page served without COOP/COEP is the one thing that cannot work: the

@@ -212,18 +212,21 @@ The page restores a sealed sandbox made for its device by default, instead of
 booting the slim image and installing into it: a desktop browser the one with
 the Python set and Jupyter (`snapshot` in the pins), a tablet or phone the one
 with python alone (`tabletSnapshot`; a phone has had no snapshot of its own
-since 2026-11-17). A desktop browser that chooses Go on the start screen
-(`?env=go`) restores the Go one instead (`goSnapshot`): the slim image with the
-`go` package installed and its build cache already holding the standard library
-a small program imports (`GO_WARMUP_IMPORTS` in `src/capture_outcome.ts`), and
-no Python or Jupyter. Phones and tablets never get it: `?env=go` there runs the
-device's own page, with a note, and the choice is shown only once the site pins
-a Go snapshot. Whenever its snapshot cannot be had or is refused, the page boots
-the image as before, with a console note; `?snapshot=0` always boots the image.
-Each snapshot records what is in that Linux, which the page shows above the
-terminal and the shell prints when it starts (it is also `/etc/motd`). A repeat
-visit takes the checked parts from the browser's cache (Cache API, keyed by each
-part's sha256) instead of downloading them again. See
+since 2026-11-17). The Notebook and JupyterLab pages restore the desktop's on a
+tablet too, and on a phone with `?memory=1g`, with a 1 GiB kernel
+(`notebookStart` in `src/device.ts`); without it a phone's start none. A desktop
+browser that chooses Go on the start screen (`?env=go`) restores the Go one
+instead (`goSnapshot`): the slim image with the `go` package installed and its
+build cache already holding the standard library a small program imports
+(`GO_WARMUP_IMPORTS` in `src/capture_outcome.ts`), and no Python or Jupyter.
+Phones and tablets never get it: `?env=go` there runs the device's own page,
+with a note, and the choice is shown only once the site pins a Go snapshot.
+Whenever its snapshot cannot be had or is refused, the page boots the image as
+before, with a console note; `?snapshot=0` always boots the image. Each snapshot
+records what is in that Linux, which the page shows above the terminal and the
+shell prints when it starts (it is also `/etc/motd`). A repeat visit takes the
+checked parts from the browser's cache (Cache API, keyed by each part's sha256)
+instead of downloading them again. See
 [Downloads, memory and boot times](../README.md#downloads-memory-and-boot-times)
 for each one's size and the memory it needs.
 
