@@ -4,14 +4,14 @@
  * the two settings, {@link NETWORK_RELAY} and {@link TURNSTILE_SITE_KEY}.
  * The build ships them beside the page as config/network.json, which the
  * page reads, and the policy (src/csp.ts) admits the relay and Turnstile.
- * A null relay -- until one is deployed -- means the tab has no network
- * and shows no toggle.
+ * A null relay means the tab has no network and shows no toggle.
  */
 
 /** The relay's base URL (`https://…`), or null: no network for the tab. */
-export const NETWORK_RELAY: string | null = null;
+export const NETWORK_RELAY: string | null =
+  "https://yurt-relay.ofersa.workers.dev";
 /** The relay's Turnstile widget's site key; required with a relay. */
-export const TURNSTILE_SITE_KEY: string | null = null;
+export const TURNSTILE_SITE_KEY: string | null = "0x4AAAAAAGIkiU4u8tEeEsWq";
 
 /** The action the widget runs; the relay checks siteverify reports it. */
 export const TURNSTILE_ACTION = "relay-token";

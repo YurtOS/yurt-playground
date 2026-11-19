@@ -204,10 +204,12 @@ desktop's train meanwhile: it describes the host, not the page.
 
 The in-tab sandbox reaches the internet only through the relay in `relay/`
 (#380), and only when its user turns "Network" on. The page offers the toggle
-only when `NETWORK_RELAY` in `src/network_config.ts` names a relay; it is
-`null`, so merging relay changes changes nothing in production.
+only when `NETWORK_RELAY` in `src/network_config.ts` names a relay. It names the
+deployed Worker, `https://yurt-relay.ofersa.workers.dev` (from `relay/`, origin
+`https://yurt-playground.pages.dev`); null turns the network off for the whole
+site.
 
-To turn it on:
+To set one up from scratch:
 
 1. Create a Turnstile widget in the Cloudflare dashboard for the site's
    hostnames (mode Managed or Invisible). It gives a site key and a secret key.

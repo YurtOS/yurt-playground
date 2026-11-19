@@ -301,11 +301,24 @@ Deno.test("relay client: a token is reused for a quarter of its life, by the pag
   assertEquals(await client.resolve("pypi.org"), ["151.101.0.223"]);
 });
 
-Deno.test("network config: no relay configured, so no toggle and no policy", () => {
-  // What merging this changes in production: nothing, until a relay is
-  // deployed and named in config/network.json.
-  assertEquals(CONFIGURED_RELAY, undefined);
+Deno.test("network config: the deployed relay, and Turnstile, are admitted", () => {
+  assertEquals(CONFIGURED_RELAY, "https://yurt-relay.ofersa.workers.dev");
   const policy = contentSecurityPolicy();
+  assert(
+    cspSources(policy, "connect-src").includes(
+      "wss://yurt-relay.ofersa.workers.dev",
+    ),
+  );
+  assertEquals(cspSources(policy, "frame-src"), [TURNSTILE_ORIGIN]);
+  // The JupyterLite pages get no network.
+  const lite = contentSecurityPolicy({ sameOriginOnly: true });
+  assert(!/wss?:/.test(cspSources(lite, "connect-src").join(" ")));
+  assertEquals(cspSources(lite, "frame-src"), ["'none'"]);
+});
+
+Deno.test("network config: with no relay, no toggle and no policy", () => {
+  // A build whose config names no relay changes nothing.
+  const policy = contentSecurityPolicy({ networkRelay: null });
   assert(!/wss?:/.test(cspSources(policy, "connect-src").join(" ")));
   assert(!cspSources(policy, "script-src").includes(TURNSTILE_ORIGIN));
   assertEquals(cspSources(policy, "frame-src"), ["'none'"]);

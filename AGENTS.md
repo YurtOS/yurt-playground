@@ -81,8 +81,8 @@ Kernel primitives stay in `yurtos-kernel`. Image composition stays in
   person allows it in the extension's own window. Through those tabs a guest can
   load any URL with the browser's sign-ins: that is the feature, and the
   approval is its boundary. And one route the user turns on: once
-  `NETWORK_RELAY` in `src/network_config.ts` names a relay (none until one is
-  deployed), the terminal bar offers "Network", off on every new tab. On, the
+  `NETWORK_RELAY` in `src/network_config.ts` names a relay (the deployed one
+  does), the terminal bar offers "Network", off on every new tab. On, the
   guest's TCP connects go to public addresses on ports 80, 443 and 9418 only,
   each as a WebSocket to the relay (`relay/`), which checks port and address
   again; a DNS on the guest's `127.0.0.1:53` answers from the relay's resolution

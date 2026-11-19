@@ -89,9 +89,9 @@ export type CspOptions = {
   /** The deployed site's Cloudflare Web Analytics beacon
    * (src/web_analytics.ts): its script and its report endpoint. */
   webAnalytics?: boolean;
-  /** The network relay's origin; the configured one when unset. Not with
-   * `sameOriginOnly`. */
-  networkRelay?: string;
+  /** The network relay's origin; the configured one when unset, none when
+   * null. Not with `sameOriginOnly`. */
+  networkRelay?: string | null;
 };
 
 export function contentSecurityPolicy(options: CspOptions = {}): string {
@@ -134,9 +134,8 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
 
 /** The relay the policy admits: the configured one, outside JupyterLite. */
 function relayFor(options: CspOptions): string | undefined {
-  return options.sameOriginOnly
-    ? undefined
-    : options.networkRelay ?? CONFIGURED_RELAY;
+  if (options.sameOriginOnly || options.networkRelay === null) return undefined;
+  return options.networkRelay ?? CONFIGURED_RELAY;
 }
 
 /** `policy` (one CSP header value) with `relay` and Turnstile admitted, as
