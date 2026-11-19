@@ -61,7 +61,11 @@ function loadTurnstile(): Promise<Turnstile> {
     script.crossOrigin = "anonymous";
     script.onload = () =>
       resolve((globalThis as unknown as { turnstile: Turnstile }).turnstile);
-    script.onerror = () => reject(new Error("Turnstile did not load"));
+    script.onerror = () => {
+      // Gone with its failure: the next try adds one tag, not another.
+      script.remove();
+      reject(new Error("Turnstile did not load"));
+    };
     document.head.append(script);
   }).catch((error) => {
     turnstileScript = undefined;

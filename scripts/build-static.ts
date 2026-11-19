@@ -327,6 +327,15 @@ export async function buildStaticSite(
   );
   await writeLlmRuntime();
   await writeSiteDocuments(distDir, beaconToken(options.webAnalytics ?? false));
+  // After the policy is final: the worker carries its hash.
+  const worker = join(distDir, JUPYTER_DIR, "service-worker.js");
+  await Deno.writeTextFile(
+    worker,
+    await stampedServiceWorker(
+      await Deno.readTextFile(worker),
+      await Deno.readTextFile(join(distDir, "_headers")),
+    ),
+  );
   if (options.ghPagesPreview) await writeGhPagesPreview(distDir);
 }
 
@@ -341,6 +350,25 @@ export async function writeSiteDocuments(
     join(dir, "_headers"),
     await siteHeaders(dir, token),
   );
+}
+
+const POLICY_STAMP = /\n\/\/ yurt-policy [0-9a-f]{64}\n$/;
+
+/** JupyterLite's service worker with the site's `_headers` hash appended.
+ * A service worker keeps the policy it was installed with, and the browser
+ * replaces it only when its script's bytes change: JupyterLite's do not
+ * between builds, so after #388 visitors kept a worker whose connect-src
+ * refused Turnstile (#390). Its bytes now change with the policy, and the
+ * worker (skipWaiting, clients.claim) takes over on the next load. */
+export async function stampedServiceWorker(
+  script: string,
+  headers: string,
+): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(headers)),
+  );
+  const hex = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${script.replace(POLICY_STAMP, "")}\n// yurt-policy ${hex}\n`;
 }
 
 /** Add the Cloudflare Web Analytics beacon (src/web_analytics.ts) to the
