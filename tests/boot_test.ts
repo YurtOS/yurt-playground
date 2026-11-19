@@ -2,6 +2,7 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { KernelHostInterface, METHOD } from "@yurt/kernel-host-interface-js";
 import {
   bootPlayground,
+  DEFAULT_ENV,
   fetchPlaygroundBytes,
   prepareSeal,
 } from "../src/boot.ts";
@@ -16,6 +17,15 @@ import {
 import { ExecutionRegistry } from "../src/executions.ts";
 import { buildExportLine, EXPORT_MAX_BYTES } from "../src/agent_api.ts";
 import { probePython } from "../src/coordinator_start.ts";
+
+Deno.test("the terminal's PATH ends with the user's ~/.local/bin, as /etc/profile has it", () => {
+  // `pip install --user` puts its scripts there; the page runs /bin/sh,
+  // which reads no profile (yurt-ports#319).
+  assertEquals(
+    DEFAULT_ENV.PATH.split(":"),
+    ["/bin", "/usr/bin", "/usr/local/bin", "/home/user/.local/bin"],
+  );
+});
 
 Deno.test("bootPlayground fails closed when the page is not isolated", async () => {
   let shown = "";
