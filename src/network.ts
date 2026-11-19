@@ -31,6 +31,9 @@ export const INBOX_CAP = 16 * 1024 * 1024;
 /** Names the page remembers at most. */
 export const DNS_CACHE_NAMES = 256;
 const CLOSE_ERRNO_BASE = 4000;
+/** How long a token may take (a Turnstile check included): past it the
+ * connect fails with ENETUNREACH and the next one asks again. */
+export const TOKEN_DEADLINE_MS = 30_000;
 const DNS_TTL_S = 60;
 
 const EAGAIN = 11;
@@ -60,6 +63,7 @@ export class RelayClient {
     private readonly fetchFn: typeof fetch = (input, init) =>
       fetch(input, init),
     private readonly now: () => number = Date.now,
+    private readonly deadlineMs = TOKEN_DEADLINE_MS,
   ) {}
 
   /** A token with three quarters of its life ahead at least: a connection
@@ -74,8 +78,21 @@ export class RelayClient {
     }
     this.#token = (async () => {
       const fetched = this.now();
-      const { token, expires } = await this.fetchToken();
-      return { token, expires, fetched };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const { token, expires } = await Promise.race([
+          this.fetchToken(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("no relay token in time")),
+              this.deadlineMs,
+            );
+          }),
+        ]);
+        return { token, expires, fetched };
+      } finally {
+        clearTimeout(timer);
+      }
     })();
     return (await this.#token).token;
   }

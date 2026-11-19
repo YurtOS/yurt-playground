@@ -427,3 +427,34 @@ Deno.test("relay client: the name cache stays bounded", async () => {
   }
   assertEquals(client.cachedNames, DNS_CACHE_NAMES);
 });
+
+Deno.test("relay client: a token that does not come in time fails the connect", async () => {
+  let asked = 0;
+  const client = new RelayClient(
+    "https://relay.example",
+    () => {
+      asked++;
+      // The page never answers (a Turnstile check left hanging).
+      return new Promise(() => {});
+    },
+    () => Promise.resolve(new Response(null, { status: 500 })),
+    Date.now,
+    20,
+  );
+  const tcp = new RelayTcp(
+    client,
+    () => {},
+    (url) => new FakeWebSocket(url) as unknown as WebSocket,
+  );
+  FakeWebSocket.made = [];
+  tcp.setEnabled(true);
+  const handle = tcp.connect("151.101.0.223", 443, KH_CONNECT_ASYNC);
+  assertEquals(tcp.connectStatus(handle), 0);
+  await new Promise((r) => setTimeout(r, 50));
+  assertEquals(tcp.connectStatus(handle), -101); // ENETUNREACH
+  assertEquals(FakeWebSocket.made, []);
+  // The next connect asks again.
+  tcp.connect("151.101.0.223", 443, KH_CONNECT_ASYNC);
+  await new Promise((r) => setTimeout(r, 50));
+  assertEquals(asked, 2);
+});

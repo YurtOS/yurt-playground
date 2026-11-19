@@ -15,6 +15,7 @@ import {
   type Network,
   NETWORK_CONFIG_PATH,
   networkOf,
+  TURNSTILE_ACTION,
   TURNSTILE_ORIGIN,
 } from "./network_config.ts";
 import { siteUrl } from "./site_url.ts";
@@ -40,6 +41,7 @@ type Turnstile = {
     container: HTMLElement,
     options: {
       sitekey: string;
+      action: string;
       appearance: "interaction-only";
       callback: (token: string) => void;
       "error-callback": (code: string) => void;
@@ -81,6 +83,7 @@ async function humanAnswer(
     return await new Promise<string>((resolve, reject) => {
       const widget = turnstile.render(slot, {
         sitekey: siteKey,
+        action: TURNSTILE_ACTION,
         appearance: "interaction-only",
         callback: (token) => {
           turnstile.remove(widget);

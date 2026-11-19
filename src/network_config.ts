@@ -13,6 +13,9 @@ export const NETWORK_RELAY: string | null = null;
 /** The relay's Turnstile widget's site key; required with a relay. */
 export const TURNSTILE_SITE_KEY: string | null = null;
 
+/** The action the widget runs; the relay checks siteverify reports it. */
+export const TURNSTILE_ACTION = "relay-token";
+
 /** Where Turnstile's script and challenge frame come from. */
 export const TURNSTILE_ORIGIN = "https://challenges.cloudflare.com";
 

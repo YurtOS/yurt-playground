@@ -14,7 +14,10 @@ import { launchBrowser } from "../scripts/browser.ts";
 import { ensureBundle } from "../scripts/serve.ts";
 import { handlePlaygroundRequest } from "../src/serve.ts";
 import { withRelay } from "../src/csp.ts";
-import { NETWORK_CONFIG_PATH } from "../src/network_config.ts";
+import {
+  NETWORK_CONFIG_PATH,
+  TURNSTILE_ORIGIN,
+} from "../src/network_config.ts";
 import {
   startDenoRelay,
   TURNSTILE_TEST_SECRET,
@@ -87,6 +90,13 @@ if (import.meta.main) {
     page.on("console", (m) => {
       if (/\[network\]/.test(m.text())) console.log(`[page] ${m.text()}`);
     });
+    // Turnstile under the page's COOP/COEP: its script and its frame.
+    const turnstile: string[] = [];
+    page.on("requestfinished", (request) => {
+      if (request.url().startsWith(TURNSTILE_ORIGIN)) {
+        turnstile.push(request.resourceType());
+      }
+    });
     await page.goto(`${site.url}/`);
     await page.getByTestId("start-sandbox").click();
     await page.evaluate(() =>
@@ -157,6 +167,13 @@ if (import.meta.main) {
       whole,
     );
     console.log(`  ${whole.stdout.trim()} bytes`);
+
+    expect(
+      "Turnstile's script and challenge frame loaded in the isolated page",
+      // The token behind the curl above needed the widget's answer.
+      turnstile.includes("script") && turnstile.includes("document"),
+      turnstile,
+    );
 
     // Refusals stay refusals with the network on.
     const port = await exec(

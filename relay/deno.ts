@@ -8,11 +8,14 @@
 import {
   configProblem,
   createRelay,
+  hostnamesOf,
   type Limits,
   originsOf,
   type RelayConnection,
   type RelayWebSocket,
   siteverify,
+  TURNSTILE_ACTION,
+  TURNSTILE_TEST_SECRETS,
 } from "./relay.ts";
 
 /** A server WebSocket that queues `send`/`close` until it is open: Deno
@@ -53,15 +56,25 @@ export type DenoRelayOptions = {
 /** Cloudflare's published Turnstile test keys: the site key's widget
  * always passes, without a challenge, and the secret accepts its answer. */
 export const TURNSTILE_TEST_SITE_KEY = "1x00000000000000000000BB";
-export const TURNSTILE_TEST_SECRET = "1x0000000000000000000000000000000AA";
+export const TURNSTILE_TEST_SECRET = TURNSTILE_TEST_SECRETS[0];
 
 export function startDenoRelay(options: DenoRelayOptions) {
   if (!options.turnstileSecret) {
     throw new Error("relay not configured: no Turnstile secret");
   }
   const relay = createRelay({
+    // A real secret's answers must name a site hostname and the widget's
+    // action; Cloudflare's test secrets answer example.com and no action.
     verifyHuman: (response, address) =>
-      siteverify(options.turnstileSecret, response, address),
+      siteverify(
+        options.turnstileSecret,
+        response,
+        address,
+        TURNSTILE_TEST_SECRETS.includes(options.turnstileSecret) ? undefined : {
+          hostnames: hostnamesOf(options.allowedOrigins),
+          action: TURNSTILE_ACTION,
+        },
+      ),
     secret: options.secret,
     allowedOrigins: options.allowedOrigins,
     limits: options.limits,

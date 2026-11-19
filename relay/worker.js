@@ -9,8 +9,10 @@
 import { connect } from "cloudflare:sockets";
 import {
   createRelay,
+  hostnamesOf,
   originsOf,
   siteverify,
+  TURNSTILE_ACTION,
   workerConfigProblem,
 } from "./relay.ts";
 
@@ -71,7 +73,10 @@ export default {
           allowToken: async (client) =>
             (await env.TOKEN_LIMITER.limit({ key: client })).success,
           verifyHuman: (response, address) =>
-            siteverify(env.TURNSTILE_SECRET, response, address),
+            siteverify(env.TURNSTILE_SECRET, response, address, {
+              hostnames: hostnamesOf(originsOf(env.RELAY_ORIGINS)),
+              action: TURNSTILE_ACTION,
+            }),
         });
       } else {
         console.error(`relay not configured: ${problem}`);

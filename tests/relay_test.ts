@@ -8,6 +8,7 @@ import {
   type RelayConnection,
   type RelayWebSocket,
   siteverify,
+  TURNSTILE_TEST_SECRETS,
   workerConfigProblem,
 } from "../relay/relay.ts";
 
@@ -561,27 +562,124 @@ Deno.test("relay: a page that gives no credit is cut", async () => {
   assert(peer.isClosed());
 });
 
-Deno.test("relay: past the isolate's unacknowledged budget the largest holder is cut", async () => {
-  const peers: ReturnType<typeof echoConnection>[] = [];
+/** A server that sends `size` bytes as soon as it is connected. */
+function talker(size: number): RelayConnection {
+  return {
+    readable: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(size));
+      },
+    }),
+    writable: new WritableStream(),
+    close: () => {},
+  };
+}
+
+Deno.test("relay: past the isolate's unacknowledged budget the heaviest caller is cut", async () => {
+  const sizes = [6, 6, 3, 3];
   const { tcp } = testRelay({
-    limits: { downstreamWindow: 100, downstreamTotal: 10, seqEvery: 1000 },
-    connect: () => {
-      const peer = echoConnection();
-      peers.push(peer);
-      return Promise.resolve(peer.connection);
+    limits: {
+      downstreamWindow: 100,
+      downstreamPerClient: 100,
+      downstreamTotal: 17,
+      seqEvery: 1000,
     },
+    connect: () => Promise.resolve(talker(sizes.shift()!)),
   });
-  const big = await tcp("151.101.0.223", 443);
-  const small = await tcp("151.101.0.223", 443, undefined, "192.0.2.5");
-  await tick();
-  big.emit("message", new Uint8Array(8).buffer);
-  await tick();
-  await tick();
-  // The small one's frame tips the isolate over; the big one goes.
-  small.emit("message", new Uint8Array(3).buffer);
+  // Caller A holds 6 + 6 over two connections; caller B 3, then 3 more.
+  const a1 = await tcp("151.101.0.223", 443);
+  const a2 = await tcp("151.101.0.223", 443);
+  const b1 = await tcp("151.101.0.223", 443, undefined, "192.0.2.5");
   await tick();
   await tick();
-  assertEquals([big.closed?.code, small.closed], [4104, undefined]);
+  assertEquals([a1.closed, a2.closed, b1.closed], [
+    undefined,
+    undefined,
+    undefined,
+  ]);
+  // B's next 3 tip the isolate over (18 > 17): A, holding the most in all,
+  // goes with both its connections, though neither is the largest alone.
+  const b2 = await tcp("151.101.0.223", 443, undefined, "192.0.2.5");
+  await tick();
+  await tick();
+  assertEquals(
+    [a1.closed?.code, a2.closed?.code, b1.closed, b2.closed],
+    [4104, 4104, undefined, undefined],
+  );
+  for (const s of [b1, b2]) s.emit("close");
+});
+
+Deno.test("relay: a tie goes to the caller longest without an acknowledgement", async () => {
+  let clock = 1_000;
+  const servers = [
+    // Caller A: 2 bytes (a seq), then 5 more (another).
+    () =>
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new Uint8Array(2));
+          c.enqueue(new Uint8Array(5));
+        },
+      }),
+    // Caller B: 5 bytes, never acknowledged.
+    () =>
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new Uint8Array(5));
+        },
+      }),
+    () =>
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new Uint8Array(3));
+        },
+      }),
+  ];
+  const { tcp } = testRelay({
+    now: () => clock,
+    limits: {
+      downstreamWindow: 100,
+      downstreamPerClient: 100,
+      downstreamTotal: 12,
+      seqEvery: 2,
+    },
+    connect: () =>
+      Promise.resolve({
+        readable: servers.shift()!(),
+        writable: new WritableStream(),
+        close: () => {},
+      }),
+  });
+  const a = await tcp("151.101.0.223", 443, undefined, "192.0.2.1");
+  const b = await tcp("151.101.0.223", 443, undefined, "192.0.2.2");
+  await tick();
+  await tick();
+  // A acknowledges its first 2 bytes later: 5 each unacknowledged now,
+  // and B has gone longer without an acknowledgement.
+  clock += 5_000;
+  a.emit("message", `ack ${seqs(a)[0]}`);
+  const third = await tcp("151.101.0.223", 443, undefined, "192.0.2.3");
+  await tick();
+  await tick();
+  assertEquals(
+    [a.closed, b.closed?.code, third.closed],
+    [undefined, 4104, undefined],
+  );
+  for (const s of [a, third]) s.emit("close");
+});
+
+Deno.test("relay: a caller past its own unacknowledged budget loses its largest holder", async () => {
+  const sizes = [4, 7];
+  const { tcp } = testRelay({
+    limits: { downstreamWindow: 100, downstreamPerClient: 10, seqEvery: 1000 },
+    connect: () => Promise.resolve(talker(sizes.shift()!)),
+  });
+  const small = await tcp("151.101.0.223", 443);
+  await tick();
+  await tick();
+  const large = await tcp("151.101.0.223", 443);
+  await tick();
+  await tick();
+  assertEquals([small.closed, large.closed?.code], [undefined, 4104]);
   small.emit("close");
 });
 
@@ -728,6 +826,31 @@ Deno.test("relay: a full isolate budget cuts the heaviest caller, not the last s
   light.emit("close");
 });
 
+Deno.test("relay: a tie on queued bytes goes to the caller whose write waits longest", async () => {
+  let clock = 1_000;
+  const { tcp } = testRelay({
+    now: () => clock,
+    limits: { upstreamQueueTotal: 10 },
+    connect: () => Promise.resolve(stuck()),
+  });
+  // The caller whose write waits longer connects second: map order would
+  // pick the other one.
+  const newer = await tcp("151.101.0.223", 443, undefined, "192.0.2.2");
+  const older = await tcp("151.101.0.223", 443, undefined, "192.0.2.1");
+  await tick();
+  older.emit("message", new Uint8Array(5).buffer);
+  clock += 5_000;
+  newer.emit("message", new Uint8Array(5).buffer);
+  const third = await tcp("151.101.0.223", 443, undefined, "192.0.2.3");
+  await tick();
+  third.emit("message", new Uint8Array(1).buffer);
+  assertEquals(
+    [older.closed?.code, newer.closed, third.closed],
+    [4104, undefined, undefined],
+  );
+  for (const s of [newer, third]) s.emit("close");
+});
+
 Deno.test("relay: a write the server does not take is cut", async () => {
   const { tcp } = testRelay({
     limits: { writeStallMs: 20 },
@@ -765,23 +888,49 @@ Deno.test("relay: /token needs a Turnstile answer that passes", async () => {
   assertEquals((await get("/token?turnstile=human")).status, 200);
 });
 
-Deno.test("relay: siteverify asks Cloudflare and takes only a yes", async () => {
+Deno.test("relay: siteverify takes only a yes for this site and action", async () => {
   const asked: URLSearchParams[] = [];
   const answer = (body: unknown, status = 200) =>
     ((_input: unknown, init?: RequestInit) => {
       asked.push(new URLSearchParams(init!.body as URLSearchParams));
       return Promise.resolve(new Response(JSON.stringify(body), { status }));
     }) as typeof fetch;
-  assert(await siteverify("s", "r", "198.51.100.7", answer({ success: true })));
+  const expect = { hostnames: ["site.test"], action: "relay-token" };
+  const good = { success: true, hostname: "site.test", action: "relay-token" };
+  assert(await siteverify("s", "r", "198.51.100.7", expect, answer(good)));
   assertEquals(
     [...asked[0]],
     [["secret", "s"], ["response", "r"], ["remoteip", "198.51.100.7"]],
   );
-  assert(!await siteverify("s", "r", "a", answer({ success: false })));
-  assert(!await siteverify("s", "r", "a", answer({ success: "yes" })));
-  assert(!await siteverify("s", "r", "a", answer({ success: true }, 500)));
+  for (
+    const [body, status] of [
+      [{ ...good, success: false }, 200],
+      [{ ...good, success: "yes" }, 200],
+      [good, 500],
+      // An answer from a widget on another site, or for another action.
+      [{ ...good, hostname: "example.com" }, 200],
+      [{ ...good, action: "login" }, 200],
+      [{ success: true }, 200],
+    ] as const
+  ) {
+    assert(
+      !await siteverify("s", "r", "a", expect, answer(body, status)),
+      JSON.stringify(body),
+    );
+  }
   assert(
-    !await siteverify("s", "r", "a", () => Promise.reject(new Error("down"))),
+    !await siteverify(
+      "s",
+      "r",
+      "a",
+      expect,
+      () => Promise.reject(new Error("down")),
+    ),
+  );
+  // Without expectations (Cloudflare's test secrets, locally) success is
+  // enough: those answer example.com and no action.
+  assert(
+    await siteverify("s", "r", "a", undefined, answer({ success: true })),
   );
 });
 
@@ -797,6 +946,16 @@ Deno.test("relay: the Worker refuses to serve without its rate limiting binding"
     undefined,
   );
   assert(workerConfigProblem(env)?.includes("TOKEN_LIMITER"));
+  // Cloudflare's always-pass test secrets are for local runs only.
+  for (const secret of TURNSTILE_TEST_SECRETS) {
+    assert(
+      workerConfigProblem({
+        ...env,
+        TURNSTILE_SECRET: secret,
+        TOKEN_LIMITER: limiter,
+      })?.includes("test secrets"),
+    );
+  }
   assert(
     workerConfigProblem({
       ...env,

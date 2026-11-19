@@ -86,8 +86,10 @@ export type Limits = {
    * its connection. */
   writeStallMs: number;
   /** Bytes sent to the page and not yet acknowledged, at most: per
-   * connection, and in all (past which the largest holder is cut). */
+   * connection (reading pauses), per caller (its largest holder is cut)
+   * and in all (the caller holding the most is cut). */
   downstreamWindow: number;
+  downstreamPerClient: number;
   downstreamTotal: number;
   /** Bytes between two `seq` frames. */
   seqEvery: number;
@@ -110,7 +112,8 @@ export const DEFAULT_LIMITS: Limits = {
   upstreamQueueTotal: 64 * 1024 * 1024,
   writeStallMs: 45_000,
   downstreamWindow: 2 * 1024 * 1024,
-  downstreamTotal: 128 * 1024 * 1024,
+  downstreamPerClient: 16 * 1024 * 1024,
+  downstreamTotal: 32 * 1024 * 1024,
   seqEvery: 256 * 1024,
 };
 
@@ -147,10 +150,21 @@ const MIN_SECRET_LENGTH = 32;
 /** Bookkeeping of the past is swept at most this often. */
 const PRUNE_EVERY_MS = 30_000;
 
+/** An open connection, as the isolate-wide budgets see it. */
+type Live = {
+  client: string;
+  queued(): number;
+  unacked(): number;
+  ackedAt(): number;
+  writingSince(): number;
+  end(code: number, why: string): void;
+};
+
 type Usage = {
   open: number;
   bytes: number;
   queued: number;
+  unacked: number;
   /** When an idle entry may be forgotten (a token's expiry; the end of a
    * caller's byte window, when its bytes start over). */
   until: number;
@@ -207,7 +221,11 @@ export type WorkerEnv = {
  * `TURNSTILE_SECRET`, or no `TOKEN_LIMITER` binding. */
 export function workerConfigProblem(env: WorkerEnv): string | undefined {
   return configProblem(env.RELAY_SECRET, originsOf(env.RELAY_ORIGINS)) ??
-    (env.TURNSTILE_SECRET ? undefined : "TURNSTILE_SECRET is not set") ??
+    (!env.TURNSTILE_SECRET
+      ? "TURNSTILE_SECRET is not set"
+      : TURNSTILE_TEST_SECRETS.includes(env.TURNSTILE_SECRET)
+      ? "TURNSTILE_SECRET is one of Cloudflare's test secrets"
+      : undefined) ??
     (typeof env.TOKEN_LIMITER?.limit === "function"
       ? undefined
       : "the TOKEN_LIMITER rate limiting binding is missing");
@@ -215,13 +233,36 @@ export function workerConfigProblem(env: WorkerEnv): string | undefined {
 
 const SITEVERIFY = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
+/** The `action` the page's widget runs: siteverify must report it. */
+export const TURNSTILE_ACTION = "relay-token";
+
+/** Cloudflare's published Turnstile test secrets: siteverify answers them
+ * for any response (hostname example.com, no action). For local runs and
+ * tests only; the Worker refuses them. */
+export const TURNSTILE_TEST_SECRETS: readonly string[] = [
+  "1x0000000000000000000000000000000AA",
+  "2x0000000000000000000000000000000AA",
+  "3x0000000000000000000000000000000AA",
+];
+
+/** What a real answer must say besides success: one of the site's
+ * hostnames, and the widget's action. */
+export type HumanExpectations = { hostnames: string[]; action: string };
+
+/** The hostnames of `origins`. */
+export function hostnamesOf(origins: readonly string[]): string[] {
+  return origins.map((origin) => new URL(origin).hostname);
+}
+
 /** Ask Cloudflare whether `response`, a Turnstile widget's answer given to
- * the caller at `address`, is good under `secret`. A failure to ask is a
- * no. */
+ * the caller at `address`, is good under `secret` and, with `expect`, was
+ * given on one of the site's hostnames for {@link TURNSTILE_ACTION}. A
+ * failure to ask is a no. */
 export async function siteverify(
   secret: string,
   response: string,
   address: string,
+  expect: HumanExpectations | undefined,
   fetchFn: typeof fetch = fetch,
 ): Promise<boolean> {
   try {
@@ -230,7 +271,16 @@ export async function siteverify(
       body: new URLSearchParams({ secret, response, remoteip: address }),
     });
     if (!answer.ok) return false;
-    return (await answer.json() as { success?: unknown }).success === true;
+    const result = await answer.json() as {
+      success?: unknown;
+      hostname?: unknown;
+      action?: unknown;
+    };
+    if (result.success !== true) return false;
+    if (expect === undefined) return true;
+    return typeof result.hostname === "string" &&
+      expect.hostnames.includes(result.hostname) &&
+      result.action === expect.action;
   } catch {
     return false;
   }
@@ -282,14 +332,7 @@ export function createRelay(platform: RelayPlatform): Relay {
   /** Bytes sent to every page and not yet acknowledged. */
   let unackedTotal = 0;
   /** Every open connection, for the isolate-wide budgets' evictions. */
-  const live = new Set<
-    {
-      client: string;
-      queued(): number;
-      unacked(): number;
-      end(code: number, why: string): void;
-    }
-  >();
+  const live = new Set<Live>();
   const mayIssue = windowCounter(limits.tokensPerMinute, 60_000, now);
   const mayAsk = windowCounter(limits.dnsPerMinute, 60_000, now);
   const mayClientAsk = windowCounter(
@@ -298,31 +341,71 @@ export function createRelay(platform: RelayPlatform): Relay {
     now,
   );
 
-  /** The isolate's queued upstream bytes are over budget: cut the caller
-   * holding the most, not whoever sent the last frame. */
-  const evictQueued = () => {
-    while (queuedTotal > limits.upstreamQueueTotal) {
-      const heaviest = [...clients].reduce((a, b) =>
-        b[1].queued > a[1].queued ? b : a
-      );
-      if (heaviest[1].queued <= 0) return;
-      for (const conn of [...live]) {
-        if (conn.client === heaviest[0] && conn.queued() > 0) {
-          conn.end(CLOSE_ERRNO_BASE + ECONNRESET, "the relay is busy");
-        }
+  /** Cut every connection, among `among`, of the caller holding the most
+   * `amount`; a tie goes to the caller whose `since` is oldest (the
+   * longest without progress). False when no one holds any. */
+  const evictHeaviest = (
+    among: Iterable<Live>,
+    amount: (c: Live) => number,
+    since: (c: Live) => number,
+  ): boolean => {
+    const callers = new Map<string, { total: number; oldest: number }>();
+    for (const c of among) {
+      const a = amount(c);
+      if (a <= 0) continue;
+      const entry = callers.get(c.client) ?? { total: 0, oldest: Infinity };
+      entry.total += a;
+      entry.oldest = Math.min(entry.oldest, since(c));
+      callers.set(c.client, entry);
+    }
+    let pick: { client: string; total: number; oldest: number } | undefined;
+    for (const [client, e] of callers) {
+      if (
+        pick === undefined || e.total > pick.total ||
+        (e.total === pick.total && e.oldest < pick.oldest)
+      ) {
+        pick = { client, ...e };
       }
     }
+    if (pick === undefined) return false;
+    for (const c of [...live]) {
+      if (c.client === pick.client && amount(c) > 0) {
+        c.end(CLOSE_ERRNO_BASE + ECONNRESET, "the relay is busy");
+      }
+    }
+    return true;
   };
-  /** The isolate's unacknowledged bytes are over budget: cut the
-   * connection holding the most. */
-  const evictUnacked = () => {
-    while (unackedTotal > limits.downstreamTotal && live.size > 0) {
-      const heaviest = [...live].reduce((a, b) =>
-        b.unacked() > a.unacked() ? b : a
-      );
-      heaviest.end(CLOSE_ERRNO_BASE + ECONNRESET, "the relay is busy");
+  /** Cut until `total()` is within `cap`; stops when a round frees
+   * nothing. */
+  const evictUntil = (
+    total: () => number,
+    cap: number,
+    amount: (c: Live) => number,
+    since: (c: Live) => number,
+  ) => {
+    while (total() > cap) {
+      const before = total();
+      if (!evictHeaviest(live, amount, since) || total() >= before) return;
     }
   };
+  /** The isolate's queued upstream bytes are over budget: cut the caller
+   * holding the most, not whoever sent the last frame. */
+  const evictQueued = () =>
+    evictUntil(
+      () => queuedTotal,
+      limits.upstreamQueueTotal,
+      (c) => c.queued(),
+      (c) => c.writingSince(),
+    );
+  /** The isolate's unacknowledged bytes are over budget: the same, by
+   * the bytes the callers have not acknowledged. */
+  const evictUnacked = () =>
+    evictUntil(
+      () => unackedTotal,
+      limits.downstreamTotal,
+      (c) => c.unacked(),
+      (c) => c.ackedAt(),
+    );
 
   let pruned = now();
   const prune = () => {
@@ -331,7 +414,10 @@ export function createRelay(platform: RelayPlatform): Relay {
     pruned = t;
     for (const map of [tokens, clients]) {
       for (const [key, use] of map) {
-        if (use.open === 0 && use.queued === 0 && use.until <= t) {
+        if (
+          use.open === 0 && use.queued === 0 && use.unacked === 0 &&
+          use.until <= t
+        ) {
           map.delete(key);
         }
       }
@@ -341,7 +427,7 @@ export function createRelay(platform: RelayPlatform): Relay {
   const tokenUsage = (id: string, expires: number) => {
     let use = tokens.get(id);
     if (use === undefined) {
-      use = { open: 0, bytes: 0, queued: 0, until: expires };
+      use = { open: 0, bytes: 0, queued: 0, unacked: 0, until: expires };
       tokens.set(id, use);
     }
     return use;
@@ -350,7 +436,13 @@ export function createRelay(platform: RelayPlatform): Relay {
     let use = clients.get(key);
     const t = now();
     if (use === undefined) {
-      use = { open: 0, bytes: 0, queued: 0, until: t + limits.clientWindowMs };
+      use = {
+        open: 0,
+        bytes: 0,
+        queued: 0,
+        unacked: 0,
+        until: t + limits.clientWindowMs,
+      };
       clients.set(key, use);
     } else if (use.until <= t) {
       // A new window: the caller's bytes start over.
@@ -437,6 +529,10 @@ export function createRelay(platform: RelayPlatform): Relay {
     let idle: ReturnType<typeof setTimeout> | undefined;
     /** The write in flight's deadline. */
     let stall: ReturnType<typeof setTimeout> | undefined;
+    /** When the page last acknowledged (or the connection opened), and
+     * since when bytes have been waiting for the server. */
+    let ackedAt = now();
+    let writingSince = Infinity;
     // A connection lives no longer than its token.
     const expiry = setTimeout(
       () => end(CLOSE_ERRNO_BASE + EACCES, "the token expired"),
@@ -457,6 +553,7 @@ export function createRelay(platform: RelayPlatform): Relay {
       for (const use of uses) use.open--;
       unqueue(queued);
       unackedTotal -= sent - acked;
+      byClient.unacked -= sent - acked;
       acked = sent;
       credited?.();
       try {
@@ -490,10 +587,12 @@ export function createRelay(platform: RelayPlatform): Relay {
       end(CLOSE_ERRNO_BASE + ECONNRESET, "the data allowance is used up");
       return false;
     };
-    const self = {
+    const self: Live = {
       client,
       queued: () => queued,
       unacked: () => sent - acked,
+      ackedAt: () => ackedAt,
+      writingSince: () => writingSince,
       end,
     };
     live.add(self);
@@ -506,7 +605,9 @@ export function createRelay(platform: RelayPlatform): Relay {
       }
       marks.shift();
       unackedTotal -= mark.at - acked;
+      byClient.unacked -= mark.at - acked;
       acked = mark.at;
+      ackedAt = now();
       credited?.();
     };
     /** Send the server's `chunk`, and a `seq` frame past each
@@ -515,12 +616,27 @@ export function createRelay(platform: RelayPlatform): Relay {
       socket.send(chunk);
       sent += chunk.byteLength;
       unackedTotal += chunk.byteLength;
+      byClient.unacked += chunk.byteLength;
       sinceMark += chunk.byteLength;
       if (sinceMark >= limits.seqEvery) {
         const mark = { nonce: nonce(), at: sent };
         marks.push(mark);
         socket.send(`seq ${mark.nonce}`);
         sinceMark = 0;
+      }
+      // A caller over its own budget loses its largest holder.
+      if (byClient.unacked > limits.downstreamPerClient) {
+        const mine = [...live].filter((c) => c.client === client);
+        const largest = mine.reduce((a, b) =>
+          b.unacked() > a.unacked() ||
+            (b.unacked() === a.unacked() && b.ackedAt() < a.ackedAt())
+            ? b
+            : a
+        );
+        largest.end(
+          CLOSE_ERRNO_BASE + ECONNRESET,
+          "too much unacknowledged data",
+        );
       }
       if (unackedTotal > limits.downstreamTotal) evictUnacked();
     };
@@ -538,6 +654,7 @@ export function createRelay(platform: RelayPlatform): Relay {
       }
       const bytes = new Uint8Array(event.data);
       if (!count(bytes.byteLength)) return;
+      if (queued === 0) writingSince = now();
       queued += bytes.byteLength;
       byClient.queued += bytes.byteLength;
       queuedTotal += bytes.byteLength;
@@ -570,7 +687,9 @@ export function createRelay(platform: RelayPlatform): Relay {
         ]).finally(() => clearTimeout(stall));
       }).then(
         () => {
-          if (!ended) unqueue(bytes.byteLength);
+          if (ended) return;
+          unqueue(bytes.byteLength);
+          writingSince = queued === 0 ? Infinity : now();
         },
         (error) =>
           end(

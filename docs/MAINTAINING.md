@@ -225,28 +225,33 @@ To turn it on:
    cross-origin isolated, and Turnstile's frame has to load under it.
 
 Who can use it: `/token` answers only pages on `RELAY_ORIGINS` whose visitor
-passed Turnstile (the relay checks each answer with Cloudflare's siteverify), at
-most 10 tokens a minute per caller. A caller is an IPv4 address or an IPv6 /64
-(an IPv6 address that carries an IPv4 one counts as that); the relay counts per
-isolate, `TOKEN_LIMITER` per Cloudflare location. A token works only from the
-exact address it was issued to, for 20 minutes, and its connections end with it
-(the page takes a new token once a quarter of one's life has passed, so a
-connection gets 15 minutes at least).
+passed Turnstile (the relay checks each answer with Cloudflare's siteverify,
+which must name one of those origins' hostnames and the widget's action
+`relay-token`; the Worker refuses Cloudflare's test secrets), at most 10 tokens
+a minute per caller. A token the page cannot get within 30 s fails the connect
+that asked for it. A caller is an IPv4 address or an IPv6 /64 (an IPv6 address
+that carries an IPv4 one counts as that); the relay counts per isolate,
+`TOKEN_LIMITER` per Cloudflare location. A token works only from the exact
+address it was issued to, for 20 minutes, and its connections end with it (the
+page takes a new token once a quarter of one's life has passed, so a connection
+gets 15 minutes at least).
 
 Limits: 16 connections and 1 GiB per token; 32 connections and 2 GiB an hour per
 caller; 120 `/dns` questions a minute per token and 600 per caller; 5 minutes
 idle. Bytes from pages that their servers have not taken are capped at 4 MiB per
 connection and 16 MiB per caller (past these that connection is cut), and 64 MiB
-in all (past this the caller holding the most is cut); a write a server does not
-take within 45 s ends its connection. Downstream, the relay sends `seq <nonce>`
-every 256 KiB; the page answers `ack <nonce>`, in order, once its guest has read
-that far, which proves the bytes arrived. The server's bytes run at most 2 MiB
-ahead of that, a page that acknowledges nothing for 5 minutes is cut, and past
-128 MiB unacknowledged in all the connection holding the most is cut. All of
-these are counted per isolate: exact counts across isolates would need a Durable
-Object. Workers' `connect()` cannot reach Cloudflare's own addresses, so sites
-behind Cloudflare are refused through the relay; PyPI (Fastly) and GitHub are
-not.
+in all (past this the caller holding the most is cut, a tie going to the one
+whose write has waited longest); a write a server does not take within 45 s ends
+its connection. Downstream, the relay sends `seq <nonce>` every 256 KiB; the
+page answers `ack <nonce>`, in order, once its guest has read that far, which
+proves the bytes arrived. The server's bytes run at most 2 MiB ahead of that and
+a page that acknowledges nothing for 5 minutes is cut. A caller past 16 MiB
+unacknowledged loses its largest connection; past 32 MiB in all, the caller
+holding the most is cut, a tie going to the one longest without an
+acknowledgement. All of these are counted per isolate: exact counts across
+isolates would need a Durable Object. Workers' `connect()` cannot reach
+Cloudflare's own addresses, so sites behind Cloudflare are refused through the
+relay; PyPI (Fastly) and GitHub are not.
 
 A browser that reaches the relay over IPv4 for one request and IPv6 for the next
 gets a token refused (401): its connects then fail until the next token.
