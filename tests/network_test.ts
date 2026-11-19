@@ -1,6 +1,5 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
-  ACK_EVERY,
   answerDns,
   DNS_CACHE_NAMES,
   dnsAnswer,
@@ -13,8 +12,9 @@ import {
 } from "../src/network.ts";
 import {
   CONFIGURED_RELAY,
-  relayOf,
+  networkOf,
   relaySources,
+  TURNSTILE_ORIGIN,
 } from "../src/network_config.ts";
 import { networkWanted } from "../src/network_toggle.ts";
 import { contentSecurityPolicy, cspSources, withRelay } from "../src/csp.ts";
@@ -163,14 +163,8 @@ function fakeRelay() {
   const statuses: NetworkStatus[] = [];
   const client = new RelayClient(
     "https://relay.example",
-    (input) => {
-      const url = String(input);
-      return Promise.resolve(
-        url.endsWith("/token")
-          ? Response.json({ token: "t0", expires: Date.now() + 3_600_000 })
-          : new Response(null, { status: 500 }),
-      );
-    },
+    () => Promise.resolve({ token: "t0", expires: Date.now() + 3_600_000 }),
+    () => Promise.resolve(new Response(null, { status: 500 })),
   );
   const tcp = new RelayTcp(
     client,
@@ -285,16 +279,11 @@ Deno.test("relay client: a token is reused until near its expiry", async () => {
   let issued = 0;
   const client = new RelayClient(
     "https://relay.example",
-    (input) => {
-      const url = String(input);
-      if (url.endsWith("/token")) {
-        issued++;
-        return Promise.resolve(
-          Response.json({ token: `t${issued}`, expires: now + 600_000 }),
-        );
-      }
-      return Promise.resolve(Response.json({ addresses: ["151.101.0.223"] }));
+    () => {
+      issued++;
+      return Promise.resolve({ token: `t${issued}`, expires: now + 600_000 });
     },
+    () => Promise.resolve(Response.json({ addresses: ["151.101.0.223"] })),
     () => now,
   );
   assertEquals(await client.token(), "t1");
@@ -312,11 +301,21 @@ Deno.test("network config: no relay configured, so no toggle and no policy", () 
   assertEquals(CONFIGURED_RELAY, undefined);
   const policy = contentSecurityPolicy();
   assert(!/wss?:/.test(cspSources(policy, "connect-src").join(" ")));
-  assertEquals(relayOf({ relay: null }), undefined);
-  assertEquals(relayOf({}), undefined);
+  assert(!cspSources(policy, "script-src").includes(TURNSTILE_ORIGIN));
+  assertEquals(cspSources(policy, "frame-src"), ["'none'"]);
+  assertEquals(networkOf({ relay: null, turnstileSiteKey: null }), undefined);
+  assertEquals(networkOf({}), undefined);
   assertEquals(
-    relayOf({ relay: "https://relay.example/path" }),
-    "https://relay.example",
+    networkOf({
+      relay: "https://relay.example/path",
+      turnstileSiteKey: "0xKEY",
+    }),
+    { relay: "https://relay.example", siteKey: "0xKEY" },
+  );
+  // A relay without its Turnstile site key is a broken build, not a quiet
+  // one.
+  assertThrows(() =>
+    networkOf({ relay: "https://relay.example", turnstileSiteKey: null })
   );
 });
 
@@ -328,6 +327,10 @@ Deno.test("network config: a relay is admitted in connect-src outside JupyterLit
     "connect-src",
   );
   assert(page.includes(relay) && page.includes("wss://relay.example"));
+  // Turnstile's script and challenge frame come with a relay.
+  const policy = contentSecurityPolicy({ networkRelay: relay });
+  assert(cspSources(policy, "script-src").includes(TURNSTILE_ORIGIN));
+  assertEquals(cspSources(policy, "frame-src"), [TURNSTILE_ORIGIN]);
   const lite = cspSources(
     contentSecurityPolicy({ networkRelay: relay, sameOriginOnly: true }),
     "connect-src",
@@ -338,6 +341,9 @@ Deno.test("network config: a relay is admitted in connect-src outside JupyterLit
     "connect-src",
   );
   assert(local.includes("ws://127.0.0.1:9"));
+  const localPolicy = withRelay(contentSecurityPolicy(), "http://127.0.0.1:9");
+  assertEquals(cspSources(localPolicy, "frame-src"), [TURNSTILE_ORIGIN]);
+  assert(cspSources(localPolicy, "script-src").includes(TURNSTILE_ORIGIN));
 });
 
 Deno.test("network toggle: on again only after the page's own reload", () => {
@@ -366,41 +372,55 @@ Deno.test("network toggle: on again only after the page's own reload", () => {
   assertEquals(networkWanted(throwing, true), false);
 });
 
-Deno.test("relay tcp: the guest's reads are credited to the relay, and too much is cut", async () => {
+Deno.test("relay tcp: each seq is acknowledged once the guest has read past it", async () => {
   const { tcp } = fakeRelay();
   tcp.setEnabled(true);
   const handle = tcp.connect("151.101.0.223", 443, KH_CONNECT_ASYNC);
   await settle();
   const ws = FakeWebSocket.made[0];
   ws.up();
-  ws.chunk(ACK_EVERY + 10);
-  const small = new Uint8Array(ACK_EVERY - 1);
-  assertEquals(tcp.recv(handle, small, 2 /* MSG_PEEK */), ACK_EVERY - 1);
-  assertEquals(tcp.recv(handle, small, 0), ACK_EVERY - 1);
-  // A peek is no read, and less than ACK_EVERY waits for more.
+  ws.chunk(10);
+  ws.onmessage?.({ data: "seq first" });
+  ws.chunk(10);
+  ws.onmessage?.({ data: "seq second" });
+  const buf = new Uint8Array(6);
+  assertEquals(tcp.recv(handle, buf, 2 /* MSG_PEEK */), 6);
+  assertEquals(tcp.recv(handle, buf, 0), 6);
+  // A peek is no read, and 6 of the 10 bytes before `first` is not all.
   assertEquals(ws.sent, []);
-  assertEquals(tcp.recv(handle, new Uint8Array(5), 0), 5);
-  assertEquals(ws.sent, [`ack ${ACK_EVERY + 4}`]);
-  // A relay that keeps sending past the cap is cut.
+  assertEquals(tcp.recv(handle, new Uint8Array(4), 0), 4);
+  assertEquals(ws.sent, ["ack first"]);
+  assertEquals(tcp.recv(handle, new Uint8Array(10), 0), 10);
+  assertEquals(ws.sent, ["ack first", "ack second"]);
+  // A seq for bytes already read is answered at once.
+  ws.onmessage?.({ data: "seq third" });
+  assertEquals(ws.sent.at(-1), "ack third");
+});
+
+Deno.test("relay tcp: a relay that sends past the cap is cut", async () => {
+  const { tcp } = fakeRelay();
+  tcp.setEnabled(true);
+  const handle = tcp.connect("151.101.0.223", 443, KH_CONNECT_ASYNC);
+  await settle();
+  const ws = FakeWebSocket.made[0];
+  ws.up();
   ws.chunk(INBOX_CAP);
+  assert(!ws.closed);
+  ws.chunk(1);
   assert(ws.closed);
-  assertEquals(tcp.recv(handle, new Uint8Array(6), 0), 6);
   assertEquals(
     tcp.recv(handle, new Uint8Array(INBOX_CAP), 0),
     INBOX_CAP,
   );
+  assertEquals(tcp.recv(handle, new Uint8Array(1), 0), 1);
   assertEquals(tcp.recv(handle, new Uint8Array(1), 0), -104);
 });
 
 Deno.test("relay client: the name cache stays bounded", async () => {
   const client = new RelayClient(
     "https://relay.example",
-    (input) =>
-      Promise.resolve(
-        String(input).endsWith("/token")
-          ? Response.json({ token: "t", expires: Date.now() + 3_600_000 })
-          : Response.json({ addresses: ["151.101.0.223"] }),
-      ),
+    () => Promise.resolve({ token: "t", expires: Date.now() + 3_600_000 }),
+    () => Promise.resolve(Response.json({ addresses: ["151.101.0.223"] })),
   );
   for (let i = 0; i < DNS_CACHE_NAMES + 10; i++) {
     await client.resolve(`host${i}.example`);

@@ -29,7 +29,11 @@
 import { PACKAGE_SOURCES } from "./packages.ts";
 import { SNAPSHOT_REFS_API, SNAPSHOT_SOURCE } from "./snapshot_source.ts";
 import { BEACON_REPORT_ORIGIN, BEACON_SCRIPT_ORIGIN } from "./web_analytics.ts";
-import { CONFIGURED_RELAY, relaySources } from "./network_config.ts";
+import {
+  CONFIGURED_RELAY,
+  relaySources,
+  TURNSTILE_ORIGIN,
+} from "./network_config.ts";
 
 const INLINE_SCRIPT = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
 
@@ -96,8 +100,11 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
     "'wasm-unsafe-eval'",
     ...(options.allowEval ? ["'unsafe-eval'"] : []),
     ...(options.webAnalytics ? [BEACON_SCRIPT_ORIGIN] : []),
+    // The relay's Turnstile check (src/network_toggle.ts).
+    ...(relayFor(options) === undefined ? [] : [TURNSTILE_ORIGIN]),
     ...(options.scriptHashes ?? []),
   ].join(" ");
+  const relay = relayFor(options);
   return [
     "default-src 'self'",
     `script-src ${script}`,
@@ -113,10 +120,11 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
       ...PACKAGE_SOURCES,
       ...(options.sameOriginOnly ? [] : [SNAPSHOT_SOURCE, SNAPSHOT_REFS_API]),
       ...(options.webAnalytics ? [BEACON_REPORT_ORIGIN] : []),
-      ...relaySourcesFor(options),
+      ...(relay === undefined ? [] : relaySources(relay)),
     ].join(" "),
     "worker-src 'self'",
-    "frame-src 'none'",
+    // Turnstile's challenge frame, with a relay; nothing else frames.
+    relay === undefined ? "frame-src 'none'" : `frame-src ${TURNSTILE_ORIGIN}`,
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'none'",
@@ -124,19 +132,24 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
   ].join("; ");
 }
 
-function relaySourcesFor(options: CspOptions): string[] {
-  const relay = options.networkRelay ?? CONFIGURED_RELAY;
-  return options.sameOriginOnly || relay === undefined
-    ? []
-    : relaySources(relay);
+/** The relay the policy admits: the configured one, outside JupyterLite. */
+function relayFor(options: CspOptions): string | undefined {
+  return options.sameOriginOnly
+    ? undefined
+    : options.networkRelay ?? CONFIGURED_RELAY;
 }
 
-/** `policy` (one CSP header value) with `relay` admitted in `connect-src`,
- * for a server that runs one of its own (tests/network_e2e.ts). */
+/** `policy` (one CSP header value) with `relay` and Turnstile admitted, as
+ * {@link contentSecurityPolicy} admits a configured one, for a server that
+ * runs one of its own (tests/network_e2e.ts). */
 export function withRelay(policy: string, relay: string): string {
   return policy.split("; ").map((part) =>
     part.startsWith("connect-src ")
       ? [part, ...relaySources(relay)].join(" ")
+      : part.startsWith("script-src ")
+      ? `${part} ${TURNSTILE_ORIGIN}`
+      : part === "frame-src 'none'"
+      ? `frame-src ${TURNSTILE_ORIGIN}`
       : part
   ).join("; ");
 }

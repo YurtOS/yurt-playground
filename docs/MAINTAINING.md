@@ -209,44 +209,54 @@ only when `NETWORK_RELAY` in `src/network_config.ts` names a relay; it is
 
 To turn it on:
 
-1. Deploy the Worker from `relay/`: `wrangler secret put RELAY_SECRET` (at least
-   32 random characters), set `RELAY_ORIGINS` in `relay/wrangler.toml` to the
-   site's exact origins, keep its `TOKEN_LIMITER` rate limiting binding, then
-   `wrangler deploy`. Until all three are there the Worker answers 503 to
+1. Create a Turnstile widget in the Cloudflare dashboard for the site's
+   hostnames (mode Managed or Invisible). It gives a site key and a secret key.
+2. Deploy the Worker from `relay/`: `wrangler secret put RELAY_SECRET` (at least
+   32 random characters), `wrangler secret put TURNSTILE_SECRET` (the widget's
+   secret key), set `RELAY_ORIGINS` in `relay/wrangler.toml` to the site's exact
+   origins, keep its `TOKEN_LIMITER` rate limiting binding, then
+   `wrangler deploy`. Until all four are there the Worker answers 503 to
    everything.
-2. Set `NETWORK_RELAY` in `src/network_config.ts` to the Worker's URL. The build
-   ships it as config/network.json and admits the relay in the site's
-   `connect-src`.
-3. Deploy the site.
+3. Set `NETWORK_RELAY` in `src/network_config.ts` to the Worker's URL and
+   `TURNSTILE_SITE_KEY` to the widget's site key. The build ships both as
+   config/network.json and admits the relay (`connect-src`) and Turnstile
+   (`script-src`, `frame-src`) in the site's policy.
+4. Deploy the site, and check one token on a preview first: the page is
+   cross-origin isolated, and Turnstile's frame has to load under it.
 
-Who can use it: `/token` answers only pages on `RELAY_ORIGINS`, at most 10
-tokens a minute per caller. A caller is an IPv4 address or an IPv6 /64; the
-relay counts per isolate, `TOKEN_LIMITER` per Cloudflare location. A token works
-only from the exact address it was issued to, for 20 minutes, and its
-connections end with it (the page takes a new token once a quarter of one's life
-has passed, so a connection gets 15 minutes at least). A script can still forge
-the Origin header, so anyone can use the relay within these limits, as a visitor
-would; a Turnstile challenge on `/token` would close that gap, at the cost of a
-widget on the page (not done).
+Who can use it: `/token` answers only pages on `RELAY_ORIGINS` whose visitor
+passed Turnstile (the relay checks each answer with Cloudflare's siteverify), at
+most 10 tokens a minute per caller. A caller is an IPv4 address or an IPv6 /64
+(an IPv6 address that carries an IPv4 one counts as that); the relay counts per
+isolate, `TOKEN_LIMITER` per Cloudflare location. A token works only from the
+exact address it was issued to, for 20 minutes, and its connections end with it
+(the page takes a new token once a quarter of one's life has passed, so a
+connection gets 15 minutes at least).
 
 Limits: 16 connections and 1 GiB per token; 32 connections and 2 GiB an hour per
-caller; 120 `/dns` questions a minute per token; 5 minutes idle. Bytes from
-pages that their servers have not taken are capped at 4 MiB per connection, 16
-MiB per caller and 64 MiB in all. The server's bytes run at most 2 MiB ahead of
-what the page has acknowledged its guest read (`ack <bytes>` frames); a page
-that acknowledges nothing for 5 minutes is cut. All of these are counted per
-isolate: exact counts across isolates would need a Durable Object. Workers'
-`connect()` cannot reach Cloudflare's own addresses, so sites behind Cloudflare
-are refused through the relay; PyPI (Fastly) and GitHub are not.
+caller; 120 `/dns` questions a minute per token and 600 per caller; 5 minutes
+idle. Bytes from pages that their servers have not taken are capped at 4 MiB per
+connection and 16 MiB per caller (past these that connection is cut), and 64 MiB
+in all (past this the caller holding the most is cut); a write a server does not
+take within 45 s ends its connection. Downstream, the relay sends `seq <nonce>`
+every 256 KiB; the page answers `ack <nonce>`, in order, once its guest has read
+that far, which proves the bytes arrived. The server's bytes run at most 2 MiB
+ahead of that, a page that acknowledges nothing for 5 minutes is cut, and past
+128 MiB unacknowledged in all the connection holding the most is cut. All of
+these are counted per isolate: exact counts across isolates would need a Durable
+Object. Workers' `connect()` cannot reach Cloudflare's own addresses, so sites
+behind Cloudflare are refused through the relay; PyPI (Fastly) and GitHub are
+not.
 
 A browser that reaches the relay over IPv4 for one request and IPv6 for the next
 gets a token refused (401): its connects then fail until the next token.
 
 Locally,
-`RELAY_SECRET=<32+ characters> RELAY_ORIGINS=http://127.0.0.1:4173 deno run
+`RELAY_SECRET=<32+ characters> RELAY_ORIGINS=http://127.0.0.1:4173 TURNSTILE_SECRET=<secret> deno run
 --allow-net --allow-env relay/deno.ts`
 runs the same relay; `deno run -A tests/network_e2e.ts` runs curl and pip
-through one in Chrome. It needs the internet, so it is not a CI scene.
+through one in Chrome, with Cloudflare's always-pass Turnstile test keys. It
+needs the internet, so it is not a CI scene.
 
 ## The suspend/resume kernel
 

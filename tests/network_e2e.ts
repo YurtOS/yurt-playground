@@ -1,8 +1,9 @@
 /**
  * The in-tab sandbox's network through the relay (#380), end to end in
  * Chrome: a local relay (relay/deno.ts) on this machine, the page told
- * about it as config/network.json would, and the guest's own curl and pip
- * reaching PyPI through it. Needs the internet, so it is not a CI scene:
+ * about it as config/network.json would, Turnstile with Cloudflare's
+ * always-pass test keys, and the guest's own curl and pip reaching PyPI
+ * through it. Needs the internet, so it is not a CI scene:
  *
  *   deno run --allow-all tests/network_e2e.ts
  */
@@ -14,7 +15,11 @@ import { ensureBundle } from "../scripts/serve.ts";
 import { handlePlaygroundRequest } from "../src/serve.ts";
 import { withRelay } from "../src/csp.ts";
 import { NETWORK_CONFIG_PATH } from "../src/network_config.ts";
-import { startDenoRelay } from "../relay/deno.ts";
+import {
+  startDenoRelay,
+  TURNSTILE_TEST_SECRET,
+  TURNSTILE_TEST_SITE_KEY,
+} from "../relay/deno.ts";
 import { watchCspViolations } from "./csp_watch.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -45,7 +50,10 @@ function serveWithRelay(relay: () => string) {
     async (request) => {
       const url = new URL(request.url);
       if (url.pathname === `/${NETWORK_CONFIG_PATH}`) {
-        return Response.json({ relay: relay() });
+        return Response.json({
+          relay: relay(),
+          turnstileSiteKey: TURNSTILE_TEST_SITE_KEY,
+        });
       }
       const response = await handlePlaygroundRequest(request);
       const policy = response.headers.get("Content-Security-Policy");
@@ -68,6 +76,8 @@ if (import.meta.main) {
   const relay = startDenoRelay({
     secret: crypto.randomUUID(),
     allowedOrigins: [site.url],
+    // Cloudflare's always-pass test keys: the real siteverify, no challenge.
+    turnstileSecret: TURNSTILE_TEST_SECRET,
   });
   relayUrl = relay.url;
   const browser = await launchBrowser();

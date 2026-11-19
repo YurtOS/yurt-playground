@@ -5,25 +5,112 @@
  * runs), whose connections come back closed, turns it on again when it
  * was on. A refresh, a new tab, and a tab the browser duplicated or
  * opened (which copy sessionStorage) all start off.
+ *
+ * The page also gets the relay's tokens for the coordinator
+ * ({@link relayToken}): each one needs a Turnstile answer, and Turnstile
+ * runs in the page, not in a worker.
  */
 import type { NetworkStatus } from "./network.ts";
-import { NETWORK_CONFIG_PATH, relayOf } from "./network_config.ts";
+import {
+  type Network,
+  NETWORK_CONFIG_PATH,
+  networkOf,
+  TURNSTILE_ORIGIN,
+} from "./network_config.ts";
 import { siteUrl } from "./site_url.ts";
 
 const WANTED_KEY = "yurt-network-on";
 
-/** The configured relay's origin, or `undefined`: no network for the tab. */
-export async function loadNetworkRelay(
+/** The configured network, or `undefined`: no network for the tab. */
+export async function loadNetwork(
   fetchFn: typeof fetch = fetch,
-): Promise<string | undefined> {
+): Promise<Network | undefined> {
   try {
     const response = await fetchFn(siteUrl(`./${NETWORK_CONFIG_PATH}`));
     if (!response.ok) return undefined;
-    return relayOf(await response.json());
+    return networkOf(await response.json());
   } catch (error) {
     console.warn(`[network] no relay: ${error}`);
     return undefined;
   }
+}
+
+type Turnstile = {
+  render(
+    container: HTMLElement,
+    options: {
+      sitekey: string;
+      appearance: "interaction-only";
+      callback: (token: string) => void;
+      "error-callback": (code: string) => void;
+    },
+  ): string;
+  remove(widget: string): void;
+};
+
+let turnstileScript: Promise<Turnstile> | undefined;
+
+/** Turnstile's script, loaded once. `crossorigin`: the page is
+ * cross-origin isolated, so the script comes by CORS. */
+function loadTurnstile(): Promise<Turnstile> {
+  turnstileScript ??= new Promise<Turnstile>((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = `${TURNSTILE_ORIGIN}/turnstile/v0/api.js?render=explicit`;
+    script.crossOrigin = "anonymous";
+    script.onload = () =>
+      resolve((globalThis as unknown as { turnstile: Turnstile }).turnstile);
+    script.onerror = () => reject(new Error("Turnstile did not load"));
+    document.head.append(script);
+  }).catch((error) => {
+    turnstileScript = undefined;
+    throw error;
+  });
+  return turnstileScript;
+}
+
+/** One Turnstile answer for `siteKey`, from a widget in `container` that
+ * shows itself only if the visitor has to act. */
+async function humanAnswer(
+  siteKey: string,
+  container: HTMLElement,
+): Promise<string> {
+  const turnstile = await loadTurnstile();
+  const slot = document.createElement("div");
+  container.append(slot);
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      const widget = turnstile.render(slot, {
+        sitekey: siteKey,
+        appearance: "interaction-only",
+        callback: (token) => {
+          turnstile.remove(widget);
+          resolve(token);
+        },
+        "error-callback": (code) => {
+          turnstile.remove(widget);
+          reject(new Error(`Turnstile: ${code}`));
+        },
+      });
+    });
+  } finally {
+    slot.remove();
+  }
+}
+
+/** A relay token for the coordinator: a Turnstile answer, then `/token`. */
+export async function relayToken(
+  network: Network,
+  container: HTMLElement,
+  fetchFn: typeof fetch = fetch,
+): Promise<{ token: string; expires: number }> {
+  const human = await humanAnswer(network.siteKey, container);
+  const response = await fetchFn(
+    `${network.relay}/token?turnstile=${encodeURIComponent(human)}`,
+    { credentials: "omit" },
+  );
+  if (!response.ok) throw new Error(`relay token: ${response.status}`);
+  const { token, expires } = await response.json();
+  return { token, expires };
 }
 
 /** Whether this load starts with the network on: only `ownReload` (the

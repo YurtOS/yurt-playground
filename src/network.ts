@@ -24,12 +24,9 @@ export const MAX_CONNECTIONS = 16;
 /** Bytes queued on one WebSocket before a send waits. */
 const SEND_HIGH_WATER = 1024 * 1024;
 const WRITABLE_POLL_MS = 20;
-/** The guest's reads are acknowledged to the relay (`ack <bytes>`) once
- * this many have accumulated: the relay sends at most its window (2 MiB)
- * ahead of them. */
-export const ACK_EVERY = 256 * 1024;
 /** Bytes received and not yet read, at most: a relay that does not keep to
- * its window is cut. */
+ * its window (2 MiB ahead of what the guest read; see `seq` below) is
+ * cut. */
 export const INBOX_CAP = 16 * 1024 * 1024;
 /** Names the page remembers at most. */
 export const DNS_CACHE_NAMES = 256;
@@ -55,6 +52,11 @@ export class RelayClient {
 
   constructor(
     readonly origin: string,
+    /** A fresh token: the page's Turnstile answer, then `/token`
+     * (src/network_toggle.ts relayToken). */
+    private readonly fetchToken: () => Promise<
+      { token: string; expires: number }
+    >,
     private readonly fetchFn: typeof fetch = (input, init) =>
       fetch(input, init),
     private readonly now: () => number = Date.now,
@@ -72,11 +74,7 @@ export class RelayClient {
     }
     this.#token = (async () => {
       const fetched = this.now();
-      const response = await this.fetchFn(`${this.origin}/token`, {
-        credentials: "omit",
-      });
-      if (!response.ok) throw new Error(`relay token: ${response.status}`);
-      const { token, expires } = await response.json();
+      const { token, expires } = await this.fetchToken();
       return { token, expires, fetched };
     })();
     return (await this.#token).token;
@@ -151,8 +149,13 @@ type Connection = {
   inbox: Uint8Array[];
   /** Bytes in `inbox`. */
   buffered: number;
-  /** Bytes the guest has read and the relay has not been told of. */
-  unacked: number;
+  /** Bytes received from the relay, and read by the guest, in all. */
+  received: number;
+  consumed: number;
+  /** The relay's `seq <nonce>` frames not yet acknowledged, and how many
+   * bytes had arrived before each: once the guest has read that far, the
+   * page answers `ack <nonce>`, which proves the relay's bytes arrived. */
+  marks: { nonce: string; at: number }[];
   readable: Set<() => void>;
   writable: Set<() => void>;
 };
@@ -241,7 +244,9 @@ export class RelayTcp implements TcpSocketImpl {
       established: false,
       inbox: [],
       buffered: 0,
-      unacked: 0,
+      received: 0,
+      consumed: 0,
+      marks: [],
       readable: new Set(),
       writable: new Set(),
     };
@@ -277,9 +282,15 @@ export class RelayTcp implements TcpSocketImpl {
           this.#wake(connection);
           this.changed(this.status());
         }
+        const nonce = /^seq (\S{1,64})$/.exec(event.data)?.[1];
+        if (nonce !== undefined) {
+          connection.marks.push({ nonce, at: connection.received });
+          this.#acknowledge(connection);
+        }
         return;
       }
       const bytes = new Uint8Array(event.data as ArrayBuffer);
+      connection.received += bytes.byteLength;
       connection.inbox.push(bytes);
       connection.buffered += bytes.byteLength;
       if (connection.buffered > INBOX_CAP) {
@@ -307,6 +318,17 @@ export class RelayTcp implements TcpSocketImpl {
       );
       this.changed(this.status());
     };
+  }
+
+  /** Answer every `seq` the guest has read past. */
+  #acknowledge(connection: Connection): void {
+    while (
+      connection.state === "open" &&
+      connection.marks.length > 0 &&
+      connection.marks[0].at <= connection.consumed
+    ) {
+      connection.socket!.send(`ack ${connection.marks.shift()!.nonce}`);
+    }
   }
 
   connectStatus(handle: number): number {
@@ -339,11 +361,8 @@ export class RelayTcp implements TcpSocketImpl {
         if (n === next.byteLength) connection.inbox.shift();
         else connection.inbox[0] = next.subarray(n);
         connection.buffered -= n;
-        connection.unacked += n;
-        if (connection.unacked >= ACK_EVERY && connection.state === "open") {
-          connection.socket!.send(`ack ${connection.unacked}`);
-          connection.unacked = 0;
-        }
+        connection.consumed += n;
+        this.#acknowledge(connection);
       }
       return n;
     }
@@ -668,8 +687,12 @@ export class TabNetwork {
   readonly tcp: RelayTcp;
   #writeResolvConf: (() => void) | undefined;
 
-  constructor(relayOrigin: string, changed: (status: NetworkStatus) => void) {
-    this.relay = new RelayClient(relayOrigin);
+  constructor(
+    relayOrigin: string,
+    fetchToken: () => Promise<{ token: string; expires: number }>,
+    changed: (status: NetworkStatus) => void,
+  ) {
+    this.relay = new RelayClient(relayOrigin, fetchToken);
     this.tcp = new RelayTcp(this.relay, changed);
   }
 

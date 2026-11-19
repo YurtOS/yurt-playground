@@ -1,7 +1,8 @@
 # The Yurt network relay (yurt-playground#380). Deploy from this directory
 # with `wrangler deploy`, after `wrangler secret put RELAY_SECRET` (at least
-# 32 random characters) and setting RELAY_ORIGINS below. Until both are set
-# the Worker answers 503 to everything.
+# 32 random characters), `wrangler secret put TURNSTILE_SECRET` (the
+# Turnstile widget's secret key) and setting RELAY_ORIGINS below. Until all
+# are set the Worker answers 503 to everything.
 name = "yurt-relay"
 main = "worker.js"
 compatibility_date = "2025-09-01"

@@ -86,7 +86,9 @@ Kernel primitives stay in `yurtos-kernel`. Image composition stays in
   guest's TCP connects go to public addresses on ports 80, 443 and 9418 only,
   each as a WebSocket to the relay (`relay/`), which checks port and address
   again; a DNS on the guest's `127.0.0.1:53` answers from the relay's resolution
-  (`src/network.ts`). No UDP leaves. Guests get no other route out of the
+  (`src/network.ts`). No UDP leaves. With a relay configured the page also loads
+  Cloudflare Turnstile (its script and challenge frame), which the relay
+  requires before it gives the tab a token. Guests get no other route out of the
   sandbox: no other host, no DNS.
 - The Notebook/Lab interface is JupyterLite's frontend and server shim with one
   kernel, `yurt`, relaying to the guest `ipykernel`. JupyterLite's own kernels

@@ -208,13 +208,38 @@ type ToWorker =
   | { type: "cdp-close"; conn: number }
   // The page's network toggle, and its "cut all connections".
   | { type: "network"; on: boolean }
-  | { type: "network-cut" };
+  | { type: "network-cut" }
+  // A relay token the coordinator asked for (`network-token`): the page
+  // passes Turnstile, which only it can, then asks the relay.
+  | {
+    type: "network-token-reply";
+    req: number;
+    token?: string;
+    expires?: number;
+    error?: string;
+  };
 
 /** The guest's DevTools endpoint, once the shell's boot started it. */
 let cdpBridge: CdpBridge | undefined;
 
 /** The in-tab sandbox's network, when a relay is configured. */
 let network: TabNetwork | undefined;
+/** Relay tokens asked of the page, by request number. */
+const tokenRequests = new Map<
+  number,
+  {
+    resolve: (t: { token: string; expires: number }) => void;
+    reject: (e: Error) => void;
+  }
+>();
+let nextTokenRequest = 1;
+function pageToken(): Promise<{ token: string; expires: number }> {
+  return new Promise((resolve, reject) => {
+    const req = nextTokenRequest++;
+    tokenRequests.set(req, { resolve, reject });
+    post({ type: "network-token", req });
+  });
+}
 
 /** Recorded with a seal: a kernel memory means something only to its binary. */
 let runningKernelSha256: string | undefined;
@@ -254,6 +279,7 @@ type FromWorker =
   | { type: "cdp-close"; conn: number }
   // The network's state for the page's indicator (src/network.ts).
   | { type: "network-status"; status: NetworkStatus }
+  | { type: "network-token"; req: number }
   | {
     type: "yurt-reply";
     req: number;
@@ -700,6 +726,16 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     network?.tcp.cutAll();
     return;
   }
+  if (msg.type === "network-token-reply") {
+    const waiter = tokenRequests.get(msg.req);
+    tokenRequests.delete(msg.req);
+    if (msg.token !== undefined && msg.expires !== undefined) {
+      waiter?.resolve({ token: msg.token, expires: msg.expires });
+    } else {
+      waiter?.reject(new Error(msg.error ?? "no relay token"));
+    }
+    return;
+  }
   await serveYurt(msg);
   await servePackages(msg);
   if (msg.type === "pkg-read-installed") await installed.read();
@@ -828,6 +864,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   if (kernelPorts === undefined && msg.networkRelay !== undefined) {
     network ??= new TabNetwork(
       msg.networkRelay,
+      pageToken,
       (status) => post({ type: "network-status", status }),
     );
     if (msg.networkOn === true) network.setEnabled(true);

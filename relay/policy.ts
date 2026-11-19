@@ -131,10 +131,17 @@ export function isHostname(name: string): boolean {
 
 /** Who a caller is, for counting: an IPv4 address as it is, an IPv6
  * address by its /64 (one subscriber's prefix, inside which a client can
- * pick any address). Anything else as it is. */
+ * pick any address), unless it carries an IPv4 address (mapped, NAT64,
+ * 6to4, Teredo): then that IPv4 address. Anything else as it is. */
 export function clientKey(address: string): string {
   if (parseV4(address) !== undefined) return address;
   const v6 = parseV6(address.replace(/^\[|\]$/g, ""));
   if (v6 === undefined) return address;
+  const nat64 = v6[0] === 0x64 && v6[1] === 0xff9b &&
+    v6.slice(2, 6).every((x) => x === 0);
+  const v4 = nat64
+    ? [v6[6] >> 8, v6[6] & 0xff, v6[7] >> 8, v6[7] & 0xff]
+    : embeddedV4(v6);
+  if (v4 !== undefined) return v4.join(".");
   return `${v6.slice(0, 4).map((x) => x.toString(16)).join(":")}::/64`;
 }

@@ -2,16 +2,20 @@
  * The Yurt network relay: how a playground tab's sandbox reaches the
  * internet when its user turns network on (yurt-playground#380).
  *
- * - `GET /token`: a short-lived token bound to the caller's address, only
- *   for a page on an allowed origin, a few per caller per minute.
+ * - `GET /token?turnstile=`: a short-lived token bound to the caller's
+ *   address, only for a page on an allowed origin that passed a Turnstile
+ *   challenge, a few per caller per minute.
  * - `GET /dns?name=&token=`: the name's public IPv4 addresses.
  * - `GET /tcp?host=&port=&token=` (WebSocket): one TCP connection to a
  *   public IPv4 address on port 80, 443 or 9418. The relay answers the
  *   text frame `ok` once the connection is up; after that every binary
- *   frame is stream bytes, both ways. The page credits what its guest has
- *   read with text frames `ack <bytes>`; the relay stops reading from the
- *   server while more than {@link Limits.downstreamWindow} bytes are
- *   unacknowledged. A refusal or failure is a close with code
+ *   frame is stream bytes, both ways. Every {@link Limits.seqEvery} bytes
+ *   the relay sends the text frame `seq <nonce>`; once its guest has read
+ *   everything before it, the page answers `ack <nonce>`, in order. Frames
+ *   arrive in order, so quoting the nonce proves the page received those
+ *   bytes. The relay stops reading from the server while more than
+ *   {@link Limits.downstreamWindow} bytes are unacknowledged. A refusal or
+ *   failure is a close with code
  *   `4000 + errno` (Linux numbering), which the page hands the guest as
  *   that errno.
  *
@@ -60,8 +64,9 @@ export type Limits = {
   tokenTtlMs: number;
   /** Tokens per caller per minute. */
   tokensPerMinute: number;
-  /** `/dns` questions per token per minute. */
+  /** `/dns` questions per token, and per caller, per minute. */
   dnsPerMinute: number;
+  dnsPerClientPerMinute: number;
   socketsPerToken: number;
   socketsPerClient: number;
   bytesPerToken: number;
@@ -77,14 +82,22 @@ export type Limits = {
   upstreamQueueBytes: number;
   upstreamQueuePerClient: number;
   upstreamQueueTotal: number;
-  /** Bytes sent to the page and not yet acknowledged, at most. */
+  /** An upstream write the server has not taken within this long ends
+   * its connection. */
+  writeStallMs: number;
+  /** Bytes sent to the page and not yet acknowledged, at most: per
+   * connection, and in all (past which the largest holder is cut). */
   downstreamWindow: number;
+  downstreamTotal: number;
+  /** Bytes between two `seq` frames. */
+  seqEvery: number;
 };
 
 export const DEFAULT_LIMITS: Limits = {
   tokenTtlMs: 20 * 60 * 1000,
   tokensPerMinute: 10,
   dnsPerMinute: 120,
+  dnsPerClientPerMinute: 600,
   socketsPerToken: 16,
   socketsPerClient: 32,
   bytesPerToken: 1024 * 1024 * 1024,
@@ -95,7 +108,10 @@ export const DEFAULT_LIMITS: Limits = {
   upstreamQueueBytes: 4 * 1024 * 1024,
   upstreamQueuePerClient: 16 * 1024 * 1024,
   upstreamQueueTotal: 64 * 1024 * 1024,
+  writeStallMs: 45_000,
   downstreamWindow: 2 * 1024 * 1024,
+  downstreamTotal: 128 * 1024 * 1024,
+  seqEvery: 256 * 1024,
 };
 
 export type RelayPlatform = {
@@ -112,6 +128,9 @@ export type RelayPlatform = {
   /** A platform's own limit on `/token` per caller ({@link clientKey}),
    * on top of the relay's. */
   allowToken?(client: string): Promise<boolean>;
+  /** Whether a Turnstile response from `address` is a human's
+   * ({@link siteverify}). Required: no token without it. */
+  verifyHuman(response: string, address: string): Promise<boolean>;
   limits?: Partial<Limits>;
   now?: () => number;
 };
@@ -178,18 +197,48 @@ export function originsOf(text: string | undefined): string[] {
 export type WorkerEnv = {
   RELAY_SECRET?: string;
   RELAY_ORIGINS?: string;
+  TURNSTILE_SECRET?: string;
   TOKEN_LIMITER?: {
     limit(options: { key: string }): Promise<{ success: boolean }>;
   };
 };
 
-/** Why the Worker must not serve: {@link configProblem}, or no
- * `TOKEN_LIMITER` binding. */
+/** Why the Worker must not serve: {@link configProblem}, no
+ * `TURNSTILE_SECRET`, or no `TOKEN_LIMITER` binding. */
 export function workerConfigProblem(env: WorkerEnv): string | undefined {
   return configProblem(env.RELAY_SECRET, originsOf(env.RELAY_ORIGINS)) ??
+    (env.TURNSTILE_SECRET ? undefined : "TURNSTILE_SECRET is not set") ??
     (typeof env.TOKEN_LIMITER?.limit === "function"
       ? undefined
       : "the TOKEN_LIMITER rate limiting binding is missing");
+}
+
+const SITEVERIFY = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+
+/** Ask Cloudflare whether `response`, a Turnstile widget's answer given to
+ * the caller at `address`, is good under `secret`. A failure to ask is a
+ * no. */
+export async function siteverify(
+  secret: string,
+  response: string,
+  address: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<boolean> {
+  try {
+    const answer = await fetchFn(SITEVERIFY, {
+      method: "POST",
+      body: new URLSearchParams({ secret, response, remoteip: address }),
+    });
+    if (!answer.ok) return false;
+    return (await answer.json() as { success?: unknown }).success === true;
+  } catch {
+    return false;
+  }
+}
+
+function nonce(): string {
+  return btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(9))))
+    .replaceAll("+", "-").replaceAll("/", "_");
 }
 
 /** At most `limit` per key per `windowMs`; old windows are swept at most
@@ -221,14 +270,59 @@ export function createRelay(platform: RelayPlatform): Relay {
   if (problem !== undefined) {
     throw new Error(`relay not configured: ${problem}`);
   }
+  if (typeof platform.verifyHuman !== "function") {
+    throw new Error("relay not configured: no Turnstile verification");
+  }
   const limits = { ...DEFAULT_LIMITS, ...platform.limits };
   const now = platform.now ?? Date.now;
   const tokens = new Map<string, Usage>();
   const clients = new Map<string, Usage>();
   /** Bytes from every page not yet taken by their servers. */
   let queuedTotal = 0;
+  /** Bytes sent to every page and not yet acknowledged. */
+  let unackedTotal = 0;
+  /** Every open connection, for the isolate-wide budgets' evictions. */
+  const live = new Set<
+    {
+      client: string;
+      queued(): number;
+      unacked(): number;
+      end(code: number, why: string): void;
+    }
+  >();
   const mayIssue = windowCounter(limits.tokensPerMinute, 60_000, now);
   const mayAsk = windowCounter(limits.dnsPerMinute, 60_000, now);
+  const mayClientAsk = windowCounter(
+    limits.dnsPerClientPerMinute,
+    60_000,
+    now,
+  );
+
+  /** The isolate's queued upstream bytes are over budget: cut the caller
+   * holding the most, not whoever sent the last frame. */
+  const evictQueued = () => {
+    while (queuedTotal > limits.upstreamQueueTotal) {
+      const heaviest = [...clients].reduce((a, b) =>
+        b[1].queued > a[1].queued ? b : a
+      );
+      if (heaviest[1].queued <= 0) return;
+      for (const conn of [...live]) {
+        if (conn.client === heaviest[0] && conn.queued() > 0) {
+          conn.end(CLOSE_ERRNO_BASE + ECONNRESET, "the relay is busy");
+        }
+      }
+    }
+  };
+  /** The isolate's unacknowledged bytes are over budget: cut the
+   * connection holding the most. */
+  const evictUnacked = () => {
+    while (unackedTotal > limits.downstreamTotal && live.size > 0) {
+      const heaviest = [...live].reduce((a, b) =>
+        b.unacked() > a.unacked() ? b : a
+      );
+      heaviest.end(CLOSE_ERRNO_BASE + ECONNRESET, "the relay is busy");
+    }
+  };
 
   let pruned = now();
   const prune = () => {
@@ -313,7 +407,7 @@ export function createRelay(platform: RelayPlatform): Relay {
     }
     byToken.open++;
     byClient.open++;
-    pipe(socket, host, port, [byToken, byClient], token.expires);
+    pipe(socket, host, port, [byToken, byClient], token.expires, client);
     return response;
   };
 
@@ -323,6 +417,7 @@ export function createRelay(platform: RelayPlatform): Relay {
     port: number,
     uses: [Usage, Usage],
     expires: number,
+    client: string,
   ) => {
     const [byToken, byClient] = uses;
     let connection: RelayConnection | undefined;
@@ -330,12 +425,18 @@ export function createRelay(platform: RelayPlatform): Relay {
     let writes = Promise.resolve();
     /** Bytes from the page not yet taken by the server. */
     let queued = 0;
-    /** Bytes sent to the page and not yet acknowledged. */
-    let unacked = 0;
+    /** Bytes sent to the page, and how far the page acknowledged. */
+    let sent = 0;
+    let acked = 0;
+    /** `seq` frames sent and not yet acknowledged: where each stood. */
+    const marks: { nonce: string; at: number }[] = [];
+    let sinceMark = 0;
     /** Wakes the read loop: credit arrived, or the connection ended. */
     let credited: (() => void) | undefined;
     let ended = false;
     let idle: ReturnType<typeof setTimeout> | undefined;
+    /** The write in flight's deadline. */
+    let stall: ReturnType<typeof setTimeout> | undefined;
     // A connection lives no longer than its token.
     const expiry = setTimeout(
       () => end(CLOSE_ERRNO_BASE + EACCES, "the token expired"),
@@ -349,10 +450,14 @@ export function createRelay(platform: RelayPlatform): Relay {
     const end = (code = 1000, why = "") => {
       if (ended) return;
       ended = true;
+      live.delete(self);
       clearTimeout(idle);
       clearTimeout(expiry);
+      clearTimeout(stall);
       for (const use of uses) use.open--;
       unqueue(queued);
+      unackedTotal -= sent - acked;
+      acked = sent;
       credited?.();
       try {
         connection?.close();
@@ -385,14 +490,39 @@ export function createRelay(platform: RelayPlatform): Relay {
       end(CLOSE_ERRNO_BASE + ECONNRESET, "the data allowance is used up");
       return false;
     };
+    const self = {
+      client,
+      queued: () => queued,
+      unacked: () => sent - acked,
+      end,
+    };
+    live.add(self);
+    /** `ack <nonce>`: the oldest `seq` outstanding, or the page is lying. */
     const credit = (text: string) => {
-      const n = /^ack ([1-9]\d{0,9})$/.exec(text)?.[1];
-      if (n === undefined || Number(n) > unacked) {
+      const mark = marks[0];
+      if (mark === undefined || text !== `ack ${mark.nonce}`) {
         end(CLOSE_ERRNO_BASE + ECONNRESET, "bad acknowledgement");
         return;
       }
-      unacked -= Number(n);
+      marks.shift();
+      unackedTotal -= mark.at - acked;
+      acked = mark.at;
       credited?.();
+    };
+    /** Send the server's `chunk`, and a `seq` frame past each
+     * {@link Limits.seqEvery} bytes. */
+    const sendDown = (chunk: Uint8Array) => {
+      socket.send(chunk);
+      sent += chunk.byteLength;
+      unackedTotal += chunk.byteLength;
+      sinceMark += chunk.byteLength;
+      if (sinceMark >= limits.seqEvery) {
+        const mark = { nonce: nonce(), at: sent };
+        marks.push(mark);
+        socket.send(`seq ${mark.nonce}`);
+        sinceMark = 0;
+      }
+      if (unackedTotal > limits.downstreamTotal) evictUnacked();
     };
     socket.addEventListener("close", () => end());
     socket.addEventListener("error", () => end());
@@ -413,8 +543,7 @@ export function createRelay(platform: RelayPlatform): Relay {
       queuedTotal += bytes.byteLength;
       if (
         queued > limits.upstreamQueueBytes ||
-        byClient.queued > limits.upstreamQueuePerClient ||
-        queuedTotal > limits.upstreamQueueTotal
+        byClient.queued > limits.upstreamQueuePerClient
       ) {
         end(
           CLOSE_ERRNO_BASE + ECONNRESET,
@@ -422,25 +551,45 @@ export function createRelay(platform: RelayPlatform): Relay {
         );
         return;
       }
+      // The isolate's budget: the heaviest caller goes, maybe not this one.
+      if (queuedTotal > limits.upstreamQueueTotal) evictQueued();
+      if (ended) return;
       alive();
       const w = writer;
-      writes = writes.then(() => w.write(bytes)).then(
+      writes = writes.then(() => {
+        // A server that takes nothing for writeStallMs ends the connection.
+        if (ended) return;
+        return Promise.race([
+          w.write(bytes),
+          new Promise<never>((_, reject) => {
+            stall = setTimeout(
+              () => reject(new Error("stalled")),
+              limits.writeStallMs,
+            );
+          }),
+        ]).finally(() => clearTimeout(stall));
+      }).then(
         () => {
           if (!ended) unqueue(bytes.byteLength);
         },
-        () => end(CLOSE_ERRNO_BASE + ECONNRESET, "write failed"),
+        (error) =>
+          end(
+            CLOSE_ERRNO_BASE +
+              (error?.message === "stalled" ? ETIMEDOUT : ECONNRESET),
+            "write failed",
+          ),
       );
     });
     /** Until the page has acknowledged enough to fall within the window,
      * or the connection ends; a page that gives no credit for `idleMs` is
      * cut. */
     const waitForCredit = async () => {
-      if (unacked <= limits.downstreamWindow) return;
+      if (sent - acked <= limits.downstreamWindow) return;
       const stalled = setTimeout(
         () => end(CLOSE_ERRNO_BASE + ETIMEDOUT, "no acknowledgement"),
         limits.idleMs,
       );
-      while (!ended && unacked > limits.downstreamWindow) {
+      while (!ended && sent - acked > limits.downstreamWindow) {
         await new Promise<void>((resolve) => credited = resolve);
       }
       credited = undefined;
@@ -470,8 +619,7 @@ export function createRelay(platform: RelayPlatform): Relay {
           for await (const chunk of opened.readable) {
             if (ended || !count(chunk.byteLength)) break;
             alive();
-            socket.send(chunk);
-            unacked += chunk.byteLength;
+            sendDown(chunk);
             await waitForCredit();
           }
           end();
@@ -518,6 +666,10 @@ export function createRelay(platform: RelayPlatform): Relay {
       ) {
         return json(origin, { error: "too many tokens" }, 429);
       }
+      const human = url.searchParams.get("turnstile") ?? "";
+      if (human === "" || !await platform.verifyHuman(human, address)) {
+        return json(origin, { error: "the Turnstile check failed" }, 403);
+      }
       // Bound to the exact address; counted by the caller's key.
       return json(
         origin,
@@ -534,7 +686,7 @@ export function createRelay(platform: RelayPlatform): Relay {
       return json(origin, { error: "no valid token" }, 401);
     }
     if (url.pathname === "/dns") {
-      if (!mayAsk(token.id)) {
+      if (!mayAsk(token.id) || !mayClientAsk(client)) {
         return json(origin, { error: "too many questions" }, 429);
       }
       const name = (url.searchParams.get("name") ?? "").toLowerCase();

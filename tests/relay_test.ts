@@ -7,6 +7,7 @@ import {
   type Limits,
   type RelayConnection,
   type RelayWebSocket,
+  siteverify,
   workerConfigProblem,
 } from "../relay/relay.ts";
 
@@ -104,6 +105,7 @@ Deno.test("relay token: genuine, unexpired and from its own client only", async 
 Deno.test("relay: refuses to start without a real secret and origins", () => {
   const platform = {
     allowedOrigins: [ORIGIN],
+    verifyHuman: (r: string) => Promise.resolve(r === "human"),
     resolve: () => Promise.resolve([]),
     connect: () => Promise.reject(new Error("no")),
     upgrade: () => {
@@ -186,6 +188,7 @@ function testRelay(
     resolve?: (name: string) => Promise<string[]>;
     connect?: (ip: string, port: number) => Promise<RelayConnection>;
     now?: () => number;
+    verifyHuman?: (response: string) => Promise<boolean>;
   } = {},
 ) {
   const sockets: FakeSocket[] = [];
@@ -196,6 +199,9 @@ function testRelay(
     // Many tokens per test; the token limit has a test of its own.
     limits: { tokensPerMinute: 1000, ...options.limits },
     now: options.now,
+    // The page's Turnstile answer is "human" in these tests.
+    verifyHuman: options.verifyHuman ??
+      ((response) => Promise.resolve(response === "human")),
     resolve: options.resolve ?? (() => Promise.resolve([])),
     connect: (ip, port) => {
       connects.push(`${ip}:${port}`);
@@ -220,7 +226,7 @@ function testRelay(
       client,
     );
   const token = async (client = CLIENT) =>
-    (await (await get("/token", {}, client)).json()).token;
+    (await (await get("/token?turnstile=human", {}, client)).json()).token;
   const tcp = async (
     host: string,
     port: number,
@@ -255,8 +261,8 @@ Deno.test("relay: only an allowed origin gets anything", async () => {
     CLIENT,
   );
   assertEquals(none.status, 403);
-  assertEquals((await get("/token", {}, "")).status, 400);
-  const ok = await get("/token");
+  assertEquals((await get("/token?turnstile=human", {}, "")).status, 400);
+  const ok = await get("/token?turnstile=human");
   assertEquals(ok.status, 200);
   assertEquals(ok.headers.get("Access-Control-Allow-Origin"), ORIGIN);
 });
@@ -408,6 +414,7 @@ Deno.test("relay: /token is limited per address", async () => {
     secret: SECRET,
     allowedOrigins: [ORIGIN],
     limits: { tokensPerMinute: 2 },
+    verifyHuman: (r: string) => Promise.resolve(r === "human"),
     resolve: () => Promise.resolve([]),
     connect: () => Promise.reject(new Error("no")),
     upgrade: () => {
@@ -420,7 +427,7 @@ Deno.test("relay: /token is limited per address", async () => {
   });
   const ask = (client: string) =>
     relay.handle(
-      new Request("https://relay.example/token", {
+      new Request("https://relay.example/token?turnstile=human", {
         headers: { Origin: ORIGIN },
       }),
       client,
@@ -485,29 +492,53 @@ Deno.test("relay: a page that outruns the server is cut", async () => {
   assertEquals(socket.closed?.code, 4104);
 });
 
-Deno.test("relay: the server's bytes wait for the page's credit", async () => {
+/** The `seq` nonces among what the relay sent. */
+const seqs = (socket: FakeSocket) =>
+  socket.sent.filter((f): f is string =>
+    typeof f === "string" && f.startsWith("seq ")
+  ).map((f) => f.slice(4));
+
+Deno.test("relay: the server's bytes wait for proof the page received them", async () => {
   const peer = echoConnection();
   const { tcp } = testRelay({
-    limits: { downstreamWindow: 2 },
+    limits: { downstreamWindow: 2, seqEvery: 2 },
     connect: () => Promise.resolve(peer.connection),
   });
   const socket = await tcp("151.101.0.223", 443);
   await tick();
-  for (const byte of [1, 2, 3, 4]) {
+  for (const byte of [1, 2, 3, 4, 5]) {
     socket.emit("message", new Uint8Array([byte]).buffer);
   }
   await new Promise((r) => setTimeout(r, 20));
-  // Three bytes unacknowledged is past the window: reading stopped.
-  assertEquals(socket.sent.slice(1).length, 3);
-  socket.emit("message", "ack 2");
+  const data = () => socket.sent.filter((f) => typeof f !== "string");
+  // A seq after every second byte; three unacknowledged is past the window.
+  assertEquals(data().length, 3);
+  assertEquals(seqs(socket).length, 1);
+  // A count of bytes is no proof any more.
+  socket.emit("message", `ack ${seqs(socket)[0]}`);
   await new Promise((r) => setTimeout(r, 20));
-  assertEquals(
-    socket.sent.slice(1),
-    [1, 2, 3, 4].map((b) => new Uint8Array([b])),
-  );
-  // Credit for bytes never sent is a broken page.
-  socket.emit("message", "ack 100");
-  assertEquals(socket.closed?.code, 4104);
+  assertEquals(data().length, 5);
+  socket.emit("close");
+});
+
+Deno.test("relay: an acknowledgement must quote the oldest seq", async () => {
+  const { tcp } = testRelay({ limits: { seqEvery: 1 } });
+  for (
+    const bad of [
+      () => "ack 2", // a byte count, the old protocol
+      (n: string[]) => `ack ${n[1]}`, // out of order
+      () => "ack nonsense",
+    ]
+  ) {
+    const socket = await tcp("151.101.0.223", 443);
+    await tick();
+    socket.emit("message", new Uint8Array([1]).buffer);
+    socket.emit("message", new Uint8Array([2]).buffer);
+    await new Promise((r) => setTimeout(r, 20));
+    assertEquals(seqs(socket).length, 2);
+    socket.emit("message", bad(seqs(socket)));
+    assertEquals(socket.closed?.code, 4104);
+  }
 });
 
 Deno.test("relay: a page that gives no credit is cut", async () => {
@@ -528,6 +559,30 @@ Deno.test("relay: a page that gives no credit is cut", async () => {
   clearInterval(keepSending);
   assertEquals(socket.closed?.code, 4110);
   assert(peer.isClosed());
+});
+
+Deno.test("relay: past the isolate's unacknowledged budget the largest holder is cut", async () => {
+  const peers: ReturnType<typeof echoConnection>[] = [];
+  const { tcp } = testRelay({
+    limits: { downstreamWindow: 100, downstreamTotal: 10, seqEvery: 1000 },
+    connect: () => {
+      const peer = echoConnection();
+      peers.push(peer);
+      return Promise.resolve(peer.connection);
+    },
+  });
+  const big = await tcp("151.101.0.223", 443);
+  const small = await tcp("151.101.0.223", 443, undefined, "192.0.2.5");
+  await tick();
+  big.emit("message", new Uint8Array(8).buffer);
+  await tick();
+  await tick();
+  // The small one's frame tips the isolate over; the big one goes.
+  small.emit("message", new Uint8Array(3).buffer);
+  await tick();
+  await tick();
+  assertEquals([big.closed?.code, small.closed], [4104, undefined]);
+  small.emit("close");
 });
 
 Deno.test("relay: connections end with their token, and usage is forgotten later", async () => {
@@ -561,16 +616,32 @@ Deno.test("relay: callers are counted by IPv4 address or IPv6 /64", () => {
     clientKey("2001:0db8:00aa:00bb:ffff::9"),
   );
   assert(clientKey("2001:db8:aa:bb::1") !== clientKey("2001:db8:aa:bc::1"));
+  // An IPv6 address that carries an IPv4 one is that IPv4 caller.
+  for (
+    const carried of [
+      "::ffff:198.51.100.7",
+      "64:ff9b::198.51.100.7",
+      "64:ff9b::c633:6407",
+      "2002:c633:6407::1",
+    ]
+  ) {
+    assertEquals(clientKey(carried), "198.51.100.7", carried);
+  }
 });
 
 Deno.test("relay: rotating IPv6 addresses in one /64 does not mint more tokens", async () => {
   const { get } = testRelay({ limits: { tokensPerMinute: 2 } });
   const statuses = [];
   for (let i = 1; i <= 3; i++) {
-    statuses.push((await get("/token", {}, `2001:db8:1:2::${i}`)).status);
+    statuses.push(
+      (await get("/token?turnstile=human", {}, `2001:db8:1:2::${i}`)).status,
+    );
   }
   assertEquals(statuses, [200, 200, 429]);
-  assertEquals((await get("/token", {}, "2001:db8:1:3::1")).status, 200);
+  assertEquals(
+    (await get("/token?turnstile=human", {}, "2001:db8:1:3::1")).status,
+    200,
+  );
 });
 
 Deno.test("relay: a token is still bound to its exact IPv6 address", async () => {
@@ -620,59 +691,129 @@ Deno.test("relay: connections and bytes are capped per caller across its tokens"
   for (const s of [a, other]) s.emit("close");
 });
 
-Deno.test("relay: queued upstream bytes are capped per caller and in all", async () => {
-  const stuck = (): RelayConnection => ({
-    readable: new ReadableStream(),
-    writable: new WritableStream({ write: () => new Promise(() => {}) }),
-    close: () => {},
-  });
+const stuck = (): RelayConnection => ({
+  readable: new ReadableStream(),
+  writable: new WritableStream({ write: () => new Promise(() => {}) }),
+  close: () => {},
+});
+
+Deno.test("relay: queued upstream bytes are capped per caller", async () => {
   const { tcp, token } = testRelay({
-    limits: {
-      upstreamQueueBytes: 100,
-      upstreamQueuePerClient: 10,
-      upstreamQueueTotal: 16,
-    },
+    limits: { upstreamQueueBytes: 100, upstreamQueuePerClient: 10 },
     connect: () => Promise.resolve(stuck()),
   });
   const a = await tcp("151.101.0.223", 443, await token());
   const b = await tcp("151.101.0.223", 443, await token());
-  const c = await tcp("151.101.0.223", 443, undefined, "192.0.2.5");
   await tick();
   a.emit("message", new Uint8Array(6).buffer);
   b.emit("message", new Uint8Array(6).buffer); // 12 > 10 for this caller
   assertEquals([a.closed, b.closed?.code], [undefined, 4104]);
-  // The cut connection's bytes no longer count: 6 + 9 = 15 in all.
-  c.emit("message", new Uint8Array(9).buffer);
-  assertEquals(c.closed, undefined);
-  c.emit("message", new Uint8Array(2).buffer); // 17 > 16 in all
-  assertEquals(c.closed?.code, 4104);
   a.emit("close");
 });
 
-Deno.test("relay: /dns questions are limited per token", async () => {
+Deno.test("relay: a full isolate budget cuts the heaviest caller, not the last sender", async () => {
+  const { tcp } = testRelay({
+    limits: { upstreamQueueTotal: 16 },
+    connect: () => Promise.resolve(stuck()),
+  });
+  const heavy = await tcp("151.101.0.223", 443);
+  const light = await tcp("151.101.0.223", 443, undefined, "192.0.2.5");
+  await tick();
+  heavy.emit("message", new Uint8Array(12).buffer);
+  light.emit("message", new Uint8Array(6).buffer); // 18 > 16 in all
+  assertEquals([heavy.closed?.code, light.closed], [4104, undefined]);
+  // The heavy one's bytes are released: the light one goes on.
+  light.emit("message", new Uint8Array(6).buffer);
+  assertEquals(light.closed, undefined);
+  light.emit("close");
+});
+
+Deno.test("relay: a write the server does not take is cut", async () => {
+  const { tcp } = testRelay({
+    limits: { writeStallMs: 20 },
+    connect: () => Promise.resolve(stuck()),
+  });
+  const socket = await tcp("151.101.0.223", 443);
+  await tick();
+  socket.emit("message", new Uint8Array(1).buffer);
+  await new Promise((r) => setTimeout(r, 60));
+  assertEquals(socket.closed?.code, 4110);
+});
+
+Deno.test("relay: /dns questions are limited per token and per caller", async () => {
   const { get, token } = testRelay({
-    limits: { dnsPerMinute: 2 },
+    limits: { dnsPerMinute: 2, dnsPerClientPerMinute: 3 },
     resolve: () => Promise.resolve(["151.101.0.223"]),
   });
-  const t = encodeURIComponent(await token());
-  const ask = async () => (await get(`/dns?name=pypi.org&token=${t}`)).status;
-  assertEquals([await ask(), await ask(), await ask()], [200, 200, 429]);
+  const ask = async (t: string) =>
+    (await get(`/dns?name=pypi.org&token=${encodeURIComponent(t)}`)).status;
+  const first = await token();
+  assertEquals([await ask(first), await ask(first), await ask(first)], [
+    200,
+    200,
+    429,
+  ]);
+  // A fresh token from the same caller: the caller's count goes on.
+  const second = await token();
+  assertEquals([await ask(second), await ask(second)], [200, 429]);
+});
+
+Deno.test("relay: /token needs a Turnstile answer that passes", async () => {
+  const { get } = testRelay();
+  assertEquals((await get("/token")).status, 403);
+  assertEquals((await get("/token?turnstile=bot")).status, 403);
+  assertEquals((await get("/token?turnstile=human")).status, 200);
+});
+
+Deno.test("relay: siteverify asks Cloudflare and takes only a yes", async () => {
+  const asked: URLSearchParams[] = [];
+  const answer = (body: unknown, status = 200) =>
+    ((_input: unknown, init?: RequestInit) => {
+      asked.push(new URLSearchParams(init!.body as URLSearchParams));
+      return Promise.resolve(new Response(JSON.stringify(body), { status }));
+    }) as typeof fetch;
+  assert(await siteverify("s", "r", "198.51.100.7", answer({ success: true })));
+  assertEquals(
+    [...asked[0]],
+    [["secret", "s"], ["response", "r"], ["remoteip", "198.51.100.7"]],
+  );
+  assert(!await siteverify("s", "r", "a", answer({ success: false })));
+  assert(!await siteverify("s", "r", "a", answer({ success: "yes" })));
+  assert(!await siteverify("s", "r", "a", answer({ success: true }, 500)));
+  assert(
+    !await siteverify("s", "r", "a", () => Promise.reject(new Error("down"))),
+  );
 });
 
 Deno.test("relay: the Worker refuses to serve without its rate limiting binding", () => {
   const limiter = { limit: () => Promise.resolve({ success: true }) };
-  const env = { RELAY_SECRET: SECRET, RELAY_ORIGINS: `${ORIGIN}, ` };
+  const env = {
+    RELAY_SECRET: SECRET,
+    RELAY_ORIGINS: `${ORIGIN}, `,
+    TURNSTILE_SECRET: "t",
+  };
   assertEquals(
     workerConfigProblem({ ...env, TOKEN_LIMITER: limiter }),
     undefined,
   );
   assert(workerConfigProblem(env)?.includes("TOKEN_LIMITER"));
   assert(
+    workerConfigProblem({
+      ...env,
+      TURNSTILE_SECRET: undefined,
+      TOKEN_LIMITER: limiter,
+    })?.includes("TURNSTILE_SECRET"),
+  );
+  assert(
     workerConfigProblem({ ...env, RELAY_SECRET: "", TOKEN_LIMITER: limiter })
       ?.includes("RELAY_SECRET"),
   );
   assert(
-    workerConfigProblem({ RELAY_SECRET: SECRET, TOKEN_LIMITER: limiter })
+    workerConfigProblem({
+      RELAY_SECRET: SECRET,
+      TURNSTILE_SECRET: "t",
+      TOKEN_LIMITER: limiter,
+    })
       ?.includes("RELAY_ORIGINS"),
   );
 });

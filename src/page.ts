@@ -83,9 +83,10 @@ import {
 import type { ExecOptions } from "./executions.ts";
 import { siteUrl } from "./site_url.ts";
 import {
-  loadNetworkRelay,
+  loadNetwork,
   type NetworkControls,
   networkWanted,
+  relayToken,
   wireNetworkToggle,
 } from "./network_toggle.ts";
 import type { NetworkStatus } from "./network.ts";
@@ -117,6 +118,7 @@ type FromWorker =
   | { type: "cell-error"; id: string; message: string }
   | MemoryRefusedMessage
   | { type: "network-status"; status: NetworkStatus }
+  | { type: "network-token"; req: number }
   | CdpFromWorker;
 
 /** The in-tab sandbox seals after each agent run; `?suspend=0` keeps it running,
@@ -465,7 +467,7 @@ function boot(
   // The desktop app's sandbox has the machine's network; the tab's has
   // one only through a configured relay, and only once the user says so.
   const relayPromise = desktop === undefined
-    ? loadNetworkRelay()
+    ? loadNetwork()
     : Promise.resolve(undefined);
   let networkControls: NetworkControls | undefined;
   // The cell's Install: enabled when the pins name a slim image; after a
@@ -647,6 +649,29 @@ function boot(
       else waiter.reject(new Error(msg.error ?? "yurt request failed"));
     }
     if (msg.type === "network-status") networkControls?.show(msg.status);
+    if (msg.type === "network-token") {
+      const req = msg.req;
+      void relayPromise.then(async (network) => {
+        if (network === undefined) throw new Error("no relay");
+        return await relayToken(network, byId("network-human"));
+      }).then(
+        ({ token, expires }) =>
+          worker.postMessage({
+            type: "network-token-reply",
+            req,
+            token,
+            expires,
+          }),
+        (error) => {
+          console.warn(`[network] no token: ${error}`);
+          worker.postMessage({
+            type: "network-token-reply",
+            req,
+            error: String(error),
+          });
+        },
+      );
+    }
     if (msg.type === "cell-stream") notebook.stream(msg.id, msg.chunk);
     if (msg.type === "cell-result") notebook.result(msg.id, msg.result);
     if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
@@ -750,7 +775,7 @@ function boot(
       snapshot: snapshotMode(),
       snapshotId: uploadedSnapshotId(),
       capturePackages: extra,
-      networkRelay: relay,
+      networkRelay: relay?.relay,
       networkOn,
     });
     if (relay !== undefined) {

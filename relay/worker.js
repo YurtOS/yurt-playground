@@ -7,7 +7,12 @@
 // Cloudflare): those connects fail as refused. Fastly-hosted PyPI and
 // GitHub are reachable.
 import { connect } from "cloudflare:sockets";
-import { createRelay, originsOf, workerConfigProblem } from "./relay.ts";
+import {
+  createRelay,
+  originsOf,
+  siteverify,
+  workerConfigProblem,
+} from "./relay.ts";
 
 /** A name's A records through DNS over HTTPS (Workers have no resolver
  * API). */
@@ -49,8 +54,8 @@ let problem;
 export default {
   fetch(request, env) {
     if (relay === undefined && problem === undefined) {
-      // Fails closed: without a real secret, origins and the rate limiting
-      // binding nothing is served.
+      // Fails closed: without a real secret, origins, the Turnstile secret
+      // and the rate limiting binding nothing is served.
       problem = workerConfigProblem(env);
       if (problem === undefined) {
         relay = createRelay({
@@ -65,6 +70,8 @@ export default {
           // or an IPv6 /64.
           allowToken: async (client) =>
             (await env.TOKEN_LIMITER.limit({ key: client })).success,
+          verifyHuman: (response, address) =>
+            siteverify(env.TURNSTILE_SECRET, response, address),
         });
       } else {
         console.error(`relay not configured: ${problem}`);

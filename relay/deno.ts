@@ -12,6 +12,7 @@ import {
   originsOf,
   type RelayConnection,
   type RelayWebSocket,
+  siteverify,
 } from "./relay.ts";
 
 /** A server WebSocket that queues `send`/`close` until it is open: Deno
@@ -39,6 +40,9 @@ function openWhenReady(socket: WebSocket): RelayWebSocket {
 export type DenoRelayOptions = {
   secret: string;
   allowedOrigins: string[];
+  /** Turnstile's secret: Cloudflare's always-pass test secret
+   * ({@link TURNSTILE_TEST_SECRET}) for local runs. */
+  turnstileSecret: string;
   port?: number;
   limits?: Partial<Limits>;
   /** Overrides for tests: resolution and connects. */
@@ -46,8 +50,18 @@ export type DenoRelayOptions = {
   connect?: (ip: string, port: number) => Promise<RelayConnection>;
 };
 
+/** Cloudflare's published Turnstile test keys: the site key's widget
+ * always passes, without a challenge, and the secret accepts its answer. */
+export const TURNSTILE_TEST_SITE_KEY = "1x00000000000000000000BB";
+export const TURNSTILE_TEST_SECRET = "1x0000000000000000000000000000000AA";
+
 export function startDenoRelay(options: DenoRelayOptions) {
+  if (!options.turnstileSecret) {
+    throw new Error("relay not configured: no Turnstile secret");
+  }
   const relay = createRelay({
+    verifyHuman: (response, address) =>
+      siteverify(options.turnstileSecret, response, address),
     secret: options.secret,
     allowedOrigins: options.allowedOrigins,
     limits: options.limits,
@@ -95,7 +109,9 @@ export function startDenoRelay(options: DenoRelayOptions) {
 if (import.meta.main) {
   const secret = Deno.env.get("RELAY_SECRET") ?? "";
   const origins = originsOf(Deno.env.get("RELAY_ORIGINS"));
-  const problem = configProblem(secret, origins);
+  const turnstileSecret = Deno.env.get("TURNSTILE_SECRET") ?? "";
+  const problem = configProblem(secret, origins) ??
+    (turnstileSecret === "" ? "TURNSTILE_SECRET is not set" : undefined);
   if (problem !== undefined) {
     console.error(`${problem} (RELAY_ORIGINS is comma-separated)`);
     Deno.exit(2);
@@ -103,6 +119,7 @@ if (import.meta.main) {
   const relay = startDenoRelay({
     secret,
     allowedOrigins: origins,
+    turnstileSecret,
     port: Number(Deno.args[0] ?? 8788),
   });
   console.log(`relay on ${relay.url}`);
