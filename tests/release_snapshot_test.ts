@@ -114,12 +114,13 @@ Deno.test("the deploy fetches every snapshot, CI's jupyterlite scene only the de
     true,
   );
   // CI fetches the desktop's for the jupyterlite scene alone, whose
-  // notebook cannot start without it (src/lite_bridge.ts).
+  // notebook cannot start without it (src/lite_bridge.ts), and the
+  // tablet's for the memory budget scene, which restores it as an iPad.
   const ci = await read(".github/workflows/ci.yml");
   assertEquals(
     ci.match(/YURT_INSTALL_SNAPSHOT: .*/g),
     [
-      "YURT_INSTALL_SNAPSHOT: ${{ matrix.scene == 'jupyterlite' && 'snapshot' || '' }}",
+      "YURT_INSTALL_SNAPSHOT: ${{ matrix.scene == 'jupyterlite' && 'snapshot' || matrix.scene == 'memory_budget' && 'tabletSnapshot' || '' }}",
     ],
   );
   assertEquals(
