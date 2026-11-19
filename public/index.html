@@ -936,6 +936,29 @@
                 >
                   Download home
                 </button>
+                <button
+                  type="button"
+                  id="network-toggle"
+                  data-testid="network-toggle"
+                  class="bar-action"
+                  aria-pressed="false"
+                  hidden
+                  title="Let programs in this sandbox reach the internet through Yurt's relay."
+                >
+                  Network: off
+                </button>
+                <span id="network-open" data-testid="network-open" hidden
+                >0 open</span>
+                <button
+                  type="button"
+                  id="network-cut"
+                  data-testid="network-cut"
+                  class="bar-action"
+                  hidden
+                  title="Close every connection the sandbox has open."
+                >
+                  Cut connections
+                </button>
                 <span
                   id="net"
                   data-testid="net"
@@ -943,6 +966,12 @@
                   title="This tab's network state. The sandbox keeps working without it."
                 >online</span>
               </div>
+              <p id="network-note" data-testid="network-note" hidden>
+                Traffic leaves through Yurt's relay, which sees destination
+                names and how much data you send, not its contents (TLS is end
+                to end). Only ports 80, 443 and 9418, to public addresses; never
+                your local network.
+              </p>
               <div id="packages" data-testid="packages" hidden>
                 <p>
                   Install a package from

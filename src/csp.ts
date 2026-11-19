@@ -17,7 +17,10 @@
  * the GitHub API's list of its snapshot refs ({@link SNAPSHOT_REFS_API})
  * says the repository published them (src/snapshot_source.ts). On the
  * deployed site only, once its token is set: the Cloudflare Web Analytics
- * beacon's script and report endpoint (src/web_analytics.ts). Scripts come from the origin
+ * beacon's script and report endpoint (src/web_analytics.ts). Outside
+ * JupyterLite only, once src/network_config.ts names one: the network relay
+ * (src/network_config.ts), which the sandbox's connections go through
+ * when its user turns the network on. Scripts come from the origin
  * plus the inline bootstraps JupyterLite emits in its index pages, allowed
  * by hash; the WebAssembly kernel needs `'wasm-unsafe-eval'`. Styles allow
  * inline because JupyterLab sets them everywhere.
@@ -26,6 +29,7 @@
 import { PACKAGE_SOURCES } from "./packages.ts";
 import { SNAPSHOT_REFS_API, SNAPSHOT_SOURCE } from "./snapshot_source.ts";
 import { BEACON_REPORT_ORIGIN, BEACON_SCRIPT_ORIGIN } from "./web_analytics.ts";
+import { CONFIGURED_RELAY, relaySources } from "./network_config.ts";
 
 const INLINE_SCRIPT = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
 
@@ -81,6 +85,9 @@ export type CspOptions = {
   /** The deployed site's Cloudflare Web Analytics beacon
    * (src/web_analytics.ts): its script and its report endpoint. */
   webAnalytics?: boolean;
+  /** The network relay's origin; the configured one when unset. Not with
+   * `sameOriginOnly`. */
+  networkRelay?: string;
 };
 
 export function contentSecurityPolicy(options: CspOptions = {}): string {
@@ -106,6 +113,7 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
       ...PACKAGE_SOURCES,
       ...(options.sameOriginOnly ? [] : [SNAPSHOT_SOURCE, SNAPSHOT_REFS_API]),
       ...(options.webAnalytics ? [BEACON_REPORT_ORIGIN] : []),
+      ...relaySourcesFor(options),
     ].join(" "),
     "worker-src 'self'",
     "frame-src 'none'",
@@ -114,6 +122,23 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
     "form-action 'none'",
     "frame-ancestors 'none'",
   ].join("; ");
+}
+
+function relaySourcesFor(options: CspOptions): string[] {
+  const relay = options.networkRelay ?? CONFIGURED_RELAY;
+  return options.sameOriginOnly || relay === undefined
+    ? []
+    : relaySources(relay);
+}
+
+/** `policy` (one CSP header value) with `relay` admitted in `connect-src`,
+ * for a server that runs one of its own (tests/network_e2e.ts). */
+export function withRelay(policy: string, relay: string): string {
+  return policy.split("; ").map((part) =>
+    part.startsWith("connect-src ")
+      ? [part, ...relaySources(relay)].join(" ")
+      : part
+  ).join("; ");
 }
 
 /** The sources of directive `name` in `policy` (one CSP header value). */

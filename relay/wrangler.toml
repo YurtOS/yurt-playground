@@ -1,0 +1,10 @@
+# The Yurt network relay (yurt-playground#380). Deploy from this directory
+# with `wrangler deploy`; set the secret first with
+# `wrangler secret put RELAY_SECRET` (any long random string).
+name = "yurt-relay"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+
+[vars]
+# The playground's origins, comma-separated: only their pages get tokens.
+RELAY_ORIGINS = "https://yurt-playground.pages.dev"

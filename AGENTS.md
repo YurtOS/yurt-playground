@@ -80,8 +80,14 @@ Kernel primitives stay in `yurtos-kernel`. Image composition stays in
   (`extension/`), which drives tabs it opens in the user's browser only after a
   person allows it in the extension's own window. Through those tabs a guest can
   load any URL with the browser's sign-ins: that is the feature, and the
-  approval is its boundary. Guests get no other route out of the sandbox: no
-  other host, no DNS.
+  approval is its boundary. And one route the user turns on: once
+  `NETWORK_RELAY` in `src/network_config.ts` names a relay (none until one is
+  deployed), the terminal bar offers "Network", off on every new tab. On, the
+  guest's TCP connects go to public addresses on ports 80, 443 and 9418 only,
+  each as a WebSocket to the relay (`relay/`), which checks port and address
+  again; a DNS on the guest's `127.0.0.1:53` answers from the relay's resolution
+  (`src/network.ts`). No UDP leaves. Guests get no other route out of the
+  sandbox: no other host, no DNS.
 - The Notebook/Lab interface is JupyterLite's frontend and server shim with one
   kernel, `yurt`, relaying to the guest `ipykernel`. JupyterLite's own kernels
   (Pyodide, xeus) never ship: the kernel is not replaced, only fronted.

@@ -66,6 +66,7 @@ import {
   startCdpBridge,
 } from "./cdp_bridge.ts";
 import { parsePins, type Pins } from "./pins.ts";
+import { RESOLV_CONF, type TabNetwork } from "./network.ts";
 import {
   checkPythonSet,
   decodeSandboxSnapshot,
@@ -156,6 +157,9 @@ export type PlaygroundEnv = {
     handlers: CdpBridgeHandlers;
     started: (bridge: CdpBridge) => void;
   };
+  /** The tab's network through the relay (src/network.ts): its TCP
+   * backend goes into the kernel, and its DNS serves the guest. */
+  network?: TabNetwork;
 };
 
 export type PlaygroundSession = {
@@ -473,11 +477,12 @@ export async function plannedPlaygroundHostState(
 export async function loadPlaygroundKernel(
   kernel: Uint8Array,
   platform?: Platform,
+  network?: TabNetwork,
 ): Promise<KernelHostInterface> {
-  return KernelHostInterface.load(
-    kernel,
-    await plannedPlaygroundHostState(undefined, undefined, platform),
-  );
+  return KernelHostInterface.load(kernel, {
+    ...await plannedPlaygroundHostState(undefined, undefined, platform),
+    ...(network !== undefined && { tcp: network.tcp }),
+  });
 }
 
 /** Restore a sealed in-browser sandbox; see {@link loadPlaygroundKernel}. */
@@ -492,9 +497,15 @@ export async function restorePlaygroundKernel(
     expect: StoreIdentity;
   },
   platform?: Platform,
+  network?: TabNetwork,
 ): Promise<Awaited<ReturnType<typeof KernelHostInterface.restore>>> {
   const state = restoreHostState(
-    await plannedPlaygroundHostState(undefined, undefined, platform),
+    {
+      ...await plannedPlaygroundHostState(undefined, undefined, platform),
+      // A restored sandbox's connections come back closed: the kernel
+      // holds none of this backend's handles.
+      ...(network !== undefined && { tcp: network.tcp }),
+    },
     image.kernelMemory.byteLength,
   );
   if (store !== undefined) {
@@ -563,6 +574,7 @@ export async function bootPlayground(
         saved.image,
         undefined,
         env.platform,
+        env.network,
       );
       if (restored.processes.length !== 0) {
         restored.host.dispose();
@@ -581,7 +593,7 @@ export async function bootPlayground(
   const bootImage = async () => {
     env.show("compiling kernel");
     return await start(
-      await loadPlaygroundKernel(kernel, env.platform),
+      await loadPlaygroundKernel(kernel, env.platform, env.network),
       false,
     );
   };
@@ -779,6 +791,7 @@ export async function restoreSnapshot(
         expect: store.expect.identity,
       },
       env.platform,
+      env.network,
     );
     if (restored.processes.length !== 0) {
       restored.host.dispose();
@@ -924,13 +937,23 @@ async function startPlayground(
       console.warn(`[cdp bridge] not started: ${error}`);
     }
   }
+  const stopNetwork = env.network?.attach(
+    mk,
+    () =>
+      writeRamfsFile(
+        mk,
+        "/etc/resolv.conf",
+        new TextEncoder().encode(RESOLV_CONF),
+      ),
+  );
   const relay: PkgRelay | undefined = pkgRelay === undefined &&
-      cdp === undefined
+      cdp === undefined && stopNetwork === undefined
     ? undefined
     : {
       stop() {
         pkgRelay?.stop();
         cdp?.stop();
+        stopNetwork?.();
       },
     };
   try {

@@ -82,6 +82,13 @@ import {
 } from "./agent_api.ts";
 import type { ExecOptions } from "./executions.ts";
 import { siteUrl } from "./site_url.ts";
+import {
+  loadNetworkRelay,
+  type NetworkControls,
+  networkWanted,
+  wireNetworkToggle,
+} from "./network_toggle.ts";
+import type { NetworkStatus } from "./network.ts";
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -109,6 +116,7 @@ type FromWorker =
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string }
   | MemoryRefusedMessage
+  | { type: "network-status"; status: NetworkStatus }
   | CdpFromWorker;
 
 /** The in-tab sandbox seals after each agent run; `?suspend=0` keeps it running,
@@ -454,6 +462,12 @@ function boot(
     markBootEnded(document.documentElement.dataset, capturing, why);
   };
   const pinsPromise = fetchSitePins();
+  // The desktop app's sandbox has the machine's network; the tab's has
+  // one only through a configured relay, and only once the user says so.
+  const relayPromise = desktop === undefined
+    ? loadNetworkRelay()
+    : Promise.resolve(undefined);
+  let networkControls: NetworkControls | undefined;
   // The cell's Install: enabled when the pins name a slim image; after a
   // failed install it says why and tries again.
   const showPythonMissing = (error: string | undefined) =>
@@ -632,6 +646,7 @@ function boot(
       if (msg.ok) waiter.resolve(msg.value);
       else waiter.reject(new Error(msg.error ?? "yurt request failed"));
     }
+    if (msg.type === "network-status") networkControls?.show(msg.status);
     if (msg.type === "cell-stream") notebook.stream(msg.id, msg.chunk);
     if (msg.type === "cell-result") notebook.result(msg.id, msg.result);
     if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
@@ -659,7 +674,7 @@ function boot(
   // set before Jupyter; a tablet's session, and a phone's, is the shell
   // (with the snapshot's python) alone, and the desktop app's sandbox
   // needs no page to install anything.
-  void pinsPromise.then((pins) => {
+  void Promise.all([pinsPromise, relayPromise]).then(([pins, relay]) => {
     // `?snapshot=capture&packages=a,b` (scripts/snapshot-local.ts): a
     // name pkg would refuse fails the capture before it starts.
     let extra: string[] | undefined;
@@ -733,7 +748,21 @@ function boot(
       snapshot: snapshotMode(),
       snapshotId: uploadedSnapshotId(),
       capturePackages: extra,
+      networkRelay: relay,
+      networkOn: relay !== undefined && networkWanted(sessionStorage),
     });
+    if (relay !== undefined) {
+      networkControls = wireNetworkToggle(
+        {
+          toggle: byId("network-toggle") as HTMLButtonElement,
+          open: byId("network-open"),
+          cut: byId("network-cut") as HTMLButtonElement,
+          note: byId("network-note"),
+        },
+        networkWanted(sessionStorage),
+        (message) => worker.postMessage(message),
+      );
+    }
   });
 }
 

@@ -200,6 +200,35 @@ many browser-only ones pile up. `--check` shows the desktop app as `BEHIND` (not
 installers again. Leave yurt-sandbox's `scripts/desktop-host-pins.env` at the
 desktop's train meanwhile: it describes the host, not the page.
 
+## The network relay
+
+The in-tab sandbox reaches the internet only through the relay in `relay/`
+(#380), and only when its user turns "Network" on. The page offers the toggle
+only when `NETWORK_RELAY` in `src/network_config.ts` names a relay; it is
+`null`, so merging relay changes changes nothing in production.
+
+To turn it on:
+
+1. Deploy the Worker from `relay/`: `wrangler secret put RELAY_SECRET` (any long
+   random string), set `RELAY_ORIGINS` in `relay/wrangler.toml` to the site's
+   origins, then `wrangler deploy`. Rate-limit `/token` with a Cloudflare rate
+   limiting rule: its Origin check stops other sites' pages, not scripts.
+2. Set `NETWORK_RELAY` in `src/network_config.ts` to the Worker's URL. The build
+   ships it as config/network.json and admits the relay in the site's
+   `connect-src`.
+3. Deploy the site.
+
+Workers' `connect()` cannot reach Cloudflare's own addresses, so sites behind
+Cloudflare are refused through the relay; PyPI (Fastly) and GitHub are not. The
+relay's caps (16 connections and 1 GiB per token, 5 minutes idle, tokens good
+for an hour) are counted per Worker isolate.
+
+Locally,
+`RELAY_SECRET=x RELAY_ORIGINS=http://127.0.0.1:4173 deno run
+--allow-net --allow-env relay/deno.ts`
+runs the same relay; `deno run -A tests/network_e2e.ts` runs curl and pip
+through one in Chrome. It needs the internet, so it is not a CI scene.
+
 ## The suspend/resume kernel
 
 The _Python 3 (Yurt, suspend/resume)_ kernelspec runs a CPython built so the

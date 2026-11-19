@@ -95,6 +95,7 @@ import {
   uploadedSnapshotPath,
 } from "./snapshot_source.ts";
 import { runQueue } from "./run_queue.ts";
+import { type NetworkStatus, TabNetwork } from "./network.ts";
 import { type BootedSession, workerPackageHost } from "./session_packages.ts";
 import {
   type MemoryRefusedMessage,
@@ -158,6 +159,12 @@ type ToWorker =
     // DevTools endpoint at 127.0.0.1:9222 (src/cdp_bridge.ts) whose
     // messages go to the page as `cdp-*`.
     cdpBridge?: boolean;
+    // The network relay's origin (src/network_config.ts): the in-tab
+    // sandbox gets a TCP backend and DNS through it, off until `network`
+    // turns it on (src/network.ts).
+    networkRelay?: string;
+    // The tab's user had the network on before a reload: on from the start.
+    networkOn?: boolean;
   }
   // Install Python again after a failed install (the cell's Install), then
   // start the kernel. Answered like a boot: status, then notebook-ready or
@@ -198,10 +205,16 @@ type ToWorker =
   // The extension's side of a DevTools connection (src/browser_bridge.ts):
   // a CDP message for the guest, or the connection ended there.
   | { type: "cdp-send"; conn: number; text: string }
-  | { type: "cdp-close"; conn: number };
+  | { type: "cdp-close"; conn: number }
+  // The page's network toggle, and its "cut all connections".
+  | { type: "network"; on: boolean }
+  | { type: "network-cut" };
 
 /** The guest's DevTools endpoint, once the shell's boot started it. */
 let cdpBridge: CdpBridge | undefined;
+
+/** The in-tab sandbox's network, when a relay is configured. */
+let network: TabNetwork | undefined;
 
 /** Recorded with a seal: a kernel memory means something only to its binary. */
 let runningKernelSha256: string | undefined;
@@ -239,6 +252,8 @@ type FromWorker =
   | { type: "cdp-open"; conn: number }
   | { type: "cdp-message"; conn: number; text: string }
   | { type: "cdp-close"; conn: number }
+  // The network's state for the page's indicator (src/network.ts).
+  | { type: "network-status"; status: NetworkStatus }
   | {
     type: "yurt-reply";
     req: number;
@@ -677,6 +692,14 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     cdpBridge?.close(msg.conn);
     return;
   }
+  if (msg.type === "network") {
+    network?.setEnabled(msg.on);
+    return;
+  }
+  if (msg.type === "network-cut") {
+    network?.tcp.cutAll();
+    return;
+  }
   await serveYurt(msg);
   await servePackages(msg);
   if (msg.type === "pkg-read-installed") await installed.read();
@@ -802,6 +825,13 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   }
   if (msg.type !== "start") return;
   kernelPorts = msg.kernelPorts;
+  if (kernelPorts === undefined && msg.networkRelay !== undefined) {
+    network ??= new TabNetwork(
+      msg.networkRelay,
+      (status) => post({ type: "network-status", status }),
+    );
+    if (msg.networkOn === true) network.setEnabled(true);
+  }
   // The live index's answers for this boot: a snapshot's check and the
   // install's stored-layer question, from one read. Made by each begin()
   // below, so a fresh sandbox asks again.
@@ -862,6 +892,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         started: (bridge: CdpBridge) => cdpBridge = bridge,
       }
       : undefined,
+    network,
   };
   // The slim image's Python: the coordinator installs the set itself, so
   // every page that boots a sandbox gets the same install.
