@@ -54,6 +54,7 @@ export class RelayClient {
   /** The fetch in flight, which every connect waiting for a token shares. */
   #fetching: Promise<string> | undefined;
   #names = new Map<string, { addresses: string[]; until: number }>();
+  #asking = new Map<string, Promise<string[]>>();
 
   constructor(
     readonly origin: string,
@@ -114,12 +115,22 @@ export class RelayClient {
   }
 
   /** `name`'s public IPv4 addresses, cached for {@link DNS_TTL_S}. */
-  async resolve(name: string): Promise<string[]> {
+  resolve(name: string): Promise<string[]> {
     const key = name.toLowerCase();
     const cached = this.#names.get(key);
     if (cached !== undefined && cached.until > this.now()) {
-      return cached.addresses;
+      return Promise.resolve(cached.addresses);
     }
+    // The resolver resends while it waits: one relay question per name.
+    let pending = this.#asking.get(key);
+    if (pending === undefined) {
+      pending = this.#ask(key).finally(() => this.#asking.delete(key));
+      this.#asking.set(key, pending);
+    }
+    return pending;
+  }
+
+  async #ask(key: string): Promise<string[]> {
     const query = (token: string) =>
       this.fetchFn(
         `${this.origin}/dns?name=${encodeURIComponent(key)}&token=${
@@ -710,7 +721,14 @@ export function startDnsServer(
 }
 
 /** What /etc/resolv.conf says once the network is on. */
-export const RESOLV_CONF = "nameserver 127.0.0.1\n";
+/** What /etc/resolv.conf says once the network is on. musl waits
+ * `timeout` seconds in all for an answer, asking again every
+ * `timeout / attempts`: its default 5 s is shorter than the first token
+ * can take (a Turnstile check, #380), and the first lookup failed with
+ * "bad address". 30 s covers {@link TOKEN_DEADLINE_MS}; the DNS server
+ * answers a resend from the same lookup in flight. */
+export const RESOLV_CONF =
+  "nameserver 127.0.0.1\noptions timeout:30 attempts:3\n";
 
 /** One tab's network: the kernel's TCP backend, the DNS server, the
  * toggle. Made before the kernel (its backend goes into the kernel's host
@@ -748,7 +766,12 @@ export class TabNetwork {
   }
 
   setEnabled(on: boolean): void {
-    if (on) this.#writeResolvConf?.();
+    if (on) {
+      this.#writeResolvConf?.();
+      // Start the first token's Turnstile check now, not at the first
+      // lookup: the user's first command waits for less of it.
+      this.relay.token().catch(() => {});
+    }
     this.tcp.setEnabled(on);
   }
 }

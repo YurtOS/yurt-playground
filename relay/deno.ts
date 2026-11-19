@@ -48,9 +48,11 @@ export type DenoRelayOptions = {
   turnstileSecret: string;
   port?: number;
   limits?: Partial<Limits>;
-  /** Overrides for tests: resolution and connects. */
+  /** Overrides for tests: resolution and connects, and a wait before
+   * each Turnstile check (a challenge that takes its time). */
   resolve?: (name: string) => Promise<string[]>;
   connect?: (ip: string, port: number) => Promise<RelayConnection>;
+  beforeVerify?: () => Promise<void>;
 };
 
 /** Cloudflare's published Turnstile test keys: the site key's widget
@@ -65,8 +67,9 @@ export function startDenoRelay(options: DenoRelayOptions) {
   const relay = createRelay({
     // A real secret's answers must name a site hostname and the widget's
     // action; Cloudflare's test secrets answer example.com and no action.
-    verifyHuman: (response, address) =>
-      siteverify(
+    verifyHuman: async (response, address) => {
+      await options.beforeVerify?.();
+      return await siteverify(
         options.turnstileSecret,
         response,
         address,
@@ -74,7 +77,8 @@ export function startDenoRelay(options: DenoRelayOptions) {
           hostnames: hostnamesOf(options.allowedOrigins),
           action: TURNSTILE_ACTION,
         },
-      ),
+      );
+    },
     secret: options.secret,
     allowedOrigins: options.allowedOrigins,
     limits: options.limits,

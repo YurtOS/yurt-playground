@@ -9,6 +9,9 @@ import {
   parseDnsQuery,
   RelayClient,
   RelayTcp,
+  RESOLV_CONF,
+  TabNetwork,
+  TOKEN_DEADLINE_MS,
 } from "../src/network.ts";
 import {
   CONFIGURED_RELAY,
@@ -545,4 +548,53 @@ Deno.test("page: a check in flight is shared, and the next one starts fresh", as
   const c = once();
   finish(8);
   assertEquals([await c, started], [8, 2]);
+});
+
+Deno.test("dns: a resolver's resends share one relay question", async () => {
+  let asked = 0;
+  let answer: (r: Response) => void = () => {};
+  const client = new RelayClient(
+    "https://relay.example",
+    () => Promise.resolve({ token: "t", ttl: 600 }),
+    () => {
+      asked++;
+      return new Promise((resolve) => answer = resolve);
+    },
+  );
+  const first = client.resolve("pypi.org");
+  const resend = client.resolve("PyPI.org");
+  await new Promise((r) => setTimeout(r, 0));
+  answer(Response.json({ addresses: ["151.101.0.223"] }));
+  assertEquals([await first, await resend, asked], [
+    ["151.101.0.223"],
+    ["151.101.0.223"],
+    1,
+  ]);
+});
+
+Deno.test("dns: musl waits long enough for the first token", () => {
+  // musl waits `timeout` seconds in all (its default 5 s was shorter than
+  // a first Turnstile check, #383); it must cover the token deadline.
+  const timeout = Number(/options timeout:(\d+)/.exec(RESOLV_CONF)?.[1]);
+  assert(timeout * 1000 >= TOKEN_DEADLINE_MS, RESOLV_CONF);
+  assert(RESOLV_CONF.startsWith("nameserver 127.0.0.1\n"));
+});
+
+Deno.test("network: turning it on starts the first token's check at once", async () => {
+  let asked = 0;
+  const network = new TabNetwork(
+    "https://relay.example",
+    () => {
+      asked++;
+      return Promise.resolve({ token: "t", ttl: 600 });
+    },
+    () => {},
+  );
+  network.setEnabled(true);
+  await new Promise((r) => setTimeout(r, 0));
+  assertEquals(asked, 1);
+  // A connect after it takes that token.
+  assertEquals(await network.relay.token(), "t");
+  assertEquals(asked, 1);
+  network.setEnabled(false);
 });
