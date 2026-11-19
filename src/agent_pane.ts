@@ -41,6 +41,7 @@ import {
 import { fetchAgentModels } from "./agent_models_config.ts";
 import type { Platform } from "./device.ts";
 import { LOCAL_MODELS, type LocalModel, MAX_NUM_TOKENS } from "./llm_models.ts";
+import { siteUrl } from "./site_url.ts";
 
 const GiB = 2 ** 30;
 
@@ -83,7 +84,7 @@ const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 /** Which pinned in-tab models this site ships the runtime for; a 404: none. */
 async function offeredModels(): Promise<LocalModel[]> {
   try {
-    const response = await fetch("/llm/models.json");
+    const response = await fetch(siteUrl("./llm/models.json"));
     if (!response.ok) return [];
     const ids: string[] = await response.json();
     return LOCAL_MODELS.filter((m) => ids.includes(m.id));

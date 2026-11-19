@@ -6,6 +6,7 @@ import {
 } from "../src/integrity.ts";
 import { cspSources, inlineScriptHashes } from "../src/csp.ts";
 import { StoreLogWriter } from "../src/store_log.ts";
+import { PREVIEW_FILES } from "../scripts/lib/gh_pages_preview.ts";
 
 Deno.test("static build emits isolated playground deployment", async () => {
   const script = await Deno.readTextFile(
@@ -77,11 +78,18 @@ Deno.test("static build writes every file the pages need", async () => {
       // The Playwright demo's (src/playwright_assets.ts).
       "playwright-core.tgz",
       "yurt-browser-bridge.zip",
+      // The agent's model list, which the page reads from its own site.
+      "config/agent-models.json",
     ]
   ) {
     const stat = await Deno.stat(new URL(`dist/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/${file} is empty`);
   }
+  // The list as committed: a deploy ships the tree it was built from (#368).
+  assertEquals(
+    await Deno.readTextFile(new URL("dist/config/agent-models.json", repoRoot)),
+    await Deno.readTextFile(new URL("config/agent-models.json", repoRoot)),
+  );
   // The extension's zip holds what Load unpacked needs.
   const listing = new TextDecoder().decode(
     (await new Deno.Command("unzip", {
@@ -110,6 +118,35 @@ Deno.test("static build writes every file the pages need", async () => {
   ) {
     const stat = await Deno.stat(new URL(`dist/jupyter/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/jupyter/${file} is empty`);
+  }
+  // A production build carries nothing of the GitHub Pages preview's
+  // (scripts/lib/gh_pages_preview.ts): no isolation worker, the pages and
+  // JupyterLite's worker as they are in public/.
+  for (const file of PREVIEW_FILES) {
+    assertEquals(
+      await Deno.stat(new URL(`dist/${file}`, repoRoot)).then(
+        () => true,
+        () => false,
+      ),
+      false,
+      file,
+    );
+  }
+  for (
+    const file of [
+      "index.html",
+      "terminal.html",
+      "unsupported.html",
+      "snapshot.html",
+      "jupyter/jupyter-lite.json",
+      "jupyter/lab/index.html",
+    ]
+  ) {
+    assertEquals(
+      await Deno.readFile(new URL(`dist/${file}`, repoRoot)),
+      await Deno.readFile(new URL(`public/${file}`, repoRoot)),
+      file,
+    );
   }
   // A 404.html stops Pages' SPA fallback, so a path the site does not have
   // says so instead of serving a broken copy of the home page (#73).
@@ -142,6 +179,21 @@ Deno.test("static build writes every file the pages need", async () => {
   // every built page's inline scripts allowed by hash (the JupyterLite
   // bootstraps change hash with each build, so they are derived, not typed).
   const headers = await Deno.readTextFile(new URL("dist/_headers", repoRoot));
+  // JupyterLite's service worker carries this build's policy hash, so a
+  // browser that installed it under an older policy replaces it (#390).
+  const worker = await Deno.readTextFile(
+    new URL("dist/jupyter/service-worker.js", repoRoot),
+  );
+  const { stampedServiceWorker } = await import("../scripts/build-static.ts");
+  assertEquals(
+    worker,
+    await stampedServiceWorker(
+      await Deno.readTextFile(
+        new URL("public/jupyter/service-worker.js", repoRoot),
+      ),
+      headers,
+    ),
+  );
   for (
     const value of [
       "Cross-Origin-Opener-Policy: same-origin",
@@ -388,4 +440,29 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
     console.warn = warn;
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("JupyterLite's service worker changes with the site's policy, and only with it", async () => {
+  const { stampedServiceWorker } = await import("../scripts/build-static.ts");
+  const script = '"use strict";self.addEventListener("fetch",onFetch);';
+  const before = await stampedServiceWorker(script, "connect-src 'self'");
+  const after = await stampedServiceWorker(
+    script,
+    "connect-src 'self' https://challenges.cloudflare.com",
+  );
+  // A new policy is new bytes: the browser installs the new worker.
+  assertEquals(before === after, false);
+  assertStringIncludes(before, script);
+  // Stamping a stamped worker again replaces its stamp, never piles up.
+  assertEquals(
+    await stampedServiceWorker(before, "connect-src 'self'"),
+    before,
+  );
+  assertEquals(
+    await stampedServiceWorker(
+      before,
+      "connect-src 'self' https://challenges.cloudflare.com",
+    ),
+    after,
+  );
 });

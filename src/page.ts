@@ -53,9 +53,14 @@ import {
   choosePlatform,
   deviceClass,
   type Env,
+  fullKernelMemory,
+  isFirefox,
+  largeMemoryAsked,
+  memoryParam,
   type Platform,
   platformSnapshotKind,
   withEnv,
+  withMemory,
   withPlatform,
 } from "./device.ts";
 import {
@@ -81,6 +86,15 @@ import {
 } from "./agent_api.ts";
 import type { ExecOptions } from "./executions.ts";
 import { type SandboxFileMessage, sandboxFileOk } from "./sandbox_file.ts";
+import { siteUrl } from "./site_url.ts";
+import {
+  answerTokenRequest,
+  loadNetwork,
+  type NetworkControls,
+  networkWanted,
+  wireNetworkToggle,
+} from "./network_toggle.ts";
+import type { NetworkStatus } from "./network.ts";
 
 type FromWorker =
   | { type: "status"; text: string }
@@ -109,6 +123,8 @@ type FromWorker =
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string }
   | MemoryRefusedMessage
+  | { type: "network-status"; status: NetworkStatus }
+  | { type: "network-token"; req: number }
   | CdpFromWorker;
 
 /** The in-tab sandbox seals after each agent run; `?suspend=0` keeps it running,
@@ -424,7 +440,7 @@ function boot(
   const term = createPlaygroundTerminal(byId("term"));
   // Classic worker: Chrome will not start a nested *module* Worker.
   // A classic coordinator can spawn the module guest bootstrap.
-  const worker = new Worker("/coordinator.bundle.js");
+  const worker = new Worker(siteUrl("./coordinator.bundle.js"));
   attachGuestWorkerFactory(worker);
   let suspendAnswer: ((why?: string) => void) | undefined;
   // The in-tab sandbox, and not a capture's, which ends sealed.
@@ -482,6 +498,12 @@ function boot(
     markBootEnded(document.documentElement.dataset, capturing, why);
   };
   const pinsPromise = fetchSitePins();
+  // The desktop app's sandbox has the machine's network; the tab's has
+  // one only through a configured relay, and only once the user says so.
+  const relayPromise = desktop === undefined
+    ? loadNetwork()
+    : Promise.resolve(undefined);
+  let networkControls: NetworkControls | undefined;
   // The cell's Install: enabled when the pins name a slim image; after a
   // failed install it says why and tries again.
   const showPythonMissing = (error: string | undefined) =>
@@ -714,6 +736,15 @@ function boot(
       if (msg.ok) waiter.resolve(msg.value);
       else waiter.reject(new Error(msg.error ?? "yurt request failed"));
     }
+    if (msg.type === "network-status") networkControls?.show(msg.status);
+    if (msg.type === "network-token") {
+      answerTokenRequest(
+        worker,
+        relayPromise,
+        () => byId("network-human"),
+        msg.req,
+      );
+    }
     if (msg.type === "cell-stream") notebook.stream(msg.id, msg.chunk);
     if (msg.type === "cell-result") notebook.result(msg.id, msg.result);
     if (msg.type === "cell-error") notebook.error(msg.id, msg.message);
@@ -741,7 +772,9 @@ function boot(
   // set before Jupyter; a tablet's session, and a phone's, is the shell
   // (with the snapshot's python) alone, and the desktop app's sandbox
   // needs no page to install anything.
-  void pinsPromise.then((pins) => {
+  void Promise.all([pinsPromise, relayPromise]).then(([pins, relay]) => {
+    const networkOn = relay !== undefined &&
+      networkWanted(globalThis.sessionStorage, ownReload);
     // `?snapshot=capture&packages=a,b` (scripts/snapshot-local.ts): a
     // name pkg would refuse fails the capture before it starts.
     let extra: string[] | undefined;
@@ -811,10 +844,27 @@ function boot(
         : undefined,
       snapshotKind: kind,
       tablet: smallDevice,
+      platform,
+      // A tablet's kernel, and a phone's on `?memory=1g`, keep 1 GiB.
+      fullKernelMemory: fullKernelMemory(platform, memoryParam()),
       snapshot: snapshotMode(),
       snapshotId: uploadedSnapshotId(),
       capturePackages: extra,
+      networkRelay: relay?.relay,
+      networkOn,
     });
+    if (relay !== undefined) {
+      networkControls = wireNetworkToggle(
+        {
+          toggle: byId("network-toggle") as HTMLButtonElement,
+          open: byId("network-open"),
+          cut: byId("network-cut") as HTMLButtonElement,
+          note: byId("network-note"),
+        },
+        networkOn,
+        (message) => worker.postMessage(message),
+      );
+    }
   });
 }
 
@@ -1243,6 +1293,12 @@ async function runPage(): Promise<void> {
     notes.push(chosenEnv.note);
     showNotes();
   }
+  if (desktop === undefined && isFirefox(navigator.userAgent)) {
+    status.failure("Firefox is not supported");
+    yurtState.failed("Firefox is not supported");
+    globalThis.location.replace("./unsupported.html#firefox");
+    throw new Error("Firefox is not supported");
+  }
   if (desktop === undefined && globalThis.crossOriginIsolated !== true) {
     status.failure("need COOP/COEP");
     yurtState.failed("the page is not cross-origin isolated");
@@ -1258,14 +1314,27 @@ async function runPage(): Promise<void> {
     (id, code) => execute.current(id, code),
     (id) => interruptCell.current(id),
   );
-  // A tablet gets the Linux shell, and an agent whose model runs outside
-  // the tab (OpenRouter). Jupyter (this cell, the Notebook and JupyterLab
-  // pages) and an in-tab model need more memory than a tablet browser gives
-  // one tab: iPadOS refused new processes after ~13 while ipykernel started,
-  // and a GPU model beside the sandbox crashed it. The desktop app runs
-  // natively and keeps everything.
+  // A tablet's home page gets the Linux shell, and an agent whose model
+  // runs outside the tab (OpenRouter). Its sandbox restores the tablet's
+  // snapshot, which holds no Jupyter: this cell would need ipykernel beside
+  // the shell, and iPadOS refused new processes after ~13 while ipykernel
+  // started. An in-tab model beside the sandbox crashed the iPad. Jupyter
+  // runs on the Notebook and JupyterLab pages instead, each restoring the
+  // desktop's snapshot in a sandbox of its own (src/lite_bridge.ts), as
+  // does a phone's on `?memory=1g`. The desktop app runs natively and
+  // keeps everything.
   const device = platform;
   const shellOnly = desktop === undefined && device === "tablet";
+  const memoryAsked = memoryParam();
+  // The Notebook and JupyterLab links carry `?memory=1g` on to their pages.
+  for (const testid of ["choose-notebook", "choose-lab"]) {
+    const link = document.querySelector<HTMLAnchorElement>(
+      `[data-testid=${testid}]`,
+    );
+    if (link && largeMemoryAsked(memoryAsked)) {
+      link.href = withMemory(link.href, memoryAsked);
+    }
+  }
   // The panel's installs run in the coordinator, capped like the tab's
   // other installs (16 MiB on a phone or tablet: boot's `smallDevice`).
   wirePackages();
@@ -1304,8 +1373,9 @@ async function runPage(): Promise<void> {
       agent.hidden = false;
       delete agent.dataset.hiddenForPlaywright;
     }
-    if (shellOnly) return;
-    byId("notebook").hidden = env === "go" || playwrightSandbox();
+    if (!shellOnly) {
+      byId("notebook").hidden = env === "go" || playwrightSandbox();
+    }
     for (const testid of ["choose-notebook", "choose-lab"]) {
       const link = document.querySelector<HTMLElement>(
         `[data-testid=${testid}]`,
@@ -1314,15 +1384,7 @@ async function runPage(): Promise<void> {
     }
   };
   applyEnv();
-  if (shellOnly) {
-    byId("notebook").hidden = true;
-    for (const testid of ["choose-notebook", "choose-lab"]) {
-      const link = document.querySelector<HTMLElement>(
-        `[data-testid=${testid}]`,
-      );
-      if (link) link.hidden = true;
-    }
-  }
+  if (shellOnly) byId("notebook").hidden = true;
   // The local agent (#140) drives the same sandbox through window.yurt; its
   // Run starts the sandbox the way the Start button does, and only then.
   // With the boot refused there is no sandbox to start, so the pane says
@@ -1467,7 +1529,11 @@ async function runPage(): Promise<void> {
     }
     if (phone) {
       byId("phone-note").hidden = false;
-      notebook.unavailable("no Jupyter on phones");
+      notebook.unavailable(
+        fullKernelMemory(platform, memoryAsked)
+          ? "Jupyter runs on the Notebook and JupyterLab pages"
+          : "no Jupyter on phones",
+      );
     }
   }
   // The boot memory has been read (and cleared) by now; a test that plants

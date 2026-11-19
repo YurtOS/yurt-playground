@@ -27,7 +27,16 @@ import {
   SLIM_IMAGE_NAME,
 } from "../src/integrity.ts";
 import { loadPins, type Pins } from "../src/pins.ts";
+import { AGENT_MODELS_PATH } from "../src/agent_models_config.ts";
+import {
+  NETWORK_CONFIG_PATH,
+  networkConfigJson,
+} from "../src/network_config.ts";
 import { checkSnapshotFile, kernelRootIsStore } from "./lib/snapshot_file.ts";
+import {
+  PREVIEW_SNAPSHOT_KINDS,
+  writeGhPagesPreview,
+} from "./lib/gh_pages_preview.ts";
 import {
   BEACON_PAGES,
   WEB_ANALYTICS_TOKEN,
@@ -169,7 +178,25 @@ export type BuildOptions = {
    * production Pages deploy asks for it: previews, CI and the desktop app
    * (whose own CSP, src/desktop.ts, would refuse the beacon) build without. */
   webAnalytics?: boolean;
+  /** A GitHub Pages preview (`--gh-pages-preview`,
+   * .github/workflows/preview-gh-pages.yml): the isolation service worker
+   * and a `<meta>` CSP in every page, since Pages sends no `_headers`, and
+   * only the snapshots in PREVIEW_SNAPSHOT_KINDS
+   * (scripts/lib/gh_pages_preview.ts). Never with analytics. */
+  ghPagesPreview?: boolean;
 };
+
+/** The device snapshots a build publishes when it has them: every kind,
+ * and on a GitHub Pages preview only {@link PREVIEW_SNAPSHOT_KINDS}. */
+export function publishedSnapshotKinds(
+  options: BuildOptions,
+): readonly SnapshotKind[] {
+  return options.ghPagesPreview
+    ? SNAPSHOT_KIND_NAMES.filter((kind) =>
+      PREVIEW_SNAPSHOT_KINDS.includes(kind)
+    )
+    : SNAPSHOT_KIND_NAMES;
+}
 
 /** The beacon token a build uses: the committed one when the build asked
  * for analytics, otherwise none. */
@@ -217,6 +244,21 @@ export async function buildStaticSite(
   await copyTree(jupyter, join(distDir, JUPYTER_DIR));
   // The page reads the pins for its hash checks, then the blobs.
   await copyFiles(["pins.json", "yurt_kernel.wasm"], artifactsDir, distDir);
+  // The agent's model list ships with the page it belongs to: only a deploy
+  // changes it (src/agent_models_config.ts, #368).
+  await Deno.mkdir(join(distDir, dirname(AGENT_MODELS_PATH)), {
+    recursive: true,
+  });
+  await Deno.copyFile(
+    join(repoRoot, AGENT_MODELS_PATH),
+    join(distDir, AGENT_MODELS_PATH),
+  );
+  // So does the network relay's setting (src/network_config.ts); the
+  // policy in _headers admits the same relay.
+  await Deno.writeTextFile(
+    join(distDir, NETWORK_CONFIG_PATH),
+    networkConfigJson(),
+  );
   // Cloudflare Pages refuses files over 25 MiB; the image ships in parts.
   // The full image stays in the site: with no slim pin, the suspend/resume
   // kernel stages its Python standard library from it (on a slim site it
@@ -243,7 +285,7 @@ export async function buildStaticSite(
   // the pinned ones, which scripts/install-pinned-artifacts.sh fetched.
   // Optional; a page without its own boots the image.
   const pins = await loadPins(join(artifactsDir, "pins.json"));
-  for (const kind of SNAPSHOT_KIND_NAMES) {
+  for (const kind of publishedSnapshotKinds(options)) {
     const { name, pinKey } = SNAPSHOT_KINDS[kind];
     const snapshotPath = join(publicDir, name);
     const snapshot = await Deno.stat(snapshotPath).then(
@@ -285,6 +327,16 @@ export async function buildStaticSite(
   );
   await writeLlmRuntime();
   await writeSiteDocuments(distDir, beaconToken(options.webAnalytics ?? false));
+  // After the policy is final: the worker carries its hash.
+  const worker = join(distDir, JUPYTER_DIR, "service-worker.js");
+  await Deno.writeTextFile(
+    worker,
+    await stampedServiceWorker(
+      await Deno.readTextFile(worker),
+      await Deno.readTextFile(join(distDir, "_headers")),
+    ),
+  );
+  if (options.ghPagesPreview) await writeGhPagesPreview(distDir);
 }
 
 /** The last step of the build: the beacon in the pages that carry it and
@@ -298,6 +350,25 @@ export async function writeSiteDocuments(
     join(dir, "_headers"),
     await siteHeaders(dir, token),
   );
+}
+
+const POLICY_STAMP = /\n\/\/ yurt-policy [0-9a-f]{64}\n$/;
+
+/** JupyterLite's service worker with the site's `_headers` hash appended.
+ * A service worker keeps the policy it was installed with, and the browser
+ * replaces it only when its script's bytes change: JupyterLite's do not
+ * between builds, so after #388 visitors kept a worker whose connect-src
+ * refused Turnstile (#390). Its bytes now change with the policy, and the
+ * worker (skipWaiting, clients.claim) takes over on the next load. */
+export async function stampedServiceWorker(
+  script: string,
+  headers: string,
+): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(headers)),
+  );
+  const hex = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${script.replace(POLICY_STAMP, "")}\n// yurt-policy ${hex}\n`;
 }
 
 /** Add the Cloudflare Web Analytics beacon (src/web_analytics.ts) to the
@@ -392,11 +463,15 @@ export async function siteHeaders(
 }
 
 if (import.meta.main) {
-  const unknown = Deno.args.filter((arg) => arg !== "--web-analytics");
+  const flags = ["--web-analytics", "--gh-pages-preview"];
+  const unknown = Deno.args.filter((arg) => !flags.includes(arg));
   if (unknown.length > 0) {
     throw new Error(`build-static: unknown arguments ${unknown.join(" ")}`);
   }
-  await buildStaticSite({
-    webAnalytics: Deno.args.includes("--web-analytics"),
-  });
+  const webAnalytics = Deno.args.includes("--web-analytics");
+  const ghPagesPreview = Deno.args.includes("--gh-pages-preview");
+  if (webAnalytics && ghPagesPreview) {
+    throw new Error("build-static: a preview never counts visitors");
+  }
+  await buildStaticSite({ webAnalytics, ghPagesPreview });
 }

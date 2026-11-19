@@ -9,8 +9,7 @@ import { startPlaygroundServer } from "../src/serve.ts";
 import { EXECUTE_TIMEOUT_MS } from "../src/jupyter_protocol.ts";
 import { watchCspViolations } from "./csp_watch.ts";
 import { PACKAGE_REPO_URL } from "../src/packages.ts";
-import { AGENT_MODELS_URL } from "../src/agent_models_config.ts";
-import { withPrompts } from "./agent_models_fixture.ts";
+import { AGENT_MODELS_ROUTE, withPrompts } from "./agent_models_fixture.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -89,18 +88,19 @@ function expectPane(name: string, got: FailurePane, want: FailurePane): void {
   }
 }
 
-/** A tablet runs the Linux shell, and an agent with only models outside the
- * tab: no Python cell, no Notebook or JupyterLab link, no in-tab model, and
- * no ipykernel in the guest — iPadOS refused new processes after ~13 while
- * ipykernel started. The boot ends at the shell, and a later reload is not
- * mistaken for a boot cut off midway. */
+/** A tablet's home page runs the Linux shell, and an agent with only models
+ * outside the tab: no Python cell, no in-tab model, and no ipykernel in the
+ * guest — iPadOS refused new processes after ~13 while ipykernel started
+ * beside the shell. The Notebook and JupyterLab links are shown: those pages
+ * restore the desktop's snapshot in a sandbox of their own. The boot ends at
+ * the shell, and a later reload is not mistaken for a boot cut off midway. */
 async function tabletIsShellOnly(
   browser: Browser,
   url: string,
 ): Promise<void> {
   const context = await browser.newContext(devices["iPad Pro 11"]);
   // A list that names an in-tab model for tablets too: it is not offered.
-  await context.route(AGENT_MODELS_URL, (route) =>
+  await context.route(AGENT_MODELS_ROUTE, (route) =>
     route.fulfill({
       contentType: "application/json",
       headers: { "access-control-allow-origin": "*" },
@@ -170,8 +170,8 @@ async function tabletIsShellOnly(
     JSON.stringify(state.models) !==
       JSON.stringify(["openrouter:test/remote:free"]) &&
     `agent offered ${JSON.stringify(state.models)}`,
-    state.notebookLink && "Notebook link shown",
-    state.labLink && "JupyterLab link shown",
+    !state.notebookLink && "Notebook link hidden",
+    !state.labLink && "JupyterLab link hidden",
     !state.tabletNote && "tablet note hidden",
     state.ipykernel && "ipykernel is running",
     state.echo !== "shell-only" && `shell answered ${state.echo}`,
@@ -185,20 +185,51 @@ async function tabletIsShellOnly(
 }
 
 /** The terminal's key bar on a touch device (#273): iOS gives xterm's hidden
- * textarea no paste menu, and the iPhone and iPad keyboards have no arrow
- * keys. `page` shows a running shell on an emulated touch device. ↑ and ↓
- * walk ash's history, ← and → move the cursor along the line, Paste puts
- * the clipboard on the command line, a refused or empty clipboard is said in
- * the bar, and the terminal keeps the focus (the iOS keyboard) through every
- * tap. The clipboard is stubbed: neither headless
+ * textarea no paste menu, and the iPhone and iPad keyboards have no Esc, Tab,
+ * Ctrl or arrow keys. `page` shows a running shell on an emulated touch
+ * device. The keys sit in one row of touch targets that scrolls sideways
+ * when the screen is narrower (an iPhone in portrait) and never widens the
+ * page. Esc reaches the guest (`od -c` shows 033), Tab completes a
+ * command in ash, a held Ctrl turns the next letter typed into its control
+ * character (Ctrl-C stops a `sleep`, Ctrl-D ends a shell; the terminal's
+ * own reply to a query is not that letter) and a second tap lets it go,
+ * ↑ and ↓ walk ash's history, ← and → move the cursor along the line,
+ * Paste puts the clipboard on the command line, a refused or empty
+ * clipboard is said in the bar, and the terminal keeps the focus (the iOS
+ * keyboard) through every tap. The clipboard is stubbed: neither headless
  * engine has one a test can fill and read the same way. */
 export async function touchKeysWork(page: Page): Promise<void> {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(String(error)));
   const bar = page.getByTestId("term-keys");
   if (!(await bar.isVisible())) throw new Error("touch key bar not shown");
-  const fits = await bar.evaluate((el) => el.scrollWidth <= el.clientWidth);
-  if (!fits) throw new Error("touch key bar overflows its width");
+  const layout = await bar.evaluate((el) => ({
+    keys: Array.from(el.querySelectorAll("button"), (b) => ({
+      id: b.dataset.testid,
+      name: b.getAttribute("aria-label"),
+      width: b.getBoundingClientRect().width,
+      top: b.getBoundingClientRect().top,
+    })),
+    pageScrolls: document.documentElement.scrollWidth > innerWidth,
+  }));
+  const order = layout.keys.map((k) => `${k.id}=${k.name}`).join(",");
+  const wantOrder = [
+    "esc=Escape",
+    "tab=Tab",
+    "ctrl=Control",
+    "up=Previous command",
+    "down=Next command",
+    "left=Cursor left",
+    "right=Cursor right",
+    "paste=Paste",
+  ].map((k) => `term-key-${k}`).join(",");
+  if (order !== wantOrder) throw new Error(`touch keys: ${order}`);
+  if (layout.keys.some((k) => k.width < 44 || k.top !== layout.keys[0].top)) {
+    throw new Error(
+      `touch keys not one row of 44 px: ${JSON.stringify(layout)}`,
+    );
+  }
+  if (layout.pageScrolls) throw new Error("touch key bar widens the page");
   /** The terminal's lines, trimmed; the last non-empty one is the prompt. */
   const lines = () =>
     page.evaluate(() =>
@@ -297,6 +328,99 @@ export async function touchKeysWork(page: Page): Promise<void> {
     (seen) => count(seen, "keys-pasted") === 1,
   );
 
+  // Ctrl, tapped, holds for the next letter typed and lets go after it.
+  const ctrlPressed = () =>
+    page.getByTestId("term-key-ctrl").getAttribute("aria-pressed");
+  const ctrlKey = async (letter: string) => {
+    await tap("ctrl");
+    if (await ctrlPressed() !== "true") throw new Error("Ctrl not held");
+    await page.keyboard.type(letter);
+    if (await ctrlPressed() !== "false") {
+      throw new Error(`Ctrl still held after ${letter}`);
+    }
+  };
+
+  // Tab completes "ech" to "echo ".
+  await prompt();
+  await page.keyboard.type("ech");
+  await tap("tab");
+  await promptShows("echo");
+  await page.keyboard.type("keys-tab\n");
+  await waitFor(
+    "completed command ran",
+    (seen) => count(seen, "keys-tab") === 1,
+  );
+
+  // Ctrl-C stops a sleep long before it would end.
+  await prompt();
+  await page.keyboard.type("sleep 100\n");
+  await waitFor(
+    "sleep runs",
+    (seen) => seen.at(-1)?.endsWith("sleep 100") === true,
+  );
+  await ctrlKey("c");
+  await prompt();
+
+  // Ctrl-D at an empty prompt ends a nested shell: its prompt goes, the
+  // outer one is back.
+  await page.keyboard.type("PS1='keys-sub> ' sh\n");
+  await waitFor("nested shell", (seen) => seen.at(-1) === "keys-sub>");
+  await ctrlKey("d");
+  await prompt();
+
+  // A second tap lets Ctrl go: "echo" stays "echo" (a held Ctrl would make
+  // its "e" Ctrl-E).
+  await tap("ctrl");
+  await tap("ctrl");
+  if (await ctrlPressed() !== "false") throw new Error("Ctrl not let go");
+  await page.keyboard.type("echo keys-let-go\n");
+  await waitFor("Ctrl let go", (seen) => count(seen, "keys-let-go") === 1);
+
+  // The terminal's own replies are not the next input: a cursor position
+  // query answered while Ctrl is held leaves it held for the letter typed
+  // after it. The query goes out two seconds after Enter, and Ctrl is held
+  // before that (keys-reply not shown yet). `read -n` puts the tty in raw
+  // mode and takes the reply (ESC [ row ; col R) up to its R, so ash never
+  // reads it as typed input, and keys-reply shows only if a reply came.
+  await prompt();
+  await page.keyboard.type(
+    "sleep 2; printf '\\033[6n'; read -rs -t 5 -n 32 -d R x;" +
+      ' [ -n "$x" ] && echo keys-reply\n',
+  );
+  const replied = (seen: string[]) =>
+    seen.some((line) => /^(\^\[\[\d+;\d+R?)?keys-reply$/.test(line));
+  await tap("ctrl");
+  if (replied(await lines())) throw new Error("Ctrl held after the reply");
+  // The tty may echo the reply (^[[row;col, with or without its R) before
+  // read turns echo off.
+  await waitFor("query answered", replied);
+  if (await ctrlPressed() !== "true") {
+    throw new Error("a terminal reply let Ctrl go");
+  }
+  // Ctrl-C at the empty prompt: ash shows ^C and a fresh prompt (the bare
+  // prompt before it would match prompt() too early).
+  await page.keyboard.type("c");
+  if (await ctrlPressed() !== "false") throw new Error("Ctrl still held");
+  await waitFor(
+    "Ctrl-C at the prompt",
+    (seen) =>
+      /^\S*[$#] \^C$/.test(seen.at(-2) ?? "") &&
+      /^\S*[$#]$/.test(seen.at(-1) ?? ""),
+  );
+
+  // Esc reaches the guest: od shows it as 033, after a Ctrl-D at the start
+  // of a line ends od's input.
+  await prompt();
+  await page.keyboard.type("od -c\n");
+  await waitFor("od runs", (seen) => seen.at(-1)?.endsWith("od -c") === true);
+  await tap("esc");
+  await page.keyboard.press("Enter");
+  await ctrlKey("d");
+  await waitFor(
+    "Esc reached od",
+    (seen) => seen.some((line) => /^0000000\s+033\s+\\n$/.test(line)),
+  );
+
   const note = page.getByTestId("term-key-note");
   for (const [text, says] of [[null, "clipboard"], ["", "empty"]] as const) {
     await clipboard(text);
@@ -318,8 +442,23 @@ export async function touchKeysWork(page: Page): Promise<void> {
     throw new Error(`touch keys: page errors ${errors.join("; ")}`);
   }
   console.log(
-    "playground e2e: touch keys recall, move, paste and keep the focus",
+    "playground e2e: touch keys send Esc, Tab and Ctrl, recall, move, paste and keep the focus",
   );
+}
+
+/** The touch key bar on an iPhone in portrait (375 px, narrower than its
+ * keys): the phone's shell, booted, and every key reached. */
+async function phoneTouchKeysWork(browser: Browser, url: string) {
+  const context = await browser.newContext(devices["iPhone SE (3rd gen)"]);
+  const page = await showAllSections(await context.newPage());
+  await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(
+    () => document.querySelector("#status")?.textContent === "running",
+    undefined,
+    { timeout: 180_000 },
+  );
+  await touchKeysWork(page);
+  await context.close();
 }
 
 /** The agent pane on a phone (#197): a phone boots now (the tablet's
@@ -332,7 +471,7 @@ export async function phoneAgentHasTheSandbox(
   url: string,
 ): Promise<void> {
   const phone = await browser.newContext(devices["iPhone 13"]);
-  await phone.route(AGENT_MODELS_URL, (route) =>
+  await phone.route(AGENT_MODELS_ROUTE, (route) =>
     route.fulfill({
       contentType: "application/json",
       headers: { "access-control-allow-origin": "*" },
@@ -374,6 +513,48 @@ export async function phoneAgentHasTheSandbox(
     throw new Error(`phone agent: ${JSON.stringify(agent)}`);
   }
   await phone.close();
+}
+
+/** Firefox's UA, on a Chromium page: the page tells Firefox by its UA. */
+const FIREFOX_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:140.0) Gecko/20100101 Firefox/140.0";
+
+/** Firefox cannot run the sandbox (its workers never signal ready), so the
+ * home page sends it to unsupported.html with that reason, not the
+ * isolation one; any other browser that lands there sees the isolation
+ * reason only. */
+async function firefoxIsSentToItsReason(
+  browser: Browser,
+  url: string,
+): Promise<void> {
+  const firefox = await browser.newContext({ userAgent: FIREFOX_UA });
+  try {
+    const page = await firefox.newPage();
+    await page.goto(`${url}/?start=1`, { waitUntil: "domcontentloaded" });
+    await page.getByTestId("unsupported-firefox").waitFor({
+      state: "visible",
+      timeout: 30_000,
+    });
+    if (new URL(page.url()).pathname !== "/unsupported.html") {
+      throw new Error(`Firefox landed on ${page.url()}`);
+    }
+    if (await page.locator("#isolation").isVisible()) {
+      throw new Error("Firefox is shown the isolation reason");
+    }
+  } finally {
+    await firefox.close();
+  }
+  const other = await browser.newPage();
+  try {
+    await other.goto(`${url}/unsupported.html`, { waitUntil: "load" });
+    await other.locator("#isolation").waitFor({ state: "visible" });
+    if (await other.getByTestId("unsupported-firefox").isVisible()) {
+      throw new Error("the Firefox reason shows without #firefox");
+    }
+  } finally {
+    await other.close();
+  }
+  console.log("playground e2e: Firefox is sent to unsupported.html#firefox");
 }
 
 /** iPadOS Safari asks for the desktop site: its UA is a Mac Safari's. */
@@ -1429,7 +1610,9 @@ if (import.meta.main) {
     await page.close();
     await bootFailuresAreExplained(browser, server.url);
     await tabletIsShellOnly(browser, server.url);
+    await phoneTouchKeysWork(browser, server.url);
     await phoneAgentHasTheSandbox(browser, server.url);
+    await firefoxIsSentToItsReason(browser, server.url);
   } finally {
     await browser.close();
     await server.shutdown();

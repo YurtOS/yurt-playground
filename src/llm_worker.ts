@@ -175,7 +175,7 @@ async function load(
     },
   };
   let t = performance.now();
-  await loadLiteRtLm("/llm/wasm/");
+  await loadLiteRtLm(new URL("./llm/wasm/", self.location.href).href);
   const wasmMs = performance.now() - t;
   const wasmVariant = glue.replace(/\.js$/, ".wasm");
   const got = await modelBlob(model, cacheKey);

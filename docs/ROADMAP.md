@@ -34,8 +34,9 @@ What you can use today.
   downloads the snapshot once; later visits take it from the browser's cache.
   `?snapshot=0` boots the slim image instead.
 - **Phones and tablets boot.** Both get the tablet's snapshot, sized for their
-  memory (the shell and Python, no Jupyter), and a key bar under the terminal
-  adds Paste, history and cursor keys that the on-screen keyboard lacks.
+  memory (the shell and Python), and a key bar under the terminal adds Esc, Tab,
+  a sticky Ctrl, history and cursor keys and Paste, which the on-screen keyboard
+  lacks.
 - **A slim browser image that installs Python itself.** The tab loads 23.5 MB
   (the shell, the command-line tools, `sudo` and `pkg`) instead of 144 MB, and
   every page that runs Python installs the newest Python set from the signed
@@ -137,11 +138,13 @@ Bigger directions. Each needs design work, and the order is not fixed.
   and the first `go build` in the tab is slow. On iPad it is over the 16 MiB
   install limit today, and the per-tab process and memory limits are a further
   question, since `go build` starts several compiler and linker processes.
-- **More of the playground on tablets.** iPad browsers limit the processes and
-  memory one tab can use, which is why tablets get no Jupyter today and why a
-  long shell session can still run out of memory
+- **More of the playground on tablets and phones.** iPad and iPhone browsers
+  limit the processes and memory one tab can use, which is why a long shell
+  session can still run out of memory
   ([#200](https://github.com/YurtOS/yurt-playground/issues/200)). Tablets now
-  run the shell and Python; the goal is for Jupyter to fit too.
+  run the Notebook and JupyterLab from the desktop's snapshot, in a sandbox of
+  their own beside a 1 GiB kernel, but not Jupyter on the home page next to the
+  shell; phones run Jupyter only on `?memory=1g`. The goal is both by default.
 - **Ctrl-C for CPU-bound Python.** Ctrl-C and `kill -INT` reaching a Python
   program that is busy computing, so `KeyboardInterrupt` works.
 - **A faster JavaScript engine (experimental).** Node on Yurt runs
@@ -174,9 +177,10 @@ Bigger directions. Each needs design work, and the order is not fixed.
 - **On the desktop**, the root filesystem is also held in memory, and changes to
   it are written to disk at sync points (an explicit `sync`, or when the sandbox
   stops). Host folders you mount are on disk directly.
-- **Tablets and phones run the shell and Python**, with no Jupyter, and an agent
-  whose model runs on OpenRouter. The Notebook and JupyterLab pages do not start
-  a sandbox on a phone.
+- **Tablets and phones run the shell and Python** on the home page, with no
+  Jupyter there, and an agent whose model runs on OpenRouter. A tablet's
+  Notebook and JupyterLab pages restore the desktop's snapshot in a sandbox of
+  their own; a phone's start no sandbox unless the URL says `?memory=1g`.
 - **Go is a package, not part of the image.** Go programs run on one thread, and
   signals reach them only between system calls; in the browser the first
   `go build` takes about 17 minutes.

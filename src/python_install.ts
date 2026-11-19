@@ -16,6 +16,7 @@ import {
 import type { InstalledRelease } from "./installed_list.ts";
 import { parsePins, type Pins } from "./pins.ts";
 import { IndexUnreadable, layerKey } from "./python_layer.ts";
+import { siteUrl } from "./site_url.ts";
 
 export { IndexUnreadable };
 
@@ -134,12 +135,12 @@ export function pythonInstallState(
     };
 }
 
-/** The site's pins, as a page reads them (`/pins.json`, from any page
- * path); `undefined` when they cannot be read, and the page then asks for
+/** The site's pins, as a page reads them (`pins.json` at the site's root,
+ * from any page path); `undefined` when they cannot be read, and the page then asks for
  * no install. */
 export async function fetchSitePins(): Promise<Pins | undefined> {
   try {
-    const response = await fetch("/pins.json");
+    const response = await fetch(siteUrl("./pins.json"));
     if (!response.ok) return undefined;
     return parsePins(await response.json());
   } catch {

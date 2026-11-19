@@ -10,6 +10,9 @@ import {
 } from "../src/page_worker_bridge.ts";
 
 const ORIGIN = "http://127.0.0.1:4173";
+const SITE = `${ORIGIN}/`;
+/** A site under a path: a GitHub Pages preview. */
+const PREVIEW = `${ORIGIN}/yurt-playground/preview/agent-x/`;
 
 Deno.test("guest workers are module scripts at the bundled bootstrap", () => {
   for (
@@ -20,9 +23,22 @@ Deno.test("guest workers are module scripts at the bundled bootstrap", () => {
       `${ORIGIN}/nested/worker_bootstrap.ts?v=1`,
     ]
   ) {
-    const [url, options] = guestWorkerStart(requested, ORIGIN);
-    assertEquals(url, `${ORIGIN}${GUEST_WORKER_PATH}`, requested);
+    const [url, options] = guestWorkerStart(requested, SITE);
+    assertEquals(url, `${ORIGIN}/worker_bootstrap.js`, requested);
     assertEquals(options.type, "module");
+  }
+  assertEquals(GUEST_WORKER_PATH, "./worker_bootstrap.js");
+});
+
+Deno.test("a site under a path starts the bootstrap at its own root", () => {
+  for (
+    const requested of [
+      "./worker_bootstrap.ts",
+      `${PREVIEW}worker_bootstrap.ts`,
+    ]
+  ) {
+    const [url] = guestWorkerStart(requested, PREVIEW);
+    assertEquals(url, `${PREVIEW}worker_bootstrap.js`, requested);
   }
 });
 
@@ -41,7 +57,7 @@ Deno.test("anything but the same-origin bootstrap is refused", () => {
     ]
   ) {
     assertThrows(
-      () => guestWorkerStart(requested, ORIGIN),
+      () => guestWorkerStart(requested, SITE),
       GuestWorkerRefused,
       undefined,
       requested,

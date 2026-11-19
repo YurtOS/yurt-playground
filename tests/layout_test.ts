@@ -179,7 +179,8 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   // ...and the converse: an e2e file nobody put in the matrix would never
   // run here. `desktop_e2e.ts` is release-desktop.yml's, by name,
   // `agent_webgpu_e2e.ts` needs a GPU and Safari, and `agent_demo_e2e.ts`
-  // a GPU and the real weights: they run on a Mac.
+  // a GPU and the real weights: they run on a Mac. `network_e2e.ts` needs
+  // the internet (curl and pip through a local relay, #380).
   const e2eFiles: string[] = [];
   for await (const entry of Deno.readDir(testsDir)) {
     if (entry.isFile && entry.name.endsWith("_e2e.ts")) {
@@ -189,6 +190,7 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   assertEquals(
     e2eFiles.filter((s) =>
       s !== "desktop" && s !== "agent_webgpu" && s !== "agent_demo" &&
+      s !== "network" &&
       !scenes.includes(s)
     ),
     [],
@@ -298,7 +300,14 @@ Deno.test("workflows authenticate every private sibling checkout", async () => {
   // The default GITHUB_TOKEN cannot read a *different* private repository, so
   // each YurtOS sibling checkout needs an explicit token. Without one the job
   // dies at "remote: Repository not found" before any step runs.
-  for (const file of ["ci.yml", "deploy-pages.yml", "release-desktop.yml"]) {
+  for (
+    const file of [
+      "ci.yml",
+      "deploy-pages.yml",
+      "preview-gh-pages.yml",
+      "release-desktop.yml",
+    ]
+  ) {
     const workflow = await workflowSource(file);
     const siblings = workflow.match(/repository: YurtOS\/\S+/g) ?? [];
     assertEquals(siblings.length > 0, true, `${file} checks out no sibling`);
@@ -325,7 +334,14 @@ Deno.test("the site workflows fetch the pinned blobs, none builds them", async (
   // image needs the guest toolchain plus hours of port builds, so a workflow
   // that rebuilt either could never satisfy artifacts/pins.json. All consume
   // the published releases through the same script.
-  for (const file of ["ci.yml", "deploy-pages.yml", "release-desktop.yml"]) {
+  for (
+    const file of [
+      "ci.yml",
+      "deploy-pages.yml",
+      "preview-gh-pages.yml",
+      "release-desktop.yml",
+    ]
+  ) {
     const workflow = await workflowSource(file);
     assertEquals(
       workflow.includes("scripts/install-pinned-artifacts.sh"),
@@ -453,7 +469,7 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
 
 Deno.test("the page's instructions hold outside Chrome and without a token", async () => {
   // yurt-playground#154: `yurt pull` reads a public release now, and the
-  // proof is read in Safari and Firefox as well.
+  // proof is read in Edge and Safari as well.
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
   );
@@ -464,9 +480,29 @@ Deno.test("the page's instructions hold outside Chrome and without a token", asy
     html.indexOf("</details>", html.indexOf('data-testid="proof"')),
   );
   assertEquals(proof.includes("in Chrome."), false, "Chrome-only timing");
-  for (const browser of ["Chrome", "Safari", "Firefox"]) {
+  for (const browser of ["Chrome", "Edge", "Safari"]) {
     assertEquals(proof.includes(browser), true, `the proof names ${browser}`);
   }
+});
+
+Deno.test("no page claims Firefox, and the home page sends it to its reason", async () => {
+  // The owner, 2026-11-18: Firefox is not supported (the sandbox's workers
+  // never signal ready there).
+  const read = (path: string) =>
+    Deno.readTextFile(new URL(`../${path}`, import.meta.url));
+  assertEquals(/firefox/i.test(await read("public/index.html")), false);
+  const unsupported = await read("public/unsupported.html");
+  assertEquals(unsupported.includes('<p id="firefox"'), true);
+  assertEquals(unsupported.includes("Firefox is not supported"), true);
+  // It names the browsers to use instead.
+  assertMatch(
+    unsupported,
+    /Chrome or Edge on a desktop, or in\s+Safari on a Mac, iPhone or iPad/,
+  );
+  assertEquals(
+    (await read("src/page.ts")).includes("./unsupported.html#firefox"),
+    true,
+  );
 });
 
 Deno.test("the start screen offers Python, Go or Playwright, hidden until the page shows it", async () => {
@@ -713,9 +749,10 @@ Deno.test("deployment workflow publishes an isolated static site", async () => {
 });
 
 Deno.test("every workflow restricts its token to reading the repository", async () => {
-  // Nothing here pushes or writes to the repository, and a public repository
-  // runs these on pull requests from strangers. The cross-repo and Cloudflare
-  // credentials are named secrets, not the workflow token.
+  // A public repository runs these on pull requests from strangers. The
+  // cross-repo and Cloudflare credentials are named secrets, not the workflow
+  // token. A job that writes asks for it itself: the desktop release, and
+  // the GitHub Pages preview's publishing jobs, and no other.
   for (
     const entry of Deno.readDirSync(
       new URL("../.github/workflows", import.meta.url),
@@ -728,6 +765,38 @@ Deno.test("every workflow restricts its token to reading the repository", async 
       workflow.includes("\npermissions:\n  contents: read\n"),
       true,
       `${entry.name} does not restrict the workflow token to contents: read`,
+    );
+    const writers = [...workflow.matchAll(
+      /\n {2}([\w-]+):\n(?: {4}.*\n|\n)*? {6}contents: write\n/g,
+    )].map((match) => match[1]);
+    assertEquals(
+      writers,
+      ({
+        "preview-gh-pages.yml": ["publish", "remove"],
+        "release-desktop.yml": ["release"],
+      } as Record<string, string[]>)[entry.name] ?? [],
+      `${entry.name}: jobs that write to the repository`,
+    );
+  }
+});
+
+Deno.test("the GitHub Pages preview writes only from jobs that run none of the branch's code", async () => {
+  // A branch's code runs in the build job, with a read-only token; the jobs
+  // that push to gh-pages check out only the publish script, from the
+  // commit the workflow was dispatched from.
+  const workflow = await Deno.readTextFile(
+    new URL("../.github/workflows/preview-gh-pages.yml", import.meta.url),
+  );
+  const jobs = workflow.split(/\n {2}(?=[\w-]+:\n)/);
+  for (const name of ["publish", "remove"]) {
+    const job = jobs.find((text) => text.startsWith(`${name}:`));
+    assertEquals(job !== undefined, true, name);
+    assertEquals(job!.includes("needs.target.outputs.ref"), false, name);
+    assertEquals(job!.includes("deno"), false, name);
+    assertEquals(
+      job!.includes("sparse-checkout: scripts/gh-pages-preview/publish.sh"),
+      true,
+      name,
     );
   }
 });
