@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   answerDns,
   DNS_CACHE_NAMES,
@@ -16,7 +16,11 @@ import {
   relaySources,
   TURNSTILE_ORIGIN,
 } from "../src/network_config.ts";
-import { networkWanted } from "../src/network_toggle.ts";
+import {
+  networkWanted,
+  settleWithin,
+  shareInFlight,
+} from "../src/network_toggle.ts";
 import { contentSecurityPolicy, cspSources, withRelay } from "../src/csp.ts";
 
 /** A DNS query for `name` of `type`, as musl sends one. */
@@ -163,7 +167,7 @@ function fakeRelay() {
   const statuses: NetworkStatus[] = [];
   const client = new RelayClient(
     "https://relay.example",
-    () => Promise.resolve({ token: "t0", expires: Date.now() + 3_600_000 }),
+    () => Promise.resolve({ token: "t0", ttl: 3600 }),
     () => Promise.resolve(new Response(null, { status: 500 })),
   );
   const tcp = new RelayTcp(
@@ -274,23 +278,25 @@ Deno.test("relay tcp: at most MAX_CONNECTIONS open", () => {
   assertEquals(tcp.connect("151.101.0.223", 443, KH_CONNECT_ASYNC), -11);
 });
 
-Deno.test("relay client: a token is reused until near its expiry", async () => {
-  let now = 0;
+Deno.test("relay client: a token is reused for a quarter of its life, by the page's own clock", async () => {
+  // The page's clock is far off the relay's: only the fetch time (here)
+  // and the relay's ttl count.
+  let now = 9_000_000_000;
   let issued = 0;
   const client = new RelayClient(
     "https://relay.example",
     () => {
       issued++;
-      return Promise.resolve({ token: `t${issued}`, expires: now + 600_000 });
+      return Promise.resolve({ token: `t${issued}`, ttl: 600 });
     },
     () => Promise.resolve(Response.json({ addresses: ["151.101.0.223"] })),
     () => now,
   );
   assertEquals(await client.token(), "t1");
   assertEquals(await client.token(), "t1");
-  now = 140_000; // three quarters of its life still ahead
+  now += 140_000; // three quarters of its life still ahead
   assertEquals(await client.token(), "t1");
-  now = 160_000; // a connection opened now would get less than that
+  now += 20_000; // a connection opened now would get less than that
   assertEquals(await client.token(), "t2");
   assertEquals(await client.resolve("pypi.org"), ["151.101.0.223"]);
 });
@@ -419,7 +425,7 @@ Deno.test("relay tcp: a relay that sends past the cap is cut", async () => {
 Deno.test("relay client: the name cache stays bounded", async () => {
   const client = new RelayClient(
     "https://relay.example",
-    () => Promise.resolve({ token: "t", expires: Date.now() + 3_600_000 }),
+    () => Promise.resolve({ token: "t", ttl: 3600 }),
     () => Promise.resolve(Response.json({ addresses: ["151.101.0.223"] })),
   );
   for (let i = 0; i < DNS_CACHE_NAMES + 10; i++) {
@@ -434,8 +440,10 @@ Deno.test("relay client: a token that does not come in time fails the connect", 
     "https://relay.example",
     () => {
       asked++;
-      // The page never answers (a Turnstile check left hanging).
-      return new Promise(() => {});
+      // The page does not answer; the coordinator gives up on it later.
+      return new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("no answer")), 60)
+      );
     },
     () => Promise.resolve(new Response(null, { status: 500 })),
     Date.now,
@@ -453,8 +461,75 @@ Deno.test("relay client: a token that does not come in time fails the connect", 
   await new Promise((r) => setTimeout(r, 50));
   assertEquals(tcp.connectStatus(handle), -101); // ENETUNREACH
   assertEquals(FakeWebSocket.made, []);
-  // The next connect asks again.
+  // Once that request has failed, the next connect asks again.
+  await new Promise((r) => setTimeout(r, 30));
   tcp.connect("151.101.0.223", 443, KH_CONNECT_ASYNC);
-  await new Promise((r) => setTimeout(r, 50));
+  await new Promise((r) => setTimeout(r, 100));
   assertEquals(asked, 2);
+});
+
+Deno.test("relay client: connects waiting together share one token fetch", async () => {
+  let asked = 0;
+  let answer: (t: { token: string; ttl: number }) => void = () => {};
+  const client = new RelayClient(
+    "https://relay.example",
+    () => {
+      asked++;
+      return new Promise((resolve) => answer = resolve);
+    },
+  );
+  const first = client.token();
+  const second = client.token();
+  answer({ token: "t", ttl: 600 });
+  assertEquals([await first, await second, asked], ["t", "t", 1]);
+});
+
+Deno.test("relay client: a token that lands after the deadline is kept for the next connect", async () => {
+  let asked = 0;
+  let answer: (t: { token: string; ttl: number }) => void = () => {};
+  const client = new RelayClient(
+    "https://relay.example",
+    () => {
+      asked++;
+      return new Promise((resolve) => answer = resolve);
+    },
+    () => Promise.resolve(new Response(null, { status: 500 })),
+    Date.now,
+    20,
+  );
+  await assertRejects(() => client.token(), Error, "in time");
+  // A second connect during the same check waits for it, too.
+  const waiting = client.token();
+  answer({ token: "late", ttl: 600 });
+  assertEquals(await waiting, "late");
+  assertEquals(await client.token(), "late");
+  assertEquals(asked, 1);
+});
+
+Deno.test("page: a token request waits at most its deadline, and cleans up either way", async () => {
+  let cleaned = 0;
+  const hanging = settleWithin<string>(() => () => cleaned++, 20);
+  await assertRejects(() => hanging, Error, "no answer");
+  assertEquals(cleaned, 1);
+  const answered = await settleWithin<string>((resolve) => {
+    queueMicrotask(() => resolve("ok"));
+    return () => cleaned++;
+  }, 1000);
+  assertEquals([answered, cleaned], ["ok", 2]);
+});
+
+Deno.test("page: a check in flight is shared, and the next one starts fresh", async () => {
+  let started = 0;
+  let finish: (v: number) => void = () => {};
+  const once = shareInFlight(() => {
+    started++;
+    return new Promise<number>((resolve) => finish = resolve);
+  });
+  const a = once();
+  const b = once();
+  finish(7);
+  assertEquals([await a, await b, started], [7, 7, 1]);
+  const c = once();
+  finish(8);
+  assertEquals([await c, started], [8, 2]);
 });

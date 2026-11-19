@@ -70,6 +70,39 @@ function loadTurnstile(): Promise<Turnstile> {
   return turnstileScript;
 }
 
+/** How long the page waits for a Turnstile answer: past it the widget
+ * goes, and the token request fails. */
+export const TURNSTILE_DEADLINE_MS = 60_000;
+
+/** What `start` settles to, or a throw after `ms`. `start` returns its
+ * clean-up, which runs either way. */
+export function settleWithin<T>(
+  start: (
+    resolve: (value: T) => void,
+    reject: (error: Error) => void,
+  ) => () => void,
+  ms: number,
+): Promise<T> {
+  let cleanUp = () => {};
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return new Promise<T>((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`no answer in ${ms} ms`)), ms);
+    cleanUp = start(resolve, reject);
+  }).finally(() => {
+    clearTimeout(timer);
+    cleanUp();
+  });
+}
+
+/** `fn`, but a call while one is in flight gets that one's result. */
+export function shareInFlight<T>(fn: () => Promise<T>): () => Promise<T> {
+  let inFlight: Promise<T> | undefined;
+  return () =>
+    inFlight ??= fn().finally(() => {
+      inFlight = undefined;
+    });
+}
+
 /** One Turnstile answer for `siteKey`, from a widget in `container` that
  * shows itself only if the visitor has to act. */
 async function humanAnswer(
@@ -77,43 +110,49 @@ async function humanAnswer(
   container: HTMLElement,
 ): Promise<string> {
   const turnstile = await loadTurnstile();
-  const slot = document.createElement("div");
-  container.append(slot);
-  try {
-    return await new Promise<string>((resolve, reject) => {
-      const widget = turnstile.render(slot, {
-        sitekey: siteKey,
-        action: TURNSTILE_ACTION,
-        appearance: "interaction-only",
-        callback: (token) => {
-          turnstile.remove(widget);
-          resolve(token);
-        },
-        "error-callback": (code) => {
-          turnstile.remove(widget);
-          reject(new Error(`Turnstile: ${code}`));
-        },
-      });
+  return await settleWithin<string>((resolve, reject) => {
+    const slot = document.createElement("div");
+    container.append(slot);
+    const widget = turnstile.render(slot, {
+      sitekey: siteKey,
+      action: TURNSTILE_ACTION,
+      appearance: "interaction-only",
+      callback: resolve,
+      "error-callback": (code) => reject(new Error(`Turnstile: ${code}`)),
     });
-  } finally {
-    slot.remove();
-  }
+    return () => {
+      turnstile.remove(widget);
+      slot.remove();
+    };
+  }, TURNSTILE_DEADLINE_MS);
 }
 
-/** A relay token for the coordinator: a Turnstile answer, then `/token`. */
-export async function relayToken(
+/** A relay token and its lifetime in seconds, for the coordinator: a
+ * Turnstile answer, then `/token`. */
+async function fetchRelayToken(
   network: Network,
   container: HTMLElement,
-  fetchFn: typeof fetch = fetch,
-): Promise<{ token: string; expires: number }> {
+): Promise<{ token: string; ttl: number }> {
   const human = await humanAnswer(network.siteKey, container);
-  const response = await fetchFn(
+  const response = await fetch(
     `${network.relay}/token?turnstile=${encodeURIComponent(human)}`,
     { credentials: "omit" },
   );
   if (!response.ok) throw new Error(`relay token: ${response.status}`);
-  const { token, expires } = await response.json();
-  return { token, expires };
+  const { token, ttl } = await response.json();
+  return { token, ttl };
+}
+
+let pendingToken: (() => Promise<{ token: string; ttl: number }>) | undefined;
+
+/** {@link fetchRelayToken}, one at a time: asked again while a check is in
+ * flight, the page answers with that check's token, not a second widget. */
+export function relayToken(
+  network: Network,
+  container: HTMLElement,
+): Promise<{ token: string; ttl: number }> {
+  pendingToken ??= shareInFlight(() => fetchRelayToken(network, container));
+  return pendingToken();
 }
 
 /** Whether this load starts with the network on: only `ownReload` (the

@@ -48,17 +48,19 @@ const MSG_PEEK = 2;
 
 /** The relay as the page uses it: tokens, names, connection URLs. */
 export class RelayClient {
-  #token:
-    | Promise<{ token: string; expires: number; fetched: number }>
-    | undefined;
+  /** The token in hand, judged by this page's own clock: when it was
+   * fetched and how long the relay said it lives. */
+  #token: { token: string; fetched: number; lifeMs: number } | undefined;
+  /** The fetch in flight, which every connect waiting for a token shares. */
+  #fetching: Promise<string> | undefined;
   #names = new Map<string, { addresses: string[]; until: number }>();
 
   constructor(
     readonly origin: string,
-    /** A fresh token: the page's Turnstile answer, then `/token`
-     * (src/network_toggle.ts relayToken). */
+    /** A fresh token and its lifetime in seconds: the page's Turnstile
+     * answer, then `/token` (src/network_toggle.ts relayToken). */
     private readonly fetchToken: () => Promise<
-      { token: string; expires: number }
+      { token: string; ttl: number }
     >,
     private readonly fetchFn: typeof fetch = (input, init) =>
       fetch(input, init),
@@ -66,35 +68,49 @@ export class RelayClient {
     private readonly deadlineMs = TOKEN_DEADLINE_MS,
   ) {}
 
-  /** A token with three quarters of its life ahead at least: a connection
-   * lives no longer than the token it was opened with. */
+  /** A token with three quarters of its life ahead at least (a connection
+   * lives no longer than the token it was opened with), or a throw after
+   * {@link TOKEN_DEADLINE_MS}. A fetch that outlives the deadline still
+   * lands: the next connect takes its token instead of starting another
+   * Turnstile check. */
   async token(): Promise<string> {
-    const held = await this.#token?.catch(() => undefined);
-    if (
-      held !== undefined &&
-      held.expires - this.now() > (held.expires - held.fetched) * 3 / 4
-    ) {
+    const held = this.#token;
+    if (held !== undefined && this.now() - held.fetched < held.lifeMs / 4) {
       return held.token;
     }
-    this.#token = (async () => {
-      const fetched = this.now();
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        const { token, expires } = await Promise.race([
-          this.fetchToken(),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () => reject(new Error("no relay token in time")),
-              this.deadlineMs,
-            );
-          }),
-        ]);
-        return { token, expires, fetched };
-      } finally {
-        clearTimeout(timer);
-      }
-    })();
-    return (await this.#token).token;
+    if (this.#fetching === undefined) {
+      this.#fetching = (async () => {
+        const fetched = this.now();
+        try {
+          const { token, ttl } = await this.fetchToken();
+          this.#token = { token, fetched, lifeMs: ttl * 1000 };
+          return token;
+        } finally {
+          this.#fetching = undefined;
+        }
+      })();
+      // A failure past every waiter's deadline is no one's to handle.
+      this.#fetching.catch(() => {});
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.#fetching,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("no relay token in time")),
+            this.deadlineMs,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** The token is refused (expired under us): fetch another next time. */
+  dropToken(): void {
+    this.#token = undefined;
   }
 
   /** `name`'s public IPv4 addresses, cached for {@link DNS_TTL_S}. */
@@ -114,7 +130,7 @@ export class RelayClient {
     let response = await query(await this.token());
     if (response.status === 401) {
       // Expired under us: one more try with a fresh token.
-      this.#token = undefined;
+      this.dropToken();
       response = await query(await this.token());
     }
     if (!response.ok) throw new Error(`relay dns: ${response.status}`);
@@ -706,7 +722,7 @@ export class TabNetwork {
 
   constructor(
     relayOrigin: string,
-    fetchToken: () => Promise<{ token: string; expires: number }>,
+    fetchToken: () => Promise<{ token: string; ttl: number }>,
     changed: (status: NetworkStatus) => void,
   ) {
     this.relay = new RelayClient(relayOrigin, fetchToken);

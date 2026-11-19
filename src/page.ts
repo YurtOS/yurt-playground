@@ -655,12 +655,12 @@ function boot(
         if (network === undefined) throw new Error("no relay");
         return await relayToken(network, byId("network-human"));
       }).then(
-        ({ token, expires }) =>
+        ({ token, ttl }) =>
           worker.postMessage({
             type: "network-token-reply",
             req,
             token,
-            expires,
+            ttl,
           }),
         (error) => {
           console.warn(`[network] no token: ${error}`);

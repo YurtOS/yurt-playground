@@ -790,10 +790,12 @@ export function createRelay(platform: RelayPlatform): Relay {
         return json(origin, { error: "the Turnstile check failed" }, 403);
       }
       // Bound to the exact address; counted by the caller's key.
-      return json(
-        origin,
-        await issueToken(platform.secret, address, now(), limits.tokenTtlMs),
-      );
+      // `ttl`, not only `expires`: the page judges freshness by its own
+      // clock, which may be off.
+      return json(origin, {
+        ...await issueToken(platform.secret, address, now(), limits.tokenTtlMs),
+        ttl: limits.tokenTtlMs / 1000,
+      });
     }
     const token = await verifyToken(
       platform.secret,

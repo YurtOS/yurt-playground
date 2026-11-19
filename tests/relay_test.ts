@@ -265,6 +265,8 @@ Deno.test("relay: only an allowed origin gets anything", async () => {
   assertEquals((await get("/token?turnstile=human", {}, "")).status, 400);
   const ok = await get("/token?turnstile=human");
   assertEquals(ok.status, 200);
+  // The lifetime in seconds, for a page whose clock may be off.
+  assertEquals((await ok.clone().json()).ttl, 20 * 60);
   assertEquals(ok.headers.get("Access-Control-Allow-Origin"), ORIGIN);
 });
 

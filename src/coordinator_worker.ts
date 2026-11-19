@@ -215,7 +215,7 @@ type ToWorker =
     type: "network-token-reply";
     req: number;
     token?: string;
-    expires?: number;
+    ttl?: number;
     error?: string;
   };
 
@@ -228,15 +228,31 @@ let network: TabNetwork | undefined;
 const tokenRequests = new Map<
   number,
   {
-    resolve: (t: { token: string; expires: number }) => void;
+    resolve: (t: { token: string; ttl: number }) => void;
     reject: (e: Error) => void;
   }
 >();
 let nextTokenRequest = 1;
-function pageToken(): Promise<{ token: string; expires: number }> {
+/** Past the page's own Turnstile deadline: a page that never answers
+ * leaves no request behind. */
+const PAGE_TOKEN_DEADLINE_MS = 90_000;
+function pageToken(): Promise<{ token: string; ttl: number }> {
   return new Promise((resolve, reject) => {
     const req = nextTokenRequest++;
-    tokenRequests.set(req, { resolve, reject });
+    const timer = setTimeout(() => {
+      tokenRequests.delete(req);
+      reject(new Error("the page gave no relay token"));
+    }, PAGE_TOKEN_DEADLINE_MS);
+    tokenRequests.set(req, {
+      resolve: (t) => {
+        clearTimeout(timer);
+        resolve(t);
+      },
+      reject: (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    });
     post({ type: "network-token", req });
   });
 }
@@ -729,8 +745,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   if (msg.type === "network-token-reply") {
     const waiter = tokenRequests.get(msg.req);
     tokenRequests.delete(msg.req);
-    if (msg.token !== undefined && msg.expires !== undefined) {
-      waiter?.resolve({ token: msg.token, expires: msg.expires });
+    if (msg.token !== undefined && msg.ttl !== undefined) {
+      waiter?.resolve({ token: msg.token, ttl: msg.ttl });
     } else {
       waiter?.reject(new Error(msg.error ?? "no relay token"));
     }
