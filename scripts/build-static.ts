@@ -28,6 +28,10 @@ import {
 } from "../src/integrity.ts";
 import { loadPins, type Pins } from "../src/pins.ts";
 import { AGENT_MODELS_PATH } from "../src/agent_models_config.ts";
+import {
+  NETWORK_CONFIG_PATH,
+  networkConfigJson,
+} from "../src/network_config.ts";
 import { checkSnapshotFile, kernelRootIsStore } from "./lib/snapshot_file.ts";
 import {
   PREVIEW_SNAPSHOT_KINDS,
@@ -248,6 +252,12 @@ export async function buildStaticSite(
   await Deno.copyFile(
     join(repoRoot, AGENT_MODELS_PATH),
     join(distDir, AGENT_MODELS_PATH),
+  );
+  // So does the network relay's setting (src/network_config.ts); the
+  // policy in _headers admits the same relay.
+  await Deno.writeTextFile(
+    join(distDir, NETWORK_CONFIG_PATH),
+    networkConfigJson(),
   );
   // Cloudflare Pages refuses files over 25 MiB; the image ships in parts.
   // The full image stays in the site: with no slim pin, the suspend/resume

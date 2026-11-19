@@ -31,7 +31,11 @@ Deno.test("inline script hashes are CSP sha256 sources of the exact body", async
 });
 
 Deno.test("the policy keeps every request on the origin but the models', the packages' and the uploaded snapshots'", () => {
-  const policy = contentSecurityPolicy({ scriptHashes: ["'sha256-x'"] });
+  // Without the network relay, which tests/network_test.ts covers.
+  const policy = contentSecurityPolicy({
+    scriptHashes: ["'sha256-x'"],
+    networkRelay: null,
+  });
   assertStringIncludes(policy, "default-src 'self'");
   assertStringIncludes(
     policy,
@@ -122,6 +126,7 @@ Deno.test("the page's privacy note names whoever each connect-src source belongs
     [/^https:\/\/openrouter\.ai$/, "OpenRouter"],
     [/^https:\/\/(raw\.githubusercontent\.com|api\.github\.com)\//, "GitHub"],
     [/^https:\/\/cloudflareinsights\.com$/, "Cloudflare"],
+    [/^(https|wss):\/\/yurt-relay\.ofersa\.workers\.dev$/, "Yurt's relay"],
   ];
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
@@ -133,7 +138,7 @@ Deno.test("the page's privacy note names whoever each connect-src source belongs
     contentSecurityPolicy({ webAnalytics: true }),
     "connect-src",
   ).filter((source) => source !== "'self'");
-  assertEquals(sources.length, 7, sources.join(" "));
+  assertEquals(sources.length, 9, sources.join(" "));
   for (const source of sources) {
     const owner = owners.find(([pattern]) => pattern.test(source))?.[1];
     assertEquals(owner !== undefined, true, `no owner for ${source}`);

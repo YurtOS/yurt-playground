@@ -939,6 +939,29 @@
                 >
                   Download home
                 </button>
+                <button
+                  type="button"
+                  id="network-toggle"
+                  data-testid="network-toggle"
+                  class="bar-action"
+                  aria-pressed="false"
+                  hidden
+                  title="Let programs in this sandbox reach the internet through Yurt's relay."
+                >
+                  Network: off
+                </button>
+                <span id="network-open" data-testid="network-open" hidden
+                >0 open</span>
+                <button
+                  type="button"
+                  id="network-cut"
+                  data-testid="network-cut"
+                  class="bar-action"
+                  hidden
+                  title="Close every connection the sandbox has open."
+                >
+                  Cut connections
+                </button>
                 <span
                   id="net"
                   data-testid="net"
@@ -946,6 +969,14 @@
                   title="This tab's network state. The sandbox keeps working without it."
                 >online</span>
               </div>
+              <p id="network-note" data-testid="network-note" hidden>
+                Traffic leaves through Yurt's relay, which sees destination
+                names and how much data you send, not its contents (TLS is end
+                to end). Only ports 80, 443 and 9418, to public addresses; never
+                your local network.
+              </p>
+              <!-- Turnstile's widget, when the relay's check needs the visitor. -->
+              <div id="network-human" data-testid="network-human"></div>
               <div id="packages" data-testid="packages" hidden>
                 <p>
                   Install a package from
@@ -1039,11 +1070,12 @@
                       desktop, 85 MB on a tablet or phone; later visits load it
                       from the browser's cache.</span>
                     <span id="offline-note"
-                    >Programs in the sandbox have no network:
-                      <code>pip install</code> and <code>wget</code> fail by
-                      design (the desktop app, under Install, has both). <code
-                      >sudo pkg install</code>
-                      works: this page fetches signed packages for it.</span>
+                    >Programs in the sandbox have no network until you turn it
+                      on (Network, above the terminal), through Yurt's relay;
+                      then <code>pip install</code> and <code>curl</code> work.
+                      <code>sudo pkg install</code>
+                      works either way: this page fetches signed packages for
+                      it.</span>
                   </p>
                 </div>
                 <div id="failed" data-testid="boot-failed" hidden>
@@ -1485,7 +1517,16 @@ yurt stop web</pre>
                 <li>
                   <strong>Cloudflare</strong> hosts this site, and counts page
                   views on it with Cloudflare Web Analytics, which sets no
-                  cookies. Previews and the desktop app count nothing.
+                  cookies. Previews and the desktop app count nothing. When you
+                  turn the sandbox's network on, Cloudflare Turnstile checks
+                  this browser before the relay lets it in.
+                </li>
+                <li>
+                  <strong>Yurt's relay</strong>, only when you turn the
+                  sandbox's network on: the sandbox's connections go out through
+                  it. It sees which names are looked up, which addresses are
+                  reached and how much data passes, not the contents (TLS is end
+                  to end).
                 </li>
                 <li>
                   <strong>GitHub</strong> serves the package repository, from

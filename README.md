@@ -101,7 +101,13 @@ you choose otherwise. What does leave it, and where it goes:
 - **Cloudflare** hosts the site. The production site
   (`yurt-playground.pages.dev`) counts page views with Cloudflare Web Analytics,
   which sets no cookies (`src/web_analytics.ts`); previews, local serving and
-  the desktop app do not.
+  the desktop app do not. When you turn the sandbox's network on, Cloudflare
+  Turnstile (`challenges.cloudflare.com`) checks the browser before the relay
+  gives it a token.
+- **Yurt's relay** (`yurt-relay.ofersa.workers.dev`, `relay/`), only when you
+  turn the sandbox's network on: the sandbox's TCP connections and name lookups
+  go out through it. It sees which names are looked up, which addresses are
+  reached and how much data passes, not the contents (TLS is end to end).
 - **GitHub** (`raw.githubusercontent.com`) serves the package repository,
   [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), from which
   the page reads the index and installs packages. A shared snapshot link
