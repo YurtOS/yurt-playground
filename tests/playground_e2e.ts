@@ -88,11 +88,12 @@ function expectPane(name: string, got: FailurePane, want: FailurePane): void {
   }
 }
 
-/** A tablet runs the Linux shell, and an agent with only models outside the
- * tab: no Python cell, no Notebook or JupyterLab link, no in-tab model, and
- * no ipykernel in the guest — iPadOS refused new processes after ~13 while
- * ipykernel started. The boot ends at the shell, and a later reload is not
- * mistaken for a boot cut off midway. */
+/** A tablet's home page runs the Linux shell, and an agent with only models
+ * outside the tab: no Python cell, no in-tab model, and no ipykernel in the
+ * guest — iPadOS refused new processes after ~13 while ipykernel started
+ * beside the shell. The Notebook and JupyterLab links are shown: those pages
+ * restore the desktop's snapshot in a sandbox of their own. The boot ends at
+ * the shell, and a later reload is not mistaken for a boot cut off midway. */
 async function tabletIsShellOnly(
   browser: Browser,
   url: string,
@@ -169,8 +170,8 @@ async function tabletIsShellOnly(
     JSON.stringify(state.models) !==
       JSON.stringify(["openrouter:test/remote:free"]) &&
     `agent offered ${JSON.stringify(state.models)}`,
-    state.notebookLink && "Notebook link shown",
-    state.labLink && "JupyterLab link shown",
+    !state.notebookLink && "Notebook link hidden",
+    !state.labLink && "JupyterLab link hidden",
     !state.tabletNote && "tablet note hidden",
     state.ipykernel && "ipykernel is running",
     state.echo !== "shell-only" && `shell answered ${state.echo}`,

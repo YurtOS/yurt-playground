@@ -127,6 +127,10 @@ type ToWorker =
     python?: PythonRequest;
     // A tablet or phone: installs over 16 MiB are refused there.
     tablet?: boolean;
+    // The kernel keeps its default 1 GiB maximum even under a small cap
+    // (src/device.ts fullKernelMemory): a tablet, a phone on `?memory=1g`,
+    // a Notebook page restoring the desktop's snapshot.
+    fullKernelMemory?: boolean;
     // `?snapshot=1`: restore the sealed sandbox (src/sandbox_snapshot.ts)
     // instead of booting the image; `?snapshot=capture`: boot and install
     // as usual, then seal instead of starting Jupyter and hand the file
@@ -807,6 +811,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   runningKind = restoreKind;
   const env = {
     isolated: msg.isolated,
+    fullKernelMemory: msg.fullKernelMemory === true,
     // The slim image when the train pins one; the desktop app's native
     // sandbox reads no image here.
     imagePath: kernelPorts === undefined

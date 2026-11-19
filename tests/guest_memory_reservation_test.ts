@@ -89,13 +89,17 @@ Deno.test("every in-browser kernel load and restore goes through the playground'
   // Both size the reservation from what the tab can reserve (#270).
   assert(
     boot.includes(
-      "KernelHostInterface.load(kernel, await plannedPlaygroundHostState())",
+      "await plannedPlaygroundHostState(undefined, undefined, fullKernelMemory)",
     ),
+  );
+  assert(
+    /KernelHostInterface\.load\(\s*kernel,\s*await plannedPlaygroundHostState\(/
+      .test(boot),
   );
   // A restore takes the same plan, less a smaller kernel maximum its
   // sealed image would not fit (restoreHostState, yurtos-kernel#4239).
   assert(
-    /const state = restoreHostState\(\s*await plannedPlaygroundHostState\(\),/
+    /const state = restoreHostState\(\s*await plannedPlaygroundHostState\(undefined, undefined, fullKernelMemory\),/
       .test(boot),
   );
   assert(

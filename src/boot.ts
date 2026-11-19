@@ -112,6 +112,11 @@ export type PlaygroundEnv = {
   dropSavedSession?: () => Promise<void>;
   /** Fail rather than boot the image when the snapshot cannot be restored. */
   snapshotRequired?: boolean;
+  /** Keep the kernel host's default 1 GiB kernel maximum even under a
+   * small cap (src/device.ts fullKernelMemory): a tablet, a phone on
+   * `?memory=1g`, and every Notebook page that restores the desktop's
+   * snapshot. */
+  fullKernelMemory?: boolean;
   /** The kernel's sha256, once loaded: a later seal records it. */
   kernelSha256?: (sha256: string) => void;
   fetchBytes: (path: string) => Promise<Uint8Array>;
@@ -434,14 +439,20 @@ export function playgroundHostState(
  * The host state for a kernel this page is about to build: on
  * JavaScriptCore, with the per-process reservation sized from what the tab
  * can still reserve right now ({@link planGuestMemory}, #270); elsewhere
- * {@link playgroundHostState} as it is.
+ * {@link playgroundHostState} as it is. `fullKernelMemory`: the kernel
+ * keeps the default 1 GiB maximum even under a small cap (the guests are
+ * sized as beside 1 GiB either way).
  */
 export async function plannedPlaygroundHostState(
   userAgent: string | undefined = globalThis.navigator?.userAgent,
   plan: () => Promise<GuestMemoryPlan> = () => planGuestMemory(),
+  fullKernelMemory = false,
 ): Promise<ReturnType<typeof playgroundHostState>> {
   if (!isJavaScriptCore(userAgent)) return playgroundHostState(userAgent);
-  const planned = await plan();
+  const measured = await plan();
+  const planned = fullKernelMemory
+    ? { ...measured, kernelMemoryBytes: KERNEL_MEMORY_RESERVATION_BYTES }
+    : measured;
   console.info(
     `[memory] ${planned.reservationBytes / (1024 * 1024)} MiB per process, ` +
       `${planned.kernelMemoryBytes / (1024 * 1024)} MiB for the kernel` +
@@ -462,11 +473,15 @@ export async function plannedPlaygroundHostState(
 /** Load a kernel for an in-browser sandbox. Every page and worker goes
  *  through this or {@link restorePlaygroundKernel}, so on JavaScriptCore
  *  each one reserves what {@link plannedPlaygroundHostState} picks per
- *  guest process. */
+ *  guest process. `fullKernelMemory`: see {@link PlaygroundEnv}. */
 export async function loadPlaygroundKernel(
   kernel: Uint8Array,
+  fullKernelMemory = false,
 ): Promise<KernelHostInterface> {
-  return KernelHostInterface.load(kernel, await plannedPlaygroundHostState());
+  return KernelHostInterface.load(
+    kernel,
+    await plannedPlaygroundHostState(undefined, undefined, fullKernelMemory),
+  );
 }
 
 /** Restore a sealed in-browser sandbox; see {@link loadPlaygroundKernel}. */
@@ -480,9 +495,10 @@ export async function restorePlaygroundKernel(
     target: StoreRestoreTarget;
     expect: StoreIdentity;
   },
+  fullKernelMemory = false,
 ): Promise<Awaited<ReturnType<typeof KernelHostInterface.restore>>> {
   const state = restoreHostState(
-    await plannedPlaygroundHostState(),
+    await plannedPlaygroundHostState(undefined, undefined, fullKernelMemory),
     image.kernelMemory.byteLength,
   );
   if (store !== undefined) {
@@ -546,7 +562,12 @@ export async function bootPlayground(
       }
       env.show("resuming your session");
       const started = performance.now();
-      const restored = await restorePlaygroundKernel(kernel, saved.image);
+      const restored = await restorePlaygroundKernel(
+        kernel,
+        saved.image,
+        undefined,
+        env.fullKernelMemory,
+      );
       if (restored.processes.length !== 0) {
         restored.host.dispose();
         throw new Error("a saved session must hold no process");
@@ -563,7 +584,10 @@ export async function bootPlayground(
   }
   const bootImage = async () => {
     env.show("compiling kernel");
-    return await start(await loadPlaygroundKernel(kernel), false);
+    return await start(
+      await loadPlaygroundKernel(kernel, env.fullKernelMemory),
+      false,
+    );
   };
   const snapshotPath = env.snapshotPath;
   if (snapshotPath === undefined) return await bootImage();
@@ -758,6 +782,7 @@ export async function restoreSnapshot(
         target: store.target,
         expect: store.expect.identity,
       },
+      env.fullKernelMemory,
     );
     if (restored.processes.length !== 0) {
       restored.host.dispose();

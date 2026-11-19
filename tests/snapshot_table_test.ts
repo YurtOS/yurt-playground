@@ -43,11 +43,11 @@ Deno.test("the snapshot table names each kind, and says when one is not pinned",
   });
   assertStringIncludes(
     table,
-    "| tablet | tablet (iPad) and phone (iPhone): `?platform=tablet`, `?platform=phone` | `snapshot-tablet-t` | 31.2 MB in 2 parts | 136.1 MiB | 400 MiB | BusyBox shell, Python 3.14.7; no Jupyter |",
+    "| tablet | home page on a tablet (iPad) and phone (iPhone): `?platform=tablet`, `?platform=phone` | `snapshot-tablet-t` | 31.2 MB in 2 parts | 136.1 MiB | 400 MiB | BusyBox shell, Python 3.14.7; no Jupyter |",
   );
   assertStringIncludes(
     table,
-    "| desktop | desktop browser (Mac, PC): `?platform=desktop` | not pinned",
+    "| desktop | desktop browser (Mac, PC): `?platform=desktop`; the Notebook and JupyterLab on a tablet (iPad), and on a phone with `?memory=1g` | not pinned",
   );
   assertStringIncludes(
     table,

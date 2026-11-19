@@ -1,4 +1,5 @@
 import { assert, assertEquals } from "@std/assert";
+import { fullKernelMemory } from "../src/device.ts";
 import {
   plannedPlaygroundHostState,
   playgroundHostState,
@@ -413,4 +414,35 @@ Deno.test("the tablet snapshot an iPad or iPhone restores fits the 512 MiB kerne
       `${RESTORE_KERNEL_HEADROOM_BYTES / MIB} MiB > ` +
       `${SMALL_CAP_KERNEL_MEMORY_BYTES / MIB} MiB`,
   );
+});
+
+Deno.test("an iPhone's kernel takes 512 MiB unless ?memory=1g; an iPad's keeps 1 GiB either way", async () => {
+  // The owner's call: only an iPhone uses 512 MiB, and `?memory=1g` gives it
+  // the iPad's 1 GiB to try Jupyter (src/device.ts fullKernelMemory).
+  const smallCap = () =>
+    planGuestMemory(() => Promise.resolve(IOS_EMPTY_TAB_BYTES));
+  const cases = [
+    { ua: IPHONE_UA, platform: "phone", asked: null, kernel: 512 * MIB },
+    { ua: IPHONE_UA, platform: "phone", asked: "1g", kernel: undefined },
+    { ua: IPAD_UA, platform: "tablet", asked: null, kernel: undefined },
+    { ua: IPAD_UA, platform: "tablet", asked: "1g", kernel: undefined },
+  ] as const;
+  const reservations = new Set<number | undefined>();
+  for (const { ua, platform, asked, kernel } of cases) {
+    const state = await plannedPlaygroundHostState(
+      ua,
+      smallCap,
+      fullKernelMemory(platform, asked),
+    );
+    // Unset is the kernel host's default, 1 GiB.
+    assertEquals(
+      state.kernelMemoryMaximumBytes,
+      kernel,
+      `${platform} ${asked}`,
+    );
+    reservations.add(state.guestMemoryReservationBytes);
+  }
+  assertEquals(SMALL_CAP_KERNEL_MEMORY_BYTES, 512 * MIB);
+  // The guests are sized as beside 1 GiB either way.
+  assertEquals(reservations.size, 1);
 });
