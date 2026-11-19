@@ -91,6 +91,7 @@ import {
   loadNetwork,
   type NetworkControls,
   networkWanted,
+  pageSessionStorage,
   wireNetworkToggle,
 } from "./network_toggle.ts";
 import type { NetworkStatus } from "./network.ts";
@@ -690,7 +691,7 @@ function boot(
   // needs no page to install anything.
   void Promise.all([pinsPromise, relayPromise]).then(([pins, relay]) => {
     const networkOn = relay !== undefined &&
-      networkWanted(globalThis.sessionStorage, ownReload);
+      networkWanted(pageSessionStorage() ?? undefined, ownReload);
     // `?snapshot=capture&packages=a,b` (scripts/snapshot-local.ts): a
     // name pkg would refuse fails the capture before it starts.
     let extra: string[] | undefined;

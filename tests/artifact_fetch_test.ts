@@ -99,3 +99,20 @@ Deno.test("pinned fetch rejects a network hash mismatch", async () => {
     "sha256 mismatch",
   );
 });
+
+Deno.test("a browser that refuses the Cache API (site data blocked) still gets the artifact", async () => {
+  const refused = () =>
+    Promise.reject(
+      new DOMException(
+        "Failed to execute 'open' on 'CacheStorage'",
+        "SecurityError",
+      ),
+    );
+  const result = await fetchPinnedArtifact(await pinFor(bytes), {
+    url,
+    cacheName: "artifacts",
+    cacheStorage: { open: refused } as unknown as CacheStorage,
+    fetch: () => Promise.resolve(new Response(bytes)),
+  });
+  assertEquals(result, bytes);
+});

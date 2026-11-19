@@ -270,6 +270,7 @@ jobs:
           slim,
           browser_bridge,
           memory_budget,
+          storage_blocked,
         ]
         exclude: ${{ fromJSON(needs.checks.outputs.exclude) }}
     env:

@@ -17,8 +17,10 @@ export async function fetchPinnedArtifact(
   pin: ArtifactPin,
   options: ArtifactFetchOptions,
 ): Promise<Uint8Array> {
+  // A browser that keeps no site data refuses the Cache API: the
+  // artifact is fetched every time then, not refused.
   const cache = options.cacheStorage && options.cacheName
-    ? await options.cacheStorage.open(options.cacheName)
+    ? await options.cacheStorage.open(options.cacheName).catch(() => undefined)
     : undefined;
 
   if (cache !== undefined) {
@@ -44,13 +46,15 @@ export async function fetchPinnedArtifact(
   }
 
   if (cache !== undefined) {
+    // Kept for the next visit when the browser lets it: a full quota is
+    // no failure of this one.
     await cache.put(
       options.url,
       new Response(bytes as unknown as BodyInit, {
         status: 200,
         headers: response.headers,
       }),
-    );
+    ).catch(() => {});
   }
   return bytes;
 }
