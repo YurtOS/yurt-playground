@@ -138,7 +138,6 @@ Deno.test("static build writes every file the pages need", async () => {
       "terminal.html",
       "unsupported.html",
       "snapshot.html",
-      "jupyter/service-worker.js",
       "jupyter/jupyter-lite.json",
       "jupyter/lab/index.html",
     ]
@@ -180,6 +179,21 @@ Deno.test("static build writes every file the pages need", async () => {
   // every built page's inline scripts allowed by hash (the JupyterLite
   // bootstraps change hash with each build, so they are derived, not typed).
   const headers = await Deno.readTextFile(new URL("dist/_headers", repoRoot));
+  // JupyterLite's service worker carries this build's policy hash, so a
+  // browser that installed it under an older policy replaces it (#390).
+  const worker = await Deno.readTextFile(
+    new URL("dist/jupyter/service-worker.js", repoRoot),
+  );
+  const { stampedServiceWorker } = await import("../scripts/build-static.ts");
+  assertEquals(
+    worker,
+    await stampedServiceWorker(
+      await Deno.readTextFile(
+        new URL("public/jupyter/service-worker.js", repoRoot),
+      ),
+      headers,
+    ),
+  );
   for (
     const value of [
       "Cross-Origin-Opener-Policy: same-origin",
@@ -426,4 +440,29 @@ Deno.test("the static build publishes a sandbox snapshot only when it is the pin
     console.warn = warn;
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("JupyterLite's service worker changes with the site's policy, and only with it", async () => {
+  const { stampedServiceWorker } = await import("../scripts/build-static.ts");
+  const script = '"use strict";self.addEventListener("fetch",onFetch);';
+  const before = await stampedServiceWorker(script, "connect-src 'self'");
+  const after = await stampedServiceWorker(
+    script,
+    "connect-src 'self' https://challenges.cloudflare.com",
+  );
+  // A new policy is new bytes: the browser installs the new worker.
+  assertEquals(before === after, false);
+  assertStringIncludes(before, script);
+  // Stamping a stamped worker again replaces its stamp, never piles up.
+  assertEquals(
+    await stampedServiceWorker(before, "connect-src 'self'"),
+    before,
+  );
+  assertEquals(
+    await stampedServiceWorker(
+      before,
+      "connect-src 'self' https://challenges.cloudflare.com",
+    ),
+    after,
+  );
 });
