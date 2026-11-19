@@ -7,7 +7,7 @@
 // Cloudflare): those connects fail as refused. Fastly-hosted PyPI and
 // GitHub are reachable.
 import { connect } from "cloudflare:sockets";
-import { configProblem, createRelay } from "./relay.ts";
+import { createRelay, originsOf, workerConfigProblem } from "./relay.ts";
 
 /** A name's A records through DNS over HTTPS (Workers have no resolver
  * API). */
@@ -49,23 +49,22 @@ let problem;
 export default {
   fetch(request, env) {
     if (relay === undefined && problem === undefined) {
-      const origins = (env.RELAY_ORIGINS ?? "").split(",")
-        .map((o) => o.trim()).filter((o) => o !== "");
-      // Fails closed: without a real secret and origins nothing is served.
-      problem = configProblem(env.RELAY_SECRET, origins);
+      // Fails closed: without a real secret, origins and the rate limiting
+      // binding nothing is served.
+      problem = workerConfigProblem(env);
       if (problem === undefined) {
         relay = createRelay({
           secret: env.RELAY_SECRET,
-          allowedOrigins: origins,
+          allowedOrigins: originsOf(env.RELAY_ORIGINS),
           resolve,
           connect: connectTcp,
           upgrade,
-          // The rate limiting binding (wrangler.toml), when it is set up:
-          // it counts across isolates, which the relay's own count cannot.
-          allowToken: env.TOKEN_LIMITER === undefined
-            ? undefined
-            : async (client) =>
-              (await env.TOKEN_LIMITER.limit({ key: client })).success,
+          // The rate limiting binding counts per Cloudflare location (not
+          // globally), across that location's isolates, which the relay's
+          // own per-isolate count cannot. Keyed like it: an IPv4 address,
+          // or an IPv6 /64.
+          allowToken: async (client) =>
+            (await env.TOKEN_LIMITER.limit({ key: client })).success,
         });
       } else {
         console.error(`relay not configured: ${problem}`);

@@ -110,9 +110,11 @@ if (import.meta.main) {
       offConnect.code === 7,
       offConnect,
     );
-    expect("off: the relay saw nothing", relay.usage.size === 0, [
-      ...relay.usage,
-    ]);
+    expect(
+      "off: the relay saw nothing",
+      relay.usage.tokens.size === 0 && relay.usage.clients.size === 0,
+      [...relay.usage.tokens, ...relay.usage.clients],
+    );
 
     await toggle.click();
     await page.getByTestId("network-note").waitFor({ state: "visible" });
@@ -132,6 +134,19 @@ if (import.meta.main) {
       simple.code === 0 && /simple index|<html|<!DOCTYPE/i.test(simple.stdout),
       simple,
     );
+
+    // A download well past the relay's 2 MiB window: it runs on credit.
+    const whole = await exec(
+      page,
+      "curl -sS --max-time 180 https://pypi.org/simple/ | wc -c",
+      200_000,
+    );
+    expect(
+      "on: the whole simple index (many windows' worth) arrives",
+      whole.code === 0 && Number(whole.stdout.trim()) > 8 * 1024 * 1024,
+      whole,
+    );
+    console.log(`  ${whole.stdout.trim()} bytes`);
 
     // Refusals stay refusals with the network on.
     const port = await exec(

@@ -24,11 +24,12 @@ export const MAX_CONNECTIONS = 16;
 /** Bytes queued on one WebSocket before a send waits. */
 const SEND_HIGH_WATER = 1024 * 1024;
 const WRITABLE_POLL_MS = 20;
-/** Bytes received and not yet read by the guest: past PAUSE_AT the relay
- * is asked to hold the server's bytes, below RESUME_AT to send again;
- * a relay that does not stop is cut at INBOX_CAP. */
-export const PAUSE_AT = 2 * 1024 * 1024;
-const RESUME_AT = 512 * 1024;
+/** The guest's reads are acknowledged to the relay (`ack <bytes>`) once
+ * this many have accumulated: the relay sends at most its window (2 MiB)
+ * ahead of them. */
+export const ACK_EVERY = 256 * 1024;
+/** Bytes received and not yet read, at most: a relay that does not keep to
+ * its window is cut. */
 export const INBOX_CAP = 16 * 1024 * 1024;
 /** Names the page remembers at most. */
 export const DNS_CACHE_NAMES = 256;
@@ -47,7 +48,9 @@ const MSG_PEEK = 2;
 
 /** The relay as the page uses it: tokens, names, connection URLs. */
 export class RelayClient {
-  #token: Promise<{ token: string; expires: number }> | undefined;
+  #token:
+    | Promise<{ token: string; expires: number; fetched: number }>
+    | undefined;
   #names = new Map<string, { addresses: string[]; until: number }>();
 
   constructor(
@@ -57,18 +60,24 @@ export class RelayClient {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** A token good for another minute at least. */
+  /** A token with three quarters of its life ahead at least: a connection
+   * lives no longer than the token it was opened with. */
   async token(): Promise<string> {
     const held = await this.#token?.catch(() => undefined);
-    if (held !== undefined && held.expires - this.now() > 60_000) {
+    if (
+      held !== undefined &&
+      held.expires - this.now() > (held.expires - held.fetched) * 3 / 4
+    ) {
       return held.token;
     }
     this.#token = (async () => {
+      const fetched = this.now();
       const response = await this.fetchFn(`${this.origin}/token`, {
         credentials: "omit",
       });
       if (!response.ok) throw new Error(`relay token: ${response.status}`);
-      return await response.json();
+      const { token, expires } = await response.json();
+      return { token, expires, fetched };
     })();
     return (await this.#token).token;
   }
@@ -142,8 +151,8 @@ type Connection = {
   inbox: Uint8Array[];
   /** Bytes in `inbox`. */
   buffered: number;
-  /** The relay was asked to hold the server's bytes. */
-  paused: boolean;
+  /** Bytes the guest has read and the relay has not been told of. */
+  unacked: number;
   readable: Set<() => void>;
   writable: Set<() => void>;
 };
@@ -232,7 +241,7 @@ export class RelayTcp implements TcpSocketImpl {
       established: false,
       inbox: [],
       buffered: 0,
-      paused: false,
+      unacked: 0,
       readable: new Set(),
       writable: new Set(),
     };
@@ -277,10 +286,6 @@ export class RelayTcp implements TcpSocketImpl {
         this.#end(connection, -ECONNRESET);
         this.changed(this.status());
         return;
-      }
-      if (connection.buffered > PAUSE_AT && !connection.paused) {
-        connection.paused = true;
-        socket.send("pause");
       }
       const watchers = [...connection.readable];
       connection.readable.clear();
@@ -334,12 +339,10 @@ export class RelayTcp implements TcpSocketImpl {
         if (n === next.byteLength) connection.inbox.shift();
         else connection.inbox[0] = next.subarray(n);
         connection.buffered -= n;
-        if (
-          connection.paused && connection.buffered < RESUME_AT &&
-          connection.state === "open"
-        ) {
-          connection.paused = false;
-          connection.socket!.send("resume");
+        connection.unacked += n;
+        if (connection.unacked >= ACK_EVERY && connection.state === "open") {
+          connection.socket!.send(`ack ${connection.unacked}`);
+          connection.unacked = 0;
         }
       }
       return n;

@@ -9,6 +9,7 @@ import {
   configProblem,
   createRelay,
   type Limits,
+  originsOf,
   type RelayConnection,
   type RelayWebSocket,
 } from "./relay.ts";
@@ -25,9 +26,6 @@ function openWhenReady(socket: WebSocket): RelayWebSocket {
   });
   const when = (action: () => void) => ready ? action() : queued.push(action);
   return {
-    get bufferedAmount() {
-      return socket.bufferedAmount;
-    },
     send: (data) => when(() => socket.send(data)),
     close: (code, reason) =>
       when(() => {
@@ -96,8 +94,7 @@ export function startDenoRelay(options: DenoRelayOptions) {
 
 if (import.meta.main) {
   const secret = Deno.env.get("RELAY_SECRET") ?? "";
-  const origins = (Deno.env.get("RELAY_ORIGINS") ?? "").split(",")
-    .map((o) => o.trim()).filter((o) => o !== "");
+  const origins = originsOf(Deno.env.get("RELAY_ORIGINS"));
   const problem = configProblem(secret, origins);
   if (problem !== undefined) {
     console.error(`${problem} (RELAY_ORIGINS is comma-separated)`);

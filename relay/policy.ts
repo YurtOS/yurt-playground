@@ -128,3 +128,13 @@ export function isHostname(name: string): boolean {
     /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(label)
   );
 }
+
+/** Who a caller is, for counting: an IPv4 address as it is, an IPv6
+ * address by its /64 (one subscriber's prefix, inside which a client can
+ * pick any address). Anything else as it is. */
+export function clientKey(address: string): string {
+  if (parseV4(address) !== undefined) return address;
+  const v6 = parseV6(address.replace(/^\[|\]$/g, ""));
+  if (v6 === undefined) return address;
+  return `${v6.slice(0, 4).map((x) => x.toString(16)).join(":")}::/64`;
+}

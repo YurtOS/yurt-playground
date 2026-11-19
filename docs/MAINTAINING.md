@@ -211,28 +211,33 @@ To turn it on:
 
 1. Deploy the Worker from `relay/`: `wrangler secret put RELAY_SECRET` (at least
    32 random characters), set `RELAY_ORIGINS` in `relay/wrangler.toml` to the
-   site's exact origins, then `wrangler deploy`. Until both are set the Worker
-   answers 503 to everything.
+   site's exact origins, keep its `TOKEN_LIMITER` rate limiting binding, then
+   `wrangler deploy`. Until all three are there the Worker answers 503 to
+   everything.
 2. Set `NETWORK_RELAY` in `src/network_config.ts` to the Worker's URL. The build
    ships it as config/network.json and admits the relay in the site's
    `connect-src`.
 3. Deploy the site.
 
 Who can use it: `/token` answers only pages on `RELAY_ORIGINS`, at most 10
-tokens a minute per address (in the relay, per isolate, and through the
-`TOKEN_LIMITER` rate limiting binding across isolates). A token works only from
-the address it was issued to, and for an hour; its connections end with it. A
-script can still forge the Origin header, so anyone can use the relay within
-those limits, as a visitor would; a Turnstile challenge on `/token` would close
-that gap, at the cost of a widget on the page (not done).
+tokens a minute per caller. A caller is an IPv4 address or an IPv6 /64; the
+relay counts per isolate, `TOKEN_LIMITER` per Cloudflare location. A token works
+only from the exact address it was issued to, for 20 minutes, and its
+connections end with it (the page takes a new token once a quarter of one's life
+has passed, so a connection gets 15 minutes at least). A script can still forge
+the Origin header, so anyone can use the relay within these limits, as a visitor
+would; a Turnstile challenge on `/token` would close that gap, at the cost of a
+widget on the page (not done).
 
-Limits per token: 16 connections, 1 GiB, 5 minutes idle. Bytes from the page
-that the server has not taken are capped at 4 MiB (the connection is cut past
-it), and the server's bytes wait while the page's reader is behind (the page
-asks the relay to pause) or, on Deno, while the WebSocket has 1 MiB queued.
-These caps are counted per isolate. Workers' `connect()` cannot reach
-Cloudflare's own addresses, so sites behind Cloudflare are refused through the
-relay; PyPI (Fastly) and GitHub are not.
+Limits: 16 connections and 1 GiB per token; 32 connections and 2 GiB an hour per
+caller; 120 `/dns` questions a minute per token; 5 minutes idle. Bytes from
+pages that their servers have not taken are capped at 4 MiB per connection, 16
+MiB per caller and 64 MiB in all. The server's bytes run at most 2 MiB ahead of
+what the page has acknowledged its guest read (`ack <bytes>` frames); a page
+that acknowledges nothing for 5 minutes is cut. All of these are counted per
+isolate: exact counts across isolates would need a Durable Object. Workers'
+`connect()` cannot reach Cloudflare's own addresses, so sites behind Cloudflare
+are refused through the relay; PyPI (Fastly) and GitHub are not.
 
 A browser that reaches the relay over IPv4 for one request and IPv6 for the next
 gets a token refused (401): its connects then fail until the next token.

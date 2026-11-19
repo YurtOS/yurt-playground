@@ -11,8 +11,10 @@ compatibility_date = "2025-09-01"
 # only their pages get tokens.
 RELAY_ORIGINS = ""
 
-# /token per caller address across isolates, on top of the relay's own
-# per-isolate limit. namespace_id is any integer unique in the account.
+# /token per caller (IPv4 address or IPv6 /64), counted per Cloudflare
+# location, on top of the relay's own per-isolate limit. Required: without
+# it the Worker answers 503. namespace_id is any integer unique in the
+# account.
 [[ratelimits]]
 name = "TOKEN_LIMITER"
 namespace_id = "38001"

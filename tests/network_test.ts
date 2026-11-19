@@ -1,5 +1,6 @@
 import { assert, assertEquals } from "@std/assert";
 import {
+  ACK_EVERY,
   answerDns,
   DNS_CACHE_NAMES,
   dnsAnswer,
@@ -7,7 +8,6 @@ import {
   MAX_CONNECTIONS,
   type NetworkStatus,
   parseDnsQuery,
-  PAUSE_AT,
   RelayClient,
   RelayTcp,
 } from "../src/network.ts";
@@ -299,7 +299,9 @@ Deno.test("relay client: a token is reused until near its expiry", async () => {
   );
   assertEquals(await client.token(), "t1");
   assertEquals(await client.token(), "t1");
-  now = 590_000; // within a minute of its expiry
+  now = 140_000; // three quarters of its life still ahead
+  assertEquals(await client.token(), "t1");
+  now = 160_000; // a connection opened now would get less than that
   assertEquals(await client.token(), "t2");
   assertEquals(await client.resolve("pypi.org"), ["151.101.0.223"]);
 });
@@ -364,32 +366,30 @@ Deno.test("network toggle: on again only after the page's own reload", () => {
   assertEquals(networkWanted(throwing, true), false);
 });
 
-Deno.test("relay tcp: a slow reader pauses the relay, and too much is cut", async () => {
+Deno.test("relay tcp: the guest's reads are credited to the relay, and too much is cut", async () => {
   const { tcp } = fakeRelay();
   tcp.setEnabled(true);
   const handle = tcp.connect("151.101.0.223", 443, KH_CONNECT_ASYNC);
   await settle();
   const ws = FakeWebSocket.made[0];
   ws.up();
-  ws.chunk(PAUSE_AT);
+  ws.chunk(ACK_EVERY + 10);
+  const small = new Uint8Array(ACK_EVERY - 1);
+  assertEquals(tcp.recv(handle, small, 2 /* MSG_PEEK */), ACK_EVERY - 1);
+  assertEquals(tcp.recv(handle, small, 0), ACK_EVERY - 1);
+  // A peek is no read, and less than ACK_EVERY waits for more.
   assertEquals(ws.sent, []);
-  ws.chunk(1);
-  assertEquals(ws.sent, ["pause"]);
-  ws.chunk(1); // asked once
-  assertEquals(ws.sent, ["pause"]);
-  const buf = new Uint8Array(PAUSE_AT);
-  assertEquals(tcp.recv(handle, buf, 0), PAUSE_AT);
-  assertEquals(ws.sent, ["pause", "resume"]);
+  assertEquals(tcp.recv(handle, new Uint8Array(5), 0), 5);
+  assertEquals(ws.sent, [`ack ${ACK_EVERY + 4}`]);
   // A relay that keeps sending past the cap is cut.
-  ws.chunk(INBOX_CAP + 1);
+  ws.chunk(INBOX_CAP);
   assert(ws.closed);
-  tcp.recv(handle, buf, 0);
-  tcp.recv(handle, buf, 0);
+  assertEquals(tcp.recv(handle, new Uint8Array(6), 0), 6);
   assertEquals(
-    tcp.recv(handle, new Uint8Array(INBOX_CAP + 1), 0),
-    INBOX_CAP + 1,
+    tcp.recv(handle, new Uint8Array(INBOX_CAP), 0),
+    INBOX_CAP,
   );
-  assertEquals(tcp.recv(handle, buf, 0), -104);
+  assertEquals(tcp.recv(handle, new Uint8Array(1), 0), -104);
 });
 
 Deno.test("relay client: the name cache stays bounded", async () => {
