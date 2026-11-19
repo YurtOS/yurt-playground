@@ -373,8 +373,10 @@ Deno.test("a preview publishes the snapshot a desktop Notebook page requires", a
   // src/lite_bridge.ts restores the desktop snapshot with no fallback to
   // the image: a preview without it has no desktop Jupyter kernel.
   const bridge = await Deno.readTextFile(path("../src/lite_bridge.ts"));
-  assertStringIncludes(bridge, 'snapshotKind: "desktop" as const');
-  assertStringIncludes(bridge, "snapshotRequired: true");
+  assertStringIncludes(bridge, "...notebookStart(");
+  const { notebookStart } = await import("../src/device.ts");
+  assertEquals(notebookStart("desktop", null, false).snapshotKind, "desktop");
+  assertEquals(notebookStart("desktop", null, false).snapshotRequired, true);
   assertEquals(PREVIEW_SNAPSHOT_KINDS, ["desktop"]);
   const { publishedSnapshotKinds } = await import("../scripts/build-static.ts");
   const { SNAPSHOT_KIND_NAMES } = await import("../src/sandbox_snapshot.ts");

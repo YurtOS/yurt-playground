@@ -28,10 +28,14 @@
  * at 128 MiB. So a probe that under-counts (a disposed kernel not yet
  * collected, or a probe whose every allocation failed) never takes a page
  * below it. *
- * A tab whose probe stops short of {@link PROBE_LIMIT_BYTES} has a small cap
- * (iOS), and its kernel reserves {@link SMALL_CAP_KERNEL_MEMORY_BYTES}
- * instead of the default 1 GiB (yurtos-kernel#4239). The guests are still
- * sized as beside 1 GiB, so the half GiB it gives back is headroom.
+ * A phone page whose probe stops short of {@link PROBE_LIMIT_BYTES} has a
+ * small cap (an iPhone), and its kernel reserves
+ * {@link SMALL_CAP_KERNEL_MEMORY_BYTES} instead of the default 1 GiB
+ * (yurtos-kernel#4239). The guests are still sized as beside 1 GiB, so the
+ * half GiB it gives back is headroom. A tablet (an iPad) keeps the default
+ * 1 GiB: the owner's call, iPhone at 512 MiB and iPad at 1 GiB. Which one a
+ * page is comes from the page (src/device.ts), since the coordinator Worker
+ * that plans has no `screen` to tell them apart.
  */
 
 const MIB = 1024 * 1024;
@@ -45,11 +49,11 @@ export const MIN_GUEST_MEMORY_RESERVATION_BYTES = 128 * MIB;
 /** The kernel's own shared memory maximum where the tab's cap is large
  *  (the kernel host's default, `KERNEL_MAXIMUM_PAGES`, 16384 wasm pages). */
 export const KERNEL_MEMORY_RESERVATION_BYTES = 1024 * MIB;
-/** The kernel's memory maximum where the tab's cap is small (an iPhone or
- *  iPad, about 4 GiB): half of it goes back to the guests. The tablet and
- *  phone snapshots' kernels use about 250 MiB of it, and about 225 MiB after
- *  `pkg install python` (yurtos-kernel#4239). The kernel host passes it on
- *  as `HostState.kernelMemoryMaximumBytes`. */
+/** The kernel's memory maximum on a phone whose tab's cap is small (an
+ *  iPhone, about 4 GiB): half of it goes back to the guests. The phone
+ *  restores the tablet's snapshot, whose kernel uses about 250 MiB of it,
+ *  and about 225 MiB after `pkg install python` (yurtos-kernel#4239). The
+ *  kernel host passes it on as `HostState.kernelMemoryMaximumBytes`. */
 export const SMALL_CAP_KERNEL_MEMORY_BYTES = 512 * MIB;
 /** Room kept free beside the kernel and the guests: a snapshot restore's
  *  buffers and killed guests that linger with their memories. */
@@ -96,7 +100,8 @@ export function kernelMemoryForRestore(
 export type GuestMemoryPlan = {
   reservationBytes: number;
   /** The kernel memory's maximum: {@link KERNEL_MEMORY_RESERVATION_BYTES},
-   *  or {@link SMALL_CAP_KERNEL_MEMORY_BYTES} under a small cap. */
+   *  or {@link SMALL_CAP_KERNEL_MEMORY_BYTES} on a phone under a small
+   *  cap. */
   kernelMemoryBytes: number;
   /** What the probe could reserve, or `undefined` when it could not run. */
   availableBytes?: number;
@@ -108,14 +113,17 @@ export type GuestMemoryPlan = {
  * The larger power-of-two reservation, the desktop's quarter GiB or
  * {@link MIN_GUEST_MEMORY_RESERVATION_BYTES}, that leaves room for
  * {@link WANTED_PROCESSES} processes in `availableBytes`, beside the kernel
- * and the headroom. When even the smallest does not, the smallest.
+ * and the headroom. When even the smallest does not, the smallest. `phone`:
+ * the page runs as a phone (src/device.ts Platform).
  */
 export function reservationForAvailableBytes(
   availableBytes: number,
+  phone = false,
 ): GuestMemoryPlan {
   // The probe stops at PROBE_LIMIT_BYTES: a tab that could not reserve that
-  // much has a small cap (iOS), and its kernel takes the smaller maximum.
-  const kernelMemoryBytes = availableBytes < PROBE_LIMIT_BYTES
+  // much has a small cap (iOS). On a phone its kernel takes the smaller
+  // maximum; a tablet's keeps the default.
+  const kernelMemoryBytes = phone && availableBytes < PROBE_LIMIT_BYTES
     ? SMALL_CAP_KERNEL_MEMORY_BYTES
     : KERNEL_MEMORY_RESERVATION_BYTES;
   // The guests are sized as beside a 1 GiB kernel either way: what the
@@ -231,13 +239,16 @@ export async function probeAvailableBytes(
  *  gets what fits on iOS. */
 export const UNPROBED_RESERVATION_BYTES = 128 * MIB;
 
-/** The plan for this page: measured when the probe runs, and otherwise
- *  {@link UNPROBED_RESERVATION_BYTES}. */
+/** The plan for this page (`phone`: it runs as a phone): measured when the
+ *  probe runs, and otherwise {@link UNPROBED_RESERVATION_BYTES}. */
 export async function planGuestMemory(
   probe: () => Promise<number | undefined> = () => probeAvailableBytes(),
+  phone = false,
 ): Promise<GuestMemoryPlan> {
   const available = await probe().catch(() => undefined);
-  if (available !== undefined) return reservationForAvailableBytes(available);
+  if (available !== undefined) {
+    return reservationForAvailableBytes(available, phone);
+  }
   // Unmeasured, the kernel keeps its default: a Mac's desktop snapshot holds
   // more kernel memory than the small maximum.
   return {

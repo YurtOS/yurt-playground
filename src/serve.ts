@@ -25,6 +25,7 @@ import {
   SLIM_IMAGE_NAME,
 } from "./integrity.ts";
 import { LOCAL_MODELS } from "./llm_models.ts";
+import { NETWORK_CONFIG_PATH, networkConfigJson } from "./network_config.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -305,6 +306,15 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   }
   const llm = await handleLlmFile(pathname);
   if (llm !== null) return llm;
+  // The network relay, if any (src/network_config.ts), as the build ships it.
+  if (pathname === `/${NETWORK_CONFIG_PATH}`) {
+    return new Response(networkConfigJson(), {
+      headers: {
+        ...ISOLATION_HEADERS,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+    });
+  }
   if (pathname === "/integrity.json") {
     try {
       return await handleIntegrity();
