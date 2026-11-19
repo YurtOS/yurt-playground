@@ -887,36 +887,39 @@ function exec(page: Page, cmd: string): Promise<Exec> {
 }
 
 /** A snapshot of YurtOS/yurt-packages as published at fa6ce22 (2026-10-25):
- * the signed index, its bundle and every package's metadata, no archives.
+ * the signed index, its bundle and every package's metadata (less
+ * yurt-greet, since removed from the repository), no archives.
  * Its bundles are the repository's placeholder text, so the guest's `pkg`
  * must refuse it; the signature check comes before the expiry check, so
  * the outcome does not depend on the date. */
 const PACKAGES_SNAPSHOT = join(repoRoot, "tests/fixtures/yurt-packages");
 
 /**
- * "Packages": install through the real control and check what the guest's
- * `pkg` made of it (src/packages.ts). Skipped on an image without `pkg` and
- * `sudo` (before the modular base image).
+ * "Packages": the real control's list, and with a repository that can
+ * install, an install through it and what the guest's `pkg` made of it
+ * (src/packages.ts). Skipped on an image without `pkg` and `sudo` (before
+ * the modular base image).
  *
  * By default the page's repository requests are answered from
- * PACKAGES_SNAPSHOT, and the install must fail closed: no network, and a
- * result that does not change when the live repository is republished.
+ * PACKAGES_SNAPSHOT (no network; terminalPkg reuses the route) and only the
+ * list is checked: the snapshot has no package to install.
  * PLAYGROUND_PKG_REPO=<dir> answers from another directory in the
  * repository's layout instead, and PLAYGROUND_PKG_LIVE=1 from the live
- * repository; both expect PLAYGROUND_PKG_NAME to install and
- * PLAYGROUND_PKG_RUN (default its name) to exit 0 after. The name defaults
- * to `yurt-greet`, the snapshot's package, and to `rtk` (run as
- * `rtk --version`) against the live repository, which no longer publishes
- * yurt-greet.
+ * repository; both install PLAYGROUND_PKG_NAME and expect
+ * PLAYGROUND_PKG_RUN (default its name) to exit 0 after. Against the live
+ * repository the name defaults to `rtk` (run as `rtk --version`); with
+ * PLAYGROUND_PKG_REPO it must be set.
  */
 async function packagesInstall(page: Page): Promise<void> {
   const live = Deno.env.get("PLAYGROUND_PKG_LIVE") === "1";
-  const name = Deno.env.get("PLAYGROUND_PKG_NAME") ??
-    (live ? "rtk" : "yurt-greet");
-  const run = Deno.env.get("PLAYGROUND_PKG_RUN") ??
-    (live && name === "rtk" ? "rtk --version" : name);
   const repo = Deno.env.get("PLAYGROUND_PKG_REPO");
   const expectInstall = live || repo !== undefined;
+  const name = Deno.env.get("PLAYGROUND_PKG_NAME") ?? (live ? "rtk" : "");
+  if (expectInstall && name === "") {
+    throw new Error("packages: PLAYGROUND_PKG_REPO needs PLAYGROUND_PKG_NAME");
+  }
+  const run = Deno.env.get("PLAYGROUND_PKG_RUN") ??
+    (live && name === "rtk" ? "rtk --version" : name);
   const image = await exec(
     page,
     "command -v pkg && command -v sudo && test -r /etc/yurt-pkg/trusted-repos.toml",
@@ -954,15 +957,20 @@ async function packagesInstall(page: Page): Promise<void> {
     );
   }
   const command = run.split(" ")[0];
-  const before = await exec(page, `command -v ${command}`);
-  if (before.code === 0) {
-    throw new Error(`packages: ${command} is there before the install`);
+  if (expectInstall) {
+    const before = await exec(page, `command -v ${command}`);
+    if (before.code === 0) {
+      throw new Error(`packages: ${command} is there before the install`);
+    }
   }
   await page.getByTestId("packages-toggle").click();
   const install = page.locator(
     `[data-testid=packages-list] button[data-package="${name}"]`,
   );
-  await install.waitFor({ timeout: 60_000 });
+  await (expectInstall
+    ? install
+    : page.locator("[data-testid=packages-list] tr[data-package]").first())
+    .waitFor({ timeout: 60_000 });
   // The image bakes zsh into its base outside pkg, which refuses to
   // install over it ("would overwrite unmanaged path bin/zsh"): the panel
   // leaves it out, and the remark above the terminal names it. python-seal
@@ -979,14 +987,13 @@ async function packagesInstall(page: Page): Promise<void> {
       return {
         zsh: listed("zsh"),
         pythonSeal: listed("python-seal"),
-        yurtGreet: listed("yurt-greet"),
         remark: document.querySelector("#linux-remark-text")?.textContent ??
           "",
       };
     });
     if (
       seen.zsh !== false || seen.pythonSeal === true ||
-      (!live && seen.yurtGreet !== true) || !/; also zsh\b/.test(seen.remark)
+      !/; also zsh\b/.test(seen.remark)
     ) {
       throw new Error(
         `packages: want zsh left out of the list and named in the remark, python-seal left out, got ${
@@ -1006,6 +1013,10 @@ async function packagesInstall(page: Page): Promise<void> {
       }`,
     );
   }
+  if (!expectInstall) {
+    console.log("playground e2e: Packages listed the snapshot's packages");
+    return;
+  }
   await install.click();
   await page.waitForFunction(
     () => {
@@ -1023,31 +1034,12 @@ async function packagesInstall(page: Page): Promise<void> {
   const isListed = listed.stdout.split("\n").some((line) =>
     line.startsWith(`${name} `)
   );
-  const after = await exec(page, `command -v ${command}`);
   const staging = await exec(
     page,
     "ls -A /var/cache/yurt-pkg/browser/staging 2>/dev/null",
   );
   if (staging.stdout.trim() !== "") {
     throw new Error(`packages: staging left behind: ${staging.stdout}`);
-  }
-  if (!expectInstall) {
-    const problems = [
-      state !== "failed" && `state ${state}`,
-      !new RegExp(`^pkg install ${name} failed: .*verification failed`)
-        .test(status) && `status ${JSON.stringify(status)}`,
-      isListed && `sudo pkg list has ${name}`,
-      after.code === 0 && `${command} is installed`,
-    ].filter(Boolean);
-    if (problems.length > 0) {
-      throw new Error(
-        `packages: the snapshot's placeholder signatures were not refused: ${
-          problems.join("; ")
-        }`,
-      );
-    }
-    console.log(`playground e2e: Packages refused ${name}: ${status}`);
-    return;
   }
   if (state !== "done" || status !== `installed ${name}` || !isListed) {
     throw new Error(
