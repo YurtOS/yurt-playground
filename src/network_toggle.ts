@@ -198,7 +198,8 @@ export function wireNetworkToggle(
   send: (
     message: { type: "network"; on: boolean } | { type: "network-cut" },
   ) => void,
-  storage: Storage | undefined = globalThis.sessionStorage,
+  /** Where the choice is kept for the page's own reload; null: nowhere. */
+  storage: Storage | null = globalThis.sessionStorage,
 ): NetworkControls {
   const { toggle, open, cut, note } = elements;
   let on = initiallyOn;
@@ -213,7 +214,7 @@ export function wireNetworkToggle(
   };
   toggle.onclick = () => {
     on = !on;
-    remember(storage, on);
+    remember(storage ?? undefined, on);
     send({ type: "network", on });
     render(0);
   };
@@ -225,4 +226,98 @@ export function wireNetworkToggle(
       render(status.open);
     },
   };
+}
+
+/** Answer the coordinator's `network-token` request `req` on `worker`: a
+ * Turnstile check in `container`, then `/token`; or why there is none. */
+export function answerTokenRequest(
+  worker: { postMessage(message: unknown): void },
+  network: Promise<Network | undefined>,
+  container: () => HTMLElement,
+  req: number,
+): void {
+  void network.then(async (configured) => {
+    if (configured === undefined) throw new Error("no relay");
+    return await relayToken(configured, container());
+  }).then(
+    ({ token, ttl }) =>
+      worker.postMessage({ type: "network-token-reply", req, token, ttl }),
+    (error) => {
+      console.warn(`[network] no token: ${error}`);
+      worker.postMessage({
+        type: "network-token-reply",
+        req,
+        error: String(error),
+      });
+    },
+  );
+}
+
+/** The Notebook and JupyterLab pages' network controls: the frontend has
+ * no bar for them, so a small fixed panel in the corner, built like the
+ * bridge's status line (src/bridge_status.ts). Off on every load. */
+export function mountNotebookNetwork(doc: Document): {
+  toggle: HTMLButtonElement;
+  open: HTMLElement;
+  cut: HTMLButtonElement;
+  note: HTMLElement;
+  human: HTMLElement;
+} {
+  const panel = doc.createElement("div");
+  panel.id = "yurt-network";
+  panel.dataset.testid = "yurt-network";
+  panel.style.cssText = [
+    "position: fixed",
+    "right: 12px",
+    "bottom: 12px",
+    "z-index: 10000",
+    "max-width: min(420px, calc(100vw - 24px))",
+    "display: flex",
+    "flex-wrap: wrap",
+    "align-items: center",
+    "gap: 6px 10px",
+    "padding: 6px 10px",
+    "border-radius: 6px",
+    "background: #1f2430",
+    "color: #e6e1d7",
+    "font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+  ].join("; ");
+  const button = (testid: string, text: string, title: string) => {
+    const b = doc.createElement("button");
+    b.type = "button";
+    b.dataset.testid = testid;
+    b.textContent = text;
+    b.title = title;
+    b.style.cssText =
+      "font: inherit; color: inherit; background: none; border: 1px solid #5c6370; border-radius: 4px; padding: 1px 8px; cursor: pointer; white-space: nowrap";
+    return b;
+  };
+  const toggle = button(
+    "network-toggle",
+    "Network: off",
+    "Let programs in this notebook's sandbox reach the internet through Yurt's relay.",
+  );
+  toggle.setAttribute("aria-pressed", "false");
+  const open = doc.createElement("span");
+  open.dataset.testid = "network-open";
+  open.hidden = true;
+  const cut = button(
+    "network-cut",
+    "Cut connections",
+    "Close every connection the sandbox has open.",
+  );
+  cut.hidden = true;
+  const note = doc.createElement("p");
+  note.dataset.testid = "network-note";
+  note.hidden = true;
+  note.style.cssText = "margin: 0; flex-basis: 100%";
+  note.textContent = "Traffic leaves through Yurt's relay, which sees " +
+    "destination names and how much data you send, not its contents (TLS " +
+    "is end to end). Only ports 80, 443 and 9418, to public addresses; " +
+    "never your local network.";
+  const human = doc.createElement("div");
+  human.dataset.testid = "network-human";
+  panel.append(toggle, open, cut, note, human);
+  doc.body.append(panel);
+  return { toggle, open, cut, note, human };
 }

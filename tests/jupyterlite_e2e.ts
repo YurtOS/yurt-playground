@@ -37,7 +37,7 @@ function fail(message: string): never {
 /** Insert a cell below the active one, put `code` into it, and run it. The
  * code is inserted, not typed: typing goes through the editor's bracket and
  * quote auto-closing, which garbles a payload like `{...}` in a string. */
-async function runNewCell(page: Page, code: string): Promise<void> {
+export async function runNewCell(page: Page, code: string): Promise<void> {
   await page.keyboard.press("Escape");
   await page.keyboard.press("b");
   await page.keyboard.press("Enter");
@@ -47,7 +47,7 @@ async function runNewCell(page: Page, code: string): Promise<void> {
 
 /** Wait until the notebook's last output area contains `text` and no cell
  * is still running. */
-async function waitForLastOutput(
+export async function waitForLastOutput(
   page: Page,
   text: string,
   timeout: number,
@@ -71,7 +71,10 @@ async function waitForLastOutput(
  * the name and the status are required. A sandbox that cannot start says so on
  * the page's status line (src/bridge_status.ts) and never becomes idle: that
  * fails at once, with the page's words, instead of at the timeout. */
-async function waitForKernelIdle(page: Page, timeout: number): Promise<void> {
+export async function waitForKernelIdle(
+  page: Page,
+  timeout: number,
+): Promise<void> {
   const outcome = await page.waitForFunction(
     (statusId) => {
       const line = document.getElementById(statusId);

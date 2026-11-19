@@ -7,7 +7,12 @@
  *
  *   deno run --allow-all tests/network_e2e.ts
  */
-import type { Page } from "playwright";
+import type { Browser, Page } from "playwright";
+import {
+  runNewCell,
+  waitForKernelIdle,
+  waitForLastOutput,
+} from "./jupyterlite_e2e.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { launchBrowser } from "../scripts/browser.ts";
@@ -68,6 +73,57 @@ function serveWithRelay(relay: () => string) {
   );
   const addr = server.addr as Deno.NetAddr;
   return { url: `http://127.0.0.1:${addr.port}`, server };
+}
+
+/** The Notebook page's own sandbox (#384): the network is off there too,
+ * its panel turns it on, and a cell's `pip install` and `urllib` reach
+ * PyPI through the relay. */
+async function notebookHasTheNetwork(
+  browser: Browser,
+  url: string,
+): Promise<void> {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const checkCsp = watchCspViolations(page);
+  await page.goto(`${url}/jupyter/notebooks/index.html?path=welcome.ipynb`, {
+    waitUntil: "load",
+  });
+  await page.locator(".jp-Notebook").first().waitFor({ timeout: 60_000 });
+  await waitForKernelIdle(page, 480_000);
+  const toggle = page.getByTestId("network-toggle");
+  expect(
+    "notebook: the network starts off",
+    await toggle.getAttribute("aria-pressed") === "false",
+    await toggle.textContent(),
+  );
+  await page.locator(".jp-Cell").last().click();
+  const probe =
+    "import urllib.request\ntry:\n    print('status', urllib.request.urlopen('https://pypi.org/simple/', timeout=60).status)\nexcept Exception as e:\n    print('failed', type(e).__name__)";
+  await runNewCell(page, probe);
+  await waitForLastOutput(page, "failed", 120_000);
+  console.log("ok: notebook: off, urllib cannot reach PyPI");
+  await toggle.click();
+  await page.getByTestId("network-note").waitFor({ state: "visible" });
+  // Back to the notebook: the keys below go to the focused element.
+  await page.locator(".jp-Cell").last().click();
+  await runNewCell(page, probe);
+  await waitForLastOutput(page, "status 200", 180_000);
+  console.log("ok: notebook: on, urllib.request.urlopen(PyPI) is 200");
+  await runNewCell(page, "!pip install --no-cache-dir requests 2>&1 | tail -1");
+  await waitForLastOutput(page, "Successfully installed", 300_000);
+  // Into ~/.local, which the running kernel's sys.path took without (it
+  // did not exist yet): a new Python finds it, as after a kernel restart.
+  await runNewCell(
+    page,
+    "!python3 -c \"import requests; print('requests', requests.__version__)\"",
+  );
+  await waitForLastOutput(page, "requests 2.", 120_000);
+  const output = await page.locator(".jp-OutputArea-output").last()
+    .textContent();
+  console.log(output);
+  console.log("ok: notebook: !pip install requests");
+  checkCsp();
+  await context.close();
 }
 
 if (import.meta.main) {
@@ -250,6 +306,8 @@ if (import.meta.main) {
     );
     expect("off again: curl fails", offAgain.code !== 0, offAgain);
     checkCsp();
+    await page.close();
+    await notebookHasTheNetwork(browser, site.url);
   } finally {
     await browser.close();
     await relay.shutdown();
