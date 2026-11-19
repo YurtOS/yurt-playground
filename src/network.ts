@@ -24,6 +24,14 @@ export const MAX_CONNECTIONS = 16;
 /** Bytes queued on one WebSocket before a send waits. */
 const SEND_HIGH_WATER = 1024 * 1024;
 const WRITABLE_POLL_MS = 20;
+/** Bytes received and not yet read by the guest: past PAUSE_AT the relay
+ * is asked to hold the server's bytes, below RESUME_AT to send again;
+ * a relay that does not stop is cut at INBOX_CAP. */
+export const PAUSE_AT = 2 * 1024 * 1024;
+const RESUME_AT = 512 * 1024;
+export const INBOX_CAP = 16 * 1024 * 1024;
+/** Names the page remembers at most. */
+export const DNS_CACHE_NAMES = 256;
 const CLOSE_ERRNO_BASE = 4000;
 const DNS_TTL_S = 60;
 
@@ -87,8 +95,29 @@ export class RelayClient {
     }
     if (!response.ok) throw new Error(`relay dns: ${response.status}`);
     const { addresses } = await response.json() as { addresses: string[] };
-    this.#names.set(key, { addresses, until: this.now() + DNS_TTL_S * 1000 });
+    this.#remember(key, addresses);
     return addresses;
+  }
+
+  /** Keep `addresses` for `key`, within {@link DNS_CACHE_NAMES}: expired
+   * names go first, then the oldest. */
+  #remember(key: string, addresses: string[]): void {
+    const now = this.now();
+    this.#names.delete(key);
+    if (this.#names.size >= DNS_CACHE_NAMES) {
+      for (const [name, entry] of this.#names) {
+        if (entry.until <= now) this.#names.delete(name);
+      }
+    }
+    while (this.#names.size >= DNS_CACHE_NAMES) {
+      this.#names.delete(this.#names.keys().next().value!);
+    }
+    this.#names.set(key, { addresses, until: now + DNS_TTL_S * 1000 });
+  }
+
+  /** How many names are remembered, for tests. */
+  get cachedNames(): number {
+    return this.#names.size;
   }
 
   /** The WebSocket URL of one connection to `host:port`. */
@@ -111,6 +140,10 @@ type Connection = {
   /** The negated errno of a failed handshake, or of a reset after it. */
   error?: number;
   inbox: Uint8Array[];
+  /** Bytes in `inbox`. */
+  buffered: number;
+  /** The relay was asked to hold the server's bytes. */
+  paused: boolean;
   readable: Set<() => void>;
   writable: Set<() => void>;
 };
@@ -198,6 +231,8 @@ export class RelayTcp implements TcpSocketImpl {
       state: "connecting",
       established: false,
       inbox: [],
+      buffered: 0,
+      paused: false,
       readable: new Set(),
       writable: new Set(),
     };
@@ -237,6 +272,16 @@ export class RelayTcp implements TcpSocketImpl {
       }
       const bytes = new Uint8Array(event.data as ArrayBuffer);
       connection.inbox.push(bytes);
+      connection.buffered += bytes.byteLength;
+      if (connection.buffered > INBOX_CAP) {
+        this.#end(connection, -ECONNRESET);
+        this.changed(this.status());
+        return;
+      }
+      if (connection.buffered > PAUSE_AT && !connection.paused) {
+        connection.paused = true;
+        socket.send("pause");
+      }
       const watchers = [...connection.readable];
       connection.readable.clear();
       for (const complete of watchers) complete();
@@ -288,6 +333,14 @@ export class RelayTcp implements TcpSocketImpl {
       if ((flags & MSG_PEEK) === 0) {
         if (n === next.byteLength) connection.inbox.shift();
         else connection.inbox[0] = next.subarray(n);
+        connection.buffered -= n;
+        if (
+          connection.paused && connection.buffered < RESUME_AT &&
+          connection.state === "open"
+        ) {
+          connection.paused = false;
+          connection.socket!.send("resume");
+        }
       }
       return n;
     }

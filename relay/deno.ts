@@ -6,6 +6,7 @@
  *     deno run --allow-net --allow-env relay/deno.ts [port]
  */
 import {
+  configProblem,
   createRelay,
   type Limits,
   type RelayConnection,
@@ -24,6 +25,9 @@ function openWhenReady(socket: WebSocket): RelayWebSocket {
   });
   const when = (action: () => void) => ready ? action() : queued.push(action);
   return {
+    get bufferedAmount() {
+      return socket.bufferedAmount;
+    },
     send: (data) => when(() => socket.send(data)),
     close: (code, reason) =>
       when(() => {
@@ -74,7 +78,13 @@ export function startDenoRelay(options: DenoRelayOptions) {
   });
   const server = Deno.serve(
     { port: options.port ?? 0, hostname: "127.0.0.1", onListen: () => {} },
-    relay.handle,
+    (request, info) =>
+      relay.handle(
+        request,
+        info.remoteAddr.transport === "tcp"
+          ? info.remoteAddr.hostname
+          : undefined,
+      ),
   );
   const addr = server.addr as Deno.NetAddr;
   return {
@@ -85,15 +95,17 @@ export function startDenoRelay(options: DenoRelayOptions) {
 }
 
 if (import.meta.main) {
-  const secret = Deno.env.get("RELAY_SECRET");
-  const origins = Deno.env.get("RELAY_ORIGINS");
-  if (!secret || !origins) {
-    console.error("set RELAY_SECRET and RELAY_ORIGINS (comma-separated)");
+  const secret = Deno.env.get("RELAY_SECRET") ?? "";
+  const origins = (Deno.env.get("RELAY_ORIGINS") ?? "").split(",")
+    .map((o) => o.trim()).filter((o) => o !== "");
+  const problem = configProblem(secret, origins);
+  if (problem !== undefined) {
+    console.error(`${problem} (RELAY_ORIGINS is comma-separated)`);
     Deno.exit(2);
   }
   const relay = startDenoRelay({
     secret,
-    allowedOrigins: origins.split(",").map((o) => o.trim()),
+    allowedOrigins: origins,
     port: Number(Deno.args[0] ?? 8788),
   });
   console.log(`relay on ${relay.url}`);

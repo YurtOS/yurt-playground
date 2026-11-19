@@ -7,7 +7,7 @@
 // Cloudflare): those connects fail as refused. Fastly-hosted PyPI and
 // GitHub are reachable.
 import { connect } from "cloudflare:sockets";
-import { createRelay } from "./relay.ts";
+import { configProblem, createRelay } from "./relay.ts";
 
 /** A name's A records through DNS over HTTPS (Workers have no resolver
  * API). */
@@ -44,16 +44,40 @@ function upgrade() {
 }
 
 let relay;
+let problem;
 
 export default {
   fetch(request, env) {
-    relay ??= createRelay({
-      secret: env.RELAY_SECRET,
-      allowedOrigins: env.RELAY_ORIGINS.split(",").map((o) => o.trim()),
-      resolve,
-      connect: connectTcp,
-      upgrade,
-    });
-    return relay.handle(request);
+    if (relay === undefined && problem === undefined) {
+      const origins = (env.RELAY_ORIGINS ?? "").split(",")
+        .map((o) => o.trim()).filter((o) => o !== "");
+      // Fails closed: without a real secret and origins nothing is served.
+      problem = configProblem(env.RELAY_SECRET, origins);
+      if (problem === undefined) {
+        relay = createRelay({
+          secret: env.RELAY_SECRET,
+          allowedOrigins: origins,
+          resolve,
+          connect: connectTcp,
+          upgrade,
+          // The rate limiting binding (wrangler.toml), when it is set up:
+          // it counts across isolates, which the relay's own count cannot.
+          allowToken: env.TOKEN_LIMITER === undefined
+            ? undefined
+            : async (client) =>
+              (await env.TOKEN_LIMITER.limit({ key: client })).success,
+        });
+      } else {
+        console.error(`relay not configured: ${problem}`);
+      }
+    }
+    if (relay === undefined) {
+      return new Response("relay not configured\n", { status: 503 });
+    }
+    // The caller's address as Cloudflare saw it: tokens are bound to it.
+    return relay.handle(
+      request,
+      request.headers.get("CF-Connecting-IP") ?? undefined,
+    );
   },
 };

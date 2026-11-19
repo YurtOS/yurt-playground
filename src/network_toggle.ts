@@ -1,8 +1,10 @@
 /**
  * The terminal bar's network toggle (src/network.ts, #380): shown only
- * when src/network_config.ts names a relay, off on every new tab. The
- * choice is kept for the tab (sessionStorage), so a reload that resumes
- * the sandbox -- whose connections come back closed -- turns it on again.
+ * when src/network_config.ts names a relay, and off on every load but
+ * one: the page's own reload that resumes a sealed sandbox (the agent's
+ * runs), whose connections come back closed, turns it on again when it
+ * was on. A refresh, a new tab, and a tab the browser duplicated or
+ * opened (which copy sessionStorage) all start off.
  */
 import type { NetworkStatus } from "./network.ts";
 import { NETWORK_CONFIG_PATH, relayOf } from "./network_config.ts";
@@ -24,11 +26,17 @@ export async function loadNetworkRelay(
   }
 }
 
-/** Whether this tab's user turned the network on (and has not since
- * turned it off). Off when storage cannot say. */
-export function networkWanted(storage: Storage | undefined): boolean {
+/** Whether this load starts with the network on: only `ownReload` (the
+ * page reloaded itself to resume its sandbox) after the user had turned it
+ * on. Any other load forgets the choice. Off when storage cannot say. */
+export function networkWanted(
+  storage: Storage | undefined,
+  ownReload: boolean,
+): boolean {
   try {
-    return storage?.getItem(WANTED_KEY) === "1";
+    const wanted = storage?.getItem(WANTED_KEY) === "1";
+    if (!ownReload) storage?.removeItem(WANTED_KEY);
+    return ownReload && wanted;
   } catch {
     return false;
   }

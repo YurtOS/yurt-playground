@@ -1,10 +1,13 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   answerDns,
+  DNS_CACHE_NAMES,
   dnsAnswer,
+  INBOX_CAP,
   MAX_CONNECTIONS,
   type NetworkStatus,
   parseDnsQuery,
+  PAUSE_AT,
   RelayClient,
   RelayTcp,
 } from "../src/network.ts";
@@ -127,14 +130,14 @@ class FakeWebSocket {
   static made: FakeWebSocket[] = [];
   binaryType = "blob";
   bufferedAmount = 0;
-  sent: Uint8Array[] = [];
+  sent: (Uint8Array | string)[] = [];
   closed = false;
   onmessage: ((event: { data: unknown }) => void) | null = null;
   onclose: ((event: { code: number; reason: string }) => void) | null = null;
   constructor(readonly url: string) {
     FakeWebSocket.made.push(this);
   }
-  send(data: Uint8Array) {
+  send(data: Uint8Array | string) {
     this.sent.push(data);
   }
   close() {
@@ -146,6 +149,9 @@ class FakeWebSocket {
   }
   bytes(...data: number[]) {
     this.onmessage?.({ data: new Uint8Array(data).buffer });
+  }
+  chunk(size: number) {
+    this.onmessage?.({ data: new ArrayBuffer(size) });
   }
   end(code = 1000) {
     this.onclose?.({ code, reason: "" });
@@ -332,21 +338,72 @@ Deno.test("network config: a relay is admitted in connect-src outside JupyterLit
   assert(local.includes("ws://127.0.0.1:9"));
 });
 
-Deno.test("network toggle: off on a new tab, on after a reload that had it", () => {
+Deno.test("network toggle: on again only after the page's own reload", () => {
   const store = new Map<string, string>();
   const storage = {
     getItem: (k: string) => store.get(k) ?? null,
     setItem: (k: string, v: string) => store.set(k, v),
     removeItem: (k: string) => store.delete(k),
   } as unknown as Storage;
-  assertEquals(networkWanted(storage), false);
-  assertEquals(networkWanted(undefined), false);
+  assertEquals(networkWanted(storage, false), false);
+  assertEquals(networkWanted(storage, true), false);
+  assertEquals(networkWanted(undefined, true), false);
   store.set("yurt-network-on", "1");
-  assertEquals(networkWanted(storage), true);
+  // The page reloaded itself to resume its sandbox: on again.
+  assertEquals(networkWanted(storage, true), true);
+  // A refresh, or a tab the browser duplicated with this storage: off,
+  // and the choice is forgotten.
+  assertEquals(networkWanted(storage, false), false);
+  assertEquals(store.has("yurt-network-on"), false);
+  assertEquals(networkWanted(storage, true), false);
   const throwing = {
     getItem: () => {
       throw new Error("blocked");
     },
   } as unknown as Storage;
-  assertEquals(networkWanted(throwing), false);
+  assertEquals(networkWanted(throwing, true), false);
+});
+
+Deno.test("relay tcp: a slow reader pauses the relay, and too much is cut", async () => {
+  const { tcp } = fakeRelay();
+  tcp.setEnabled(true);
+  const handle = tcp.connect("151.101.0.223", 443, KH_CONNECT_ASYNC);
+  await settle();
+  const ws = FakeWebSocket.made[0];
+  ws.up();
+  ws.chunk(PAUSE_AT);
+  assertEquals(ws.sent, []);
+  ws.chunk(1);
+  assertEquals(ws.sent, ["pause"]);
+  ws.chunk(1); // asked once
+  assertEquals(ws.sent, ["pause"]);
+  const buf = new Uint8Array(PAUSE_AT);
+  assertEquals(tcp.recv(handle, buf, 0), PAUSE_AT);
+  assertEquals(ws.sent, ["pause", "resume"]);
+  // A relay that keeps sending past the cap is cut.
+  ws.chunk(INBOX_CAP + 1);
+  assert(ws.closed);
+  tcp.recv(handle, buf, 0);
+  tcp.recv(handle, buf, 0);
+  assertEquals(
+    tcp.recv(handle, new Uint8Array(INBOX_CAP + 1), 0),
+    INBOX_CAP + 1,
+  );
+  assertEquals(tcp.recv(handle, buf, 0), -104);
+});
+
+Deno.test("relay client: the name cache stays bounded", async () => {
+  const client = new RelayClient(
+    "https://relay.example",
+    (input) =>
+      Promise.resolve(
+        String(input).endsWith("/token")
+          ? Response.json({ token: "t", expires: Date.now() + 3_600_000 })
+          : Response.json({ addresses: ["151.101.0.223"] }),
+      ),
+  );
+  for (let i = 0; i < DNS_CACHE_NAMES + 10; i++) {
+    await client.resolve(`host${i}.example`);
+  }
+  assertEquals(client.cachedNames, DNS_CACHE_NAMES);
 });

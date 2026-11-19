@@ -1,10 +1,19 @@
 # The Yurt network relay (yurt-playground#380). Deploy from this directory
-# with `wrangler deploy`; set the secret first with
-# `wrangler secret put RELAY_SECRET` (any long random string).
+# with `wrangler deploy`, after `wrangler secret put RELAY_SECRET` (at least
+# 32 random characters) and setting RELAY_ORIGINS below. Until both are set
+# the Worker answers 503 to everything.
 name = "yurt-relay"
 main = "worker.js"
 compatibility_date = "2025-09-01"
 
 [vars]
-# The playground's origins, comma-separated: only their pages get tokens.
-RELAY_ORIGINS = "https://yurt-playground.pages.dev"
+# The playground's exact origins, comma-separated (https://host, no path):
+# only their pages get tokens.
+RELAY_ORIGINS = ""
+
+# /token per caller address across isolates, on top of the relay's own
+# per-isolate limit. namespace_id is any integer unique in the account.
+[[ratelimits]]
+name = "TOKEN_LIMITER"
+namespace_id = "38001"
+simple = { limit = 10, period = 60 }

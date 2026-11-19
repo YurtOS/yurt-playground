@@ -675,6 +675,8 @@ function boot(
   // (with the snapshot's python) alone, and the desktop app's sandbox
   // needs no page to install anything.
   void Promise.all([pinsPromise, relayPromise]).then(([pins, relay]) => {
+    const networkOn = relay !== undefined &&
+      networkWanted(globalThis.sessionStorage, ownReload);
     // `?snapshot=capture&packages=a,b` (scripts/snapshot-local.ts): a
     // name pkg would refuse fails the capture before it starts.
     let extra: string[] | undefined;
@@ -749,7 +751,7 @@ function boot(
       snapshotId: uploadedSnapshotId(),
       capturePackages: extra,
       networkRelay: relay,
-      networkOn: relay !== undefined && networkWanted(sessionStorage),
+      networkOn,
     });
     if (relay !== undefined) {
       networkControls = wireNetworkToggle(
@@ -759,7 +761,7 @@ function boot(
           cut: byId("network-cut") as HTMLButtonElement,
           note: byId("network-note"),
         },
-        networkWanted(sessionStorage),
+        networkOn,
         (message) => worker.postMessage(message),
       );
     }

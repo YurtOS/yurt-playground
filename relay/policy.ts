@@ -1,8 +1,9 @@
 /**
  * What the relay lets a tab reach: three ports, and public unicast
  * addresses only. The address rules mirror the Yurt runtime's egress
- * guard (the desktop app's): "public" is defined positively, so anything
- * not provably routable global unicast is refused.
+ * guard (the desktop app's), plus three special-purpose /24s it does not
+ * list (AS112 and AMT): "public" is defined positively, so anything not
+ * provably routable global unicast is refused.
  *
  * Dependency-free: the Cloudflare Worker and the Deno server both use it.
  */
@@ -70,6 +71,9 @@ function publicV4(a: V4): boolean {
     (x === 192 && y === 0 && z === 0) || // IETF protocol assignments
     (x === 192 && y === 0 && z === 2) || // documentation
     (x === 192 && y === 88 && z === 99) || // 6to4 relay anycast
+    (x === 192 && y === 31 && z === 196) || // AS112-v4
+    (x === 192 && y === 52 && z === 193) || // AMT
+    (x === 192 && y === 175 && z === 48) || // AS112 direct delegation
     (x === 192 && y === 168) || // private
     (x === 198 && (y === 18 || y === 19)) || // benchmarking
     (x === 198 && y === 51 && z === 100) || // documentation

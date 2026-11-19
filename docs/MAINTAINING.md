@@ -209,22 +209,36 @@ only when `NETWORK_RELAY` in `src/network_config.ts` names a relay; it is
 
 To turn it on:
 
-1. Deploy the Worker from `relay/`: `wrangler secret put RELAY_SECRET` (any long
-   random string), set `RELAY_ORIGINS` in `relay/wrangler.toml` to the site's
-   origins, then `wrangler deploy`. Rate-limit `/token` with a Cloudflare rate
-   limiting rule: its Origin check stops other sites' pages, not scripts.
+1. Deploy the Worker from `relay/`: `wrangler secret put RELAY_SECRET` (at least
+   32 random characters), set `RELAY_ORIGINS` in `relay/wrangler.toml` to the
+   site's exact origins, then `wrangler deploy`. Until both are set the Worker
+   answers 503 to everything.
 2. Set `NETWORK_RELAY` in `src/network_config.ts` to the Worker's URL. The build
    ships it as config/network.json and admits the relay in the site's
    `connect-src`.
 3. Deploy the site.
 
-Workers' `connect()` cannot reach Cloudflare's own addresses, so sites behind
-Cloudflare are refused through the relay; PyPI (Fastly) and GitHub are not. The
-relay's caps (16 connections and 1 GiB per token, 5 minutes idle, tokens good
-for an hour) are counted per Worker isolate.
+Who can use it: `/token` answers only pages on `RELAY_ORIGINS`, at most 10
+tokens a minute per address (in the relay, per isolate, and through the
+`TOKEN_LIMITER` rate limiting binding across isolates). A token works only from
+the address it was issued to, and for an hour; its connections end with it. A
+script can still forge the Origin header, so anyone can use the relay within
+those limits, as a visitor would; a Turnstile challenge on `/token` would close
+that gap, at the cost of a widget on the page (not done).
+
+Limits per token: 16 connections, 1 GiB, 5 minutes idle. Bytes from the page
+that the server has not taken are capped at 4 MiB (the connection is cut past
+it), and the server's bytes wait while the page's reader is behind (the page
+asks the relay to pause) or, on Deno, while the WebSocket has 1 MiB queued.
+These caps are counted per isolate. Workers' `connect()` cannot reach
+Cloudflare's own addresses, so sites behind Cloudflare are refused through the
+relay; PyPI (Fastly) and GitHub are not.
+
+A browser that reaches the relay over IPv4 for one request and IPv6 for the next
+gets a token refused (401): its connects then fail until the next token.
 
 Locally,
-`RELAY_SECRET=x RELAY_ORIGINS=http://127.0.0.1:4173 deno run
+`RELAY_SECRET=<32+ characters> RELAY_ORIGINS=http://127.0.0.1:4173 deno run
 --allow-net --allow-env relay/deno.ts`
 runs the same relay; `deno run -A tests/network_e2e.ts` runs curl and pip
 through one in Chrome. It needs the internet, so it is not a CI scene.
