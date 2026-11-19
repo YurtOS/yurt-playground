@@ -1,16 +1,20 @@
 # The Yurt network relay (yurt-playground#380). Deploy from this directory
 # with `wrangler deploy`, after `wrangler secret put RELAY_SECRET` (at least
 # 32 random characters), `wrangler secret put TURNSTILE_SECRET` (the
-# Turnstile widget's secret key) and setting RELAY_ORIGINS below. Until all
+# Turnstile widget's secret key) and checking RELAY_ORIGINS below. Until all
 # are set the Worker answers 503 to everything.
 name = "yurt-relay"
 main = "worker.js"
 compatibility_date = "2025-09-01"
+# Served at yurt-relay.<account>.workers.dev. No preview URLs: they would
+# run with the same secrets.
+workers_dev = true
+preview_urls = false
 
 [vars]
 # The playground's exact origins, comma-separated (https://host, no path):
 # only their pages get tokens.
-RELAY_ORIGINS = ""
+RELAY_ORIGINS = "https://yurt-playground.pages.dev"
 
 # /token per caller (IPv4 address or IPv6 /64), counted per Cloudflare
 # location, on top of the relay's own per-isolate limit. Required: without
