@@ -234,7 +234,7 @@ Deno.test("the snapshot demo and both notebook kernels show the banner (#213)", 
       `${worker} watches its booted and its restored kernel`,
     );
     assert(
-      /loadPlaygroundKernel\(kernel\);\n(.*\n){0,3}.*watchGuestMemoryRefusals\(mk,/
+      /loadPlaygroundKernel\(kernel(, \w+)?\);\n(.*\n){0,3}.*watchGuestMemoryRefusals\(mk,/
         .test(text),
       `${worker} watches the booted kernel before its guest starts`,
     );
@@ -276,7 +276,7 @@ Deno.test("a refused restore shows the banner and keeps the stored image", () =>
   for (const worker of ["snapshot_worker.ts", "notebook_kernel_worker.ts"]) {
     const text = source(worker);
     assert(
-      /restorePlaygroundKernel\(kernel, stored\.image\)\.catch\(\s*\(error\) => \{[^}]*if \(isGuestMemoryRefusal\(error\)\) post\(memoryRefusedMessage\(\)\);\s*throw error;/
+      /restorePlaygroundKernel\(\s*kernel,\s*stored\.image(,\s*[\w]+)*,?\s*\)\.catch\(\s*\(error\) => \{[^}]*if \(isGuestMemoryRefusal\(error\)\) post\(memoryRefusedMessage\(\)\);\s*throw error;/
         .test(text),
       `${worker} reports a refusal thrown by the restore`,
     );
