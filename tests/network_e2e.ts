@@ -75,12 +75,16 @@ if (import.meta.main) {
     Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel"),
   );
   let relayUrl = "";
+  let turnstileWaitMs = 8_000;
   const site = serveWithRelay(() => relayUrl);
   const relay = startDenoRelay({
     secret: crypto.randomUUID(),
     allowedOrigins: [site.url],
     // Cloudflare's always-pass test keys: the real siteverify, no challenge.
     turnstileSecret: TURNSTILE_TEST_SECRET,
+    // The first check takes as long as a managed challenge may (#380: the
+    // first lookup after turning the network on failed in production).
+    beforeVerify: () => new Promise((r) => setTimeout(r, turnstileWaitMs)),
   });
   relayUrl = relay.url;
   const browser = await launchBrowser();
@@ -143,6 +147,21 @@ if (import.meta.main) {
       await toggle.getAttribute("aria-pressed") === "true",
       await toggle.textContent(),
     );
+
+    // At once, while the first token's Turnstile check is still running:
+    // the very first lookup must still resolve.
+    const first = await exec(
+      page,
+      "wget -q -O /dev/null http://pypi.org/simple/ 2>&1; " +
+        "curl -sS --max-time 60 -o /dev/null -w '%{http_code}' https://pypi.org/simple/",
+    );
+    expect(
+      "on: the first lookup waits for the first token",
+      first.code === 0 &&
+        !/bad address|resolve/i.test(first.stdout + first.stderr),
+      first,
+    );
+    turnstileWaitMs = 0;
 
     const simple = await exec(
       page,
