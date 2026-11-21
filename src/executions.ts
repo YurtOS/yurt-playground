@@ -303,6 +303,12 @@ export class ExecutionRegistry {
   #executions = new Map<string, Execution>();
   #next = 1;
   #pollMs: number;
+  /** Rejected by {@link abandon}: every wait ends with its reason. */
+  #gone: Promise<never>;
+  #abandon!: (why: Error) => void;
+  /** Set by {@link abandon}, with its reason: no run polls a dropped
+   * kernel any more. */
+  #abandoned: Error | undefined;
   /** Spawns in flight: counted against the limit before their process
    * exists, so concurrent calls cannot slip past it. */
   #starting = 0;
@@ -320,6 +326,8 @@ export class ExecutionRegistry {
     options: { pollMs?: number } = {},
   ) {
     this.#pollMs = options.pollMs ?? 50;
+    this.#gone = new Promise<never>((_, reject) => this.#abandon = reject);
+    this.#gone.catch(() => {});
   }
 
   list(): ExecutionRecord[] {
@@ -369,19 +377,20 @@ export class ExecutionRegistry {
     // In the map before the run starts: the run's first tick may kill
     // (a zero timeout), which looks the execution up by id.
     this.#executions.set(id, execution);
-    execution.done = this.#run(execution, opts).catch((error) => {
-      // A failure of the machinery (the signaller, the host), not of the
-      // command: the execution is over as far as this registry can tell.
-      this.#finish(execution);
-      return {
-        ...this.#output(execution),
-        code: null,
-        signal: null,
-        coreDumped: false,
-        timedOut: execution.timedOut,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    });
+    execution.done = Promise.race([this.#run(execution, opts), this.#gone])
+      .catch((error) => {
+        // A failure of the machinery (the signaller, the host), not of the
+        // command: the execution is over as far as this registry can tell.
+        this.#finish(execution);
+        return {
+          ...this.#output(execution),
+          code: null,
+          signal: null,
+          coreDumped: false,
+          timedOut: execution.timedOut,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      });
     return id;
   }
 
@@ -399,6 +408,10 @@ export class ExecutionRegistry {
     const tick = new Tick();
     const deadline = Date.now() + (opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     while (!exited) {
+      if (this.#abandoned !== undefined) {
+        tick.cancel();
+        throw this.#abandoned;
+      }
       stdout.push(process.takeStdout());
       stderr.push(process.takeStderr());
       const now = Date.now();
@@ -444,7 +457,11 @@ export class ExecutionRegistry {
         });
         return stuck;
       }
-      await Promise.race([exit, tick.wait(this.#pollMs)]);
+      await Promise.race([
+        exit,
+        tick.wait(this.#pollMs),
+        this.#gone.catch(() => {}),
+      ]);
     }
     tick.cancel();
     // The leader's exit is not the group's: a caller's kill may still be
@@ -508,6 +525,14 @@ export class ExecutionRegistry {
     const execution = this.#executions.get(id);
     if (execution === undefined) throw new Error(`no execution ${id}`);
     return execution;
+  }
+
+  /** The sandbox these processes ran in is gone (src/coordinator_worker.ts
+   * dropSandbox): every execution still waited on ends now, with `why`,
+   * rather than with whatever its dead kernel answers. */
+  abandon(why: string): void {
+    this.#abandoned = new Error(why);
+    this.#abandon(this.#abandoned);
   }
 
   /** The outcome, once there is one. A result read once is released. A

@@ -112,6 +112,11 @@ export type PlaygroundEnv = {
   savedSession?: () => Promise<StoredSnapshot | undefined>;
   /** A saved session that would not resume: it is not tried again. */
   dropSavedSession?: () => Promise<void>;
+  /** A sandbox the page saved or the user loaded (Save / Load sandbox,
+   * src/sandbox_file.ts), checked already: restored instead of anything
+   * else, and a restore that fails fails the boot rather than booting
+   * anything in its place. */
+  sealImage?: () => SandboxSealImage | undefined;
   /** Fail rather than boot the image when the snapshot cannot be restored. */
   snapshotRequired?: boolean;
   /** What the page runs as (src/device.ts): a phone's kernel takes the
@@ -586,6 +591,8 @@ export async function bootPlayground(
   };
   const kernelSha256 = await sha256Hex(kernel);
   env.kernelSha256?.(kernelSha256);
+  const fromSeal = await restoreSealImage(env, kernel);
+  if (fromSeal !== undefined) return await start(fromSeal, true);
   const saved = await env.savedSession?.().catch(() => undefined);
   if (saved !== undefined) {
     try {
@@ -698,6 +705,39 @@ export async function snapshotOrBoot<K>(
     );
     return { kernel: await boot(), restored: false };
   }
+}
+
+/** The kernel over Save's or Load's seal (`env.sealImage`), or undefined
+ * when there is none. Apart from {@link bootPlayground} so that nothing
+ * holds the image once the kernel has its copy, while the shell and
+ * Jupyter start. */
+async function restoreSealImage(
+  env: PlaygroundEnv,
+  kernel: Uint8Array,
+): Promise<KernelHostInterface | undefined> {
+  const image = env.sealImage?.();
+  if (image === undefined) return undefined;
+  env.show("restoring the sandbox");
+  const started = performance.now();
+  // The same host state as every other restore: the tab's platform and
+  // memory plan, and the network's TCP backend (else a loaded sandbox
+  // has no network until a reload).
+  const restored = await restorePlaygroundKernel(
+    kernel,
+    image,
+    undefined,
+    env.platform,
+    env.fullKernelMemory,
+    env.network,
+  );
+  if (restored.processes.length !== 0) {
+    restored.host.dispose();
+    throw new Error("a saved sandbox must hold no process");
+  }
+  console.log(
+    `[sandbox] restored in ${Math.round(performance.now() - started)} ms`,
+  );
+  return restored.host;
 }
 
 /** A kernel over a sealed sandbox with no process in it: its filesystem is

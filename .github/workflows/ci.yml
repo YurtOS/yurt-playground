@@ -269,6 +269,7 @@ jobs:
           webkit,
           slim,
           browser_bridge,
+          sandbox_file,
           memory_budget,
           storage_blocked,
         ]
@@ -276,10 +277,12 @@ jobs:
     env:
       # The notebook on a desktop restores the default snapshot and has no
       # other way to start (src/lite_bridge.ts snapshotRequired), so this
-      # scene fetches that one (scripts/install-pinned-artifacts.sh). The
-      # memory budget scene restores the tablet's, as an iPad does. The
-      # other scenes boot the image and fetch none.
-      YURT_INSTALL_SNAPSHOT: ${{ matrix.scene == 'jupyterlite' && 'snapshot' || matrix.scene == 'memory_budget' && 'tabletSnapshot' || '' }}
+      # scene fetches that one (scripts/install-pinned-artifacts.sh), and so
+      # does Save/Load's, which saves and loads a sandbox with Jupyter in it
+      # (from the image, its Python install alone is minutes). The memory
+      # budget scene restores the tablet's, as an iPad does. The other
+      # scenes boot the image and fetch none.
+      YURT_INSTALL_SNAPSHOT: ${{ (matrix.scene == 'jupyterlite' || matrix.scene == 'sandbox_file') && 'snapshot' || matrix.scene == 'memory_budget' && 'tabletSnapshot' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

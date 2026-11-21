@@ -86,7 +86,7 @@ Deno.test("an existing snapshot release counts only when it holds every part, by
   ]);
 });
 
-Deno.test("the deploy fetches every snapshot, CI's jupyterlite scene only the desktop's, with the other blobs' retry", async () => {
+Deno.test("the deploy fetches every snapshot, CI's jupyterlite and sandbox_file scenes only the desktop's, with the other blobs' retry", async () => {
   const read = (path: string) =>
     Deno.readTextFile(new URL(`../${path}`, import.meta.url));
   const script = await read("scripts/install-pinned-artifacts.sh");
@@ -113,14 +113,15 @@ Deno.test("the deploy fetches every snapshot, CI's jupyterlite scene only the de
     ),
     true,
   );
-  // CI fetches the desktop's for the jupyterlite scene alone, whose
-  // notebook cannot start without it (src/lite_bridge.ts), and the
-  // tablet's for the memory budget scene, which restores it as an iPad.
+  // CI fetches the desktop's for the jupyterlite scene, whose notebook
+  // cannot start without it (src/lite_bridge.ts), and for sandbox_file,
+  // which saves and loads a sandbox with Jupyter in it; and the tablet's
+  // for the memory budget scene, which restores it as an iPad.
   const ci = await read(".github/workflows/ci.yml");
   assertEquals(
     ci.match(/YURT_INSTALL_SNAPSHOT: .*/g),
     [
-      "YURT_INSTALL_SNAPSHOT: ${{ matrix.scene == 'jupyterlite' && 'snapshot' || matrix.scene == 'memory_budget' && 'tabletSnapshot' || '' }}",
+      "YURT_INSTALL_SNAPSHOT: ${{ (matrix.scene == 'jupyterlite' || matrix.scene == 'sandbox_file') && 'snapshot' || matrix.scene == 'memory_budget' && 'tabletSnapshot' || '' }}",
     ],
   );
   assertEquals(

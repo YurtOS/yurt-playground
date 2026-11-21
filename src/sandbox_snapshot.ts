@@ -29,6 +29,7 @@
  * it.
  */
 import { sha256 } from "@noble/hashes/sha2";
+import { createSHA256, type IHasher } from "hash-wasm";
 import { sha256Hex } from "./integrity.ts";
 import { IMAGE_PART_BYTES, type ImagePartsManifest } from "./image_parts.ts";
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
@@ -84,6 +85,12 @@ type Manifest = Omit<SandboxSealImage, "kernelMemory" | "processes"> & {
   /** What it holds; absent in a capture made before it was recorded. */
   contents?: SnapshotContents;
   store?: ManifestStore;
+  /** A saved sandbox's (src/sandbox_file.ts): its kernel memory's sha256,
+   * which the signature covers with the rest of the manifest. */
+  memorySha256?: string;
+  /** A saved sandbox's: this browser's HMAC-SHA-256 of
+   * {@link manifestSigningBytes} (src/save_key.ts), as hex. */
+  signature?: string;
 };
 
 function replacer(_key: string, value: unknown): unknown {
@@ -100,12 +107,42 @@ function reviver(_key: string, value: unknown): unknown {
   return value;
 }
 
+/** An incremental sha256 for a kernel memory (wasm, about as fast as
+ * the platform's): never the platform's one-shot digest, which copies its
+ * input, so a memory of up to 1 GiB would be held twice. */
+export const memoryHasher = (): Promise<IHasher> => createSHA256();
+
+/** `bytes`' sha256 as hex, hashed a slice at a time. */
+export async function sha256Sliced(bytes: Uint8Array): Promise<string> {
+  const hash = await memoryHasher();
+  const slice = 16 * 1024 * 1024;
+  for (let at = 0; at < bytes.byteLength; at += slice) {
+    hash.update(bytes.subarray(at, at + slice));
+  }
+  return hash.digest("hex");
+}
+
+/** What a saved sandbox's signature covers: its manifest without the
+ * signature, as the zip writes it, under a label of its own. With the
+ * manifest's `memorySha256`, every byte a restore reads. */
+export function manifestSigningBytes(
+  manifest: Record<string, unknown>,
+): Uint8Array<ArrayBuffer> {
+  const { signature: _signature, ...signed } = manifest;
+  return new TextEncoder().encode(
+    `yurt-sandbox-save-v1\n${JSON.stringify(signed, replacer)}`,
+  );
+}
+
 /** The snapshot zip for `image`, a seal with no process in it: with its
- * root store's files when it was taken with them. */
+ * root store's files when it was taken with them. With `sign` (a saved
+ * sandbox, src/sandbox_file.ts), the manifest also holds the memory's
+ * sha256 and `sign`'s signature of {@link manifestSigningBytes}. */
 export async function encodeSandboxSnapshot(
   image: PageSeal,
   builtFrom: BuiltFrom,
   contents?: SnapshotContents,
+  sign?: (bytes: Uint8Array<ArrayBuffer>) => Promise<string>,
 ): Promise<Blob> {
   if (image.processes.length !== 0) {
     throw new Error(
@@ -129,6 +166,10 @@ export async function encodeSandboxSnapshot(
       },
     }),
   };
+  if (sign !== undefined) {
+    manifest.memorySha256 = await sha256Sliced(kernelMemory);
+    manifest.signature = await sign(manifestSigningBytes(manifest));
+  }
   return await writeZip([
     {
       name: MANIFEST,
@@ -363,6 +404,13 @@ export async function decodeSandboxSnapshot(
   /** Check every entry's CRC-32 too: the release tools' full check, whose
    * file no pinned hash covers yet. */
   checkCrc = false,
+  /** Awaited with the manifest as read, before any other check of it: a
+   * saved sandbox's signature (src/sandbox_file.ts), which refuses the
+   * file before anything in it is believed. */
+  verifyManifest?: (manifest: Record<string, unknown>) => Promise<void>,
+  /** Given each piece of the kernel memory as it is read, in order: a
+   * saved sandbox's digest, made without a second pass or a copy. */
+  onMemory?: (chunk: Uint8Array) => void,
 ): Promise<SandboxSealImage> {
   const store = typeof root === "object" ? root : undefined;
   // A reader, not `for await`: WebKit's ReadableStream is not async-iterable.
@@ -370,6 +418,7 @@ export async function decodeSandboxSnapshot(
   const zip = new ZipStreamReader(reader, { checkCrc });
   try {
     const manifest = await readManifest(zip);
+    await verifyManifest?.(manifest as Record<string, unknown>);
     const why = manifestMismatch(
       manifest,
       expected,
@@ -414,11 +463,16 @@ export async function decodeSandboxSnapshot(
       memoryBytes,
       contents: _contents,
       store: _store,
+      memorySha256: _memorySha256,
+      signature: _signature,
       ...seal
     } = manifest as Manifest;
     const entry = await expectEntry(zip, MEMORY, memoryBytes);
     const memory = new Uint8Array(memoryBytes);
-    await zip.read(entry, (chunk, offset) => memory.set(chunk, offset));
+    await zip.read(entry, (chunk, offset) => {
+      memory.set(chunk, offset);
+      onMemory?.(chunk);
+    });
     if (await zip.next() !== undefined) {
       throw new Error("sandbox snapshot holds an entry after the memory");
     }

@@ -945,6 +945,33 @@
                 </button>
                 <button
                   type="button"
+                  id="save-sandbox"
+                  data-testid="save-sandbox"
+                  class="bar-action"
+                  hidden
+                  title="Save this sandbox's files and installed packages as a .zip that this browser can load again later. The shell and Jupyter restart afterwards; running programs and Python variables are not kept. If the sandbox cannot be sealed (a process that will not stop), a fresh one replaces it: use Download home first for files you cannot lose."
+                >
+                  Save sandbox
+                </button>
+                <button
+                  type="button"
+                  id="load-sandbox"
+                  data-testid="load-sandbox"
+                  class="bar-action"
+                  hidden
+                  title="Replace this sandbox with one this browser saved with Save sandbox. Only files saved in this browser load (clearing the site's data forgets them); any other file, a damaged one, or one from another Yurt version is refused, and nothing changes."
+                >
+                  Load sandbox
+                </button>
+                <input
+                  type="file"
+                  id="load-input"
+                  data-testid="load-input"
+                  accept=".zip, application/zip"
+                  hidden
+                >
+                <button
+                  type="button"
                   id="network-toggle"
                   data-testid="network-toggle"
                   class="bar-action"

@@ -785,8 +785,12 @@ export async function executeCell(
     timeoutMs?: number;
     /** Called with each new output chunk; the reply remains complete. */
     onStream?: (chunk: JupyterStream) => void;
+    /** The cell's sandbox went (src/coordinator_worker.ts dropSandbox): it
+     * settles at once with the abort's reason, holding nothing of it. */
+    signal?: AbortSignal;
   } = {},
 ): Promise<JupyterReply> {
+  options.signal?.throwIfAborted();
   const msgId = crypto.randomUUID();
   const output = {
     stdout: "",
@@ -795,7 +799,14 @@ export async function executeCell(
     traceback: [] as string[],
   };
   let unsubscribe: (() => void) | undefined;
+  let aborted: () => void = () => {};
   const result = new Promise<JupyterReply>((resolve, reject) => {
+    aborted = () => {
+      unsubscribe?.();
+      unsubscribe = undefined;
+      reject(options.signal!.reason);
+    };
+    options.signal?.addEventListener("abort", aborted, { once: true });
     let gotReply = false;
     let gotIdle = false;
     let replyStatus: "ok" | "error" = "error";
@@ -866,6 +877,8 @@ export async function executeCell(
   } finally {
     unsubscribe?.();
     unsubscribe = undefined;
+    // The signal outlives the cell (it is the sandbox's): let go of it.
+    options.signal?.removeEventListener("abort", aborted);
   }
 }
 
