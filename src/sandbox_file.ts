@@ -12,9 +12,10 @@
  * limit, every entry's CRC-32 -- and only then replaces the sandbox.
  *
  * A loaded file becomes the sandbox: its programs are what runs next.
- * Whether the JS host must validate a seal image from an untrusted source
- * is a kernel question (yurt-playground#8); until it is answered, Load is
- * not deployed.
+ * Load is wired for the in-tab sandbox. It restores only a file this
+ * browser signed (src/save_key.ts); one it did not sign is refused before
+ * the running sandbox is replaced. Validating an untrusted seal in the JS
+ * host stays a kernel question (yurt-playground#8).
  */
 import type { SandboxSealImage } from "@yurt/kernel-host-interface-js";
 import type { Pins } from "./pins.ts";
