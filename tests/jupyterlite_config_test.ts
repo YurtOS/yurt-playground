@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 
 Deno.test("the JavaScript output renderer is disabled in JupyterLite", async () => {
   // @jupyterlab/javascript-extension evals application/javascript outputs of a
