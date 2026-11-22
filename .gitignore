@@ -38,7 +38,8 @@ worktrees/
 public/jupyter/
 jupyterlite/.venv/
 jupyterlite/ext/
-jupyterlite/.jupyterlite.doit.db
+jupyterlite/.site-build/
+jupyterlite/.jupyterlite.doit.db*
 jupyterlite/yurt-kernel/node_modules/
 jupyterlite/yurt-kernel/lib/
 jupyterlite/yurt-kernel/tsconfig.tsbuildinfo

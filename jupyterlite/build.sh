@@ -9,7 +9,8 @@
 #
 # Needs python3 (3.10+) and node/npm. The Python deps go into a venv under
 # jupyterlite/.venv unless JUPYTERLITE_PYTHON names an interpreter that already
-# has jupyterlite/requirements.txt installed (CI does that).
+# has jupyterlite/requirements.txt installed (CI does that). A relative output
+# dir is relative to jupyterlite/, where `jupyter lite build` runs.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 out=${1:-"$here/../public/jupyter"}
@@ -34,10 +35,23 @@ rm -rf "$here/ext"
 mkdir -p "$here/ext/@yurt"
 cp -R "$here/yurt-kernel/yurt_jupyterlite_kernel/labextension" "$here/ext/@yurt/jupyterlite-yurt-kernel"
 
-# 2. The site.
-rm -rf "$out"
-(
-  cd "$here"
-  "$bin/jupyter" lite build --output-dir "$out"
-)
+# 2. The site. The doit database goes with the old site: left behind, it marks
+# the config patch up to date and the rebuilt site ships without our config.
+# The site is built and checked in .site-build, outside the served tree, and
+# moved into place only once it passes, so a failed, rejected or interrupted
+# build leaves no site for serve.ts or build-static.ts.
+cd "$here"
+rm -rf "$out" .site-build .jupyterlite.doit.db*
+"$bin/jupyter" lite build --output-dir .site-build
+# The disabled extensions keep guest-controlled output from running script or
+# fetching URLs in the page; a site without them must not ship.
+"$python" - jupyter-lite.json .site-build/jupyter-lite.json <<'EOF'
+import json, sys
+want, got = (json.load(open(p)).get("jupyter-config-data", {}).get("disabledExtensions", []) for p in sys.argv[1:])
+missing = set(want) - set(got)
+if missing:
+    sys.exit(f"{sys.argv[2]} lacks disabledExtensions {sorted(missing)}")
+EOF
+mkdir -p "$(dirname "$out")"
+mv .site-build "$out"
 echo "built JupyterLite site at $out"
