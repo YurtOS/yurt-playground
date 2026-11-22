@@ -13,6 +13,8 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 out=${1:-"$here/../public/jupyter"}
+# Absolute, because jupyter runs from $here and the check below does not.
+mkdir -p "$out" && out=$(cd "$out" && pwd)
 
 python=${JUPYTERLITE_PYTHON:-}
 if [[ -z "$python" ]]; then
@@ -42,8 +44,8 @@ rm -rf "$out" "$here"/.jupyterlite.doit.db*
   "$bin/jupyter" lite build --output-dir "$out"
 )
 # The disabled extensions keep guest-controlled output from running script or
-# fetching URLs in the page; a site without them must not ship.
-"$python" - "$here/jupyter-lite.json" "$out/jupyter-lite.json" <<'EOF'
+# fetching URLs in the page; a site without them must not ship, or stay.
+"$python" - "$here/jupyter-lite.json" "$out/jupyter-lite.json" <<'EOF' || { rm -rf "$out"; exit 1; }
 import json, sys
 want, got = (json.load(open(p))["jupyter-config-data"].get("disabledExtensions", []) for p in sys.argv[1:])
 missing = set(want) - set(got)
