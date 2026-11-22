@@ -46,10 +46,10 @@ Deno.test("no output renderer that fetches a URL the notebook names is loaded", 
 });
 
 type LiteBuild = {
-  /** Runs build.sh from the scratch root with the relative output `out`. */
+  /** Runs build.sh from the scratch root, into public/jupyter by default. */
   build: (
     env?: Record<string, string>,
-    out?: string,
+    args?: string[],
   ) => Promise<Deno.CommandOutput>;
   /** The built site's jupyter-lite.json, or undefined if there is none. */
   built: () => Promise<
@@ -88,6 +88,7 @@ async function withLiteBuild(fn: (lite: LiteBuild) => Promise<void>) {
         '  cp jupyter-lite.json "$out/jupyter-lite.json"',
         "fi",
         "touch .jupyterlite.doit.db",
+        'if [ -n "${STUB_FAIL:-}" ]; then exit 1; fi',
       ].join("\n"),
     };
     for (const [name, body] of Object.entries(stubs)) {
@@ -96,9 +97,9 @@ async function withLiteBuild(fn: (lite: LiteBuild) => Promise<void>) {
     }
     await fn({
       root,
-      build: (env = {}, out = "out") =>
+      build: (env = {}, args = []) =>
         new Deno.Command(`${here}/build.sh`, {
-          args: [out],
+          args,
           cwd: root,
           // bin/ is not on PATH, so the python3 stub execs the real one.
           clearEnv: true,
@@ -113,7 +114,7 @@ async function withLiteBuild(fn: (lite: LiteBuild) => Promise<void>) {
       built: async () => {
         try {
           return JSON.parse(
-            await Deno.readTextFile(`${root}/out/jupyter-lite.json`),
+            await Deno.readTextFile(`${root}/public/jupyter/jupyter-lite.json`),
           );
         } catch (e) {
           if (e instanceof Deno.errors.NotFound) return undefined;
@@ -148,24 +149,40 @@ Deno.test("a rebuild over a stale doit database keeps the disabled extensions", 
   });
 });
 
-Deno.test("build.sh fails and leaves no site when the build lacks the disabled extensions", async () => {
-  await withLiteBuild(async (lite) => {
-    const out = await lite.build({ STUB_DROP_CONFIG: "1" });
-    assertEquals(out.success, false);
-    assertStringIncludes(
-      new TextDecoder().decode(out.stderr),
-      "lacks disabledExtensions",
-    );
-    await assertRejects(
-      () => Deno.stat(`${lite.root}/out`),
-      Deno.errors.NotFound,
-    );
+for (
+  const [what, env] of [
+    ["lacks the disabled extensions", { STUB_DROP_CONFIG: "1" }],
+    ["fails partway", { STUB_FAIL: "1" }],
+  ] as const
+) {
+  Deno.test(`build.sh fails and leaves no site when the build ${what}`, async () => {
+    await withLiteBuild(async (lite) => {
+      assertEquals((await lite.build()).code, 0);
+      const out = await lite.build(env);
+      assertEquals(out.success, false);
+      if ("STUB_DROP_CONFIG" in env) {
+        assertStringIncludes(
+          new TextDecoder().decode(out.stderr),
+          "lacks disabledExtensions",
+        );
+      }
+      await assertRejects(
+        () => Deno.stat(`${lite.root}/public/jupyter`),
+        Deno.errors.NotFound,
+      );
+    });
   });
-});
+}
 
 Deno.test("build.sh refuses `.` as its output dir and deletes nothing", async () => {
   await withLiteBuild(async (lite) => {
-    assertEquals((await lite.build({}, ".")).success, false);
-    await Deno.stat(`${lite.root}/jupyterlite/build.sh`);
+    const out = await lite.build({}, ["."]);
+    assertEquals(out.success, false);
+    assertStringIncludes(
+      new TextDecoder().decode(out.stderr),
+      "refusing to remove",
+    );
+    await Deno.stat(`${lite.root}/jupyterlite/jupyter-lite.json`);
+    await Deno.stat(`${lite.root}/bin/jupyter`);
   });
 });
