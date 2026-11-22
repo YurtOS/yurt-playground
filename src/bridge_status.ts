@@ -7,7 +7,7 @@
  * (src/memory_refused.ts): progress while the sandbox boots, gone once the
  * kernel answers, and a failure kept on screen.
  */
-import { deviceClass } from "./device.ts";
+import { deviceClass, fullKernelMemory, memoryParam } from "./device.ts";
 import { PYTHON_INSTALL, PYTHON_MISSING_TEXT } from "./notebook.ts";
 
 export const BRIDGE_STATUS_ID = "yurt-bridge-status";
@@ -85,20 +85,23 @@ export function showBridgeState(doc: Document, state: BridgeState): void {
 /** Why the Notebook and JupyterLab pages boot nothing on a phone. */
 export const PHONE_REFUSAL =
   "the Notebook and JupyterLab do not run on phones: a phone tab has too " +
-  "little memory for Python. Use a desktop browser, the desktop app or the " +
-  "command line; the home page runs the shell here with ?start-anyway.";
+  "little memory for Python. Use a desktop browser, a tablet, the desktop " +
+  "app or the command line; the home page runs the shell here. To try " +
+  "anyway, with the 1 GiB kernel a tablet gets, add ?memory=1g to the URL.";
 
 /**
  * On a phone, say why there is no kernel and throw, before any sandbox
  * boots: both kernels need Python, and installing it ran an iPhone tab out
  * of memory for new processes. There is no `?start-anyway` here, since
- * without Python these pages have nothing to run.
+ * without Python these pages have nothing to run; `?memory=1g` (`asked`)
+ * runs them as on a tablet (src/device.ts fullKernelMemory).
  */
 export function refuseOnPhone(
   doc: Document,
   device: ReturnType<typeof deviceClass> = deviceClass(),
+  asked: string | null = memoryParam(),
 ): void {
-  if (device !== "phone") return;
+  if (fullKernelMemory(device, asked)) return;
   showBridgeState(doc, { state: "error", text: PHONE_REFUSAL });
   throw new Error(PHONE_REFUSAL);
 }

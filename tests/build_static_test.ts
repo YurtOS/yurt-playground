@@ -4,7 +4,9 @@ import {
   sha256Hex,
   SLIM_IMAGE_NAME,
 } from "../src/integrity.ts";
-import { inlineScriptHashes } from "../src/csp.ts";
+import { cspSources, inlineScriptHashes } from "../src/csp.ts";
+import { StoreLogWriter } from "../src/store_log.ts";
+import { PREVIEW_FILES } from "../scripts/lib/gh_pages_preview.ts";
 
 Deno.test("static build emits isolated playground deployment", async () => {
   const script = await Deno.readTextFile(
@@ -73,11 +75,34 @@ Deno.test("static build writes every file the pages need", async () => {
       "llm/wasm/litertlm_wasm_internal.js",
       "llm/wasm/litertlm_wasm_internal.wasm.gz",
       "llm/wasm/litertlm_wasm_compat_asyncify_internal.wasm.gz",
+      // The Playwright demo's (src/playwright_assets.ts).
+      "playwright-core.tgz",
+      "yurt-browser-bridge.zip",
+      // The agent's model list, which the page reads from its own site.
+      "config/agent-models.json",
     ]
   ) {
     const stat = await Deno.stat(new URL(`dist/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/${file} is empty`);
   }
+  // The list as committed: a deploy ships the tree it was built from (#368).
+  assertEquals(
+    await Deno.readTextFile(new URL("dist/config/agent-models.json", repoRoot)),
+    await Deno.readTextFile(new URL("config/agent-models.json", repoRoot)),
+  );
+  // The extension's zip holds what Load unpacked needs.
+  const listing = new TextDecoder().decode(
+    (await new Deno.Command("unzip", {
+      args: ["-Z1", new URL("dist/yurt-browser-bridge.zip", repoRoot).pathname],
+      stdout: "piped",
+    }).output()).stdout,
+  ).trim().split("\n").map((name) => name.replace(/^\.\//, "")).sort();
+  assertEquals(listing, [
+    "approve.html",
+    "approve.js",
+    "bridge.js",
+    "manifest.json",
+  ]);
   // Notebook 7's commands open tree/, consoles/ and edit/ in new tabs; each is
   // an app the JupyterLite build must emit, or Pages answers with the home
   // page at the wrong path and a Start button that does nothing (#73).
@@ -93,6 +118,35 @@ Deno.test("static build writes every file the pages need", async () => {
   ) {
     const stat = await Deno.stat(new URL(`dist/jupyter/${file}`, repoRoot));
     if (stat.size === 0) throw new Error(`dist/jupyter/${file} is empty`);
+  }
+  // A production build carries nothing of the GitHub Pages preview's
+  // (scripts/lib/gh_pages_preview.ts): no isolation worker, the pages and
+  // JupyterLite's worker as they are in public/.
+  for (const file of PREVIEW_FILES) {
+    assertEquals(
+      await Deno.stat(new URL(`dist/${file}`, repoRoot)).then(
+        () => true,
+        () => false,
+      ),
+      false,
+      file,
+    );
+  }
+  for (
+    const file of [
+      "index.html",
+      "terminal.html",
+      "unsupported.html",
+      "snapshot.html",
+      "jupyter/jupyter-lite.json",
+      "jupyter/lab/index.html",
+    ]
+  ) {
+    assertEquals(
+      await Deno.readFile(new URL(`dist/${file}`, repoRoot)),
+      await Deno.readFile(new URL(`public/${file}`, repoRoot)),
+      file,
+    );
   }
   // A 404.html stops Pages' SPA fallback, so a path the site does not have
   // says so instead of serving a broken copy of the home page (#73).
@@ -125,18 +179,57 @@ Deno.test("static build writes every file the pages need", async () => {
   // every built page's inline scripts allowed by hash (the JupyterLite
   // bootstraps change hash with each build, so they are derived, not typed).
   const headers = await Deno.readTextFile(new URL("dist/_headers", repoRoot));
+  // JupyterLite's service worker carries this build's policy hash, so a
+  // browser that installed it under an older policy replaces it (#390).
+  const worker = await Deno.readTextFile(
+    new URL("dist/jupyter/service-worker.js", repoRoot),
+  );
+  const { stampedServiceWorker } = await import("../scripts/build-static.ts");
+  assertEquals(
+    worker,
+    await stampedServiceWorker(
+      await Deno.readTextFile(
+        new URL("public/jupyter/service-worker.js", repoRoot),
+      ),
+      headers,
+    ),
+  );
   for (
     const value of [
       "Cross-Origin-Opener-Policy: same-origin",
       "Cross-Origin-Embedder-Policy: require-corp",
       "Cross-Origin-Resource-Policy: same-origin",
-      "connect-src 'self' https://huggingface.co https://*.hf.co https://raw.githubusercontent.com/YurtOS/yurt-packages/;",
+      "Permissions-Policy: camera=(), microphone=(), geolocation=()",
       "/jupyter/*\n  ! Content-Security-Policy\n  Content-Security-Policy: ",
     ]
   ) {
     assertStringIncludes(headers, value);
   }
   const [siteRule, jupyterRule] = headers.split("/jupyter/*");
+  const siteConnect = cspSources(
+    siteRule.split("Content-Security-Policy: ")[1],
+    "connect-src",
+  );
+  for (
+    const source of [
+      "'self'",
+      "https://huggingface.co",
+      "https://*.hf.co",
+      "https://raw.githubusercontent.com/YurtOS/yurt-packages/",
+      "https://raw.githubusercontent.com/YurtOS/yurt-playground/",
+      "https://api.github.com/repos/YurtOS/yurt-playground/git/matching-refs/snapshots/",
+    ]
+  ) {
+    assertEquals(siteConnect.includes(source), true, source);
+  }
+  // A build that did not ask for analytics (`--web-analytics`, production
+  // only) has no beacon and no beacon origins: the desktop app and the
+  // previews ship this build.
+  assertEquals(headers.includes("cloudflareinsights"), false);
+  for (const page of ["index.html", "snapshot.html", "unsupported.html"]) {
+    const html = await Deno.readTextFile(new URL(`dist/${page}`, repoRoot));
+    assertEquals(html.includes("cloudflareinsights"), false, page);
+  }
   assertEquals(siteRule.includes("'unsafe-eval'"), false);
   assertEquals(jupyterRule.includes("'unsafe-eval'"), true);
   // The model download is the home page's; JupyterLite stays on the origin.
@@ -193,4 +286,183 @@ Deno.test("static build writes every file the pages need", async () => {
       `dist/${entry.name} exceeds the Pages cap`,
     );
   }
+});
+
+Deno.test("the static build publishes a sandbox snapshot only when it is the pinned one, built from the pins", async () => {
+  const { snapshotMatchesPins } = await import("../scripts/build-static.ts");
+  const { BOOT_SETUP, encodeSandboxSnapshot } = await import(
+    "../src/sandbox_snapshot.ts"
+  );
+  const hex = (c: string) => c.repeat(64);
+  const pin = (sha256: string) => ({
+    repo: "r",
+    rev: "v",
+    build: "b",
+    path: "p",
+    sha256,
+  });
+  const built = {
+    kernelSha256: hex("a"),
+    kernelRev: "v",
+    sealVersion: 2,
+    bootSetup: BOOT_SETUP,
+    imageSha256: hex("b"),
+    pythonSealSha256: hex("c"),
+    pythonSet: "b/python@3.14.7-yurt_0:0123456789abcdef",
+  };
+  const seal = {
+    version: 2 as const,
+    kernelToken: 1n,
+    kernelMemory: new Uint8Array(64),
+    processes: [],
+    hostWaits: [],
+    monotonicNs: 0n,
+    realtimeOffsetNs: 0n,
+    executor: { contexts: [], freeScratch: [] },
+  };
+  const encode = async (builtFrom: typeof built) =>
+    new Uint8Array(
+      await (await encodeSandboxSnapshot(seal, builtFrom)).arrayBuffer(),
+    );
+  const file = await encode(built);
+  const pins = {
+    kernelWasm: pin(built.kernelSha256),
+    image: pin("full"),
+    browserImage: pin(built.imageSha256),
+    pythonSeal: { sha256: built.pythonSealSha256 },
+    snapshot: {
+      releaseRepo: "YurtOS/yurt-playground",
+      format: 4,
+      release: "snapshot-t",
+      sha256: await sha256Hex(file),
+      size: file.byteLength,
+      builtFrom: built,
+      memoryBytes: 64,
+    },
+  };
+  const dir = await Deno.makeTempDir();
+  const warned: unknown[][] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => warned.push(args);
+  try {
+    const path = `${dir}/sandbox.seal.zip`;
+    await Deno.writeFile(path, file);
+    assertEquals(await snapshotMatchesPins(path, pins, "desktop", false), true);
+    assertEquals(warned.length, 0);
+    // Unasked, the pins' own record decides: today's kernel.
+    assertEquals(await snapshotMatchesPins(path, pins), true);
+    assertEquals(warned.length, 0);
+    // A zip of the memory alone is not published for a store-root kernel.
+    assertEquals(await snapshotMatchesPins(path, pins, "desktop", true), false);
+    assertStringIncludes(
+      String(warned.at(-1)),
+      "holds the kernel memory alone",
+    );
+    warned.length = 0;
+    // Not the pinned file (a local capture, an older download).
+    const other = await encode({ ...built, imageSha256: hex("d") });
+    await Deno.writeFile(path, other);
+    assertEquals(
+      await snapshotMatchesPins(path, pins, "desktop", false),
+      false,
+    );
+    assertStringIncludes(String(warned.at(-1)), "not the pinned");
+    // The pin itself is of another train's image.
+    await Deno.writeFile(path, file);
+    assertEquals(
+      await snapshotMatchesPins(
+        path,
+        {
+          ...pins,
+          browserImage: pin(hex("e")),
+        },
+        "desktop",
+        false,
+      ),
+      false,
+    );
+    assertStringIncludes(String(warned.at(-1)), `imageSha256 ${hex("b")}`);
+    // No snapshot pinned at all.
+    const { snapshot: _snapshot, ...unpinned } = pins;
+    assertEquals(
+      await snapshotMatchesPins(path, unpinned, "desktop", false),
+      false,
+    );
+    warned.length = 0;
+    // Unasked, a store-root record in the pins is the rule too: the
+    // memory-only zip is left out.
+    const storeRoot = {
+      ...pins,
+      kernelWasm: { ...pins.kernelWasm, rootStore: true as const },
+    };
+    assertEquals(await snapshotMatchesPins(path, storeRoot), false);
+    assertStringIncludes(
+      String(warned.at(-1)),
+      "holds the kernel memory alone",
+    );
+    warned.length = 0;
+    // A file that carries a store its pin does not name is caught by the
+    // file's own check, on a kernel without one.
+    const log = new StoreLogWriter();
+    log.write("journal-a", 0, new Uint8Array(8).fill(1));
+    log.setLength("journal-a", 8);
+    log.write("meta", 0, new Uint8Array(76).fill(2));
+    log.setLength("meta", 76);
+    const withStore = new Uint8Array(
+      await (await encodeSandboxSnapshot({
+        ...seal,
+        rootStore: {
+          identity: {
+            lineage: "11".repeat(16),
+            sequence: "1",
+            hash: "22".repeat(32),
+          },
+          lower: { bytes: 1024, sha256: hex("f") },
+          ...log.finish(),
+          log: log.chunks,
+        },
+      }, built)).arrayBuffer(),
+    );
+    await Deno.writeFile(path, withStore);
+    assertEquals(
+      await snapshotMatchesPins(path, {
+        ...pins,
+        snapshot: {
+          ...pins.snapshot,
+          sha256: await sha256Hex(withStore),
+          size: withStore.byteLength,
+        },
+      }),
+      false,
+    );
+    assertStringIncludes(String(warned.at(-1)), "carries a YurtFS root store");
+  } finally {
+    console.warn = warn;
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("JupyterLite's service worker changes with the site's policy, and only with it", async () => {
+  const { stampedServiceWorker } = await import("../scripts/build-static.ts");
+  const script = '"use strict";self.addEventListener("fetch",onFetch);';
+  const before = await stampedServiceWorker(script, "connect-src 'self'");
+  const after = await stampedServiceWorker(
+    script,
+    "connect-src 'self' https://challenges.cloudflare.com",
+  );
+  // A new policy is new bytes: the browser installs the new worker.
+  assertEquals(before === after, false);
+  assertStringIncludes(before, script);
+  // Stamping a stamped worker again replaces its stamp, never piles up.
+  assertEquals(
+    await stampedServiceWorker(before, "connect-src 'self'"),
+    before,
+  );
+  assertEquals(
+    await stampedServiceWorker(
+      before,
+      "connect-src 'self' https://challenges.cloudflare.com",
+    ),
+    after,
+  );
 });

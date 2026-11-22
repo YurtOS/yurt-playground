@@ -17,6 +17,13 @@
  * Installed files live in the tab's memory, like every other file in the
  * sandbox, and are gone after a reload (#81).
  */
+import {
+  INSTALLED_DB_PATH,
+  INSTALLED_LIST_PATH,
+  type InstalledRelease,
+  parseInstalledList,
+} from "./installed_list.ts";
+import { COMMAND_DIRS } from "./image_tools.ts";
 
 /** Where the page fetches the repository from: GitHub's raw file host,
  * which answers with `Access-Control-Allow-Origin: *`. */
@@ -28,6 +35,12 @@ export const PACKAGE_REPO_URL =
 export const PACKAGE_SOURCES = [
   "https://raw.githubusercontent.com/YurtOS/yurt-packages/",
 ];
+
+/** Where the guest's own `pkg` reaches {@link PACKAGE_REPO_URL} in the
+ * tab: the page's package relay on the sandbox's loopback
+ * (src/pkg_relay.ts), which fetches each file for it. */
+export const PKG_RELAY_PORT = 7417;
+export const PKG_RELAY_URL = `http://127.0.0.1:${PKG_RELAY_PORT}/`;
 
 /** The repository the image's trust configuration must name: the one entry
  * of `trusted-repos.toml` whose signing identity the browser copy reuses,
@@ -97,7 +110,7 @@ export function isPackageName(name: string): boolean {
  * `%` (an encoded `..` resolves as one), `?` and `#` (a query or fragment
  * pkg drops), `:` (a scheme, which pkg takes as an absolute URL), and
  * spaces and control characters (URL parsers strip tabs and newlines). */
-function checkRelative(path: string, what: string): string {
+export function checkRelative(path: string, what: string): string {
   if (
     path === "" || path.startsWith("/") ||
     // deno-lint-ignore no-control-regex
@@ -252,12 +265,7 @@ export function browserTrustedRepos(
   toml: string,
   mirrorUrl: string,
 ): { toml: string; id: string } {
-  const repo = repoTables(toml).find((table) => {
-    const segments = (table.values.url ?? "").split("/");
-    return segments.some((segment, i) =>
-      segment === TRUSTED_REPO[0] && segments[i + 1] === TRUSTED_REPO[1]
-    );
-  });
+  const repo = repoTables(toml).find(isPackageRepo);
   if (repo === undefined) {
     throw new Error(
       `${TRUSTED_REPOS_PATH} does not trust ${TRUSTED_REPO.join("/")}`,
@@ -276,6 +284,65 @@ export function browserTrustedRepos(
     line.startsWith("url ") ? `url = ${JSON.stringify(mirrorUrl)}` : line
   );
   return { toml: ["[[repo]]", ...lines, ""].join("\n"), id: repo.values.id };
+}
+
+/** The table for YurtOS/yurt-packages: by its URL's path segments, or at
+ * the relay, where the page's boot points it ({@link relayTrustedRepos}). */
+function isPackageRepo(table: TomlRepo): boolean {
+  const url = table.values.url ?? "";
+  if (url === PKG_RELAY_URL) return true;
+  const segments = url.split("/");
+  return segments.some((segment, i) =>
+    segment === TRUSTED_REPO[0] && segments[i + 1] === TRUSTED_REPO[1]
+  );
+}
+
+/**
+ * The image's `trusted-repos.toml` with the YurtOS/yurt-packages entry's
+ * `url` pointed at the relay, and nothing else changed: the other tables,
+ * comments, and the entry's id and signing identity stay as they are.
+ * `undefined` when it already points there (a restored sandbox), when no
+ * entry names the repository, or when the file is not one the page can
+ * read: then it is left as it is.
+ */
+export function relayTrustedRepos(toml: string): string | undefined {
+  let tables: TomlRepo[];
+  try {
+    tables = repoTables(toml);
+  } catch (error) {
+    // A file the page cannot read is left as it is: the terminal's pkg
+    // then has no network, and the sandbox still boots.
+    console.warn(
+      `[pkg relay] ${error instanceof Error ? error.message : error}`,
+    );
+    return undefined;
+  }
+  const target = tables.findIndex(isPackageRepo);
+  if (target < 0 || tables[target].values.url === PKG_RELAY_URL) {
+    return undefined;
+  }
+  let table = -1;
+  return toml.split("\n").flatMap((raw) => {
+    const line = raw.trim();
+    if (line === "[[repo]]") table++;
+    if (table !== target || !/^url\s*=/.test(line)) return [raw];
+    return [
+      "# In the browser playground the page fetches this repository for pkg",
+      `# (${PACKAGE_REPO_URL}), through its relay on the sandbox's loopback.`,
+      `url = ${JSON.stringify(PKG_RELAY_URL)}`,
+    ];
+  }).join("\n");
+}
+
+/** Whether `toml` points the YurtOS/yurt-packages entry at the relay. */
+export function trustsRelay(toml: string): boolean {
+  try {
+    return repoTables(toml).some((table) =>
+      isPackageRepo(table) && table.values.url === PKG_RELAY_URL
+    );
+  } catch {
+    return false;
+  }
 }
 
 function q(word: string): string {
@@ -398,6 +465,16 @@ export type PackageHost = {
    * without the guest's help). Without it nothing can tell a long run
    * from a hung one, so the no-progress check pauses during runs. */
   observesProgress?: boolean;
+  /** Run `pkg recover` in the guest, watched like a run: what finishes, or
+   * retries, a transaction a run the install gave up on left unfinished
+   * (pkg writes each file private first and sets its mode in a later
+   * pass, so such a transaction can leave a python3 nobody may run). pkg
+   * waits for the lock while that run is still going. Absent: no
+   * recovery, and a run given up on is said to leave a sandbox that
+   * takes no more installs. */
+  recover?(
+    watch: RunWatch,
+  ): Promise<{ code: number | null; stdout: string; stderr: string }>;
 };
 
 /** How an install follows one `pkg` run: `alive` at least every few
@@ -416,9 +493,20 @@ export const INSTALL_STALL_MS = 60_000;
 /** The longest one guest `pkg` run may take, heartbeat or not: the
  * backstop for a `pkg` that is alive but blocked, which keeps the
  * heartbeat going (src/session_packages.ts `withHeartbeat`) and shows no
- * other sign. Python's install run takes about a minute, 80-90 s on a
- * loaded host; this is several times that. */
-export const INSTALL_RUN_CEILING_MS = 300_000;
+ * other sign. Wall time, with room for a tab the browser slows down. In
+ * desktop Safari 27 on an M-series Mac, Python's install run took
+ * 136-157 s with the window in front and 538 s with it minimized
+ * (hidden, as on a locked screen); twenty minutes is more than twice
+ * that. Guest time is no better a measure: the guest's clock and its
+ * `sleep` follow the host's monotonic clock, so the hidden tab still beat
+ * every 2.4 s while pkg ran at under a third of its speed. A sandbox that
+ * stopped is caught by {@link INSTALL_STALL_MS} long before this. */
+export const INSTALL_RUN_CEILING_MS = 20 * 60_000;
+
+/** How often a watched run's status says how long it has been going:
+ * the page's own silence deadline (src/install_request.ts
+ * `INSTALL_SILENCE_MS`) hears from a run that is still working. */
+export const PROGRESS_EVERY_MS = 5000;
 
 /** An install that stopped making progress ({@link INSTALL_STALL_MS}).
  * `inSandbox`: it stopped in the guest's `pkg` run, so the sandbox may no
@@ -426,6 +514,17 @@ export const INSTALL_RUN_CEILING_MS = 300_000;
  * download, and the sandbox is as it was. */
 export class InstallStalled extends Error {
   readonly inSandbox: boolean;
+  /** The run went past {@link INSTALL_RUN_CEILING_MS}, still beating: its
+   * `pkg` is alive, and holds pkg's lock. */
+  readonly ceiling: boolean;
+  /** For a stall in the sandbox, once recovery was tried: whether `pkg
+   * recover` then left none of pkg's transactions unfinished, finishing
+   * any it found. It says nothing more about the install: recovery may
+   * have committed it, or the abandoned run may yet do more. `false`: the
+   * sandbox may hold a half-installed package, and needs a fresh one. */
+  recovered?: boolean;
+  /** Whether `pkg recover` was run at all (set with `recovered`). */
+  recoveryRan?: boolean;
   constructor(
     name: string,
     ms: number,
@@ -436,7 +535,7 @@ export class InstallStalled extends Error {
     const seconds = Math.round(ms / 1000);
     super(
       ceiling
-        ? `${name}: the install stopped making progress (the sandbox ` +
+        ? `${name}: the install ran past its time limit (the sandbox ` +
           `did not finish it in ${seconds} s)`
         : inSandbox
         ? `${name}: the install stopped making progress (the sandbox's ` +
@@ -446,6 +545,130 @@ export class InstallStalled extends Error {
     );
     this.name = "InstallStalled";
     this.inSandbox = inSandbox;
+    this.ceiling = ceiling;
+  }
+
+  /** The same stall, with what recovery made of it. `ran: false`: no
+   * recovery was run (`why` says why), so nothing was recovered. */
+  withRecovery(recovered: boolean, why = "", ran = true): InstallStalled {
+    const error = new InstallStalled("", 0, this.inSandbox, this.ceiling);
+    const said = why === "" ? "" : ` (${why})`;
+    // The next try needs a fresh sandbox: the Python install's Try again
+    // starts one, and the Packages panel's reply adds that a reload gives
+    // one (src/coordinator_worker.ts `servePackages`).
+    const noMore = ", so this sandbox may hold a half-installed package " +
+      "and takes no more installs";
+    error.message = !ran
+      ? `${this.message}; pkg recover was not run${said}${noMore}`
+      : recovered
+      ? `${this.message}; pkg recover then left none of pkg's ` +
+        `transactions unfinished, but the page did not see the install ` +
+        `finish, so this sandbox takes no more installs`
+      : `${this.message}; pkg recover could not finish what it left ` +
+        `unfinished${said}${noMore}`;
+    error.recovered = ran && recovered;
+    error.recoveryRan = ran;
+    return error;
+  }
+}
+
+/** Why a sandbox takes no more installs after `error`, a stall in its
+ * `pkg` run: said with "in this sandbox, so it installs nothing more;
+ * reload the page" after it (src/coordinator_worker.ts). */
+export function stalledSandboxWhy(error: InstallStalled): string {
+  if (error.ceiling) {
+    return "an earlier install was still running past its time limit, " +
+      "so a package may be half installed";
+  }
+  if (error.recovered !== false) {
+    return "an earlier install stopped making progress";
+  }
+  return error.recoveryRan === false
+    ? "an earlier install stopped part way, so a package may be half " +
+      "installed"
+    : "an earlier install stopped part way and pkg recover could not " +
+      "finish it, so a package may be half installed";
+}
+
+/** `pkg recover` after a run the install gave up on, watched like a run:
+ * no progress for `stallMs`, or running longer than `ceilingMs`, gives up
+ * on it too. While it beats, `status` is said with its seconds every
+ * `everyMs`, as a run's is, so the page's own silence deadline
+ * (src/install_request.ts) hears from it. Whether it finished, and if
+ * not, why. */
+async function recoverStalled(
+  recover: NonNullable<PackageHost["recover"]>,
+  limits: { stallMs: number; ceilingMs: number; everyMs: number },
+  status: string,
+  progress: (message: string) => void,
+): Promise<{ recovered: boolean; why: string }> {
+  const { stallMs, ceilingMs, everyMs } = limits;
+  const giveUp = new AbortController();
+  const started = Date.now();
+  let last = started;
+  let shown = started;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stopped = new Promise<string>((resolve) => {
+    // Said before the abort, which makes the recovery reject at once: the
+    // race then answers with why the install gave up on it.
+    const stop = (why: string) => {
+      resolve(why);
+      giveUp.abort();
+    };
+    const check = () => {
+      const now = Date.now();
+      // Silence first: a late timer that finds both limits passed has a
+      // recovery that stopped beating, not one still at work.
+      const idle = now - last;
+      if (idle >= stallMs) {
+        return stop(`it did nothing for ${Math.round(idle / 1000)} s`);
+      }
+      if (now - started >= ceilingMs) {
+        return stop(`it did not finish in ${Math.round(ceilingMs / 1000)} s`);
+      }
+      timer = setTimeout(
+        check,
+        Math.max(Math.min(stallMs - idle, ceilingMs - (now - started)), 10),
+      );
+    };
+    timer = setTimeout(check, Math.min(stallMs, ceilingMs));
+  });
+  try {
+    const outcome = await Promise.race([
+      recover({
+        alive: () => {
+          const now = Date.now();
+          last = now;
+          if (!giveUp.signal.aborted && now - shown >= everyMs) {
+            shown = now;
+            progress(`${status} (${Math.round((now - started) / 1000)} s)`);
+          }
+        },
+        signal: giveUp.signal,
+      }),
+      stopped,
+    ]);
+    if (typeof outcome === "string") return { recovered: false, why: outcome };
+    if (outcome.code === 0) return { recovered: true, why: "" };
+    const said = `${outcome.stdout}\n${outcome.stderr}`.trim().split("\n").at(
+      -1,
+    );
+    return {
+      recovered: false,
+      why: said !== undefined && said !== ""
+        ? said
+        : outcome.code === null
+        ? "it was killed by a signal"
+        : `exit ${outcome.code}`,
+    };
+  } catch (error) {
+    return {
+      recovered: false,
+      why: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timer);
+    giveUp.abort();
   }
 }
 
@@ -462,7 +685,7 @@ const INDEX_GRACE_MS = 30 * 24 * 3600 * 1000;
 
 /** The most an index, a signature or a package's metadata may be: they are
  * a few KiB. */
-const METADATA_MAX_BYTES = 4 * 1024 * 1024;
+export const METADATA_MAX_BYTES = 4 * 1024 * 1024;
 
 /** `fetch` with progress, failing unless the response is OK, and as soon as
  * the response passes `limit` bytes, so a response larger than the index
@@ -543,6 +766,112 @@ export async function loadCatalog(
     }),
   );
   return { index, indexBytes, indexBundle, metadata };
+}
+
+/** What a panel install put in: the package, and the dependencies pkg's
+ * plan installed with it (its `install NAME VERSION` lines). The panel
+ * marks them at once; the next read of pkg's installed list
+ * (src/installed_list.ts) replaces the guess. */
+export function plannedInstalls(output: string, name: string): string[] {
+  const names = new Set(
+    [...output.matchAll(/^install (\S+) /gm)].map((match) => match[1]),
+  );
+  names.add(name);
+  return [...names];
+}
+
+/** Packages the panel never lists, whatever the sandbox holds, each with
+ * why. (What the image already has outside pkg is left out too, but found
+ * in the sandbox: {@link packagesInImage}.) */
+export const NOT_LISTED: ReadonlyMap<string, string> = new Map([
+  [
+    "python-seal",
+    // Not something to run: the page installs and verifies it itself
+    // (src/python_install.ts, src/notebook_kernel_worker.ts).
+    "the Suspend/Resume kernel's sealable interpreter, which that kernel fetches itself",
+  ],
+]);
+
+/** One package's row in the panel, and its Install button. */
+export type PackageRow = {
+  row: { hidden: boolean };
+  button: {
+    dataset: { package?: string };
+    textContent: string | null;
+    disabled: boolean;
+  };
+};
+
+/** The panel's rows, by what the sandbox is known to have: what pkg
+ * installed (`installed`) says Installed and cannot be clicked; what the
+ * image has outside pkg (`inImage`, {@link packagesInImage}) and what is
+ * {@link NOT_LISTED} is not listed at all; no button can be clicked while
+ * an install runs. */
+export function markInstalled(
+  rows: Iterable<PackageRow>,
+  installed: ReadonlySet<string>,
+  inImage: ReadonlySet<string>,
+  busy: boolean,
+): void {
+  for (const { row, button } of rows) {
+    const name = button.dataset.package ?? "";
+    const has = installed.has(name);
+    // pkg's list first: a command pkg put there is pkg's, not the image's.
+    row.hidden = NOT_LISTED.has(name) || (!has && inImage.has(name));
+    button.textContent = has ? "Installed" : "Install";
+    button.disabled = busy || has;
+  }
+}
+
+/**
+ * The catalog packages the sandbox already has outside pkg: those whose
+ * command is there (src/image_tools.ts) and that pkg's installed list
+ * does not name, both read in the same run. The slim image bakes busybox,
+ * make, pkg, zsh and zstd into its base without pkg, so pkg refuses to
+ * install them ("would overwrite unmanaged path bin/zsh"). The
+ * repository's metadata names no files -- each archive's own
+ * `info/files.json` does, and clang's archive alone is 94 MB -- so the
+ * sandbox is asked about the command instead; for every package published
+ * on 2026-10-29 that finds exactly the archives whose files the slim image
+ * has. Read once: pkg cannot install over these, and a fresh sandbox boots
+ * the same image. With pkg's database but no list (a pkg before
+ * yurt-pkg#59), what pkg manages is unknown, so none. `root` is for tests.
+ */
+export async function packagesInImage(
+  names: readonly string[],
+  /** A stuck run has no `code`. */
+  exec: (cmd: string) => Promise<{ code?: number | null; stdout: string }>,
+  root = "",
+): Promise<Set<string>> {
+  if (names.length === 0) return new Set();
+  for (const name of names) {
+    // Each goes into the script as a word.
+    if (!isPackageName(name)) {
+      throw new Error(`${JSON.stringify(name)} is not a package name`);
+    }
+  }
+  const dirs = COMMAND_DIRS.map((dir) => `'${root}${dir}'`).join(" ");
+  const list = `'${root}${INSTALLED_LIST_PATH}'`;
+  const db = `'${root}${INSTALLED_DB_PATH}'`;
+  const result = await exec(
+    `if [ -e ${list} ]; then ` +
+      `managed=$(cut -f1 ${list}) || exit 3; managed=" $(echo $managed) "; ` +
+      `elif [ -e ${db} ]; then exit 0; else managed=" "; fi; ` +
+      `for n in ${names.join(" ")}; do ` +
+      `case "$managed" in *" $n "*) continue;; esac; ` +
+      `for d in ${dirs}; do ` +
+      `if [ -f "$d/$n" ] && [ ! -L "$d/$n" ]; then echo "$n"; break; fi; ` +
+      `done; done`,
+  );
+  if (result.code !== 0) {
+    throw new Error(
+      `could not tell what the image has: exit ${
+        result.code ?? "none, the probe did not finish"
+      }`,
+    );
+  }
+  const asked = new Set(names);
+  return new Set(result.stdout.split("\n").filter((line) => asked.has(line)));
 }
 
 /** What the menu lists for each package: its latest release and size. */
@@ -651,16 +980,33 @@ export type InstallRequest =
     verifyAll?: boolean;
   }
   // A set of packages that share one `yurt_N` build, their set's marker:
-  // the newest build every one of them has (src/python_install.ts).
-  | { label: string; set: readonly string[] };
+  // the newest build every one of them has (src/python_install.ts), or the
+  // build of the members already `installed` (resolveSet); only the
+  // members not installed are asked of pkg.
+  | {
+    label: string;
+    set: readonly string[];
+    installed?: readonly InstalledRelease[];
+  };
+
+/** The repository does not offer the set: a member it has no package for,
+ * or no `yurt_N` build that all of them have. */
+export class SetNotOffered extends Error {}
 
 /** The newest complete set: for each `yurt_N` build every package in
  * `names` has (unyanked, in a release the page can read), the highest N
  * wins, and each package's release with that build (the highest version,
- * should there be several). A set only partly published is never chosen. */
+ * should there be several). A set only partly published is never chosen.
+ *
+ * Members already `installed` (pkg's installed list) pin it: pkg never
+ * replaces an installed package, so the set is the one at their build,
+ * with their exact releases, however much newer a set is live -- and none
+ * at all (SetNotOffered, naming them) when the repository no longer has a
+ * complete set there. What is installed outside `names` pins nothing. */
 export function resolveSet(
   catalog: Catalog,
   names: readonly string[],
+  installed: readonly InstalledRelease[] = [],
 ): (PinnedRelease & { url: string })[] {
   const readable = (name: string, release: PackageVersion) => {
     try {
@@ -670,11 +1016,17 @@ export function resolveSet(
       return false;
     }
   };
+  const pins = new Map(
+    installed.filter((r) => names.includes(r.name)).map((r) => [r.name, r]),
+  );
   const byName = names.map((name) => {
     const file = catalog.metadata.get(name)?.file;
-    if (file === undefined) throw new Error(`no package named ${name}`);
+    if (file === undefined) throw new SetNotOffered(`no package named ${name}`);
+    const pin = pins.get(name);
     return file.versions.filter((v) =>
-      !v.yanked && /^yurt_\d+$/.test(v.build) && readable(name, v)
+      !v.yanked && /^yurt_\d+$/.test(v.build) && readable(name, v) &&
+      (pin === undefined ||
+        (v.version === pin.version && v.build === pin.build))
     );
   });
   const builds = byName.map((versions) =>
@@ -682,10 +1034,19 @@ export function resolveSet(
   );
   const common = [...builds[0]].filter((n) => builds.every((b) => b.has(n)));
   if (common.length === 0) {
-    throw new Error(
-      `the repository has no complete set of ${
-        names.join(", ")
-      } (one yurt_N build of all of them)`,
+    const at = [...pins.values()].map((r) =>
+      `${r.name} ${r.version}-${r.build}`
+    );
+    throw new SetNotOffered(
+      at.length === 0
+        ? `the repository has no complete set of ${
+          names.join(", ")
+        } (one yurt_N build of all of them)`
+        : `the repository has no complete set of ${
+          names.join(", ")
+        } at the installed ${
+          at.join(", ")
+        } (pkg cannot replace an installed package, so only a set of that build can be installed beside it)`,
     );
   }
   const newest = Math.max(...common);
@@ -812,10 +1173,16 @@ export async function installPackage(
   let check = () => {};
   const stalled = new Promise<never>((_, reject) => {
     check = () => {
+      if (giveUp.signal.aborted) return;
       const now = Date.now();
       const idle = now - last;
       const running = runStarted === undefined ? 0 : now - runStarted;
-      if (runStarted !== undefined && running >= ceilingMs) {
+      // Past the ceiling and still heard from: a live run. A run also
+      // silent for the stall window (a late timer sees both at once) is a
+      // stall like any other, which recovery may help.
+      if (
+        runStarted !== undefined && running >= ceilingMs && idle < stallMs
+      ) {
         giveUp.abort();
         reject(new InstallStalled(name, ceilingMs, true, true));
         return;
@@ -880,6 +1247,40 @@ export async function installPackage(
       }, watcher),
       stalled,
     ]);
+  } catch (error) {
+    // The page gave up on a guest `pkg` run, which may have stopped
+    // between writing files and setting their modes: let pkg finish or
+    // retry that transaction before the failure is said, so nothing is
+    // left half installed and looking installed.
+    if (!(error instanceof InstallStalled) || !error.inSandbox) throw error;
+    // A sandbox thrown away after this install has nothing to recover.
+    if (options.recoverAfterStall === false) throw error;
+    if (options.host.recover === undefined) {
+      throw error.withRecovery(false, "this sandbox cannot run it", false);
+    }
+    // A run past the ceiling is still beating: its pkg is alive and holds
+    // pkg's lock, which `pkg recover` would wait on -- beating, so for
+    // another whole ceiling -- before it could do anything.
+    if (error.ceiling) {
+      throw error.withRecovery(
+        false,
+        "the run is still going, and holds pkg's lock",
+        false,
+      );
+    }
+    const status = `${name}: running pkg recover after the stopped install`;
+    options.progress(status);
+    const { recovered, why } = await recoverStalled(
+      options.host.recover,
+      {
+        stallMs,
+        ceilingMs,
+        everyMs: options.progressEveryMs ?? PROGRESS_EVERY_MS,
+      },
+      status,
+      options.progress,
+    );
+    throw error.withRecovery(recovered, why);
   } finally {
     clearTimeout(timer);
   }
@@ -896,6 +1297,21 @@ type InstallOptions = {
   stallMs?: number;
   /** {@link INSTALL_RUN_CEILING_MS}; shorter in tests. */
   runCeilingMs?: number;
+  /** Told the exact releases a set or pinned list resolved to, from the
+   * install's own index read: what this install puts in the sandbox. */
+  resolved?: (releases: readonly PinnedRelease[]) => void;
+  /** {@link PROGRESS_EVERY_MS}; shorter in tests. */
+  progressEveryMs?: number;
+  /** `false` for a sandbox that is thrown away after the install (the
+   * Suspend/Resume check): a stall then runs no `pkg recover`, and its
+   * error is the stall alone. */
+  recoverAfterStall?: boolean;
+  /** Install a name the way the user would in the terminal: `sudo pkg
+   * update && sudo pkg install NAME` against the image's configuration,
+   * which the boot pointed at the page's relay (src/pkg_relay.ts), so the
+   * panel and the terminal share one repository cache. Names only; a set
+   * or a pinned list always goes through the staged copy. */
+  relayed?: boolean;
 };
 
 type InstallWatcher = {
@@ -940,20 +1356,38 @@ async function installWatched(
       throw new Error(`no package named ${wanted}`);
     }
   }
+  if (typeof request === "string" && options.relayed === true) {
+    return await installRelayed(request, catalog, options, watcher);
+  }
   // The exact releases, for a set or a pinned list: pkg installs exactly
   // those (`name@version-build`). A pinned list's plan may hold nothing
   // else; a set's may also hold the dependencies pkg adds outside it.
   const exact = typeof request === "string"
     ? undefined
     : "set" in request
-    ? resolveSet(catalog, request.set)
+    ? resolveSet(catalog, request.set, request.installed)
     : request.releases;
+  if (exact !== undefined) options.resolved?.(exact);
   const pinned = exact === undefined
     ? undefined
     : new Map(exact.map((release) => [release.name, release]));
+  // A set's members already installed (at exactly these releases, which
+  // resolveSet made sure of) are not asked for again.
+  const have = typeof request !== "string" && "set" in request
+    ? new Set((request.installed ?? []).map((r) => r.name))
+    : new Set<string>();
   const specs = exact === undefined
     ? [request as string]
-    : exact.map((r) => `${r.name}@${r.version}-${r.build}`);
+    : exact.filter((r) => !have.has(r.name)).map((r) =>
+      `${r.name}@${r.version}-${r.build}`
+    );
+  // Only a set's members can all be installed already: a pinned list (a
+  // verify-all one included) names at least one release, or the name
+  // check above refused it, and none of its releases is skipped.
+  if (specs.length === 0) {
+    progress(`${name}: already installed`);
+    return "";
+  }
   const command = `pkg install ${specs.join(" ")}`;
   // A guest process too: a sandbox that stops answering here is the
   // sandbox's stall, not a download's.
@@ -992,26 +1426,12 @@ async function installWatched(
     for (const [path, bytes] of archives) {
       files.push({ path: `${mirror}/${path}`, bytes });
     }
-    const script = installScript(specs, config.id);
-    watcher.check();
-    progress(status);
-    if (host.observesProgress !== true) {
-      return watcher.unwatched(() => host.stageAndRun(files, script));
-    }
-    const started = Date.now();
-    let shown = started;
-    return watcher.watched(() =>
-      host.stageAndRun(files, script, {
-        alive: () => {
-          watcher.touch();
-          const now = Date.now();
-          if (now - shown >= 5000) {
-            shown = now;
-            progress(`${status} (${Math.round((now - started) / 1000)} s)`);
-          }
-        },
-        signal: watcher.signal,
-      })
+    return runWatched(
+      files,
+      installScript(specs, config.id),
+      status,
+      options,
+      watcher,
     );
   };
   const planned = await run(new Map(), `${name}: resolving (${command})`);
@@ -1151,6 +1571,126 @@ async function installWatched(
   ) {
     await cache?.keepOnly?.(used);
   }
+  return `${result.stdout}${result.stderr}`.trim();
+}
+
+/** Run `script` in the guest after staging `files`, watched for stalls
+ * when the host can say the guest is alive; `status` is what the page
+ * shows meanwhile, with a count of seconds. */
+function runWatched(
+  files: StagedFile[],
+  script: string,
+  status: string,
+  options: InstallOptions,
+  watcher: InstallWatcher,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const { host, progress } = options;
+  watcher.check();
+  progress(status);
+  if (host.observesProgress !== true) {
+    return watcher.unwatched(() => host.stageAndRun(files, script));
+  }
+  const started = Date.now();
+  let shown = started;
+  const progressEveryMs = options.progressEveryMs ?? PROGRESS_EVERY_MS;
+  return watcher.watched(() =>
+    host.stageAndRun(files, script, {
+      alive: () => {
+        watcher.touch();
+        const now = Date.now();
+        if (now - shown >= progressEveryMs) {
+          shown = now;
+          progress(`${status} (${Math.round((now - started) / 1000)} s)`);
+        }
+      },
+      signal: watcher.signal,
+    })
+  );
+}
+
+/** What installing `name` would download, by the catalog: its latest
+ * release and, transitively, its dependencies' latest releases, less what
+ * `installed.list` names (by name: an installed dependency pkg would
+ * upgrade is not counted). An estimate of pkg's plan, for the size refusal
+ * before the install starts. It leaves out the index and metadata, and
+ * counts packages the image has outside pkg; the relay caps each download,
+ * but nothing bounds the total across them. */
+export function relayedInstallPlan(
+  catalog: Catalog,
+  name: string,
+  installed: ReadonlySet<string>,
+): Release[] {
+  const seen = new Set<string>();
+  const plan: Release[] = [];
+  const visit = (wanted: string) => {
+    if (seen.has(wanted) || installed.has(wanted)) return;
+    seen.add(wanted);
+    const file = catalog.metadata.get(wanted)?.file;
+    const release = file === undefined ? undefined : latestRelease(file);
+    if (release === undefined) return;
+    plan.push(release);
+    for (const dep of release.depends ?? []) visit(dep.name);
+  };
+  visit(name);
+  return plan;
+}
+
+/** The guest script for an install by name through the relay: what the
+ * user would type, as the login user, `pkg` under `sudo` (`pkg` stands in
+ * for it in tests). The last command is not `exec`ed: the guest's
+ * heartbeat (src/session_packages.ts) beats only while this shell has a
+ * child, and a silent install of a large package is no stall. */
+export function relayedInstallScript(name: string, pkg = "sudo pkg"): string {
+  return [
+    ...(pkg === "sudo pkg"
+      ? [
+        "for tool in pkg sudo; do command -v $tool >/dev/null 2>&1 || " +
+        '{ echo "this image has no $tool" >&2; exit 127; }; done',
+        '[ "$(sudo id -u)" = 0 ] || ' +
+        "{ echo 'sudo does not give root here' >&2; exit 126; }",
+      ]
+      : []),
+    `${pkg} update || exit 1`,
+    `${pkg} install ${q(name)}; exit $?`,
+  ].join("\n");
+}
+
+/** {@link installWatched} for a name, through the relay. */
+async function installRelayed(
+  name: string,
+  catalog: Catalog,
+  options: InstallOptions,
+  watcher: InstallWatcher,
+): Promise<string> {
+  // No list, or one the page cannot read: counted as nothing installed,
+  // which only makes the estimate larger.
+  const installed = await watcher.watched(() =>
+    options.host.readFile(INSTALLED_LIST_PATH)
+  ).then(
+    (bytes) => new Set(parseInstalledList(bytes).map((r) => r.name)),
+  ).catch(() => new Set<string>());
+  const plan = relayedInstallPlan(catalog, name, installed);
+  const refusal = sizeRefusal(
+    plan.reduce((sum, release) => sum + release.size, 0),
+    options.tablet,
+  );
+  if (refusal !== undefined) throw new Error(`${name}: ${refusal}`);
+  const extra = plan.filter((release) => release.name !== name);
+  if (extra.length > 0) {
+    options.progress(
+      `${name}: also installs ${
+        extra.map((r) => `${r.name} (${formatBytes(r.size)})`).join(", ")
+      }`,
+    );
+  }
+  const result = await runWatched(
+    [],
+    relayedInstallScript(name),
+    `${name}: installing (sudo pkg update && sudo pkg install ${name})`,
+    options,
+    watcher,
+  );
+  if (result.code !== 0) throw failure(name, result);
   return `${result.stdout}${result.stderr}`.trim();
 }
 

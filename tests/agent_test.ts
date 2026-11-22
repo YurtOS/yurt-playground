@@ -2,12 +2,22 @@ import { assert, assertEquals } from "@std/assert";
 import {
   type AgentEvent,
   buildPrompt,
+  chatTask,
   DEFAULT_LIMITS,
+  DEMO_PDF_MADE,
+  DEMO_PDF_PATH,
+  DEMO_TEXT_PATH,
+  demoTextRedirect,
+  firstAction,
+  instructionsPrompt,
+  madePdfPath,
   type Model,
   parseAction,
   runAgent,
+  sandboxTools,
   SYSTEM_PROMPT,
   systemPrompt,
+  ToolFailed,
   type Tools,
   validateAction,
 } from "../src/agent.ts";
@@ -35,6 +45,8 @@ const tools = (log: string[] = []): Tools => ({
     log.push(`exec ${cmd}`);
     return Promise.resolve({ code: 0, stdout: "2\n", stderr: "" });
   },
+  writeFile: () => Promise.reject(new Error("unused")),
+  setColor: () => Promise.reject(new Error("unused")),
   readFile(path) {
     log.push(`read ${path}`);
     return Promise.resolve(passwd);
@@ -62,7 +74,7 @@ async function run(
   return { events, prompts, types: events.map((e) => e.type) };
 }
 
-Deno.test("validateAction accepts exactly the three variants", () => {
+Deno.test("validateAction accepts exactly the five variants", () => {
   assertEquals(validateAction({ action: "exec", cmd: "ls" }), {
     action: "exec",
     cmd: "ls",
@@ -86,6 +98,82 @@ Deno.test("parseAction takes one object, fenced or bare, and nothing else", () =
   assertEquals(parseAction('Sure! {"action":"answer","text":"hi"}'), null);
   assertEquals(parseAction("the answer is 2"), null);
   assertEquals(parseAction('{"action":"answer","text":"a"} {"x":1}'), null);
+});
+
+Deno.test("firstAction runs the first of several actions in one reply", () => {
+  const reply =
+    '{"action":"write_file","path":"/home/user/a.py","text":"print(\\"{}\\")"}\n' +
+    '{"action":"exec","cmd":"python3 /home/user/a.py"}';
+  assertEquals(firstAction(reply), {
+    action: {
+      action: "write_file",
+      path: "/home/user/a.py",
+      text: 'print("{}")',
+    },
+    more: true,
+  });
+  assertEquals(firstAction('```json\n{"action":"answer","text":"hi"}\n```'), {
+    action: { action: "answer", text: "hi" },
+    more: false,
+  });
+  assertEquals(firstAction('Sure! {"action":"answer","text":"hi"}'), null);
+  assertEquals(firstAction('{"action":"answer","text":"cut off'), null);
+  // Gemma 4 E2B's answer without its "text" key.
+  assertEquals(
+    parseAction(
+      '{"action":"answer":"python3 was not found, so it \\"failed\\"."}',
+    ),
+    { action: "answer", text: 'python3 was not found, so it "failed".' },
+  );
+  assertEquals(parseAction('{"action":"exec":"ls"}'), null);
+});
+
+Deno.test("a string with raw line breaks and tabs is read as if escaped", () => {
+  // Gemma 4 31B on the phone: a program with real newlines inside "text".
+  const reply = '{"action":"write_file","path":"/home/user/main.zsh",' +
+    '"text":"fib() {\n\ta=0\n  echo $a\r\n}\\nfib"}';
+  assertEquals(parseAction(reply), {
+    action: "write_file",
+    path: "/home/user/main.zsh",
+    text: "fib() {\n\ta=0\n  echo $a\r\n}\nfib",
+  });
+  // Outside a string, line breaks were always fine; inside one, an escaped
+  // quote does not end it.
+  assertEquals(
+    parseAction('{\n"action":"exec",\n"cmd":"echo \\"a\nb\\""\n}'),
+    { action: "exec", cmd: 'echo "a\nb"' },
+  );
+  // Still one object and nothing else: the same reply runs, with text after
+  // it does not.
+  assertEquals(parseAction('{"action":"exec","cmd":"a\nb"}'), {
+    action: "exec",
+    cmd: "a\nb",
+  });
+  assertEquals(parseAction('{"action":"exec","cmd":"a\nb"} more'), null);
+});
+
+Deno.test("a backslash JSON does not know is still refused, beside raw line breaks", () => {
+  // The model is asked again rather than the reply being guessed at.
+  assertEquals(parseAction('{"action":"exec","cmd":"echo a \\\nb"}'), null);
+  assertEquals(
+    parseAction(
+      String
+        .raw`{"action":"write_file","path":"/home/user/demo.txt","text":"It\'s"}`,
+    ),
+    null,
+  );
+  // A valid escape keeps its JSON meaning, even beside raw line breaks.
+  assertEquals(
+    parseAction('{"action":"exec","cmd":"a\nb\\tc"}'),
+    { action: "exec", cmd: "a\nb\tc" },
+  );
+});
+
+Deno.test("Gemma E2B's keyless answer is read with raw line breaks too", () => {
+  assertEquals(
+    parseAction('{"action":"answer":"line 1\nline 2"}'),
+    { action: "answer", text: "line 1\nline 2" },
+  );
 });
 
 Deno.test("a tool step feeds its result into the next prompt, then answers", async () => {
@@ -119,7 +207,7 @@ Deno.test("an invalid reply is retried with a correction, then limited", async (
     "action",
     "answer",
   ]);
-  assert(corrected.prompts[1].includes("not one of the three JSON actions"));
+  assert(corrected.prompts[1].includes("not one of the five JSON actions"));
 
   const gaveUp = await run(["no", "still no", "never"], {
     limits: { maxInvalid: 2 },
@@ -130,7 +218,7 @@ Deno.test("an invalid reply is retried with a correction, then limited", async (
 
 Deno.test("the step limit stops a model that never answers", async () => {
   const { events, prompts } = await run(
-    Array(10).fill('{"action":"exec","cmd":"true"}'),
+    Array.from({ length: 10 }, (_, i) => `{"action":"exec","cmd":"echo ${i}"}`),
     { limits: { maxSteps: 3 } },
   );
   assertEquals(prompts.length, 3);
@@ -142,6 +230,8 @@ Deno.test("tool output is clipped to the observation limit", async () => {
     exec: () =>
       Promise.resolve({ code: 0, stdout: "x".repeat(5000), stderr: "" }),
     readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
   };
   const { events, prompts } = await run([
     '{"action":"exec","cmd":"yes"}',
@@ -156,6 +246,8 @@ Deno.test("a failing tool is an observation, not the end of the task", async () 
   const failing: Tools = {
     exec: () => Promise.reject(new Error("kernel_spawn_process failed")),
     readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
   };
   const { types, prompts } = await run([
     '{"action":"exec","cmd":"ls"}',
@@ -191,6 +283,8 @@ Deno.test("cancel stops a running tool and reports it", async () => {
         controller.abort();
       }),
     readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
   };
   const { events, prompts } = await run(
     ['{"action":"exec","cmd":"sleep 100"}', '{"action":"answer","text":"x"}'],
@@ -265,6 +359,8 @@ Deno.test("runAgent hands the model the system prompt it was given", async () =>
   const tools: Tools = {
     exec: () => Promise.reject(new Error("unused")),
     readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
   };
   await runAgent(
     "task",
@@ -276,4 +372,276 @@ Deno.test("runAgent hands the model the system prompt it was given", async () =>
     systemPrompt(false),
   );
   assertEquals(systems, [systemPrompt(false)]);
+});
+
+Deno.test("a chat message carries the document and what fits of the earlier ones", () => {
+  assertEquals(chatTask([], "make a pdf", 4000), "make a pdf");
+  assertEquals(
+    chatTask(["make a pdf", "shorter"], "add a title", 4000),
+    "Earlier in this chat the user asked:\n- make a pdf\n- shorter\n\nNow the user asks: add a title",
+  );
+  const withText = chatTask(["make a pdf"], "add a title", 4000, "The text.");
+  assertEquals(
+    withText,
+    "Earlier in this chat the user asked:\n- make a pdf\n\n" +
+      "The text in /home/user/demo.txt now, to change only as asked:\n<<<\nThe text.\n>>>\n\n" +
+      "Now the user asks: add a title",
+  );
+  // The oldest goes first, the document never: an edit needs it.
+  const tight = chatTask(["x".repeat(300), "shorter"], "t", 150, "doc");
+  assertEquals(tight.includes("xxx"), false);
+  assertEquals(tight.includes("- shorter"), true);
+  assertEquals(tight.includes("doc"), true);
+  assertEquals(tight.length <= 150, true);
+  // A document too long to show is named instead, so the message still runs.
+  const big = chatTask([], "shorten it", 200, "z".repeat(5000));
+  assertEquals(big.includes("zzz"), false);
+  assertEquals(big.includes("read_file"), true);
+  assertEquals(big.endsWith("Now the user asks: shorten it"), true);
+  assertEquals(big.length <= 200, true);
+  // Too long on its own: runAgent's refusal, not a silent cut.
+  assertEquals(chatTask([], "y".repeat(50), 40), "y".repeat(50));
+});
+
+Deno.test("write_file needs both its fields, and the loop writes what it names", async () => {
+  const good = { action: "write_file" as const, path: "/a", text: "x" };
+  assertEquals(validateAction(good), good);
+  assertEquals(validateAction({ action: "write_file", path: "/a" }), null);
+  assertEquals(validateAction({ action: "write_file", text: "x" }), null);
+  assertEquals(
+    validateAction({ action: "write_file", path: "/a", data: "x" }),
+    null,
+  );
+  assertEquals(validateAction({ ...good, extra: "y" }), null);
+  assertEquals(validateAction({ ...good, text: " " }), null);
+
+  const replies = [JSON.stringify(good), '{"action":"answer","text":"done"}'];
+  const written: string[][] = [];
+  const prompts: string[] = [];
+  await runAgent(
+    "write it",
+    {
+      generate(_system, prompt) {
+        prompts.push(prompt);
+        return Promise.resolve({
+          text: replies.shift()!,
+          stats: { promptTokens: 1, outputTokens: 1 },
+        });
+      },
+    },
+    {
+      exec: () => Promise.reject(new Error("unused")),
+      readFile: () => Promise.reject(new Error("unused")),
+      setColor: () => Promise.reject(new Error("unused")),
+      writeFile: (path, text) => {
+        written.push([path, text]);
+        return Promise.resolve(`wrote ${path}`);
+      },
+    },
+    () => {},
+    new AbortController().signal,
+  );
+  assertEquals(written, [["/a", "x"]]);
+  assertEquals(prompts[1].includes("wrote /a"), true);
+});
+
+Deno.test("a tool failure the model cannot fix ends the task at once", async () => {
+  const events: AgentEvent[] = [];
+  let calls = 0;
+  await runAgent(
+    "write it",
+    {
+      generate() {
+        calls++;
+        return Promise.resolve({
+          text: '{"action":"write_file","path":"/a","text":"x"}',
+          stats: { promptTokens: 1, outputTokens: 1 },
+        });
+      },
+    },
+    {
+      exec: () => Promise.reject(new Error("unused")),
+      readFile: () => Promise.reject(new Error("unused")),
+      writeFile: () => Promise.reject(new ToolFailed("mkpdf: not found")),
+      setColor: () => Promise.reject(new Error("unused")),
+    },
+    (e) => events.push(e),
+    new AbortController().signal,
+  );
+  assertEquals(calls, 1);
+  assertEquals(events.at(-1), { type: "error", message: "mkpdf: not found" });
+});
+
+Deno.test("set_color takes one color and goes to the tool", async () => {
+  assertEquals(validateAction({ action: "set_color", color: "green" }), {
+    action: "set_color",
+    color: "green",
+  });
+  assertEquals(validateAction({ action: "set_color" }), null);
+  const asked: string[] = [];
+  const replies = [
+    '{"action":"set_color","color":"green"}',
+    '{"action":"answer","text":"done"}',
+  ];
+  await runAgent(
+    "make it green",
+    {
+      generate: () =>
+        Promise.resolve({
+          text: replies.shift()!,
+          stats: { promptTokens: 1, outputTokens: 1 },
+        }),
+    },
+    {
+      exec: () => Promise.reject(new Error("unused")),
+      readFile: () => Promise.reject(new Error("unused")),
+      writeFile: () => Promise.reject(new Error("unused")),
+      setColor: (color) => {
+        asked.push(color);
+        return Promise.resolve("set");
+      },
+    },
+    () => {},
+    new AbortController().signal,
+  );
+  assertEquals(asked, ["green"]);
+});
+
+function recorded(replies: string[]) {
+  const prompts: string[] = [];
+  return {
+    prompts,
+    model: {
+      generate(_system: string, prompt: string) {
+        prompts.push(prompt);
+        return Promise.resolve({
+          text: replies.shift() ?? replies[0] ?? "",
+          stats: { promptTokens: 1, outputTokens: 1 },
+        });
+      },
+    },
+  };
+}
+
+Deno.test("a step repeated exactly is not run again, and a second repeat ends the task", async () => {
+  const again = '{"action":"set_color","color":"#0000ff"}';
+  let runs = 0;
+  const tools = {
+    exec: () => Promise.reject(new Error("unused")),
+    readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => {
+      runs++;
+      return Promise.resolve("set");
+    },
+  };
+  // It takes the hint: one run, then the answer.
+  const hinted = recorded([again, again, '{"action":"answer","text":"done"}']);
+  const events: AgentEvent[] = [];
+  await runAgent(
+    "blue",
+    hinted.model,
+    tools,
+    (e) => events.push(e),
+    new AbortController().signal,
+  );
+  assertEquals(runs, 1);
+  assertEquals(events.at(-1), { type: "answer", text: "done" });
+  assertEquals(hinted.prompts[2].includes("not run again"), true);
+  // It does not: the task ends well before the step limit.
+  runs = 0;
+  const stuck = recorded([again, again, again, again, again, again]);
+  const stuckEvents: AgentEvent[] = [];
+  await runAgent(
+    "blue",
+    stuck.model,
+    tools,
+    (e) => stuckEvents.push(e),
+    new AbortController().signal,
+  );
+  assertEquals(runs, 1);
+  assertEquals(stuck.prompts.length, 3);
+  assertEquals(stuckEvents.at(-1), { type: "stopped", reason: "repeat" });
+});
+
+Deno.test("a tool's result names the PDF it made, for the pane to offer", () => {
+  assertEquals(
+    madePdfPath("wrote 2 characters to /a/b.pdf; made /a/b.pdf"),
+    "/a/b.pdf",
+  );
+  assertEquals(madePdfPath("wrote 2 characters to /a/b.txt"), undefined);
+  assertEquals(madePdfPath("error: made nothing"), undefined);
+});
+
+Deno.test("a PDF made by a command ends its result, however long the output", async () => {
+  const making: Tools = {
+    exec: () =>
+      Promise.resolve({
+        code: 0,
+        stdout: "x".repeat(5000),
+        stderr: "a warning\n",
+        made: DEMO_PDF_MADE,
+      }),
+    readFile: () => Promise.reject(new Error("unused")),
+    writeFile: () => Promise.reject(new Error("unused")),
+    setColor: () => Promise.reject(new Error("unused")),
+  };
+  const { events } = await run([
+    `{"action":"exec","cmd":"python3 /home/user/main.py > ${DEMO_TEXT_PATH}"}`,
+    '{"action":"answer","text":"done"}',
+  ], { tools: making, limits: { maxObservation: 100 } });
+  const observation = events.find((e) => e.type === "observation");
+  assert(observation?.type === "observation");
+  assertEquals(madePdfPath(observation.text), DEMO_PDF_PATH);
+});
+
+Deno.test("demoTextRedirect finds output sent into the demo's text", () => {
+  const t = DEMO_TEXT_PATH;
+  for (
+    const cmd of [
+      `python3 /home/user/main.py > ${t}`,
+      `ls >>${t}`,
+      `echo hi > '${t}'; cat ${t}`,
+      `python3 /home/user/main.py > ${t} && wc -w ${t}`,
+    ]
+  ) {
+    assertEquals(demoTextRedirect(cmd), { readsItFirst: false }, cmd);
+  }
+  for (const cmd of [`python3 ${t} > ${t}`, `cat ${t} | sort > ${t}`]) {
+    assertEquals(demoTextRedirect(cmd), { readsItFirst: true }, cmd);
+  }
+  for (
+    const cmd of [
+      `cat ${t}`,
+      `ls 2> ${t}`,
+      `ls &> ${t}`,
+      `ls 2>> ${t}`,
+      `ls &>> ${t}`,
+      `echo 1 > ${t}.bak`,
+      `echo 1 > ${t}x`,
+    ]
+  ) {
+    assertEquals(demoTextRedirect(cmd), undefined, cmd);
+  }
+  // demo.txt.bak is another file: reading it first does not empty the text.
+  assertEquals(demoTextRedirect(`cat ${t}.bak > ${t}`), {
+    readsItFirst: false,
+  });
+});
+
+Deno.test("instructions from the model list say what the sandbox has", () => {
+  const lines = ["You operate a sandbox ({tools}).", "Reply with JSON."];
+  assertEquals(
+    instructionsPrompt(lines, true),
+    "You operate a sandbox (BusyBox, zsh, Python 3).\nReply with JSON.",
+  );
+  assertEquals(
+    instructionsPrompt(lines, false),
+    "You operate a sandbox (BusyBox shell tools and zsh; no Python, no Node).\nReply with JSON.",
+  );
+  // The built-in prompt says the same for the same sandbox.
+  assertEquals(
+    systemPrompt(false).split("\n")[0],
+    `You operate a Linux sandbox (${sandboxTools(false)}) for the user.`,
+  );
 });

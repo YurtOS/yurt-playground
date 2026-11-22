@@ -1,0 +1,26 @@
+{
+  "extraKnownMarketplaces": {
+    "yurtos-rules": {
+      "source": {
+        "source": "github",
+        "repo": "YurtOS/yurtos-rules"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "yurtos-rules@yurtos-rules": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "h=\"$HOME/work/yurtos/yurtos-rules/hooks/require-worktree\"; [ -x \"$h\" ] || exit 0; exec \"$h\""
+          }
+        ]
+      }
+    ]
+  }
+}

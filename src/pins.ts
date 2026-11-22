@@ -7,16 +7,188 @@ export type ArtifactPin = {
 };
 
 export type Pins = {
-  kernelWasm: ArtifactPin;
+  /** `rootStore: true` once the pinned kernel's root is a YurtFS store
+   * (src/root_store.ts): every snapshot of it must then carry the store,
+   * and none of a kernel without one may. Set with the kernel pin that
+   * brings it; tests/root_store_snapshot_test.ts holds it to the pinned
+   * JS host. */
+  kernelWasm: ArtifactPin & { rootStore?: true };
   /** The full image: the desktop app, the CLI, and (on a site with no
    * slim pin) the suspend/resume kernel's standard library. */
   image: ArtifactPin;
-  /** The slim image the browser boots: no Python, no Node. Absent, the
-   * browser boots `image`, as before. Its pages install Python from the
-   * live signed repository (src/python_install.ts): packages are not
-   * pinned here. */
-  browserImage?: ArtifactPin;
+  /** The slim image the browser boots: no Node, and no Python set. Absent,
+   * the browser boots `image`, as before. Its pages install the Python set
+   * from the live signed repository (src/python_install.ts): packages are
+   * not pinned here. `python` is the python package the image itself
+   * ships, from its pkg installed list (scripts/release-playground.sh);
+   * absent, it ships none. pkg never replaces it, so the set installed
+   * beside it is the one at its build. */
+  browserImage?: ArtifactPin & { python?: { version: string; build: string } };
+  /** The train's sealable CPython (the notebook kernel's interpreter),
+   * built with the Python set it belongs to: what names that set here. */
+  pythonSeal?: { sha256: string };
+  /** The sealed sandbox `?snapshot=1` restores (src/sandbox_snapshot.ts),
+   * captured locally by scripts/release-snapshot.ts and published as a
+   * yurt-playground release; absent, `?snapshot=1` boots as without it.
+   * Kept as written: only `?snapshot=1`, the static build and the release
+   * script read it, through parseSnapshotPin, so an entry of another shape
+   * never breaks a default boot or a deploy. */
+  snapshot?: unknown;
+  /** The tablet's (a phone's too), and the desktop's Go and Playwright
+   * snapshots (src/sandbox_snapshot.ts SNAPSHOT_KINDS), kept as written
+   * like `snapshot`. */
+  tabletSnapshot?: unknown;
+  goSnapshot?: unknown;
+  playwrightSnapshot?: unknown;
 };
+
+/** What a sandbox snapshot was built from: a restore needs the same of
+ * all of it. The kernel (its wasm, and the rev its JS host is bundled
+ * from) and the seal format must match the memory layout; the image, the
+ * Python set and the page's boot setup are what the sandbox's files and
+ * login came from. */
+export type SnapshotIdentity = {
+  /** The kernel build the image was sealed under. */
+  kernelSha256: string;
+  /** The yurtos-kernel rev (`kernelWasm.rev`): the page bundles its JS
+   * host from that rev, which can change while the wasm does not. */
+  kernelRev: string;
+  /** The host's seal image version (`SandboxSealImage.version`). */
+  sealVersion: number;
+  /** The page's own boot setup (`BOOT_SETUP` in src/sandbox_snapshot.ts):
+   * what it stages beside the image and how it sets up the login. */
+  bootSetup: number;
+  /** The image the sandbox booted (the slim one, when the pins name it). */
+  imageSha256: string;
+  /** The train's Python set, by its sealable CPython's hash (`pythonSeal`);
+   * null on a site that pins none. */
+  pythonSealSha256: string | null;
+};
+
+/** What a snapshot records it was built from: its identity, and the
+ * Python set the capture installed from the live repository (its layer
+ * key, src/python_layer.ts), which a restore compares with the live index
+ * as a stored layer is. */
+export type BuiltFrom = SnapshotIdentity & {
+  /** null on a site that installs no Python (the full image has it). */
+  pythonSet: string | null;
+};
+
+export type SnapshotPin = {
+  releaseRepo: string;
+  release: string;
+  /** The snapshot zip's format (its manifest's, src/sandbox_snapshot.ts):
+   * a page restores only its own. */
+  format: number;
+  /** The whole zip: the one hash a restore checks, incrementally as the
+   * parts the site publishes it in (src/image_parts.ts, transport only)
+   * arrive. */
+  sha256: string;
+  size: number;
+  builtFrom: BuiltFrom;
+  /** The kernel memory a restore allocates (the manifest's memoryBytes):
+   * checked against the manifest's before anything is allocated, so
+   * required from format 4 (the zip) on. */
+  memoryBytes?: number;
+  /** What it holds (src/sandbox_snapshot.ts SnapshotContents). */
+  contents?: {
+    packages: { name: string; version: string; build: string }[];
+    remark: string;
+  };
+  /** The renderer's peak memory while restoring it, in MiB, as
+   * scripts/measure-boot.ts measured it in the device's emulation. */
+  restorePeakMiB?: number;
+  /** The YurtFS root store the zip carries beside the kernel memory
+   * (src/root_store.ts), as its manifest names it; absent, the zip is
+   * the kernel memory alone. */
+  store?: StorePin;
+};
+
+/** A YurtFS store's identity (yurtos-kernel#4089, the kernel's
+ * `Identity`): its lineage UUID, its last batch's sequence and the
+ * history hash `H` up to it. Two stores that diverged never share it, so
+ * a checkpoint binds it and a restore refuses any other. */
+export type StoreIdentity = {
+  /** 16 bytes, hex. */
+  lineage: string;
+  /** A u64 in decimal: exact, where a JSON number is not past 2^53. */
+  sequence: string;
+  /** SHA-256, hex. */
+  hash: string;
+};
+
+/** `lower.tar` as the store's `meta` records it: the pinned image
+ * (`builtFrom.imageSha256`) inflated, so a snapshot never ships it. */
+export type StoreLower = { bytes: number; sha256: string };
+
+/** A snapshot's store, as its pin names it: which one, and how much its
+ * export holds (src/store_log.ts: the files it names, their lengths' sum
+ * and the bytes its pieces hold, which a sparse file's holes are not). A
+ * restore checks the manifest's against these before it writes
+ * anything, and never writes past them before the zip's hash is checked,
+ * as it never allocates more memory than `memoryBytes`. */
+export type StorePin = {
+  identity: StoreIdentity;
+  files: number;
+  bytes: number;
+  pieceBytes: number;
+};
+
+/** A store identity (a pin's, or a snapshot manifest's), checked; `fail`
+ * is called with what is wrong. */
+export function parseStoreIdentity(
+  raw: unknown,
+  fail: (what: string) => never,
+): StoreIdentity {
+  const isHex = (value: unknown, bytes: number): value is string =>
+    typeof value === "string" &&
+    new RegExp(`^[0-9a-f]{${bytes * 2}}$`).test(value);
+  const value = (raw ?? {}) as Record<string, unknown>;
+  if (
+    !isHex(value.lineage, 16) || !isHex(value.hash, 32) ||
+    typeof value.sequence !== "string" ||
+    !/^(0|[1-9][0-9]*)$/.test(value.sequence)
+  ) {
+    fail(
+      "store.identity must be {lineage: 16 bytes hex, sequence: decimal, hash: sha256}",
+    );
+  }
+  return {
+    lineage: value.lineage as string,
+    sequence: value.sequence as string,
+    hash: value.hash as string,
+  };
+}
+
+/** A store pin (a pin's, or a snapshot manifest's identity and totals),
+ * checked; `fail` is called with what is wrong. */
+export function parseStorePin(
+  raw: unknown,
+  fail: (what: string) => never,
+): StorePin {
+  const value = (raw ?? {}) as Record<string, unknown>;
+  const identity = parseStoreIdentity(value.identity, fail);
+  // At least the active journal and meta.
+  if (!Number.isSafeInteger(value.files) || (value.files as number) < 2) {
+    fail("store.files must be an integer of at least 2");
+  }
+  if (!Number.isSafeInteger(value.bytes) || (value.bytes as number) <= 0) {
+    fail("store.bytes must be a positive integer");
+  }
+  if (
+    !Number.isSafeInteger(value.pieceBytes) ||
+    (value.pieceBytes as number) <= 0 ||
+    (value.pieceBytes as number) > (value.bytes as number)
+  ) {
+    fail("store.pieceBytes must be a positive integer, at most store.bytes");
+  }
+  return {
+    identity,
+    files: value.files as number,
+    bytes: value.bytes as number,
+    pieceBytes: value.pieceBytes as number,
+  };
+}
 
 export type ArtifactSource = "artifacts" | "siblings" | "urls";
 
@@ -74,15 +246,148 @@ export function parsePins(raw: unknown): Pins {
     kernelWasm?: unknown;
     image?: unknown;
     browserImage?: unknown;
+    pythonSeal?: { sha256?: unknown } | null;
+    snapshot?: unknown;
+    tabletSnapshot?: unknown;
+    goSnapshot?: unknown;
+    playwrightSnapshot?: unknown;
   };
   const pins: Pins = {
     kernelWasm: parsePin(value.kernelWasm, "kernelWasm"),
     image: parsePin(value.image, "image"),
   };
+  const rootStore = (value.kernelWasm as { rootStore?: unknown }).rootStore;
+  if (rootStore === true) pins.kernelWasm.rootStore = true;
+  else if (rootStore !== undefined) {
+    throw new PinResolutionError(
+      "kernelWasm.rootStore must be true or absent",
+      1,
+    );
+  }
   if (value.browserImage !== undefined) {
     pins.browserImage = parsePin(value.browserImage, "browserImage");
+    const python = (value.browserImage as { python?: unknown }).python;
+    if (python !== undefined) {
+      const { version, build } = (python ?? {}) as Record<string, unknown>;
+      if (
+        typeof version !== "string" || version === "" ||
+        typeof build !== "string" || !/^yurt_\d+$/.test(build)
+      ) {
+        throw new PinResolutionError(
+          "browserImage.python must be {version, build: yurt_N}",
+          1,
+        );
+      }
+      pins.browserImage.python = { version, build };
+    }
+  }
+  // Read only for a snapshot's identity: an entry of another shape is
+  // left out (the identity then names none, and no snapshot matches it)
+  // rather than failing the default boot or a deploy.
+  const sealSha256 = value.pythonSeal?.sha256;
+  if (typeof sealSha256 === "string" && sealSha256 !== "") {
+    pins.pythonSeal = { sha256: sealSha256.toLowerCase() };
+  }
+  if (value.snapshot !== undefined) pins.snapshot = value.snapshot;
+  if (value.tabletSnapshot !== undefined) {
+    pins.tabletSnapshot = value.tabletSnapshot;
+  }
+  if (value.goSnapshot !== undefined) pins.goSnapshot = value.goSnapshot;
+  if (value.playwrightSnapshot !== undefined) {
+    pins.playwrightSnapshot = value.playwrightSnapshot;
   }
   return pins;
+}
+
+/** A pins.json `snapshot` entry, checked; throws on any other shape. */
+export function parseSnapshotPin(raw: unknown): SnapshotPin {
+  const fail = (what: string): never => {
+    throw new PinResolutionError(`snapshot.${what}`, 1);
+  };
+  const isHex = (value: unknown): value is string =>
+    typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+  const value = (raw ?? {}) as Record<string, unknown>;
+  for (const key of ["releaseRepo", "release"] as const) {
+    if (typeof value[key] !== "string" || value[key] === "") {
+      fail(`${key} must be a string`);
+    }
+  }
+  if (!Number.isInteger(value.format)) fail("format must be an integer");
+  if (!isHex(value.sha256)) fail("sha256 must be a lowercase sha256");
+  if (!Number.isInteger(value.size) || (value.size as number) <= 0) {
+    fail("size must be a positive integer");
+  }
+  const built = (value.builtFrom ?? {}) as Record<string, unknown>;
+  if (!isHex(built.kernelSha256) || !isHex(built.imageSha256)) {
+    fail("builtFrom must name the kernel and image sha256");
+  }
+  if (built.pythonSealSha256 !== null && !isHex(built.pythonSealSha256)) {
+    fail("builtFrom.pythonSealSha256 must be a sha256 or null");
+  }
+  if (typeof built.kernelRev !== "string" || built.kernelRev === "") {
+    fail("builtFrom.kernelRev must be a string");
+  }
+  for (const key of ["sealVersion", "bootSetup"] as const) {
+    if (!Number.isInteger(built[key])) {
+      fail(`builtFrom.${key} must be an integer`);
+    }
+  }
+  if (
+    built.pythonSet !== null &&
+    (typeof built.pythonSet !== "string" || built.pythonSet === "")
+  ) fail("builtFrom.pythonSet must be a string or null");
+  if (
+    (value.memoryBytes !== undefined || (value.format as number) >= 4) &&
+    (!Number.isInteger(value.memoryBytes) || (value.memoryBytes as number) <= 0)
+  ) fail("memoryBytes must be a positive integer");
+  if (
+    value.restorePeakMiB !== undefined &&
+    (!Number.isInteger(value.restorePeakMiB) ||
+      (value.restorePeakMiB as number) <= 0)
+  ) fail("restorePeakMiB must be a positive integer");
+  const contents = value.contents as
+    | { packages?: unknown; remark?: unknown }
+    | undefined;
+  if (
+    contents !== undefined &&
+    (typeof contents?.remark !== "string" ||
+      !Array.isArray(contents.packages) ||
+      !contents.packages.every((p) =>
+        p !== null && typeof p === "object" &&
+        ["name", "version", "build"].every((k) =>
+          typeof (p as Record<string, unknown>)[k] === "string"
+        )
+      ))
+  ) fail("contents must be {packages: [{name, version, build}], remark}");
+  const store = value.store === undefined
+    ? undefined
+    : parseStorePin(value.store, fail);
+  return {
+    releaseRepo: value.releaseRepo as string,
+    release: value.release as string,
+    format: value.format as number,
+    sha256: value.sha256 as string,
+    size: value.size as number,
+    builtFrom: {
+      kernelSha256: built.kernelSha256 as string,
+      kernelRev: built.kernelRev as string,
+      sealVersion: built.sealVersion as number,
+      bootSetup: built.bootSetup as number,
+      imageSha256: built.imageSha256 as string,
+      pythonSealSha256: built.pythonSealSha256 as string | null,
+      pythonSet: built.pythonSet as string | null,
+    },
+    ...(value.memoryBytes === undefined
+      ? {}
+      : { memoryBytes: value.memoryBytes as number }),
+    ...(contents === undefined
+      ? {}
+      : { contents: contents as NonNullable<SnapshotPin["contents"]> }),
+    ...(value.restorePeakMiB === undefined
+      ? {}
+      : { restorePeakMiB: value.restorePeakMiB as number }),
+    ...(store === undefined ? {} : { store }),
+  };
 }
 
 export async function loadPins(path: string): Promise<Pins> {

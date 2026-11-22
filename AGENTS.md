@@ -1,66 +1,119 @@
 # Agent Instructions — yurt-playground
 
-Canonical instructions for AI coding agents (Claude Code, Codex, etc.) working
-in this repo. `CLAUDE.md` points here.
+Org-wide rules live in the `YurtOS/yurtos-rules` repository, not here. After
+this file, read its `AGENTS.md` and `org.md` in full, before changing anything.
+
+It is a checkout named `yurtos-rules` next to this repository's primary checkout
+(read it, do not edit it): `~/work/yurtos/yurtos-rules` locally,
+`/home/user/yurtos-rules` in a Claude cloud session.
+
+- If it is missing in a Claude cloud session, attach it read-only with
+  `add_repo` (`owner: YurtOS`, `repo: yurtos-rules`, `access: read`), clone it
+  as the tool instructs into a directory named exactly `yurtos-rules`, then
+  `register_repo_root` (it rejects any other final path segment).
+- If none of these works, stop. Do not read, edit or run anything else. Tell the
+  user the rules are missing and that this is an environment problem for them to
+  fix.
+
+Skills load as `yurtos-rules:<skill>` only if the user has installed the Claude
+Code plugin on this machine
+(`claude plugin marketplace add YurtOS/yurtos-rules`, then
+`claude plugin install yurtos-rules@yurtos-rules`). Do not install it yourself.
+Without it, and in cloud sessions, read `skills/<name>/SKILL.md` in the
+yurtos-rules checkout.
+
+If a rule here and an org rule disagree, stop and tell the user.
+
+`CLAUDE.md` points here. This repository's hosted CI budget is
+[Hosted CI budget during draft review](#hosted-ci-budget-during-draft-review).
 
 ## Project shape
 
 - **Purpose:** the in-browser Yurt playground. A static page boots a real Yurt
-  sandbox: first BusyBox/`ash`, then preinstalled CPython, then the existing
-  `yurt-jupyter` stack. This repo owns the page, the local COOP/COEP server,
-  artifact pins, and Playwright acceptance. It does **not** own the kernel,
-  guest toolchain, image recipes, or Jupyter payload.
+  sandbox in the tab (BusyBox `ash`, CPython and the `yurt-jupyter` stack); by
+  default it restores a snapshot made for the device. The same page is the
+  desktop app's front end, over a native host. This repo owns the page, the
+  local COOP/COEP server, the desktop launcher, artifact pins, and Playwright
+  acceptance. It does **not** own the kernel, guest toolchain, image recipes, or
+  Jupyter payload.
 - **Languages:** TypeScript on Deno (`deno.json`).
-- **Plan:**
-  [`docs/superpowers/plans/2026-08-17-browser-yurt-playground.md`](./docs/superpowers/plans/2026-08-17-browser-yurt-playground.md).
+- **Docs:** [`README.md`](./README.md) for what the playground is today,
+  [`docs/MAINTAINING.md`](./docs/MAINTAINING.md) for releasing and snapshots.
+  The original plan,
+  [`docs/superpowers/plans/2026-08-17-browser-yurt-playground.md`](./docs/superpowers/plans/2026-08-17-browser-yurt-playground.md),
+  is history.
 
 ## Sibling repos (do not reimplement here)
 
 Check these out next to this repo (`../<name>`). Scripts read `YURT_KERNEL_ROOT`
 / `YURT_PORTS_ROOT` with those relative defaults.
 
+Only this repository and `YurtOS/yurt-packages` are public; the others are
+private, so they are named here without links.
+
 | Repo                                                              | What it owns                                                               |
 | ----------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| [`YurtOS/yurtos-kernel`](https://github.com/YurtOS/yurtos-kernel) | Kernel wasm, JS host (`attachHostPty`, `dialSandboxPort`, `pumpPtyMaster`) |
-| [`YurtOS/yurt-ports`](https://github.com/YurtOS/yurt-ports)       | `playground-image` recipe (`playground.yurtimg`)                           |
-| [`YurtOS/yurt-packages`](https://github.com/YurtOS/yurt-packages) | Published BusyBox / later CPython packages                                 |
-| [`YurtOS/yurt-jupyter`](https://github.com/YurtOS/yurt-jupyter)   | Jupyter ipykernel payload (unchanged by this page)                         |
+| `YurtOS/yurtos-kernel` (private)                                  | Kernel wasm, JS host (`attachHostPty`, `dialSandboxPort`, `pumpPtyMaster`) |
+| `YurtOS/yurt-ports` (private)                                     | `playground-image` recipe (`playground.yurtimg`)                           |
+| [`YurtOS/yurt-packages`](https://github.com/YurtOS/yurt-packages) | Published packages (the Python set, Node, ...)                             |
+| `YurtOS/yurt-jupyter` (private)                                   | Jupyter ipykernel payload (unchanged by this page)                         |
 
 Kernel primitives stay in `yurtos-kernel`. Image composition stays in
 `yurt-ports`. Do not vendor `kernel.wasm` source or port scripts here.
 
 ## Locked decisions
 
-- In-browser. Not a websocket to a native `yurt-runtime-wasmtime`.
+- The hosted page runs the sandbox in the tab, not over a websocket to a native
+  runtime. Only the desktop app's page reaches a native host, through WebSockets
+  on its launcher's origin.
 - One sandbox, one VFS. xterm talks to a host-owned PTY.
 - Jupyter JS dials a port the guest is already listening on (`dialSandboxPort`).
-  No `Deno.connect`, no host OS TCP, no guest egress.
+  No `Deno.connect`, no host OS TCP, no guest egress, with one exception.
+- The exception: the page's package relay (`src/pkg_relay.ts`) listens on the
+  sandbox's loopback (`127.0.0.1:7417`) so the guest's own `pkg` can reach
+  YurtOS/yurt-packages. It answers only `GET`s of files under
+  `PACKAGE_REPO_URL`, which the page fetches with the browser's `fetch`, under
+  the CSP's `connect-src`, with bounded sizes and timeouts. `pkg` verifies every
+  byte as on the desktop. One more route, opt-in: a page set up for Playwright
+  (`?env=playwright`) serves the guest a DevTools endpoint at `127.0.0.1:9222`
+  (`src/cdp_bridge.ts`) whose messages go to the Yurt browser bridge extension
+  (`extension/`), which drives tabs it opens in the user's browser only after a
+  person allows it in the extension's own window. Through those tabs a guest can
+  load any URL with the browser's sign-ins: that is the feature, and the
+  approval is its boundary. And one route the user turns on: once
+  `NETWORK_RELAY` in `src/network_config.ts` names a relay (the deployed one
+  does), the terminal bar offers "Network", off on every new tab, and so do the
+  Notebook and Lab pages for their own sandbox (a corner panel, off on every
+  load). On, the guest's TCP connects go to public addresses on ports 80, 443
+  and 9418 only, each as a WebSocket to the relay (`relay/`), which checks port
+  and address again; a DNS on the guest's `127.0.0.1:53` answers from the
+  relay's resolution (`src/network.ts`). No UDP leaves. With a relay configured
+  the page also loads Cloudflare Turnstile (its script and challenge frame),
+  which the relay requires before it gives the tab a token. Guests get no other
+  route out of the sandbox: no other host, no DNS.
 - The Notebook/Lab interface is JupyterLite's frontend and server shim with one
   kernel, `yurt`, relaying to the guest `ipykernel`. JupyterLite's own kernels
   (Pyodide, xeus) never ship: the kernel is not replaced, only fronted.
 - GitHub Pages cannot set COOP/COEP. Local `scripts/serve.ts` and Cloudflare
-  Pages (or equivalent) can.
+  Pages (or equivalent) can. A GitHub Pages preview of a UI change gets them
+  from a service worker in its own build only (`--gh-pages-preview`,
+  `docs/MAINTAINING.md` "Previews"); production never carries it.
 - Pins are git SHA + sha256 in `artifacts/pins.json`. Blobs (`*.wasm`,
   `*.yurtimg`) are gitignored.
 
-## KISS: the simplest thing that works
+## KISS: additions for this repository
 
-Prefer the simplest implementation that satisfies the plan and passes the gates.
-Complexity has to be earned by a locked decision, a failing test, or a measured
-number — never by anticipation.
+org.md "KISS, except where security says otherwise" applies in full, including
+its security carve-out. On top of it, here:
 
-- **Solve the case in front of you.** No configuration knobs, options bags, or
-  abstraction layers added for a caller that doesn't exist yet. This is one page
-  booting one sandbox; when a second consumer appears, generalize then.
+- A locked decision above earns complexity the way the spec does in org.md.
+- This is one page booting one sandbox; when a second consumer appears,
+  generalize then.
 - **Fewest moving parts.** No framework, bundler, or state-management layer
   where a module and the DOM will do. Prefer a direct call into the kernel's JS
   host over a wrapper of our own, and one more function over one more module —
   unless the larger structure is what makes the code readable.
-- **No defensive paths for states that cannot occur.** If an invariant holds,
-  throw on its violation instead of inventing a recovery path nothing exercises.
-  A silent `catch` that hides a broken boot is worse than a loud failure.
-- **Optimize on evidence.** Caching, prefetching, and worker tricks require a
-  measurement that demonstrates the win.
+- A silent `catch` that hides a broken boot is worse than a loud failure.
 - **Simplify before review.** Delete the debug flag, the dead branch, and the
   helper that ended up with one caller. Reviewers read the diff you leave, so a
   smaller one is a faster merge.
@@ -68,30 +121,78 @@ number — never by anticipation.
 Simple is not terse or clever: clear names, obvious control flow, and a comment
 that says _why_ beat a compact expression that has to be decoded.
 
-## The bar: CI green = done
+## Verification
 
-`.github/workflows/ci.yml` is the gate: `deno fmt --check`, `deno lint`,
-`deno check '**/*.ts'`, `deno test --no-check` (with read/write/env/net/run). CI
-checks out `yurtos-kernel` at the pinned rev so `@yurt/*` imports resolve. A
-change is not done until that job is green. Do not claim completion from a local
-pass alone.
+What "done" means is org.md "Done means verified": these local checks pass and
+every required hosted check on the PR is green.
 
-## Development procedure (non-trivial work)
+- Local, the commands `.github/workflows/ci.yml` runs:
 
-Always work in your own worktree. Follow the superpowers loop:
+  ```sh
+  deno fmt --check
+  deno lint
+  deno check '**/*.ts'
+  PLAYGROUND_REQUIRE_ARTIFACTS=1 YURT_KERNEL_ROOT=../yurtos-kernel \
+    deno test --no-check --allow-read --allow-write --allow-env --allow-net --allow-run
+  ```
 
-1. **Brainstorm** — `superpowers:brainstorming`.
-2. **Plan** — `superpowers:writing-plans`. Plans live under
-   `docs/superpowers/plans/YYYY-MM-DD-<slug>.md`. Specs under
-   `docs/superpowers/specs/`.
-3. **Implement with TDD** — `superpowers:test-driven-development`. Red test
-   first. Playwright specs live under `tests/`.
-4. **Verify** — `superpowers:verification-before-completion`.
-5. **Request review** — `superpowers:requesting-code-review`.
-6. **Receive review** — `superpowers:receiving-code-review`.
+  `deno.json` resolves `@yurt/*` imports into a sibling `../yurtos-kernel`
+  checkout; CI checks it out at the pinned rev. The tests need the pinned blobs
+  (`scripts/install-pinned-artifacts.sh`; CI prepares the rest in
+  `.github/actions/site-inputs`). Without `PLAYGROUND_REQUIRE_ARTIFACTS=1` some
+  artifact-backed tests skip instead of failing, and such a run is not a pass.
+- Hosted: `.github/workflows/ci.yml`.
 
-Never merge a pull request unless the user has explicitly ordered that merge in
-the current task.
+A pull request skips the slow acceptance scenes (`MERGE_TIER` in ci.yml:
+playground, jupyterlite, slim, browser_bridge); they run on every push to main.
+Add the `ci:full` label to a pull request that changes what they cover (the
+boot, the terminal, the notebook pages, the slim image, the browser bridge) so
+they run before the merge, and check main's run after merging one without it.
+
+### Hosted CI budget during draft review
+
+This is the hosted CI budget that the "Hosted CI cost during PR review" section
+of
+[yurtos-rules `org.md`](https://github.com/YurtOS/yurtos-rules/blob/main/org.md#hosted-ci-cost-during-pr-review)
+defers to for this repository, modeled on
+[yurtos-kernel's](https://github.com/YurtOS/yurtos-kernel/blob/main/docs/contributing/gates.md#manual-ci-budget-during-draft-review):
+**at most one hand-triggered merge-tier round per draft PR, at its final head.**
+A round is one `ci.yml` run of the merge-tier acceptance scenes (`MERGE_TIER`)
+at the reviewed head, started by adding `ci:full` or by one `workflow_dispatch`
+of `ci.yml` on the PR branch. It is not a separate budget for every review
+round.
+
+- Between review rounds, use the pull request tier every push already runs
+  (fmt/lint, the test shards, the other acceptance scenes) and local tests
+  narrowed to what changed. Do not add `ci:full` or dispatch `ci.yml` after each
+  round. While `ci:full` is on, every push reruns the merge tier, so add it only
+  for the final round and take it off before any push that is not the fix for a
+  failed final round. Adding any other label also starts a run, so leave labels
+  alone during review.
+- Complete the last fix, its review and the local checks before spending the
+  round. Check for existing runs at that exact head rather than duplicating
+  in-progress or successful coverage. Marking a PR ready runs nothing extra.
+- If that final round fails, fix the failure, review the delta and pass the
+  local checks before running once more at the corrected final head. Repeat this
+  only for an actual failed final round; a successful run does not authorize
+  speculative reruns.
+- A preview deploy (`preview-gh-pages.yml`, or `deploy-pages.yml` with `ref`,
+  see `docs/MAINTAINING.md` "Previews") is not CI: dispatch one only when the
+  user asks or the change needs a real-device check, once, at the final head.
+  `regenerate-jupyter-payload.yml` and `release-desktop.yml` belong to releases,
+  not draft review.
+- This applies to every session and any agents or subagents it starts. Put a
+  link to this section and the instruction to follow it in their briefs,
+  including reviewer briefs.
+
+## Development procedure: additions for this repository
+
+The procedure is org.md "Workflow" (superpowers loop, red test first, review by
+both a Claude and a Codex agent) and "Merge authority". On top of it, here:
+
+- Playwright specs live under `tests/`. They run the installed Google Chrome
+  through `scripts/browser.ts`; `PLAYGROUND_BROWSER=chromium` runs Playwright's
+  own build instead (after `playwright install chromium`).
 
 ## Code standards
 
@@ -102,51 +203,44 @@ the current task.
 - Comments are short and explain non-obvious constraints, not the change
   history.
 
-## Keep PRs reviewable
+## Keep PRs reviewable: additions for this repository
 
-A PR must be reviewable as a single cohesive unit — one idea, one test strategy
-— that one reviewer (human or agent) can hold in mind and check in one pass.
-Size is a proxy for that, not the goal. Aim for roughly **1000 lines of new or
-changed logic**, weighted by review cost: tests count at about half (repetitive
-tests are cheap to check), while mechanical moves, renames, formatting-only
-changes, `docs/` (specs, plans, ADRs) and other prose-only files, and
-regenerated output (ABI codegen, lockfiles, vendored or generated fixtures) are
-free. Regenerated output must be isolated in its own commit and named as
-generated in the PR description. Huge PRs cannot be reviewed, so they get
-rubber-stamped or stall.
+PR size, how test lines are counted and reported, stacking and retargeting, and
+mechanical-only PRs are org.md "Pull requests". On top of it, here:
 
-This is a soft target, not a hard cap. Going over is fine, up to roughly 2-3k
-weighted lines, when the PR is one cohesive change that doesn't split cleanly;
-say why in the PR description. Beyond that, ask the user before opening it.
-
-- **Plan the split up front.** During `superpowers:writing-plans`, cut the work
-  into slices that each build, pass CI, and make sense alone (e.g. refactor or
-  plumbing → behavior → callers/migration → cleanup). Do not write the whole
-  change and slice it afterwards.
+- `docs/` (specs, plans, ADRs) counts as prose, so it is free. Name regenerated
+  output as generated in the PR description, as well as putting it in its own
+  commit.
+- Each slice builds, passes CI, and makes sense alone (e.g. refactor or plumbing
+  → behavior → callers/migration → cleanup). Keep the stack's overall goal in
+  the first PR's description.
 - **Don't slice just to hit a number.** Splitting a cohesive change into PRs
   that can't be understood alone makes review harder, not easier. Split along
   real seams, not line counts.
-- **Stack the PRs.** Each slice is its own PR based on the previous slice's
-  branch (the first on `main`); say "Stack: N/M, depends on #X" in each
-  description and keep the stack's overall goal in the first PR. Retarget to
-  `main` as lower PRs merge. Never merge a PR without an explicit order from the
-  user.
-- **Mechanical changes ride alone.** Renames, moves, and formatting-only changes
-  go in their own PR so reviewers can skim them; don't mix them with logic
-  changes.
 - Size is never a reason to skip tests or the red-test-first rule; a slice's
   tests ship in that slice.
 - If a PR you're working on is already well over the target, say so to the user
   and propose a split rather than adding to it.
 
-## Conventions
+## Conventions: additions for this repository
 
-- Commits: short imperative subject (`feat:`, `fix:`, `docs:`, `chore:`).
-- Do not add files outside the documented layout without a reason. Do not create
-  markdown files speculatively.
+Commit messages, plan and spec paths and markdown files follow org.md
+"Conventions". On top of it, here:
+
+- Do not add files outside the documented layout without a reason.
 - Never commit `artifacts/*.wasm` or `artifacts/*.yurtimg`.
 
 ## When in doubt
 
 Read the skill before acting. If a skill applies, invoking it is mandatory — see
 `superpowers:using-superpowers`.
+
+## Worktree hygiene
+
+- Work in your own worktree. When you finish a PR (merged or closed) or a
+  review, remove the worktree you created for it (`git worktree remove`).
+  Confirm it is clean and the branch is pushed first, and push unpushed work to
+  a branch rather than losing it.
+- Delete only your own worktrees and build output, never another session's.
+  Build directories run to tens of GB per worktree; ask an owner before pruning
+  theirs.

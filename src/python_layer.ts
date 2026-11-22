@@ -422,24 +422,31 @@ export type LayerInstallDeps<E> = {
   pristine: boolean;
   /** The key the live index resolves the set to now. `undefined` when the
    * repository answered but names no usable set (yanked, removed): then no
-   * layer is used either, and `pkg` says why. Throws when the repository
-   * cannot be reached in time. */
+   * layer is used either, and `pkg` says why. Throws IndexUnreadable when
+   * the index cannot be had (the stored layer is then used); any other
+   * throw uses no layer, with a warning. */
   liveKey(): Promise<string | undefined>;
   /** The guest's own install; `between` runs right before `pkg` and right
    * after it succeeded. The caller runs all of this in one turn of the
    * install queue, so nothing else installs meanwhile. */
   install(between: { before(): void; after(): void }): Promise<void>;
-  /** Whether the sandbox has a python3 now (src/coordinator_start.ts):
-   * `undefined` when the probe could not tell. */
+  /** Whether the sandbox has the Python set now, python3 and the
+   * kernel's packages (src/coordinator_start.ts): `undefined` when the
+   * probe could not tell. */
   probe(): Promise<boolean | undefined>;
   progress(text: string): void;
 };
+
+/** The live index could not be had -- not downloaded (in time), or not
+ * parsed: no answer, as offline -- a stored layer, or a snapshot, is then
+ * used. */
+export class IndexUnreadable extends Error {}
 
 /** Install the Python set: from this browser's stored layer when it is
  * the set the live index resolves to (or, when the index cannot be had,
  * the one stored for this image), else with the guest's `pkg` -- keeping
  * what that install wrote as the layer for the next visit. A layer that
- * does not apply, or leaves no python3, is dropped and fails as
+ * does not apply, or leaves no Python set, is dropped and fails as
  * {@link LayerFailed}. Failing to keep a layer fails nothing. */
 export async function installWithLayer<E>(
   deps: LayerInstallDeps<E>,
@@ -451,14 +458,33 @@ export async function installWithLayer<E>(
     deps.pristine
   ) {
     let key: string | undefined;
+    /** The live index could not be had: offline. */
+    let offline: IndexUnreadable | undefined;
     try {
       live = await deps.liveKey();
       key = live;
-    } catch {
-      // No live answer: the layer this browser kept for this image, if any.
-      key = await store.storedKey(image);
+    } catch (error) {
+      // No live answer (the index could not be had: offline, not in time,
+      // unparsable): the layer this browser kept for this image, if any.
+      // Anything else went wrong in resolving the answer: no layer, and the
+      // install below uses pkg -- said, not swallowed.
+      if (error instanceof IndexUnreadable) {
+        offline = error;
+        key = await store.storedKey(image);
+      } else {
+        console.warn("the live Python set could not be resolved:", error);
+        key = undefined;
+      }
     }
     const entries = key === undefined ? undefined : await store.get(key);
+    if (offline !== undefined) {
+      console.info(
+        entries === undefined
+          ? "the live index could not be had and this browser keeps no usable layer for this image: installing with pkg"
+          : "the live index could not be had: using this browser's stored layer",
+        offline,
+      );
+    }
     if (entries !== undefined) {
       deps.progress("Python: installing from this browser's earlier install");
       let cause: string;
@@ -467,7 +493,7 @@ export async function installWithLayer<E>(
         // A probe that could not tell (it timed out) is no reason to throw
         // a good layer away; the kernel's start tells.
         if (await deps.probe() !== false) return "layer";
-        cause = "no python3 after it";
+        cause = "no Python set after it";
       } catch (error) {
         cause = error instanceof Error ? error.message : String(error);
       }

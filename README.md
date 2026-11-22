@@ -1,123 +1,138 @@
 # Yurt playground
 
-**Try it: <https://yurt-playground.pages.dev>**
+A Linux sandbox that runs entirely in your browser tab: a shell, Python and
+Jupyter, with nothing running on a server. It runs on Yurt, an original
+Linux-compatible kernel written in Rust and compiled to WebAssembly. Yurt is not
+Linux itself: it implements the Linux system-call interface, so ordinary Linux
+programs (BusyBox, CPython, git), compiled to WebAssembly for it from their
+usual sources, run as they would on Linux. The same sandbox also runs natively
+on your machine as a desktop app.
 
-A Linux sandbox that boots inside your browser tab — a BusyBox shell, CPython
-3.14 with NumPy, and Jupyter (Notebook and JupyterLab) on a real `ipykernel` —
-running on the [Yurt](https://github.com/YurtOS) kernel compiled to WebAssembly.
-Nothing runs on a server: the kernel, the filesystem and Python all execute in
-the tab, and the page keeps working with the network off.
+What a sandbox in a tab is for: coding environments that need no server per
+user, a place to run the tools an AI agent calls, away from your machine,
+notebooks that keep working offline, and sandboxes embedded in a product of your
+own.
 
-Where it is going: [the roadmap](docs/ROADMAP.md). What changed in each release:
-[the release notes](https://yurtos.github.io/yurt-playground/).
+## Try it
 
-The playground is a demo of one idea: a Linux sandbox that runs the same image
-in a browser tab, on a laptop and on a server, and that can be suspended to a
-file and resumed anywhere. Where that is the right tool, and where it is not:
-[Where Yurt works best](https://github.com/YurtOS/yurtos-kernel/blob/main/docs/WHY_YURT.md).
+**<https://yurt-playground.pages.dev>**: press _Start the sandbox_.
 
-The same playground is also a **desktop app** for macOS and Linux, where the
-sandbox runs natively on your machine instead of in the tab: it boots in
-seconds, and the guest has real network access. Download links are on the home
-page.
+- **Boot.** The page restores a ready-made snapshot of a booted sandbox: a shell
+  prompt in about 2 s and Jupyter ready in about 5 s on a desktop (measured in
+  Chromium; WebKit, Safari's engine, takes about 8 s to Jupyter).
+- **First visit.** A desktop browser downloads about 152 MB once: the 8.5 MB
+  kernel and a 143 MB snapshot with Python and Jupyter. A tablet or phone
+  downloads about 86 MB: the kernel and a 77 MB snapshot with Python. A repeat
+  visit takes them from the browser's cache.
+- **Phones and tablets boot too**: both get the shell and Python. On a tablet
+  the Notebook and JupyterLab run too, each restoring the desktop's snapshot in
+  a sandbox of its own with a 1 GiB kernel. A phone's kernel gets 512 MiB and no
+  Jupyter; `?memory=1g` gives it what a tablet gets, to try.
+- **Go, on a desktop.** Choose _Go_ on the start screen, or open `?env=go`: the
+  sandbox comes with `go` and its standard library already compiled, so the
+  first `go run` of a small program (one that imports `fmt`, `bufio`, `os`,
+  `strings`) takes about 10 s instead of about 10 minutes (measured in headless
+  Chromium). It holds no Python or Jupyter, downloads about 254 MB once, and is
+  never offered on a phone or tablet.
 
-## What you get
+The Notebook and JupyterLab links at the top of the page open the full Jupyter
+interfaces. What changed in each release is in
+[the release notes](https://yurtos.github.io/yurt-playground/); where it is
+going, in [the roadmap](docs/ROADMAP.md).
 
-|                                                              | Browser                                                                       | Desktop app                                                |
-| ------------------------------------------------------------ | ----------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Terminal (`ash`), Python 3.14, NumPy, Jupyter Notebook / Lab | ✓                                                                             | ✓                                                          |
-| Runs in                                                      | the tab (WebAssembly, no server)                                              | the native Yurt runtime on your machine                    |
-| Boot                                                         | ~30–60 s (compiles in the tab)                                                | ~12 s                                                      |
-| Network from inside the sandbox                              | none, by design                                                               | yes (Python verifies TLS; BusyBox `wget` does not)         |
-| Works offline                                                | yes                                                                           | yes                                                        |
-| Needs                                                        | a desktop browser with cross-origin isolation (Chrome, Edge, Firefox, Safari) | any browser to display; nothing to install besides the app |
+## What works today
 
-## Supported packages
+|                                    | Browser                                                              | Desktop app                                        |
+| ---------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------- |
+| Shell (BusyBox `ash`), git, `curl` | ✓                                                                    | ✓                                                  |
+| Python 3.14                        | ✓                                                                    | ✓                                                  |
+| NumPy                              | ✓ desktop                                                            | ✓                                                  |
+| Jupyter Notebook and JupyterLab    | ✓ desktop                                                            | ✓                                                  |
+| Node.js 22, Gemini CLI             | as packages (Gemini CLI needs the desktop app's network for its API) | ✓ in the image                                     |
+| Go, `gh`, clang (C and C++)        | as packages, desktop (`gh` needs the desktop app's network)          | as packages                                        |
+| Runs in                            | the tab (WebAssembly, no server)                                     | the native Yurt runtime on your machine            |
+| Boots                              | the slim image, or a snapshot of it with Python installed            | the full image                                     |
+| Network from inside the sandbox    | none, by design; `pkg` reaches its repository through the page       | yes (Python verifies TLS; BusyBox `wget` does not) |
+| Works offline                      | yes, after the sandbox is up                                         | yes                                                |
+| Needs                              | Chrome or Edge (desktop), or Safari (Mac, iPhone, iPad); not Firefox | macOS (Apple Silicon) or Debian/Ubuntu             |
 
-The browser page, the desktop app and `yurt run playground` boot the same image
-(pinned in `artifacts/pins.json`). It contains:
+In the browser, files live in the tab's memory: a reload starts a fresh sandbox
+(_Download home_ saves your home directory first). Planned, not done yet: files
+that survive a reload, Python native extensions loaded at run time, and Jupyter
+on phones by default. The [roadmap](docs/ROADMAP.md) has the rest.
 
-| Package                   | Version               | For                                                                                                                                           |
-| ------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| BusyBox                   | 1.37.0                | 151 applets, `ash` among them: core utilities, `grep`, `sed`, `awk`, `vi`, `less`, `tar`, `gzip`, `bzip2`, `unzip`, `wget`, `nc`, `ps`, `top` |
-| CPython, pip              | 3.14.7, 26.1          | `python3`; `pip`                                                                                                                              |
-| NumPy                     | 2.5.0                 | arrays                                                                                                                                        |
-| ipykernel, IPython, pyzmq | 7.2.0, 9.13.0, 26.4.0 | the Jupyter kernel behind Notebook and Lab                                                                                                    |
+### What is in the sandbox
 
-All four are in the image.
+The browser boots the **slim image** (23.5 MB): BusyBox 1.37.0 (151 applets,
+`ash` among them), `git`, `curl`, `jq`, `sqlite3`, `zsh`, `make`, `zstd`, `xz`,
+CA certificates, the `pkg` package client and a passwordless `sudo` for the
+default user. By default it restores a snapshot of that image instead of booting
+it: on a desktop with the Python set installed (or, when Go is chosen, with `go`
+and a warm build cache instead), on a tablet or phone with Python alone.
 
-### Installing more
+The desktop app and `yurt run playground` boot the **full image** (92 MB): the
+slim image plus the Python set, Node.js, Gemini CLI and Datasette.
 
-The image is becoming modular: a small base image (BusyBox, `git`, `curl`, `jq`,
-`sqlite3`, `zsh`, `make`, `zstd`, `xz`, CA certificates, and a passwordless
-`sudo` for the default user) with the `pkg` client and a trusted-repository
-configuration for
-[YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), and the heavy
-tools as signed packages there. That base image is in progress; the image pinned
-here carries neither `pkg` nor `sudo` yet, so nothing can be installed into it
-today.
+The Python set is CPython 3.14.7 with pip 26.1, NumPy 2.5.0, and the Jupyter
+kernel (`ipykernel` 7.2.0, IPython 9.13.0, pyzmq 26.4.0).
 
-- **Desktop app and `yurt run`:** the sandbox has a network, so
-  `sudo pkg update`, then `sudo pkg install NAME`, in the terminal. Every `pkg`
-  command needs root, `sudo pkg list` and `sudo pkg search` too: it locks and
-  writes its cache and state under `/var/cache/yurt-pkg` and
-  `/var/lib/yurt-pkg`, and installs into system directories. That is what the
-  base image's passwordless `sudo` is for; the browser's _Packages_ control uses
-  the same `sudo`. `pip install` of pure-Python packages and matching wheels
-  works there already.
-- **Browser:** the sandbox has no network, so the page fetches for it. Press
-  _Packages_ in the terminal's bar, then _Install_ next to a package; the line
-  below the list shows the download and then `installed NAME` (or why pkg
-  refused), and the package's command runs in the terminal. The page downloads
-  the repository's signed index, the package metadata, and the archives with
-  their Sigstore bundles, and lays them out in the sandbox as a file-backed copy
-  of the repository. The sandbox's own `pkg` then runs `update` and `install`
-  against that copy, trusting the signing identity and Sigstore trust root the
-  image configures for the real repository, so every check it makes on the
-  desktop (index and archive signatures, every sha256 and size the index names,
-  the archive's own metadata) runs unchanged. Its rollback protection starts
-  from an empty cache in each session, as on a fresh desktop sandbox.
-  `sudo pkg install` typed in the browser terminal still fails: only the
-  _Packages_ control can download.
-  - Installed packages live in the tab's memory, like every file there, and a
-    reload loses them
-    ([#81](https://github.com/YurtOS/yurt-playground/issues/81)).
-  - A tablet or phone has much less memory for one tab
-    ([#200](https://github.com/YurtOS/yurt-playground/issues/200)), so there an
-    install whose downloads (archives, signatures, index and metadata) add up to
-    more than 16 MiB is refused. Elsewhere the limit is 256 MiB.
+## Help bring Yurt to customers
 
-Which packages are published, and which are coming, is tracked in
-[YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages) (its signed
-`index.json` is the list), not here. The builds published in yurt-packages today
-predate the current package format and carry placeholder signatures, so `pkg`
-refuses them, in the browser and on the desktop alike, until they are
-republished.
+We're looking for a business partner to help identify customer opportunities,
+build relationships, and bring Yurt to market.
 
-## Desktop app
+Contact Ofer at [ofersa@gmail.com](mailto:ofersa@gmail.com), or
+[Sunny](https://github.com/smarcd) on GitHub.
 
-**macOS** (Apple Silicon). Open `Yurt-Playground-aarch64-apple-darwin.dmg` and
-drag _Yurt Playground_ to Applications. The app is not notarized yet, so macOS
-blocks the first open: allow it under _System Settings → Privacy & Security →
-Open Anyway_ (or run
-`xattr -dr com.apple.quarantine "/Applications/Yurt
-Playground.app"`), then open
-it again. A terminal window shows the server; close it to stop.
+## The agent's model
 
-**Debian / Ubuntu.**
-`sudo apt install ./Yurt-Playground-<arch>-unknown-linux-gnu.deb`, then run
-`yurt-playground` (or the _Yurt Playground_ desktop entry). Ctrl-C stops it.
+The home page's agent runs a model in the tab, on WebGPU: Gemma 4, whose weights
+download once from Hugging Face and then stay in the browser. With that model,
+nothing you type leaves your computer. A browser without WebGPU is told so. The
+agent can also run a model on OpenRouter, with your own OpenRouter account (the
+only choice on a tablet or phone); then your task and what the agent reads in
+the sandbox go to OpenRouter (see [Privacy](#privacy)).
 
-Either way the launcher prints `Yurt playground: http://127.0.0.1:<port>/` and
-opens it in your default browser. `yurt-playground --port N` fixes the port and
-`--no-open` skips the browser (a headless box, a script); `--help` lists them.
+## Privacy
 
-Inside the app: the launcher (this repo, compiled with Deno), the site as
-deployed, and the native sandbox — `yurt-desktop-host`, the Yurt runtime, the
-kernel and the playground image — as pinned in `artifacts/pins.json`. The
-launcher starts the host, which boots the image with a public network interface,
-your resolvers and a few mapped ports, and relays the terminal and the Jupyter
-kernel to the page over WebSockets on the launcher's own origin.
+The sandbox runs in the tab, and what you do in it stays in this browser unless
+you choose otherwise. What does leave it, and where it goes:
+
+- **Cloudflare** hosts the site. The production site
+  (`yurt-playground.pages.dev`) counts page views with Cloudflare Web Analytics,
+  which sets no cookies (`src/web_analytics.ts`); previews, local serving and
+  the desktop app do not. When you turn the sandbox's network on, Cloudflare
+  Turnstile (`challenges.cloudflare.com`) checks the browser before the relay
+  gives it a token.
+- **Yurt's relay** (`yurt-relay.ofersa.workers.dev`, `relay/`), only when you
+  turn the sandbox's network on: the sandbox's TCP connections and name lookups
+  go out through it. It sees which names are looked up, which addresses are
+  reached and how much data passes, not the contents (TLS is end to end).
+- **GitHub** (`raw.githubusercontent.com`) serves the package repository,
+  [YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages), from which
+  the page reads the index and installs packages. A shared snapshot link
+  (`?snapshot=<id>`) also asks `api.github.com` which snapshots this repository
+  published, then downloads that snapshot from `raw.githubusercontent.com`.
+- **Hugging Face** serves the in-tab model's weights, downloaded when you start
+  the agent with that model. The model runs in the tab.
+- **OpenRouter**, only when you choose an OpenRouter model for the agent: your
+  task and what the agent sees in the sandbox (the output of its commands, the
+  files it reads) go to OpenRouter under your account. Your OpenRouter key is
+  kept in this browser's storage and sent only to `openrouter.ai`.
+- **The sites a Playwright program opens**, only when you choose Playwright and
+  allow it in the Yurt browser bridge extension's window: the program drives
+  tabs in your browser, which load what it asks for, with your browser's
+  sign-ins ([Playwright in the sandbox](#playwright-in-the-sandbox)).
+
+Nothing else leaves the browser, and the page's Content Security Policy
+(`src/csp.ts`) lets it connect only to its own site and the addresses above. The
+desktop app is different: its sandbox runs natively on your machine and has the
+network. The sandbox's files live in the tab's memory. What the page keeps
+between visits stays in this browser's storage (Cache Storage, IndexedDB, the
+origin private file system and localStorage). It includes downloaded packages,
+model weights and snapshot parts; the sealed sandboxes of the agent (with its
+chat), the suspend/resume notebook and the snapshot demo; and your OpenRouter
+key. Clearing the site's data in the browser removes all of it.
 
 ## Driving the sandbox from a program
 
@@ -169,39 +184,204 @@ curl -H "Authorization: Bearer $T" -X PUT --data-binary @data.csv "${U}api/fs/co
 Results are JSON, so a command's output is text there; binary output goes
 through a file. A process running as you on this machine is you: that is the
 whole of the access model. Errors are `{error, code}`; an `Origin` other than
-the launcher's own is refused, so no web page can reach it. The page's
-`window.yurt` and a `curl` share one registry: at most 16 running or stuck
-executions per sandbox, results kept ten minutes or until read.
+the launcher's own is refused, as is any `Host` but `127.0.0.1` or `localhost`
+on the launcher's port (DNS rebinding; a forwarded port or a proxy name gets a
+403), so no web page can reach it. The page's `window.yurt` and a `curl` share
+one registry: at most 16 running or stuck executions per sandbox, results kept
+ten minutes or until read.
+
+## Playwright in the sandbox
+
+On a desktop Chromium browser, a Playwright script inside the sandbox drives the
+browser the page runs in: it opens tabs, reads them and takes screenshots. It
+needs the **Yurt browser bridge** extension.
+
+1. Download
+   [yurt-browser-bridge.zip](https://yurt-playground.pages.dev/yurt-browser-bridge.zip)
+   (also linked from the start screen) and unzip it. On macOS, unzip it
+   somewhere the folder picker shows, such as `~/Downloads` (the picker hides
+   `/private/tmp`).
+2. Open `chrome://extensions` (any Chromium browser: Chrome, Edge, Brave), turn
+   on **Developer mode**, click **Load unpacked** and pick the folder.
+3. Choose **Playwright** on the start screen (or open
+   `?platform=desktop&env=playwright`) and **Start**. The extension opens its
+   own window asking whether this page's sandbox may drive the browser: click
+   **Allow** (its buttons wake after a second).
+4. When the page says Playwright is ready, run in the terminal:
+
+   ```
+   node playwright-example.js https://example.com
+   ```
+
+   It opens a tab, prints its title and saves a screenshot in the sandbox's
+   home. A script of your own starts with
+   `const browser = await require("yurt-chrome").connect();` and opens its tabs
+   in the browser's own profile, as the example does:
+   `const page = await browser.contexts()[0].newPage();`. `browser.newPage()`
+   fails with an error ending in "the Yurt bridge drives tabs in this browser's
+   own profile only (no new contexts)".
+5. To try it against a local server (`deno task serve`, port 4173), load a copy
+   of the extension whose `manifest.json` also lists `"http://127.0.0.1:4173/"`
+   and `"http://127.0.0.1:4173/?*"` in `externally_connectable.matches`.
+6. Remove it from `chrome://extensions` when you are done.
+
+The site restores a sandbox with node and playwright-core already in it when its
+pins name the Playwright snapshot; otherwise the page installs them (about 10
+s).
+
+What you allow is that page and its sandbox: anything running in the page, or in
+the sandbox, can then drive the browser the way the script does, with this
+browser's sign-ins, until the page closes or reloads. Allow it only if you chose
+Playwright on that page yourself. The extension (`extension/` in this
+repository) answers only the playground's own page, uses Chrome's debugger API
+on the tabs it opens itself, and sends them to web pages only (never
+`chrome://`, `file:` or an extension's pages). The agent is off in that sandbox.
+Inside the sandbox, Playwright reaches the extension at `127.0.0.1:9222`, a
+DevTools endpoint only a page set up for Playwright serves
+(`src/cdp_bridge.ts`).
+
+## Desktop app
+
+The same playground, with the sandbox running natively on your machine instead
+of in the tab: it boots in seconds, and the guest has real network access.
+
+**macOS** (Apple Silicon).
+[Download the disk image](https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-apple-darwin.dmg),
+open it and drag _Yurt Playground_ to Applications. The app is not notarized
+yet, so macOS blocks the first open: allow it under _System Settings → Privacy &
+Security → Open Anyway_ (or run
+`xattr -dr com.apple.quarantine "/Applications/Yurt Playground.app"`), then open
+it again. A terminal window shows the server; close it to stop.
+
+**Debian / Ubuntu.** Download the package for
+[x86_64](https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-x86_64-unknown-linux-gnu.deb)
+or
+[arm64](https://github.com/YurtOS/yurt-playground/releases/latest/download/Yurt-Playground-aarch64-unknown-linux-gnu.deb),
+then `sudo apt install ./Yurt-Playground-<arch>-unknown-linux-gnu.deb` and run
+`yurt-playground` (or the _Yurt Playground_ desktop entry). Ctrl-C stops it.
+
+Either way the launcher prints `Yurt playground: http://127.0.0.1:<port>/` and
+opens it in your default browser. `yurt-playground --port N` fixes the port and
+`--no-open` skips the browser (a headless box, a script); `--help` lists them.
+
+Inside the app: the launcher (this repository, compiled with Deno), the site as
+deployed, and the native sandbox (the Yurt desktop host and runtime, the kernel
+and the full image) as pinned in `artifacts/pins.json`. The launcher starts the
+host, which boots the image with a network interface, your resolvers and a few
+mapped ports, and relays the terminal and the Jupyter kernel to the page over
+WebSockets on the launcher's own origin.
+
+The home page also offers the `yurt` command line for macOS and Linux, which
+runs the same image from a shell the way you would use `docker`.
 
 ## How the browser version works
 
-A static page loads `kernel.wasm` and the playground image, boots the kernel in
-web workers, spawns `ash` on a host-side PTY that xterm.js talks to, and
-launches `ipykernel` inside the sandbox. The Jupyter Notebook and JupyterLab
-interfaces are JupyterLite's frontend with one kernel plugin that relays every
-message to that real `ipykernel` — none of JupyterLite's own kernels ship, and
-no Python runs in the browser itself. The page needs cross-origin isolation
-(COOP/COEP headers) for the shared memory the workers use, which is why it is
-hosted on Cloudflare Pages; phones are told the sandbox needs a desktop-class
-tab.
+A static page loads the kernel (`kernel.wasm`) and a snapshot or the slim image,
+boots the kernel in web workers, spawns `ash` on a host-side PTY that xterm.js
+talks to, and launches `ipykernel` inside the sandbox. The Jupyter Notebook and
+JupyterLab interfaces are JupyterLite's frontend with one kernel plugin that
+relays every message to that real `ipykernel`: none of JupyterLite's own kernels
+ship, and no Python runs in the browser itself. The page needs cross-origin
+isolation (COOP/COEP headers) for the shared memory the workers use, which is
+why it is hosted on Cloudflare Pages.
 
 The "Is this really running in your browser?" section on the home page has
-checks you can do yourself, including re-hashing every file the page downloaded
+checks you can do yourself, including re-hashing files the page downloaded
 against the published pins.
 
 A second kernelspec, _Python 3 (Yurt, suspend/resume)_, runs one CPython process
-built so the sandbox can be sealed (`scripts/build-python-seal.sh`): its
-notebook has Suspend and Resume buttons, and a cell that is printing when you
-suspend carries on at the same line when you resume, from the image in the
-browser's IndexedDB. `src/notebook_kernel_worker.ts` is the whole kernel.
+built so the sandbox can be sealed: its notebook has Suspend and Resume buttons,
+and a cell that is printing when you suspend carries on at the same line when
+you resume, from the image in the browser's IndexedDB.
 
-A new release of all of that is one train,
-`playground-<YYYY.MM.DD>-<kernel rev>`, cut by `scripts/release-playground.sh`:
-it dispatches yurt-sandbox's release workflows from exact commits, generates
-`artifacts/pins.json` from what they published, verifies it, and asks before
-merging the pin PR that deploys the page. `--validate` builds everything and
-publishes nothing; `--pins-only` regenerates the pins from releases cut by hand.
+## Installing more
+
+Packages are signed and published in
+[YurtOS/yurt-packages](https://github.com/YurtOS/yurt-packages); its signed
+`index.json` is the list.
+
+- **Desktop app and `yurt run`:** the sandbox has a network, so
+  `sudo pkg update`, then `sudo pkg install NAME`, in the terminal. Every `pkg`
+  command needs root (it writes its cache and state under system directories),
+  which is what the passwordless `sudo` is for. `pip install` of pure-Python
+  packages and matching wheels works there too.
+- **Browser:** the sandbox has no network, so the page fetches for it.
+  `sudo pkg update`, then `sudo pkg install NAME`, works in the terminal as on
+  the desktop: the page answers `pkg` on the sandbox's loopback and downloads
+  only files of the package repository. Or press _Packages_ in the terminal's
+  bar, then _Install_ next to a package. Either way the sandbox's own `pkg`
+  checks every signature, sha256 and size before it installs, and the terminal
+  and the panel share one cache. `pip install` and `wget` still fail: programs
+  in the sandbox have no network of their own.
+  - Installed packages live in the tab's memory, like every file there, and a
+    reload loses them
+    ([#81](https://github.com/YurtOS/yurt-playground/issues/81)), except the
+    Python set: it comes back with the snapshot, or, when the page boots the
+    slim image, from the layer the browser kept of its first install.
+  - A tablet or phone has much less memory for one tab
+    ([#200](https://github.com/YurtOS/yurt-playground/issues/200)), so there an
+    install whose downloads add up to more than 16 MiB is refused. Elsewhere the
+    limit is 256 MiB.
+
+## Downloads, memory and boot times
+
+<!-- snapshot-table:start (scripts/snapshot-table.ts) -->
+<!-- deno-fmt-ignore-start -->
+
+Train `playground-2026.11.18-ac8686f`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
+
+The desktop's holds the Python set and starts the Notebook, the tablet's, which a phone's home page restores too (a tablet's Notebook and JupyterLab restore the desktop's), the interpreter alone; Go's, which a desktop browser restores when Go is chosen, holds the go package and its standard library already compiled, and no Python. A snapshot is sealed with no process in it, so nothing runs or is imported until a restore starts the shell (and, on a desktop, Jupyter). `deno run -A scripts/verify-snapshots.ts [--files] [--live]` checks each against its kind.
+
+| Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
+| --- | --- | --- | --- | --- | --- | --- |
+| desktop | desktop browser (Mac, PC): `?platform=desktop`; the Notebook and JupyterLab on a tablet (iPad), and on a phone with `?memory=1g` | `snapshot-playground-2026.11.18-ac8686f` | 143.4 MB in 7 parts | 593.7 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
+| tablet | home page on a tablet (iPad) and phone (iPhone): `?platform=tablet`, `?platform=phone` | `snapshot-tablet-playground-2026.11.18-ac8686f` | 77.9 MB in 4 parts | 241.4 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
+| go | desktop browser that chose Go: `?platform=desktop&env=go` | `snapshot-go-playground-2026.11.18-ac8686f` | 233.7 MB in 12 parts | 798.8 MiB | ? | BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
+| playwright | desktop browser that chose Playwright: `?platform=desktop&env=playwright` | `snapshot-playwright-playground-2026.11.18-ac8686f` | 69.1 MB in 4 parts | 197.4 MiB | ? | BusyBox shell, git 2.55.0, Node 22.23.3, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
+
+<!-- deno-fmt-ignore-end -->
+<!-- snapshot-table:end -->
+
+The page picks its platform from the device; `?platform=phone`, `tablet` or
+`desktop` overrides it as far as the device can run it, `?memory=1g` gives a
+phone's kernel the 1 GiB a tablet's has and lets its Notebook and JupyterLab
+restore the desktop's snapshot (the home page carries it on to those links),
+`?env=go` restores Go's snapshot on a desktop browser (and is ignored, with a
+note, anywhere else), and `?snapshot=0` boots the slim image instead of
+restoring a snapshot. Each download comes with the 8.5 MB kernel.
+
+Measured with `scripts/measure-boot.ts` (headless, served locally, so the
+download is fast) on 2026-10-29, except the phone rows: those are from
+2026-11-17, when a phone started restoring the tablet's snapshot. An iPad Pro 11
+measured alongside them took 3.55 s / 3.47 s in Chromium and 2.99 s / 2.80 s in
+WebKit, about what the phone did and slower than its own row from 2026-10-29, so
+compare the phone rows with those figures, not with the tablet rows below. "RAM
+to restore" is the peak resident memory of Chromium's renderer processes while
+the page restores and starts its shell, the page itself included.
+
+| Platform                                        | Engine   | Time to a prompt, cold / warm | Jupyter ready |
+| ----------------------------------------------- | -------- | ----------------------------- | ------------- |
+| phone (iPhone 13)                               | Chromium | 3.59 s / 2.96 s               | none          |
+| phone (iPhone 13)                               | WebKit   | 3.13 s / 2.82 s               | none          |
+| tablet (iPad Pro 11, iPadOS landscape and mini) | Chromium | 1.48-1.52 s / 1.06-1.07 s     | none          |
+| tablet (same three)                             | WebKit   | 1.11-1.15 s / 0.83-0.89 s     | none          |
+| desktop                                         | Chromium | 1.88 s / 1.48 s               | 5.2 s / 4.4 s |
+| desktop                                         | WebKit   | 1.78 s / 1.43 s               | 8.2 s / 7.9 s |
+
+Booting the slim image instead (`?snapshot=0`, Chromium) gives a prompt at about
+1.4 s on every platform; a desktop then installs the Python set and starts
+Jupyter, ready at about 88 s.
+
+Maintainers: releasing, previews and snapshot tooling are in
+[docs/MAINTAINING.md](docs/MAINTAINING.md).
 
 ## License
 
-Apache-2.0.
+Yurt's own code (this repository, the kernel, runtime and tooling) is licensed
+under Apache-2.0; see [LICENSE](LICENSE). Most of those repositories are not
+public yet, and this site and the releases ship them as binaries. The guest SDK
+and its runtime libraries, which are linked into programs built for Yurt, are
+MIT-licensed. Third-party software in the images keeps its own license; the
+[third-party licenses and source](https://github.com/YurtOS/yurt-playground/releases?q=gpl-sources-playground&expanded=true)
+releases, one per train, list each component and carry the source of the GPL,
+LGPL and MPL ones.

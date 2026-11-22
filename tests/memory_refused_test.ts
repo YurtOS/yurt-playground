@@ -66,7 +66,7 @@ Deno.test("the banner is a tab-level note that names no engine", () => {
     new URL("../public/index.html", import.meta.url),
   );
   const banner = html.match(
-    /<p id="memory-refused"[^>]*>([\s\S]*?)<\/p>/,
+    /<p\s+id="memory-refused"[^>]*>([\s\S]*?)<\/p>/,
   );
   if (banner === null) throw new Error("no #memory-refused paragraph");
   const text = banner[1].replace(/<button[\s\S]*<\/button>/, "")
@@ -234,7 +234,7 @@ Deno.test("the snapshot demo and both notebook kernels show the banner (#213)", 
       `${worker} watches its booted and its restored kernel`,
     );
     assert(
-      /loadPlaygroundKernel\(kernel\);\n(.*\n){0,3}.*watchGuestMemoryRefusals\(mk,/
+      /loadPlaygroundKernel\(\s*kernel(,\s*\w+)*,?\s*\);\n(.*\n){0,3}.*watchGuestMemoryRefusals\(mk,/
         .test(text),
       `${worker} watches the booted kernel before its guest starts`,
     );
@@ -276,7 +276,7 @@ Deno.test("a refused restore shows the banner and keeps the stored image", () =>
   for (const worker of ["snapshot_worker.ts", "notebook_kernel_worker.ts"]) {
     const text = source(worker);
     assert(
-      /restorePlaygroundKernel\(kernel, stored\.image\)\.catch\(\s*\(error\) => \{[^}]*if \(isGuestMemoryRefusal\(error\)\) post\(memoryRefusedMessage\(\)\);\s*throw error;/
+      /restorePlaygroundKernel\(\s*kernel,\s*stored\.image(,\s*[\w]+)*,?\s*\)\.catch\(\s*\(error\) => \{[^}]*if \(isGuestMemoryRefusal\(error\)\) post\(memoryRefusedMessage\(\)\);\s*throw error;/
         .test(text),
       `${worker} reports a refusal thrown by the restore`,
     );

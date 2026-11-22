@@ -163,7 +163,7 @@ Deno.test("release-notes links point at the train named in pins.json", async () 
   }
   assertEquals(
     elements.get("release-train")?.textContent,
-    ` (this page is pinned to train ${train})`,
+    " Version 2026-10-26.",
   );
 });
 
@@ -201,4 +201,22 @@ Deno.test("release-notes links stay on the top when pins.json names no train", a
   assertEquals(elements.get("release-train")?.hidden, true);
   assertEquals(elements.get("release-notes-link")?.href, undefined);
   assertEquals(elements.get("footer-release-notes")?.href, undefined);
+});
+
+Deno.test("the footer's version is the train's date, with its .N suffix", async () => {
+  const source = await Deno.readTextFile(
+    new URL("../public/verify.js", import.meta.url),
+  );
+  const document = {
+    getElementById: () => new FakeElement(),
+    createElement: () => new FakeElement(),
+  };
+  // No pins: showTrain() gives up, and the context keeps trainVersion.
+  const fetch = () => Promise.reject(new Error("offline"));
+  const context: Record<string, unknown> = { console, document, fetch };
+  runInNewContext(source, context);
+  const trainVersion = context.trainVersion as (train: string) => string;
+  assertEquals(trainVersion("playground-2026.10.29-3d32068"), "2026-10-29");
+  assertEquals(trainVersion("playground-2026.10.27-3d32068.2"), "2026-10-27.2");
+  assertEquals(trainVersion("local-build"), "local-build");
 });

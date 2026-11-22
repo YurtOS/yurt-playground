@@ -1,4 +1,10 @@
 #!/usr/bin/env -S deno run --allow-read --allow-write --allow-env --allow-run
+import {
+  BRIDGE_EXTENSION_ZIP,
+  bridgeExtensionZip,
+  PLAYWRIGHT_CORE_TGZ,
+  playwrightCoreTarball,
+} from "../src/playwright_assets.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "./serve.ts";
@@ -20,6 +26,29 @@ import {
   integrityManifest,
   SLIM_IMAGE_NAME,
 } from "../src/integrity.ts";
+import { loadPins, type Pins } from "../src/pins.ts";
+import { AGENT_MODELS_PATH } from "../src/agent_models_config.ts";
+import {
+  NETWORK_CONFIG_PATH,
+  networkConfigJson,
+} from "../src/network_config.ts";
+import { checkSnapshotFile, kernelRootIsStore } from "./lib/snapshot_file.ts";
+import {
+  PREVIEW_SNAPSHOT_KINDS,
+  writeGhPagesPreview,
+} from "./lib/gh_pages_preview.ts";
+import {
+  BEACON_PAGES,
+  WEB_ANALYTICS_TOKEN,
+  withBeacon,
+} from "../src/web_analytics.ts";
+import {
+  pinnedSnapshot,
+  SNAPSHOT_KIND_NAMES,
+  SNAPSHOT_KINDS,
+  type SnapshotKind,
+  SnapshotMismatch,
+} from "../src/sandbox_snapshot.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -51,12 +80,18 @@ const STATIC_FILES = [
   // answer is no, said in JSON rather than as a 404 on every boot (#86).
   "desktop.json",
   "favicon.svg",
+  // The link preview's picture (og:image), 1200x630.
+  "og-image.jpg",
   // For pages that name no icon -- JupyterLite's Notebook page -- the
   // browser asks for /favicon.ico; without it, a console 404 (#247).
   "favicon.ico",
   // The local agent's inference worker (#140); its runtime is /llm/.
   "llm_worker.bundle.js",
   "agent.css",
+  // How much shared wasm memory this browser lets a tab reserve: the boot's
+  // probe Worker, and its page (noindex) for measuring a device by hand.
+  "memory-probe.html",
+  "memory-probe.js",
 ];
 /** The JupyterLite site (jupyterlite/build.sh); served under /jupyter/. */
 const JUPYTER_DIR = "jupyter";
@@ -102,13 +137,102 @@ async function writeImageParts(
   );
 }
 
-export async function buildStaticSite(): Promise<void> {
+/** Whether the sandbox snapshot at `path` is the one `pins` pin, built
+ * from the pins' own kernel, image and Python set. One that is not is left
+ * out of the site with a loud warning rather than failing the build: it is
+ * optional, `?snapshot=1` is the only page that reads it, and that page
+ * would refuse it anyway -- after downloading it. */
+export async function snapshotMatchesPins(
+  path: string,
+  pins: Pins,
+  kind: SnapshotKind = "desktop",
+  /** Whether the kernel's root is a YurtFS store: a page restores only a
+   * zip with the store then, and only one without otherwise. */
+  rootStore?: boolean,
+): Promise<boolean> {
+  const leftOut = (why: string) => {
+    console.warn(
+      `!!! ${SNAPSHOT_KINDS[kind].name} is NOT published: ${why}. ` +
+        "scripts/install-pinned-artifacts.sh fetches the pinned one; " +
+        "scripts/release-snapshot.ts captures a new one.",
+    );
+    return false;
+  };
+  rootStore ??= kernelRootIsStore(pins);
+  let pin;
+  try {
+    pin = pinnedSnapshot(pins, kind, rootStore);
+  } catch (error) {
+    if (!(error instanceof SnapshotMismatch)) throw error;
+    return leftOut(error.message);
+  }
+  const check = await checkSnapshotFile(path, pin.builtFrom, {
+    sha256: pin.sha256,
+    rootStore,
+  });
+  return check.ok || leftOut(check.problem);
+}
+
+export type BuildOptions = {
+  /** Add the Cloudflare Web Analytics beacon (`--web-analytics`). Only the
+   * production Pages deploy asks for it: previews, CI and the desktop app
+   * (whose own CSP, src/desktop.ts, would refuse the beacon) build without. */
+  webAnalytics?: boolean;
+  /** A GitHub Pages preview (`--gh-pages-preview`,
+   * .github/workflows/preview-gh-pages.yml): the isolation service worker
+   * and a `<meta>` CSP in every page, since Pages sends no `_headers`, and
+   * only the snapshots in PREVIEW_SNAPSHOT_KINDS
+   * (scripts/lib/gh_pages_preview.ts). Never with analytics. */
+  ghPagesPreview?: boolean;
+};
+
+/** The device snapshots a build publishes when it has them: every kind,
+ * and on a GitHub Pages preview only {@link PREVIEW_SNAPSHOT_KINDS}. */
+export function publishedSnapshotKinds(
+  options: BuildOptions,
+): readonly SnapshotKind[] {
+  return options.ghPagesPreview
+    ? SNAPSHOT_KIND_NAMES.filter((kind) =>
+      PREVIEW_SNAPSHOT_KINDS.includes(kind)
+    )
+    : SNAPSHOT_KIND_NAMES;
+}
+
+/** The beacon token a build uses: the committed one when the build asked
+ * for analytics, otherwise none. */
+export function beaconToken(
+  webAnalytics: boolean,
+  token = WEB_ANALYTICS_TOKEN,
+): string {
+  if (!webAnalytics) return "";
+  if (token === "") {
+    console.warn(
+      "--web-analytics: WEB_ANALYTICS_TOKEN (src/web_analytics.ts) is empty; no beacon",
+    );
+  }
+  return token;
+}
+
+export async function buildStaticSite(
+  options: BuildOptions = {},
+): Promise<void> {
   await ensureBundle(kernelRoot());
   await Deno.remove(distDir, { recursive: true }).catch(() => {});
   await Deno.mkdir(join(distDir, "demo"), { recursive: true });
   await copyFiles(STATIC_FILES, publicDir, distDir);
   // terminal.html links ./xterm.css; the dev server maps it to the npm package.
   await Deno.copyFile(XTERM_CSS_PATH, join(distDir, "xterm.css"));
+  // The Playwright demo's assets (src/playwright_assets.ts): a site
+  // published without them offers a Playwright choice that can only fail,
+  // so a build that cannot make them fails.
+  await Deno.writeFile(
+    join(distDir, PLAYWRIGHT_CORE_TGZ),
+    await playwrightCoreTarball(),
+  );
+  await Deno.writeFile(
+    join(distDir, BRIDGE_EXTENSION_ZIP),
+    await bridgeExtensionZip(),
+  );
   const jupyter = join(publicDir, JUPYTER_DIR);
   try {
     await Deno.stat(join(jupyter, "index.html"));
@@ -120,6 +244,21 @@ export async function buildStaticSite(): Promise<void> {
   await copyTree(jupyter, join(distDir, JUPYTER_DIR));
   // The page reads the pins for its hash checks, then the blobs.
   await copyFiles(["pins.json", "yurt_kernel.wasm"], artifactsDir, distDir);
+  // The agent's model list ships with the page it belongs to: only a deploy
+  // changes it (src/agent_models_config.ts, #368).
+  await Deno.mkdir(join(distDir, dirname(AGENT_MODELS_PATH)), {
+    recursive: true,
+  });
+  await Deno.copyFile(
+    join(repoRoot, AGENT_MODELS_PATH),
+    join(distDir, AGENT_MODELS_PATH),
+  );
+  // So does the network relay's setting (src/network_config.ts); the
+  // policy in _headers admits the same relay.
+  await Deno.writeTextFile(
+    join(distDir, NETWORK_CONFIG_PATH),
+    networkConfigJson(),
+  );
   // Cloudflare Pages refuses files over 25 MiB; the image ships in parts.
   // The full image stays in the site: with no slim pin, the suspend/resume
   // kernel stages its Python standard library from it (on a slim site it
@@ -141,6 +280,28 @@ export async function buildStaticSite(): Promise<void> {
     console.warn(
       `${PYTHON_SEAL_NAME} missing; the yurt-snapshot kernel will not boot (scripts/install-pinned-artifacts.sh)`,
     );
+  }
+  // Each device's sealed sandbox (src/snapshot_pin.ts SNAPSHOT_KINDS):
+  // the pinned ones, which scripts/install-pinned-artifacts.sh fetched.
+  // Optional; a page without its own boots the image.
+  const pins = await loadPins(join(artifactsDir, "pins.json"));
+  for (const kind of publishedSnapshotKinds(options)) {
+    const { name, pinKey } = SNAPSHOT_KINDS[kind];
+    const snapshotPath = join(publicDir, name);
+    const snapshot = await Deno.stat(snapshotPath).then(
+      () => true,
+      () => false,
+    );
+    if (!snapshot && pins[pinKey] !== undefined) {
+      console.warn(
+        `${name} is pinned but not here, so not published ` +
+          "(YURT_INSTALL_SNAPSHOT=1 scripts/install-pinned-artifacts.sh fetches it)",
+      );
+    }
+    if (snapshot && await snapshotMatchesPins(snapshotPath, pins, kind)) {
+      await Deno.mkdir(join(distDir, "snapshot"), { recursive: true });
+      await writeImageParts(name, publicDir);
+    }
   }
   // The "check the bytes" card hashes what it downloaded against this. dist/
   // holds the image only as parts; hash the file they were sliced from.
@@ -165,7 +326,66 @@ export async function buildStaticSite(): Promise<void> {
     ) + "\n",
   );
   await writeLlmRuntime();
-  await Deno.writeTextFile(join(distDir, "_headers"), await siteHeaders());
+  await writeSiteDocuments(distDir, beaconToken(options.webAnalytics ?? false));
+  // After the policy is final: the worker carries its hash.
+  const worker = join(distDir, JUPYTER_DIR, "service-worker.js");
+  await Deno.writeTextFile(
+    worker,
+    await stampedServiceWorker(
+      await Deno.readTextFile(worker),
+      await Deno.readTextFile(join(distDir, "_headers")),
+    ),
+  );
+  if (options.ghPagesPreview) await writeGhPagesPreview(distDir);
+}
+
+/** The last step of the build: the beacon in the pages that carry it and
+ * the `_headers` whose CSP admits it, always together. */
+export async function writeSiteDocuments(
+  dir: string,
+  token: string,
+): Promise<void> {
+  await injectBeacon(dir, token);
+  await Deno.writeTextFile(
+    join(dir, "_headers"),
+    await siteHeaders(dir, token),
+  );
+}
+
+const POLICY_STAMP = /\n\/\/ yurt-policy [0-9a-f]{64}\n$/;
+
+/** JupyterLite's service worker with the site's `_headers` hash appended.
+ * A service worker keeps the policy it was installed with, and the browser
+ * replaces it only when its script's bytes change: JupyterLite's do not
+ * between builds, so after #388 visitors kept a worker whose connect-src
+ * refused Turnstile (#390). Its bytes now change with the policy, and the
+ * worker (skipWaiting, clients.claim) takes over on the next load. */
+export async function stampedServiceWorker(
+  script: string,
+  headers: string,
+): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(headers)),
+  );
+  const hex = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${script.replace(POLICY_STAMP, "")}\n// yurt-policy ${hex}\n`;
+}
+
+/** Add the Cloudflare Web Analytics beacon (src/web_analytics.ts) to the
+ * built pages that carry it; nothing when `token` is empty. Only the
+ * production site counts visitors (see {@link BuildOptions}). */
+export async function injectBeacon(
+  dir: string,
+  token: string,
+): Promise<void> {
+  if (token === "") return;
+  for (const page of BEACON_PAGES) {
+    const path = join(dir, page);
+    await Deno.writeTextFile(
+      path,
+      withBeacon(await Deno.readTextFile(path), token),
+    );
+  }
 }
 
 /** The local agent's runtime (#140), as the dev server answers it: the
@@ -217,14 +437,17 @@ async function scriptHashesUnder(dir: string): Promise<string[]> {
 
 /** The `_headers` file: isolation plus the CSP, with the inline scripts the
  * built pages actually carry allowed by hash. */
-export async function siteHeaders(): Promise<string> {
+export async function siteHeaders(
+  dir = distDir,
+  token = "",
+): Promise<string> {
   const { "Content-Security-Policy": _csp, ...isolation } = ISOLATION_HEADERS;
   const site = new Set<string>();
-  for await (const entry of Deno.readDir(distDir)) {
+  for await (const entry of Deno.readDir(dir)) {
     if (entry.isFile && entry.name.endsWith(".html")) {
       for (
         const hash of await inlineScriptHashes(
-          await Deno.readTextFile(join(distDir, entry.name)),
+          await Deno.readTextFile(join(dir, entry.name)),
         )
       ) {
         site.add(hash);
@@ -234,8 +457,21 @@ export async function siteHeaders(): Promise<string> {
   return headersFile(
     isolation,
     [...site].sort(),
-    await scriptHashesUnder(join(distDir, JUPYTER_DIR)),
+    await scriptHashesUnder(join(dir, JUPYTER_DIR)),
+    token !== "",
   );
 }
 
-if (import.meta.main) await buildStaticSite();
+if (import.meta.main) {
+  const flags = ["--web-analytics", "--gh-pages-preview"];
+  const unknown = Deno.args.filter((arg) => !flags.includes(arg));
+  if (unknown.length > 0) {
+    throw new Error(`build-static: unknown arguments ${unknown.join(" ")}`);
+  }
+  const webAnalytics = Deno.args.includes("--web-analytics");
+  const ghPagesPreview = Deno.args.includes("--gh-pages-preview");
+  if (webAnalytics && ghPagesPreview) {
+    throw new Error("build-static: a preview never counts visitors");
+  }
+  await buildStaticSite({ webAnalytics, ghPagesPreview });
+}

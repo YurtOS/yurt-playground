@@ -51,7 +51,14 @@ import {
   type PinnedRelease,
   resolveSet,
 } from "./packages.ts";
-import { PYTHON_SET, SEAL_PACKAGE, SEAL_WASM_PATH } from "./python_install.ts";
+import {
+  PYTHON_SET,
+  pythonInstallRequest,
+  SEAL_PACKAGE,
+  SEAL_WASM_PATH,
+  sealVerification,
+} from "./python_install.ts";
+import { installedReleases } from "./installed_list.ts";
 import { partsFetch, PYTHON_SEAL_NAME } from "./image_parts.ts";
 import type { JupyterHeader, JupyterMessage } from "./jupyter_protocol.ts";
 import type {
@@ -109,6 +116,9 @@ export type NotebookKernelToWorker =
     isolated: boolean;
     /** Seal this often while a cell runs; 0 disables. */
     sealEveryMs?: number;
+    /** Keep the kernel's default 1 GiB maximum even under a small cap: a
+     * tablet, or a phone on `?memory=1g` (src/device.ts fullKernelMemory). */
+    fullKernelMemory?: boolean;
   }
   | {
     type: "jupyter-send";
@@ -609,6 +619,8 @@ function finishCell(frame: Exclude<GuestFrame, { t: "ready" }>): void {
 // ── Periodic seals ──────────────────────────────────────────────────────
 
 let sealEveryMs = DEFAULT_SEAL_EVERY_MS;
+/** The start message's `fullKernelMemory`: every boot and restore takes it. */
+let fullKernelMemoryAsked = false;
 let sealTimer: number | undefined;
 /** The tick in flight, so a Suspend click waits for it instead of being
  *  dropped (`sealing` was a double-click guard before ticks existed). */
@@ -768,8 +780,9 @@ let guestBytes: Uint8Array | undefined;
 
 /**
  * On the slim image, the Python set this kernel runs: the newest one in the
- * live index complete with its `python-seal` (the guest), whose `python`
- * holds the standard library. The catalog is loaded checked (metadata
+ * live index complete with its `python-seal` (the guest) -- or, when the
+ * image ships python itself, the one at that python's build -- whose
+ * `python` holds the standard library. The catalog is loaded checked (metadata
  * against the index, the index not expired); the index's signature is
  * verified only by the guest's `pkg`, which this kernel does not run. `id` names both releases exactly
  * (`name@version-build:sha256`); a snapshot records it and resumes only
@@ -781,6 +794,9 @@ type SealSet = {
   label: string;
   python: PinnedRelease & { url: string };
   seal: PinnedRelease & { url: string };
+  /** The slim image ships this python itself (its pin's `python`): the
+   * standard library is staged from the image, not from the archive. */
+  stdlibFromImage: boolean;
 };
 let sealSet: SealSet | undefined;
 /** The checked catalog `sealSet` was resolved from. */
@@ -794,6 +810,9 @@ let startFailure: string | undefined;
 async function resolveSealSet(): Promise<SealSet | undefined> {
   const pins = await playgroundPins();
   if (pins.browserImage === undefined) return undefined;
+  // The python the slim image ships pins the set to its build, as for the
+  // coordinator's install (src/packages.ts resolveSet).
+  const installed = pythonInstallRequest(pins)?.installed ?? [];
   status("reading the Python set");
   const catalog = await loadCatalog(undefined, undefined, true);
   sealCatalog = catalog;
@@ -802,10 +821,16 @@ async function resolveSealSet(): Promise<SealSet | undefined> {
   // still to be published.
   let resolved: (PinnedRelease & { url: string })[];
   try {
-    resolved = resolveSet(catalog, [...PYTHON_SET, SEAL_PACKAGE]);
+    resolved = resolveSet(catalog, [...PYTHON_SET, SEAL_PACKAGE], installed);
   } catch {
     throw new Error(
-      `Suspend/Resume is not available: no Python set in the repository has a ${SEAL_PACKAGE}`,
+      `Suspend/Resume is not available: no Python set in the repository has a ${SEAL_PACKAGE}${
+        installed.length === 0
+          ? ""
+          : ` at the slim image's python ${installed[0].version}-${
+            installed[0].build
+          }`
+      }`,
     );
   }
   // The set's own members, by name (each with its own build spelling).
@@ -819,6 +844,7 @@ async function resolveSealSet(): Promise<SealSet | undefined> {
     label,
     python: pythonRelease,
     seal,
+    stdlibFromImage: installed.length > 0,
   };
 }
 
@@ -834,7 +860,9 @@ function sealCache() {
  * Have the guest's own `pkg` verify the set before this kernel runs it: a
  * short-lived sandbox on the slim image runs `sudo pkg install python@V-B
  * python-seal@V-B` -- the index's and both archives' Sigstore signatures,
- * their sha256s, their files -- and is then disposed of. The archives it
+ * their sha256s, their files -- and is then disposed of. A python the image
+ * already ships is not fetched, so not named: its standard library is
+ * staged from the image (src/python_install.ts `sealVerification`). The archives it
  * verified are the bytes this kernel then reads, from the same cache by the
  * same sha256. A refusal is the boot's failure, named.
  */
@@ -855,10 +883,17 @@ async function verifySealSet(set: SealSet, isolated: boolean): Promise<void> {
     },
   });
   try {
+    // pkg verifies what it fetches: not a python the image already has
+    // (whose standard library then comes from the image, by its sha256).
+    const { verify } = sealVerification(
+      [set.python, set.seal],
+      await installedReleases(session.files) ?? [],
+      set.stdlibFromImage,
+    );
     await installPackage(
       {
         label: "Suspend/Resume",
-        releases: [set.python, set.seal],
+        releases: verify,
         othersAllowed: true,
         verifyAll: true,
       },
@@ -867,6 +902,8 @@ async function verifySealSet(set: SealSet, isolated: boolean): Promise<void> {
         tablet: false,
         progress: (text) => status(text),
         cache: await sealCache(),
+        // This sandbox goes when the check ends: nothing to recover.
+        recoverAfterStall: false,
       },
     );
   } catch (error) {
@@ -985,7 +1022,11 @@ async function bootFresh(
   kernelSha256: string,
 ): Promise<Live> {
   status("booting the kernel");
-  const mk = await loadPlaygroundKernel(kernel);
+  const mk = await loadPlaygroundKernel(
+    kernel,
+    undefined,
+    fullKernelMemoryAsked,
+  );
   // A suspended kernel is disposed with its guests, so a watch never
   // outlives the kernel it watches.
   watchGuestMemoryRefusals(mk, () => post(memoryRefusedMessage()));
@@ -996,20 +1037,23 @@ async function bootFresh(
     await stageYurtimg(mk, image, new Map(), stagedPath);
   } else {
     // The slim image's /etc, and the standard library of the set's own
-    // python package: the one this interpreter was built with.
+    // python package: the one this interpreter was built with -- the
+    // image's own when it ships that python, else the package archive's.
     status("loading the image");
     const image = await fetchPlaygroundBytes(SLIM_IMAGE_PATH);
     await stageYurtimg(
       mk,
       image,
       new Map(),
-      (path) => path.startsWith("/etc/"),
+      sealSet.stdlibFromImage ? stagedPath : (path) => path.startsWith("/etc/"),
     );
-    status(`staging the Python ${sealSet.label} stdlib`);
-    const python = await fetchRelease(sealSet.python, {
-      cache: await sealCache(),
-    });
-    await stageYurtimg(mk, python, new Map(), stagedPath);
+    if (!sealSet.stdlibFromImage) {
+      status(`staging the Python ${sealSet.label} stdlib`);
+      const python = await fetchRelease(sealSet.python, {
+        cache: await sealCache(),
+      });
+      await stageYurtimg(mk, python, new Map(), stagedPath);
+    }
   }
   if (cellServer === undefined) {
     cellServer = await fetchDemoFile(CELL_SERVER_PATH);
@@ -1023,7 +1067,13 @@ async function restoreStored(
   kernel: Uint8Array,
   stored: StoredSnapshot,
 ): Promise<Live> {
-  const restored = await restorePlaygroundKernel(kernel, stored.image).catch(
+  const restored = await restorePlaygroundKernel(
+    kernel,
+    stored.image,
+    undefined,
+    undefined,
+    fullKernelMemoryAsked,
+  ).catch(
     (error) => {
       // Refused before there was a host to watch: say so here.
       if (isGuestMemoryRefusal(error)) post(memoryRefusedMessage());
@@ -1085,6 +1135,11 @@ async function suspend(): Promise<void> {
   sealing = true;
   post({ type: "snapshot", snapshot: { state: "sealing" } });
   const startedAt = performance.now();
+  // Nothing the guest writes from here reaches the page: what is unread
+  // stays in the pty and goes into the image, and Resume delivers it. Read
+  // while the store below is awaited (the guest runs on until teardown), a
+  // line would show now and again from the resumed guest.
+  current.stopPump();
   try {
     const image = await current.mk.sealSandbox({
       deadlineMs: SEAL_DEADLINE_MS,
@@ -1113,6 +1168,10 @@ async function suspend(): Promise<void> {
       },
     });
   } catch (error) {
+    // Still live: read its pty again.
+    if (live === current) {
+      current.stopPump = pumpPtyMaster(current.mk, current.pty, onGuestOutput);
+    }
     status(
       `suspend failed: ${
         error instanceof Error ? error.message : String(error)
@@ -1309,6 +1368,7 @@ self.onmessage = async (event: MessageEvent<NotebookKernelToWorker>) => {
     switch (msg.type) {
       case "start":
         if (msg.sealEveryMs !== undefined) sealEveryMs = msg.sealEveryMs;
+        fullKernelMemoryAsked = msg.fullKernelMemory === true;
         try {
           await start(msg.isolated);
         } catch (error) {

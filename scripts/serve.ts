@@ -12,7 +12,7 @@ export function resolveKernelRoot(
   return resolve(base, root);
 }
 
-function kernelRoot(): string {
+export function kernelRoot(): string {
   return resolveKernelRoot(
     Deno.env.get("YURT_KERNEL_ROOT") ?? "../yurtos-kernel",
   );
@@ -41,6 +41,12 @@ export function kernelImportMap(
       "@xterm/addon-fit": "npm:@xterm/addon-fit@0.10.0",
       fzstd: "npm:fzstd@0.1.1",
       "@litert-lm/core": "npm:@litert-lm/core@0.17.1",
+      // The snapshot zip's incremental sha256 (src/sandbox_snapshot.ts).
+      "@noble/hashes/sha2": "jsr:@noble/hashes@1.8.0/sha2",
+      // The kernel host's module-load reports hash with BLAKE3
+      // (kernel-host-interface/module_load_report.ts, yurtos-kernel #4394);
+      // the same pin as the kernel's and this repo's deno.json.
+      "hash-wasm": "npm:hash-wasm@4.12.0",
     },
   };
 }

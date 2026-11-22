@@ -26,6 +26,19 @@ for tool in gh jq shasum; do
     exit 1
   }
 done
+# The host's runtime boots only a kernel wasm of the kernel rev it was built
+# at; another rev's fails ("instantiate kernel.wasm: unknown import: kh::...").
+# A browser-only train (scripts/release-playground.sh --browser-only) moves
+# the kernel pin and carries the host through, recording the kernel it was
+# built for as desktopHost.kernelRev: never pair the two. Pins without that
+# record are one full train's, built together.
+host_kernel=$(jq -r '.desktopHost.kernelRev // empty' "$pins")
+kernel_rev=$(jq -r '.kernelWasm.rev // empty' "$pins")
+if [[ -n "$host_kernel" && "$host_kernel" != "$kernel_rev" ]]; then
+  desktop_train=$(jq -r '.desktopHost.train // "" | select(. != "") // "an earlier train"' "$pins")
+  echo "install-desktop-host: the pinned desktop host ($(jq -r .desktopHost.release "$pins")) was built for kernel ${host_kernel:0:12}, of $desktop_train; the pinned kernel wasm is ${kernel_rev:0:12}, which it cannot boot. A browser-only train moved the page alone: the desktop app of these pins comes with the next full train (scripts/release-playground.sh); until then the download links serve the newest desktop-* release." >&2
+  exit 1
+fi
 for blob in yurt_kernel.wasm playground.yurtimg; do
   [[ -f "$root/artifacts/$blob" ]] || {
     echo "install-desktop-host: artifacts/$blob is missing; run scripts/install-pinned-artifacts.sh" >&2

@@ -4,6 +4,11 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
+// The script waits 5 s before each look for a dispatched run; the stub gh
+// below lists it at once. Inherited by every script this file runs
+// (fixtureEnv copies this environment).
+Deno.env.set("YURT_RELEASE_POLL_SECS", "0");
+
 /** This process's environment without git's own variables. Under a git
  * hook (the pre-commit fast suite runs this file) git exports GIT_DIR,
  * GIT_INDEX_FILE and friends, and a child `git -C <fixture>` would then
@@ -34,6 +39,18 @@ async function command(
     env: fixtureEnv(options.env),
   }).output();
   return result;
+}
+
+/** The release script's sourced helpers (scripts/lib/), into a fixture
+ * project at `root`. */
+async function copyScriptLib(root: string): Promise<void> {
+  await Deno.mkdir(join(root, "scripts/lib"), { recursive: true });
+  for await (const entry of Deno.readDir(join(repoRoot, "scripts/lib"))) {
+    await Deno.copyFile(
+      join(repoRoot, "scripts/lib", entry.name),
+      join(root, "scripts/lib", entry.name),
+    );
+  }
 }
 
 async function git(dir: string, ...args: string[]): Promise<string> {
@@ -74,10 +91,7 @@ Deno.test("--pins-only does not require a kernel release tag", async () => {
     const startup = releaseScript.split("# ---- the train label")[0];
     const harnessRoot = join(dir, "project");
     await Deno.mkdir(join(harnessRoot, "scripts/lib"), { recursive: true });
-    await Deno.copyFile(
-      join(repoRoot, "scripts/lib/kernel-release.sh"),
-      join(harnessRoot, "scripts/lib/kernel-release.sh"),
-    );
+    await copyScriptLib(harnessRoot);
     const harness = join(harnessRoot, "scripts/release-playground.sh");
     await Deno.writeTextFile(
       harness,
@@ -193,10 +207,7 @@ Deno.test("resume watches a recorded kernel run without resolving its tag", asyn
   try {
     const root = join(dir, "project");
     await Deno.mkdir(join(root, "scripts/lib"), { recursive: true });
-    await Deno.copyFile(
-      join(repoRoot, "scripts/lib/kernel-release.sh"),
-      join(root, "scripts/lib/kernel-release.sh"),
-    );
+    await copyScriptLib(root);
     await writePinnedCli(root);
     const scriptPath = join(root, "scripts/release-playground.sh");
     const source = await Deno.readTextFile(
@@ -273,10 +284,7 @@ async function resumeFixture(
   const dir = await Deno.makeTempDir({ prefix: "release-resume-" });
   const root = join(dir, "project");
   await Deno.mkdir(join(root, "scripts/lib"), { recursive: true });
-  await Deno.copyFile(
-    join(repoRoot, "scripts/lib/kernel-release.sh"),
-    join(root, "scripts/lib/kernel-release.sh"),
-  );
+  await copyScriptLib(root);
   await writePinnedCli(root);
   const scriptPath = join(root, "scripts/release-playground.sh");
   const source = await Deno.readTextFile(
@@ -440,10 +448,7 @@ Deno.test("--resume keeps the repository of an --image-release train's image and
   try {
     const root = join(dir, "project");
     await Deno.mkdir(join(root, "scripts/lib"), { recursive: true });
-    await Deno.copyFile(
-      join(repoRoot, "scripts/lib/kernel-release.sh"),
-      join(root, "scripts/lib/kernel-release.sh"),
-    );
+    await copyScriptLib(root);
     const scriptPath = join(root, "scripts/release-playground.sh");
     const source = await Deno.readTextFile(
       join(repoRoot, "scripts/release-playground.sh"),
@@ -628,6 +633,17 @@ async function writePinnedCli(root: string) {
   );
 }
 
+type KernelRelease =
+  | "published"
+  | "later"
+  | "pending"
+  | "failed"
+  | "norun"
+  | "flaky"
+  | "slow"
+  | "error";
+const kernelRun = "https://github.com/YurtOS/yurtos-kernel/actions/runs/9";
+
 async function imageStepFixture(
   opts: {
     validate: 0 | 1;
@@ -649,6 +665,21 @@ async function imageStepFixture(
     yurtCli?: unknown;
     /** Stop where [4] starts and print the CLI it would pin. */
     stopAtPins?: boolean;
+    /** yurtos-kernel's release of the kernel's kernel-v* tag: published
+     * (the default); published from the third look on, while the tag
+     * push's release-kernel.yml run is in progress (later) or not listed
+     * (slow); published after one 502 (flaky); missing (404) while that
+     * run is in progress, failed or absent; or its lookup fails with a
+     * 401. */
+    kernelRelease?: KernelRelease;
+    /** YURT_KERNEL_RELEASE_TIMEOUT_SECS for the script. */
+    kernelReleaseTimeout?: string;
+    /** Pass --browser-only. */
+    browserOnly?: boolean;
+    /** The resumed train's state file records a browser-only train. */
+    stateBrowserOnly?: boolean;
+    /** More arguments for the script. */
+    extraArgs?: string[];
   },
 ) {
   const sandbox = opts.sandbox ?? "main";
@@ -656,10 +687,7 @@ async function imageStepFixture(
   const root = join(dir, "project");
   await Deno.mkdir(join(root, "scripts/lib"), { recursive: true });
   await Deno.mkdir(join(root, "artifacts"), { recursive: true });
-  await Deno.copyFile(
-    join(repoRoot, "scripts/lib/kernel-release.sh"),
-    join(root, "scripts/lib/kernel-release.sh"),
-  );
+  await copyScriptLib(root);
   const source = await Deno.readTextFile(
     join(repoRoot, "scripts/release-playground.sh"),
   );
@@ -669,18 +697,8 @@ async function imageStepFixture(
     opts.stopAtPins
       ? `${
         source.split(pinsStep)[0]
-      }\nprintf 'PINS_CLI=%s@%s\\n' "$cli_repo" "$cli_release"\nexit 0\n`
+      }\nprintf 'PINS_CLI=%s@%s\\n' "$cli_repo" "$cli_release"\nprintf 'BROWSER_ONLY=%s SANDBOX=%s\\n' "$browser_only" "$sandbox_sha"\nexit 0\n`
       : source,
-  );
-  await Deno.writeTextFile(
-    join(root, "artifacts/pins.json"),
-    JSON.stringify({
-      image: {
-        releaseRepo: "YurtOS/yurt-ports",
-        release: "playground-image-pinned",
-      },
-      yurtCli: opts.yurtCli ?? pinnedCli,
-    }),
   );
   const shas: Record<string, { main: string; pr: string }> = {};
   for (const name of ["ports", "kernel", "sandbox"]) {
@@ -718,6 +736,23 @@ async function imageStepFixture(
     ]);
     shas[name] = { main, pr };
   }
+  // The desktop host a browser-only train carries through: yurt-sandbox's
+  // main, as the train before it pinned it.
+  await Deno.writeTextFile(
+    join(root, "artifacts/pins.json"),
+    JSON.stringify({
+      image: {
+        releaseRepo: "YurtOS/yurt-ports",
+        release: "playground-image-pinned",
+      },
+      desktopHost: {
+        rev: shas.sandbox.main,
+        releaseRepo: "YurtOS/yurt-sandbox",
+        release: "desktop-host-pinned",
+      },
+      yurtCli: opts.yurtCli ?? pinnedCli,
+    }),
+  );
   const train = `playground-${today}-aaaaaaa${
     opts.validate ? "-validate" : ""
   }`;
@@ -736,6 +771,7 @@ async function imageStepFixture(
         image_repo: "YurtOS/yurt-ports",
         build_image: true,
         validate: opts.validate,
+        ...(opts.stateBrowserOnly ? { browser_only: true } : {}),
         steps: {
           kernel_wasm: { run_id: 1, conclusion: "success" },
           image: { jupyter_payload_release: "jupyter-payload-x" },
@@ -757,6 +793,7 @@ async function imageStepFixture(
     });
   }
   const log = join(dir, "gh.log");
+  const kernelRelease = opts.kernelRelease ?? "published";
   await Deno.writeTextFile(
     join(bin, "gh"),
     `#!/bin/bash
@@ -777,6 +814,22 @@ case "$*" in
   "api repos/YurtOS/"*"/git/refs/heads/"*)
     repo=\${2#repos/YurtOS/}; repo=\${repo%%/*}
     [ -d "${refs}/\$repo/\${2#repos/YurtOS/*/git/refs/heads/}" ];;
+  "api repos/YurtOS/yurtos-kernel/releases/tags/kernel-v0.0.1 --jq .draft")
+    n=$(($(cat "${dir}/release-looks" 2>/dev/null || echo 0) + 1))
+    echo "$n" > "${dir}/release-looks"
+    case ${kernelRelease} in
+      published) echo false;;
+      later|slow) if [ "$n" -ge 3 ]; then echo "a gh warning on stderr" >&2; echo false; else echo '{"message":"Not Found","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi;;
+      flaky) if [ "$n" -ge 2 ]; then echo false; else echo "gh: Server Error (HTTP 502)" >&2; exit 1; fi;;
+      error) echo "gh: Bad credentials (HTTP 401)" >&2; exit 1;;
+      *) echo '{"message":"Not Found","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
+    esac;;
+  "run list --repo YurtOS/yurtos-kernel --workflow release-kernel.yml --branch kernel-v0.0.1 --commit ${shas.kernel.main} --event push --limit 1 --json status,conclusion,url --jq "*)
+    case ${kernelRelease} in
+      failed) echo "a gh warning on stderr" >&2; echo "completed failure ${kernelRun}";;
+      norun|slow) ;;
+      *) echo "in_progress - ${kernelRun}";;
+    esac;;
   "workflow run"*) ;;
   "run list"*) echo 456;;
   "run watch"*) ${opts.failKernelRun ? "exit 1" : "exit 0"};;
@@ -791,14 +844,16 @@ esac
       shas.kernel[opts.kernel],
       "--ports-sha",
       shas.ports[opts.ports],
-      "--sandbox-sha",
-      shas.sandbox[sandbox],
+      // A browser-only train builds nothing of yurt-sandbox's.
+      ...(opts.browserOnly ? [] : ["--sandbox-sha", shas.sandbox[sandbox]]),
       "--train",
       train.replace(/-validate$/, ""),
       ...(opts.imageRelease ? ["--image-release", opts.imageRelease] : []),
     ]
     : ["--resume", "--train", train.replace(/-validate$/, "")];
   if (opts.validate) args.push("--validate");
+  if (opts.browserOnly) args.push("--browser-only");
+  args.push(...(opts.extraArgs ?? []));
   const result = await command(
     "bash",
     [join(root, "scripts/release-playground.sh"), ...args],
@@ -809,6 +864,9 @@ esac
         YURT_KERNEL_ROOT: join(dir, "kernel"),
         YURT_PORTS_ROOT: join(dir, "ports"),
         YURT_SANDBOX_ROOT: join(dir, opts.sandboxRoot ?? "sandbox"),
+        ...(opts.kernelReleaseTimeout !== undefined
+          ? { YURT_KERNEL_RELEASE_TIMEOUT_SECS: opts.kernelReleaseTimeout }
+          : {}),
       },
     },
   );
@@ -1017,6 +1075,120 @@ Deno.test("a new rehearsal of a sandbox commit off main records the validate bra
     await f.cleanup();
   }
 });
+
+Deno.test("a new train waits for the kernel-v* release before dispatching [1]", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    kernelRelease: "later",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    const looks = f.calls.filter((c) =>
+      c.startsWith(
+        "api repos/YurtOS/yurtos-kernel/releases/tags/kernel-v0.0.1 ",
+      )
+    );
+    assertEquals(looks.length, 3, f.calls.join("\n"));
+    // Every look comes before [1]'s dispatch.
+    const firstDispatch = f.calls.findIndex((c) =>
+      c.startsWith("workflow run")
+    );
+    assertEquals(
+      f.calls.lastIndexOf(looks[2]) < firstDispatch,
+      true,
+      f.calls.join("\n"),
+    );
+    assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+    // One line for the run's state, not one per look.
+    assertEquals(f.output.split("waiting for yurtos-kernel").length - 1, 1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new train gives the kernel-v* release's run time to appear", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    kernelRelease: "slow",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    assertStringIncludes(f.output, "release-kernel.yml: no run yet");
+    assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a new train looks again after a server error on the kernel-v* release", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    kernelRelease: "flaky",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    assertStringIncludes(f.output, "release: gh: Server Error (HTTP 502)");
+    assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+// [kernelRelease, how the test names it, YURT_KERNEL_RELEASE_TIMEOUT_SECS,
+// what the stop says].
+for (
+  const [kernelRelease, why, timeout, says] of [
+    ["pending", "is still unpublished at the timeout", "0", [
+      "not published after 0s",
+      "release: gh: Not Found (HTTP 404)",
+      `release-kernel.yml: in_progress - ${kernelRun}`,
+      "--resume --train",
+    ]],
+    ["norun", "has no run at the timeout", "0", [
+      "release-kernel.yml: no run yet",
+      "--resume --train",
+    ]],
+    ["error", "cannot be looked up at the timeout", "0", [
+      "release: gh: Bad credentials (HTTP 401)",
+      "--resume --train",
+    ]],
+    ["failed", "has a failed run", "0", [
+      `ended failure (${kernelRun})`,
+      "--resume --train",
+    ]],
+    ["pending", "wait is given a bad timeout", "30m", [
+      "YURT_KERNEL_RELEASE_TIMEOUT_SECS must be a whole number",
+      "--resume --train",
+    ]],
+  ] as [KernelRelease, string, string | undefined, string[]][]
+) {
+  Deno.test(`a new train stops before [1] when the kernel-v* release ${why}`, async () => {
+    const f = await imageStepFixture({
+      validate: 0,
+      ports: "main",
+      kernel: "main",
+      fresh: true,
+      kernelRelease,
+      kernelReleaseTimeout: timeout,
+    });
+    try {
+      assertEquals(f.code, 1, f.output);
+      for (const text of says) assertStringIncludes(f.output, text);
+      assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
+    } finally {
+      await f.cleanup();
+    }
+  });
+}
 
 Deno.test("a new rehearsal stops while yurt-sandbox still has its validate branch", async () => {
   const f = await imageStepFixture({
@@ -1320,4 +1492,1349 @@ Deno.test("a real train pins its own CLI in [4], not the one [2]'s smoke install
       await f.cleanup();
     }
   }
+});
+
+// --browser-only: a train for the page alone. [1] and [2] as ever, no
+// [3] (the host and CLI) and no [5] (the installers); [4] carries the
+// desktop pins through, with the kernel rev and train they were built for.
+
+Deno.test("a browser-only train dispatches the kernel wasm and the image, never the host and CLI", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    browserOnly: true,
+    stopAtPins: true,
+    // It needs no yurt-sandbox checkout: it builds nothing there.
+    sandboxRoot: "missing-sandbox-checkout",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    assertEquals(f.dispatches.length, 2, f.calls.join("\n"));
+    assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+    assertStringIncludes(f.dispatches[1], "release-playground-image.yml");
+    assertEquals(
+      f.dispatches.some((d) => d.includes("release-native.yml")),
+      false,
+      f.calls.join("\n"),
+    );
+    // The mode is the train's, for --resume; the sandbox rev it records
+    // is the carried desktop host's.
+    assertEquals(f.state?.browser_only, true);
+    assertEquals(f.state?.sandbox_sha, f.shas.sandbox.main);
+    assertEquals(f.state?.steps?.native, undefined);
+    assertStringIncludes(
+      f.output,
+      `BROWSER_ONLY=1 SANDBOX=${f.shas.sandbox.main}`,
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a resumed browser-only train stays browser-only without the flag", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "main",
+    stateBrowserOnly: true,
+    stopAtPins: true,
+    sandboxRoot: "missing-sandbox-checkout",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    assertEquals(f.dispatches.length, 1, f.calls.join("\n"));
+    assertStringIncludes(f.dispatches[0], "release-playground-image.yml");
+    assertStringIncludes(f.output, "BROWSER_ONLY=1");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("--resume --browser-only refuses a full train", async () => {
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "main",
+    browserOnly: true,
+  });
+  try {
+    assertEquals(f.code, 1, f.output);
+    assertStringIncludes(f.output, "is not a browser-only train");
+    assertEquals(f.dispatches, [], f.calls.join("\n"));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a browser-only rehearsal skips the host and CLI and leaves nothing behind", async () => {
+  const f = await imageStepFixture({
+    validate: 1,
+    ports: "main",
+    kernel: "main",
+    fresh: true,
+    browserOnly: true,
+    sandboxRoot: "missing-sandbox-checkout",
+  });
+  try {
+    assertEquals(f.code, 0, f.output);
+    assertEquals(f.dispatches.length, 2, f.calls.join("\n"));
+    assertStringIncludes(f.dispatches[0], "release-kernel-wasm.yml");
+    assertStringIncludes(f.dispatches[1], "release-playground-image.yml");
+    // Neither looked for nor deleted: it publishes no host or CLI.
+    const calls = f.calls.join("\n");
+    assertEquals(calls.includes("desktop-host-"), false, calls);
+    assertEquals(calls.includes("yurt-cli-playground"), false, calls);
+    assertEquals(f.stateLeft, false, "a finished rehearsal left its state");
+    assertEquals(f.leftBranches, 0, "a validate branch was left");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("--browser-only refuses the host and CLI inputs it would not use", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "release-browser-only-" });
+  try {
+    const root = join(dir, "project");
+    await copyScriptLib(root);
+    await Deno.copyFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+      join(root, "scripts/release-playground.sh"),
+    );
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    await Deno.writeTextFile(
+      join(bin, "gh"),
+      '#!/bin/sh\n[ "$1 $2" = \'auth status\' ] && exit 0\necho "unexpected gh call: $*" >&2; exit 1\n',
+    );
+    await Deno.chmod(join(bin, "gh"), 0o755);
+    for (
+      const given of [
+        ["--sandbox-sha", "a".repeat(40)],
+        ["--desktop-host-release", "desktop-host-x"],
+        ["--yurt-cli-release", "yurt-cli-x"],
+      ]
+    ) {
+      const result = await command("bash", [
+        join(root, "scripts/release-playground.sh"),
+        "--browser-only",
+        ...given,
+      ], { env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` } });
+      const output = new TextDecoder().decode(result.stdout) +
+        new TextDecoder().decode(result.stderr);
+      assertEquals(result.code, 1, `${given[0]}: ${output}`);
+      assertStringIncludes(output, `--browser-only takes no ${given[0]}`);
+      assertEquals(output.includes("unexpected gh call"), false, output);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** Parsed pins, read field by field. */
+// deno-lint-ignore no-explicit-any
+type Json = any;
+
+/** release-playground.sh's desktop part of the pins ([4]): the host and CLI
+ * a full train pins from its own releases, or a browser-only train carries
+ * through from `pins`. Prints the computed JSON. */
+async function desktopPins(
+  browserOnly: 0 | 1,
+  pins: Json,
+  {
+    pinsOnly = 0,
+    train = "playground-new",
+    hostRelease = "desktop-host-new",
+    kernelWasmRelease = "kernel-wasm-new",
+    kernelSha = "k-new",
+    // A browser-only train's is the carried host's, recorded at its start.
+    sandboxSha = browserOnly ? pins.desktopHost?.rev ?? "s-new" : "s-new",
+  }: {
+    pinsOnly?: 0 | 1;
+    train?: string;
+    hostRelease?: string;
+    kernelWasmRelease?: string;
+    kernelSha?: string;
+    sandboxSha?: string;
+  } = {},
+): Promise<{ code: number; output: string; desktop?: Json }> {
+  const dir = await Deno.makeTempDir({ prefix: "release-desktop-pins-" });
+  try {
+    const root = join(dir, "project");
+    await Deno.mkdir(join(root, "artifacts"), { recursive: true });
+    await Deno.writeTextFile(
+      join(root, "artifacts/pins.json"),
+      JSON.stringify(pins),
+    );
+    const source = await Deno.readTextFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+    );
+    const start = "# The desktop part of the pins";
+    const end = "# The sealed sandbox snapshot (scripts/release-snapshot.ts)";
+    assertEquals(
+      source.includes(start),
+      true,
+      "release-playground.sh computes the desktop part of the pins",
+    );
+    const block = start + source.split(start)[1].split(end)[0];
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    // The CLI release's assets, as \`gh release view --jq\` lists them.
+    await Deno.writeTextFile(
+      join(bin, "gh"),
+      `#!/bin/sh
+case "$1 $2" in
+  'release view') printf '%s\\n' yurt-aarch64-apple-darwin.tar.gz yurt_1_amd64.deb yurt_1_arm64.deb;;
+  *) echo "unexpected gh call: $*" >&2; exit 1;;
+esac
+`,
+    );
+    await Deno.chmod(join(bin, "gh"), 0o755);
+    const scriptPath = join(dir, "block.sh");
+    await Deno.writeTextFile(
+      scriptPath,
+      `set -euo pipefail
+say() { printf '==> %s\\n' "$*" >&2; }
+die() { echo "release-playground: $*" >&2; exit 1; }
+sidecar_sha() { echo "sha-$3"; }
+${source.split("\n").find((l) => l.startsWith("release_tag() {"))}
+root=${JSON.stringify(root)}
+browser_only=${browserOnly} pins_only=${pinsOnly}
+packages_repo=YurtOS/yurt-packages
+train=${train} kernel_sha=${kernelSha} sandbox_sha=${sandboxSha}
+kernel_wasm_release=${kernelWasmRelease}
+host_release=${hostRelease} host_repo=YurtOS/yurt-sandbox
+cli_release=yurt-cli-new cli_repo=YurtOS/yurt-sandbox
+${block}
+printf 'DESKTOP=%s\\n' "$desktop_json"
+`,
+    );
+    const result = await command("bash", [scriptPath], {
+      env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` },
+    });
+    const output = new TextDecoder().decode(result.stdout) +
+      new TextDecoder().decode(result.stderr);
+    const line = output.split("\n").find((l) => l.startsWith("DESKTOP="));
+    return {
+      code: result.code,
+      output,
+      desktop: line ? JSON.parse(line.slice("DESKTOP=".length)) : undefined,
+    };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+const oldDesktopHost = {
+  repo: "YurtOS/yurt-sandbox",
+  rev: "s-old",
+  releaseRepo: "YurtOS/yurt-sandbox",
+  release: "desktop-host-playground-old",
+  build: "scripts/build-desktop-host.sh",
+  sha256: { "aarch64-apple-darwin": "h".repeat(64) },
+};
+
+Deno.test("a full train pins its own host and CLI with the kernel rev and train they were built for", async () => {
+  const run = await desktopPins(0, {
+    train: "playground-old",
+    kernelWasm: { rev: "k-old" },
+    desktopHost: oldDesktopHost,
+    yurtCli: pinnedCli,
+  });
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.desktop?.desktopHost.release, "desktop-host-new");
+  assertEquals(run.desktop?.desktopHost.rev, "s-new");
+  assertEquals(run.desktop?.desktopHost.kernelRev, "k-new");
+  assertEquals(run.desktop?.desktopHost.train, "playground-new");
+  assertEquals(
+    run.desktop?.desktopHost.sha256["x86_64-unknown-linux-gnu"],
+    "sha-yurt-desktop-host-x86_64-unknown-linux-gnu.tar.gz",
+  );
+  assertEquals(run.desktop?.yurtCli.release, "yurt-cli-new");
+  assertEquals(
+    run.desktop?.yurtCli.assets["x86_64-unknown-linux-gnu"],
+    "yurt_1_amd64.deb",
+  );
+});
+
+Deno.test("a browser-only train carries the desktop pins through, with the kernel rev and train they were built for", async () => {
+  // Pins from before the record: a full train's host was built at its
+  // own kernel pin.
+  const first = await desktopPins(1, {
+    train: "playground-old",
+    kernelWasm: { rev: "k-old" },
+    desktopHost: oldDesktopHost,
+    yurtCli: pinnedCli,
+  });
+  assertEquals(first.code, 0, first.output);
+  assertEquals(first.desktop?.desktopHost, {
+    ...oldDesktopHost,
+    kernelRev: "k-old",
+    train: "playground-old",
+  });
+  assertEquals(first.desktop?.yurtCli, pinnedCli);
+  // A second browser-only train keeps what the first recorded, not its
+  // own pins' kernel.
+  const second = await desktopPins(1, {
+    train: "playground-mid",
+    kernelWasm: { rev: "k-mid" },
+    desktopHost: first.desktop?.desktopHost,
+    yurtCli: pinnedCli,
+  });
+  assertEquals(second.code, 0, second.output);
+  assertEquals(second.desktop?.desktopHost.kernelRev, "k-old");
+  assertEquals(second.desktop?.desktopHost.train, "playground-old");
+  // Nothing to carry: it stops.
+  const none = await desktopPins(1, {
+    train: "playground-old",
+    kernelWasm: { rev: "k-old" },
+  });
+  assertEquals(none.code, 1, none.output);
+  assertStringIncludes(none.output, "no desktopHost and yurtCli to carry");
+});
+
+Deno.test("a browser-only train stops when pins.json pins another host than the one it started with", async () => {
+  const run = await desktopPins(1, {
+    train: "playground-old",
+    kernelWasm: { rev: "k-old" },
+    desktopHost: oldDesktopHost,
+    yurtCli: pinnedCli,
+  }, { sandboxSha: "s-other" });
+  assertEquals(run.code, 1, run.output);
+  assertStringIncludes(
+    run.output,
+    "now pins the desktop host at yurt-sandbox s-old, not s-other",
+  );
+});
+
+Deno.test("a full --pins-only run keeps the record of a host it pins again, and labels a new one without the CLI prefix", async () => {
+  const pins = {
+    train: "playground-mid",
+    kernelWasm: { rev: "k-mid" },
+    desktopHost: { ...oldDesktopHost, kernelRev: "k-old", train: "p-old" },
+    yurtCli: pinnedCli,
+  };
+  // The host a browser-only train carried, named again by hand: still of
+  // its own kernel, not this one.
+  const same = await desktopPins(0, pins, {
+    pinsOnly: 1,
+    train: "yurt-cli-playground-new",
+    hostRelease: oldDesktopHost.release,
+  });
+  assertEquals(same.code, 0, same.output);
+  assertEquals(same.desktop?.desktopHost.kernelRev, "k-old");
+  assertEquals(same.desktop?.desktopHost.train, "p-old");
+  // Another host: the one the run asserts for this kernel, under the
+  // train's label, never the CLI release's.
+  // The CLI release as a train's is named, owner/repo@tag, or bare.
+  for (
+    const train of [
+      "yurt-cli-playground-new",
+      "YurtOS/yurt-sandbox@yurt-cli-playground-new",
+    ]
+  ) {
+    const other = await desktopPins(0, pins, { pinsOnly: 1, train });
+    assertEquals(other.code, 0, other.output);
+    assertEquals(other.desktop?.desktopHost.kernelRev, "k-new");
+    assertEquals(other.desktop?.desktopHost.train, "playground-new");
+  }
+  // Another train's host, by name: built at the kernel rev its label ends
+  // with. Another rev than --kernel-sha is refused.
+  const kernel = "b".repeat(40);
+  const mismatched = await desktopPins(0, pins, {
+    pinsOnly: 1,
+    train: "playground-2026.11.16-bbbbbbb",
+    hostRelease: "desktop-host-playground-2026.11.12-aaaaaaa",
+    kernelSha: kernel,
+  });
+  assertEquals(mismatched.code, 1, mismatched.output);
+  assertStringIncludes(
+    mismatched.output,
+    "was built at kernel aaaaaaa, not bbbbbbb",
+  );
+  // The same rev under another label (a later date, a .N rerun, a
+  // rehearsal's) is the same kernel: accepted.
+  for (
+    const hostRelease of [
+      "desktop-host-playground-2026.11.12-bbbbbbb",
+      "desktop-host-playground-2026.11.16-bbbbbbb.2",
+      "desktop-host-playground-2026.11.16-bbbbbbb-validate",
+    ]
+  ) {
+    const matched = await desktopPins(0, pins, {
+      pinsOnly: 1,
+      train: "playground-2026.11.16-bbbbbbb",
+      hostRelease,
+      kernelSha: kernel,
+    });
+    assertEquals(matched.code, 0, `${hostRelease}: ${matched.output}`);
+    assertEquals(matched.desktop?.desktopHost.kernelRev, kernel);
+  }
+  // A label an earlier --pins-only run wrote is carried as a train's.
+  const carried = await desktopPins(1, {
+    train: "YurtOS/yurt-sandbox@yurt-cli-playground-old",
+    kernelWasm: { rev: "k-old" },
+    desktopHost: oldDesktopHost,
+    yurtCli: pinnedCli,
+  });
+  assertEquals(carried.code, 0, carried.output);
+  assertEquals(carried.desktop?.desktopHost.train, "playground-old");
+  // Pins with no train label at all: carried without one, not as "".
+  const unlabelled = await desktopPins(1, {
+    kernelWasm: { rev: "k-old" },
+    desktopHost: oldDesktopHost,
+    yurtCli: pinnedCli,
+  });
+  assertEquals(unlabelled.code, 0, unlabelled.output);
+  assertEquals("train" in unlabelled.desktop?.desktopHost, false);
+  assertEquals(unlabelled.desktop?.desktopHost.kernelRev, "k-old");
+  // A second browser-only train: the top-level train is the first one's,
+  // which built no host, so it is not taken as the host's.
+  const again = await desktopPins(1, {
+    train: "playground-2026.11.16-bbbbbbb",
+    kernelWasm: { rev: "k-mid" },
+    desktopHost: unlabelled.desktop?.desktopHost,
+    yurtCli: pinnedCli,
+  });
+  assertEquals(again.code, 0, again.output);
+  assertEquals("train" in again.desktop?.desktopHost, false, again.output);
+  assertEquals(again.desktop?.desktopHost.kernelRev, "k-old");
+});
+
+Deno.test("a real browser-only train with a kernel commit off main stops before its first dispatch", async () => {
+  // With a hand-cut image no image or native gate runs; this one must.
+  const f = await imageStepFixture({
+    validate: 0,
+    ports: "main",
+    kernel: "pr",
+    fresh: true,
+    browserOnly: true,
+    imageRelease: "playground-image-x",
+  });
+  try {
+    assertEquals(f.code, 1, f.output);
+    assertStringIncludes(f.output, "rehearse it with --validate");
+    assertEquals(f.dispatches.length, 0, f.calls.join("\n"));
+    assertEquals(f.stateLeft, false, "a refused train left its state file");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a resumed browser-only train refuses a host or CLI release given on the command line", async () => {
+  for (const flag of ["--desktop-host-release", "--yurt-cli-release"]) {
+    const f = await imageStepFixture({
+      validate: 0,
+      ports: "main",
+      kernel: "main",
+      stateBrowserOnly: true,
+      // The stub gh answers for this release, so the refusal is the mode's.
+      imageRelease: "desktop-host-x",
+      extraArgs: [flag, "desktop-host-x"],
+    });
+    try {
+      assertEquals(f.code, 1, f.output);
+      assertStringIncludes(f.output, `--browser-only takes no ${flag}`);
+      assertEquals(f.dispatches, [], f.calls.join("\n"));
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
+
+Deno.test("--pins-only --browser-only takes its label from the kernel wasm release and needs no host or CLI", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "release-pins-only-bo-" });
+  try {
+    const root = join(dir, "project");
+    await copyScriptLib(root);
+    const source = await Deno.readTextFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+    );
+    await Deno.writeTextFile(
+      join(root, "scripts/release-playground.sh"),
+      `${
+        source.split("# ---- where the image builds ([2])")[0]
+      }\nprintf 'TRAIN=%s SANDBOX=%s\\n' "$train" "$sandbox_sha"\n`,
+    );
+    await Deno.mkdir(join(root, "artifacts"));
+    const sandbox = "5".repeat(40);
+    await Deno.writeTextFile(
+      join(root, "artifacts/pins.json"),
+      JSON.stringify({
+        image: { rev: "6".repeat(40) },
+        desktopHost: { rev: sandbox },
+      }),
+    );
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    await Deno.writeTextFile(
+      join(bin, "gh"),
+      "#!/bin/sh\ncase \"$1 $2\" in\n  'auth status'|'release view') exit 0;;\nesac\necho \"unexpected gh call: $*\" >&2; exit 1\n",
+    );
+    await Deno.chmod(join(bin, "gh"), 0o755);
+    const run = async (...args: string[]) => {
+      const result = await command("bash", [
+        join(root, "scripts/release-playground.sh"),
+        "--pins-only",
+        "--browser-only",
+        "--ports-sha",
+        "6".repeat(40),
+        ...args,
+      ], { env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` } });
+      return {
+        code: result.code,
+        output: new TextDecoder().decode(result.stdout) +
+          new TextDecoder().decode(result.stderr),
+      };
+    };
+    const ok = await run(
+      "--kernel-sha",
+      "7".repeat(40),
+      "--kernel-wasm-release",
+      "YurtOS/yurt-sandbox@kernel-wasm-playground-2026.11.16-abcdef0",
+      "--image-release",
+      "YurtOS/yurt-ports@playground-image-x",
+    );
+    assertEquals(ok.code, 0, ok.output);
+    assertStringIncludes(
+      ok.output,
+      `TRAIN=playground-2026.11.16-abcdef0 SANDBOX=${sandbox}`,
+    );
+    const missing = await run(
+      "--kernel-sha",
+      "7".repeat(40),
+      "--kernel-wasm-release",
+      "YurtOS/yurt-sandbox@kernel-wasm-playground-2026.11.16-abcdef0",
+    );
+    assertEquals(missing.code, 1, missing.output);
+    assertStringIncludes(
+      missing.output,
+      "--pins-only --browser-only needs --kernel-wasm-release and --image-release",
+    );
+    // The kernel rev the host is checked against is the caller's to give:
+    // the kernel checkout's main may be past the release.
+    const noKernel = await run(
+      "--kernel-wasm-release",
+      "YurtOS/yurt-sandbox@kernel-wasm-playground-2026.11.16-abcdef0",
+      "--image-release",
+      "YurtOS/yurt-ports@playground-image-x",
+    );
+    assertEquals(noKernel.code, 1, noKernel.output);
+    assertStringIncludes(noKernel.output, "--pins-only needs --kernel-sha");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a browser-only train dispatches no desktop installers after the deploy", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "release-browser-only-end-" });
+  try {
+    const source = await Deno.readTextFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+    );
+    const start = "# [5] the desktop installers";
+    assertEquals(source.includes(start), true);
+    const ending = start + source.split(start)[1];
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    const log = join(dir, "gh.log");
+    await Deno.writeTextFile(
+      join(bin, "gh"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nexit 1\n`,
+    );
+    await Deno.chmod(join(bin, "gh"), 0o755);
+    const state = join(dir, "state.json");
+    await Deno.writeTextFile(state, JSON.stringify({ steps: {} }));
+    const result = await command("bash", [
+      "-c",
+      `set -euo pipefail
+say() { printf '==> %s\\n' "$*"; }
+die() { echo "release-playground: $*"; exit 1; }
+source "$1"
+state=${JSON.stringify(state)}
+browser_only=1 pr_url=https://example.invalid/pull/1
+train=t image_release=i seal_release_of_train=s
+desktop_train=playground-old
+${stepHelpers(source)}
+${ending}`,
+      "bash",
+      join(repoRoot, "scripts/lib/snapshot-pin.sh"),
+    ], { env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` } });
+    const output = new TextDecoder().decode(result.stdout) +
+      new TextDecoder().decode(result.stderr);
+    assertEquals(result.code, 0, output);
+    assertEquals(
+      await Deno.readTextFile(log).catch(() => ""),
+      "",
+      "a browser-only train called gh after the deploy",
+    );
+    assertStringIncludes(output, "released (browser-only): kernel-wasm-t");
+    assertStringIncludes(output, "desktop-playground-old");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** scripts/install-desktop-host.sh on a project with these pins (and the
+ * blobs it copies), with a \`gh\` that logs its calls and fails. */
+async function installDesktopHost(pins: unknown) {
+  const dir = await Deno.makeTempDir({ prefix: "install-desktop-host-" });
+  try {
+    const root = join(dir, "project");
+    await Deno.mkdir(join(root, "scripts"), { recursive: true });
+    await Deno.mkdir(join(root, "artifacts"));
+    await Deno.copyFile(
+      join(repoRoot, "scripts/install-desktop-host.sh"),
+      join(root, "scripts/install-desktop-host.sh"),
+    );
+    await Deno.writeTextFile(
+      join(root, "artifacts/pins.json"),
+      JSON.stringify(pins),
+    );
+    for (const blob of ["yurt_kernel.wasm", "playground.yurtimg"]) {
+      await Deno.writeTextFile(join(root, "artifacts", blob), "x");
+    }
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    const log = join(dir, "gh.log");
+    await Deno.writeTextFile(
+      join(bin, "gh"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nexit 1\n`,
+    );
+    await Deno.chmod(join(bin, "gh"), 0o755);
+    const result = await command("bash", [
+      join(root, "scripts/install-desktop-host.sh"),
+      "--target",
+      "aarch64-apple-darwin",
+    ], { env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` } });
+    return {
+      code: result.code,
+      output: new TextDecoder().decode(result.stdout) +
+        new TextDecoder().decode(result.stderr),
+      ghCalls: await Deno.readTextFile(log).catch(() => ""),
+    };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("install-desktop-host.sh refuses a desktop host built for another kernel than the pinned wasm", async () => {
+  // After a browser-only train: the host would fail to boot this
+  // kernel.wasm ("unknown import: kh::..."), so it is never paired with it.
+  const behind = await installDesktopHost({
+    kernelWasm: { rev: "k-new" },
+    desktopHost: { ...oldDesktopHost, kernelRev: "k-old", train: "p-old" },
+  });
+  assertEquals(behind.code, 1, behind.output);
+  assertStringIncludes(behind.output, "browser-only train");
+  assertStringIncludes(behind.output, "p-old");
+  assertEquals(behind.ghCalls, "", "it fetched the host anyway");
+  // Built for the pinned kernel, or pins from before the record: it goes
+  // on to fetch the host (which the stub gh then refuses).
+  for (
+    const desktopHost of [
+      { ...oldDesktopHost, kernelRev: "k-new", train: "p-new" },
+      oldDesktopHost,
+    ]
+  ) {
+    const run = await installDesktopHost({
+      kernelWasm: { rev: "k-new" },
+      desktopHost,
+    });
+    assertStringIncludes(run.ghCalls, "release download", run.output);
+  }
+});
+
+Deno.test("build-desktop.sh refuses pins whose desktop host was built for another kernel", async () => {
+  // A runtime/ installed before a browser-only train's pins were pulled
+  // passes the file checks; the pins say the pair is wrong.
+  const dir = await Deno.makeTempDir({ prefix: "build-desktop-" });
+  try {
+    await Deno.mkdir(join(dir, "scripts"));
+    await Deno.mkdir(join(dir, "artifacts"));
+    await Deno.mkdir(join(dir, "dist"));
+    await Deno.writeTextFile(join(dir, "dist/index.html"), "<!doctype html>");
+    await Deno.copyFile(
+      join(repoRoot, "scripts/build-desktop.sh"),
+      join(dir, "scripts/build-desktop.sh"),
+    );
+    const run = async (desktopHost: unknown) => {
+      await Deno.writeTextFile(
+        join(dir, "artifacts/pins.json"),
+        JSON.stringify({ kernelWasm: { rev: "k-new" }, desktopHost }),
+      );
+      const result = await command("bash", [
+        join(dir, "scripts/build-desktop.sh"),
+        "--target",
+        "aarch64-apple-darwin",
+      ]);
+      return new TextDecoder().decode(result.stderr) + ` (exit ${result.code})`;
+    };
+    const behind = await run({ kernelRev: "k-old" });
+    assertStringIncludes(behind, "a browser-only train moved the page alone");
+    assertStringIncludes(behind, "(exit 1)");
+    // Built for this kernel, or from before the record: on to the runtime
+    // check, which this fixture has none for.
+    for (const host of [{ kernelRev: "k-new" }, {}]) {
+      assertStringIncludes(await run(host), "build-desktop: no runtime/");
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** \`release-playground.sh --check\` on these pins, with every repo's main
+ * at its pinned rev, the page deployed from main, and every release
+ * installable. */
+async function check(pins: Json) {
+  const dir = await Deno.makeTempDir({ prefix: "release-check-" });
+  try {
+    const root = join(dir, "project");
+    await copyScriptLib(root);
+    await Deno.copyFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+      join(root, "scripts/release-playground.sh"),
+    );
+    await Deno.mkdir(join(root, "artifacts"));
+    const pinsFile = join(root, "artifacts/pins.json");
+    await Deno.writeTextFile(pinsFile, JSON.stringify(pins));
+    const assets = [
+      "kernel-wasm.wasm",
+      "playground-image.yurtimg",
+      "python3-seal.wasm",
+      "yurt-desktop-host-aarch64-apple-darwin.tar.gz",
+      pins.yurtCli.assets["aarch64-apple-darwin"],
+    ].flatMap((a) => [a, `${a}.sha256`]);
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    const raw = "api -H Accept: application/vnd.github.raw+json";
+    await Deno.writeTextFile(
+      join(bin, "gh"),
+      `#!/bin/bash
+case "$*" in
+  "auth status") exit 0;;
+  "api repos/YurtOS/yurtos-kernel/commits/main --jq .sha") echo ${pins.kernelWasm.rev};;
+  "api repos/YurtOS/yurt-ports/commits/main --jq .sha") echo ${pins.image.rev};;
+  "api repos/YurtOS/yurt-sandbox/commits/main --jq .sha") echo ${pins.desktopHost.rev};;
+  "api repos/YurtOS/yurt-playground/commits/main --jq .sha") echo pmain;;
+  "${raw} repos/YurtOS/yurtos-kernel/contents/toolchain/sdk.lock"*) echo 'guest_sdk_release = "guest-sdk-v1"';;
+  "api repos/YurtOS/yurt-toolchain/releases --paginate"*) echo guest-sdk-v1;;
+  "${raw} repos/YurtOS/yurt-playground/contents/artifacts/pins.json"*) cat ${
+        JSON.stringify(pinsFile)
+      };;
+  "release view "*) printf '%s\\n' ${assets.join(" ")};;
+  *) echo "unexpected gh call: $*" >&2; exit 1;;
+esac
+`,
+    );
+    await Deno.writeTextFile(
+      join(bin, "curl"),
+      `#!/bin/bash
+case "$*" in
+  *pins.json) cat ${JSON.stringify(pinsFile)};;
+  *integrity.json) echo '{"commit":"pmain"}';;
+  *) exit 22;;
+esac
+`,
+    );
+    for (const tool of ["gh", "curl"]) {
+      await Deno.chmod(join(bin, tool), 0o755);
+    }
+    const result = await command("bash", [
+      join(root, "scripts/release-playground.sh"),
+      "--check",
+    ], { env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` } });
+    return {
+      code: result.code,
+      output: new TextDecoder().decode(result.stdout) +
+        new TextDecoder().decode(result.stderr),
+    };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+const checkedPins = {
+  train: "playground-new",
+  kernelWasm: { rev: "k".repeat(40), releaseRepo: "r", release: "kw" },
+  image: { rev: "p".repeat(40), releaseRepo: "r", release: "im" },
+  pythonSeal: { rev: "p".repeat(40), releaseRepo: "r", release: "ps" },
+  desktopHost: {
+    rev: "s".repeat(40),
+    releaseRepo: "r",
+    release: "desktop-host-playground-old",
+  },
+  yurtCli: { ...pinnedCli, rev: "s".repeat(40) },
+};
+
+Deno.test("--check shows a browser-only train's desktop as behind, not stale", async () => {
+  const behind = await check({
+    ...checkedPins,
+    desktopHost: {
+      ...checkedPins.desktopHost,
+      kernelRev: "o".repeat(40),
+      train: "playground-old",
+    },
+  });
+  assertEquals(behind.code, 0, behind.output);
+  const row = behind.output.split("\n").find((l) => l.includes("desktop app"));
+  assertEquals(row?.startsWith("BEHIND"), true, behind.output);
+  assertStringIncludes(row!, "host and CLI of playground-old");
+  assertStringIncludes(row!, "browser-only train");
+  assertStringIncludes(behind.output, "the desktop app is behind");
+  // Built for the pinned kernel, or pins from before the record: level.
+  for (
+    const desktopHost of [
+      {
+        ...checkedPins.desktopHost,
+        kernelRev: "k".repeat(40),
+        train: "playground-new",
+      },
+      checkedPins.desktopHost,
+    ]
+  ) {
+    const level = await check({ ...checkedPins, desktopHost });
+    assertEquals(level.code, 0, level.output);
+    const row = level.output.split("\n").find((l) => l.includes("desktop app"));
+    assertEquals(row?.startsWith("ok"), true, level.output);
+    assertStringIncludes(level.output, "up to date");
+  }
+});
+
+/** The script's own step_get and step_set lines, for a fixture state. */
+function stepHelpers(source: string): string {
+  const lines = source.split("\n").filter((line) =>
+    /^step_(get|set)\(\) \{/.test(line)
+  );
+  assertEquals(lines.length, 2, "release-playground.sh has step_get/step_set");
+  return lines.join("\n");
+}
+
+/** release-playground.sh's pins write, from the snapshot entry it reads
+ * to the pins it verifies, run on a project whose pins carry a snapshot
+ * entry, with a `deno` that answers --check-pin as `answer` (bash). */
+async function pinsWrite(
+  answer: string,
+  initialState: unknown = { steps: {} },
+  {
+    pinsOnly = false,
+    snapshots = { snapshot: { release: "snapshot-playground-old" } } as Record<
+      string,
+      unknown
+    >,
+  } = {},
+) {
+  const dir = await Deno.makeTempDir({ prefix: "release-pins-write-" });
+  try {
+    const root = join(dir, "project");
+    await copyScriptLib(root);
+    await Deno.mkdir(join(root, "artifacts"));
+    await Deno.writeTextFile(
+      join(root, "artifacts/pins.json"),
+      JSON.stringify({ train: "playground-old", ...snapshots }),
+    );
+    const source = await Deno.readTextFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+    );
+    const start = "# The sealed sandbox snapshot (scripts/release-snapshot.ts)";
+    // Through the pins' verification and the pins-only ending, to the pin
+    // PR (step [4]).
+    const end = "# [4] the pin PR, merged on a yes";
+    assertEquals(source.includes(start) && source.includes(end), true);
+    const block = start + source.split(start)[1].split(end)[0];
+    const scriptPath = join(dir, "block.sh");
+    await Deno.writeTextFile(
+      scriptPath,
+      `set -euo pipefail
+say() { printf '==> %s\\n' "$*" >&2; }
+die() { echo "release-playground: $*" >&2; exit 1; }
+resume_command() { echo "resume"; }
+root=${JSON.stringify(root)}
+pins_only=${pinsOnly ? 1 : 0}
+state=${JSON.stringify(join(dir, "state.json"))}
+echo ${JSON.stringify(JSON.stringify(initialState))} > "$state"
+${stepHelpers(source)}
+source "$root/scripts/lib/snapshot-pin.sh"
+train=playground-new kernel_sha=k sandbox_sha=s ports_sha=p
+kernel_wasm_release=kw kernel_wasm_repo=r kernel_sha256=ks
+image_release=ir image_repo=r image_sha256=is
+host_release=hr host_repo=r cli_release=cr cli_repo=r
+host_json='{}' cli_json='{}' python_seal_json='{"sha256":"py"}' slim_json=null
+desktop_json='{"desktopHost":{"release":"hr"},"yurtCli":{"release":"cr"}}'
+${block}
+printf 'DROPPED=%s\\n' "\${snapshot_dropped:-0}"
+`,
+    );
+    // The pins' verification: not this test's.
+    await Deno.writeTextFile(
+      join(root, "scripts/install-pinned-artifacts.sh"),
+      "#!/bin/sh\nexit 0\n",
+    );
+    await Deno.chmod(join(root, "scripts/install-pinned-artifacts.sh"), 0o755);
+    const bin = join(dir, "bin");
+    await Deno.mkdir(bin);
+    await Deno.writeTextFile(
+      join(bin, "deno"),
+      // Called as the script calls it, from the project root; any other
+      // call is no verdict (exit 9), which stops the train.
+      // \`kind\` is the snapshot asked about (--kind, desktop without it).
+      `#!/usr/bin/env bash
+case "$*" in
+  "run -A scripts/release-snapshot.ts --check-pin") kind=desktop ;;
+  "run -A scripts/release-snapshot.ts --check-pin --kind tablet") kind=tablet ;;
+  "run -A scripts/release-snapshot.ts --check-pin --kind go") kind=go ;;
+  "run -A scripts/release-snapshot.ts --check-pin --kind playwright") kind=playwright ;;
+  *) exit 9 ;;
+esac
+[ "$(pwd -P)" = "$(cd ${JSON.stringify(root)} && pwd -P)" ] || exit 9
+${answer}
+`,
+    );
+    await Deno.chmod(join(bin, "deno"), 0o755);
+    const result = await command("bash", [scriptPath], {
+      env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` },
+    });
+    return {
+      code: result.code,
+      output: new TextDecoder().decode(result.stdout) +
+        new TextDecoder().decode(result.stderr),
+      pins: JSON.parse(
+        await Deno.readTextFile(join(root, "artifacts/pins.json")),
+      ),
+      state: JSON.parse(await Deno.readTextFile(join(dir, "state.json"))),
+    };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("a train carries the snapshot pin --check-pin accepts into its new pins", async () => {
+  // A resumed train whose earlier run dropped the pin, and whose pins now
+  // keep one: nothing is left to recapture.
+  const run = await pinsWrite("exit 0", {
+    steps: { snapshot: { dropped: "an earlier refusal" } },
+  });
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.pins.train, "playground-new");
+  assertEquals(run.pins.snapshot, { release: "snapshot-playground-old" });
+  assertStringIncludes(run.output, "DROPPED=0");
+  assertEquals(run.state.steps.snapshot, { dropped: null });
+});
+
+Deno.test("a train carries every device's snapshot pin, each checked by its own kind, and drops the retired phone's", async () => {
+  const run = await pinsWrite(
+    `[ "$kind" = tablet ] || exit 0
+echo 'snapshot pin refused: built from bootSetup 1, not 2' >&2; exit 3`,
+    { steps: {} },
+    {
+      snapshots: {
+        snapshot: { release: "d" },
+        tabletSnapshot: { release: "t" },
+        phoneSnapshot: { release: "p" },
+        goSnapshot: { release: "g" },
+      },
+    },
+  );
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.pins.snapshot, { release: "d" });
+  // The phone restores the tablet's: its own kind is gone.
+  assertEquals("phoneSnapshot" in run.pins, false);
+  assertEquals(run.pins.goSnapshot, { release: "g" });
+  assertEquals("tabletSnapshot" in run.pins, false);
+  assertStringIncludes(
+    run.output,
+    "the pinned snapshot is not this train's (tabletSnapshot: built from bootSetup 1, not 2): dropped",
+  );
+  assertStringIncludes(run.output, "DROPPED=1");
+});
+
+Deno.test("a train drops a Go snapshot pin its own kind's check refuses", async () => {
+  const run = await pinsWrite(
+    `[ "$kind" = go ] || exit 0
+echo 'snapshot pin refused: the snapshot holds go@1, the live index offers go@2' >&2; exit 3`,
+    { steps: {} },
+    {
+      snapshots: {
+        snapshot: { release: "d" },
+        goSnapshot: { release: "g" },
+      },
+    },
+  );
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.pins.snapshot, { release: "d" });
+  assertEquals("goSnapshot" in run.pins, false);
+  assertStringIncludes(
+    run.output,
+    "the pinned snapshot is not this train's (goSnapshot: the snapshot holds go@1, the live index offers go@2): dropped",
+  );
+});
+
+Deno.test("a train carries a Playwright snapshot pin, and drops it when its own kind's check refuses", async () => {
+  const kept = await pinsWrite(
+    "exit 0",
+    { steps: {} },
+    {
+      snapshots: {
+        snapshot: { release: "d" },
+        playwrightSnapshot: { release: "w" },
+      },
+    },
+  );
+  assertEquals(kept.code, 0, kept.output);
+  assertEquals(kept.pins.playwrightSnapshot, { release: "w" });
+  const run = await pinsWrite(
+    `[ "$kind" = playwright ] || exit 0
+echo 'snapshot pin refused: the snapshot holds node@1, the live index offers node@2' >&2; exit 3`,
+    { steps: {} },
+    {
+      snapshots: {
+        snapshot: { release: "d" },
+        playwrightSnapshot: { release: "w" },
+      },
+    },
+  );
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.pins.snapshot, { release: "d" });
+  assertEquals("playwrightSnapshot" in run.pins, false);
+  assertStringIncludes(
+    run.output,
+    "the pinned snapshot is not this train's (playwrightSnapshot: the snapshot holds node@1, the live index offers node@2): dropped",
+  );
+});
+
+Deno.test("a resumed train keeps an earlier run's dropped tablet pin until it is back", async () => {
+  // The earlier run dropped the tablet's; this one keeps the desktop's.
+  const still = await pinsWrite(
+    "exit 0",
+    {
+      steps: {
+        snapshot: { dropped: "tabletSnapshot: built from bootSetup 1, not 2" },
+      },
+    },
+    { snapshots: { snapshot: { release: "d" } } },
+  );
+  assertEquals(still.code, 0, still.output);
+  assertEquals(still.state.steps.snapshot, {
+    dropped: "tabletSnapshot: built from bootSetup 1, not 2",
+  });
+  // Once a recapture put it back, nothing is left to remind of.
+  const back = await pinsWrite(
+    "exit 0",
+    {
+      steps: {
+        snapshot: { dropped: "tabletSnapshot: built from bootSetup 1, not 2" },
+      },
+    },
+    {
+      snapshots: {
+        snapshot: { release: "d" },
+        tabletSnapshot: { release: "t" },
+      },
+    },
+  );
+  assertEquals(back.code, 0, back.output);
+  assertEquals(back.state.steps.snapshot, { dropped: null });
+});
+
+Deno.test("a resumed train forgets an earlier run's dropped phone pin: that kind is gone", async () => {
+  // Started before the phone restored the tablet's snapshot, resumed after:
+  // no desktop pin either, so the line would otherwise stay as the
+  // desktop's and ask for a phone recapture that --kind phone refuses.
+  const run = await pinsWrite(
+    "exit 0",
+    { steps: { snapshot: { dropped: "phoneSnapshot: built from x, not y" } } },
+    { snapshots: { tabletSnapshot: { release: "t" } } },
+  );
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.state.steps.snapshot, { dropped: null });
+});
+
+Deno.test("a resumed train that drops another pin keeps an earlier run's record of a pin still absent", async () => {
+  // The earlier run dropped the tablet's; this one refuses the desktop's.
+  const run = await pinsWrite(
+    "echo 'snapshot pin refused: built from kernelRev a, not b; imageSha256 c, not d' >&2; exit 3",
+    { steps: { snapshot: { dropped: "tabletSnapshot: built from x, not y" } } },
+    { snapshots: { snapshot: { release: "d" } } },
+  );
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.state.steps.snapshot, {
+    dropped:
+      "built from kernelRev a, not b; imageSha256 c, not d\ntabletSnapshot: built from x, not y",
+  });
+  // A reason holding "; " is still one pin's line: once the tablet's is
+  // back, its record clears (no desktop pin on this train).
+  const back = await pinsWrite(
+    "exit 0",
+    {
+      steps: {
+        snapshot: {
+          dropped:
+            "tabletSnapshot: built from kernelRev a, not b; imageSha256 c, not d",
+        },
+      },
+    },
+    { snapshots: { tabletSnapshot: { release: "t" } } },
+  );
+  assertEquals(back.code, 0, back.output);
+  assertEquals(back.state.steps.snapshot, { dropped: null });
+});
+
+Deno.test("a train drops the snapshot pin --check-pin refuses, with its reason", async () => {
+  const run = await pinsWrite(
+    "echo 'snapshot pin refused: built from kernelRev k0, not k' >&2; exit 3",
+  );
+  assertEquals(run.code, 0, run.output);
+  assertEquals(run.pins.train, "playground-new");
+  assertEquals("snapshot" in run.pins, false);
+  assertStringIncludes(
+    run.output,
+    "the pinned snapshot is not this train's (built from kernelRev k0, not k): dropped",
+  );
+  assertStringIncludes(run.output, "DROPPED=1");
+  // Kept with the train, for a --resume's closing reminder.
+  assertEquals(run.state.steps.snapshot, {
+    dropped: "built from kernelRev k0, not k",
+  });
+});
+
+Deno.test("a pins-only train that dropped the pin ends with the reminder to recapture", async () => {
+  const dropped = await pinsWrite(
+    "echo 'snapshot pin refused: built from kernelRev k0, not k' >&2; exit 3",
+    { steps: {} },
+    { pinsOnly: true },
+  );
+  assertEquals(dropped.code, 0, dropped.output);
+  assertStringIncludes(
+    dropped.output,
+    "the snapshot pin was dropped (built from kernelRev k0, not k): run scripts/release-snapshot.ts",
+  );
+  assertStringIncludes(dropped.output, "pins regenerated and verified");
+  const kept = await pinsWrite("exit 0", { steps: {} }, { pinsOnly: true });
+  assertEquals(kept.output.includes("the snapshot pin was dropped"), false);
+});
+
+Deno.test("a train ends with the reminder to recapture when its state says the pin was dropped", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "release-reminder-" });
+  try {
+    const source = await Deno.readTextFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+    );
+    // The train's own ending, from its last report to the end of the file.
+    const start = 'say "released: ';
+    assertEquals(source.includes(start), true);
+    const ending = start + source.split(start).at(-1);
+    const run = async (steps: unknown) => {
+      const state = join(dir, "state.json");
+      await Deno.writeTextFile(state, JSON.stringify({ steps }));
+      const result = await command("bash", [
+        "-c",
+        `set -euo pipefail
+say() { printf '==> %s\\n' "$*"; }
+source "$1"
+state=${JSON.stringify(state)}
+train=t image_release=i seal_release_of_train=s
+${stepHelpers(source)}
+${ending}`,
+        "bash",
+        join(repoRoot, "scripts/lib/snapshot-pin.sh"),
+      ]);
+      return new TextDecoder().decode(result.stdout);
+    };
+    assertStringIncludes(
+      await run({ snapshot: { dropped: "built from kernelRev k0, not k" } }),
+      "the snapshot pin was dropped (built from kernelRev k0, not k): run scripts/release-snapshot.ts",
+    );
+    for (const steps of [{}, { snapshot: { dropped: null } }]) {
+      assertEquals(
+        (await run(steps)).includes("the snapshot pin was dropped"),
+        false,
+        JSON.stringify(steps),
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a train stops when --check-pin gives no verdict, and keeps the pin", async () => {
+  const run = await pinsWrite("echo 'error: Uncaught' >&2; exit 1");
+  assertEquals(run.code, 1, run.output);
+  assertStringIncludes(
+    run.output,
+    "release-snapshot.ts --check-pin failed (exit 1)",
+  );
+  assertEquals(run.pins.snapshot, { release: "snapshot-playground-old" });
+});
+
+Deno.test("a train whose pin PR is left open still reminds to recapture a dropped pin", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "release-left-open-" });
+  try {
+    const source = await Deno.readTextFile(
+      join(repoRoot, "scripts/release-playground.sh"),
+    );
+    // The script's own question, up to its answer's case.
+    const start = 'if [ "$pr_state" != MERGED ]; then';
+    assertEquals(source.includes(start), true);
+    const question = start + source.split(start)[1].split("  esac")[0] +
+      "  esac\nfi\n";
+    const state = join(dir, "state.json");
+    await Deno.writeTextFile(
+      state,
+      JSON.stringify({ steps: { snapshot: { dropped: "built from k0" } } }),
+    );
+    const scriptPath = join(dir, "question.sh");
+    await Deno.writeTextFile(
+      scriptPath,
+      `set -euo pipefail
+say() { printf '==> %s\\n' "$*"; }
+source ${JSON.stringify(join(repoRoot, "scripts/lib/snapshot-pin.sh"))}
+state=${JSON.stringify(state)}
+pr_state=OPEN pr_url=https://example.invalid/pull/1
+${stepHelpers(source)}
+${question}
+echo NOT-REACHED
+`,
+    );
+    const result = await new Deno.Command("bash", {
+      args: [scriptPath],
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+      clearEnv: true,
+      env: fixtureEnv(),
+    }).spawn();
+    const writer = result.stdin.getWriter();
+    await writer.write(new TextEncoder().encode("n\n"));
+    await writer.close();
+    const out = await result.output();
+    const output = new TextDecoder().decode(out.stdout);
+    assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
+    assertStringIncludes(output, "left open: https://example.invalid/pull/1");
+    assertStringIncludes(
+      output,
+      "the snapshot pin was dropped (built from k0): run scripts/release-snapshot.ts",
+    );
+    assertEquals(output.includes("NOT-REACHED"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** Runs `body` in bash with scripts/lib/python-set.sh sourced, and `curl`
+ * answering each yurt-packages package file from `packages` (name ->
+ * `version@build` list, `!` for yanked). */
+async function pythonSetLib(
+  body: string,
+  packages: Record<string, string[]> = {},
+): Promise<{ code: number; stdout: string }> {
+  const dir = await Deno.makeTempDir({ prefix: "python-set-" });
+  try {
+    const bin = join(dir, "bin");
+    await Deno.mkdir(join(dir, "packages"), { recursive: true });
+    await Deno.mkdir(bin);
+    for (const [name, list] of Object.entries(packages)) {
+      await Deno.writeTextFile(
+        join(dir, "packages", `${name}.json`),
+        JSON.stringify({
+          name,
+          versions: list.map((r) => {
+            const [version, build] = r.replace("!", "").split("@");
+            return { version, build, yanked: r.startsWith("!") };
+          }),
+        }),
+      );
+    }
+    await Deno.writeTextFile(
+      join(bin, "curl"),
+      `#!/usr/bin/env bash
+url=\${!#}
+cat ${JSON.stringify(join(dir, "packages"))}/"\${url##*/}"
+`,
+    );
+    await Deno.chmod(join(bin, "curl"), 0o755);
+    const result = await command("bash", [
+      "-c",
+      `set -euo pipefail; source ${
+        JSON.stringify(join(repoRoot, "scripts/lib/python-set.sh"))
+      }; cd ${JSON.stringify(dir)}; ${body}`,
+    ], { env: { PATH: `${bin}:${Deno.env.get("PATH") ?? ""}` } });
+    return {
+      code: result.code,
+      stdout: new TextDecoder().decode(result.stdout).trim(),
+    };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+const SET_AT = (builds: number[], python = "3.14.7") => ({
+  python: builds.map((n) => `${python}@yurt_${n}`),
+  numpy: builds.map((n) => `2.5.0@yurt_${n}`),
+  pyzmq: builds.map((n) => `26.4.0@yurt_${n}`),
+  "jupyter-kernel": builds.map((n) => `0.0.1@yurt_${n}`),
+  "python-seal": builds.map((n) => `3.14.7@yurt_${n}`),
+});
+
+Deno.test("the slim image's python is read from its own pkg installed list", async () => {
+  const image = (list?: string) => `
+mkdir -p root/var/lib/yurt-pkg root/bin
+touch root/bin/busybox
+${
+    list === undefined
+      ? ""
+      : `printf ${JSON.stringify(list)} > root/var/lib/yurt-pkg/installed.list`
+  }
+(cd root && tar -cf - bin var) | zstd -q -o slim.yurtimg
+slim_image_python slim.yurtimg`;
+  assertEquals(
+    (await pythonSetLib(image(
+      "ca-certificates\\t2026.9.25\\tyurt_0\\npython\\t3.14.7\\tyurt_0\\n",
+    ))).stdout,
+    "3.14.7 yurt_0",
+  );
+  // Today's slim image: a list without python, or (older) none at all.
+  assertEquals(
+    (await pythonSetLib(image("git\\t2.55.0\\tyurt_0\\n"))).stdout,
+    "",
+  );
+  assertEquals((await pythonSetLib(image())).stdout, "");
+  // Not an image at all.
+  assertEquals(
+    (await pythonSetLib("echo x > bad; slim_image_python bad")).code !== 0,
+    true,
+  );
+});
+
+Deno.test("a train needs a complete live Python set at the slim image's python build, not just the newest", async () => {
+  // python at yurt_0 with yurt_0's set still live beside yurt_1's.
+  assertEquals(
+    (await pythonSetLib("python_set_builds 3.14.7 yurt_0", SET_AT([0, 1])))
+      .stdout,
+    "yurt_0",
+  );
+  // Only yurt_1 live: nothing the image can take.
+  const newer = { ...SET_AT([1]), numpy: ["2.5.0@yurt_0", "2.5.0@yurt_1"] };
+  assertEquals(
+    (await pythonSetLib("python_set_builds 3.14.7 yurt_0", newer)).stdout,
+    "",
+  );
+  // yurt_0 live, but with another python version than the image's.
+  assertEquals(
+    (await pythonSetLib(
+      "python_set_builds 3.14.7 yurt_0",
+      SET_AT([0], "3.14.8"),
+    )).stdout,
+    "",
+  );
+  // No python in the image: every complete build, newest last, as before;
+  // a yanked member takes its build out.
+  const yanked = {
+    ...SET_AT([0, 1, 2]),
+    pyzmq: ["26.4.0@yurt_0", "!26.4.0@yurt_1", "26.4.0@yurt_2"],
+  };
+  assertEquals(
+    (await pythonSetLib("python_set_builds", yanked)).stdout,
+    "yurt_0\nyurt_2",
+  );
 });

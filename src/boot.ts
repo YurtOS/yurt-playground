@@ -1,3 +1,4 @@
+import { sha256Hex, type StoredSnapshot } from "./snapshot_store.ts";
 import {
   defaultHostState,
   KERNEL_PID,
@@ -5,7 +6,24 @@ import {
   METHOD,
   pumpPtyMaster,
   s,
+  type SandboxSealImage,
 } from "@yurt/kernel-host-interface-js";
+import {
+  INSTALLED_LIST_PATH,
+  parseInstalledList,
+  type SandboxFiles,
+} from "./installed_list.ts";
+import { linuxRemark } from "./linux_remark.ts";
+import type { Platform } from "./device.ts";
+import { baseToolsHeld } from "./image_tools.ts";
+import {
+  GUEST_MEMORY_RESERVATION_BYTES,
+  type GuestMemoryPlan,
+  KERNEL_MEMORY_RESERVATION_BYTES,
+  kernelMemoryForRestore,
+  planGuestMemory,
+  PROBE_LIMIT_BYTES,
+} from "./guest_memory_reservation.ts";
 import {
   drainDirtyPaths,
   type LayerEntry,
@@ -15,6 +33,7 @@ import {
   vfsReaddir,
   vfsReadFile,
   vfsReadlink,
+  vfsReadWhole,
   vfsStat,
   writeRamfsFile,
   writeRamfsTree,
@@ -31,8 +50,41 @@ import {
 import { partsFetch } from "./image_parts.ts";
 import { captureLayer } from "./python_layer.ts";
 import { watchGuestMemoryRefusals } from "./memory_refused.ts";
+import {
+  relayTrustedRepos,
+  TRUSTED_REPOS_PATH,
+  trustsRelay,
+} from "./packages.ts";
+import {
+  type PkgRelay,
+  type RelayOptions,
+  startPkgRelay,
+} from "./pkg_relay.ts";
+import {
+  type CdpBridge,
+  type CdpBridgeHandlers,
+  startCdpBridge,
+} from "./cdp_bridge.ts";
 import { parsePins, type Pins } from "./pins.ts";
-import type { Spawner, WaitStatus } from "./executions.ts";
+import { RESOLV_CONF, type TabNetwork } from "./network.ts";
+import {
+  checkPythonSet,
+  decodeSandboxSnapshot,
+  fetchVerifiedSnapshot,
+  pinnedSnapshot,
+  type SnapshotKind,
+  SnapshotMismatch,
+} from "./sandbox_snapshot.ts";
+import { uploadedSnapshot } from "./snapshot_source.ts";
+import {
+  type PageSeal,
+  type ProposedRootStoreApi,
+  rootStoreOf,
+  sealWithStore,
+  type StoreIdentity,
+  type StoreRestoreTarget,
+} from "./root_store.ts";
+import { KILL_GRACE_MS, type Spawner, type WaitStatus } from "./executions.ts";
 import {
   decodeWaitRecord,
   WAIT_RECORD_LEN,
@@ -55,14 +107,64 @@ export type PlaygroundTerm = {
 
 export type PlaygroundEnv = {
   isolated: boolean;
+  /** The sandbox an agent run sealed (src/agent_pane.ts), to resume instead
+   * of anything else when it was sealed under this very kernel. */
+  savedSession?: () => Promise<StoredSnapshot | undefined>;
+  /** A saved session that would not resume: it is not tried again. */
+  dropSavedSession?: () => Promise<void>;
+  /** Fail rather than boot the image when the snapshot cannot be restored. */
+  snapshotRequired?: boolean;
+  /** What the page runs as (src/device.ts): a phone's kernel takes the
+   * small cap's maximum ({@link plannedPlaygroundHostState}). */
+  platform?: Platform;
+  /** Keep the kernel host's default 1 GiB kernel maximum even under a
+   * small cap (src/device.ts fullKernelMemory): a tablet, a phone on
+   * `?memory=1g`, and every Notebook page that restores the desktop's
+   * snapshot. */
+  fullKernelMemory?: boolean;
+  /** The kernel's sha256, once loaded: a later seal records it. */
+  kernelSha256?: (sha256: string) => void;
   fetchBytes: (path: string) => Promise<Uint8Array>;
   /** The image to boot ({@link browserImagePath}); the full image when
    * unset. */
   imagePath?: string;
+  /** A sealed sandbox to restore instead of booting `imagePath`
+   * (src/sandbox_snapshot.ts). */
+  snapshotPath?: string;
+  /** `?snapshot=<id>`: restore that uploaded snapshot
+   * (src/snapshot_source.ts) instead of the pinned one. */
+  snapshotId?: string;
+  /** Which pinned snapshot a restore takes (the device's,
+   * src/snapshot_pin.ts SNAPSHOT_KINDS); the desktop's when absent. */
+  snapshotKind?: SnapshotKind;
+  /** Where a restore keeps the snapshot's checked parts between visits
+   * (the browser's Cache API); none, every visit downloads them. */
+  snapshotCache?: CacheStorage;
+  /** Told what this Linux holds once the shell is about to start
+   * (src/linux_remark.ts), whether booted or restored. */
+  linuxRemark?: (remark: string) => void;
+  /** The Python set the live index offers now, as a layer key
+   * (src/python_layer.ts): null when the site installs none, undefined
+   * when the index cannot be asked. A snapshot of another set is not
+   * restored. */
+  livePythonSet?: () => Promise<string | null | undefined>;
   show: (text: string) => void;
   term: PlaygroundTerm;
   /** The browser refused a new process its memory; only a reload helps. */
   memoryRefused?: () => void;
+  /** Serve the guest's `pkg` from the page (src/pkg_relay.ts): the
+   * terminal sandbox's, not a short-lived one's. */
+  pkgRelay?: RelayOptions;
+  /** Serve a DevTools endpoint at the guest's 127.0.0.1:9222
+   * (src/cdp_bridge.ts) whose messages go to `handlers`; `started` gets the
+   * bridge to answer through. */
+  cdpBridge?: {
+    handlers: CdpBridgeHandlers;
+    started: (bridge: CdpBridge) => void;
+  };
+  /** The tab's network through the relay (src/network.ts): its TCP
+   * backend goes into the kernel, and its DNS serves the guest. */
+  network?: TabNetwork;
 };
 
 export type PlaygroundSession = {
@@ -70,6 +172,10 @@ export type PlaygroundSession = {
   /** Stop, and free the kernel with every guest in it: for a session that
    * is done for good (a short-lived one, say), not one a page shows. */
   dispose?: () => void;
+  /** The guest's `pkg` reaches the repository through the page's relay
+   * (src/pkg_relay.ts): an install by name can run it as the terminal
+   * would. */
+  pkgRelay?: boolean;
   controller: SessionController;
   terminal: PtyTransport;
   /** Run a shell line as a process of the page's own (`sh -c`), as the
@@ -81,6 +187,13 @@ export type PlaygroundSession = {
    * `undefined` when there is no such file (the Jupyter connection file,
    * looked for without typing into the user's shell). */
   readFile?: (path: string) => Promise<Uint8Array | undefined>;
+  /** Guest files read straight from the in-tab kernel's VFS (no process,
+   * no credentials): what pkg has installed (src/installed_list.ts). */
+  files?: SandboxFiles;
+  /** Read pkg's list again after an install: /etc/motd and the page's
+   * "This Linux" line follow what the sandbox now holds
+   * (src/linux_remark.ts). */
+  refreshRemark?: () => void;
   /** The same, handing the process back: what a driver's `exec` runs
    * (src/executions.ts). */
   process?: Spawner;
@@ -96,6 +209,10 @@ export type PlaygroundSession = {
     capture(touched: string[]): LayerEntry[];
     apply(entries: LayerEntry[]): void;
   };
+  /** Kill the shell, wait for every guest process to be gone, and seal the
+   * sandbox: what `?snapshot=capture` ships (src/sandbox_snapshot.ts). The
+   * session is over afterwards. */
+  seal?: () => Promise<PageSeal>;
   /** Deliver a signal to a process this page started. */
   signal?: (pid: number, signal: number) => Promise<void>;
   dialSandboxPort: (
@@ -135,21 +252,33 @@ export function outputFanout(term: PlaygroundTerm) {
   };
 }
 
+// The login setup and what a boot stages beside the image are part of a
+// sandbox snapshot: a change to them is a new BOOT_SETUP
+// (src/sandbox_snapshot.ts).
 const LOGIN_USER = "user";
 const LOGIN_UID = 1000;
 const LOGIN_GID = 1000;
 const LOGIN_HOME = "/home/user";
 /** No such process: a `SYS_KILLPG` to a group with no live member. */
 const ESRCH = 3;
+const SIGKILL = 9;
+const MIB = 1024 * 1024;
 
-const DEFAULT_ENV: Record<string, string> = {
+export const DEFAULT_ENV: Record<string, string> = {
   HOME: LOGIN_HOME,
-  PATH: "/bin:/usr/bin:/usr/local/bin",
+  // The user's own programs last (`pip install --user` puts its scripts
+  // in ~/.local/bin), as the image's /etc/profile has it; the page runs
+  // /bin/sh directly, which reads no profile.
+  PATH: `/bin:/usr/bin:/usr/local/bin:${LOGIN_HOME}/.local/bin`,
   PYTHONHOME: "/usr/local",
   PWD: LOGIN_HOME,
   USER: LOGIN_USER,
   LOGNAME: LOGIN_USER,
   TERM: "xterm-256color",
+  // A UTF-8 locale, as Alpine's /etc/profile.d/locale.sh sets. Nothing in the
+  // image does (the page runs /bin/sh directly, not as a login shell), and
+  // terminal programs check for one: btop refuses to start without it.
+  LANG: "C.UTF-8",
 };
 
 let pinsPromise: Promise<Pins> | undefined;
@@ -266,26 +395,17 @@ function readGuestFile(
   return out;
 }
 
-/**
- * The address space each guest process reserves on JavaScriptCore
- * (yurtos-kernel#2996). A browser reserves a shared wasm memory's whole
- * maximum up front, and Safari holds about 32 GiB of them per tab; every
- * guest build declares 4 GiB, and the kernel's default is the whole 1 GiB
- * sandbox budget, so a burst of a few dozen execs ran Safari out. A quarter
- * GiB leaves room for more than 100 processes and several times what
- * CPython needs here (ipykernel 81 MiB, a 2000x2000 NumPy matmul 98 MiB). A
- * process that outgrows it gets ENOMEM; the sandbox budget still caps them
- * all.
- */
-export const GUEST_MEMORY_RESERVATION_BYTES = 256 * 1024 * 1024;
+/** The desktop per-process reservation on JavaScriptCore; a smaller one
+ *  is picked where the tab cannot fit it (src/guest_memory_reservation.ts). */
+export { GUEST_MEMORY_RESERVATION_BYTES };
 
 /**
- * Whether this engine is JavaScriptCore (Safari, and every iOS browser),
- * the one that runs out of shared-memory reservations. Chromium and Edge
- * also say `AppleWebKit/`, always with a `Chrome/` token; Firefox and Deno
- * say neither. The same test as the kernel's `workerTeardownWaitsOnCompiles`.
+ * Whether this engine is JavaScriptCore (Safari, and every iOS browser).
+ * Chromium and Edge also say `AppleWebKit/`, always with a `Chrome/`
+ * token; Firefox and Deno say neither. The same test as the kernel's
+ * `workerTeardownWaitsOnCompiles`.
  */
-export function engineCapsSharedMemoryReservations(
+export function isJavaScriptCore(
   userAgent: string | undefined = globalThis.navigator?.userAgent,
 ): boolean {
   if (userAgent === undefined) return false;
@@ -302,35 +422,136 @@ export function engineCapsSharedMemoryReservations(
  */
 export function playgroundHostState(
   userAgent: string | undefined = globalThis.navigator?.userAgent,
+  reservationBytes: number = GUEST_MEMORY_RESERVATION_BYTES,
+  kernelMemoryBytes?: number,
 ):
   & ReturnType<typeof defaultHostState>
-  & { guestMemoryReservationBytes?: number } {
-  // Kernels older than yurtos-kernel#3115 do not read the field.
-  if (!engineCapsSharedMemoryReservations(userAgent)) {
+  & {
+    guestMemoryReservationBytes?: number;
+    kernelMemoryMaximumBytes?: number;
+  } {
+  // Kernels older than yurtos-kernel#3115 do not read the reservation, and
+  // those older than #4239 not the kernel memory's maximum: both are hints.
+  // Only JavaScriptCore runs out of shared-memory reservations.
+  if (!isJavaScriptCore(userAgent)) {
     return defaultHostState();
   }
   return {
     ...defaultHostState(),
-    guestMemoryReservationBytes: GUEST_MEMORY_RESERVATION_BYTES,
+    guestMemoryReservationBytes: reservationBytes,
+    // Unset is the kernel host's default (1 GiB).
+    ...(kernelMemoryBytes !== undefined &&
+      kernelMemoryBytes !== KERNEL_MEMORY_RESERVATION_BYTES &&
+      { kernelMemoryMaximumBytes: kernelMemoryBytes }),
   };
+}
+
+/**
+ * The host state for a kernel this page is about to build: on
+ * JavaScriptCore, with the per-process reservation sized from what the tab
+ * can still reserve right now ({@link planGuestMemory}, #270), and on a
+ * phone (`platform`, the page's) the small cap's kernel maximum; elsewhere
+ * {@link playgroundHostState} as it is. `fullKernelMemory` (a phone on
+ * `?memory=1g`): the phone plans as any other device, so its kernel keeps
+ * the default maximum.
+ */
+export async function plannedPlaygroundHostState(
+  userAgent: string | undefined = globalThis.navigator?.userAgent,
+  plan: (phone: boolean) => Promise<GuestMemoryPlan> = (phone) =>
+    planGuestMemory(undefined, phone),
+  platform?: Platform,
+  fullKernelMemory = false,
+): Promise<ReturnType<typeof playgroundHostState>> {
+  if (!isJavaScriptCore(userAgent)) return playgroundHostState(userAgent);
+  // A phone on `?memory=1g` plans as any other device does.
+  const planned = await plan(platform === "phone" && !fullKernelMemory);
+  console.info(
+    `[memory] ${planned.reservationBytes / (1024 * 1024)} MiB per process, ` +
+      `${planned.kernelMemoryBytes / (1024 * 1024)} MiB for the kernel` +
+      (planned.availableBytes === undefined
+        ? " (no probe)"
+        : `; ${planned.availableBytes >= PROBE_LIMIT_BYTES ? "at least " : ""}${
+          Math.floor(planned.availableBytes / (1024 * 1024))
+        } MiB ` +
+          `free to reserve, room for ${planned.processes} processes`),
+  );
+  return playgroundHostState(
+    userAgent,
+    planned.reservationBytes,
+    planned.kernelMemoryBytes,
+  );
 }
 
 /** Load a kernel for an in-browser sandbox. Every page and worker goes
  *  through this or {@link restorePlaygroundKernel}, so on JavaScriptCore
- *  each one reserves {@link GUEST_MEMORY_RESERVATION_BYTES} per guest
- *  process (see {@link playgroundHostState}). */
-export function loadPlaygroundKernel(
+ *  each one reserves what {@link plannedPlaygroundHostState} picks per
+ *  guest process. `platform`: what the page runs as, when it says;
+ *  `fullKernelMemory`: see {@link PlaygroundEnv}. */
+export async function loadPlaygroundKernel(
   kernel: Uint8Array,
+  platform?: Platform,
+  fullKernelMemory = false,
+  network?: TabNetwork,
 ): Promise<KernelHostInterface> {
-  return KernelHostInterface.load(kernel, playgroundHostState());
+  return KernelHostInterface.load(kernel, {
+    ...await plannedPlaygroundHostState(
+      undefined,
+      undefined,
+      platform,
+      fullKernelMemory,
+    ),
+    ...(network !== undefined && { tcp: network.tcp }),
+  });
 }
 
 /** Restore a sealed in-browser sandbox; see {@link loadPlaygroundKernel}. */
-export function restorePlaygroundKernel(
+export async function restorePlaygroundKernel(
   kernel: Uint8Array,
   image: Parameters<typeof KernelHostInterface.restore>[1],
-): ReturnType<typeof KernelHostInterface.restore> {
-  return KernelHostInterface.restore(kernel, image, playgroundHostState());
+  /** On a kernel whose root is a YurtFS store: its API and the written
+   * store to mount as the root. */
+  store?: {
+    api: ProposedRootStoreApi;
+    target: StoreRestoreTarget;
+    expect: StoreIdentity;
+  },
+  platform?: Platform,
+  fullKernelMemory = false,
+  network?: TabNetwork,
+): Promise<Awaited<ReturnType<typeof KernelHostInterface.restore>>> {
+  const state = restoreHostState(
+    {
+      ...await plannedPlaygroundHostState(
+        undefined,
+        undefined,
+        platform,
+        fullKernelMemory,
+      ),
+      // A restored sandbox's connections come back closed: the kernel
+      // holds none of this backend's handles.
+      ...(network !== undefined && { tcp: network.tcp }),
+    },
+    image.kernelMemory.byteLength,
+  );
+  if (store !== undefined) {
+    return store.api.restore(kernel, image, store, state);
+  }
+  return KernelHostInterface.restore(kernel, image, state);
+}
+
+/** `state` for restoring `imageBytes` of sealed kernel memory: without its
+ *  smaller kernel maximum when the image would not fit under it with room
+ *  to grow ({@link kernelMemoryForRestore}). */
+export function restoreHostState<
+  T extends { kernelMemoryMaximumBytes?: number },
+>(state: T, imageBytes: number): T {
+  const kernelMemoryMaximumBytes = kernelMemoryForRestore(
+    state.kernelMemoryMaximumBytes,
+    imageBytes,
+  );
+  if (kernelMemoryMaximumBytes === state.kernelMemoryMaximumBytes) return state;
+  const { kernelMemoryMaximumBytes: _dropped, ...rest } = state;
+  return rest as T;
 }
 
 export async function bootPlayground(
@@ -343,48 +564,502 @@ export async function bootPlayground(
 
   env.show("loading kernel");
   const kernel = await env.fetchBytes("./yurt_kernel.wasm");
-  env.show("compiling kernel");
-  const mk = await loadPlaygroundKernel(kernel);
-  const stopWatchingRefusals = watchGuestMemoryRefusals(
-    mk,
-    () => env.memoryRefused?.(),
-  );
-  try {
-    return await startPlayground(env, mk, stopWatchingRefusals);
-  } catch (error) {
-    // A boot that failed past here leaves nothing running: its kernel goes
-    // (a page may boot again, as a fresh sandbox after a stalled install).
-    stopWatchingRefusals();
+  /** The rest of the boot on a loaded or restored kernel; a boot that
+   * fails there leaves nothing running: its kernel goes (a page may boot
+   * again, as a fresh sandbox after a stalled install). */
+  const start = async (mk: KernelHostInterface, restored: boolean) => {
+    const stopWatchingRefusals = watchGuestMemoryRefusals(
+      mk,
+      () => env.memoryRefused?.(),
+    );
     try {
-      mk.dispose();
-    } catch {
-      // Already gone.
+      return await startPlayground(env, mk, stopWatchingRefusals, restored);
+    } catch (error) {
+      stopWatchingRefusals();
+      try {
+        mk.dispose();
+      } catch {
+        // Already gone.
+      }
+      throw error;
     }
-    throw error;
+  };
+  const kernelSha256 = await sha256Hex(kernel);
+  env.kernelSha256?.(kernelSha256);
+  const saved = await env.savedSession?.().catch(() => undefined);
+  if (saved !== undefined) {
+    try {
+      if (saved.kernelSha256 !== kernelSha256) {
+        throw new Error("sealed under another kernel");
+      }
+      env.show("resuming your session");
+      const started = performance.now();
+      const restored = await restorePlaygroundKernel(
+        kernel,
+        saved.image,
+        undefined,
+        env.platform,
+        env.fullKernelMemory,
+        env.network,
+      );
+      if (restored.processes.length !== 0) {
+        restored.host.dispose();
+        throw new Error("a saved session must hold no process");
+      }
+      console.log(
+        `[session] resumed in ${Math.round(performance.now() - started)} ms`,
+      );
+      return await start(restored.host, true);
+    } catch (error) {
+      // It only saves the sandbox's files; a fresh start is still a start.
+      console.warn(`[session] not resumed: ${error}`);
+      await env.dropSavedSession?.();
+    }
+  }
+  const bootImage = async () => {
+    env.show("compiling kernel");
+    return await start(
+      await loadPlaygroundKernel(
+        kernel,
+        env.platform,
+        env.fullKernelMemory,
+        env.network,
+      ),
+      false,
+    );
+  };
+  const snapshotPath = env.snapshotPath;
+  if (snapshotPath === undefined) return await bootImage();
+  if (env.snapshotRequired === true) {
+    const restored = await restoreSnapshot(env, kernel, snapshotPath);
+    return await start(restored.host, true);
+  }
+  // A restored kernel that then fails to start its shell falls back too.
+  return (await snapshotOrBoot(
+    async () => {
+      const restored = await restoreSnapshot(env, kernel, snapshotPath);
+      try {
+        return await start(restored.host, true);
+      } catch (error) {
+        // The image boots instead: no store of this restore stays.
+        await restored.discard();
+        throw error;
+      }
+    },
+    bootImage,
+  )).kernel;
+}
+
+/** Whether `path` is a regular file (not a symlink to one); a stat that
+ * fails counts as not one, for checks that only shape a message. */
+function isFile(mk: KernelHostInterface, path: string): boolean {
+  try {
+    return vfsStat(mk, path)?.type === "file";
+  } catch {
+    return false;
   }
 }
 
-/** The rest of {@link bootPlayground}, on its loaded kernel. */
+/** This Linux's remark (src/linux_remark.ts) from pkg's installed list
+ * in the sandbox and the tools its image has outside pkg
+ * (src/image_tools.ts); a list that cannot be read counts as none
+ * installed. */
+function remarkOf(mk: KernelHostInterface): string {
+  let releases: ReturnType<typeof parseInstalledList> = [];
+  try {
+    releases = parseInstalledList(
+      readGuestFile(mk, KERNEL_PID, INSTALLED_LIST_PATH, 1024 * 1024),
+    );
+  } catch {
+    // No list, or a broken one: the remark names the shell alone.
+  }
+  return linuxRemark(releases, baseToolsHeld((path) => isFile(mk, path)));
+}
+
+/**
+ * `?snapshot=1`'s kernel: the restored snapshot, or the image's boot when
+ * the snapshot cannot be had -- none pinned, one of another build, a
+ * download that fails or is not the pinned bytes, a file that does not
+ * inflate, a restore that is refused. The snapshot only saves time; the
+ * image boot is always there, so any of these is a console note, not the
+ * boot's failure.
+ */
+export async function snapshotOrBoot<K>(
+  restore: () => Promise<K>,
+  boot: () => Promise<K>,
+): Promise<{ kernel: K; restored: boolean }> {
+  try {
+    return { kernel: await restore(), restored: true };
+  } catch (error) {
+    console.warn(
+      `[snapshot] ${
+        error instanceof Error ? error.message : String(error)
+      }; booting the image instead`,
+    );
+    return { kernel: await boot(), restored: false };
+  }
+}
+
+/** A kernel over a sealed sandbox with no process in it: its filesystem is
+ * all in the kernel's memory, or -- once the kernel's root is a YurtFS
+ * store (`rootStore`) -- in the store the snapshot carries, restored into
+ * a fresh one before the memory. Nothing is staged. */
+export async function restoreSnapshot(
+  env: PlaygroundEnv,
+  kernel: Uint8Array,
+  path: string,
+  rootStore: ProposedRootStoreApi | undefined = rootStoreOf(
+    KernelHostInterface,
+  ),
+): Promise<{
+  host: KernelHostInterface;
+  /** Remove the store it restored into (none without a root store), for
+   * a boot that falls back after it. */
+  discard: () => Promise<void>;
+}> {
+  const started = performance.now();
+  env.show("loading snapshot");
+  // A pin of another build is refused before anything is downloaded, a
+  // file whose own header says so before the kernel's memory is allocated
+  // (SnapshotMismatch both).
+  const pins = await browserPins();
+  // An uploaded snapshot's manifest takes the pin's checks, from its own
+  // commit; only its manifest (a few hundred bytes) is read before them.
+  const source = env.snapshotId === undefined
+    ? {
+      pin: pinnedSnapshot(pins, env.snapshotKind, rootStore !== undefined),
+      path,
+      fetch: undefined,
+    }
+    : await uploadedSnapshot(
+      env.snapshotId,
+      pins,
+      undefined,
+      rootStore !== undefined,
+    );
+  const pin = source.pin;
+  // The Python the capture installed must be what an install would get
+  // now, as for a stored layer (src/python_layer.ts). Asked beside the
+  // download, not before it (liveLayerKey's own bound, 20 s): a refusal
+  // stops the download, and the restore waits for the answer.
+  const stop = new AbortController();
+  const checked = Promise.resolve(env.livePythonSet?.()).then((live) =>
+    checkPythonSet(pin.builtFrom, live)
+  );
+  checked.catch((error) => stop.abort(error));
+  // The store goes into a fresh copy, and a refused restore removes it.
+  // Its lower comes from the image, fetched beside the snapshot.
+  const target = await rootStore?.freshStore();
+  let lowerImage = target === undefined
+    ? undefined
+    : env.fetchBytes(env.imagePath ?? FULL_IMAGE_PATH);
+  lowerImage?.catch(() => {});
+  const store = target === undefined ? undefined : {
+    target,
+    expect: pin.store!,
+    // Taken once: the image is not held while the memory is allocated.
+    image: () => {
+      const image = lowerImage!;
+      lowerImage = undefined;
+      return image;
+    },
+  };
+  // Only this frame holds the decoded memory (~250-545 MiB), and only
+  // until the restore copied it: a fallback boot must not run beside it.
+  let downloaded = started;
+  let fetched = started;
+  let memoryBytes = 0;
+  let image: SandboxSealImage | undefined;
+  let restored: Awaited<ReturnType<typeof restorePlaygroundKernel>>;
+  try {
+    image = await (async () =>
+      decodeSandboxSnapshot(
+        (await fetchVerifiedSnapshot(
+          source.path,
+          pin,
+          source.fetch,
+          (loaded, total) => {
+            if (loaded === total) downloaded = performance.now();
+            env.show(
+              `loading snapshot ${(loaded / MIB).toFixed(1)} of ${
+                (total / MIB).toFixed(1)
+              } MiB`,
+            );
+          },
+          env.snapshotCache,
+        )).pipeThrough(new TransformStream(), { signal: stop.signal }),
+        pin.builtFrom,
+        undefined,
+        // The live index's verdict before the memory is allocated: a
+        // refused snapshot never holds it, so a fallback boot never runs
+        // beside it.
+        async (memoryBytes) => {
+          await checked;
+          // The pin's own record of what a restore allocates, before the
+          // manifest's (unhashed yet) number is believed.
+          if (memoryBytes !== pin.memoryBytes) {
+            throw new SnapshotMismatch(
+              `the snapshot's manifest names memoryBytes ${memoryBytes}, not the pinned ${pin.memoryBytes}`,
+            );
+          }
+        },
+        store ?? false,
+      ))().catch(async (error) => {
+        // A refused set says so, rather than the aborted download's reason.
+        await checked;
+        throw error;
+      });
+    await checked;
+    fetched = performance.now();
+    memoryBytes = image.kernelMemory.byteLength;
+    env.show("restoring snapshot");
+    restored = await restorePlaygroundKernel(
+      kernel,
+      image,
+      store === undefined ? undefined : {
+        api: rootStore!,
+        target: store.target,
+        expect: store.expect.identity,
+      },
+      env.platform,
+      env.fullKernelMemory,
+      env.network,
+    );
+    if (restored.processes.length !== 0) {
+      restored.host.dispose();
+      throw new Error("a sandbox snapshot must hold no process");
+    }
+  } catch (error) {
+    await target?.discard();
+    throw error;
+  } finally {
+    image = undefined;
+  }
+  console.log(
+    `[snapshot] ${memoryBytes} bytes of kernel memory: ` +
+      `fetched+inflated in ${Math.round(fetched - started)} ms ` +
+      `(parts had at ${Math.round(downloaded - started)} ms), ` +
+      `restored in ${Math.round(performance.now() - fetched)} ms`,
+  );
+  return {
+    host: restored.host,
+    discard: async () => await target?.discard(),
+  };
+}
+
+/**
+ * What a seal does before sealing, once the page starts nothing more of
+ * its own: wait until no spawn is in flight, then kill every live guest
+ * process -- the shell and its background jobs, a running exec, a
+ * Packages install -- until a look finds none alive and none starting,
+ * and `afterSettled` has resolved; all within `deadlineMs`. Then run
+ * `cleanUp` (one process, removing every exec's /tmp files) within its
+ * own `cleanUpMs`, and require its exit 0; then look again, within
+ * `deadlineMs` once more. Past any bound it throws, and nothing is sealed.
+ */
+export async function prepareSeal(deps: {
+  host: {
+    listProcesses(): { pid: number; state: string }[];
+    killProcess(pid: number, signal: number): unknown;
+  };
+  spawning: () => number;
+  cleanUp: () => Promise<number | null>;
+  /** Awaited once nothing runs, before the clean-up. */
+  afterSettled?: () => Promise<unknown>;
+  deadlineMs?: number;
+  cleanUpMs?: number;
+  pollMs?: number;
+}): Promise<void> {
+  const deadlineMs = deps.deadlineMs ?? 30_000;
+  const pollMs = deps.pollMs ?? 250;
+  /** `work`, or a throw of `what` once `ms` have passed. */
+  const within = async <T>(ms: number, what: string, work: Promise<T>) => {
+    let timer: number | undefined;
+    try {
+      return await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`cannot seal: ${what}`)),
+            ms,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  let last = "nothing looked at yet";
+  /** Past a bound: the looks stop too. */
+  let gaveUp = false;
+  const settle = async () => {
+    while (!gaveUp) {
+      const live = deps.host.listProcesses().filter((p) =>
+        p.pid !== KERNEL_PID && p.state !== "exited"
+      );
+      const spawning = deps.spawning();
+      if (live.length === 0 && spawning === 0) return;
+      last = `processes still alive: ${
+        live.map((p) => `${p.pid}:${p.state}`).join(",")
+      }${spawning === 0 ? "" : ` (and ${spawning} starting)`}`;
+      // A spawn in flight is a process this look may not have seen yet.
+      if (spawning === 0) {
+        for (const p of live) deps.host.killProcess(p.pid, SIGKILL);
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  };
+  // `last` is read when the bound passes, so the error says what was left.
+  const settled = async () => {
+    await settle();
+    last = "every process is gone, but the login shell's exit was not seen";
+    await deps.afterSettled?.();
+  };
+  const giveUp = (error: Error): never => {
+    gaveUp = true;
+    throw new Error(`${error.message}: ${last}`);
+  };
+  await within(deadlineMs, "the guest did not stop", settled()).catch(giveUp);
+  const code = await within(
+    deps.cleanUpMs ?? 10_000,
+    "removing the exec files did not finish",
+    deps.cleanUp(),
+  );
+  if (code !== 0) {
+    throw new Error(`cannot seal: removing the exec files exited ${code}`);
+  }
+  await within(deadlineMs, "the guest did not stop", settle()).catch(giveUp);
+}
+
+/** The rest of {@link bootPlayground}, on its loaded (or restored) kernel. */
 async function startPlayground(
   env: PlaygroundEnv,
   mk: Awaited<ReturnType<typeof loadPlaygroundKernel>>,
   stopWatchingRefusals: () => void,
+  restored: boolean,
 ): Promise<PlaygroundSession> {
-  env.show("loading image");
-  const image = await env.fetchBytes(env.imagePath ?? FULL_IMAGE_PATH);
-  env.show("unpacking image");
-  const files = new Map<string, Uint8Array>();
-  await stageYurtimg(mk, image, files);
-  const sh = files.get("/bin/sh");
+  let sh: Uint8Array | undefined;
+  if (restored) {
+    sh = readGuestFile(mk, KERNEL_PID, "/bin/sh", 64 * 1024 * 1024);
+    if (sh.byteLength === 0) sh = undefined;
+  } else {
+    env.show("loading image");
+    const image = await env.fetchBytes(env.imagePath ?? FULL_IMAGE_PATH);
+    env.show("unpacking image");
+    const files = new Map<string, Uint8Array>();
+    await stageYurtimg(mk, image, files);
+    sh = files.get("/bin/sh");
+  }
   if (sh === undefined) {
     throw new Error("playground image is missing /bin/sh");
   }
+  // Before any guest process: the relay's port is free, and the first
+  // `pkg` already finds the configuration pointing at it.
+  const pkgRelay = env.pkgRelay === undefined
+    ? undefined
+    : startPkgRelay(mk, env.pkgRelay);
+  // The guest's DevTools endpoint (src/cdp_bridge.ts): a port taken for
+  // nothing is no failure, so a refused one only says so.
+  let cdp: CdpBridge | undefined;
+  if (env.cdpBridge !== undefined) {
+    try {
+      cdp = startCdpBridge(mk, env.cdpBridge.handlers);
+      env.cdpBridge.started(cdp);
+    } catch (error) {
+      console.warn(`[cdp bridge] not started: ${error}`);
+    }
+  }
+  const stopNetwork = env.network?.attach(
+    mk,
+    () =>
+      writeRamfsFile(
+        mk,
+        "/etc/resolv.conf",
+        new TextEncoder().encode(RESOLV_CONF),
+      ),
+  );
+  const relay: PkgRelay | undefined = pkgRelay === undefined &&
+      cdp === undefined && stopNetwork === undefined
+    ? undefined
+    : {
+      stop() {
+        pkgRelay?.stop();
+        cdp?.stop();
+        stopNetwork?.();
+      },
+    };
+  try {
+    const relayed = pkgRelay !== undefined && pointPkgAtRelay(mk);
+    return await startShell(env, mk, stopWatchingRefusals, sh, relay, relayed);
+  } catch (error) {
+    relay?.stop();
+    throw error;
+  }
+}
+
+/** Point the image's `pkg` at the relay (src/pkg_relay.ts): its
+ * YurtOS/yurt-packages entry, nothing else. A file already pointing there
+ * (a restored sandbox) is left as it is. */
+function pointPkgAtRelay(mk: KernelHostInterface): boolean {
+  const toml = new TextDecoder().decode(
+    readGuestFile(mk, KERNEL_PID, TRUSTED_REPOS_PATH, 1024 * 1024),
+  );
+  const relayed = relayTrustedRepos(toml);
+  if (relayed !== undefined) {
+    writeRamfsFile(mk, TRUSTED_REPOS_PATH, new TextEncoder().encode(relayed));
+  }
+  // Whether the image's pkg now reaches the repository through it.
+  return trustsRelay(relayed ?? toml);
+}
+
+/** The session on a staged or restored sandbox: its login shell on the
+ * terminal, and what the page runs beside it. */
+async function startShell(
+  env: PlaygroundEnv,
+  mk: Awaited<ReturnType<typeof loadPlaygroundKernel>>,
+  stopWatchingRefusals: () => void,
+  shell: Uint8Array,
+  relay: PkgRelay | undefined,
+  relayed: boolean,
+): Promise<PlaygroundSession> {
+  /** The relay serves the image's pkg: it listens, and the configuration
+   * points there. Not once a seal or dispose has stopped it. */
+  let relayServes = relayed;
+  /** Each exec's sweep of its files, waiting out its delay (below). */
+  const sweepTimers = new Set<number>();
+  /** A seal has begun: the page starts nothing more of its own -- an exec,
+   * a process, a sweep -- but the seal's own clean-up. */
+  let sealing = false;
+  /** A dispose has freed the kernel: nothing more may start, and no sweep
+   * may be armed for an exec that ends after it. */
+  let disposed = false;
+  /** Cancel every pending sweep: a seal and a dispose both end them (the
+   * seal removes the files itself). */
+  const clearSweeps = () => {
+    for (const timer of sweepTimers) clearTimeout(timer);
+    sweepTimers.clear();
+  };
+  /** Spawns that have begun and not yet returned: a seal waits for them,
+   * so no process it has not seen can start under it. */
+  let spawning = 0;
+  /** Per group leader the page SIGKILLed, the wait for the rest of its
+   * group to die (`signal` below): the leader's reap waits for it. */
+  const groupKills = new Map<number, Promise<void>>();
 
   /** `/bin/sh` with `argv`, as the login user in the login home, leading
    * its own process group unless `ownGroup` is false. */
   const spawnShell = async (argv: string[], { ownGroup = true } = {}) => {
+    if (disposed) throw new Error("the sandbox is disposed");
+    spawning++;
+    try {
+      return await spawnShellNow(argv, ownGroup);
+    } finally {
+      spawning--;
+    }
+  };
+  const spawnShellNow = async (argv: string[], ownGroup: boolean) => {
     const process = await mk.spawnUserProcessWithArgsAsync(
-      sh,
+      shell,
       argv.map((arg) => s(arg)),
       { ...DEFAULT_ENV },
     );
@@ -437,7 +1112,15 @@ async function startPlayground(
     };
     const start = process.runStartAsync.bind(process);
     process.runStartAsync = () =>
-      start().finally(() => {
+      start().finally(async () => {
+        // A killed pipeline's members die after their leader, and each
+        // is an orphan the kernel releases only when the host reaps a
+        // root (yurtos-kernel#3002) -- one already dead when this reap
+        // runs, or the next reap of any other command's, which may be
+        // the one that lists it. Reaped once the group is dead, the
+        // leader takes its members with it (yurt-sandbox#357).
+        await groupKills.get(process.pid);
+        groupKills.delete(process.pid);
         try {
           reap();
         } catch (error) {
@@ -451,6 +1134,19 @@ async function startPlayground(
       waitStatus: (): WaitStatus | undefined => status,
     });
   };
+  // What this Linux holds, from pkg's own list: said to the page, kept in
+  // /etc/motd, and printed above the shell's first prompt; said and kept
+  // again after each install (refreshRemark).
+  let lastRemark: string | undefined;
+  const sayRemark = () => {
+    const remark = remarkOf(mk);
+    if (remark === lastRemark) return remark;
+    lastRemark = remark;
+    writeRamfsFile(mk, "/etc/motd", new TextEncoder().encode(`${remark}\n`));
+    env.linuxRemark?.(remark);
+    return remark;
+  };
+  env.term.write(`\x1b[2m${sayRemark()}\x1b[0m\r\n`);
   env.show("starting ash");
   // Not a group leader: attaching the terminal makes the login shell a
   // session leader, which the kernel refuses a group leader (EPERM).
@@ -497,18 +1193,19 @@ async function startPlayground(
     }
   };
 
-  void user.runStartAsync().then(() => {
+  const userExited = user.runStartAsync().then(() => {
     // `exit` at the prompt: the shell is done, the sandbox is still there
     // (the notebook's kernel keeps answering). Say so where the prompt
     // was, and in the status, instead of failing the next keystroke.
-    if (!stopped) {
+    // A seal kills it on purpose; the capture says what happens next.
+    if (!stopped && !sealing) {
       env.term.write(
         "\r\n[the shell exited; reload the page for a new one]\r\n",
       );
       env.show("shell exited");
     }
   }).catch((error) => {
-    if (!stopped) {
+    if (!stopped && !sealing) {
       const message = error instanceof Error ? error.message : String(error);
       env.show(message);
     }
@@ -517,20 +1214,37 @@ async function startPlayground(
   env.show("");
   return {
     stop,
+    get pkgRelay() {
+      return relayServes;
+    },
     dispose() {
-      stop();
-      mk.dispose();
+      if (disposed) return;
+      disposed = true;
+      clearSweeps();
+      relayServes = false;
+      try {
+        stop();
+        relay?.stop();
+      } finally {
+        mk.dispose();
+      }
     },
     controller,
     terminal,
     async spawn(line) {
+      if (sealing) throw new Error("the sandbox is being sealed");
+      if (disposed) throw new Error("the sandbox is disposed");
       const process = await spawnShell(["/bin/sh", "-c", line]);
       // Nothing feeds it: stdin is at end-of-file from the start.
       process.closeStdin();
       // Its exit is the kernel's business (the connection file, the log);
       // the launch only watches for it, to stop waiting for a file a dead
       // kernel will not write.
-      const exited = process.runStartAsync();
+      // The wait status when the host has one, as `process` gives: a
+      // signal death is then a signal, not a folded 128+n.
+      const exited = process.runStartAsync().then((rc) =>
+        process.waitStatus() ?? rc
+      );
       exited.catch(() => {});
       return { exited };
     },
@@ -544,10 +1258,15 @@ async function startPlayground(
       // `head` -- a single command, whose own stdout the host does
       // capture. `line` ends in the exec of the command, so the redirects
       // bind to the command and every child inherits them.
+      if (sealing) throw new Error("the sandbox is being sealed");
+      if (disposed) throw new Error("the sandbox is disposed");
       const tag = crypto.randomUUID();
       const path = (name: string) => `/tmp/.yurt-exec-${tag}.${name}`;
       const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+      // A sweep after a seal began is the seal's to do (it removes every
+      // exec's files itself, once nothing runs).
       const single = async (command: string) => {
+        if (sealing || disposed) return;
         const p = await spawnShell(["/bin/sh", "-c", command]);
         p.closeStdin();
         await p.runStartAsync();
@@ -576,7 +1295,7 @@ async function startPlayground(
       // so the registry sees the cut and says so; the files go afterwards.
       let done = false;
       const sweep = () =>
-        void single(
+        single(
           `exec rm -f ${q(path("out"))} ${q(path("err"))} ${q(path("in"))}`,
         );
       const exited = process.runStartAsync().then((rc) => {
@@ -588,7 +1307,14 @@ async function startPlayground(
       });
       // The registry reads the files right after the exit; the sweep comes
       // well after, whichever way the exit went.
-      exited.finally(() => setTimeout(sweep, 5000)).catch(() => {});
+      exited.finally(() => {
+        if (disposed) return;
+        const timer = setTimeout(() => {
+          sweepTimers.delete(timer);
+          void sweep().catch(() => {});
+        }, 5000);
+        sweepTimers.add(timer);
+      }).catch(() => {});
       const cap = io.maxOutputBytes + 1;
       const taken = { out: false, err: false };
       const take = (stream: "out" | "err") => {
@@ -608,6 +1334,39 @@ async function startPlayground(
           stderr: readGuestFile(mk, user.pid, path("err"), cap),
         }),
       };
+    },
+    async seal() {
+      // From here the page starts nothing (an exec, a process and a sweep
+      // are refused): see prepareSeal.
+      if (disposed) throw new Error("the sandbox is disposed");
+      sealing = true;
+      clearSweeps();
+      await prepareSeal({
+        host: mk,
+        spawning: () => spawning,
+        // Every exec's files, the ones whose sweep never ran included.
+        cleanUp: async () => {
+          const clean = await spawnShell([
+            "/bin/sh",
+            "-c",
+            "exec rm -f /tmp/.yurt-exec-*",
+          ]);
+          clean.closeStdin();
+          const rc = await clean.runStartAsync();
+          return clean.waitStatus()?.code ?? Number(rc);
+        },
+        afterSettled: () => userExited,
+      });
+      // No host-owned socket in the snapshot: its restore listens anew. A
+      // seal that fails after this leaves the relay stopped, which ends the
+      // capture anyway.
+      relayServes = false;
+      relay?.stop();
+      // A kernel whose root is a YurtFS store exports it with the seal.
+      const rootStore = rootStoreOf(KernelHostInterface);
+      return rootStore === undefined
+        ? await mk.sealSandbox()
+        : await sealWithStore(rootStore, mk);
     },
     writeFiles(files) {
       for (const { path, bytes } of files) writeRamfsTree(mk, path, bytes);
@@ -630,15 +1389,39 @@ async function startPlayground(
       const request = new Uint8Array(8);
       const view = new DataView(request.buffer);
       view.setUint32(0, pid, true);
-      view.setUint32(4, signal, true);
-      const { rc } = mk.kernelSyscall(METHOD.SYS_KILLPG, user.pid, request, 0);
+      const killpg = (signal: number) => {
+        view.setUint32(4, signal, true);
+        return Number(
+          mk.kernelSyscall(METHOD.SYS_KILLPG, user.pid, request, 0).rc,
+        );
+      };
+      const rc = killpg(signal);
       // An empty group: the execution is already gone.
-      if (Number(rc) !== 0 && Number(rc) !== -ESRCH) {
+      if (rc !== 0 && rc !== -ESRCH) {
         return Promise.reject(
           new Error(`killpg pgid=${pid} sig=${signal} failed: rc=${rc}`),
         );
       }
-      return Promise.resolve();
+      if (signal !== SIGKILL) return Promise.resolve();
+      // Resolved once no member is alive (signal 0 counts only the live
+      // ones), or after half of KILL_GRACE_MS, so a dead leader's reap is
+      // never late enough to be reported Stuck: the reap above then
+      // releases the dead members, so "killed" means no survivors.
+      const gone = (async () => {
+        const deadline = Date.now() + KILL_GRACE_MS / 2;
+        while (killpg(0) === 0 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      })().catch((error) => {
+        // Best effort, like the reap: a failed look must not skip it.
+        console.warn(`waiting out group ${pid} failed: ${error}`);
+      });
+      groupKills.set(pid, gone);
+      // A kill after the leader's reap leaves no entry behind.
+      gone.then(() => {
+        if (groupKills.get(pid) === gone) groupKills.delete(pid);
+      });
+      return gone;
     },
     // The Jupyter connection file, looked for by the page itself: nothing is
     // typed into the user's shell for it (yurtos-kernel#2824). Read as the
@@ -647,6 +1430,16 @@ async function startPlayground(
       // Enough for the kernel log the failure message tails.
       const bytes = readGuestFile(mk, user.pid, path, 4 * 1024 * 1024);
       return Promise.resolve(bytes.byteLength > 0 ? bytes : undefined);
+    },
+    refreshRemark: () => void sayRemark(),
+    files: {
+      // In an executor, so a failed read is a rejection, not a throw.
+      readWhole: (path) =>
+        new Promise((resolve) => resolve(vfsReadWhole(mk, path))),
+      exists: (path) =>
+        new Promise((resolve) => resolve(vfsStat(mk, path) !== undefined)),
+      isFile: (path) =>
+        new Promise((resolve) => resolve(vfsStat(mk, path)?.type === "file")),
     },
     dialSandboxPort: (port) => mk.dialSandboxPort(port),
     onOutput: output.onOutput,

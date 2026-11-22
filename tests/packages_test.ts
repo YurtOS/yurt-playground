@@ -1,4 +1,10 @@
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   type ArchiveCache,
   browserTrustedRepos,
@@ -6,25 +12,39 @@ import {
   type Catalog,
   type Fetcher,
   fetchWithProgress,
+  INSTALL_RUN_CEILING_MS,
+  INSTALL_STALL_MS,
   installPackage,
   installScript,
   InstallStalled,
   latestRelease,
   loadCatalog,
+  markInstalled,
+  NOT_LISTED,
   onlyStaged,
   PACKAGE_REPO_URL,
   type PackageFile,
   type PackageHost,
+  packagesInImage,
   type PackageVersion,
   parseIndex,
   parsePackageFile,
+  plannedInstalls,
+  relayedInstallPlan,
+  relayedInstallScript,
   resolveSet,
+  SetNotOffered,
   sha256Hex,
   sizeRefusal,
   type StagedFile,
   STAGING_DIR,
+  stalledSandboxWhy,
   TABLET_MAX_BYTES,
 } from "../src/packages.ts";
+import {
+  INSTALLED_DB_PATH,
+  INSTALLED_LIST_PATH,
+} from "../src/installed_list.ts";
 
 const SUBJECT =
   "https://github.com/YurtOS/yurt-packages/.github/workflows/release.yml@refs/heads/main";
@@ -350,6 +370,180 @@ Deno.test("pkg plans the install; the page stages exactly what it names", async 
   );
 });
 
+Deno.test("a relayed install by name runs the user's own pkg commands and stages nothing", async () => {
+  const archive = new Uint8Array([1, 2, 3, 4, 5]);
+  const fetcher = await fakeRepo(archive);
+  const runs: { files: StagedFile[]; script: string }[] = [];
+  const read: string[] = [];
+  const host: PackageHost = {
+    readFile: (path) => {
+      read.push(path);
+      return Promise.reject(new Error("no such file"));
+    },
+    stageAndRun: (files, script) => {
+      runs.push({ files, script });
+      return Promise.resolve(INSTALLED);
+    },
+  };
+  const messages: string[] = [];
+  const output = await installPackage("greet", {
+    host,
+    tablet: false,
+    fetcher,
+    progress: (m) => messages.push(m),
+    relayed: true,
+  });
+  assertEquals(output, "install greet 0.1.0-yurt_0");
+  assertEquals(runs, [{ files: [], script: relayedInstallScript("greet") }]);
+  // Its installed list, for the size estimate; not the trust config.
+  assertEquals(read, [INSTALLED_LIST_PATH]);
+  const script = relayedInstallScript("greet");
+  assertStringIncludes(script, "sudo pkg update || exit 1");
+  assertStringIncludes(script, "sudo pkg install 'greet'; exit $?");
+  assert(!script.includes("exec "), script);
+  assert(!script.includes("--etc-root") && !script.includes("--cache-root"));
+  assertEquals(
+    messages.at(-1),
+    "greet: installing (sudo pkg update && sudo pkg install greet)",
+  );
+});
+
+Deno.test("a relayed install names pkg's cause when it fails", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1]));
+  const host: PackageHost = {
+    readFile: () => Promise.resolve(new Uint8Array()),
+    stageAndRun: () =>
+      Promise.resolve({
+        code: 1,
+        stdout: "",
+        stderr:
+          "failed to update official: fetch failed: HTTP fetch returned status 502\nError: one or more repository updates failed\n",
+      }),
+  };
+  await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        relayed: true,
+      }),
+    Error,
+    "pkg install greet failed: failed to update official",
+  );
+});
+
+Deno.test("a relayed install on a tablet refuses what its estimate says is too big", async () => {
+  const fetcher = await fakeRepo(new Uint8Array(TABLET_MAX_BYTES + 1));
+  let ran = false;
+  const host: PackageHost = {
+    readFile: () => Promise.resolve(new Uint8Array()),
+    stageAndRun: () => {
+      ran = true;
+      return Promise.resolve(INSTALLED);
+    },
+  };
+  await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: true,
+        fetcher,
+        progress: () => {},
+        relayed: true,
+      }),
+    Error,
+    "tablet",
+  );
+  assertEquals(ran, false);
+});
+
+Deno.test("relayedInstallPlan adds the dependencies not installed yet, once each", () => {
+  const meta = (name: string, size: number, depends: string[] = []) => ({
+    bytes: new Uint8Array(),
+    file: {
+      name,
+      versions: [
+        version("1.0.0", "yurt_0", {
+          size,
+          depends: depends.map((dep) => ({ name: dep, req: "*" })),
+        }),
+      ],
+    },
+  });
+  const catalog = {
+    metadata: new Map([
+      ["app", meta("app", 1, ["lib", "python"])],
+      ["lib", meta("lib", 10, ["python", "app"])],
+      ["python", meta("python", 100)],
+    ]),
+  } as unknown as Catalog;
+  const names = (installed: string[]) =>
+    relayedInstallPlan(catalog, "app", new Set(installed)).map((r) =>
+      `${r.name}:${r.size}`
+    );
+  assertEquals(names([]), ["app:1", "lib:10", "python:100"]);
+  assertEquals(names(["python"]), ["app:1", "lib:10"]);
+  assertEquals(names(["app"]), []);
+});
+
+Deno.test("a relayed install with a broken installed list still runs, estimating high", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1]));
+  let ran = false;
+  const host: PackageHost = {
+    readFile: () => Promise.resolve(new TextEncoder().encode("not a list")),
+    stageAndRun: () => {
+      ran = true;
+      return Promise.resolve(INSTALLED);
+    },
+  };
+  await installPackage("greet", {
+    host,
+    tablet: false,
+    fetcher,
+    progress: () => {},
+    relayed: true,
+  });
+  assertEquals(ran, true);
+});
+
+Deno.test("a relayed install that goes silent is a stall, and runs pkg recover", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1]));
+  const recovered: string[] = [];
+  const host: PackageHost = {
+    observesProgress: true,
+    readFile: () => Promise.resolve(new Uint8Array()),
+    // Never beats and never answers until given up on.
+    stageAndRun: (_files, _script, watch) =>
+      new Promise((_, reject) =>
+        watch!.signal.addEventListener(
+          "abort",
+          () => reject(new Error("stopped watching")),
+        )
+      ),
+    recover: () => {
+      recovered.push("recover");
+      return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+    },
+  };
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        relayed: true,
+        stallMs: 100,
+        progressEveryMs: 10,
+      }),
+    InstallStalled,
+  );
+  assert(error.inSandbox);
+  assertEquals(recovered, ["recover"]);
+});
+
 /** A host whose guest is watched (src/session_packages.ts): each run
  * beats `beats` times, `everyMs` apart, then answers; with `beats`
  * Infinity it never beats -- a sandbox that stopped answering
@@ -420,10 +614,12 @@ Deno.test("an install whose sandbox stops answering fails as stalled, not foreve
       }),
     InstallStalled,
   );
+  // A host that cannot run pkg recover: the sandbox needs a reload.
   assertEquals(
     error.message,
-    "greet: the install stopped making progress (the sandbox's pkg did nothing for 0 s)",
+    "greet: the install stopped making progress (the sandbox's pkg did nothing for 0 s); pkg recover was not run (this sandbox cannot run it), so this sandbox may hold a half-installed package and takes no more installs",
   );
+  assertEquals(error.recovered, false);
   // In the guest's run: the retry needs a fresh sandbox.
   assertEquals(error.inSandbox, true);
   // It gave up at the stall, and told the host to stop watching the run.
@@ -505,9 +701,9 @@ Deno.test("a run that beats but never finishes ends at the ceiling", async () =>
     InstallStalled,
   );
   assertEquals(error.inSandbox, true);
-  assertEquals(
+  assertStringIncludes(
     error.message,
-    "greet: the install stopped making progress (the sandbox did not finish it in 0 s)",
+    "greet: the install ran past its time limit (the sandbox did not finish it in 0 s)",
   );
   assertEquals(aborted, [false, true]);
 });
@@ -1275,4 +1471,735 @@ Deno.test("a checked catalog refuses metadata the index does not name, and an ex
     Error,
     "expired",
   );
+});
+
+/** A package's row as the panel makes it, with its Install button. */
+function packageRow(name: string) {
+  return {
+    row: { hidden: false },
+    button: {
+      dataset: { package: name } as { package?: string },
+      textContent: "Install" as string | null,
+      disabled: false,
+    },
+  };
+}
+
+/** The rows listed, as the user sees them: name, button text, clickable. */
+function shown(rows: ReturnType<typeof packageRow>[]) {
+  return rows.filter(({ row }) => !row.hidden).map(({ button }) => [
+    button.dataset.package,
+    button.textContent,
+    !button.disabled,
+  ]);
+}
+
+Deno.test("markInstalled marks the known packages Installed, disabled, and the rest Install", () => {
+  const rows = [packageRow("git"), packageRow("rtk"), packageRow("numpy")];
+  markInstalled(rows, new Set(["numpy", "git"]), new Set(), false);
+  assertEquals(shown(rows), [
+    ["git", "Installed", false],
+    ["rtk", "Install", true],
+    ["numpy", "Installed", false],
+  ]);
+  // While an install runs, none can be clicked; what is installed stays so.
+  markInstalled(rows, new Set(["numpy", "git", "rtk"]), new Set(), true);
+  assertEquals(shown(rows), [
+    ["git", "Installed", false],
+    ["rtk", "Installed", false],
+    ["numpy", "Installed", false],
+  ]);
+  markInstalled(rows, new Set(), new Set(), true);
+  assertEquals(shown(rows), [
+    ["git", "Install", false],
+    ["rtk", "Install", false],
+    ["numpy", "Install", false],
+  ]);
+});
+
+Deno.test("markInstalled leaves out what the image has outside pkg, and python-seal", () => {
+  const rows = ["busybox", "python-dev", "python-seal", "rtk", "zsh"].map(
+    packageRow,
+  );
+  markInstalled(rows, new Set(), new Set(["zsh", "busybox"]), false);
+  assertEquals(shown(rows), [
+    ["python-dev", "Install", true],
+    ["rtk", "Install", true],
+  ]);
+  // pkg's list wins over the image: a command pkg put there is listed
+  // Installed. python-seal stays out, even once installed.
+  markInstalled(
+    rows,
+    new Set(["rtk", "python-seal"]),
+    new Set(["zsh", "rtk"]),
+    false,
+  );
+  assertEquals(shown(rows), [
+    ["busybox", "Install", true],
+    ["python-dev", "Install", true],
+    ["rtk", "Installed", false],
+  ]);
+  // Each package left out by name says why.
+  assertEquals([...NOT_LISTED.keys()], ["python-seal"]);
+  for (const why of NOT_LISTED.values()) assert(why.length > 0);
+});
+
+/** Runs a probe with the host's own shell. */
+async function hostExec(cmd: string) {
+  const out = await new Deno.Command("/bin/sh", {
+    args: ["-c", cmd],
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  return { code: out.code, stdout: new TextDecoder().decode(out.stdout) };
+}
+
+Deno.test("packagesInImage finds the packages whose command the image has outside pkg", async () => {
+  // The slim image's layout (yurt-ports playground-image): zsh, make and
+  // pkg in /bin, zstd in /usr/bin, BusyBox's applets as symlinks; and
+  // pkg's list naming what it installed.
+  const root = await Deno.makeTempDir({ prefix: "packages-in-image-" });
+  try {
+    for (
+      const dir of [
+        "bin",
+        "usr/bin",
+        "usr/local/bin",
+        "etc",
+        "var/lib/yurt-pkg",
+      ]
+    ) {
+      await Deno.mkdir(`${root}/${dir}`, { recursive: true });
+    }
+    for (
+      const path of [
+        "bin/busybox",
+        "bin/make",
+        "bin/zsh",
+        "usr/bin/zstd",
+        "usr/bin/git",
+        "usr/local/bin/rtk",
+        "etc/pkg",
+      ]
+    ) {
+      await Deno.writeTextFile(`${root}/${path}`, "");
+    }
+    // An applet: a package `wget` would install beside it, not over it.
+    await Deno.symlink("busybox", `${root}/bin/wget`);
+    await Deno.symlink("python3", `${root}/usr/local/bin/python`);
+    await Deno.writeTextFile(
+      `${root}${INSTALLED_LIST_PATH}`,
+      "git\t2.55.0\tyurt_0\nrtk\t0.50.0\t1\n",
+    );
+    const ran: string[] = [];
+    const exec = (cmd: string) => {
+      ran.push(cmd);
+      return hostExec(cmd);
+    };
+    const names = [
+      "busybox",
+      "git",
+      "make",
+      "pkg",
+      "python",
+      "rtk",
+      "wget",
+      "zsh",
+      "zstd",
+    ];
+    // git and rtk are pkg's; pkg here is in /etc, no command directory.
+    assertEquals(
+      [...await packagesInImage(names, exec, root)].sort(),
+      ["busybox", "make", "zsh", "zstd"],
+    );
+    assertEquals(ran.length, 1);
+    // No names, no process.
+    assertEquals((await packagesInImage([], exec, root)).size, 0);
+    assertEquals(ran.length, 1);
+    // No pkg state at all: nothing is pkg's.
+    await Deno.remove(`${root}${INSTALLED_LIST_PATH}`);
+    assertEquals(
+      [...await packagesInImage(names, exec, root)].sort(),
+      ["busybox", "git", "make", "rtk", "zsh", "zstd"],
+    );
+    // pkg's database without its list: what pkg manages is unknown.
+    await Deno.writeTextFile(`${root}${INSTALLED_DB_PATH}`, "");
+    assertEquals((await packagesInImage(names, exec, root)).size, 0);
+    // A list that cannot be read is a failed probe, not an empty list.
+    await Deno.mkdir(`${root}${INSTALLED_LIST_PATH}`);
+    await assertRejects(
+      () => packagesInImage(names, exec, root),
+      Error,
+      "exit 3",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("packagesInImage refuses a name that is not a package name, and a failed probe", async () => {
+  const exec = () => Promise.resolve({ code: 0, stdout: "" });
+  await assertRejects(
+    () => packagesInImage(["zsh", "a;rm -rf /"], exec),
+    Error,
+    "not a package name",
+  );
+  await assertRejects(
+    () =>
+      packagesInImage(
+        ["zsh"],
+        () => Promise.resolve({ code: 2, stdout: "zsh\n" }),
+      ),
+    Error,
+    "exit 2",
+  );
+  // Only names asked about count, whatever else the output says.
+  const found = await packagesInImage(
+    ["zsh"],
+    () => Promise.resolve({ code: 0, stdout: "zsh\nrtk\n\n" }),
+  );
+  assertEquals([...found], ["zsh"]);
+});
+
+Deno.test("plannedInstalls is the package and what pkg's plan installed with it", () => {
+  assertEquals(
+    plannedInstalls(
+      "install libx 1.0.0-yurt_0\ninstall greet 0.1.0-yurt_0\n",
+      "greet",
+    ),
+    ["libx", "greet"],
+  );
+  // Already there: no plan, but it is installed.
+  assertEquals(plannedInstalls("nothing to install\n", "greet"), ["greet"]);
+  // Only pkg's own plan lines, anchored.
+  assertEquals(
+    plannedInstalls("will install foo next\n  install bar 1\n", "greet"),
+    ["greet"],
+  );
+});
+
+Deno.test("a set's install says which releases its own index read resolved to", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([3, 1, 4]));
+  const { host } = fakeHost(PLAN, INSTALLED);
+  const resolved: string[][] = [];
+  await installPackage({ label: "Greet", set: ["greet"] }, {
+    host,
+    tablet: false,
+    fetcher,
+    cache: memoryCache({}).cache,
+    progress: () => {},
+    resolved: (releases) =>
+      resolved.push(releases.map((r) => `${r.name}@${r.version}-${r.build}`)),
+  });
+  assertEquals(resolved, [["greet@0.1.0-yurt_0"]]);
+});
+
+Deno.test("the run ceiling leaves a slowed tab's run room: twenty minutes", () => {
+  // Hidden desktop Safari ran Python's install run in 538 s, past the old
+  // five minutes, while pkg was still working; the no-progress check
+  // stays the fast guard against a sandbox that stopped.
+  assertEquals(INSTALL_RUN_CEILING_MS, 20 * 60_000);
+  assertEquals(INSTALL_STALL_MS, 60_000);
+});
+
+/** `watchedHost`, with pkg's recovery answering `recover` (or hanging). */
+function recoveringHost(
+  runs: Parameters<typeof watchedHost>[0],
+  recover:
+    | { code: number; stdout: string; stderr: string }
+    | "hang"
+    // Beats every `everyMs`, `beats` times (or forever), then answers.
+    | { beats: number; everyMs: number; result: typeof PLAN },
+) {
+  const watched = watchedHost(runs);
+  const events: string[] = [];
+  const host: PackageHost = {
+    ...watched.host,
+    stageAndRun: (files, script, watch) => {
+      events.push("run");
+      watch?.signal.addEventListener("abort", () => events.push("abort"));
+      return watched.host.stageAndRun(files, script, watch);
+    },
+    recover: (watch) => {
+      events.push("recover");
+      if (recover !== "hang" && "code" in recover) {
+        return Promise.resolve(recover);
+      }
+      return new Promise((resolve, reject) => {
+        let beaten = 0;
+        const timer = recover === "hang" ? undefined : setInterval(() => {
+          if (beaten++ < recover.beats) return watch.alive();
+          clearInterval(timer);
+          resolve(recover.result);
+        }, recover.everyMs);
+        watch.signal.addEventListener("abort", () => {
+          clearInterval(timer);
+          reject(new Error("stopped watching"));
+        });
+      });
+    },
+  };
+  return { host, events };
+}
+
+Deno.test("a run past the ceiling, still beating, runs no recovery: it would wait on pkg's lock", async () => {
+  // The run's pkg is alive and holds pkg's lock; pkg recover would wait
+  // for it, beating, for another whole ceiling.
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, events } = recoveringHost([
+    { beats: 0, everyMs: 5, result: PLAN },
+    { beats: 100, everyMs: 10, result: INSTALLED },
+  ], { code: 0, stdout: "", stderr: "" });
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+        runCeilingMs: 300,
+      }),
+    InstallStalled,
+  );
+  assertEquals(events.includes("recover"), false);
+  assertEquals(error.ceiling, true);
+  assertEquals(error.recovered, false);
+  assertStringIncludes(error.message, "did not finish it in 0 s");
+  assertStringIncludes(error.message, "holds pkg's lock");
+  // It says recovery was not run, not that it ran and failed.
+  assertStringIncludes(error.message, "pkg recover was not run");
+  assertEquals(error.recoveryRan, false);
+  assertStringIncludes(stalledSandboxWhy(error), "past its time limit");
+  assertStringIncludes(error.message, "takes no more installs");
+});
+
+const HUNG_RUN = [
+  { beats: 0, everyMs: 5, result: PLAN },
+  { beats: Infinity, everyMs: 5, result: INSTALLED },
+];
+
+Deno.test("a silent recovery past both limits did nothing; a failed one's reason is its last line", async () => {
+  // A late timer can find both limits passed at once (equal here): a
+  // recovery that went silent did nothing, whatever the clock says.
+  {
+    const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+    const { host } = recoveringHost(HUNG_RUN, "hang");
+    const error = await assertRejects(
+      () =>
+        installPackage("greet", {
+          host,
+          tablet: false,
+          fetcher,
+          progress: () => {},
+          stallMs: 100,
+          runCeilingMs: 100,
+        }),
+      InstallStalled,
+    );
+    assertStringIncludes(error.message, "(it did nothing for 0 s)");
+  }
+  // stdout without a final newline does not run into stderr.
+  {
+    const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+    const { host } = recoveringHost(HUNG_RUN, {
+      code: 1,
+      stdout: "recovering 0001",
+      stderr: "Error: recovery incomplete\n",
+    });
+    const error = await assertRejects(
+      () =>
+        installPackage("greet", {
+          host,
+          tablet: false,
+          fetcher,
+          progress: () => {},
+          stallMs: 100,
+        }),
+      InstallStalled,
+    );
+    assertStringIncludes(error.message, "(Error: recovery incomplete)");
+  }
+});
+
+Deno.test("a run silent for the stall window when the ceiling also passes is a stall, and recovery runs", async () => {
+  // A late timer can find both limits passed at once (here they are
+  // equal): a silent run is no live pkg holding the lock, so it is
+  // treated as a stall, and pkg recover runs.
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, events } = recoveringHost(HUNG_RUN, {
+    code: 0,
+    stdout: "",
+    stderr: "",
+  });
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+        runCeilingMs: 100,
+      }),
+    InstallStalled,
+  );
+  assertEquals(error.ceiling, false);
+  assertEquals(events.includes("recover"), true);
+  assertEquals(error.recovered, true);
+});
+
+Deno.test("a sandbox thrown away after the install runs no recovery after a stall", async () => {
+  // The Suspend/Resume check's sandbox goes when the check ends: there is
+  // nothing to recover, and nothing for a reload to fix.
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, events } = recoveringHost(HUNG_RUN, {
+    code: 0,
+    stdout: "",
+    stderr: "",
+  });
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+        recoverAfterStall: false,
+      }),
+    InstallStalled,
+  );
+  assertEquals(events.includes("recover"), false);
+  assertEquals(error.recovered, undefined);
+  assertEquals(
+    error.message,
+    "greet: the install stopped making progress (the sandbox's pkg did nothing for 0 s)",
+  );
+});
+
+Deno.test("a recovery killed by a signal, saying nothing, says so", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host } = recoveringHost(HUNG_RUN, {
+    code: null as unknown as number,
+    stdout: "",
+    stderr: "",
+  });
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+      }),
+    InstallStalled,
+  );
+  assertEquals(error.recovered, false);
+  assertStringIncludes(error.message, "(it was killed by a signal)");
+});
+
+Deno.test("after the page gives up on a pkg run, pkg recover runs before the failure is said", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, events } = recoveringHost(HUNG_RUN, {
+    code: 0,
+    stdout: "",
+    stderr: "",
+  });
+  const messages: string[] = [];
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: (m) => messages.push(m),
+        stallMs: 100,
+      }),
+    InstallStalled,
+  );
+  // The run is given up on (every run's listener hears it), then pkg
+  // recover runs, then the failure is said.
+  assertEquals(events.filter((e) => e !== "abort"), ["run", "run", "recover"]);
+  assertEquals(events.indexOf("abort") < events.indexOf("recover"), true);
+  assertEquals(error.inSandbox, true);
+  assertEquals(error.recovered, true);
+  assertStringIncludes(error.message, "pkg recover");
+  // Recovery speaks for pkg's transactions only: the install itself did
+  // not complete.
+  assertStringIncludes(
+    error.message,
+    "pkg recover then left none of pkg's transactions unfinished, but the page did not see the install finish, so this sandbox takes no more installs",
+  );
+  assertStringIncludes(messages.at(-1)!, "pkg recover");
+});
+
+Deno.test("a recovery that fails or stops making progress says the sandbox takes no more installs", async () => {
+  for (
+    const recover of [
+      { code: 1, stdout: "", stderr: "recovery incomplete" },
+      "hang" as const,
+    ]
+  ) {
+    const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+    const { host, events } = recoveringHost(HUNG_RUN, recover);
+    const error = await assertRejects(
+      () =>
+        installPackage("greet", {
+          host,
+          tablet: false,
+          fetcher,
+          progress: () => {},
+          stallMs: 100,
+        }),
+      InstallStalled,
+    );
+    assertEquals(events.at(-1), "recover", JSON.stringify(recover));
+    assertEquals(error.recovered, false);
+    assertStringIncludes(error.message, "half-installed");
+    assertStringIncludes(error.message, "takes no more installs");
+  }
+});
+
+Deno.test("a download that stalls runs no recovery: pkg never started", async () => {
+  const archive = new Uint8Array([1, 2, 3]);
+  const repo = await fakeRepo(archive);
+  const fetcher: Fetcher = (url) =>
+    url.endsWith(".yurtpkg")
+      ? new Promise((resolve) => setTimeout(() => resolve(repo(url)), 300))
+      : repo(url);
+  const { host, events } = recoveringHost([
+    { beats: 0, everyMs: 5, result: PLAN },
+  ], { code: 0, stdout: "", stderr: "" });
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+      }),
+    InstallStalled,
+  );
+  assertEquals(error.inSandbox, false);
+  assertEquals(events.includes("recover"), false);
+  await new Promise((resolve) => setTimeout(resolve, 400));
+});
+
+Deno.test("a sandbox whose stalled install pkg could not recover says a package may be half installed", () => {
+  const stall = new InstallStalled("greet", 60_000, true);
+  assertStringIncludes(
+    stalledSandboxWhy(stall.withRecovery(false, "exit 1")),
+    "half installed",
+  );
+  assertEquals(
+    stalledSandboxWhy(stall.withRecovery(false, "cannot", false)),
+    "an earlier install stopped part way, so a package may be half installed",
+  );
+  assertEquals(
+    stalledSandboxWhy(stall.withRecovery(true)),
+    "an earlier install stopped making progress",
+  );
+});
+
+Deno.test("a live recovery keeps telling the page it is still going", async () => {
+  // The page's own silence deadline (src/install_request.ts) must not fire
+  // while pkg recover waits on a lock, beating.
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host } = recoveringHost(HUNG_RUN, {
+    beats: 20,
+    everyMs: 20,
+    result: { code: 0, stdout: "", stderr: "" },
+  });
+  const messages: string[] = [];
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: (m) => messages.push(m),
+        stallMs: 100,
+        progressEveryMs: 100,
+      }),
+    InstallStalled,
+  );
+  assertEquals(error.recovered, true);
+  const ticks = messages.filter((m) =>
+    /^greet: running pkg recover after the stopped install \(\d+ s\)$/.test(m)
+  );
+  assertEquals(ticks.length >= 2, true, JSON.stringify(messages));
+});
+
+Deno.test("a recovery that keeps beating past the ceiling is given up on", async () => {
+  // A pkg recover alive but blocked keeps the heartbeat going; the run
+  // ceiling ends it too. It does answer, much later (3 s): a missing
+  // ceiling then says it recovered, rather than hanging the test.
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host } = recoveringHost(HUNG_RUN, {
+    beats: 300,
+    everyMs: 10,
+    result: { code: 0, stdout: "", stderr: "" },
+  });
+  const started = Date.now();
+  const error = await assertRejects(
+    () =>
+      installPackage("greet", {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+        stallMs: 100,
+        runCeilingMs: 300,
+      }),
+    InstallStalled,
+  );
+  assertEquals(error.recovered, false);
+  assertStringIncludes(error.message, "it did not finish in 0 s");
+  assertEquals(Date.now() - started < 3000, true);
+});
+
+/** The slim image's python, from pkg's installed list: pkg never replaces
+ * an installed package, so the set must be the one with this build. */
+const SLIM_PYTHON = { name: "python", version: "3.14.7", build: "yurt_0" };
+
+Deno.test("an installed python pins the set to its own build, even with a newer set live", () => {
+  const catalog = catalogOf({
+    python: ["3.14.7@yurt_0", "3.14.7@yurt_1"],
+    numpy: ["2.5.0@yurt_0", "2.5.0@yurt_1"],
+    pyzmq: ["26.4.0@yurt_0", "26.4.0@yurt_1"],
+    "jupyter-kernel": ["0.0.1@yurt_0", "0.0.1@yurt_1"],
+  });
+  assertEquals(
+    resolveSet(catalog, SET, [SLIM_PYTHON]).map((r) =>
+      `${r.name}@${r.version}-${r.build}`
+    ),
+    [
+      "python@3.14.7-yurt_0",
+      "numpy@2.5.0-yurt_0",
+      "pyzmq@26.4.0-yurt_0",
+      "jupyter-kernel@0.0.1-yurt_0",
+    ],
+  );
+  // What is installed outside the set pins nothing; with no python, the
+  // newest set, as before.
+  for (
+    const installed of [
+      [],
+      [{ name: "git", version: "2.55.0", build: "yurt_0" }],
+      undefined,
+    ]
+  ) {
+    assertEquals(
+      resolveSet(catalog, SET, installed).map((r) => r.build),
+      ["yurt_1", "yurt_1", "yurt_1", "yurt_1"],
+    );
+  }
+});
+
+Deno.test("an installed python with no complete set at its build is a clear failure", () => {
+  // Only yurt_1 is live: the set was republished and yurt_0's withdrawn.
+  const newer = catalogOf({
+    python: ["3.14.7@yurt_1"],
+    numpy: ["2.5.0@yurt_0", "2.5.0@yurt_1"],
+    pyzmq: ["26.4.0@yurt_1"],
+    "jupyter-kernel": ["0.0.1@yurt_1"],
+  });
+  const error = assertThrows(
+    () => resolveSet(newer, SET, [SLIM_PYTHON]),
+    SetNotOffered,
+  );
+  assertStringIncludes(error.message, "python 3.14.7-yurt_0");
+  assertStringIncludes(error.message, "installed");
+  // The build is live, but not that python's version.
+  assertThrows(
+    () =>
+      resolveSet(
+        catalogOf({
+          python: ["3.14.8@yurt_0"],
+          numpy: ["2.5.0@yurt_0"],
+          pyzmq: ["26.4.0@yurt_0"],
+          "jupyter-kernel": ["0.0.1@yurt_0"],
+        }),
+        SET,
+        [SLIM_PYTHON],
+      ),
+    SetNotOffered,
+    "python 3.14.7-yurt_0",
+  );
+  // Two installed members of different builds: no set has both.
+  assertThrows(
+    () =>
+      resolveSet(newer, SET, [SLIM_PYTHON, {
+        name: "numpy",
+        version: "2.5.0",
+        build: "yurt_1",
+      }]),
+    SetNotOffered,
+  );
+});
+
+Deno.test("a set's install asks pkg only for what is not installed, and says the whole set", async () => {
+  const archive = new Uint8Array([5, 5]);
+  const base = await fakeRepo(archive);
+  const enc = (value: unknown) =>
+    new TextEncoder().encode(JSON.stringify(value));
+  const libx = enc({
+    name: "libx",
+    versions: [
+      version("1.0.0", "yurt_0"),
+      version("1.0.0", "yurt_1"),
+    ],
+  });
+  const fetcher = async (url: string) => {
+    const path = url.slice(PACKAGE_REPO_URL.length);
+    if (path === "packages/libx.json") return libx;
+    const bytes = await base(url);
+    if (path !== "index.json") return bytes;
+    const index = JSON.parse(new TextDecoder().decode(bytes));
+    index.packages.libx = { sha256: "", size: 1, url: "packages/libx.json" };
+    return enc(index);
+  };
+  const { host, runs } = fakeHost(PLAN, INSTALLED);
+  let resolved: string[] = [];
+  await installPackage(
+    {
+      label: "Set",
+      set: ["libx", "greet"],
+      installed: [{ name: "libx", version: "1.0.0", build: "yurt_0" }],
+    },
+    {
+      host,
+      tablet: false,
+      fetcher,
+      progress: () => {},
+      resolved: (releases) => {
+        resolved = releases.map((r) => `${r.name}@${r.version}-${r.build}`);
+      },
+    },
+  );
+  assertEquals(
+    runs[0].script,
+    installScript(["greet@0.1.0-yurt_0"], "official"),
+  );
+  assertEquals(resolved, ["libx@1.0.0-yurt_0", "greet@0.1.0-yurt_0"]);
+});
+
+Deno.test("a verify-all list with nothing to verify is refused before pkg runs, never passed as verified", async () => {
+  const fetcher = await fakeRepo(new Uint8Array([1, 2, 3]));
+  const { host, runs } = fakeHost(PLAN, INSTALLED);
+  await assertRejects(
+    () =>
+      installPackage({ label: "Seal", releases: [], verifyAll: true }, {
+        host,
+        tablet: false,
+        fetcher,
+        progress: () => {},
+      }),
+    Error,
+    "not a package name: []",
+  );
+  assertEquals(runs.length, 0);
 });

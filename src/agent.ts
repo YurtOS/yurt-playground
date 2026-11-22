@@ -10,6 +10,8 @@
 export type Action =
   | { action: "exec"; cmd: string }
   | { action: "read_file"; path: string }
+  | { action: "write_file"; path: string; text: string }
+  | { action: "set_color"; color: string }
   | { action: "answer"; text: string };
 
 export type ModelStats = { promptTokens: number; outputTokens: number };
@@ -26,12 +28,22 @@ export type ExecResult = {
   code: number | null;
   stdout: string;
   stderr: string;
+  /** Set when the command's output made a PDF: {@link pdfMade}'s words,
+   * which end the result the model and the pane see. */
+  made?: string;
 };
 
 export type Tools = {
   exec(cmd: string, signal: AbortSignal): Promise<ExecResult>;
   readFile(path: string, signal: AbortSignal): Promise<string>;
+  /** Resolves to what happened, for the model. */
+  writeFile(path: string, text: string, signal: AbortSignal): Promise<string>;
+  /** The demo PDF's text color; resolves to what happened, for the model. */
+  setColor(color: string, signal: AbortSignal): Promise<string>;
 };
+
+/** A tool failure the model cannot fix by trying again: it ends the task. */
+export class ToolFailed extends Error {}
 
 export type Limits = {
   /** Model calls per task, invalid replies included. */
@@ -52,7 +64,8 @@ export const DEFAULT_LIMITS: Limits = {
   maxSteps: 8,
   maxInvalid: 2,
   maxObservation: 1500,
-  maxTask: 2000,
+  // Room for the demo's document and a message about it.
+  maxTask: 4000,
   // ~2,500 tokens at 3.5 characters a token: with the system prompt and the
   // reply it stays inside the 4,096-token engine.
   maxPrompt: 9000,
@@ -60,6 +73,7 @@ export const DEFAULT_LIMITS: Limits = {
 };
 
 export type AgentEvent =
+  | { type: "repeat"; step: number }
   | { type: "step"; step: number; promptChars: number }
   | {
     type: "action";
@@ -86,7 +100,7 @@ export type AgentEvent =
   | { type: "answer"; text: string }
   | {
     type: "stopped";
-    reason: "cancelled" | "steps" | "invalid" | "timeout" | "task";
+    reason: "cancelled" | "steps" | "invalid" | "timeout" | "task" | "repeat";
   }
   | { type: "error"; message: string };
 
@@ -95,25 +109,148 @@ export type AgentEvent =
  * first and spends its steps on "not found". */
 export function systemPrompt(python: boolean): string {
   return [
-    python
-      ? "You operate a Linux sandbox (BusyBox, Python 3) for the user."
-      : "You operate a Linux sandbox (BusyBox shell tools only; no Python, no Node) for the user.",
+    `You operate a Linux sandbox (${sandboxTools(python)}) for the user.`,
     ...PROMPT_RULES,
   ].join("\n");
+}
+
+/** What the sandbox offers, as the prompt says it. */
+export function sandboxTools(python: boolean): string {
+  return python
+    ? "BusyBox, zsh, Python 3"
+    : "BusyBox shell tools and zsh; no Python, no Node";
+}
+
+/** A system prompt given as lines (agent-models.json's `instructions`), with
+ * `{tools}` standing for {@link sandboxTools}. */
+export function instructionsPrompt(lines: string[], python: boolean): string {
+  return lines.join("\n").replaceAll("{tools}", sandboxTools(python));
+}
+
+/** The demo's document: both files are the sandbox's, so a later message in the
+ * chat, or a restored sandbox, finds them. */
+export const DEMO_TEXT_PATH = "/home/user/demo.txt";
+export const DEMO_PDF_PATH = "/home/user/demo.pdf";
+export const DEMO_COLOR_PATH = "/home/user/demo.color";
+/** Where the prompt suggests a program goes: not the document's text. */
+export const PROGRAM_PATH = "/home/user/main.py";
+/** What the `mkpdf` command takes as a color. */
+export const DEMO_COLOR = /^#[0-9a-f]{6}$/;
+const shellQuoted = (path: string) => `'${path.replaceAll("'", "'\\''")}'`;
+
+/** Make a PDF from a text file, in the document's color if it has one. */
+export function makePdfCommand(text: string, pdf: string): string {
+  return `command -v mkpdf >/dev/null || { sudo pkg update && sudo pkg install mkpdf; }; { [ -f ${DEMO_COLOR_PATH} ] && echo "%color $(cat ${DEMO_COLOR_PATH})"; cat ${
+    shellQuoted(text)
+  }; } | mkpdf ${shellQuoted(pdf)}`;
+}
+
+/** Run after each write of the demo's text. */
+export const MAKE_DEMO_PDF = makePdfCommand(DEMO_TEXT_PATH, DEMO_PDF_PATH);
+
+/** What a tool says when it made a PDF: the pane's cue to offer it. */
+export const pdfMade = (path: string) => `made ${path}`;
+export const madePdfPath = (result: string) =>
+  /made (\/.*\.pdf)$/.exec(result)?.[1];
+export const DEMO_PDF_MADE = pdfMade(DEMO_PDF_PATH);
+
+const DEMO_TEXT_WORD = DEMO_TEXT_PATH.replaceAll(".", "\\.");
+/** Output (not a numbered stream like `2>`) sent into the demo's text. */
+const DEMO_TEXT_REDIRECT = new RegExp(
+  `(?<![\\d&>])>>?\\s*['"]?${DEMO_TEXT_WORD}['"]?(?=\\s|;|&|\\||$)`,
+);
+
+/** How a shell command writes the demo's text, if it does: `> ` or `>> `
+ * it, and whether the same command reads it first, which the shell would
+ * empty before the read (`python3 demo.txt > demo.txt`). Commands joined
+ * by `;`, `&&` or `||` run one after another, so only the one holding the
+ * redirect counts; a pipe runs together with it. */
+export function demoTextRedirect(
+  cmd: string,
+): { readsItFirst: boolean } | undefined {
+  const redirect = DEMO_TEXT_REDIRECT.exec(cmd);
+  if (redirect === null) return undefined;
+  const command = cmd.slice(0, redirect.index).split(/;|&&|\|\||\n/).pop()!;
+  return {
+    readsItFirst: new RegExp(`${DEMO_TEXT_WORD}(?![\\w.])`).test(command),
+  };
 }
 
 const PROMPT_RULES = [
   "Reply with exactly one JSON object and nothing else. It must be one of:",
   '{"action":"exec","cmd":"<shell command>"}',
   '{"action":"read_file","path":"<absolute path>"}',
+  '{"action":"write_file","path":"<absolute path>","text":"<the whole file>"}',
+  '{"action":"set_color","color":"<#rrggbb>"}',
   '{"action":"answer","text":"<final answer for the user>"}',
   "Use exec or read_file to get facts from the sandbox, one step at a time.",
+  `To create or change a PDF, write_file its whole text to ${DEMO_TEXT_PATH}: plain ASCII with no markdown, under 300 words, since a page holds 40 lines of 65 characters. That also makes the PDF at ${DEMO_PDF_PATH}; do nothing more for it.`,
+  `A program goes in its own file, such as ${PROGRAM_PATH}, never in ${DEMO_TEXT_PATH}. To put its output in that PDF, exec it with the output redirected: python3 ${PROGRAM_PATH} > ${DEMO_TEXT_PATH}. That makes the PDF too. Never type out a program's output yourself.`,
+  "Send one action per reply; you see its result before the next.",
+  "set_color sets the color of the whole text of that PDF and remakes it; it changes no words. Give the requested color's #rrggbb value.",
+  `To read the text of that PDF, exec: mkpdf --text ${DEMO_PDF_PATH} and pipe it to other commands, such as wc -w. Do not count or calculate in your head: report what the command printed.`,
+  "When a step is done, do not repeat it: use the answer action. If a step failed, say so; never claim it worked.",
+  "Only if the user names another PDF file, write_file its text to that path ending in .pdf, which makes a real PDF. Otherwise use the file above.",
+  "Every PDF made gets a Download button under this chat. If asked to download one, say so; you cannot download it yourself.",
+  "The PDF can do nothing else: no bold, sizes, images or background. If asked for those, say so; never claim a change you did not make.",
   "Answer only from what you have seen. Keep the answer short.",
 ];
 
 export const SYSTEM_PROMPT = systemPrompt(true);
 
-const FIELDS = { exec: "cmd", read_file: "path", answer: "text" } as const;
+/** One message of a chat as the agent's task: its words, after the document as
+ * it stands, so an edit changes that text and not a new one, and after the
+ * earlier messages, which say what "it" refers to. The oldest go first when they
+ * do not fit `maxTask`; a message too long on its own is left for runAgent to
+ * refuse. */
+export function chatTask(
+  earlier: readonly string[],
+  message: string,
+  maxTask: number,
+  document?: string,
+): string {
+  const now = document === undefined && earlier.length === 0
+    ? message
+    : `Now the user asks: ${message}`;
+  const shown =
+    `The text in ${DEMO_TEXT_PATH} now, to change only as asked:\n<<<\n${document}\n>>>\n\n`;
+  // A document too long to show must not block every later message.
+  const text = document === undefined
+    ? ""
+    : shown.length + now.length <= maxTask
+    ? shown
+    : `${DEMO_TEXT_PATH} is too long to show here; read_file it if you need it.\n\n`;
+  const heading = "Earlier in this chat the user asked:\n";
+  const kept: string[] = [];
+  let room = maxTask - now.length - text.length - heading.length - 1;
+  for (let i = earlier.length - 1; i >= 0; i--) {
+    const line = `- ${earlier[i]}\n`;
+    if (line.length > room) break;
+    kept.unshift(line);
+    room -= line.length;
+  }
+  const asked = kept.length === 0 ? "" : `${heading}${kept.join("")}\n`;
+  return `${asked}${text}${now}`;
+}
+
+/** The demo: a task the pane offers until the visitor types their own. */
+// The task names the file: told only to "make it a PDF" and to say Yurt, the
+// in-tab Gemma 4 E4B wrote /home/user/Yurt.txt and Yurt.pdf in 4 of 4 runs.
+export const DEMO_TASK = [
+  `Write a short explanation of this demo for someone seeing it for the first time, and make it the demo PDF: write_file its text to ${DEMO_TEXT_PATH}. Mention Yurt by name in the text.`,
+  "What is true of it: a Linux sandbox (Yurt) runs inside this browser tab, started from a snapshot so it is ready in seconds.",
+  "A language model on this computer proposes one action at a time, and the page runs each in the sandbox.",
+  "The document's text and the PDF are files in that sandbox, and the user can change them by asking in this chat.",
+  "What the user types stays on this computer. Do not claim anything else.",
+].join(" ");
+
+const FIELDS = {
+  exec: ["cmd"],
+  read_file: ["path"],
+  write_file: ["path", "text"],
+  set_color: ["color"],
+  answer: ["text"],
+} as const;
 
 /** Exactly the keys of one variant, each a non-empty string. */
 export function validateAction(value: unknown): Action | null {
@@ -121,28 +258,106 @@ export function validateAction(value: unknown): Action | null {
     return null;
   }
   const v = value as Record<string, unknown>;
-  const field = FIELDS[v.action as keyof typeof FIELDS];
-  if (field === undefined) return null;
-  const keys = Object.keys(v);
-  if (keys.length !== 2 || !keys.includes(field)) return null;
-  const arg = v[field];
-  if (typeof arg !== "string" || arg.trim() === "") return null;
+  const fields: readonly string[] | undefined =
+    FIELDS[v.action as keyof typeof FIELDS];
+  if (fields === undefined) return null;
+  if (Object.keys(v).length !== fields.length + 1) return null;
+  for (const field of fields) {
+    const arg = v[field];
+    if (typeof arg !== "string" || arg.trim() === "") return null;
+  }
   return v as Action;
 }
 
-/** The one JSON object in a reply. Small models often wrap it in a
- * ```json fence; anything more than one object is not an action. */
-export function parseAction(text: string): Action | null {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end < start) return null;
-  const outside = text.slice(0, start) + text.slice(end + 1);
-  if (outside.replace(/```(json)?/g, "").trim() !== "") return null;
+/** Where the JSON object starting at `start` ends (its closing brace),
+ * strings and escapes aside; -1 if it does not close. */
+function objectEnd(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+const FENCE = /```(json)?/g;
+
+/** Gemma 4 E2B often drops the answer's "text" key:
+ * {"action":"answer":"..."}. Not JSON, but there is only one way to read it. */
+const KEYLESS_ANSWER =
+  /^\{\s*"action"\s*:\s*"answer"\s*:\s*("(?:[^"\\]|\\.)*")\s*\}$/s;
+
+/** Models write a program into a string with its line breaks and tabs as
+ * they are, not escaped (Gemma 4 31B on the phone). Not JSON, but a raw
+ * control character inside a string can only mean itself, so it becomes
+ * its escape. Only that: a backslash JSON does not know (`\'`, `\d`) is
+ * left for JSON.parse to refuse, so the model is asked again rather than
+ * this guessing what it meant. Escapes keep their JSON meaning (`\n` is a
+ * line break), as in the phone's reply, which mixed both. */
+const JSON_STRING = /"(?:[^"\\]|\\.)*"/gs;
+
+function escapeRawControls(json: string): string {
+  return json.replace(
+    JSON_STRING,
+    (string) =>
+      // An escape pair stays as it is (a backslash before a raw line break
+      // is still refused); a raw control character becomes its escape.
+      // deno-lint-ignore no-control-regex -- matching them is the point
+      string.replace(/\\[\s\S]|[\x00-\x1f]/g, (c) =>
+        c.length === 2 ? c : JSON.stringify(c).slice(1, -1)),
+  );
+}
+
+function parseObject(json: string): unknown {
   try {
-    return validateAction(JSON.parse(text.slice(start, end + 1)));
+    return JSON.parse(json);
+  } catch (error) {
+    const escaped = escapeRawControls(json);
+    if (escaped !== json) {
+      try {
+        return JSON.parse(escaped);
+      } catch {
+        // Not that either.
+      }
+    }
+    const keyless = KEYLESS_ANSWER.exec(escaped);
+    if (keyless === null) throw error;
+    return { action: "answer", text: JSON.parse(keyless[1]) };
+  }
+}
+
+/** The first action in a reply, and whether more text follows it. Small
+ * models often wrap it in a ```json fence; nothing else may come first. A
+ * model that plans ahead sends several actions in one reply: the first is
+ * the one to run, and the rest wait for its result. */
+export function firstAction(
+  text: string,
+): { action: Action; more: boolean } | null {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+  if (text.slice(0, start).replace(FENCE, "").trim() !== "") return null;
+  const end = objectEnd(text, start);
+  if (end < 0) return null;
+  try {
+    const action = validateAction(parseObject(text.slice(start, end + 1)));
+    if (action === null) return null;
+    const more = text.slice(end + 1).replace(FENCE, "").trim() !== "";
+    return { action, more };
   } catch {
     return null;
   }
+}
+
+/** The one JSON object in a reply, fenced or bare, and nothing else. */
+export function parseAction(text: string): Action | null {
+  const first = firstAction(text);
+  return first === null || first.more ? null : first.action;
 }
 
 type Turn = { reply: string; result: string };
@@ -220,6 +435,8 @@ export async function runAgent(
   }
   const turns: Turn[] = [];
   let invalid = 0;
+  let lastAction: string | undefined;
+  let repeats = 0;
   try {
     for (let step = 1; step <= limits.maxSteps; step++) {
       if (signal.aborted) return stopped();
@@ -233,7 +450,8 @@ export async function runAgent(
       );
       if (signal.aborted) return stopped();
       const ms = performance.now() - started;
-      const action = parseAction(text);
+      const first = firstAction(text);
+      const action = first?.action ?? null;
       if (action === null) {
         onEvent({ type: "invalid", step, raw: text, stats, ms });
         if (++invalid > limits.maxInvalid) {
@@ -242,30 +460,57 @@ export async function runAgent(
         turns.push({
           reply: JSON.stringify(text.slice(0, 200)),
           result:
-            "That is not one of the three JSON actions. Reply with exactly one.",
+            "That is not one of the five JSON actions. Reply with exactly one.",
         });
         continue;
       }
       invalid = 0;
+      // A model may not see that a step is done, and repeat it for ever. The
+      // answer is exempt: it ends the task anyway.
+      if (action.action !== "answer" && text.trim() === lastAction) {
+        if (++repeats > 1) {
+          return onEvent({ type: "stopped", reason: "repeat" });
+        }
+        onEvent({ type: "repeat", step });
+        turns.push({
+          reply: JSON.stringify(action),
+          result:
+            "You already did exactly this and its result is above, so it was not run again. Change the step, or use the answer action to say what happened.",
+        });
+        continue;
+      }
+      lastAction = text.trim();
+      repeats = 0;
       onEvent({ type: "action", step, action, raw: text, stats, ms });
       if (action.action === "answer") {
         return onEvent({ type: "answer", text: action.text });
       }
       started = performance.now();
       let raw: string;
+      let made: string | undefined;
       try {
         if (action.action === "exec") {
           const r = await tools.exec(action.cmd, signal);
           raw = `exit ${r.code ?? "none"}\n${r.stdout}${r.stderr}`;
+          made = r.made;
+        } else if (action.action === "set_color") {
+          raw = await tools.setColor(action.color, signal);
+        } else if (action.action === "write_file") {
+          raw = await tools.writeFile(action.path, action.text, signal);
         } else {
           raw = await tools.readFile(action.path, signal);
         }
       } catch (error) {
         if (signal.aborted) return stopped();
+        if (error instanceof ToolFailed) throw error;
         raw = `error: ${error instanceof Error ? error.message : error}`;
       }
       if (signal.aborted) return stopped();
-      const result = clip(raw, limits.maxObservation);
+      const clipped = clip(raw, limits.maxObservation);
+      // Last, where madePdfPath reads it, and never clipped away.
+      const result = made === undefined
+        ? clipped
+        : { ...clipped, text: `${clipped.text.trimEnd()}\n${made}` };
       onEvent({
         type: "observation",
         step,
@@ -273,7 +518,12 @@ export async function runAgent(
         truncated: result.truncated,
         ms: performance.now() - started,
       });
-      turns.push({ reply: JSON.stringify(action), result: result.text });
+      turns.push({
+        reply: JSON.stringify(action),
+        result: first?.more
+          ? `${result.text}\n(Only your first action was run. Send one action per reply, after reading its result.)`
+          : result.text,
+      });
     }
     onEvent({ type: "stopped", reason: "steps" });
   } catch (error) {

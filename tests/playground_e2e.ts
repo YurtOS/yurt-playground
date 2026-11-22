@@ -1,12 +1,15 @@
-import { chromium, devices, type Page } from "playwright";
+import { type Browser, devices, type Page } from "playwright";
+import { launchBrowser } from "../scripts/browser.ts";
+import { showAllSections } from "./show_all_sections.ts";
 import { Buffer } from "node:buffer";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
-import { EXECUTE_TIMEOUT_MS } from "../src/jupyter.ts";
+import { EXECUTE_TIMEOUT_MS } from "../src/jupyter_protocol.ts";
 import { watchCspViolations } from "./csp_watch.ts";
 import { PACKAGE_REPO_URL } from "../src/packages.ts";
+import { AGENT_MODELS_ROUTE, withPrompts } from "./agent_models_fixture.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -85,16 +88,30 @@ function expectPane(name: string, got: FailurePane, want: FailurePane): void {
   }
 }
 
-/** A tablet runs the Linux shell only: no Python cell, no Notebook or
- * JupyterLab link, no agent, and no ipykernel in the guest — iPadOS refused
- * new processes after ~13 while ipykernel started. The boot ends at the
- * shell, and a later reload is not mistaken for a boot cut off midway. */
+/** A tablet's home page runs the Linux shell, and an agent with only models
+ * outside the tab: no Python cell, no in-tab model, and no ipykernel in the
+ * guest — iPadOS refused new processes after ~13 while ipykernel started
+ * beside the shell. The Notebook and JupyterLab links are shown: those pages
+ * restore the desktop's snapshot in a sandbox of their own. The boot ends at
+ * the shell, and a later reload is not mistaken for a boot cut off midway. */
 async function tabletIsShellOnly(
-  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  browser: Browser,
   url: string,
 ): Promise<void> {
   const context = await browser.newContext(devices["iPad Pro 11"]);
-  const page = await context.newPage();
+  // A list that names an in-tab model for tablets too: it is not offered.
+  await context.route(AGENT_MODELS_ROUTE, (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      headers: { "access-control-allow-origin": "*" },
+      body: JSON.stringify(withPrompts({
+        tablet: {
+          local: ["E4B"],
+          openrouter: [{ id: "test/remote:free", label: "Remote" }],
+        },
+      })),
+    }));
+  const page = await showAllSections(await context.newPage());
   await page.addInitScript(() => {
     const seen: string[] = [];
     (globalThis as { __statuses?: string[] }).__statuses = seen;
@@ -135,6 +152,8 @@ async function tabletIsShellOnly(
       statuses: (globalThis as { __statuses?: string[] }).__statuses ?? [],
       notebook: shown("#notebook"),
       agent: shown("#agent"),
+      models: [...document.querySelectorAll("#agent-model option")]
+        .map((o) => (o as HTMLOptionElement).value),
       notebookLink: shown("[data-testid=choose-notebook]"),
       labLink: shown("[data-testid=choose-lab]"),
       tabletNote: shown("#mobile-note"),
@@ -147,9 +166,12 @@ async function tabletIsShellOnly(
     state.statuses.some((s) => s.includes("Jupyter")) &&
     `status mentioned Jupyter: ${JSON.stringify(state.statuses)}`,
     state.notebook && "Python pane shown",
-    state.agent && "agent pane shown",
-    state.notebookLink && "Notebook link shown",
-    state.labLink && "JupyterLab link shown",
+    !state.agent && "agent pane hidden",
+    JSON.stringify(state.models) !==
+      JSON.stringify(["openrouter:test/remote:free"]) &&
+    `agent offered ${JSON.stringify(state.models)}`,
+    !state.notebookLink && "Notebook link hidden",
+    !state.labLink && "JupyterLab link hidden",
     !state.tabletNote && "tablet note hidden",
     state.ipykernel && "ipykernel is running",
     state.echo !== "shell-only" && `shell answered ${state.echo}`,
@@ -158,64 +180,381 @@ async function tabletIsShellOnly(
   if (problems.length > 0) {
     throw new Error(`tablet shell-only: ${problems.join("; ")}`);
   }
+  await touchKeysWork(page);
   await context.close();
 }
 
-/** The agent pane on a phone (#197): the page refuses the boot, so there is
- * no sandbox for the agent's Run to start, and the pane says so instead of
- * offering a download and a Run that does nothing. `?start-anyway` gets the
- * sandbox's Start, and with it the agent's. WebGPU is stubbed: headless
- * Chromium has none, and without it the pane never offers a Run anyway. */
-export async function phoneAgentIsUnavailable(
-  browser: Awaited<ReturnType<typeof chromium.launch>>,
+/** The terminal's key bar on a touch device (#273): iOS gives xterm's hidden
+ * textarea no paste menu, and the iPhone and iPad keyboards have no Esc, Tab,
+ * Ctrl or arrow keys. `page` shows a running shell on an emulated touch
+ * device. The keys sit in one row of touch targets that scrolls sideways
+ * when the screen is narrower (an iPhone in portrait) and never widens the
+ * page. Esc reaches the guest (`od -c` shows 033), Tab completes a
+ * command in ash, a held Ctrl turns the next letter typed into its control
+ * character (Ctrl-C stops a `sleep`, Ctrl-D ends a shell; the terminal's
+ * own reply to a query is not that letter) and a second tap lets it go,
+ * ↑ and ↓ walk ash's history, ← and → move the cursor along the line,
+ * Paste puts the clipboard on the command line, a refused or empty
+ * clipboard is said in the bar, and the terminal keeps the focus (the iOS
+ * keyboard) through every tap. The clipboard is stubbed: neither headless
+ * engine has one a test can fill and read the same way. */
+export async function touchKeysWork(page: Page): Promise<void> {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(String(error)));
+  const bar = page.getByTestId("term-keys");
+  if (!(await bar.isVisible())) throw new Error("touch key bar not shown");
+  const layout = await bar.evaluate((el) => ({
+    keys: Array.from(el.querySelectorAll("button"), (b) => ({
+      id: b.dataset.testid,
+      name: b.getAttribute("aria-label"),
+      width: b.getBoundingClientRect().width,
+      top: b.getBoundingClientRect().top,
+    })),
+    pageScrolls: document.documentElement.scrollWidth > innerWidth,
+  }));
+  const order = layout.keys.map((k) => `${k.id}=${k.name}`).join(",");
+  const wantOrder = [
+    "esc=Escape",
+    "tab=Tab",
+    "ctrl=Control",
+    "up=Previous command",
+    "down=Next command",
+    "left=Cursor left",
+    "right=Cursor right",
+    "paste=Paste",
+  ].map((k) => `term-key-${k}`).join(",");
+  if (order !== wantOrder) throw new Error(`touch keys: ${order}`);
+  if (layout.keys.some((k) => k.width < 44 || k.top !== layout.keys[0].top)) {
+    throw new Error(
+      `touch keys not one row of 44 px: ${JSON.stringify(layout)}`,
+    );
+  }
+  if (layout.pageScrolls) throw new Error("touch key bar widens the page");
+  /** The terminal's lines, trimmed; the last non-empty one is the prompt. */
+  const lines = () =>
+    page.evaluate(() =>
+      Array.from(
+        document.querySelectorAll("#term .xterm-rows > div"),
+        (row) => (row.textContent ?? "").replace(/ /g, " ").trim(),
+      ).filter((line) => line !== "")
+    );
+  const waitFor = async (what: string, ok: (lines: string[]) => boolean) => {
+    const deadline = Date.now() + 30_000;
+    let seen = await lines();
+    while (!ok(seen)) {
+      if (Date.now() > deadline) {
+        throw new Error(`touch keys: ${what}; terminal: ${seen.join(" | ")}`);
+      }
+      await page.waitForTimeout(100);
+      seen = await lines();
+    }
+  };
+  const count = (seen: string[], line: string) =>
+    seen.filter((l) => l === line).length;
+  const promptShows = (command: string) =>
+    waitFor(
+      `prompt shows "${command}"`,
+      (seen) => seen.at(-1)?.endsWith(command) === true,
+    );
+  const focused = async (after: string) => {
+    const ok = await page.evaluate(() =>
+      document.activeElement?.classList.contains("xterm-helper-textarea")
+    );
+    if (!ok) throw new Error(`terminal lost the focus after ${after}`);
+  };
+  const tap = async (key: string) => {
+    await page.getByTestId(`term-key-${key}`).tap();
+    await focused(`tapping ${key}`);
+  };
+  const clipboard = (text: string | null) =>
+    page.evaluate((text) => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          readText: () =>
+            text === null
+              ? Promise.reject(new DOMException("denied", "NotAllowedError"))
+              : Promise.resolve(text),
+        },
+      });
+    }, text);
+
+  // Input sent before ash reads its next line is echoed raw (^[[A), so
+  // each step waits for the bare prompt.
+  const prompt = () =>
+    waitFor("prompt", (seen) => /^\S*[$#]$/.test(seen.at(-1) ?? ""));
+
+  await page.locator("#term").tap();
+  await prompt();
+  await page.keyboard.type("echo keys-one\n");
+  await waitFor("first command ran", (seen) => count(seen, "keys-one") === 1);
+  await prompt();
+  await page.keyboard.type("echo keys-two\n");
+  await waitFor("second command ran", (seen) => count(seen, "keys-two") === 1);
+  await prompt();
+  await tap("up");
+  await promptShows("echo keys-two");
+  await tap("up");
+  await promptShows("echo keys-one");
+  await tap("down");
+  await promptShows("echo keys-two");
+  await page.keyboard.press("Enter");
+  await waitFor(
+    "recalled command ran",
+    (seen) => count(seen, "keys-two") === 2,
+  );
+
+  // ← then a letter inserts before the line's last character, → moves back
+  // past it: "keys-a" becomes "keys-bac".
+  await prompt();
+  await page.keyboard.type("echo keys-a");
+  await promptShows("echo keys-a");
+  await tap("left");
+  await page.keyboard.type("b");
+  await promptShows("echo keys-ba");
+  await tap("right");
+  await page.keyboard.type("c");
+  await promptShows("echo keys-bac");
+  await page.keyboard.press("Enter");
+  await waitFor("edited command ran", (seen) => count(seen, "keys-bac") === 1);
+
+  await prompt();
+  await clipboard("echo keys-pasted");
+  await tap("paste");
+  await promptShows("echo keys-pasted");
+  await page.keyboard.press("Enter");
+  await waitFor(
+    "pasted command ran",
+    (seen) => count(seen, "keys-pasted") === 1,
+  );
+
+  // Ctrl, tapped, holds for the next letter typed and lets go after it.
+  const ctrlPressed = () =>
+    page.getByTestId("term-key-ctrl").getAttribute("aria-pressed");
+  const ctrlKey = async (letter: string) => {
+    await tap("ctrl");
+    if (await ctrlPressed() !== "true") throw new Error("Ctrl not held");
+    await page.keyboard.type(letter);
+    if (await ctrlPressed() !== "false") {
+      throw new Error(`Ctrl still held after ${letter}`);
+    }
+  };
+
+  // Tab completes "ech" to "echo ".
+  await prompt();
+  await page.keyboard.type("ech");
+  await tap("tab");
+  await promptShows("echo");
+  await page.keyboard.type("keys-tab\n");
+  await waitFor(
+    "completed command ran",
+    (seen) => count(seen, "keys-tab") === 1,
+  );
+
+  // Ctrl-C stops a sleep long before it would end.
+  await prompt();
+  await page.keyboard.type("sleep 100\n");
+  await waitFor(
+    "sleep runs",
+    (seen) => seen.at(-1)?.endsWith("sleep 100") === true,
+  );
+  await ctrlKey("c");
+  await prompt();
+
+  // Ctrl-D at an empty prompt ends a nested shell: its prompt goes, the
+  // outer one is back.
+  await page.keyboard.type("PS1='keys-sub> ' sh\n");
+  await waitFor("nested shell", (seen) => seen.at(-1) === "keys-sub>");
+  await ctrlKey("d");
+  await prompt();
+
+  // A second tap lets Ctrl go: "echo" stays "echo" (a held Ctrl would make
+  // its "e" Ctrl-E).
+  await tap("ctrl");
+  await tap("ctrl");
+  if (await ctrlPressed() !== "false") throw new Error("Ctrl not let go");
+  await page.keyboard.type("echo keys-let-go\n");
+  await waitFor("Ctrl let go", (seen) => count(seen, "keys-let-go") === 1);
+
+  // The terminal's own replies are not the next input: a cursor position
+  // query answered while Ctrl is held leaves it held for the letter typed
+  // after it. The query goes out two seconds after Enter, and Ctrl is held
+  // before that (keys-reply not shown yet). `read -n` puts the tty in raw
+  // mode and takes the reply (ESC [ row ; col R) up to its R, so ash never
+  // reads it as typed input, and keys-reply shows only if a reply came.
+  await prompt();
+  await page.keyboard.type(
+    "sleep 2; printf '\\033[6n'; read -rs -t 5 -n 32 -d R x;" +
+      ' [ -n "$x" ] && echo keys-reply\n',
+  );
+  const replied = (seen: string[]) =>
+    seen.some((line) => /^(\^\[\[\d+;\d+R?)?keys-reply$/.test(line));
+  await tap("ctrl");
+  if (replied(await lines())) throw new Error("Ctrl held after the reply");
+  // The tty may echo the reply (^[[row;col, with or without its R) before
+  // read turns echo off.
+  await waitFor("query answered", replied);
+  if (await ctrlPressed() !== "true") {
+    throw new Error("a terminal reply let Ctrl go");
+  }
+  // Ctrl-C at the empty prompt: ash shows ^C and a fresh prompt (the bare
+  // prompt before it would match prompt() too early).
+  await page.keyboard.type("c");
+  if (await ctrlPressed() !== "false") throw new Error("Ctrl still held");
+  await waitFor(
+    "Ctrl-C at the prompt",
+    (seen) =>
+      /^\S*[$#] \^C$/.test(seen.at(-2) ?? "") &&
+      /^\S*[$#]$/.test(seen.at(-1) ?? ""),
+  );
+
+  // Esc reaches the guest: od shows it as 033, after a Ctrl-D at the start
+  // of a line ends od's input.
+  await prompt();
+  await page.keyboard.type("od -c\n");
+  await waitFor("od runs", (seen) => seen.at(-1)?.endsWith("od -c") === true);
+  await tap("esc");
+  await page.keyboard.press("Enter");
+  await ctrlKey("d");
+  await waitFor(
+    "Esc reached od",
+    (seen) => seen.some((line) => /^0000000\s+033\s+\\n$/.test(line)),
+  );
+
+  const note = page.getByTestId("term-key-note");
+  for (const [text, says] of [[null, "clipboard"], ["", "empty"]] as const) {
+    await clipboard(text);
+    await tap("paste");
+    await page.waitForFunction(
+      (says) =>
+        document.querySelector("[data-testid=term-key-note]")?.textContent
+          ?.includes(says),
+      says,
+      { timeout: 5_000 },
+    ).catch(async () => {
+      throw new Error(
+        `touch keys: paste of ${JSON.stringify(text)} said "${await note
+          .textContent()}"`,
+      );
+    });
+  }
+  if (errors.length > 0) {
+    throw new Error(`touch keys: page errors ${errors.join("; ")}`);
+  }
+  console.log(
+    "playground e2e: touch keys send Esc, Tab and Ctrl, recall, move, paste and keep the focus",
+  );
+}
+
+/** The touch key bar on an iPhone in portrait (375 px, narrower than its
+ * keys): the phone's shell, booted, and every key reached. */
+async function phoneTouchKeysWork(browser: Browser, url: string) {
+  const context = await browser.newContext(devices["iPhone SE (3rd gen)"]);
+  const page = await showAllSections(await context.newPage());
+  await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(
+    () => document.querySelector("#status")?.textContent === "running",
+    undefined,
+    { timeout: 180_000 },
+  );
+  await touchKeysWork(page);
+  await context.close();
+}
+
+/** The agent pane on a phone (#197): a phone boots now (the tablet's
+ * snapshot), so the pane offers the sandbox's Start and the agent's Run,
+ * as on a tablet, with only models outside the tab (an in-tab one on the
+ * list is not offered). WebGPU is stubbed, so it is the phone, not a
+ * missing adapter, that leaves the in-tab model out. */
+export async function phoneAgentHasTheSandbox(
+  browser: Browser,
   url: string,
 ): Promise<void> {
   const phone = await browser.newContext(devices["iPhone 13"]);
+  await phone.route(AGENT_MODELS_ROUTE, (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      headers: { "access-control-allow-origin": "*" },
+      // An in-tab model on the list is not offered on a phone.
+      body: JSON.stringify(withPrompts({
+        phone: {
+          local: ["E4B", "E2B"],
+          openrouter: [{ id: "test/remote:free", label: "Remote" }],
+        },
+      })),
+    }));
   await phone.addInitScript(() => {
     Object.defineProperty(Navigator.prototype, "gpu", {
       configurable: true,
       get: () => ({ requestAdapter: () => Promise.resolve({}) }),
     });
   });
-  const page = await phone.newPage();
-  const agent = () =>
-    page.evaluate(() => {
-      const q = (id: string) =>
-        document.querySelector<HTMLElement>(`[data-testid=${id}]`);
-      return {
-        shown: document.querySelector<HTMLElement>("#agent")!
-          .offsetParent !== null,
-        status: q("agent-status")?.textContent ?? null,
-        unavailable: q("agent-unavailable") !== null,
-        start: q("agent-start") !== null,
-        run: q("agent-run") !== null,
-      };
-    });
-  await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
-  await page.getByTestId("boot-failed").waitFor({ state: "visible" });
-  await page.getByTestId("agent-status").waitFor({ state: "visible" });
-  const refused = await agent();
-  const want = {
-    shown: true,
-    status: "not on phones",
-    unavailable: true,
-    start: false,
-    run: false,
-  };
-  if (JSON.stringify(refused) !== JSON.stringify(want)) {
-    throw new Error(
-      `phone agent: want ${JSON.stringify(want)}, got ${
-        JSON.stringify(refused)
-      }`,
-    );
-  }
-  await page.goto(`${url}/?start-anyway`, { waitUntil: "domcontentloaded" });
+  const page = await showAllSections(await phone.newPage());
+  await page.goto(`${url}/`, { waitUntil: "domcontentloaded" });
   await page.getByTestId("agent-start").waitFor({ state: "visible" });
-  const anyway = await agent();
-  if (anyway.unavailable || !anyway.run) {
-    throw new Error(`phone agent ?start-anyway: ${JSON.stringify(anyway)}`);
+  const agent = await page.evaluate(() => {
+    const q = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-testid=${id}]`);
+    return {
+      unavailable: q("agent-unavailable") !== null,
+      run: q("agent-run") !== null,
+      start: (q("start-sandbox")?.offsetParent ?? null) !== null,
+      models: [...document.querySelectorAll("#agent-model option")]
+        .map((o) => (o as HTMLOptionElement).value),
+      platform: new URL(location.href).searchParams.get("platform"),
+    };
+  });
+  if (
+    agent.unavailable || !agent.run || !agent.start ||
+    agent.platform !== "phone" ||
+    JSON.stringify(agent.models) !==
+      JSON.stringify(["openrouter:test/remote:free"])
+  ) {
+    throw new Error(`phone agent: ${JSON.stringify(agent)}`);
   }
   await phone.close();
+}
+
+/** Firefox's UA, on a Chromium page: the page tells Firefox by its UA. */
+const FIREFOX_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:140.0) Gecko/20100101 Firefox/140.0";
+
+/** Firefox cannot run the sandbox (its workers never signal ready), so the
+ * home page sends it to unsupported.html with that reason, not the
+ * isolation one; any other browser that lands there sees the isolation
+ * reason only. */
+async function firefoxIsSentToItsReason(
+  browser: Browser,
+  url: string,
+): Promise<void> {
+  const firefox = await browser.newContext({ userAgent: FIREFOX_UA });
+  try {
+    const page = await firefox.newPage();
+    await page.goto(`${url}/?start=1`, { waitUntil: "domcontentloaded" });
+    await page.getByTestId("unsupported-firefox").waitFor({
+      state: "visible",
+      timeout: 30_000,
+    });
+    if (new URL(page.url()).pathname !== "/unsupported.html") {
+      throw new Error(`Firefox landed on ${page.url()}`);
+    }
+    if (await page.locator("#isolation").isVisible()) {
+      throw new Error("Firefox is shown the isolation reason");
+    }
+  } finally {
+    await firefox.close();
+  }
+  const other = await browser.newPage();
+  try {
+    await other.goto(`${url}/unsupported.html`, { waitUntil: "load" });
+    await other.locator("#isolation").waitFor({ state: "visible" });
+    if (await other.getByTestId("unsupported-firefox").isVisible()) {
+      throw new Error("the Firefox reason shows without #firefox");
+    }
+  } finally {
+    await other.close();
+  }
+  console.log("playground e2e: Firefox is sent to unsupported.html#firefox");
 }
 
 /** iPadOS Safari asks for the desktop site: its UA is a Mac Safari's. */
@@ -226,14 +565,14 @@ const IPADOS_SAFARI_UA =
 const ANDROID_DESKTOP_SITE_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 
-/** What the page knows before and after a boot it could not finish: a phone
- * is not offered Start (a phone tab has too little memory for Python), and
- * says so as a refusal, not a failure, unless `?start-anyway`; a boot
- * that dies in-page explains itself in the terminal's place, with the likely
- * cause on a tablet; and a tab the browser reloaded mid-boot says so on the
- * next load instead of offering a fresh Start. */
+/** What the page knows before and after a boot it could not finish: each
+ * device is told apart and its platform written into the URL (a phone, a
+ * tablet, a desktop; a hand-written `?platform=` kept); a boot that dies
+ * in-page explains itself in the terminal's place, with the likely cause on
+ * a tablet; and a tab the browser reloaded mid-boot says so on the next
+ * load instead of offering a fresh Start. */
 async function bootFailuresAreExplained(
-  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  browser: Browser,
   url: string,
 ): Promise<void> {
   // On a timeout, say what the page was doing: its status line, where it
@@ -267,107 +606,84 @@ async function bootFailuresAreExplained(
       page.off("pageerror", onError);
     }
   };
-  // iPhone Safari with "Request Desktop Website" sends the Mac Safari UA,
-  // reports 5 touch points like an iPad, and lays out at 980 px; only its
-  // screen, 390 px wide, says phone (#214).
-  const desktopModeIPhone = await browser.newContext({
-    userAgent: IPADOS_SAFARI_UA,
-    viewport: { width: 980, height: 1700 },
-    screen: { width: 390, height: 844 },
-    hasTouch: true,
-  });
-  const desktopModePage = await desktopModeIPhone.newPage();
-  await desktopModePage.addInitScript(() => {
-    Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
-      get: () => 5,
-    });
-  });
-  await desktopModePage.goto(`${url}/?start`, {
-    waitUntil: "domcontentloaded",
-  });
-  await failed(desktopModePage);
-  expectPane(
-    "iPhone Safari, desktop website",
-    await readFailurePane(desktopModePage),
-    {
-      status: "not on phones",
-      title: "The sandbox does not run on phones",
-      notebook: "not on phones",
-      start: true,
-      why: ["phone"],
-      reason: null,
-    },
-  );
-  await desktopModeIPhone.close();
-
-  // Android Chrome's "Desktop site" sends a Linux desktop UA and
-  // `userAgentData.mobile` false, and ignores the viewport meta tag, so it
-  // lays out at 980 px; its screen and coarse pointer are the phone's
-  // (Chromium: ContentUtils SetUserAgentOverride, #216).
-  const desktopSiteAndroid = await browser.newContext({
-    userAgent: ANDROID_DESKTOP_SITE_UA,
-    viewport: { width: 980, height: 2180 },
-    screen: { width: 412, height: 915 },
-    hasTouch: true,
-  });
-  const desktopSitePage = await desktopSiteAndroid.newPage();
-  await desktopSitePage.addInitScript(() => {
-    Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
-      get: () => 5,
-    });
-    Object.defineProperty(Navigator.prototype, "userAgentData", {
-      get: () => ({ mobile: false, platform: "Linux", brands: [] }),
-    });
-  });
-  await desktopSitePage.goto(`${url}/?start`, {
-    waitUntil: "domcontentloaded",
-  });
-  await failed(desktopSitePage);
-  expectPane(
-    "Android Chrome, desktop site",
-    await readFailurePane(desktopSitePage),
-    {
-      status: "not on phones",
-      title: "The sandbox does not run on phones",
-      notebook: "not on phones",
-      start: true,
-      why: ["phone"],
-      reason: null,
-    },
-  );
-  await desktopSiteAndroid.close();
-
-  const phone = await browser.newContext(devices["iPhone 13"]);
-  const phonePage = await phone.newPage();
-  await phonePage.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
-  await failed(phonePage);
-  expectPane("phone", await readFailurePane(phonePage), {
-    status: "not on phones",
-    title: "The sandbox does not run on phones",
-    notebook: "not on phones",
-    start: true,
-    why: ["phone"],
-    reason: null,
-  });
-  // `?start-anyway`: the same phone gets the Start button and no refusal,
-  // for the shell alone: the note says so, and the cell has no Python.
-  await phonePage.goto(`${url}/?start-anyway`, {
-    waitUntil: "domcontentloaded",
-  });
-  await phonePage.getByTestId("start-sandbox").waitFor({ state: "visible" });
-  const anyway = await phonePage.evaluate(() => ({
-    failed: document.querySelector<HTMLElement>("#failed")!.hidden,
-    notebook: document.querySelector("#notebook-status")!.textContent,
-    note: !document.querySelector<HTMLElement>("#phone-note")!.hidden,
-  }));
-  if (
-    !anyway.failed || anyway.notebook !== "not on phones" || !anyway.note
-  ) {
-    throw new Error(`phone ?start-anyway: ${JSON.stringify(anyway)}`);
-  }
-  await phone.close();
-
   const reason = "fetch ./yurt_kernel.wasm failed: 503";
+  // Phones: each one is told apart from a tablet or a desktop, and the bare
+  // URL gains `platform=phone` before anything loads. A phone now boots,
+  // the shell only (the tablet's snapshot, or the image): a failed boot
+  // explains itself as on any device, and the cell says no Jupyter here.
+  const phones: {
+    name: string;
+    options: Parameters<typeof browser.newContext>[0];
+    init?: () => void;
+  }[] = [
+    // iPhone Safari with "Request Desktop Website" sends the Mac Safari UA,
+    // reports 5 touch points like an iPad, and lays out at 980 px; only its
+    // screen, 390 px wide, says phone (#214).
+    {
+      name: "iPhone Safari, desktop website",
+      options: {
+        userAgent: IPADOS_SAFARI_UA,
+        viewport: { width: 980, height: 1700 },
+        screen: { width: 390, height: 844 },
+        hasTouch: true,
+      },
+      init: () =>
+        Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
+          get: () => 5,
+        }),
+    },
+    // Android Chrome's "Desktop site" sends a Linux desktop UA and
+    // `userAgentData.mobile` false, and ignores the viewport meta tag, so it
+    // lays out at 980 px; its screen and coarse pointer are the phone's
+    // (Chromium: ContentUtils SetUserAgentOverride, #216).
+    {
+      name: "Android Chrome, desktop site",
+      options: {
+        userAgent: ANDROID_DESKTOP_SITE_UA,
+        viewport: { width: 980, height: 2180 },
+        screen: { width: 412, height: 915 },
+        hasTouch: true,
+      },
+      init: () => {
+        Object.defineProperty(Navigator.prototype, "maxTouchPoints", {
+          get: () => 5,
+        });
+        Object.defineProperty(Navigator.prototype, "userAgentData", {
+          get: () => ({ mobile: false, platform: "Linux", brands: [] }),
+        });
+      },
+    },
+    { name: "phone", options: devices["iPhone 13"] },
+  ];
+  for (const { name, options, init } of phones) {
+    const context = await browser.newContext(options);
+    const page = await showAllSections(await context.newPage());
+    if (init !== undefined) await page.addInitScript(init);
+    await page.route(
+      "**/yurt_kernel.wasm",
+      (route) => route.fulfill({ status: 503 }),
+    );
+    await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
+    await failed(page);
+    const seen = await page.evaluate(() => ({
+      platform: new URL(location.href).searchParams.get("platform"),
+      data: document.documentElement.dataset.platform,
+      note: !document.querySelector<HTMLElement>("#phone-note")!.hidden,
+    }));
+    if (seen.platform !== "phone" || seen.data !== "phone" || !seen.note) {
+      throw new Error(`${name}: ${JSON.stringify(seen)}`);
+    }
+    expectPane(name, await readFailurePane(page), {
+      status: "failed",
+      title: "The sandbox did not start",
+      notebook: "no sandbox",
+      start: true,
+      why: ["error"],
+      reason,
+    });
+    await context.close();
+  }
+
   const scenes = [
     { name: "tablet", tablet: true, ...devices["iPad Pro 11"] },
     // What a real iPad sends: iPadOS Safari asks for the desktop site, so
@@ -452,7 +768,7 @@ async function bootFailuresAreExplained(
     const { name, tablet, maxTouchPoints, platform, ...options } of scenes
   ) {
     const context = await browser.newContext(options);
-    const page = await context.newPage();
+    const page = await showAllSections(await context.newPage());
     // Chromium's touch emulation reports one touch point; an iPad reports 5.
     if (maxTouchPoints !== undefined) {
       await page.addInitScript((points) => {
@@ -475,6 +791,16 @@ async function bootFailuresAreExplained(
     );
     await page.goto(`${url}/?start`, { waitUntil: "domcontentloaded" });
     await failed(page);
+    // The bare URL gains the device's platform.
+    const want = tablet ? "tablet" : "desktop";
+    const seen = await page.evaluate(() => [
+      new URL(location.href).searchParams.get("platform"),
+      new URL(location.href).searchParams.has("start"),
+      document.documentElement.dataset.platform,
+    ]);
+    if (seen[0] !== want || seen[1] !== true || seen[2] !== want) {
+      throw new Error(`${name}: platform ${JSON.stringify(seen)}, not ${want}`);
+    }
     expectPane(name, await readFailurePane(page), {
       status: "failed",
       title: "The sandbox did not start",
@@ -486,8 +812,41 @@ async function bootFailuresAreExplained(
     await context.close();
   }
 
+  // `?platform=` by hand: a smaller platform is run as asked (a desktop
+  // trying the phone's page), a bigger one than the device runs the
+  // device's own and says so; neither is written away from the URL.
+  for (
+    const [name, options, asked, want, noted] of [
+      ["desktop as a phone", {}, "phone", "phone", false],
+      ["phone as a desktop", devices["iPhone 13"], "desktop", "phone", true],
+      [
+        "tablet as a desktop",
+        devices["iPad Pro 11"],
+        "desktop",
+        "tablet",
+        true,
+      ],
+    ] as const
+  ) {
+    const context = await browser.newContext(options);
+    const page = await showAllSections(await context.newPage());
+    await page.goto(`${url}/?platform=${asked}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.getByTestId("start-sandbox").waitFor({ state: "visible" });
+    const seen = await page.evaluate(() => ({
+      url: new URL(location.href).searchParams.get("platform"),
+      data: document.documentElement.dataset.platform,
+      note: !document.querySelector<HTMLElement>("#platform-note")!.hidden,
+    }));
+    if (seen.url !== asked || seen.data !== want || seen.note !== noted) {
+      throw new Error(`${name}: ${JSON.stringify(seen)}`);
+    }
+    await context.close();
+  }
+
   const context = await browser.newContext();
-  const page = await context.newPage();
+  const page = await showAllSections(await context.newPage());
   await page.goto(`${url}/`, { waitUntil: "domcontentloaded" });
   // The page reads and clears the boot memory once it has asked the host
   // whether it is the app; plant one only after that, or this load takes it
@@ -528,36 +887,39 @@ function exec(page: Page, cmd: string): Promise<Exec> {
 }
 
 /** A snapshot of YurtOS/yurt-packages as published at fa6ce22 (2026-10-25):
- * the signed index, its bundle and every package's metadata, no archives.
+ * the signed index, its bundle and every package's metadata (less
+ * yurt-greet, since removed from the repository), no archives.
  * Its bundles are the repository's placeholder text, so the guest's `pkg`
  * must refuse it; the signature check comes before the expiry check, so
  * the outcome does not depend on the date. */
 const PACKAGES_SNAPSHOT = join(repoRoot, "tests/fixtures/yurt-packages");
 
 /**
- * "Packages": install through the real control and check what the guest's
- * `pkg` made of it (src/packages.ts). Skipped on an image without `pkg` and
- * `sudo` (before the modular base image).
+ * "Packages": the real control's list, and with a repository that can
+ * install, an install through it and what the guest's `pkg` made of it
+ * (src/packages.ts). Skipped on an image without `pkg` and `sudo` (before
+ * the modular base image).
  *
  * By default the page's repository requests are answered from
- * PACKAGES_SNAPSHOT, and the install must fail closed: no network, and a
- * result that does not change when the live repository is republished.
+ * PACKAGES_SNAPSHOT (no network; terminalPkg reuses the route) and only the
+ * list is checked: the snapshot has no package to install.
  * PLAYGROUND_PKG_REPO=<dir> answers from another directory in the
  * repository's layout instead, and PLAYGROUND_PKG_LIVE=1 from the live
- * repository; both expect PLAYGROUND_PKG_NAME to install and
- * PLAYGROUND_PKG_RUN (default its name) to exit 0 after. The name defaults
- * to `yurt-greet`, the snapshot's package, and to `rtk` (run as
- * `rtk --version`) against the live repository, which no longer publishes
- * yurt-greet.
+ * repository; both install PLAYGROUND_PKG_NAME and expect
+ * PLAYGROUND_PKG_RUN (default its name) to exit 0 after. Against the live
+ * repository the name defaults to `rtk` (run as `rtk --version`); with
+ * PLAYGROUND_PKG_REPO it must be set.
  */
 async function packagesInstall(page: Page): Promise<void> {
   const live = Deno.env.get("PLAYGROUND_PKG_LIVE") === "1";
-  const name = Deno.env.get("PLAYGROUND_PKG_NAME") ??
-    (live ? "rtk" : "yurt-greet");
-  const run = Deno.env.get("PLAYGROUND_PKG_RUN") ??
-    (live && name === "rtk" ? "rtk --version" : name);
   const repo = Deno.env.get("PLAYGROUND_PKG_REPO");
   const expectInstall = live || repo !== undefined;
+  const name = Deno.env.get("PLAYGROUND_PKG_NAME") ?? (live ? "rtk" : "");
+  if (expectInstall && name === "") {
+    throw new Error("packages: PLAYGROUND_PKG_REPO needs PLAYGROUND_PKG_NAME");
+  }
+  const run = Deno.env.get("PLAYGROUND_PKG_RUN") ??
+    (live && name === "rtk" ? "rtk --version" : name);
   const image = await exec(
     page,
     "command -v pkg && command -v sudo && test -r /etc/yurt-pkg/trusted-repos.toml",
@@ -595,15 +957,66 @@ async function packagesInstall(page: Page): Promise<void> {
     );
   }
   const command = run.split(" ")[0];
-  const before = await exec(page, `command -v ${command}`);
-  if (before.code === 0) {
-    throw new Error(`packages: ${command} is there before the install`);
+  if (expectInstall) {
+    const before = await exec(page, `command -v ${command}`);
+    if (before.code === 0) {
+      throw new Error(`packages: ${command} is there before the install`);
+    }
   }
   await page.getByTestId("packages-toggle").click();
   const install = page.locator(
     `[data-testid=packages-list] button[data-package="${name}"]`,
   );
-  await install.waitFor({ timeout: 60_000 });
+  await (expectInstall
+    ? install
+    : page.locator("[data-testid=packages-list] tr[data-package]").first())
+    .waitFor({ timeout: 60_000 });
+  // The image bakes zsh into its base outside pkg, which refuses to
+  // install over it ("would overwrite unmanaged path bin/zsh"): the panel
+  // leaves it out, and the remark above the terminal names it. python-seal
+  // is left out by name (src/packages.ts NOT_LISTED).
+  const zsh = await exec(page, "test -e /bin/zsh && sudo pkg list");
+  if (zsh.code === 0 && !/^zsh /m.test(zsh.stdout)) {
+    const seen = await page.evaluate(() => {
+      const listed = (name: string) => {
+        const row = document.querySelector<HTMLElement>(
+          `[data-testid=packages-list] tr[data-package="${name}"]`,
+        );
+        return row === null ? null : row.checkVisibility();
+      };
+      return {
+        zsh: listed("zsh"),
+        pythonSeal: listed("python-seal"),
+        remark: document.querySelector("#linux-remark-text")?.textContent ??
+          "",
+      };
+    });
+    if (
+      seen.zsh !== false || seen.pythonSeal === true ||
+      !/; also zsh\b/.test(seen.remark)
+    ) {
+      throw new Error(
+        `packages: want zsh left out of the list and named in the remark, python-seal left out, got ${
+          JSON.stringify(seen)
+        }`,
+      );
+    }
+    console.log(
+      `playground e2e: Packages leaves zsh out; the remark says ${
+        JSON.stringify(seen.remark)
+      }`,
+    );
+  } else if (Deno.env.get("PLAYGROUND_REQUIRE_ARTIFACTS") === "1") {
+    throw new Error(
+      `packages: the pinned image should have an unmanaged /bin/zsh: ${
+        JSON.stringify(zsh)
+      }`,
+    );
+  }
+  if (!expectInstall) {
+    console.log("playground e2e: Packages listed the snapshot's packages");
+    return;
+  }
   await install.click();
   await page.waitForFunction(
     () => {
@@ -621,31 +1034,12 @@ async function packagesInstall(page: Page): Promise<void> {
   const isListed = listed.stdout.split("\n").some((line) =>
     line.startsWith(`${name} `)
   );
-  const after = await exec(page, `command -v ${command}`);
   const staging = await exec(
     page,
     "ls -A /var/cache/yurt-pkg/browser/staging 2>/dev/null",
   );
   if (staging.stdout.trim() !== "") {
     throw new Error(`packages: staging left behind: ${staging.stdout}`);
-  }
-  if (!expectInstall) {
-    const problems = [
-      state !== "failed" && `state ${state}`,
-      !new RegExp(`^pkg install ${name} failed: .*verification failed`)
-        .test(status) && `status ${JSON.stringify(status)}`,
-      isListed && `sudo pkg list has ${name}`,
-      after.code === 0 && `${command} is installed`,
-    ].filter(Boolean);
-    if (problems.length > 0) {
-      throw new Error(
-        `packages: the snapshot's placeholder signatures were not refused: ${
-          problems.join("; ")
-        }`,
-      );
-    }
-    console.log(`playground e2e: Packages refused ${name}: ${status}`);
-    return;
   }
   if (state !== "done" || status !== `installed ${name}` || !isListed) {
     throw new Error(
@@ -665,14 +1059,85 @@ async function packagesInstall(page: Page): Promise<void> {
   );
 }
 
+/** Type `line` into the terminal and wait for `marker` at the end of its
+ * output; what the screen then shows. */
+async function typeInTerminal(
+  page: Page,
+  line: string,
+  timeout: number,
+): Promise<string> {
+  const marker = `__PKG_${crypto.randomUUID().slice(0, 8)}__`;
+  await page.locator("#term").click();
+  await page.keyboard.type(`clear; ${line}; echo ${marker}\n`);
+  await page.waitForFunction(
+    (marker) => {
+      const rows = [
+        ...document.querySelectorAll("#term .xterm-rows > div"),
+      ].map((row) => row.textContent?.trim());
+      return rows.includes(marker);
+    },
+    marker,
+    { timeout },
+  );
+  return await page.locator("#term .xterm-rows").innerText();
+}
+
+/**
+ * The terminal's own `pkg`, through the page's relay (src/pkg_relay.ts).
+ * Against the repository snapshot (the default) `sudo pkg update` must get
+ * the index through the relay and then refuse its placeholder signature:
+ * before the relay it failed earlier, with no network ("HTTP request
+ * failed"). With PLAYGROUND_PKG_LIVE=1 it must find the index the panel's
+ * install just fetched current (one cache for both), again a second time,
+ * and install
+ * PLAYGROUND_PKG_TERMINAL_NAME (default pkgconf), which must then run.
+ */
+async function terminalPkg(page: Page): Promise<void> {
+  const live = Deno.env.get("PLAYGROUND_PKG_LIVE") === "1";
+  const update = await typeInTerminal(page, "sudo pkg update", 180_000);
+  if (update.includes("HTTP request failed")) {
+    throw new Error(`terminal pkg update had no network: ${update}`);
+  }
+  if (!live) {
+    if (!/failed to update official/.test(update)) {
+      throw new Error(`terminal pkg update: ${update}`);
+    }
+    console.log(
+      "playground e2e: terminal pkg update reached the repository and refused its placeholder signature",
+    );
+    return;
+  }
+  // The Packages panel installed through the same relay into the same
+  // cache just before: the terminal's first update finds it current.
+  if (!update.includes("official already current")) {
+    throw new Error(
+      `terminal pkg update did not share the panel's cache: ${update}`,
+    );
+  }
+  const again = await typeInTerminal(page, "sudo pkg update", 180_000);
+  if (!again.includes("official already current")) {
+    throw new Error(`terminal pkg update again: ${again}`);
+  }
+  const name = Deno.env.get("PLAYGROUND_PKG_TERMINAL_NAME") ?? "pkgconf";
+  const install = await typeInTerminal(
+    page,
+    `sudo pkg install ${name} && ${name} --version && echo installed-ok`,
+    300_000,
+  );
+  if (!install.includes("installed-ok")) {
+    throw new Error(`terminal pkg install ${name}: ${install}`);
+  }
+  console.log(`playground e2e: terminal sudo pkg install ${name} worked`);
+}
+
 if (import.meta.main) {
   await ensureBundle(
     Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel"),
   );
   const server = startPlaygroundServer(0);
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   try {
-    const page = await browser.newPage();
+    const page = await showAllSections(await browser.newPage());
     const started = Date.now();
     const csp = watchCspViolations(page);
     // The primary flow: the home page, and the one action on it.
@@ -1099,6 +1564,7 @@ if (import.meta.main) {
     }
     console.log(`playground e2e: Upload wrote 3 files (${big.length} bytes)`);
     await packagesInstall(page);
+    await terminalPkg(page);
     // The cell and the ash terminal share one VFS: a file written by Python
     // is read back by the shell in the xterm (#4).
     await page.getByTestId("notebook-input").fill(
@@ -1111,6 +1577,10 @@ if (import.meta.main) {
     );
     if (!(await page.locator("#term").isVisible())) {
       throw new Error("ash terminal is not visible");
+    }
+    // The touch key bar is for touch devices only (#273).
+    if (await page.getByTestId("term-keys").count() !== 0) {
+      throw new Error("a desktop page shows the touch key bar");
     }
     await page.locator("#term").click();
     await page.keyboard.type("cat /tmp/from-cell; echo __VFS_DONE__\n");
@@ -1132,7 +1602,9 @@ if (import.meta.main) {
     await page.close();
     await bootFailuresAreExplained(browser, server.url);
     await tabletIsShellOnly(browser, server.url);
-    await phoneAgentIsUnavailable(browser, server.url);
+    await phoneTouchKeysWork(browser, server.url);
+    await phoneAgentHasTheSandbox(browser, server.url);
+    await firefoxIsSentToItsReason(browser, server.url);
   } finally {
     await browser.close();
     await server.shutdown();

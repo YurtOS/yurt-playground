@@ -107,7 +107,11 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   assertEquals(workflow.includes("scripts/build-all-ports.sh"), false);
   assertEquals(workflow.includes("dtolnay/rust-toolchain"), false);
   assertEquals(workflow.includes('PLAYGROUND_REQUIRE_ARTIFACTS: "1"'), true);
-  assertEquals(workflow.includes("playwright/cli.js install chromium"), true);
+  // The Chromium-family scenes run the runner image's Google Chrome
+  // (scripts/browser.ts) and print its version; nothing installs Playwright's
+  // Chromium for them.
+  assertEquals(workflow.includes("run: google-chrome --version"), true);
+  assertEquals(workflow.includes("playwright/cli.js install chromium"), false);
   // WebKit runs in Playwright's image for the pinned version, not from an
   // apt install of its system libraries (32 min at ~60 kB/s on #246).
   assertEquals(workflow.includes("--with-deps"), false);
@@ -137,10 +141,11 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   const control = /^ {8}(?:id|continue-on-error|if): .*$/gm;
   assertEquals(installs[0].match(control), [
     "        id: install",
+    "        if: matrix.scene == 'webkit'",
     "        continue-on-error: true",
   ]);
   assertEquals(installs[1].match(control), [
-    "        if: steps.install.outcome == 'failure'",
+    "        if: matrix.scene == 'webkit' && steps.install.outcome == 'failure'",
   ]);
   const body = (step: string) =>
     step.split("\n").slice(1).filter((line) =>
@@ -172,8 +177,10 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
     );
   }
   // ...and the converse: an e2e file nobody put in the matrix would never
-  // run here. `desktop_e2e.ts` is release-desktop.yml's, by name, and
-  // `agent_webgpu_e2e.ts` needs a GPU and Safari: it runs on a Mac.
+  // run here. `desktop_e2e.ts` is release-desktop.yml's, by name,
+  // `agent_webgpu_e2e.ts` needs a GPU and Safari, and `agent_demo_e2e.ts`
+  // a GPU and the real weights: they run on a Mac. `network_e2e.ts` needs
+  // the internet (curl and pip through a local relay, #380).
   const e2eFiles: string[] = [];
   for await (const entry of Deno.readDir(testsDir)) {
     if (entry.isFile && entry.name.endsWith("_e2e.ts")) {
@@ -182,13 +189,55 @@ Deno.test("CI fetches the pinned kernel wasm and playground image for integratio
   }
   assertEquals(
     e2eFiles.filter((s) =>
-      s !== "desktop" && s !== "agent_webgpu" && !scenes.includes(s)
+      s !== "desktop" && s !== "agent_webgpu" && s !== "agent_demo" &&
+      s !== "network" &&
+      !scenes.includes(s)
     ),
     [],
     "an e2e scene exists that no acceptance job runs",
   );
   // The notebook interface is accepted too -- its own job since #123.
   assertEquals(scenes.includes("jupyterlite"), true);
+  // The merge tier (yurt-sandbox#367) names scenes from that list: a typo or
+  // a renamed scene would make the exclude match nothing, and the slow leg
+  // would run on every pull request again. It leaves some scene on a pull
+  // request, and the label and the trigger that bring the rest back exist.
+  const mergeTier =
+    workflow.match(/MERGE_TIER: (.+)/)?.[1].trim().split(/\s+/) ??
+      [];
+  assertEquals(mergeTier.length > 0, true, "no MERGE_TIER in ci.yml");
+  assertEquals(
+    mergeTier.filter((s) => !scenes.includes(s)),
+    [],
+    `MERGE_TIER names scenes the matrix lacks: ${mergeTier}`,
+  );
+  assertEquals(scenes.some((s) => !mergeTier.includes(s)), true);
+  assertEquals(
+    workflow.includes(
+      "exclude: ${{ fromJSON(needs.checks.outputs.exclude) }}",
+    ),
+    true,
+  );
+  // Read when the run starts, not from the event (#276).
+  assertEquals(
+    workflow.includes(
+      'gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/labels"',
+    ),
+    true,
+  );
+  assertEquals(workflow.includes("grep -qx 'ci:full' <<< \"$labels\""), true);
+  assertEquals(
+    workflow.includes("types: [opened, synchronize, reopened, labeled]"),
+    true,
+  );
+  // Each push to main gets its own concurrency group: in a shared one a newer
+  // waiting run replaces the older, and that merge's merge tier never runs.
+  assertEquals(
+    workflow.includes(
+      "group: ci-${{ github.ref }}${{ github.event_name == 'push' && format('-{0}', github.sha) || '' }}",
+    ),
+    true,
+  );
   // Browser acceptance is a required step, not a repository-variable opt-in:
   // it is the only check that proves the deployed pages boot the sandbox.
   assertEquals(workflow.includes("YURT_JUPYTER_E2E"), false);
@@ -251,19 +300,26 @@ Deno.test("workflows authenticate every private sibling checkout", async () => {
   // The default GITHUB_TOKEN cannot read a *different* private repository, so
   // each YurtOS sibling checkout needs an explicit token. Without one the job
   // dies at "remote: Repository not found" before any step runs.
-  for (const file of ["ci.yml", "deploy-pages.yml", "release-desktop.yml"]) {
+  for (
+    const file of [
+      "ci.yml",
+      "deploy-pages.yml",
+      "preview-gh-pages.yml",
+      "release-desktop.yml",
+    ]
+  ) {
     const workflow = await workflowSource(file);
     const siblings = workflow.match(/repository: YurtOS\/\S+/g) ?? [];
     assertEquals(siblings.length > 0, true, `${file} checks out no sibling`);
     // The composite takes the token as its input and hands it to its
-    // checkouts; the callers pass KERNEL_CHECKOUT_TOKEN.
+    // checkouts; the callers pass REPO_READ_TOKEN.
     const tokens = (workflow.match(
-      /token: \$\{\{ (secrets\.KERNEL_CHECKOUT_TOKEN|inputs\.token) \}\}/g,
+      /token: \$\{\{ (secrets\.REPO_READ_TOKEN|inputs\.token) \}\}/g,
     ) ?? []).filter((t) => t.includes("inputs.token"));
     assertEquals(
-      workflow.includes("token: ${{ secrets.KERNEL_CHECKOUT_TOKEN }}"),
+      workflow.includes("token: ${{ secrets.REPO_READ_TOKEN }}"),
       true,
-      `${file} passes no KERNEL_CHECKOUT_TOKEN to the site inputs`,
+      `${file} passes no REPO_READ_TOKEN to the site inputs`,
     );
     assertEquals(
       tokens.length,
@@ -278,7 +334,14 @@ Deno.test("the site workflows fetch the pinned blobs, none builds them", async (
   // image needs the guest toolchain plus hours of port builds, so a workflow
   // that rebuilt either could never satisfy artifacts/pins.json. All consume
   // the published releases through the same script.
-  for (const file of ["ci.yml", "deploy-pages.yml", "release-desktop.yml"]) {
+  for (
+    const file of [
+      "ci.yml",
+      "deploy-pages.yml",
+      "preview-gh-pages.yml",
+      "release-desktop.yml",
+    ]
+  ) {
     const workflow = await workflowSource(file);
     assertEquals(
       workflow.includes("scripts/install-pinned-artifacts.sh"),
@@ -336,26 +399,37 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
     html.includes('href="https://github.com/YurtOS/yurt-playground"'),
     true,
   );
-  // The release notes live on GitHub Pages; the header nav and the footer
+  // The release notes live on GitHub Pages; the sidebar and the footer
   // both link there.
   const notes = "https://yurtos.github.io/yurt-playground/";
-  const nav = html.match(/<nav aria-label="interfaces">([\s\S]*?)<\/nav>/)
+  const nav = html.match(
+    /<nav class="links" aria-label="about this site">([\s\S]*?)<\/nav>/,
+  )
     ?.[1] ?? "";
   const navLinks = [...nav.matchAll(/<a\s([^>]*)>([^<]*)<\/a>/g)];
   assertEquals(navLinks.map((link) => link[2]), [
-    "Notebook",
-    "JupyterLab",
     "Release notes",
     "Source",
   ]);
-  const navNotes = navLinks[2][1];
+  const navNotes = navLinks[0][1];
   assertEquals(navNotes.includes(`href="${notes}"`), true);
   assertEquals(navNotes.includes('data-testid="release-notes-link"'), true);
-  const footer = html.match(/<footer>([\s\S]*?)<\/footer>/)?.[1] ?? "";
+  const footer = html.match(/<footer[^>]*>([\s\S]*?)<\/footer>/)?.[1] ?? "";
   const footerNotes = footer.match(
     /<a\s([^>]*data-testid="footer-release-notes"[^>]*)>/,
   )?.[1] ?? "";
   assertEquals(footerNotes.includes(`href="${notes}"`), true);
+  // The images ship GPL, LGPL and MPL programs (BusyBox, Git, make, ...);
+  // the footer points at the release that carries their source and the
+  // third-party license list.
+  const footerSources = footer.match(
+    /<a\s([^>]*data-testid="footer-third-party"[^>]*)>([^<]*)<\/a>/,
+  );
+  assertEquals(footerSources?.[2], "Third-party licenses and source");
+  assertMatch(
+    footerSources?.[1] ?? "",
+    /href="https:\/\/github\.com\/YurtOS\/yurt-playground\/releases\/tag\/gpl-sources-playground-[^"]+"/,
+  );
   // verify.js finds the two links and the train label by these ids.
   assertEquals(navNotes.includes('id="release-notes-link"'), true);
   assertEquals(footerNotes.includes('id="footer-release-notes"'), true);
@@ -384,26 +458,18 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
       .includes("integrity.json"),
     true,
   );
-  // Tablets get a note; phones and a boot that dies get the explanation.
+  // Tablets and phones get a note; a boot that dies gets the explanation.
   assertEquals(html.includes('data-testid="mobile-note"'), true);
+  assertEquals(html.includes('data-testid="phone-note"'), true);
   assertEquals(html.includes('data-testid="boot-failed"'), true);
-  for (const why of ["phone", "tablet", "reloaded", "error"]) {
+  for (const why of ["tablet", "reloaded", "error"]) {
     assertEquals(html.includes(`data-why="${why}"`), true, why);
   }
-  // The phone refusal names its way out, and states no stale measurement.
+  // A phone boots (the tablet's snapshot): no refusal pane is left for it.
+  assertEquals(html.includes('data-why="phone"'), false);
   assertEquals(html.includes('id="failed-title"'), true);
-  assertEquals(html.includes('href="./?start-anyway"'), true);
   assertEquals(html.includes("around a gigabyte"), false);
-  // The slim boot: a phone that starts anyway gets the shell and a note
-  // instead of Python, and the refusal tells no story of the old full-image
-  // boot ("starting Jupyter"). The intro says Python comes on its own.
-  assertEquals(html.includes('data-testid="phone-note"'), true);
-  const phonePane = html.slice(
-    html.indexOf('data-why="phone"'),
-    html.indexOf("</p>", html.indexOf('data-why="phone"')),
-  );
-  assertEquals(phonePane.includes("starting Jupyter"), false);
-  assertEquals(/Notebook\s+and\s+JupyterLab/.test(phonePane), true);
+  // The intro says Python comes on its own.
   assertEquals(html.includes("when the sandbox's image has Python"), false);
   const unsupported = await Deno.readTextFile(
     new URL("../public/unsupported.html", import.meta.url),
@@ -414,7 +480,7 @@ Deno.test("home page offers the Notebook, JupyterLab, the source and the proof",
 
 Deno.test("the page's instructions hold outside Chrome and without a token", async () => {
   // yurt-playground#154: `yurt pull` reads a public release now, and the
-  // proof is read in Safari and Firefox as well.
+  // proof is read in Edge and Safari as well.
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
   );
@@ -425,9 +491,58 @@ Deno.test("the page's instructions hold outside Chrome and without a token", asy
     html.indexOf("</details>", html.indexOf('data-testid="proof"')),
   );
   assertEquals(proof.includes("in Chrome."), false, "Chrome-only timing");
-  for (const browser of ["Chrome", "Safari", "Firefox"]) {
+  for (const browser of ["Chrome", "Edge", "Safari"]) {
     assertEquals(proof.includes(browser), true, `the proof names ${browser}`);
   }
+});
+
+Deno.test("no page claims Firefox, and the home page sends it to its reason", async () => {
+  // The owner, 2026-11-18: Firefox is not supported (the sandbox's workers
+  // never signal ready there).
+  const read = (path: string) =>
+    Deno.readTextFile(new URL(`../${path}`, import.meta.url));
+  assertEquals(/firefox/i.test(await read("public/index.html")), false);
+  const unsupported = await read("public/unsupported.html");
+  assertEquals(unsupported.includes('<p id="firefox"'), true);
+  assertEquals(unsupported.includes("Firefox is not supported"), true);
+  // It names the browsers to use instead.
+  assertMatch(
+    unsupported,
+    /Chrome or Edge on a desktop, or in\s+Safari on a Mac, iPhone or iPad/,
+  );
+  assertEquals(
+    (await read("src/page.ts")).includes("./unsupported.html#firefox"),
+    true,
+  );
+});
+
+Deno.test("the start screen offers Python, Go or Playwright, hidden until the page shows it", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const start = html.match(/<div id="start">[\s\S]*?<\/fieldset>/)?.[0] ?? "";
+  const fieldset = start.match(/<fieldset\b[\s\S]*?>/)?.[0] ?? "";
+  assertEquals(fieldset.includes('id="env-choice"'), true, fieldset);
+  // Shown only by a desktop browser's page (src/page.ts), never on a phone
+  // or tablet; Go's choice once Go's snapshot is pinned.
+  assertEquals(/\bhidden\b/.test(fieldset), true, fieldset);
+  const radios = [...start.matchAll(/<input\b[\s\S]*?>/g)]
+    .map((m) => m[0])
+    .filter((tag) => tag.includes('type="radio"'));
+  assertEquals(radios.length, 3, `expected three choices: ${radios.length}`);
+  const value = (tag: string) => tag.match(/\bvalue="([^"]*)"/)?.[1];
+  assertEquals(radios.map(value), ["python", "go", "playwright"]);
+  // Python is the default.
+  assertEquals(/\bchecked\b/.test(radios[0]), true);
+  assertEquals(radios.slice(1).some((r) => /\bchecked\b/.test(r)), false);
+  const page = await Deno.readTextFile(
+    new URL("../src/page.ts", import.meta.url),
+  );
+  assertEquals(page.includes('platform === "desktop"'), true);
+  // Go's choice starts hidden and shows once the pins name its snapshot.
+  assertEquals(page.includes("pins?.goSnapshot !== undefined"), true);
+  const go = start.match(/<label\b[^>]*>(?=<input[^>]*value="go")/)?.[0] ?? "";
+  assertEquals(/\bhidden\b/.test(go), true, go);
 });
 
 Deno.test("every install choice has an accessible name of its own", async () => {
@@ -645,9 +760,10 @@ Deno.test("deployment workflow publishes an isolated static site", async () => {
 });
 
 Deno.test("every workflow restricts its token to reading the repository", async () => {
-  // Nothing here pushes or writes to the repository, and a public repository
-  // runs these on pull requests from strangers. The cross-repo and Cloudflare
-  // credentials are named secrets, not the workflow token.
+  // A public repository runs these on pull requests from strangers. The
+  // cross-repo and Cloudflare credentials are named secrets, not the workflow
+  // token. A job that writes asks for it itself: the desktop release, and
+  // the GitHub Pages preview's publishing jobs, and no other.
   for (
     const entry of Deno.readDirSync(
       new URL("../.github/workflows", import.meta.url),
@@ -661,5 +777,141 @@ Deno.test("every workflow restricts its token to reading the repository", async 
       true,
       `${entry.name} does not restrict the workflow token to contents: read`,
     );
+    const writers = [...workflow.matchAll(
+      /\n {2}([\w-]+):\n(?: {4}.*\n|\n)*? {6}contents: write\n/g,
+    )].map((match) => match[1]);
+    assertEquals(
+      writers,
+      ({
+        "preview-gh-pages.yml": ["publish", "remove"],
+        "release-desktop.yml": ["release"],
+      } as Record<string, string[]>)[entry.name] ?? [],
+      `${entry.name}: jobs that write to the repository`,
+    );
   }
+});
+
+Deno.test("the GitHub Pages preview writes only from jobs that run none of the branch's code", async () => {
+  // A branch's code runs in the build job, with a read-only token; the jobs
+  // that push to gh-pages check out only the publish script, from the
+  // commit the workflow was dispatched from.
+  const workflow = await Deno.readTextFile(
+    new URL("../.github/workflows/preview-gh-pages.yml", import.meta.url),
+  );
+  const jobs = workflow.split(/\n {2}(?=[\w-]+:\n)/);
+  for (const name of ["publish", "remove"]) {
+    const job = jobs.find((text) => text.startsWith(`${name}:`));
+    assertEquals(job !== undefined, true, name);
+    assertEquals(job!.includes("needs.target.outputs.ref"), false, name);
+    assertEquals(job!.includes("deno"), false, name);
+    assertEquals(
+      job!.includes("sparse-checkout: scripts/gh-pages-preview/publish.sh"),
+      true,
+      name,
+    );
+  }
+});
+
+Deno.test("the Density view names the machine and the build its numbers come from", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  assertEquals(html.includes('data-view-button="density"'), true);
+  // deno fmt wraps long tags as `<code\n>yurt</code>`.
+  const flat = html.replace(/\s+/g, " ").replaceAll("<code >", "<code>");
+  assertEquals(/id="density"[^>]*data-view="density"/.test(flat), true);
+  const start = flat.indexOf('id="density"');
+  const density = flat.slice(start, flat.indexOf("</details>", start));
+  // A density claim without its machine and build would read as a promise.
+  for (
+    const fact of [
+      "t2a-standard-8",
+      "Arm (aarch64)",
+      "development build",
+      "not from the current <code>yurt</code> download",
+      "YURT_SHARED_IMAGE_LOWER=1",
+      "opt-in",
+      "Today it only warns",
+    ]
+  ) {
+    assertEquals(density.includes(fact), true, fact);
+  }
+});
+
+Deno.test("the partner section is in About and gives an email to write to", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  assertEquals(html.includes('data-view-button="about"'), true);
+  assertEquals(
+    /id="partner"[^>]*data-view="about"/.test(html.replace(/\s+/g, " ")),
+    true,
+  );
+  const start = html.indexOf('id="partner"');
+  assertEquals(start > html.indexOf("</details>"), true, "below the strips");
+  const partner = html.slice(start, html.indexOf("</section>", start));
+  assertEquals(partner.includes("Help bring Yurt to customers"), true);
+  // deno fmt wraps long anchors as `<a href="…"\n>text</a>`.
+  const prose = partner.replace(/\s+/g, " ").replaceAll(" >", ">");
+  assertEquals(
+    prose.includes(
+      "We're looking for a business partner to help identify customer opportunities, build relationships, and bring Yurt to market.",
+    ),
+    true,
+  );
+  // A stranger can write to Ofer directly (GitHub has no private messages).
+  assertEquals(
+    prose.includes(
+      'Contact Ofer at <a href="mailto:ofersa@gmail.com">ofersa@gmail.com</a>, or <a href="https://github.com/smarcd">Sunny</a> on GitHub.',
+    ),
+    true,
+  );
+  // That is the page's only email address.
+  assertEquals(html.match(/mailto:/g)?.length, 1, "one mailto link");
+  assertEquals(
+    html.match(/[a-z0-9._%+-]+@[a-z0-9-]+\.[a-z]{2,}/gi),
+    ["ofersa@gmail.com", "ofersa@gmail.com"],
+    "the only email address",
+  );
+  assertEquals(start < html.indexOf("<footer"), true, "before the footer");
+  const footer = html.slice(
+    html.indexOf("<footer"),
+    html.indexOf("</footer>"),
+  );
+  assertEquals(/License:\s*<a[^>]*>Apache-2\.0<\/a>/.test(footer), true);
+});
+
+Deno.test("the home page carries its link-preview tags and their image", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  for (
+    const tag of [
+      'name="description"',
+      'rel="canonical"',
+      'property="og:title"',
+      'property="og:description"',
+      'property="og:image"',
+      'name="twitter:card"',
+    ]
+  ) {
+    assertEquals(html.includes(tag), true, tag);
+  }
+  const image = await Deno.stat(
+    new URL("../public/og-image.jpg", import.meta.url),
+  );
+  assertEquals(image.size < 200_000, true, `og-image.jpg is ${image.size} B`);
+  const build = await Deno.readTextFile(
+    new URL("../scripts/build-static.ts", import.meta.url),
+  );
+  assertEquals(build.includes('"og-image.jpg"'), true);
+});
+
+Deno.test("the start screen links the bridge extension's zip, to download", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  const link = html.match(/<a\b[^>]*data-testid="bridge-zip"[^>]*>/)?.[0] ?? "";
+  assertEquals(/href="\.\/yurt-browser-bridge\.zip"/.test(link), true, link);
+  assertEquals(/\bdownload\b/.test(link), true, link);
 });

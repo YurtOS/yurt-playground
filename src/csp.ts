@@ -10,13 +10,33 @@
  * every page: the packages the sandbox installs come from the one
  * repository path YurtOS/yurt-packages ({@link PACKAGE_SOURCES},
  * src/packages.ts) -- on the slim image the Notebook and Lab pages install
- * Python from there before their kernel starts. Scripts come from the origin
+ * Python from there before their kernel starts, and the terminal's own
+ * `pkg` fetches through the page's relay (src/pkg_relay.ts). Outside JupyterLite only:
+ * uploaded sandbox snapshots (`?snapshot=<id>`) come from the one
+ * repository path YurtOS/yurt-playground ({@link SNAPSHOT_SOURCE}), once
+ * the GitHub API's list of its snapshot refs ({@link SNAPSHOT_REFS_API})
+ * says the repository published them (src/snapshot_source.ts). On the
+ * deployed site only, once its token is set: the Cloudflare Web Analytics
+ * beacon's script and report endpoint (src/web_analytics.ts). On every
+ * page, once src/network_config.ts names one: the network relay, which the
+ * sandbox's connections go through when its user turns the network on,
+ * and Turnstile's script and frame, which a token needs. That is no way
+ * out for notebook output: no output runs script in the page (HTML renders
+ * in a sandboxed frame without scripts, JavaScript output is off), and a
+ * token grants only the relay's public ports, never the host. Scripts come from the origin
  * plus the inline bootstraps JupyterLite emits in its index pages, allowed
  * by hash; the WebAssembly kernel needs `'wasm-unsafe-eval'`. Styles allow
  * inline because JupyterLab sets them everywhere.
  */
 
 import { PACKAGE_SOURCES } from "./packages.ts";
+import { SNAPSHOT_REFS_API, SNAPSHOT_SOURCE } from "./snapshot_source.ts";
+import { BEACON_REPORT_ORIGIN, BEACON_SCRIPT_ORIGIN } from "./web_analytics.ts";
+import {
+  CONFIGURED_RELAY,
+  relaySources,
+  TURNSTILE_ORIGIN,
+} from "./network_config.ts";
 
 const INLINE_SCRIPT = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
 
@@ -66,9 +86,15 @@ export type CspOptions = {
    * validators with `new Function`; only the JupyterLite pages get this.
    */
   allowEval?: boolean;
-  /** No model download: `connect-src` is the origin and the packages
-   * repository's path only. */
+  /** No model, downloaded or local, and no uploaded snapshot: `connect-src` is the
+   * origin, the packages repository's path and the network relay only. */
   sameOriginOnly?: boolean;
+  /** The deployed site's Cloudflare Web Analytics beacon
+   * (src/web_analytics.ts): its script and its report endpoint. */
+  webAnalytics?: boolean;
+  /** The network relay's origin; the configured one when unset, none when
+   * null. */
+  networkRelay?: string | null;
 };
 
 export function contentSecurityPolicy(options: CspOptions = {}): string {
@@ -76,8 +102,12 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
     "'self'",
     "'wasm-unsafe-eval'",
     ...(options.allowEval ? ["'unsafe-eval'"] : []),
+    ...(options.webAnalytics ? [BEACON_SCRIPT_ORIGIN] : []),
+    // The relay's Turnstile check (src/network_toggle.ts).
+    ...(relayFor(options) === undefined ? [] : [TURNSTILE_ORIGIN]),
     ...(options.scriptHashes ?? []),
   ].join(" ");
+  const relay = relayFor(options);
   return [
     "default-src 'self'",
     `script-src ${script}`,
@@ -88,15 +118,53 @@ export function contentSecurityPolicy(options: CspOptions = {}): string {
     [
       "connect-src 'self'",
       ...(options.sameOriginOnly ? [] : MODEL_ORIGINS),
+      // The agent's remote models (src/openrouter.ts).
+      ...(options.sameOriginOnly ? [] : ["https://openrouter.ai"]),
       ...PACKAGE_SOURCES,
+      ...(options.sameOriginOnly ? [] : [SNAPSHOT_SOURCE, SNAPSHOT_REFS_API]),
+      ...(options.webAnalytics ? [BEACON_REPORT_ORIGIN] : []),
+      ...(relay === undefined ? [] : relaySources(relay)),
+      // Turnstile's script, when a service worker fetches it for the page
+      // (JupyterLite's does: its own fetch answers to this directive).
+      ...(relay === undefined ? [] : [TURNSTILE_ORIGIN]),
     ].join(" "),
     "worker-src 'self'",
-    "frame-src 'none'",
+    // Turnstile's challenge frame, with a relay; nothing else frames.
+    relay === undefined ? "frame-src 'none'" : `frame-src ${TURNSTILE_ORIGIN}`,
     "object-src 'none'",
     "base-uri 'none'",
     "form-action 'none'",
     "frame-ancestors 'none'",
   ].join("; ");
+}
+
+/** The relay the policy admits: the configured one, unless null. */
+function relayFor(options: CspOptions): string | undefined {
+  if (options.networkRelay === null) return undefined;
+  return options.networkRelay ?? CONFIGURED_RELAY;
+}
+
+/** `policy` (one CSP header value) with `relay` and Turnstile admitted, as
+ * {@link contentSecurityPolicy} admits a configured one, for a server that
+ * runs one of its own (tests/network_e2e.ts). */
+export function withRelay(policy: string, relay: string): string {
+  return policy.split("; ").map((part) =>
+    part.startsWith("connect-src ")
+      ? [part, ...relaySources(relay)].join(" ")
+      : part.startsWith("script-src ")
+      ? `${part} ${TURNSTILE_ORIGIN}`
+      : part === "frame-src 'none'"
+      ? `frame-src ${TURNSTILE_ORIGIN}`
+      : part
+  ).join("; ");
+}
+
+/** The sources of directive `name` in `policy` (one CSP header value). */
+export function cspSources(policy: string, name: string): string[] {
+  const found = policy.split(";").map((part) => part.trim().split(/\s+/))
+    .find(([directive]) => directive === name);
+  if (found === undefined) throw new Error(`no ${name} in ${policy}`);
+  return found.slice(1);
 }
 
 /** The path prefix whose documents get the JupyterLab allowances. */
@@ -119,12 +187,14 @@ export function documentPolicy(
  * Cloudflare Pages `_headers`: a site-wide isolation + strict CSP rule, and a
  * JupyterLite rule that detaches the strict policy before adding its own
  * (Pages joins repeated headers with a comma, which would stack both
- * policies and keep the eval refusal).
+ * policies and keep the eval refusal). `webAnalytics` admits the beacon
+ * in the site rule only; the JupyterLite pages do not carry it.
  */
 export function headersFile(
   isolation: Record<string, string>,
   siteScriptHashes: string[],
   jupyterScriptHashes: string[],
+  webAnalytics = false,
 ): string {
   const lines = ["/*"];
   for (const [name, value] of Object.entries(isolation)) {
@@ -132,7 +202,7 @@ export function headersFile(
   }
   lines.push(
     `  Content-Security-Policy: ${
-      contentSecurityPolicy({ scriptHashes: siteScriptHashes })
+      contentSecurityPolicy({ scriptHashes: siteScriptHashes, webAnalytics })
     }`,
   );
   lines.push(`${JUPYTER_PREFIX}*`);

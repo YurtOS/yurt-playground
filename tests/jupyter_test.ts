@@ -4,19 +4,40 @@ import {
   JUPYTER_LOG_FILE,
   JUPYTER_PID_FILE,
 } from "../src/jupyter.ts";
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   connectJupyterWithRetries,
   executeCell,
   hushUntil,
   interruptKernel,
+  restartGuestKernel,
+  STACK_OVERFLOW_LAUNCHES,
   startGuestKernel,
 } from "../src/jupyter.ts";
+import { kernelFailureDropsLayer } from "../src/coordinator_start.ts";
+import type { WaitStatus } from "../src/executions.ts";
 import type { JupyterMessage } from "../src/jupyter_protocol.ts";
 import type {
   JupyterChannel,
   JupyterTransport,
 } from "../src/jupyter_transport.ts";
+
+/** The connection file ipykernel writes for a launch line: it echoes the
+ * `--Session.key` it was given. */
+function connectionFile(launchLine: string, key?: string): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify({
+    shell_port: 1,
+    iopub_port: 2,
+    stdin_port: 3,
+    control_port: 4,
+    hb_port: 5,
+    key: key ?? launchLine.match(/--Session\.key=(\S+)/)?.[1] ??
+      (() => {
+        throw new Error(`no --Session.key in launch line: ${launchLine}`);
+      })(),
+    transport: "tcp",
+  }));
+}
 
 Deno.test("executeCell collects standard Jupyter stream, result, and reply messages", async () => {
   let listener:
@@ -251,15 +272,6 @@ Deno.test("a session that can read guest files polls the connection file instead
   const typed: string[] = [];
   const spawned: string[] = [];
   let reads = 0;
-  const connection = JSON.stringify({
-    shell_port: 1,
-    iopub_port: 2,
-    stdin_port: 3,
-    control_port: 4,
-    hb_port: 5,
-    key: "k",
-    transport: "tcp",
-  });
   const session = {
     terminal: {
       write(bytes: Uint8Array) {
@@ -275,7 +287,7 @@ Deno.test("a session that can read guest files polls the connection file instead
       reads += 1;
       // The file appears on the third look, as ipykernel writes it late.
       if (path === JUPYTER_CONNECTION_FILE && reads >= 3) {
-        return Promise.resolve(new TextEncoder().encode(connection));
+        return Promise.resolve(connectionFile(spawned[0]));
       }
       return Promise.resolve(undefined);
     },
@@ -587,23 +599,16 @@ Deno.test("a kernel process the host failed to run is not reported as an exit", 
 });
 
 Deno.test("a kernel that wrote its connection file and then exited still gets it read", async () => {
-  const connection = JSON.stringify({
-    shell_port: 1,
-    iopub_port: 2,
-    stdin_port: 3,
-    control_port: 4,
-    hb_port: 5,
-    key: "k",
-    transport: "tcp",
-  });
+  let launched = "";
   const session = {
     terminal: { write: () => Promise.resolve() },
-    spawn: () => Promise.resolve({ exited: Promise.resolve(0) }),
+    spawn: (line: string) => {
+      launched = line;
+      return Promise.resolve({ exited: Promise.resolve(0) });
+    },
     readFile: (path: string) =>
       Promise.resolve(
-        path === JUPYTER_CONNECTION_FILE
-          ? new TextEncoder().encode(connection)
-          : undefined,
+        path === JUPYTER_CONNECTION_FILE ? connectionFile(launched) : undefined,
       ),
     dialSandboxPort: () => {
       throw new Error("the transport is not dialed in this test");
@@ -620,4 +625,337 @@ Deno.test("a kernel that wrote its connection file and then exited still gets it
     Error,
     "did not become ready",
   );
+});
+
+/** How a launch ends in `launchingSession`: an exit before the connection
+ * file (a host number, a wait status, or nothing at all), or `"ready"` --
+ * the file is written and the kernel keeps running. */
+type LaunchEnd = number | WaitStatus | undefined | "ready";
+
+/** A session whose kernel launches end as `ends[n]` (the last one
+ * repeats); the dial is not made. Records when each launch was spawned,
+ * what was typed into the user's shell, and every spawned line in order. */
+function launchingSession(ends: LaunchEnd[]) {
+  const handlers = new Set<(bytes: Uint8Array) => void>();
+  const spawnedAt: number[] = [];
+  const typed: string[] = [];
+  const spawned: string[] = [];
+  let current: LaunchEnd = 0;
+  return {
+    get launches() {
+      return spawnedAt.length;
+    },
+    spawnedAt,
+    typed,
+    spawned,
+    terminal: {
+      write(bytes: Uint8Array) {
+        typed.push(new TextDecoder().decode(bytes));
+        // The stop line (after a failed launch, and before a restart)
+        // ends with an echo marker.
+        const marker = new TextDecoder().decode(bytes).match(
+          /echo (YURT_SHELL_DONE_)""(\w+)/,
+        );
+        if (marker !== null) {
+          const reply = new TextEncoder().encode(
+            `${marker[1]}${marker[2]}\n$ `,
+          );
+          for (const handler of handlers) handler(reply);
+        }
+        return Promise.resolve();
+      },
+    },
+    spawn: (line: string) => {
+      spawned.push(line);
+      // Not a launch: a cleanup line ends at once.
+      if (!line.includes("ipykernel_launcher")) {
+        return Promise.resolve({ exited: Promise.resolve(0) });
+      }
+      current = ends[Math.min(spawnedAt.length, ends.length - 1)];
+      spawnedAt.push(performance.now());
+      return Promise.resolve({
+        exited: current === "ready"
+          ? new Promise<never>(() => {})
+          : Promise.resolve(current),
+      });
+    },
+    readFile: (path: string) =>
+      Promise.resolve(
+        path === JUPYTER_CONNECTION_FILE && current === "ready"
+          ? connectionFile(spawned.at(-1) ?? "")
+          : path === JUPYTER_LOG_FILE
+          ? new TextEncoder().encode("Segmentation fault\n")
+          : undefined,
+      ),
+    dialSandboxPort: (): never => {
+      throw new Error("the transport is not dialed in this test");
+    },
+    onOutput(handler: (bytes: Uint8Array) => void) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+  };
+}
+
+const SAFARI_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
+  "(KHTML, like Gecko) Version/27.2 Safari/605.1.15";
+const CHROME_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+/** Past the launch, a test that never dials stops at the first try. */
+const NO_DIAL = { attempts: 1, delayMs: 1 };
+/** Safari, with no wait between launches. */
+const ON_JSC = { pollMs: 1, userAgent: SAFARI_UA, relaunchDelayMs: 0 };
+
+Deno.test("on JavaScriptCore a kernel that dies of a stack overflow (exit 139) is launched again", async () => {
+  const session = launchingSession([139, "ready"]);
+  const relaunches: number[] = [];
+  // Past the relaunch: the dial is where this one stops.
+  await assertRejects(
+    () =>
+      startGuestKernel(session, undefined, {
+        ...ON_JSC,
+        connect: NO_DIAL,
+        relaunching: (launch) => relaunches.push(launch),
+      }),
+    Error,
+    "did not become ready",
+  );
+  assertEquals(session.launches, 2);
+  assertEquals(relaunches, [2]);
+});
+
+Deno.test("on JavaScriptCore a SIGSEGV as a wait status (code 139, or signal 11) is the same stack overflow", async () => {
+  const signalled: WaitStatus = { code: null, signal: 11, coreDumped: true };
+  const coded: WaitStatus = { code: 139, signal: null, coreDumped: false };
+  for (const exit of [signalled, coded]) {
+    const session = launchingSession([exit, "ready"]);
+    await assertRejects(
+      () =>
+        startGuestKernel(session, undefined, { ...ON_JSC, connect: NO_DIAL }),
+      Error,
+      "did not become ready",
+    );
+    assertEquals(session.launches, 2, JSON.stringify(exit));
+  }
+});
+
+Deno.test("stack-overflow relaunches stop after STACK_OVERFLOW_LAUNCHES launches, and the Python layer goes", async () => {
+  const session = launchingSession([139]);
+  const relaunches: number[] = [];
+  const error = await assertRejects(
+    () =>
+      startGuestKernel(session, undefined, {
+        ...ON_JSC,
+        relaunching: (launch) => relaunches.push(launch),
+      }),
+    Error,
+    "exited before writing its connection file (exit 139)",
+  );
+  assertEquals(session.launches, STACK_OVERFLOW_LAUNCHES);
+  assertEquals(
+    relaunches,
+    Array.from({ length: STACK_OVERFLOW_LAUNCHES - 1 }, (_, i) => i + 2),
+  );
+  // Every launch died: a broken native extension in the layer looks the
+  // same as the browser's stack, so the layer goes and the next visit
+  // installs afresh -- the safe direction.
+  assertEquals(
+    kernelFailureDropsLayer({
+      type: "error",
+      message: `Jupyter did not start: ${error.message}`,
+    }),
+    true,
+  );
+});
+
+Deno.test("a launch that exited is cleared up without typing into the user's shell", async () => {
+  const session = launchingSession([139, "ready"]);
+  await assertRejects(
+    () => startGuestKernel(session, undefined, { ...ON_JSC, connect: NO_DIAL }),
+    Error,
+    "did not become ready",
+  );
+  // A half-typed command or a REPL at the prompt would get a typed line.
+  assertEquals(session.typed, []);
+  // Nothing is alive to kill (its pid may be another process's by now):
+  // the files go, before the next launch.
+  assertEquals(session.spawned.length, 3);
+  const [first, clear, second] = session.spawned;
+  // A relaunch is a new launch: same line, but under a fresh key.
+  const withoutKey = (line: string) =>
+    line.replace(/--Session\.key=\S+/, "--Session.key=K");
+  assert(first.includes("ipykernel_launcher"));
+  assertEquals(withoutKey(second), withoutKey(first));
+  assert(second !== first, "the relaunch reuses the first launch's key");
+  assertEquals(clear, `rm -f ${JUPYTER_CONNECTION_FILE} ${JUPYTER_PID_FILE}`);
+});
+
+Deno.test("off JavaScriptCore exit 139 is a real segfault: no relaunch, and the layer goes", async () => {
+  for (const userAgent of [CHROME_UA, undefined]) {
+    const session = launchingSession([139, "ready"]);
+    const relaunches: number[] = [];
+    const error = await assertRejects(
+      () =>
+        startGuestKernel(session, undefined, {
+          pollMs: 1,
+          userAgent,
+          relaunchDelayMs: 0,
+          relaunching: (launch) => relaunches.push(launch),
+        }),
+      Error,
+      "(exit 139)",
+    );
+    assertEquals(session.launches, 1, String(userAgent));
+    assertEquals(relaunches, []);
+    assertEquals(
+      kernelFailureDropsLayer({
+        type: "error",
+        message: `Jupyter did not start: ${error.message}`,
+      }),
+      true,
+    );
+  }
+});
+
+Deno.test("on JavaScriptCore a kernel that exits with anything but a SIGSEGV is not launched again", async () => {
+  const aborted: WaitStatus = { code: null, signal: 6, coreDumped: true };
+  for (const exit of [1, 127, 134, 1390, aborted]) {
+    const session = launchingSession([exit, "ready"]);
+    await assertRejects(
+      () => startGuestKernel(session, undefined, ON_JSC),
+      Error,
+      "exited before writing its connection file (",
+    );
+    assertEquals(session.launches, 1, JSON.stringify(exit));
+  }
+});
+
+Deno.test("a relaunch waits relaunchDelayMs before the next launch", async () => {
+  const session = launchingSession([139, "ready"]);
+  await assertRejects(
+    () =>
+      startGuestKernel(session, undefined, {
+        ...ON_JSC,
+        relaunchDelayMs: 50,
+        connect: NO_DIAL,
+      }),
+    Error,
+    "did not become ready",
+  );
+  assertEquals(session.launches, 2);
+  const [first, second] = session.spawnedAt;
+  assert(second - first >= 50, `relaunched after ${second - first} ms`);
+});
+
+Deno.test("an exit the host gives no status for leaves the exit out of the message", async () => {
+  const session = launchingSession([undefined]);
+  const error = await assertRejects(
+    () => startGuestKernel(session, undefined, ON_JSC),
+    Error,
+    "exited before writing its connection file; kernel log",
+  );
+  assert(!error.message.includes("undefined"), error.message);
+  assertEquals(session.launches, 1);
+});
+
+Deno.test("a Jupyter restart relaunches past a stack overflow too, and says so", async () => {
+  const session = launchingSession([139, 139, "ready"]);
+  const relaunches: number[] = [];
+  await assertRejects(
+    () =>
+      restartGuestKernel(session, undefined, undefined, {
+        ...ON_JSC,
+        connect: NO_DIAL,
+        relaunching: (launch) => relaunches.push(launch),
+      }),
+    Error,
+    "did not become ready",
+  );
+  assertEquals(session.launches, 3);
+  assertEquals(relaunches, [2, 3]);
+});
+
+Deno.test("a signal death is named in the message", async () => {
+  const aborted: WaitStatus = { code: null, signal: 6, coreDumped: true };
+  const session = launchingSession([aborted]);
+  await assertRejects(
+    () => startGuestKernel(session, undefined, ON_JSC),
+    Error,
+    "exited before writing its connection file (signal SIGABRT); kernel log",
+  );
+});
+
+Deno.test('a connection file carrying another key (a stale one, the old fixed "yurt") is never taken for this launch', async () => {
+  const typed: string[] = [];
+  const handlers = new Set<(bytes: Uint8Array) => void>();
+  const session = {
+    terminal: {
+      write(bytes: Uint8Array) {
+        const line = new TextDecoder().decode(bytes);
+        typed.push(line);
+        const stop = line.match(/echo (YURT_SHELL_DONE_)""(\w+)/);
+        if (stop !== null) {
+          const reply = new TextEncoder().encode(`${stop[1]}${stop[2]}\n$ `);
+          for (const handler of handlers) handler(reply);
+        }
+        return Promise.resolve();
+      },
+    },
+    // The kernel exits without writing its own file: only the stale one.
+    spawn: () => Promise.resolve({ exited: Promise.resolve(1) }),
+    readFile: (path: string) =>
+      Promise.resolve(
+        path === JUPYTER_CONNECTION_FILE
+          ? connectionFile("", "yurt")
+          : undefined,
+      ),
+    dialSandboxPort: (): never => {
+      throw new Error("the transport must not be dialed under a foreign key");
+    },
+    onOutput(handler: (bytes: Uint8Array) => void) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+  };
+  await assertRejects(
+    () => startGuestKernel(session, undefined, { pollMs: 1 }),
+    Error,
+    "exited before writing its connection file",
+  );
+});
+
+Deno.test("a stale connection file under another key is skipped until the launch's own file replaces it", async () => {
+  let launched = "";
+  let reads = 0;
+  const session = {
+    terminal: { write: () => Promise.resolve() },
+    spawn: (line: string) => {
+      launched = line;
+      return Promise.resolve();
+    },
+    readFile: (path: string) => {
+      if (path !== JUPYTER_CONNECTION_FILE) return Promise.resolve(undefined);
+      reads += 1;
+      return Promise.resolve(
+        reads <= 3 ? connectionFile("", "yurt") : connectionFile(launched),
+      );
+    },
+    dialSandboxPort: (): never => {
+      throw new Error("the transport is not dialed in this test");
+    },
+    onOutput: () => () => {},
+  };
+  // Past the file: the dial is where this one stops.
+  await assertRejects(
+    () =>
+      startGuestKernel(session, undefined, {
+        pollMs: 1,
+        connect: { attempts: 1, delayMs: 1 },
+      }),
+    Error,
+    "did not become ready",
+  );
+  assertEquals(reads, 4, "three stale looks skipped, the fourth taken");
 });

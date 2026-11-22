@@ -6,12 +6,15 @@
  * allows. Run: `deno run --allow-all tests/snapshot_e2e.ts` (needs the
  * kernel checkout and pinned artifacts like playground_e2e.ts).
  */
-import { chromium, type Page } from "playwright";
+import { type Page } from "playwright";
+import { launchBrowser } from "../scripts/browser.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureBundle } from "../scripts/serve.ts";
 import { startPlaygroundServer } from "../src/serve.ts";
 import { RESTORE_MARKER } from "../src/snapshot_store.ts";
+// The page's `globalThis.yurtSnapshotDemo`, declared there, read here.
+import type {} from "../src/snapshot_page.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -55,7 +58,7 @@ if (import.meta.main) {
     Deno.env.get("YURT_KERNEL_ROOT") ?? join(repoRoot, "../yurtos-kernel"),
   );
   const server = startPlaygroundServer(0);
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   try {
     const context = await browser.newContext();
     const url = `${server.url}/snapshot.html`;

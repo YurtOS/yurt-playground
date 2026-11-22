@@ -1,4 +1,10 @@
 import { dirname, join } from "node:path";
+import {
+  BRIDGE_EXTENSION_ZIP,
+  bridgeExtensionZip,
+  PLAYWRIGHT_CORE_TGZ,
+  playwrightCoreTarball,
+} from "./playwright_assets.ts";
 import { fileURLToPath } from "node:url";
 import {
   contentSecurityPolicy,
@@ -11,6 +17,7 @@ import {
   imagePartsManifest,
   PYTHON_SEAL_NAME,
 } from "./image_parts.ts";
+import { SNAPSHOT_KINDS } from "./snapshot_pin.ts";
 import {
   IMAGE_NAME,
   INTEGRITY_FILES,
@@ -18,6 +25,7 @@ import {
   SLIM_IMAGE_NAME,
 } from "./integrity.ts";
 import { LOCAL_MODELS } from "./llm_models.ts";
+import { NETWORK_CONFIG_PATH, networkConfigJson } from "./network_config.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = join(repoRoot, "public");
@@ -31,6 +39,26 @@ export const ISOLATION_HEADERS = {
   // Non-document responses carry the policy too: a worker script's own CSP
   // is what governs the worker.
   "Content-Security-Policy": contentSecurityPolicy(),
+  // Script in the page origin (a guest's notebook output) must not be able to
+  // raise device prompts under the playground's name. Clipboard (terminal) and
+  // GPU (agent) are left alone: the page uses them. Not exhaustive: it
+  // covers the features that raise prompts or read sensors.
+  "Permissions-Policy": [
+    "camera",
+    "microphone",
+    "geolocation",
+    "usb",
+    "serial",
+    "bluetooth",
+    "hid",
+    "payment",
+    "display-capture",
+    "midi",
+    "accelerometer",
+    "gyroscope",
+    "magnetometer",
+    "xr-spatial-tracking",
+  ].map((feature) => `${feature}=()`).join(", "),
 };
 
 /** xterm's stylesheet, served from the npm package rather than copied into
@@ -46,7 +74,26 @@ const ARTIFACT_FILES: Record<string, string> = {
   "/playground.yurtimg": join(artifactsDir, "playground.yurtimg"),
   "/playground-slim.yurtimg": join(artifactsDir, "playground-slim.yurtimg"),
   "/xterm.css": XTERM_CSS_PATH,
+  // The agent's model list (src/agent_models_config.ts), as the build ships it.
+  "/config/agent-models.json": join(repoRoot, "config/agent-models.json"),
 };
+
+const PLAYWRIGHT_ASSETS: Record<
+  string,
+  { type: string; make: () => Promise<Uint8Array>; fresh?: boolean }
+> = {
+  [`/${PLAYWRIGHT_CORE_TGZ}`]: {
+    type: "application/gzip",
+    make: playwrightCoreTarball,
+  },
+  [`/${BRIDGE_EXTENSION_ZIP}`]: {
+    type: "application/zip",
+    make: bridgeExtensionZip,
+    // Made on every request: an edit under extension/ shows at once.
+    fresh: true,
+  },
+};
+const assetCache: Record<string, Promise<Uint8Array>> = {};
 
 export function resolvePlaygroundPath(pathname: string): string | null {
   if (pathname in ARTIFACT_FILES) return ARTIFACT_FILES[pathname];
@@ -118,6 +165,12 @@ const PARTED_FILES: Record<string, string> = {
   [IMAGE_NAME]: join(artifactsDir, IMAGE_NAME),
   [SLIM_IMAGE_NAME]: join(artifactsDir, SLIM_IMAGE_NAME),
   [PYTHON_SEAL_NAME]: join(publicDir, PYTHON_SEAL_NAME),
+  // Each device's sealed sandbox (src/snapshot_pin.ts SNAPSHOT_KINDS).
+  ...Object.fromEntries(
+    Object.values(SNAPSHOT_KINDS).map((
+      { name },
+    ) => [name, join(publicDir, name)]),
+  ),
 };
 
 /** The parts the static build publishes, sliced from the single file so the
@@ -253,6 +306,15 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   }
   const llm = await handleLlmFile(pathname);
   if (llm !== null) return llm;
+  // The network relay, if any (src/network_config.ts), as the build ships it.
+  if (pathname === `/${NETWORK_CONFIG_PATH}`) {
+    return new Response(networkConfigJson(), {
+      headers: {
+        ...ISOLATION_HEADERS,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+    });
+  }
   if (pathname === "/integrity.json") {
     try {
       return await handleIntegrity();
@@ -262,6 +324,25 @@ export async function handlePlaygroundRequest(req: Request): Promise<Response> {
   }
   const part = await handleImagePart(pathname);
   if (part !== null) return part;
+  // The Playwright demo's assets (src/playwright_assets.ts), made once.
+  const asset = PLAYWRIGHT_ASSETS[pathname];
+  if (asset !== undefined) {
+    try {
+      // A failed make is tried again on the next request.
+      if (asset.fresh) delete assetCache[pathname];
+      const bytes = await (assetCache[pathname] ??= asset.make().catch(
+        (error) => {
+          delete assetCache[pathname];
+          throw error;
+        },
+      ));
+      return new Response(bytes as BodyInit, {
+        headers: { ...ISOLATION_HEADERS, "content-type": asset.type },
+      });
+    } catch {
+      return notFound();
+    }
+  }
   let filePath = resolvePlaygroundPath(pathname);
   if (filePath === null) return notFound();
   const directory = await directoryRule(filePath, url);

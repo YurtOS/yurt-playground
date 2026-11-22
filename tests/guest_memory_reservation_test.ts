@@ -1,7 +1,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
-  engineCapsSharedMemoryReservations,
   GUEST_MEMORY_RESERVATION_BYTES,
+  isJavaScriptCore,
   playgroundHostState,
 } from "../src/boot.ts";
 
@@ -25,7 +25,7 @@ Deno.test("on JavaScriptCore each guest process reserves a quarter GiB, not the 
   // reservations per tab, and every process used to reserve the 1 GiB
   // sandbox budget, so a burst of a few dozen execs ran it out.
   for (const ua of [SAFARI_UA, IOS_CHROME_UA]) {
-    assert(engineCapsSharedMemoryReservations(ua), ua);
+    assert(isJavaScriptCore(ua), ua);
     assertEquals(
       playgroundHostState(ua).guestMemoryReservationBytes,
       GUEST_MEMORY_RESERVATION_BYTES,
@@ -40,7 +40,7 @@ Deno.test("on V8 and SpiderMonkey each guest process keeps the whole sandbox bud
   // The reservation is a WebKit workaround; elsewhere it would only cap a
   // process (a 1.1 GB NumPy array, a large clang TU) below the budget.
   for (const ua of [CHROME_UA, FIREFOX_UA, undefined]) {
-    assert(!engineCapsSharedMemoryReservations(ua), String(ua));
+    assert(!isJavaScriptCore(ua), String(ua));
     assertEquals(
       playgroundHostState(ua).guestMemoryReservationBytes,
       undefined,
@@ -70,7 +70,7 @@ Deno.test("every in-browser kernel load and restore goes through the playground'
   // restore included: a worker that loads or restores with the default
   // state puts its guests back on the whole sandbox budget. So only
   // loadPlaygroundKernel and restorePlaygroundKernel in boot.ts may build
-  // a kernel, and each passes playgroundHostState().
+  // a kernel, and each passes plannedPlaygroundHostState().
   const outside: string[] = [];
   let boot = "";
   for (const [path, text] of sourceFiles()) {
@@ -86,12 +86,53 @@ Deno.test("every in-browser kernel load and restore goes through the playground'
     "load",
     "restore",
   ]);
+  // Both size the reservation from what the tab can reserve (#270), and
+  // the kernel's maximum from the page's platform (a phone's is smaller).
   assert(
-    boot.includes("KernelHostInterface.load(kernel, playgroundHostState())"),
+    /KernelHostInterface\.load\(kernel, \{\s*\.\.\.await plannedPlaygroundHostState\(\s*undefined,\s*undefined,\s*platform,\s*fullKernelMemory,?\s*\),/
+      .test(boot),
+  );
+  // A restore takes the same plan, less a smaller kernel maximum its
+  // sealed image would not fit (restoreHostState, yurtos-kernel#4239).
+  assert(
+    /const state = restoreHostState\(\s*\{\s*\.\.\.await plannedPlaygroundHostState\(\s*undefined,\s*undefined,\s*platform,\s*fullKernelMemory,?\s*\),/
+      .test(boot),
   );
   assert(
-    boot.includes(
-      "KernelHostInterface.restore(kernel, image, playgroundHostState())",
+    /KernelHostInterface\.restore\(\s*kernel,\s*image,\s*state\s*\)/
+      .test(boot),
+  );
+});
+
+Deno.test("the Notebook pages' snapshot kernel keeps 1 GiB where the page asks for it", () => {
+  // The `yurt-snapshot` kernelspec (src/snapshot_bridge.ts) boots its own
+  // kernel in src/notebook_kernel_worker.ts. A phone on `?memory=1g` (and a
+  // tablet) gets the 1 GiB kernel there too, as on the ipykernel's
+  // coordinator (src/device.ts fullKernelMemory).
+  const read = (name: string) =>
+    Deno.readTextFileSync(new URL(`../src/${name}`, import.meta.url));
+  const bridge = read("snapshot_bridge.ts");
+  assert(
+    bridge.includes(
+      "fullKernelMemory: fullKernelMemory(deviceClass(), memoryParam())",
     ),
+    "snapshot_bridge.ts sends the page's ask",
+  );
+  const worker = read("notebook_kernel_worker.ts");
+  assert(
+    /fullKernelMemory\?: boolean;/.test(worker),
+    "notebook_kernel_worker.ts takes it in its start message",
+  );
+  assert(
+    /loadPlaygroundKernel\(\s*kernel,\s*undefined,\s*fullKernelMemoryAsked,?\s*\)/
+      .test(
+        worker,
+      ),
+    "notebook_kernel_worker.ts boots with it",
+  );
+  assert(
+    /restorePlaygroundKernel\(\s*kernel,\s*stored\.image,\s*undefined,\s*undefined,\s*fullKernelMemoryAsked,?\s*\)/
+      .test(worker),
+    "notebook_kernel_worker.ts restores with it",
   );
 });

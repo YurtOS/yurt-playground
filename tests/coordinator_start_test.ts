@@ -1,10 +1,14 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   installThenLaunch,
+  kernelFailureDropsLayer,
+  kernelLifecycle,
   probePython,
   PYTHON_MISSING_EXIT,
   PYTHON_PROBE_COMMAND,
   PYTHON_PROBE_LINE,
+  PYTHON_SET_MISSING_EXIT,
+  restoresSnapshot,
   type StartReport,
   startSandbox,
 } from "../src/coordinator_start.ts";
@@ -55,11 +59,13 @@ const transport: JupyterTransport = {
   close: () => Promise.resolve(),
 };
 
-Deno.test("only the probe's own exit code says python3 is missing", async () => {
+Deno.test("only the probe's own exit codes say the Python set is missing", async () => {
   assertEquals(PYTHON_MISSING_EXIT, 42);
+  assertEquals(PYTHON_SET_MISSING_EXIT, 43);
   assertEquals(await probePython(fakeSpawner(exit(0)).spawn), true);
   assertEquals(await probePython(fakeSpawner(exit(42)).spawn), false);
   assertEquals(await probePython(fakeSpawner(42).spawn), false);
+  assertEquals(await probePython(fakeSpawner(exit(43)).spawn), false);
   // Any other code is not the probe's answer -- a failed redirect (a full
   // /tmp), a shell that could not run it, a SIGKILL folded to 137, even
   // `command -v`'s own 127 -- so the launch goes ahead as before.
@@ -74,9 +80,11 @@ Deno.test("only the probe's own exit code says python3 is missing", async () => 
   const { spawn, lines } = fakeSpawner(0);
   await probePython(spawn);
   assertEquals(lines, [PYTHON_PROBE_LINE]);
-  assertEquals(
-    PYTHON_PROBE_COMMAND,
-    "command -v python3 >/dev/null && exit 0; exit 42",
+  // Builtins only, and no quote that would end the line's own.
+  assert(!PYTHON_PROBE_COMMAND.includes("'"));
+  assert(
+    !/\bpython3 -/.test(PYTHON_PROBE_COMMAND),
+    "the probe runs no python3",
   );
   assertEquals(PYTHON_PROBE_LINE, `exec /bin/sh -c '${PYTHON_PROBE_COMMAND}'`);
 });
@@ -160,6 +168,7 @@ Deno.test("a Jupyter that does not start is an error next to a shell that stays"
   assertEquals(posted.at(-1), {
     type: "error",
     message: "Jupyter did not start: the Jupyter kernel exited before writing",
+    endsBoot: true,
   });
 });
 
@@ -235,7 +244,9 @@ Deno.test("a boot that fails is posted as the error", async () => {
     post: (report) => posted.push(report),
   });
   assertEquals(booted, 0);
-  assertEquals(posted, [{ type: "error", message: "not crossOriginIsolated" }]);
+  assertEquals(posted, [
+    { type: "error", message: "not crossOriginIsolated", endsBoot: true },
+  ]);
 });
 
 Deno.test("the coordinator worker starts through startSandbox and never stops a session", () => {
@@ -328,4 +339,421 @@ Deno.test("an image with python3 is never installed into", async () => {
     post: () => {},
   });
   assertEquals(installs, 0);
+});
+
+Deno.test("a capture seals the installed sandbox instead of launching Jupyter, and its success is no error", async () => {
+  const reports: StartReport[] = [];
+  const order: string[] = [];
+  const started = await startSandbox({
+    boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(42)).spawn)),
+    booted: () => {},
+    noJupyter: false,
+    installPython: () => {
+      order.push("install");
+      return Promise.resolve();
+    },
+    launching: () => order.push("launching"),
+    startKernel: () => {
+      order.push("kernel");
+      return Promise.resolve(transport);
+    },
+    capture: () => {
+      order.push("capture");
+      return Promise.resolve();
+    },
+    post: (report) => reports.push(report),
+  });
+  assertEquals(started, undefined);
+  assertEquals(order, ["install", "capture"]);
+  assertEquals(reports.some((r) => r.type === "error"), false);
+  assertEquals(
+    reports.some((r) => r.type === "notebook-ready"),
+    false,
+  );
+});
+
+Deno.test("a failed capture is said as one, not as a Jupyter that did not start", async () => {
+  const reports: StartReport[] = [];
+  await startSandbox({
+    boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(42)).spawn)),
+    booted: () => {},
+    noJupyter: false,
+    installPython: () => Promise.resolve(),
+    startKernel: () => Promise.resolve(transport),
+    capture: () =>
+      Promise.reject(new Error("precompiling the Python set exited 2")),
+    post: (report) => reports.push(report),
+  });
+  assertEquals(reports.at(-1), {
+    type: "error",
+    message: "snapshot capture failed: precompiling the Python set exited 2",
+    endsBoot: true,
+  });
+});
+
+Deno.test("a stack-overflow relaunch's note rides on every later 'starting Jupyter' tick", async () => {
+  const posted: StartReport[] = [];
+  await startSandbox({
+    boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(0)).spawn)),
+    booted: () => {},
+    noJupyter: false,
+    startKernel: async (_session, relaunching) => {
+      relaunching(2);
+      // Long enough for the 1 ms ticker to post again.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return transport;
+    },
+    post: (report) => posted.push(report),
+    tickMs: 1,
+  });
+  const statuses = posted.flatMap((r) => r.type === "status" ? [r.text] : []);
+  const note = "launch 2: the last one overflowed the browser's stack";
+  const relaunched = statuses.findIndex((text) => text.includes(note));
+  assertEquals(
+    statuses[relaunched],
+    `starting Jupyter (0 s, ${note})`,
+    "said at once, with the count",
+  );
+  const later = statuses.slice(relaunched + 1);
+  assert(later.length > 0, "the ticker posted after the relaunch");
+  for (const text of later) {
+    assert(
+      /^starting Jupyter \(\d+ s, launch 2: the last one overflowed the browser's stack\)$/
+        .test(text),
+      text,
+    );
+  }
+  assertEquals(posted.at(-1), { type: "notebook-ready" });
+});
+
+Deno.test("a kernel failure drops the Python layer, an error that is not one does not", () => {
+  assert(
+    kernelFailureDropsLayer({
+      type: "error",
+      message: "Jupyter did not start: the Jupyter kernel exited (exit 1)",
+    }),
+  );
+  assertEquals(
+    kernelFailureDropsLayer({ type: "error", message: "Jupyter is not ready" }),
+    false,
+  );
+  assertEquals(kernelFailureDropsLayer({ type: "notebook-ready" }), false);
+});
+
+Deno.test("the coordinator worker hands the relaunch note on at start, retry and restart", () => {
+  const worker = Deno.readTextFileSync(
+    new URL("../src/coordinator_worker.ts", import.meta.url),
+  );
+  // Start and the Install/retry path: launchKernel's ticker carries it.
+  const starts = worker.match(
+    /startKernel: \((\w+), relaunching\) =>\s+startGuestKernel\(\1, kernelPorts, \{ relaunching \}\)/g,
+  );
+  assertEquals(starts?.length, 2, "both startKernel deps forward it");
+  assertEquals(
+    worker.match(/\bstartGuestKernel\(/g)?.length,
+    2,
+    "no startGuestKernel call without it",
+  );
+  // A restart says "restarting", not "starting", with the note.
+  assert(
+    /restartGuestKernel\(\s*launchSession,\s*previous,\s*kernelPorts,\s*\{\s*relaunching: \(launch\) =>\s*post\(\{\s*type: "status",\s*text: `restarting Jupyter \(\$\{relaunchNote\(launch\)\}\)`,?\s*\}\),?\s*\}/
+      .test(worker),
+    "the restart forwards its own relaunch status",
+  );
+  // A stack overflow is the browser's, not the layer's.
+  assert(/kernelFailureDropsLayer\(report\)/.test(worker));
+});
+
+Deno.test("a Jupyter restart during the boot's start is refused at once; one after a failed start runs", async () => {
+  const lifecycle = kernelLifecycle();
+  let fail!: (error: Error) => void;
+  const start = lifecycle.start(() =>
+    new Promise<void>((_resolve, reject) => fail = reject)
+  );
+  const events: string[] = [];
+  const restart = () =>
+    lifecycle.restart(
+      () => {
+        events.push("restarted");
+        return Promise.resolve();
+      },
+      () => events.push("refused"),
+    );
+  // Not queued behind the start (minutes of ipykernel import and its
+  // relaunches, then a restart of the fresh kernel): refused now.
+  await restart();
+  assertEquals(events, ["refused"]);
+  fail(new Error("the boot threw"));
+  await assertRejects(() => start, Error, "the boot threw");
+  await restart();
+  assertEquals(events, ["refused", "restarted"]);
+});
+
+Deno.test("a restart or install that throws does not stop the next one", async () => {
+  const lifecycle = kernelLifecycle();
+  await assertRejects(
+    () => lifecycle.enqueue(() => Promise.reject(new Error("install threw"))),
+    Error,
+    "install threw",
+  );
+  let ran = false;
+  await lifecycle.enqueue(() => {
+    ran = true;
+    return Promise.resolve();
+  });
+  assert(ran, "the queue survived the rejection");
+});
+
+Deno.test("a restart is refused until every overlapping start has ended", async () => {
+  const lifecycle = kernelLifecycle();
+  let endBoot!: () => void;
+  let endFresh!: () => void;
+  const boot = lifecycle.start(() => new Promise((r) => endBoot = r));
+  const fresh = lifecycle.start(() => new Promise((r) => endFresh = r));
+  let refused = 0;
+  let ran = 0;
+  const restart = () =>
+    lifecycle.restart(() => {
+      ran++;
+      return Promise.resolve();
+    }, () => refused++);
+  endBoot();
+  await boot;
+  await restart();
+  assertEquals([refused, ran], [1, 0]);
+  endFresh();
+  await fresh;
+  await restart();
+  assertEquals([refused, ran], [1, 1]);
+});
+
+Deno.test("a capture whose Python install fails is a failed capture, not python-missing", async () => {
+  for (
+    const installPython of [
+      () => Promise.reject(new Error("pkg install python failed: x")),
+      undefined,
+    ]
+  ) {
+    const reports: StartReport[] = [];
+    let captured = 0;
+    await startSandbox({
+      boot: () => Promise.resolve(fakeSession(fakeSpawner(exit(42)).spawn)),
+      booted: () => {},
+      noJupyter: false,
+      installPython,
+      startKernel: () => Promise.resolve(transport),
+      capture: () => {
+        captured++;
+        return Promise.resolve();
+      },
+      post: (report) => reports.push(report),
+    });
+    assertEquals(captured, 0);
+    assertEquals(reports.some((r) => r.type === "python-missing"), false);
+    const last = reports.at(-1);
+    assertEquals(last?.type === "error" && last.endsBoot, true);
+    assert(
+      last?.type === "error" &&
+        last.message.startsWith("snapshot capture failed: "),
+      JSON.stringify(last),
+    );
+  }
+});
+
+Deno.test("only the in-tab sandbox restores a snapshot", () => {
+  // Every device restores its kind (src/sandbox_snapshot.ts), a phone or
+  // tablet the tablet's: checkPythonSet keeps the desktop's off them.
+  assertEquals(restoresSnapshot({ snapshot: "restore", native: false }), true);
+  assertEquals(
+    restoresSnapshot({ snapshot: "restore", native: true }),
+    false,
+    "the desktop app",
+  );
+  assertEquals(restoresSnapshot({ snapshot: "capture", native: false }), false);
+  assertEquals(restoresSnapshot({ native: false }), false);
+});
+
+/** A guest root for the probe to look at: `python3` on its PATH or not,
+ * and these files under its site-packages. */
+async function guestRoot(
+  python3: boolean,
+  sitePackages: string[],
+): Promise<string> {
+  const root = await Deno.makeTempDir({ prefix: "pyprobe-" });
+  const site = `${root}/usr/local/lib/python3.14/site-packages`;
+  await Deno.mkdir(site, { recursive: true });
+  await Deno.mkdir(`${root}/usr/local/bin`, { recursive: true });
+  // The standard library, which the python package alone already brings.
+  await Deno.writeTextFile(`${root}/usr/local/lib/python3.14/os.py`, "");
+  if (python3) {
+    await Deno.writeTextFile(`${root}/usr/local/bin/python3`, "#!/bin/sh\n");
+    await Deno.chmod(`${root}/usr/local/bin/python3`, 0o755);
+  }
+  for (const file of sitePackages) {
+    const path = `${site}/${file}`;
+    await Deno.mkdir(path.slice(0, path.lastIndexOf("/")), { recursive: true });
+    await Deno.writeTextFile(path, "");
+  }
+  return root;
+}
+
+/** A spawner that runs each line in the host's own /bin/sh against `root`:
+ * the guest's /usr/local is root's, and so is its PATH. */
+function hostSpawner(root: string): Spawner {
+  return async (line) => {
+    const output = await new Deno.Command("/bin/sh", {
+      args: ["-c", line.replaceAll("/usr/local/", `${root}/usr/local/`)],
+      clearEnv: true,
+      env: { PATH: `${root}/usr/local/bin` },
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    return {
+      pid: 7,
+      exited: Promise.resolve(exit(output.code)),
+      takeStdout: () => new Uint8Array(),
+      takeStderr: () => new Uint8Array(),
+    };
+  };
+}
+
+/** What the Jupyter kernel needs beside python3: numpy's, pyzmq's and
+ * jupyter-kernel's packages, as the full image and an installed set have
+ * them. */
+const KERNEL_SET_FILES = [
+  "numpy/__init__.py",
+  "zmq/__init__.py",
+  "ipykernel/__init__.py",
+  "ipykernel_launcher.py",
+];
+
+Deno.test("the probe says the Python set is there only when the kernel's packages are", async () => {
+  const cases: [string, boolean, string[], boolean][] = [
+    // Today's slim image: no python3 at all.
+    ["no python3", false, [], false],
+    // The next slim image: the python package alone, from the base.
+    ["python3 without the kernel's packages", true, [], false],
+    // An install that stopped part way.
+    [
+      "python3, numpy and pyzmq without jupyter-kernel",
+      true,
+      ["numpy/__init__.py", "zmq/__init__.py"],
+      false,
+    ],
+    // The full image, an installed set, a layer or a snapshot.
+    ["the full set", true, KERNEL_SET_FILES, true],
+    // Each package of the set missing alone.
+    ...[
+      ["numpy", "numpy/"],
+      ["pyzmq", "zmq/"],
+      ["jupyter-kernel", "ipykernel"],
+    ].map(([name, prefix]): [string, boolean, string[], boolean] => [
+      `the set without ${name}`,
+      true,
+      KERNEL_SET_FILES.filter((file) => !file.startsWith(prefix)),
+      false,
+    ]),
+  ];
+  for (const [name, python3, files, present] of cases) {
+    const root = await guestRoot(python3, files);
+    try {
+      assertEquals(await probePython(hostSpawner(root)), present, name);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("no capture seals without Python", async () => {
+  const bare = await guestRoot(false, []);
+  try {
+    // A capture with nothing to install (the page's pins unread) fails
+    // rather than seal a snapshot without its Python.
+    const full: StartReport[] = [];
+    let captured = 0;
+    await startSandbox({
+      boot: () => Promise.resolve(fakeSession(hostSpawner(bare))),
+      booted: () => {},
+      noJupyter: false,
+      startKernel: () => Promise.resolve(transport),
+      capture: () => {
+        captured++;
+        return Promise.resolve();
+      },
+      post: (report) => full.push(report),
+    });
+    assertEquals(captured, 0);
+    const failed = full.at(-1);
+    assert(
+      failed?.type === "error" && failed.endsBoot === true &&
+        failed.message.startsWith("snapshot capture failed: "),
+      JSON.stringify(failed),
+    );
+  } finally {
+    await Deno.remove(bare, { recursive: true });
+  }
+});
+
+Deno.test("an image with python3 but not the kernel's packages installs the set before the kernel starts", async () => {
+  const root = await guestRoot(true, []);
+  try {
+    const order: string[] = [];
+    const posted: StartReport[] = [];
+    await startSandbox({
+      boot: () => Promise.resolve(fakeSession(hostSpawner(root))),
+      booted: () => {},
+      noJupyter: false,
+      installPython: () => {
+        order.push("install");
+        return Promise.resolve();
+      },
+      startKernel: () => {
+        order.push("kernel");
+        return Promise.resolve(transport);
+      },
+      post: (report) => posted.push(report),
+    });
+    assertEquals(order, ["install", "kernel"]);
+    // Without an install, it is python-missing, and no launch is tried.
+    const missing: StartReport[] = [];
+    let launched = 0;
+    await startSandbox({
+      boot: () => Promise.resolve(fakeSession(hostSpawner(root))),
+      booted: () => {},
+      noJupyter: false,
+      startKernel: () => {
+        launched++;
+        return Promise.resolve(transport);
+      },
+      post: (report) => missing.push(report),
+    });
+    assertEquals(launched, 0);
+    assertEquals(missing.at(-1), { type: "python-missing" });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("the worker installs the set pinned to the sandbox's own installed list", async () => {
+  // A scoped source check: the worker is not loadable in a test. The
+  // install's request carries what pkg has in this sandbox, read just
+  // before it, else what the pins say the image ships.
+  const source = await Deno.readTextFile(
+    new URL("../src/coordinator_worker.ts", import.meta.url),
+  );
+  const install = source.slice(
+    source.indexOf("install: async (between) => {"),
+    source.indexOf("between.after();"),
+  );
+  assert(install.length > 0, "the install closure moved");
+  const read = install.indexOf(
+    "const have = await installedReleases(session.files);",
+  );
+  const call = install.indexOf("await installPackage({");
+  assert(read >= 0 && call > read, "the installed list is read first");
+  assert(
+    /await installPackage\(\{\s*\.\.\.python,\s*installed: have \?\? python\.installed,\s*\}/
+      .test(install),
+    "the request carries the installed list",
+  );
 });

@@ -10,7 +10,13 @@ export const IMAGE_PART_BYTES = 20 * 1024 * 1024;
  * built by scripts/build-python-seal.sh into public/. */
 export const PYTHON_SEAL_NAME = "demo/python3-seal.wasm";
 
-export type ImagePartsManifest = { size: number; parts: string[] };
+/** `partBytes`: the size every part but the last has (the publisher's
+ * {@link IMAGE_PART_BYTES}), so a reader knows the layout it reads. */
+export type ImagePartsManifest = {
+  size: number;
+  partBytes: number;
+  parts: string[];
+};
 
 /** Manifest for an image of `size` bytes published as `name` parts. The
  * parts are named relative to the manifest, which sits beside them, so a
@@ -23,6 +29,7 @@ export function imagePartsManifest(
   const base = name.slice(name.lastIndexOf("/") + 1);
   return {
     size,
+    partBytes: IMAGE_PART_BYTES,
     parts: Array.from({ length: count }, (_, i) => `${base}.${i}`),
   };
 }
@@ -47,13 +54,25 @@ export function imagePartIndex(path: string, name: string): number | undefined {
   return match === null ? undefined : Number(match[1]);
 }
 
+/** Checks a caller makes as the parts arrive; a throw refuses the file. */
+export type PartChecks = {
+  /** The manifest, before any part is fetched. */
+  manifest?(manifest: ImagePartsManifest): void;
+  /** Each whole part, in order, before it is handed on (so a part with a
+   * check is held whole, one at a time). */
+  part?(index: number, name: string, bytes: Uint8Array): Promise<void>;
+};
+
 /**
  * A `fetch` that answers a request for `name` by fetching `name.parts.json`
  * and streaming the parts in order, so callers that read a single body
- * (hash check, progress, cache) need not know the file was split.
+ * (hash check, progress, cache) need not know the file was split. Parts
+ * are read as the reader asks for more; unchecked, with the next one
+ * already asked for.
  */
 export function partsFetch(
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  checks: PartChecks = {},
 ): typeof globalThis.fetch {
   return async (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
@@ -62,29 +81,84 @@ export function partsFetch(
     const manifestResponse = await fetchImpl(manifestUrl, init);
     if (!manifestResponse.ok) return manifestResponse;
     const manifest = await manifestResponse.json() as ImagePartsManifest;
+    checks.manifest?.(manifest);
+    // A reader that gives up (a cancelled body) stops the part in flight.
+    const giveUp = new AbortController();
+    const callerSignal = (init as { signal?: AbortSignal | null } | undefined)
+      ?.signal;
+    const signal = callerSignal == null
+      ? giveUp.signal
+      : AbortSignal.any([callerSignal, giveUp.signal]);
+    const request = (at: number) => {
+      const response = fetchImpl(
+        new URL(manifest.parts[at], manifestUrl),
+        { ...init, signal } as RequestInit,
+      );
+      // Not an unhandled rejection when the stream stops before it is read.
+      response.catch(() => {});
+      return response;
+    };
+    let next: Promise<Response> | undefined;
+    let index = 0;
+    // A reader, not `for await`: WebKit ships ReadableStream without
+    // Symbol.asyncIterator, so iterating a body there throws.
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     const stream = new ReadableStream<Uint8Array>({
-      async start(controller) {
+      async pull(controller) {
         try {
-          for (const part of manifest.parts) {
-            const response = await fetchImpl(new URL(part, manifestUrl), init);
-            if (!response.ok || response.body === null) {
-              throw new Error(`fetch ${part} failed: ${response.status}`);
-            }
-            // A reader, not `for await`: WebKit ships ReadableStream without
-            // Symbol.asyncIterator, so iterating the body there throws.
-            const reader = response.body.getReader();
-            for (;;) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              controller.enqueue(value);
-            }
-          }
-          controller.close();
+          await pullOne(controller);
         } catch (error) {
-          controller.error(error);
+          // A part that failed (a 404, a check) ends the file: whatever
+          // is still downloading stops with it.
+          giveUp.abort(error);
+          await reader?.cancel(error).catch(() => {});
+          throw error;
         }
       },
+      async cancel(reason) {
+        giveUp.abort(reason);
+        await reader?.cancel(reason).catch(() => {});
+      },
     });
+    async function pullOne(
+      controller: ReadableStreamDefaultController<Uint8Array>,
+    ): Promise<void> {
+      for (;;) {
+        if (reader !== undefined) {
+          const { done, value } = await reader.read();
+          if (!done) {
+            controller.enqueue(value);
+            return;
+          }
+          reader = undefined;
+        }
+        if (index === manifest.parts.length) {
+          controller.close();
+          return;
+        }
+        const part = manifest.parts[index];
+        const at = index++;
+        const response = await (next ?? request(at));
+        // Unchecked (the image, the kernel's parts), the next part is
+        // asked for while this one is read, so the parts follow one
+        // another without a round trip between them. Checked parts
+        // come one at a time: each is held whole for its check.
+        next = checks.part === undefined && at + 1 < manifest.parts.length
+          ? request(at + 1)
+          : undefined;
+        if (!response.ok || response.body === null) {
+          throw new Error(`fetch ${part} failed: ${response.status}`);
+        }
+        if (checks.part === undefined) {
+          reader = response.body.getReader();
+          continue;
+        }
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        await checks.part(at, part, bytes);
+        controller.enqueue(bytes);
+        return;
+      }
+    }
     return new Response(stream, {
       status: 200,
       headers: { "content-length": String(manifest.size) },

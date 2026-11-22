@@ -6,6 +6,7 @@
  * `jupyterlite/` extension at runtime, so every sandbox concern stays in the
  * deno-built bundles.
  */
+import { deviceClass, memoryParam, notebookStart } from "./device.ts";
 import { desktopInfo } from "./native.ts";
 import { announceSandbox, anotherSandboxRunning } from "./tab_presence.ts";
 import {
@@ -26,6 +27,16 @@ import type {
   JupyterChannel,
   JupyterRequestChannel,
 } from "./jupyter_transport.ts";
+import { siteUrl } from "./site_url.ts";
+import type { NetworkStatus } from "./network.ts";
+import type { Network } from "./network_config.ts";
+import {
+  answerTokenRequest,
+  loadNetwork,
+  mountNotebookNetwork,
+  type NetworkControls,
+  wireNetworkToggle,
+} from "./network_toggle.ts";
 
 export type PlaygroundKernelBridge = {
   /** Resolves once the current guest ipykernel answered kernel_info: the
@@ -55,13 +66,16 @@ type FromWorker =
   }
   | { type: "cell-result" }
   | { type: "cell-error" }
+  // The sandbox's network (src/network.ts), as on the home page.
+  | { type: "network-status"; status: NetworkStatus }
+  | { type: "network-token"; req: number }
   | MemoryRefusedMessage;
 
 let bridge: PlaygroundKernelBridge | undefined;
 
 /** One sandbox per page: every kernel the frontend starts shares it. */
 export function startPlaygroundKernel(
-  coordinatorUrl = "/coordinator.bundle.js",
+  coordinatorUrl = siteUrl("./coordinator.bundle.js"),
 ): PlaygroundKernelBridge {
   if (bridge !== undefined) return bridge;
   refuseOnPhone(document);
@@ -81,6 +95,11 @@ export function startPlaygroundKernel(
       rejectReady = reject;
     });
   let ready = arm();
+  // The notebook's sandbox gets the network as the home page's does: off
+  // until this page's own toggle turns it on, never carried over a reload.
+  let network: Promise<Network | undefined> = Promise.resolve(undefined);
+  let networkControls: NetworkControls | undefined;
+  let human: HTMLElement | undefined;
   // The frontend shows a kernel that never became ready as a cell stuck at
   // `[*]`; the page's own line says what happened (src/bridge_status.ts).
   const show = (state: BridgeState) => showBridgeState(document, state);
@@ -112,6 +131,10 @@ export function startPlaygroundKernel(
       for (const listener of messageListeners) {
         listener(msg.message, msg.channel);
       }
+    } else if (msg.type === "network-status") {
+      networkControls?.show(msg.status);
+    } else if (msg.type === "network-token") {
+      answerTokenRequest(worker, network, () => human!, msg.req);
     } else if (msg.type === MEMORY_REFUSED_MESSAGE_TYPE) {
       // The coordinator posts it from `bootPlayground` (src/boot.ts).
       mountMemoryRefusedBanner(document);
@@ -140,6 +163,18 @@ export function startPlaygroundKernel(
         );
       }
       announceSandbox();
+      network = loadNetwork();
+    }
+    const relay = await network;
+    if (relay !== undefined) {
+      const controls = mountNotebookNetwork(document);
+      human = controls.human;
+      networkControls = wireNetworkToggle(
+        controls,
+        false,
+        (message) => worker.postMessage(message),
+        null,
+      );
     }
     worker.postMessage({
       type: "start",
@@ -147,11 +182,19 @@ export function startPlaygroundKernel(
       rows: 24,
       isolated: globalThis.crossOriginIsolated === true,
       kernelPorts: desktop?.kernelPorts,
+      // A desktop or tablet browser (or a phone on `?memory=1g`) starts
+      // from the desktop's snapshot, which holds the Python set and the
+      // kernel, with the kernel's full 1 GiB, and says so if it cannot:
+      // installing them took a minute or more on every visit, and ran an
+      // iPad tab out of memory.
+      ...notebookStart(deviceClass(), memoryParam(), desktop !== undefined),
       python: desktop !== undefined
         ? undefined
         : await pins.then((p) =>
           p === undefined ? undefined : pythonInstallRequest(p)
         ),
+      networkRelay: relay?.relay,
+      networkOn: false,
     });
   });
   bridge = {

@@ -1,0 +1,258 @@
+/**
+ * How much address space each guest process reserves on JavaScriptCore,
+ * sized from what this tab can actually reserve (yurt-playground#270).
+ *
+ * A shared `WebAssembly.Memory` reserves its whole maximum up front, and
+ * WebKit caps what one WebContent process may reserve. On macOS that is
+ * about 30 GiB of memories under 4 GiB; on an iPad (iPadOS 18.7, Safari
+ * 26.6.1, measured with `public/memory-probe.html`) it is about 4-4.5 GiB
+ * (18 memories of 256 MiB, 64 of 64 MiB, 250 of 16 MiB). The kernel's own
+ * memory reserves a fixed 1 GiB of that, the page's buffers live in the
+ * same address space, and up to four killed guests linger with their
+ * memories (the kernel host's worker retirement). At the desktop's quarter
+ * GiB per process only a few processes fit on an iPad, so `sudo` could not
+ * start `mkdir` (exec: ENOMEM) and the shell could not fork (EAGAIN).
+ *
+ * So before it builds a kernel, a JavaScriptCore page measures what it can
+ * still reserve, in a short-lived Worker (`public/memory-probe.js`), and
+ * picks the largest per-process reservation that leaves room for
+ * {@link WANTED_PROCESSES} processes beside the kernel and
+ * {@link RESERVATION_HEADROOM_BYTES} of slack. A process that outgrows its
+ * reservation gets ENOMEM, as under Linux's RLIMIT_AS.
+ *
+ * On iOS that is 128 MiB (room for 19 processes in an empty tab), the
+ * floor: ipykernel (81 MiB) and a NumPy-sized cell run in it. A smaller
+ * reservation would fit more processes but could not run CPython, and with
+ * the kernel host's per-exec copies (yurtos-kernel#4238) in the same pool,
+ * a run of commands under a simulated iOS cap got no further at 64 MiB than
+ * at 128 MiB. So a probe that under-counts (a disposed kernel not yet
+ * collected, or a probe whose every allocation failed) never takes a page
+ * below it. *
+ * A phone page whose probe stops short of {@link PROBE_LIMIT_BYTES} has a
+ * small cap (an iPhone), and its kernel reserves
+ * {@link SMALL_CAP_KERNEL_MEMORY_BYTES} instead of the default 1 GiB
+ * (yurtos-kernel#4239). The guests are still sized as beside 1 GiB, so the
+ * half GiB it gives back is headroom. A tablet (an iPad) keeps the default
+ * 1 GiB: the owner's call, iPhone at 512 MiB and iPad at 1 GiB. Which one a
+ * page is comes from the page (src/device.ts), since the coordinator Worker
+ * that plans has no `screen` to tell them apart.
+ */
+
+const MIB = 1024 * 1024;
+
+/** The desktop reservation (yurtos-kernel#2996): several times what
+ *  CPython needs here (ipykernel 81 MiB, a 2000x2000 NumPy matmul 98 MiB). */
+export const GUEST_MEMORY_RESERVATION_BYTES = 256 * MIB;
+/** The smallest reservation offered: what CPython needs here (ipykernel
+ *  81 MiB, a 2000x2000 NumPy matmul 98 MiB), with room to grow. */
+export const MIN_GUEST_MEMORY_RESERVATION_BYTES = 128 * MIB;
+/** The kernel's own shared memory maximum where the tab's cap is large
+ *  (the kernel host's default, `KERNEL_MAXIMUM_PAGES`, 16384 wasm pages). */
+export const KERNEL_MEMORY_RESERVATION_BYTES = 1024 * MIB;
+/** The kernel's memory maximum on a phone whose tab's cap is small (an
+ *  iPhone, about 4 GiB): half of it goes back to the guests. The phone
+ *  restores the tablet's snapshot, whose kernel uses about 250 MiB of it,
+ *  and about 225 MiB after `pkg install python` (yurtos-kernel#4239). The
+ *  kernel host passes it on as `HostState.kernelMemoryMaximumBytes`. */
+export const SMALL_CAP_KERNEL_MEMORY_BYTES = 512 * MIB;
+/** Room kept free beside the kernel and the guests: a snapshot restore's
+ *  buffers and killed guests that linger with their memories. */
+export const RESERVATION_HEADROOM_BYTES = 512 * MIB;
+/** How many processes the reservation must leave room for at once: a
+ *  Packages install (sudo, sh, mkdir, tar, ...) beside the shell and its
+ *  jobs. */
+export const WANTED_PROCESSES = 12;
+/** The probe's unit, and how far it counts: enough to show that the
+ *  largest reservation fits, so a desktop browser stops well short of its
+ *  cap. */
+export const PROBE_UNIT_BYTES = 32 * MIB;
+export const PROBE_LIMIT_BYTES = KERNEL_MEMORY_RESERVATION_BYTES +
+  RESERVATION_HEADROOM_BYTES +
+  WANTED_PROCESSES * GUEST_MEMORY_RESERVATION_BYTES;
+/** The probe Worker's script, served at the site root: relative to the
+ *  coordinator, which is there too. */
+export const PROBE_SCRIPT_PATH = "./memory-probe.js";
+
+/** Room a restored kernel keeps above its sealed image to grow into: the
+ *  snapshot's own working set plus a session's installs. */
+export const RESTORE_KERNEL_HEADROOM_BYTES = 128 * MIB;
+
+/**
+ * The kernel memory maximum to restore `imageBytes` of sealed kernel memory
+ * with, given the one planned for this tab (`undefined`: the host's default,
+ * 1 GiB). A saved session or snapshot keeps the size it was sealed at, and a
+ * kernel host refuses an image larger than its maximum, which the page's
+ * fallbacks answer by discarding the saved state. So an image that leaves
+ * less than {@link RESTORE_KERNEL_HEADROOM_BYTES} under the planned maximum
+ * restores with the default instead.
+ */
+export function kernelMemoryForRestore(
+  plannedBytes: number | undefined,
+  imageBytes: number,
+): number | undefined {
+  if (plannedBytes === undefined) return undefined;
+  return imageBytes + RESTORE_KERNEL_HEADROOM_BYTES <= plannedBytes
+    ? plannedBytes
+    : undefined;
+}
+
+/** The reservation this page's guests get, and the kernel's. */
+export type GuestMemoryPlan = {
+  reservationBytes: number;
+  /** The kernel memory's maximum: {@link KERNEL_MEMORY_RESERVATION_BYTES},
+   *  or {@link SMALL_CAP_KERNEL_MEMORY_BYTES} on a phone under a small
+   *  cap. */
+  kernelMemoryBytes: number;
+  /** What the probe could reserve, or `undefined` when it could not run. */
+  availableBytes?: number;
+  /** How many processes of `reservationBytes` fit beside the kernel. */
+  processes?: number;
+};
+
+/**
+ * The larger power-of-two reservation, the desktop's quarter GiB or
+ * {@link MIN_GUEST_MEMORY_RESERVATION_BYTES}, that leaves room for
+ * {@link WANTED_PROCESSES} processes in `availableBytes`, beside the kernel
+ * and the headroom. When even the smallest does not, the smallest. `phone`:
+ * the page runs as a phone (src/device.ts Platform).
+ */
+export function reservationForAvailableBytes(
+  availableBytes: number,
+  phone = false,
+): GuestMemoryPlan {
+  // The probe stops at PROBE_LIMIT_BYTES: a tab that could not reserve that
+  // much has a small cap (iOS). On a phone its kernel takes the smaller
+  // maximum; a tablet's keeps the default.
+  const kernelMemoryBytes = phone && availableBytes < PROBE_LIMIT_BYTES
+    ? SMALL_CAP_KERNEL_MEMORY_BYTES
+    : KERNEL_MEMORY_RESERVATION_BYTES;
+  // The guests are sized as beside a 1 GiB kernel either way: what the
+  // smaller kernel gives back is headroom (a restore's buffers, an exec's
+  // transient copies, lingering killed guests), not more or larger guests.
+  const room = availableBytes - KERNEL_MEMORY_RESERVATION_BYTES -
+    RESERVATION_HEADROOM_BYTES;
+  let reservationBytes = GUEST_MEMORY_RESERVATION_BYTES;
+  while (
+    reservationBytes > MIN_GUEST_MEMORY_RESERVATION_BYTES &&
+    room < WANTED_PROCESSES * reservationBytes
+  ) {
+    reservationBytes /= 2;
+  }
+  return {
+    reservationBytes,
+    kernelMemoryBytes,
+    availableBytes,
+    processes: Math.max(0, Math.floor(room / reservationBytes)),
+  };
+}
+
+/** What the probe Worker answers (`public/memory-probe.js`). */
+type ProbeAnswer = { totalMiB: number; firstError: string };
+
+/**
+ * The engine's own Worker, taken when this module loads: a coordinator then
+ * replaces `self.Worker` with a page-backed proxy for its guests
+ * (`installCoordinatorWorkerProxy`), whose first message is a guest's port
+ * and which the probe must not go through. Nothing blocks the coordinator
+ * while it waits for the probe, so a Worker nested in it starts.
+ */
+const NativeWorker: typeof Worker | undefined = globalThis.Worker;
+
+/** A Worker-like object: what {@link probeAvailableBytes} needs. */
+export type ProbeWorker = {
+  onmessage: ((event: { data: unknown }) => void) | null;
+  onerror: ((event: unknown) => void) | null;
+  postMessage(message: unknown): void;
+  terminate(): void;
+};
+
+/**
+ * Start the probe Worker, by default from {@link PROBE_SCRIPT_PATH} at
+ * this script's site, with the engine's own Worker ({@link NativeWorker}).
+ */
+export function spawnProbeWorker(
+  script: string | URL = new URL(PROBE_SCRIPT_PATH, self.location.href),
+): ProbeWorker {
+  if (NativeWorker === undefined) throw new Error("no Worker here");
+  return new NativeWorker(script, { type: "module" }) as unknown as ProbeWorker;
+}
+
+/**
+ * How many bytes of shared memory this tab can still reserve, counted in
+ * {@link PROBE_UNIT_BYTES} memories up to {@link PROBE_LIMIT_BYTES}, in a
+ * Worker that is terminated once it answers. `undefined` when no Worker
+ * starts or it does not answer in `timeoutMs`.
+ *
+ * Once a Worker was started, the probe waits `settleMs` after terminating
+ * it, whatever it answered: macOS WebKit gave a probe's reservations back
+ * at once (4 x 1 GiB reserved right after a probe that took the whole
+ * cap), but iOS is unmeasured (the iPad gave identical counts on runs
+ * 1.5 s apart), and a Worker that timed out may still have been
+ * reserving. The kernel's own 1 GiB comes next and must not be refused.
+ */
+export async function probeAvailableBytes(
+  spawn: () => ProbeWorker = () => spawnProbeWorker(),
+  options: { timeoutMs?: number; settleMs?: number } = {},
+): Promise<number | undefined> {
+  const { timeoutMs = 10_000, settleMs = 1_500 } = options;
+  let worker: ProbeWorker;
+  try {
+    worker = spawn();
+  } catch {
+    return undefined;
+  }
+  const answer = await new Promise<ProbeAnswer | undefined>((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), timeoutMs);
+    worker.onmessage = (event) => {
+      clearTimeout(timer);
+      const data = event.data as Partial<ProbeAnswer> | null;
+      resolve(
+        typeof data?.totalMiB === "number"
+          ? { totalMiB: data.totalMiB, firstError: data.firstError ?? "" }
+          : undefined,
+      );
+    };
+    worker.onerror = () => {
+      clearTimeout(timer);
+      resolve(undefined);
+    };
+    try {
+      worker.postMessage({
+        sizes: [PROBE_UNIT_BYTES / MIB],
+        limit: PROBE_LIMIT_BYTES / PROBE_UNIT_BYTES,
+      });
+    } catch {
+      clearTimeout(timer);
+      resolve(undefined);
+    }
+  });
+  worker.terminate();
+  if (settleMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, settleMs));
+  }
+  return answer === undefined ? undefined : answer.totalMiB * MIB;
+}
+
+/** The reservation when the probe cannot run. A Worker cannot tell an
+ *  iPad from a Mac (iPadOS Safari sends a Mac user agent, and
+ *  `WorkerNavigator` has no `maxTouchPoints`), so every JavaScriptCore page
+ *  gets what fits on iOS. */
+export const UNPROBED_RESERVATION_BYTES = 128 * MIB;
+
+/** The plan for this page (`phone`: it runs as a phone): measured when the
+ *  probe runs, and otherwise {@link UNPROBED_RESERVATION_BYTES}. */
+export async function planGuestMemory(
+  probe: () => Promise<number | undefined> = () => probeAvailableBytes(),
+  phone = false,
+): Promise<GuestMemoryPlan> {
+  const available = await probe().catch(() => undefined);
+  if (available !== undefined) {
+    return reservationForAvailableBytes(available, phone);
+  }
+  // Unmeasured, the kernel keeps its default: a Mac's desktop snapshot holds
+  // more kernel memory than the small maximum.
+  return {
+    reservationBytes: UNPROBED_RESERVATION_BYTES,
+    kernelMemoryBytes: KERNEL_MEMORY_RESERVATION_BYTES,
+  };
+}

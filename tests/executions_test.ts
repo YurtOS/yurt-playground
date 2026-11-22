@@ -138,6 +138,69 @@ Deno.test("the deadline kills; a process that then exits reports the signal", as
   assertEquals("signal" in result ? result.signal : "stuck", "SIGKILL");
 });
 
+Deno.test("a caller's SIGKILL is reported only once the signaller says the group is gone (yurt-sandbox#357)", async () => {
+  // The leader dies at once; the rest of its group goes later (the host's
+  // reaper's business), and the signaller resolves when it has.
+  let groupGone!: () => void;
+  const gone = new Promise<void>((resolve) => groupGone = resolve);
+  const spawned: FakeProcess[] = [];
+  const reg = new ExecutionRegistry(
+    (line) => {
+      const p = new FakeProcess(line);
+      spawned.push(p);
+      return Promise.resolve(p);
+    },
+    (pid) => {
+      spawned.find((p) => p.pid === pid)?.exit(137);
+      return gone;
+    },
+    { pollMs: 5 },
+  );
+  const id = await reg.spawn("sleep 60 | sleep 60");
+  void reg.kill(id, "SIGKILL");
+  let reported = false;
+  const waited = reg.wait(id).then((result) => {
+    reported = true;
+    return result;
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  assertEquals(reported, false, "reported while the group was still there");
+  groupGone();
+  const result = await waited;
+  assertEquals("signal" in result ? result.signal : "stuck", "SIGKILL");
+});
+
+Deno.test("no signal goes out once the leader has exited, while its group is waited out (yurt-sandbox#357)", async () => {
+  let groupGone!: () => void;
+  const gone = new Promise<void>((resolve) => groupGone = resolve);
+  const spawned: FakeProcess[] = [];
+  const signals: number[] = [];
+  const reg = new ExecutionRegistry(
+    (line) => {
+      const p = new FakeProcess(line);
+      spawned.push(p);
+      return Promise.resolve(p);
+    },
+    (pid, signal) => {
+      signals.push(signal);
+      if (signal !== 9) return Promise.resolve();
+      spawned.find((p) => p.pid === pid)?.exit(137);
+      return gone;
+    },
+    { pollMs: 5 },
+  );
+  const id = await reg.spawn("sleep 60 | sleep 60");
+  void reg.kill(id, "SIGKILL");
+  const waited = reg.wait(id);
+  await new Promise((r) => setTimeout(r, 30));
+  // The leader is gone and its pid may already be another process's.
+  await reg.kill(id, "SIGTERM");
+  groupGone();
+  const result = await waited;
+  assertEquals(signals, [9]);
+  assertEquals("signal" in result ? result.signal : "stuck", "SIGKILL");
+});
+
 Deno.test("a process that ignores the kill is reported stuck, kept, and released when it exits", async () => {
   const { reg, spawned } = registry({ killExits: false });
   const id = await reg.spawn("while :; do :; done", { timeoutMs: 10 });

@@ -3,23 +3,37 @@
  * Browser coordinator. WorkerHost.spawnRootLeader uses Atomics.wait, which
  * is legal here and illegal on the window thread.
  */
+import type { Platform } from "./device.ts";
+import { shLine, stagePlaywright } from "./playwright_setup.ts";
+import type { CdpBridge } from "./cdp_bridge.ts";
+import {
+  dropAgentSession,
+  loadAgentSession,
+  saveAgentSession,
+} from "./agent_session.ts";
 import {
   bootPlayground,
   browserImagePath,
   fetchPlaygroundBytes,
+  playgroundPins,
   type PlaygroundTerm,
+  SLIM_IMAGE_PATH,
 } from "./boot.ts";
 import {
   executeCell,
   type JupyterStream,
   type KernelPorts,
+  relaunchNote,
   restartGuestKernel,
   startGuestKernel,
 } from "./jupyter.ts";
 import { requestCellInterrupt } from "./cell_interrupt.ts";
 import {
   installThenLaunch,
+  kernelFailureDropsLayer,
+  kernelLifecycle,
   probePython,
+  restoresSnapshot,
   type StartReport,
   startSandbox,
 } from "./coordinator_start.ts";
@@ -39,12 +53,16 @@ import type {
 import type { JupyterMessage } from "./jupyter_protocol.ts";
 import { installCoordinatorWorkerProxy } from "./page_worker_bridge.ts";
 import {
+  type InstalledRelease,
+  installedReleases,
+  type InstalledReport,
+  installedReporter,
+} from "./installed_list.ts";
+import {
   browserArchiveCache,
-  fetchWithProgress,
   installPackage,
   InstallStalled,
-  loadCatalog,
-  resolveSet,
+  stalledSandboxWhy,
 } from "./packages.ts";
 import {
   browserLayerStore,
@@ -53,8 +71,31 @@ import {
   layerKey,
   type LayerStore,
 } from "./python_layer.ts";
+import { liveAnswers } from "./python_install.ts";
+import {
+  capturePrecompiles,
+  captureStagesPlaywright,
+  captureWarmsGo,
+  goWarmupLine,
+  postCaptured,
+  precompileLine,
+} from "./capture_outcome.ts";
 import { playgroundGuestPortIsDirect } from "./guest_port_policy.ts";
+import { ensureGo, GO_PROBE_LINE } from "./go_fallback.ts";
+import {
+  encodeSandboxSnapshot,
+  SNAPSHOT_KINDS,
+  snapshotIdentity,
+  type SnapshotKind,
+} from "./sandbox_snapshot.ts";
+import { linuxRemark } from "./linux_remark.ts";
+import { baseToolsIn } from "./image_tools.ts";
+import {
+  isUploadedSnapshotId,
+  uploadedSnapshotPath,
+} from "./snapshot_source.ts";
 import { runQueue } from "./run_queue.ts";
+import { type NetworkStatus, TabNetwork } from "./network.ts";
 import { type BootedSession, workerPackageHost } from "./session_packages.ts";
 import {
   type MemoryRefusedMessage,
@@ -68,6 +109,9 @@ type ToWorker =
   // `apiToken` opens the launcher's /api/* to the launch (yurt-playground#82).
   | {
     type: "start";
+    resumeSession?: boolean;
+    snapshotRequired?: boolean;
+    dropSession?: boolean;
     cols: number;
     rows: number;
     isolated: boolean;
@@ -77,13 +121,54 @@ type ToWorker =
     // browser refuses first (iPadOS stopped spawning after ~13 processes
     // while Jupyter started), so it is never launched there.
     noJupyter?: boolean;
-    // The slim image: the Python set to install when the image has no
-    // python3, before ipykernel -- the newest complete one in the live
-    // signed index (src/python_install.ts). Absent, such an image is
+    // The slim image: the Python set to install when the image lacks it
+    // (src/coordinator_start.ts), before ipykernel -- the newest complete
+    // one in the live signed index, or the one at the build of the python
+    // the image ships (src/python_install.ts). Absent, such an image is
     // reported as `python-missing`, as before.
-    python?: { label: string; set: string[]; image?: string };
+    python?: PythonRequest;
     // A tablet or phone: installs over 16 MiB are refused there.
     tablet?: boolean;
+    // What the page runs as (src/device.ts): a phone's kernel takes the
+    // small cap's memory maximum (src/guest_memory_reservation.ts).
+    platform?: Platform;
+    // The kernel keeps its default 1 GiB maximum even under a small cap
+    // (src/device.ts fullKernelMemory): a tablet, a phone on `?memory=1g`,
+    // a Notebook page restoring the desktop's snapshot.
+    fullKernelMemory?: boolean;
+    // `?snapshot=1`: restore the sealed sandbox (src/sandbox_snapshot.ts)
+    // instead of booting the image; `?snapshot=capture`: boot and install
+    // as usual, then seal instead of starting Jupyter and hand the file
+    // to the page (`snapshot-captured`).
+    snapshot?: "restore" | "capture";
+    // `?snapshot=<id>`: the uploaded snapshot to restore instead of the
+    // pinned one (src/snapshot_source.ts); with `snapshot: "restore"`.
+    snapshotId?: string;
+    // `?snapshot=capture&packages=a,b`: packages a capture installs after
+    // the Python set, before it seals (scripts/snapshot-local.ts).
+    capturePackages?: string[];
+    // Which snapshot (src/snapshot_pin.ts SNAPSHOT_KINDS): the one a
+    // restore takes (the device's), or the one a capture makes. The
+    // tablet's capture comes with python alone; the desktop's with the set.
+    snapshotKind?: SnapshotKind;
+    // A restore's Python, when the page installs none itself: what the
+    // live index is asked about for the snapshot's check (a tablet's
+    // python alone). `python` takes its place when there is one.
+    snapshotPython?: PythonRequest;
+    // Go's page (src/go_fallback.ts): the go package to install when the
+    // sandbox has no go -- Go's snapshot could not be restored and the
+    // slim image was booted instead.
+    goFallback?: PythonRequest;
+    // The page found the Yurt browser bridge extension: serve the guest a
+    // DevTools endpoint at 127.0.0.1:9222 (src/cdp_bridge.ts) whose
+    // messages go to the page as `cdp-*`.
+    cdpBridge?: boolean;
+    // The network relay's origin (src/network_config.ts): the in-tab
+    // sandbox gets a TCP backend and DNS through it, off until `network`
+    // turns it on (src/network.ts).
+    networkRelay?: string;
+    // The tab's user had the network on before a reload: on from the start.
+    networkOn?: boolean;
   }
   // Install Python again after a failed install (the cell's Install), then
   // start the kernel. Answered like a boot: status, then notebook-ready or
@@ -115,7 +200,72 @@ type ToWorker =
   // The Packages panel's install of one package (src/packages.ts), run
   // here like the automatic Python install and queued with it: one
   // install at a time. Progress comes back as `pkg-progress`.
-  | { type: "pkg-install"; req: number; name: string; tablet: boolean };
+  | { type: "pkg-install"; req: number; name: string; tablet: boolean }
+  // The Packages panel opened: what pkg has installed, as `pkg-installed`.
+  | { type: "pkg-read-installed" }
+  // An agent run ended: seal the sandbox into browser storage. It runs nothing
+  // more; the page reloads to resume it. Answered by `suspended`.
+  | { type: "suspend" }
+  // The extension's side of a DevTools connection (src/browser_bridge.ts):
+  // a CDP message for the guest, or the connection ended there.
+  | { type: "cdp-send"; conn: number; text: string }
+  | { type: "cdp-close"; conn: number }
+  // The page's network toggle, and its "cut all connections".
+  | { type: "network"; on: boolean }
+  | { type: "network-cut" }
+  // A relay token the coordinator asked for (`network-token`): the page
+  // passes Turnstile, which only it can, then asks the relay.
+  | {
+    type: "network-token-reply";
+    req: number;
+    token?: string;
+    ttl?: number;
+    error?: string;
+  };
+
+/** The guest's DevTools endpoint, once the shell's boot started it. */
+let cdpBridge: CdpBridge | undefined;
+
+/** The in-tab sandbox's network, when a relay is configured. */
+let network: TabNetwork | undefined;
+/** Relay tokens asked of the page, by request number. */
+const tokenRequests = new Map<
+  number,
+  {
+    resolve: (t: { token: string; ttl: number }) => void;
+    reject: (e: Error) => void;
+  }
+>();
+let nextTokenRequest = 1;
+/** Past the page's own Turnstile deadline: a page that never answers
+ * leaves no request behind. */
+const PAGE_TOKEN_DEADLINE_MS = 90_000;
+function pageToken(): Promise<{ token: string; ttl: number }> {
+  return new Promise((resolve, reject) => {
+    const req = nextTokenRequest++;
+    const timer = setTimeout(() => {
+      tokenRequests.delete(req);
+      reject(new Error("the page gave no relay token"));
+    }, PAGE_TOKEN_DEADLINE_MS);
+    tokenRequests.set(req, {
+      resolve: (t) => {
+        clearTimeout(timer);
+        resolve(t);
+      },
+      reject: (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    });
+    post({ type: "network-token", req });
+  });
+}
+
+/** Recorded with a seal: a kernel memory means something only to its binary. */
+let runningKernelSha256: string | undefined;
+/** The snapshot the running sandbox was restored from (or would have been,
+ * when it booted the image): a seal records it. */
+let runningKind: SnapshotKind = "desktop";
 
 type FromWorker =
   // status, error, shell-ready (the shell is the whole session), and
@@ -143,6 +293,13 @@ type FromWorker =
     channel: JupyterChannel;
   }
   | { type: "jupyter-restarted" }
+  // The guest's side of a DevTools connection (src/cdp_bridge.ts).
+  | { type: "cdp-open"; conn: number }
+  | { type: "cdp-message"; conn: number; text: string }
+  | { type: "cdp-close"; conn: number }
+  // The network's state for the page's indicator (src/network.ts).
+  | { type: "network-status"; status: NetworkStatus }
+  | { type: "network-token"; req: number }
   | {
     type: "yurt-reply";
     req: number;
@@ -151,6 +308,13 @@ type FromWorker =
     error?: string;
   }
   | { type: "pkg-progress"; req: number; text: string }
+  // What pkg has installed (src/installed_list.ts), or why that cannot be
+  // told: the Packages panel marks those Installed.
+  | InstalledReport
+  | { type: "snapshot-captured"; blob: Blob; ms: number }
+  // What this Linux holds (src/linux_remark.ts), as the shell starts.
+  | { type: "linux-remark"; remark: string }
+  | { type: "suspended"; why?: string }
   | {
     type: "pkg-reply";
     req: number;
@@ -162,18 +326,21 @@ type FromWorker =
 let jupyter: JupyterTransport | undefined;
 let launchSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 let executions: ExecutionRegistry | undefined;
-/** The in-tab session, for package installs; the desktop app's has none
- * (its sandbox has a network, and `pkg install` there needs no page). */
+/** The booted session, the desktop app's too. Only the in-tab one installs
+ * packages (it has `writeFiles`) and reads pkg's installed list (`files`). */
 let packageSession: Awaited<ReturnType<typeof bootPlayground>> | undefined;
 
 async function servePackages(msg: ToWorker): Promise<void> {
   if (msg.type !== "pkg-install") return;
   const { req } = msg;
+  /** The sandbox this install ran in. */
+  let used: typeof packageSession;
   try {
     // The session as it is when this install's turn comes: one queued
     // behind a stalled install may find a fresh sandbox, or a stalled one.
     const output = await installs(() => {
       const session = packageSession;
+      used = session;
       if (session?.process === undefined || session.writeFiles === undefined) {
         throw new Error("this sandbox does not install packages");
       }
@@ -183,22 +350,44 @@ async function servePackages(msg: ToWorker): Promise<void> {
         host: workerPackageHost(session),
         tablet: msg.tablet,
         progress: (text) => post({ type: "pkg-progress", req, text }),
+        // As the terminal installs: one repository cache for both.
+        relayed: session.pkgRelay === true,
       });
     });
     post({ type: "pkg-reply", req, ok: true, value: output });
   } catch (error) {
-    if (error instanceof InstallStalled && error.inSandbox) {
+    let said = error instanceof Error ? error.message : String(error);
+    // Only if it is still the sandbox: a recovery can end after Try again
+    // has dropped it for a fresh one, which this stall says nothing about.
+    if (
+      error instanceof InstallStalled && error.inSandbox &&
+      used === packageSession
+    ) {
       sandboxStalled = true;
-      stalledWhy = "an earlier install stopped making progress";
+      stalledWhy = stalledSandboxWhy(error);
+      // The panel shows this as it is: say the way to a fresh sandbox.
+      said += "; reload the page for a fresh one";
+    } else if (error instanceof InstallStalled && error.inSandbox) {
+      // Its sandbox was dropped meanwhile: the one in use is fresh.
+      said += "; that sandbox has since been replaced by a fresh one";
     }
-    post({
-      type: "pkg-reply",
-      req,
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    post({ type: "pkg-reply", req, ok: false, error: said });
+  } finally {
+    await installed.read();
   }
 }
+
+/** What pkg has installed in the in-tab sandbox, told to the page
+ * (src/installed_list.ts). The desktop app's session has no `files`: its
+ * page has no Packages panel to mark. */
+const installed = installedReporter(
+  (report) => {
+    post(report);
+    // What this Linux holds follows what pkg now lists (src/linux_remark.ts).
+    if ("names" in report) packageSession?.refreshRemark?.();
+  },
+  () => packageSession?.files,
+);
 
 /** One install at a time, whole: an install is a plan run, the downloads
  * and an install run, every run stages at the same directory, and pkg
@@ -249,18 +438,19 @@ async function serveYurt(msg: ToWorker): Promise<void> {
   }
 }
 let kernelPorts: KernelPorts | undefined;
-/** The image has no python3 (src/coordinator_start.ts): a restart the
+/** The image has no Python set (src/coordinator_start.ts): a restart the
  * frontend asks for gets the same answer, not "Jupyter is not ready". */
 let pythonMissing = false;
-/** Restarts are serialised: a second request waits for the first. */
-let restarting: Promise<void> = Promise.resolve();
+/** Restarts and installs run one at a time; a restart during the boot's
+ * start is refused. */
+const lifecycle = kernelLifecycle();
 /** How the start installs Python on the slim image, kept for a retry. */
 let installPython:
   | ((session: BootedSession) => Promise<void>)
   | undefined;
 /** An install stopped making progress in this sandbox's `pkg` run
- * (src/packages.ts `InstallStalled`): it may no longer answer, and its
- * packages are half applied. The Python install's next try is in a fresh
+ * (src/packages.ts `InstallStalled`): it may no longer answer, and, unless
+ * `pkg recover` finished it, its packages may be half applied. The Python install's next try is in a fresh
  * sandbox; the Packages panel installs nothing more into this one. */
 let sandboxStalled = false;
 /** Why the sandbox takes no more installs (set with `sandboxStalled`). */
@@ -276,44 +466,171 @@ const pkgTouched = new WeakSet<object>();
  * kernel that then does not start drops the layer, rather than every
  * later visit failing the same way. */
 let layerInstalled: LayerStore | undefined;
-/** How long the live index may take to answer whether the stored layer is
- * still the set; past it, the stored layer is used as when offline. */
-const LIVE_INDEX_TIMEOUT_MS = 20_000;
-
-async function liveLayerKey(
-  image: string,
-  set: string[],
-): Promise<string | undefined> {
-  const giveUp = new AbortController();
-  const timer = setTimeout(() => giveUp.abort(), LIVE_INDEX_TIMEOUT_MS);
-  let catalog: Awaited<ReturnType<typeof loadCatalog>>;
-  try {
-    // Throws when the repository cannot be had: the stored layer then.
-    catalog = await loadCatalog(
-      (url, limit, onBytes) =>
-        fetchWithProgress(url, limit, onBytes, giveUp.signal),
-    );
-  } finally {
-    clearTimeout(timer);
-  }
-  // The repository answered: a set it no longer offers (yanked, removed)
-  // is no layer's either.
-  try {
-    return layerKey(image, resolveSet(catalog, set));
-  } catch {
-    return undefined;
-  }
-}
-
 /** A Jupyter that did not start on a layer's Python: drop the layer. */
 function dropLayerIfKernelFailed(report: StartReport): void {
-  if (
-    report.type === "error" && layerInstalled !== undefined &&
-    report.message.startsWith("Jupyter did not start")
-  ) {
+  if (layerInstalled !== undefined && kernelFailureDropsLayer(report)) {
     void layerInstalled.drop();
     layerInstalled = undefined;
   }
+}
+
+type PythonRequest = {
+  label: string;
+  set: string[];
+  image?: string;
+  installed?: InstalledRelease[];
+};
+
+/** `?snapshot=capture`: precompile the installed Python set, seal the
+ * sandbox (no process left in it) and hand the snapshot file to the page,
+ * in the kernel's place: a sealed sandbox runs nothing more. */
+async function captureSnapshot(
+  session: Awaited<ReturnType<typeof bootPlayground>>,
+  /** The Python set the capture installed, as a layer key. */
+  pythonSet: string,
+  /** Packages to install after the Python set, before the seal
+   * (`?snapshot=capture&packages=`): in the snapshot's memory only, so a
+   * restore's checks are the Python set's alone. */
+  packages: readonly string[],
+  kind: SnapshotKind,
+): Promise<void> {
+  if (session.seal === undefined || session.process === undefined) {
+    throw new Error("this session cannot seal");
+  }
+  for (const name of packages) {
+    // As the Packages panel installs one: in the install queue's turn.
+    await installs(() => {
+      pkgTouched.add(session);
+      return installPackage(name, {
+        host: workerPackageHost(session),
+        tablet: false,
+        progress: (text) => post({ type: "status", text }),
+      });
+    });
+  }
+  if (packages.length > 0) await installed.read();
+  // Go's snapshot holds no Python to compile (capturePrecompiles).
+  if (capturePrecompiles(kind)) {
+    // Bytecode for every module the packages ship as source only
+    // (PRECOMPILE_PROGRAM): each start compiled them again, slow on Safari,
+    // where compiling one of wcwidth's modules also overflowed the Worker's
+    // stack and killed ipykernel with SIGSEGV. Its failure is refused, with
+    // its own words.
+    await captureStep(
+      session.process,
+      precompileLine(),
+      "precompiling Python modules",
+      "precompiling the Python set",
+      "precompiled",
+    );
+  }
+  // Go's standard library compiled into the login user's build cache
+  // (goWarmupScript): a cold first `go run` compiles it, ~17 min in a
+  // tab, and the snapshot's restore then only compiles the user's own
+  // package. Refused like the precompile when it fails.
+  if (captureWarmsGo(kind)) {
+    await captureStep(
+      session.process,
+      goWarmupLine(),
+      "compiling Go's standard library into the build cache (minutes)",
+      "warming Go's build cache",
+      "warmed Go's build cache",
+    );
+  }
+  // Playwright's: what the demo's setup does on a page, done once here
+  // (the same code, src/playwright_setup.ts), so a restored page only
+  // checks. Files are staged in /tmp as root (writeFiles) and copied into
+  // the home by the login user, who owns them then.
+  if (captureStagesPlaywright(kind)) {
+    const spawn = session.process;
+    const writeFiles = session.writeFiles;
+    if (writeFiles === undefined) {
+      throw new Error("this session cannot write files");
+    }
+    const run = async (line: string) => {
+      const step = await spawn(line, { maxOutputBytes: 64 * 1024 });
+      const exited = await step.exited;
+      return typeof exited === "number" ? exited : exited.code ?? -1;
+    };
+    let staged = 0;
+    post({ type: "status", text: "staging playwright-core and yurt-chrome" });
+    await stagePlaywright({
+      run,
+      write: async (path, bytes) => {
+        const from = `/tmp/playwright-stage-${staged++}`;
+        writeFiles([{ path: from, bytes }]);
+        const dir = path.slice(0, path.lastIndexOf("/"));
+        if (
+          await run(
+            shLine(
+              `mkdir -p '${dir}' && cp '${from}' '${path}' && sudo rm -f '${from}'`,
+            ),
+          ) !== 0
+        ) {
+          throw new Error(`staging ${path} failed`);
+        }
+      },
+      tarball: async () => {
+        const response = await fetch("./playwright-core.tgz");
+        if (!response.ok) {
+          throw new Error(`playwright-core.tgz: HTTP ${response.status}`);
+        }
+        return new Uint8Array(await response.arrayBuffer());
+      },
+    }, {
+      // Its set is node: installed before this step, or the capture fails.
+      installNode: () =>
+        Promise.reject(new Error("the capture installed no node")),
+      say: (text) => post({ type: "status", text }),
+    });
+  }
+  // What it holds, for its pin and for people: pkg's list as the seal
+  // keeps it (src/linux_remark.ts).
+  const packagesHeld = await installedReleases(session.files) ?? [];
+  const toolsHeld = await baseToolsIn(session.files);
+  const contents = {
+    packages: packagesHeld,
+    remark: linuxRemark(packagesHeld, toolsHeld),
+  };
+  post({ type: "status", text: "sealing the sandbox" });
+  const started = performance.now();
+  const image = await session.seal();
+  const blob = await encodeSandboxSnapshot(
+    image,
+    { ...snapshotIdentity(await playgroundPins()), pythonSet },
+    contents,
+  );
+  postCaptured(post, blob, Math.round(performance.now() - started));
+}
+
+/** One of a capture's steps before the seal: run `line` (as the login
+ * user, or root through sudo), say `status` meanwhile, and refuse the
+ * capture with the step's own words unless it exits 0. */
+async function captureStep(
+  spawn: NonNullable<
+    Awaited<ReturnType<typeof bootPlayground>>["process"]
+  >,
+  line: string,
+  status: string,
+  what: string,
+  done: string,
+): Promise<void> {
+  post({ type: "status", text: status });
+  const started = performance.now();
+  const step = await spawn(line, { maxOutputBytes: 64 * 1024 });
+  const exited = await step.exited;
+  const code = typeof exited === "number" ? exited : exited.code;
+  if (code !== 0) {
+    const decoder = new TextDecoder();
+    const said = decoder.decode(step.takeStdout()) +
+      decoder.decode(step.takeStderr());
+    throw new Error(
+      `${what} exited ${JSON.stringify(exited)}: ${said.slice(-2000)}`,
+    );
+  }
+  console.log(
+    `[snapshot] ${done} in ${Math.round(performance.now() - started)} ms`,
+  );
 }
 
 /** Drop the in-tab sandbox and start a fresh one the way the page's start
@@ -341,7 +658,8 @@ async function retryPython(): Promise<void> {
   const started = await installThenLaunch(session, {
     installPython,
     launching: (s) => launchSession = s,
-    startKernel: (s) => startGuestKernel(s, kernelPorts),
+    startKernel: (s, relaunching) =>
+      startGuestKernel(s, kernelPorts, { relaunching }),
     post: (report) => {
       pythonMissing = report.type === "python-missing";
       dropLayerIfKernelFailed(report);
@@ -411,8 +729,65 @@ function workerTerm(
 
 self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
+  // The DevTools relay's hot path: before the other handlers' awaits.
+  if (msg.type === "cdp-send") {
+    cdpBridge?.send(msg.conn, msg.text);
+    return;
+  }
+  if (msg.type === "cdp-close") {
+    cdpBridge?.close(msg.conn);
+    return;
+  }
+  if (msg.type === "network") {
+    network?.setEnabled(msg.on);
+    return;
+  }
+  if (msg.type === "network-cut") {
+    network?.tcp.cutAll();
+    return;
+  }
+  if (msg.type === "network-token-reply") {
+    const waiter = tokenRequests.get(msg.req);
+    tokenRequests.delete(msg.req);
+    if (msg.token !== undefined && msg.ttl !== undefined) {
+      waiter?.resolve({ token: msg.token, ttl: msg.ttl });
+    } else {
+      waiter?.reject(new Error(msg.error ?? "no relay token"));
+    }
+    return;
+  }
   await serveYurt(msg);
   await servePackages(msg);
+  if (msg.type === "pkg-read-installed") await installed.read();
+  if (msg.type === "suspend") {
+    try {
+      await installs(async () => {
+        const session = packageSession;
+        if (session?.seal === undefined || runningKernelSha256 === undefined) {
+          throw new Error("this sandbox cannot be sealed");
+        }
+        const started = performance.now();
+        const image = await session.seal();
+        const sealed = performance.now();
+        await saveAgentSession(image, runningKernelSha256, runningKind);
+        console.log(
+          `[session] sealed in ${Math.round(sealed - started)} ms, saved in ${
+            Math.round(performance.now() - sealed)
+          } ms`,
+        );
+      });
+      post({ type: "status", text: "suspended" });
+      post({ type: "suspended" });
+    } catch (error) {
+      // An earlier seal must not come back under the chat that starts over
+      // now (src/agent_pane.ts): the next message gets a new sandbox.
+      await dropAgentSession().catch(() => {});
+      post({
+        type: "suspended",
+        why: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });
@@ -429,12 +804,11 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     return;
   }
   if (msg.type === "python-install") {
-    restarting = restarting.then(retryPython);
-    await restarting;
+    await lifecycle.enqueue(retryPython);
     return;
   }
   if (msg.type === "jupyter-restart") {
-    restarting = restarting.then(async () => {
+    await lifecycle.restart(async () => {
       if (pythonMissing && installPython !== undefined) {
         await retryPython();
         return;
@@ -455,6 +829,13 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           launchSession,
           previous,
           kernelPorts,
+          {
+            relaunching: (launch) =>
+              post({
+                type: "status",
+                text: `restarting Jupyter (${relaunchNote(launch)})`,
+              }),
+          },
         );
         subscribeJupyter(jupyter);
         post({ type: "jupyter-restarted" });
@@ -464,8 +845,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           message: error instanceof Error ? error.message : String(error),
         });
       }
-    });
-    await restarting;
+    }, () => post({ type: "error", message: "Jupyter is not ready" }));
     return;
   }
   if (msg.type === "cell-interrupt") {
@@ -501,14 +881,43 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   }
   if (msg.type !== "start") return;
   kernelPorts = msg.kernelPorts;
+  if (kernelPorts === undefined && msg.networkRelay !== undefined) {
+    network ??= new TabNetwork(
+      msg.networkRelay,
+      pageToken,
+      (status) => post({ type: "network-status", status }),
+    );
+    if (msg.networkOn === true) network.setEnabled(true);
+  }
+  // The live index's answers for this boot: a snapshot's check and the
+  // install's stored-layer question, from one read. Made by each begin()
+  // below, so a fresh sandbox asks again.
+  let live: ReturnType<typeof liveAnswers>;
   const term = workerTerm({ cols: msg.cols, rows: msg.rows });
+  const restoreKind: SnapshotKind = msg.snapshotKind ?? "desktop";
+  runningKind = restoreKind;
   const env = {
     isolated: msg.isolated,
+    platform: msg.platform,
+    fullKernelMemory: msg.fullKernelMemory === true,
     // The slim image when the train pins one; the desktop app's native
     // sandbox reads no image here.
     imagePath: kernelPorts === undefined
       ? await browserImagePath().catch(() => undefined)
       : undefined,
+    snapshotPath:
+      restoresSnapshot({ ...msg, native: kernelPorts !== undefined })
+        ? isUploadedSnapshotId(msg.snapshotId)
+          ? uploadedSnapshotPath(msg.snapshotId!)
+          : `./${SNAPSHOT_KINDS[restoreKind].name}`
+        : undefined,
+    snapshotKind: restoreKind,
+    snapshotRequired: msg.snapshotRequired === true,
+    snapshotCache: typeof caches === "undefined" ? undefined : caches,
+    snapshotId: isUploadedSnapshotId(msg.snapshotId)
+      ? msg.snapshotId
+      : undefined,
+    livePythonSet: () => live.pythonSet(),
     fetchBytes: (path: string) =>
       fetchPlaygroundBytes(path, (progress) => {
         const percent = progress.total === undefined
@@ -519,21 +928,56 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
     show: (text: string) => post({ type: "status", text }),
     term,
     memoryRefused: () => post(memoryRefusedMessage()),
+    linuxRemark: (remark: string) => post({ type: "linux-remark", remark }),
+    savedSession: msg.resumeSession === true
+      ? () => loadAgentSession(restoreKind)
+      : undefined,
+    dropSavedSession: dropAgentSession,
+    kernelSha256: (sha256: string) => runningKernelSha256 = sha256,
+    // The terminal's `pkg` fetches through the page (src/pkg_relay.ts);
+    // the desktop app's guest has the network itself.
+    pkgRelay: kernelPorts === undefined
+      ? { tablet: msg.tablet === true }
+      : undefined,
+    cdpBridge: kernelPorts === undefined && msg.cdpBridge === true
+      ? {
+        handlers: {
+          open: (conn: number) => post({ type: "cdp-open", conn }),
+          message: (conn: number, text: string) =>
+            post({ type: "cdp-message", conn, text }),
+          close: (conn: number) => post({ type: "cdp-close", conn }),
+        },
+        started: (bridge: CdpBridge) => cdpBridge = bridge,
+      }
+      : undefined,
+    network,
   };
   // The slim image's Python: the coordinator installs the set itself, so
   // every page that boots a sandbox gets the same install.
+  // No chat to go with it: not waited for, it only frees the storage.
+  if (msg.dropSession === true) {
+    void dropAgentSession().catch(() => {});
+  }
   const python = msg.python;
   const tablet = msg.tablet === true;
   // The desktop app's sandbox has a network and its own pkg; only the
   // in-tab one installs through the page.
+  /** What a capture's install installed, as a layer key: the set its
+   * own index read resolved to, so the snapshot's label is the set it
+   * holds. */
+  let capturedSet: string | undefined;
+  const capturing = msg.snapshot === "capture";
   installPython = python === undefined || kernelPorts !== undefined
     ? undefined
     : async (session) => {
-      post({ type: "status", text: "installing Python" });
+      // "installing Go" for the Go snapshot's capture.
+      post({ type: "status", text: `installing ${python.label}` });
       const cache = await browserArchiveCache();
       const progress = (text: string) => post({ type: "status", text });
       layerInstalled = undefined;
-      const store = tablet ? undefined : await browserLayerStore();
+      // A capture installs with pkg, never from a stored layer: the
+      // snapshot is what the live index gives now.
+      const store = tablet || capturing ? undefined : await browserLayerStore();
       try {
         // Instant on a later visit: this browser's earlier install, kept
         // as a layer (src/python_layer.ts), when it is still the set. All
@@ -541,6 +985,15 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         // land while a layer is written or read out. Not on a tablet: a
         // layer is over 100 MiB in this worker while it is made or used.
         const from = await installs(() => {
+          // A Packages install queued before this one stalled here (it is
+          // marked only once its recovery ends, which Try again may not
+          // have waited for): install nothing into it. The next Try again
+          // starts a fresh sandbox.
+          if (sandboxStalled && session === packageSession) {
+            throw new Error(
+              `${stalledWhy} in this sandbox; Try again starts a fresh one`,
+            );
+          }
           // In the turn: a Packages install queued before this one has run.
           const pristine = !pkgTouched.has(session);
           pkgTouched.add(session);
@@ -549,14 +1002,26 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
             store,
             image: python.image,
             pristine,
-            liveKey: () => liveLayerKey(python.image!, python.set),
+            liveKey: () => live.layerKey(),
             install: async (between) => {
+              // What pkg already has here pins the set (python, in a slim
+              // image that ships it): the sandbox's own list, read now,
+              // over what the pins say the image ships.
+              const have = await installedReleases(session.files);
               between.before();
-              await installPackage(python, {
+              await installPackage({
+                ...python,
+                installed: have ?? python.installed,
+              }, {
                 host: workerPackageHost(session),
                 tablet,
                 progress,
                 cache,
+                resolved: capturing && python.image !== undefined
+                  ? (releases) => {
+                    capturedSet = layerKey(python.image!, [...releases]);
+                  }
+                  : undefined,
               });
               between.after();
             },
@@ -567,22 +1032,30 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         layerInstalled = from === "layer" ? store : undefined;
       } catch (error) {
         // A sandbox a layer was half written into, like a stalled one,
-        // takes no pkg install: the retry is in a fresh one.
-        if (error instanceof InstallStalled && error.inSandbox) {
+        // takes no pkg install: the retry is in a fresh one. Not if this
+        // sandbox is already gone (a recovery that ended after the switch).
+        if (session !== packageSession) {
+          // Nothing to mark: the sandbox now in use is another one.
+        } else if (error instanceof InstallStalled && error.inSandbox) {
           sandboxStalled = true;
-          stalledWhy = "an earlier install stopped making progress";
+          stalledWhy = stalledSandboxWhy(error);
         } else if (error instanceof LayerFailed) {
           sandboxStalled = true;
           stalledWhy = "a stored Python install did not work";
         }
         throw error;
+      } finally {
+        // Like a panel install's: what it did install, even if it failed.
+        await installed.read();
       }
     };
   /** Boot, install, start Jupyter: the start, and what a retry after a
    * stalled install runs again on a fresh sandbox (the one deliberate
    * exception to "never stops the session": the stalled one is dropped
    * first). */
+  const captureKind: SnapshotKind = msg.snapshotKind ?? "desktop";
   const begin = async () => {
+    live = liveAnswers(msg.python ?? msg.snapshotPython);
     // Never stops the session once its shell is up (src/coordinator_start.ts).
     const started = await startSandbox({
       boot: () =>
@@ -595,12 +1068,42 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           executions = new ExecutionRegistry(session.process, session.signal);
         }
         packageSession = session;
+        void installed.read();
       },
       // A restart relaunches on it, whether or not the first launch worked.
       launching: (session) => launchSession = session,
       noJupyter: msg.noJupyter === true,
       installPython,
-      startKernel: (session) => startGuestKernel(session, kernelPorts),
+      startKernel: (session, relaunching) =>
+        startGuestKernel(session, kernelPorts, { relaunching }),
+      capture: msg.snapshot === "capture"
+        ? (session) => {
+          // Every snapshot but the desktop's is the slim image's: the full
+          // image (a train without one) holds the whole set.
+          if (captureKind !== "desktop" && env.imagePath !== SLIM_IMAGE_PATH) {
+            throw new Error(
+              `the ${captureKind}'s capture needs the train's slim image (browserImage)`,
+            );
+          }
+          if (capturedSet === undefined) {
+            throw new Error(
+              `this capture installed no ${
+                captureKind === "go"
+                  ? "Go"
+                  : captureKind === "playwright"
+                  ? "node"
+                  : "Python"
+              }`,
+            );
+          }
+          return captureSnapshot(
+            session,
+            capturedSet,
+            msg.capturePackages ?? [],
+            captureKind,
+          );
+        }
+        : undefined,
       post: (report) => {
         if (report.type === "python-missing") pythonMissing = true;
         dropLayerIfKernelFailed(report);
@@ -613,6 +1116,47 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         post(report);
       },
     });
+    // The boot is over: its read of the live index goes with it (a later
+    // install on this sandbox asks again).
+    live.finish();
+    // Go's page on a sandbox without go (a fallback boot): install it.
+    const goSession = packageSession;
+    if (
+      msg.goFallback !== undefined && kernelPorts === undefined &&
+      goSession?.process !== undefined
+    ) {
+      const goSet = msg.goFallback;
+      const spawn = goSession.process;
+      await ensureGo({
+        probe: async () => {
+          try {
+            const probe = await spawn(GO_PROBE_LINE, { maxOutputBytes: 1024 });
+            const status = await probe.exited;
+            return (typeof status === "number" ? status : status.code) === 0;
+          } catch {
+            return undefined;
+          }
+        },
+        install: async () => {
+          const cache = await browserArchiveCache();
+          await installs(() => {
+            pkgTouched.add(goSession);
+            return installPackage(goSet, {
+              host: workerPackageHost(goSession),
+              tablet: false,
+              progress: (text) => post({ type: "status", text }),
+              cache,
+            });
+          });
+          await installed.read();
+          post({ type: "status", text: "" });
+        },
+        say: (text) => {
+          term.write(`\r\n${text}\r\n`);
+          post({ type: "status", text });
+        },
+      });
+    }
     if (started !== undefined) {
       jupyter = started;
       subscribeJupyter(jupyter);
@@ -627,6 +1171,8 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
    * terminal's handlers were the stopped session's last references. Apart
    * from `startFresh` so no local of that long await holds it. */
   const dropSandbox = () => {
+    // What the fresh one has is unknown until it boots.
+    installed.dropped();
     const stale = packageSession;
     packageSession = undefined;
     launchSession = undefined;
@@ -653,7 +1199,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       dropSandbox();
       freshBoot = true;
       try {
-        await begin();
+        await lifecycle.start(begin);
       } finally {
         freshBoot = false;
       }
@@ -666,8 +1212,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           type: "python-missing",
           error: `a fresh sandbox did not start: ${bootError ?? "unknown"}`,
         });
+        installed.freshFailed(bootError ?? "unknown");
       }
     };
   }
-  await begin();
+  await lifecycle.start(begin);
 });

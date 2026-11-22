@@ -8,12 +8,22 @@ import {
 } from "@yurt/kernel-host-interface-js";
 import { handlePlaygroundRequest } from "../src/serve.ts";
 import { loadPins, resolveArtifacts } from "../src/pins.ts";
-import { stageYurtimg } from "../src/stage.ts";
+import {
+  drainDirtyPaths,
+  stageYurtimg,
+  vfsReadWhole,
+  vfsStat,
+  writeRamfsFile,
+} from "../src/stage.ts";
 
 const STAT_MODE = 12;
 const STAT_UID = 16;
 const STAT_GID = 20;
-const STAT_LEN = 48;
+// The kernel's whole StatRecord. Since yurtos-kernel#3989 it is 88 bytes
+// and a shorter response buffer is -EINVAL; fields are only ever appended,
+// so the offsets above are the same in the older 48-byte record, and a
+// kernel that writes fewer bytes still fills them.
+const STAT_LEN = 88;
 
 const repoRoot = join(fileURLToPath(import.meta.url), "../..");
 
@@ -79,7 +89,12 @@ function stagedKernel(): Promise<KernelHostInterface | null> {
   return staged;
 }
 
-async function buildStagedKernel(): Promise<KernelHostInterface | null> {
+/** A fresh kernel from the pinned wasm and the pinned image's bytes, or
+ * `null` when the artifacts are not resolvable here (see
+ * {@link stagedKernel}). */
+async function pinnedKernel(): Promise<
+  { mk: KernelHostInterface; image: Uint8Array } | null
+> {
   const artifactsDir = join(repoRoot, "artifacts");
   try {
     await resolveArtifacts({
@@ -112,12 +127,14 @@ async function buildStagedKernel(): Promise<KernelHostInterface | null> {
     new Uint8Array(await kernelRes.arrayBuffer()),
     defaultHostState(),
   );
-  await stageYurtimg(
-    mk,
-    new Uint8Array(await imageRes.arrayBuffer()),
-    new Map(),
-  );
-  return mk;
+  return { mk, image: new Uint8Array(await imageRes.arrayBuffer()) };
+}
+
+async function buildStagedKernel(): Promise<KernelHostInterface | null> {
+  const pinned = await pinnedKernel();
+  if (!pinned) return null;
+  await stageYurtimg(pinned.mk, pinned.image, new Map());
+  return pinned.mk;
 }
 
 Deno.test({
@@ -166,6 +183,7 @@ Deno.test({
 // --- A fake kernel: what stageYurtimg asks for, and in which order. ---
 
 const KERNEL_VFS_SET_METADATA = 33;
+const KERNEL_VFS_STAT = 27;
 const SYS_CHOWN = 0x1_0023;
 const SYS_LCHOWN = 0x1_01D2;
 
@@ -242,15 +260,30 @@ function zstdStored(bytes: Uint8Array): Uint8Array {
 }
 
 type Call = { kind: string; path: string };
-type Recorded = { mode: number; uid: number; gid: number; mtimeNs: bigint };
+type Recorded = {
+  mode: number;
+  uid: number;
+  gid: number;
+  mtimeNs: bigint;
+  atimeNs: bigint;
+  ctimeNs: bigint;
+};
 
-function fakeKernel() {
+/** The kernel's `kernel_vfs_set_metadata` head (yurtos-kernel#4431): mode,
+ * uid, gid, then mtime, atime and ctime as i64 ns, before the path. A
+ * request shorter than the head is EINVAL, as in the kernel. */
+const SET_METADATA_HEAD = 36;
+
+function fakeKernel(layout: "current" | "legacy" = "current") {
   const decoder = new TextDecoder();
   const calls: Call[] = [];
   const metadata = new Map<string, Recorded>();
   const mk = {
     scratchLen: 64 * 1024,
-    syscall(method: number, request: Uint8Array): { rc: bigint } {
+    syscall(
+      method: number,
+      request: Uint8Array,
+    ): { rc: bigint; response?: Uint8Array } {
       const view = new DataView(
         request.buffer,
         request.byteOffset,
@@ -277,14 +310,25 @@ function fakeKernel() {
             path: decoder.decode(request.subarray(8)),
           });
           return { rc: 0n };
+        case KERNEL_VFS_STAT:
+          // The record size tells the layout: 32 bytes before #4431, 48 after.
+          return {
+            rc: layout === "legacy" ? 32n : 48n,
+            response: new Uint8Array(72),
+          };
         case KERNEL_VFS_SET_METADATA: {
-          const path = decoder.decode(request.subarray(20));
+          const head = layout === "legacy" ? 20 : SET_METADATA_HEAD;
+          if (request.byteLength < head) return { rc: -22n };
+          const path = decoder.decode(request.subarray(head));
           calls.push({ kind: "metadata", path });
           metadata.set(path, {
             mode: view.getUint32(0, true),
             uid: view.getUint32(4, true),
             gid: view.getUint32(8, true),
-            mtimeNs: view.getBigUint64(12, true),
+            mtimeNs: view.getBigInt64(12, true),
+            // A legacy head carries the mtime alone.
+            atimeNs: layout === "legacy" ? 0n : view.getBigInt64(20, true),
+            ctimeNs: layout === "legacy" ? 0n : view.getBigInt64(28, true),
           });
           return { rc: 0n };
         }
@@ -383,6 +427,8 @@ Deno.test("stageYurtimg applies every entry's recorded mode, owner and mtime aft
         uid: entry.uid,
         gid: entry.gid,
         mtimeNs: BigInt(entry.mtime) * 1_000_000_000n,
+        atimeNs: BigInt(entry.mtime) * 1_000_000_000n,
+        ctimeNs: BigInt(entry.mtime) * 1_000_000_000n,
       },
       `metadata for ${entry.path}`,
     );
@@ -413,4 +459,466 @@ Deno.test("stageYurtimg applies metadata only to the entries it stages", async (
   assertEquals(metadata.has("/usr/local/bin/pip3"), false);
   // Directories are always staged, so they always take their metadata.
   assertEquals(metadata.get("/root")?.mode, 0o040_700);
+});
+
+/** One file reached by many names, as busybox and git are in the image,
+ * beside a distinct file with the same bytes. */
+const LINKED_IMAGE: TarSpec[] = [
+  { path: "/bin", type: "5", mode: 0o755, uid: 0, gid: 0, mtime: 1 },
+  { path: "/usr", type: "5", mode: 0o755, uid: 0, gid: 0, mtime: 1 },
+  { path: "/usr/bin", type: "5", mode: 0o755, uid: 0, gid: 0, mtime: 1 },
+  ...[
+    { path: "/bin/busybox", type: "0", body: "busybox bytes" },
+    { path: "/bin/sh", type: "2", link: "busybox" },
+    { path: "/bin/ls", type: "2", link: "busybox" },
+    { path: "/usr/bin/env", type: "2", link: "/bin/busybox" },
+    // A symlink to a symlink: still the one file.
+    { path: "/usr/bin/sh", type: "2", link: "../../bin/sh" },
+    { path: "/bin/busybox-hard", type: "1", link: "bin/busybox" },
+    // Same bytes, its own file: never the same buffer.
+    { path: "/bin/twin", type: "0", body: "busybox bytes" },
+    { path: "/bin/usr", type: "2", link: "/usr" },
+    { path: "/bin/dangling", type: "2", link: "/nowhere" },
+  ].map((entry) => ({
+    ...entry,
+    type: entry.type as TarSpec["type"],
+    mode: 0o755,
+    uid: 0,
+    gid: 0,
+    mtime: 2,
+  })),
+];
+
+Deno.test("stageYurtimg gives every name of a file one copy of its bytes, and a distinct file its own", async () => {
+  const { mk } = fakeKernel();
+  const host = new Map<string, Uint8Array>();
+  await stageYurtimg(mk, zstdStored(ustar(LINKED_IMAGE)), host);
+
+  const busybox = host.get("/bin/busybox");
+  assert(busybox !== undefined, "busybox was not staged");
+  assertEquals(new TextDecoder().decode(busybox), "busybox bytes");
+  // Each symlink used to hold its own copy of its target: 154 of busybox
+  // and 149 of git, ~1.3 GB alive at once, ran an iPhone tab out of memory.
+  for (
+    const name of [
+      "/bin/sh",
+      "/bin/ls",
+      "/usr/bin/env",
+      "/usr/bin/sh",
+      "/bin/busybox-hard",
+    ]
+  ) {
+    assert(host.get(name) === busybox, `${name} has its own copy`);
+  }
+  const twin = host.get("/bin/twin");
+  assert(twin !== undefined, "twin was not staged");
+  assert(twin.buffer !== busybox.buffer, "a distinct file shares a buffer");
+  busybox[0] = "B".charCodeAt(0);
+  assertEquals(new TextDecoder().decode(twin), "busybox bytes");
+  // A symlink to a directory and a dangling one are VFS entries, not files.
+  assertEquals(host.has("/bin/usr"), false);
+  assertEquals(host.has("/bin/dangling"), false);
+});
+
+Deno.test("stageYurtimg gives a symlink its target's bytes when only the symlink is staged", async () => {
+  const { mk } = fakeKernel();
+  const host = new Map<string, Uint8Array>();
+  await stageYurtimg(
+    mk,
+    zstdStored(ustar(LINKED_IMAGE)),
+    host,
+    (path) => path === "/bin/sh" || path === "/usr/bin/env",
+  );
+  assertEquals([...host.keys()].sort(), ["/bin/sh", "/usr/bin/env"]);
+  assertEquals(new TextDecoder().decode(host.get("/bin/sh")), "busybox bytes");
+  assert(host.get("/usr/bin/env") === host.get("/bin/sh"));
+});
+
+Deno.test({
+  name:
+    "a write to one staged file reaches its symlinks but no other file, nor the host's bytes",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const pinned = await pinnedKernel();
+    if (!pinned) return;
+    const { mk } = pinned;
+    const host = new Map<string, Uint8Array>();
+    await stageYurtimg(mk, zstdStored(ustar(LINKED_IMAGE)), host);
+    const text = (bytes: Uint8Array | undefined) =>
+      bytes === undefined ? undefined : new TextDecoder().decode(bytes);
+
+    writeRamfsFile(mk, "/bin/busybox", new TextEncoder().encode("rewritten"));
+    assertEquals(text(vfsReadWhole(mk, "/bin/busybox")), "rewritten");
+    assertEquals(text(vfsReadWhole(mk, "/bin/sh")), "rewritten");
+    assertEquals(text(vfsReadWhole(mk, "/usr/bin/sh")), "rewritten");
+    assertEquals(text(vfsReadWhole(mk, "/bin/twin")), "busybox bytes");
+    // The kernel keeps its own copy: the bytes the host was handed are
+    // not the guest's file.
+    assertEquals(text(host.get("/bin/sh")), "busybox bytes");
+
+    writeRamfsFile(mk, "/bin/twin", new TextEncoder().encode("twin"));
+    assertEquals(text(vfsReadWhole(mk, "/bin/twin")), "twin");
+    assertEquals(text(vfsReadWhole(mk, "/bin/ls")), "rewritten");
+  },
+});
+
+Deno.test("vfsReadWhole is a file in one VFS read, none when missing, and refuses one that does not fit", () => {
+  const calls: { offset: number; cap: number }[] = [];
+  /** The kernel's VFS read (29): `size` bytes at /f, `rc` for any other
+   * path. */
+  const kernel = (size: number, rc = -2n) =>
+    ({
+      scratchLen: 64 + 100,
+      syscall(method: number, request: Uint8Array, cap: number) {
+        assertEquals(method, 29);
+        const offset = Number(
+          new DataView(request.buffer, request.byteOffset).getBigUint64(
+            0,
+            true,
+          ),
+        );
+        calls.push({ offset, cap });
+        if (new TextDecoder().decode(request.subarray(8)) !== "/f") {
+          return { rc, response: new Uint8Array() };
+        }
+        const bytes = new Uint8Array(size).fill(7).subarray(0, cap);
+        return { rc: BigInt(bytes.byteLength), response: bytes };
+      },
+      // deno-lint-ignore no-explicit-any
+    }) as any;
+  // One read from the start, the whole scratch room beside the request.
+  assertEquals(vfsReadWhole(kernel(5), "/f"), new Uint8Array(5).fill(7));
+  assertEquals(calls, [{ offset: 0, cap: 100 - 10 }]);
+  assertEquals(vfsReadWhole(kernel(0), "/f"), new Uint8Array());
+  assertEquals(vfsReadWhole(kernel(5), "/gone"), undefined);
+  // Filling the read: maybe more after it, and a second read could be of
+  // another version of the file.
+  let threw = "";
+  try {
+    vfsReadWhole(kernel(90), "/f");
+  } catch (error) {
+    threw = String(error);
+  }
+  assert(threw.includes("/f does not fit one read (90 bytes)"), threw);
+  threw = "";
+  try {
+    vfsReadWhole(kernel(0, -21n), "/dir");
+  } catch (error) {
+    threw = String(error);
+  }
+  // In words: a directory where the file should be.
+  assert(threw.includes("read /dir: is a directory"), threw);
+});
+
+Deno.test("vfsStat and vfsReadWhole tell a missing path (ENOENT, ENOTDIR) from a failure, in words", () => {
+  const kernel = (rc: bigint) =>
+    ({
+      scratchLen: 64 * 1024,
+      syscall: () => ({ rc, response: new Uint8Array(32) }),
+      // deno-lint-ignore no-explicit-any
+    }) as any;
+  for (const missing of [-2n, -20n]) {
+    assertEquals(vfsStat(kernel(missing), "/a/b"), undefined);
+    assertEquals(vfsReadWhole(kernel(missing), "/a/b"), undefined);
+  }
+  for (
+    const [call, words] of [
+      [() => vfsStat(kernel(-5n), "/x"), "stat /x: I/O error"],
+      [
+        () => vfsReadWhole(kernel(-40n), "/x"),
+        "read /x: too many levels of symbolic links",
+      ],
+      [() => vfsStat(kernel(-99n), "/x"), "stat /x: error 99"],
+    ] as const
+  ) {
+    let threw = "";
+    try {
+      call();
+    } catch (error) {
+      threw = String(error);
+    }
+    assert(threw.includes(words), threw);
+  }
+});
+
+Deno.test("setEntryMetadata clamps a time beyond i64 nanoseconds instead of wrapping it", async () => {
+  const { mk, metadata } = fakeKernel();
+  const far = 9_000_000_000_000; // seconds: 9e21 ns, past i64
+  await stageYurtimg(
+    mk,
+    zstdStored(
+      ustar([
+        { path: "/d", type: "5", mode: 0o755, uid: 0, gid: 0, mtime: far },
+      ]),
+    ),
+    new Map(),
+  );
+  const recorded = metadata.get("/d");
+  const max = (1n << 63n) - 1n;
+  assertEquals(
+    [recorded?.mtimeNs, recorded?.atimeNs, recorded?.ctimeNs],
+    [max, max, max],
+  );
+});
+
+/** A `kernel_vfs_stat` that answers like the kernel: it rejects a response
+ * buffer under the 48-byte record (EINVAL) and returns the record's size,
+ * 48 bytes, or 72 with the later kernel's link identity appended. */
+function statKernel(recordSize: 48 | 72, mtimeNs: bigint) {
+  return {
+    scratchLen: 64 * 1024,
+    syscall(_method: number, _request: Uint8Array, responseLen: number) {
+      if (responseLen < 48) return { rc: -22n, response: new Uint8Array(0) };
+      const response = new Uint8Array(responseLen);
+      const view = new DataView(response.buffer);
+      view.setUint32(0, 4, true); // regular file
+      view.setUint32(4, 0o100_644, true);
+      view.setUint32(8, 1000, true);
+      view.setUint32(12, 1001, true);
+      view.setBigUint64(16, 123n, true);
+      view.setBigInt64(24, mtimeNs, true);
+      view.setBigInt64(32, 5n, true); // atime
+      view.setBigInt64(40, 6n, true); // ctime
+      if (recordSize === 72) response.fill(0xee, 48, 72);
+      return { rc: BigInt(recordSize), response };
+    },
+    // deno-lint-ignore no-explicit-any
+  } as any;
+}
+
+Deno.test("vfsStat reads the kernel's 48-byte record, and a longer one, with a signed mtime", () => {
+  for (const size of [48, 72] as const) {
+    assertEquals(
+      vfsStat(statKernel(size, 7_000_000_000n), "/f"),
+      {
+        type: "file",
+        mode: 0o644,
+        uid: 1000,
+        gid: 1001,
+        size: 123,
+        mtime: 7,
+      },
+      `a ${size}-byte record`,
+    );
+  }
+  // A time before 1970 is negative, not a 2^64-scale number (#4393), and a
+  // sub-second part belongs to the earlier second.
+  assertEquals(
+    vfsStat(statKernel(48, -3_000_000_000n), "/old")?.mtime,
+    -3,
+  );
+  assertEquals(
+    vfsStat(statKernel(48, -3_500_000_000n), "/older")?.mtime,
+    -4,
+  );
+});
+
+Deno.test("vfsStat names a record shorter than the 32-byte legacy one instead of reading it as an errno", () => {
+  const short = {
+    scratchLen: 64 * 1024,
+    syscall: () => ({ rc: 24n, response: new Uint8Array(32) }),
+    // deno-lint-ignore no-explicit-any
+  } as any;
+  let threw = "";
+  try {
+    vfsStat(short, "/f");
+  } catch (error) {
+    threw = String(error);
+  }
+  assert(threw.includes("answered 24 bytes, not a 32-byte record"), threw);
+});
+
+Deno.test("stageYurtimg stages against a kernel from before #4431: a 20-byte head and a 32-byte stat record", async () => {
+  const { mk, metadata } = fakeKernel("legacy");
+  await stageYurtimg(mk, zstdStored(ustar(IMAGE)), new Map());
+  for (const entry of IMAGE) {
+    const recorded = metadata.get(entry.path);
+    assertEquals(
+      [recorded?.mode, recorded?.uid, recorded?.gid, recorded?.mtimeNs],
+      [
+        TYPE_BITS[entry.type] | entry.mode,
+        entry.uid,
+        entry.gid,
+        BigInt(entry.mtime) * 1_000_000_000n,
+      ],
+      `metadata for ${entry.path} through the legacy head`,
+    );
+  }
+});
+
+Deno.test("the kernel's layout is found once per kernel, from the stat record of /", async () => {
+  let probes = 0;
+  const { mk } = fakeKernel();
+  const original = mk.syscall.bind(mk);
+  // deno-lint-ignore no-explicit-any
+  (mk as any).syscall = (method: number, ...rest: any[]) => {
+    if (method === KERNEL_VFS_STAT) probes++;
+    // deno-lint-ignore no-explicit-any
+    return (original as any)(method, ...rest);
+  };
+  await stageYurtimg(mk, zstdStored(ustar(IMAGE)), new Map());
+  assertEquals(probes, 1);
+});
+
+Deno.test("vfsStat reads the 32-byte record of a kernel from before #4431", () => {
+  const view = new DataView(new ArrayBuffer(72));
+  view.setUint32(0, 3, true); // directory
+  view.setUint32(4, 0o040_755, true);
+  view.setUint32(8, 0, true);
+  view.setUint32(12, 0, true);
+  view.setBigUint64(16, 0n, true);
+  view.setBigInt64(24, 9_000_000_000n, true);
+  const legacy = {
+    scratchLen: 64 * 1024,
+    syscall: () => ({ rc: 32n, response: new Uint8Array(view.buffer) }),
+    // deno-lint-ignore no-explicit-any
+  } as any;
+  assertEquals(vfsStat(legacy, "/d")?.mtime, 9);
+  assertEquals(vfsStat(legacy, "/d")?.type, "dir");
+});
+
+/** A `kernel_vfs_stat` that answers `rc` with a `responseLen`-byte response,
+ * whatever the request: a reply the kernel never gives. */
+function oddStatKernel(rc: bigint, responseLen = 72) {
+  return {
+    scratchLen: 64 * 1024,
+    syscall: () => ({ rc, response: new Uint8Array(responseLen) }),
+    // deno-lint-ignore no-explicit-any
+  } as any;
+}
+
+function thrown(run: () => unknown): string {
+  try {
+    run();
+  } catch (error) {
+    return String(error);
+  }
+  return "";
+}
+
+Deno.test("vfsStat refuses a record size neither layout has, and one past the response it came in", () => {
+  for (const rc of [33n, 47n]) {
+    const threw = thrown(() => vfsStat(oddStatKernel(rc), "/f"));
+    assert(threw.includes(`answered ${rc} bytes`), threw);
+  }
+  // More than the buffer asked for.
+  let threw = thrown(() => vfsStat(oddStatKernel(73n, 73), "/f"));
+  assert(threw.includes("answered 73 bytes"), threw);
+  // A size the response does not hold: named, not a RangeError.
+  threw = thrown(() => vfsStat(oddStatKernel(48n, 24), "/f"));
+  assert(threw.includes("answered 48 bytes in a 24-byte response"), threw);
+});
+
+Deno.test("a failed or malformed layout probe stops staging instead of choosing a layout", async () => {
+  for (const rc of [-11n, -2n, 0n, 24n, 40n]) {
+    const { mk, metadata } = fakeKernel("legacy");
+    const original = mk.syscall.bind(mk);
+    let probe = true;
+    // deno-lint-ignore no-explicit-any
+    (mk as any).syscall = (method: number, ...rest: any[]) => {
+      if (method === KERNEL_VFS_STAT && probe) {
+        probe = false;
+        return { rc, response: new Uint8Array(72) };
+      }
+      // deno-lint-ignore no-explicit-any
+      return (original as any)(method, ...rest);
+    };
+    let threw = "";
+    try {
+      await stageYurtimg(mk, zstdStored(ustar(IMAGE)), new Map());
+    } catch (error) {
+      threw = String(error);
+    }
+    assert(threw.includes("stat /"), `rc ${rc}: ${threw}`);
+    // Nothing was cached: the next staging probes again and uses the legacy
+    // head the kernel really speaks.
+    metadata.clear();
+    await stageYurtimg(mk, zstdStored(ustar(IMAGE)), new Map());
+    for (const entry of IMAGE) {
+      assertEquals(
+        metadata.get(entry.path)?.mtimeNs,
+        BigInt(entry.mtime) * 1_000_000_000n,
+        `rc ${rc}: ${entry.path} staged through the legacy head`,
+      );
+    }
+  }
+});
+
+Deno.test({
+  name:
+    "drainDirtyPaths returns the path of a file created since the last drain, from the pinned kernel (#337)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const pinned = await pinnedKernel();
+    if (!pinned) return;
+    const { mk } = pinned;
+    drainDirtyPaths(mk);
+    const path = new TextEncoder().encode("/drained-337");
+    const open = new Uint8Array(12 + path.length);
+    const view = new DataView(open.buffer);
+    view.setUint32(0, 0o101, true); // O_WRONLY | O_CREAT
+    view.setUint32(4, 0o644, true);
+    view.setUint32(8, path.length, true);
+    open.set(path, 12);
+    const fd = Number(mk.syscall(METHOD.KERNEL_FS_OPEN, open, 0).rc);
+    assert(fd >= 0, `open: rc=${fd}`);
+    const fdBytes = new Uint8Array(4);
+    new DataView(fdBytes.buffer).setUint32(0, fd, true);
+    mk.syscall(METHOD.KERNEL_FS_CLOSE, fdBytes, 0);
+    assertEquals(drainDirtyPaths(mk), ["/drained-337"]);
+    assertEquals(drainDirtyPaths(mk), []);
+  },
+});
+
+Deno.test("drainDirtyPaths reads tagged records: a PATH's path, an ATTR's name hint when it has one", () => {
+  const enc = new TextEncoder();
+  /** One record: tag, 16-byte identity, u32 length, path. */
+  const record = (tag: number, path: string) => {
+    const bytes = enc.encode(path);
+    const out = new Uint8Array(21 + bytes.length);
+    out[0] = tag;
+    out.fill(9, 1, 17);
+    new DataView(out.buffer).setUint32(17, bytes.length, true);
+    out.set(bytes, 21);
+    return out;
+  };
+  const drains = [
+    [record(0, "/usr/bin/a"), record(0, "/etc"), record(1, "/usr/lib/b")],
+    [record(1, "")],
+    [],
+  ].map((records) => {
+    const out = new Uint8Array(records.reduce((n, r) => n + r.length, 0));
+    let at = 0;
+    for (const r of records) {
+      out.set(r, at);
+      at += r.length;
+    }
+    return out;
+  });
+  const kernel = {
+    scratchLen: 64 * 1024,
+    syscall(method: number) {
+      assertEquals(method, 26);
+      const response = drains.shift()!;
+      return { rc: BigInt(response.length), response };
+    },
+    // deno-lint-ignore no-explicit-any
+  } as any;
+  assertEquals(drainDirtyPaths(kernel), ["/usr/bin/a", "/etc", "/usr/lib/b"]);
+  assertEquals(drains.length, 0);
+  // A record cut short, or of a tag this page does not know: said, never
+  // read as paths.
+  for (const bad of [record(0, "/usr").subarray(0, 23), record(2, "/usr")]) {
+    drains.push(bad);
+    let threw = "";
+    try {
+      drainDirtyPaths(kernel);
+    } catch (error) {
+      threw = String(error);
+    }
+    assert(threw.includes("a malformed record at byte 0"), threw);
+    drains.length = 0;
+  }
 });

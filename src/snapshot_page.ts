@@ -13,6 +13,7 @@ import type {
   SnapshotDemoFromWorker,
   SnapshotDemoToWorker,
 } from "./snapshot_worker.ts";
+import { siteUrl } from "./site_url.ts";
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -55,7 +56,7 @@ export function startSnapshotDemo(): void {
     return;
   }
 
-  const worker = new Worker("/snapshot.bundle.js");
+  const worker = new Worker(siteUrl("./snapshot.bundle.js"));
   attachGuestWorkerFactory(worker);
   const send = (message: SnapshotDemoToWorker) => worker.postMessage(message);
 

@@ -1,4 +1,14 @@
+import { AGENT_CHAT_STORAGE } from "./snapshot_store.ts";
+import { BRIDGE_ZIP, setUpPlaywright } from "./playwright_demo.ts";
+import {
+  bridgeAnswers,
+  bridgeApproval,
+  type CdpFromWorker,
+  createCdpRelay,
+  extensionRuntime,
+} from "./browser_bridge.ts";
 import { attachGuestWorkerFactory } from "./page_worker_bridge.ts";
+import { installedMarks, type InstalledReport } from "./installed_list.ts";
 import {
   hideMemoryRefused,
   MEMORY_REFUSED_RELOAD_ID,
@@ -13,16 +23,55 @@ import {
   pythonInstallState,
 } from "./python_install.ts";
 import { mountAgentPane } from "./agent_pane.ts";
+import { restoreAfterSignIn } from "./openrouter.ts";
+import { mountSidebar } from "./sidebar.ts";
 import { UPLOAD_DIR, uploadFiles } from "./upload.ts";
+import {
+  captureRefusal,
+  finishCapture,
+  markBootEnded,
+  saveDownload,
+} from "./capture_outcome.ts";
 import {
   catalogRows,
   formatBytes,
   loadCatalog,
+  markInstalled,
+  type PackageRow,
+  packagesInImage,
+  plannedInstalls,
   TRUSTED_REPOS_PATH,
 } from "./packages.ts";
+import {
+  type InstallReply,
+  InstallsStopped,
+  packageRequests,
+} from "./install_request.ts";
 import { createPlaygroundTerminal } from "./terminal.ts";
-import { deviceClass } from "./device.ts";
+import {
+  chooseEnv,
+  choosePlatform,
+  deviceClass,
+  type Env,
+  fullKernelMemory,
+  isFirefox,
+  largeMemoryAsked,
+  memoryParam,
+  type Platform,
+  platformSnapshotKind,
+  withEnv,
+  withMemory,
+  withPlatform,
+} from "./device.ts";
+import {
+  captureKindOf,
+  goSetRequest,
+  playwrightSetRequest,
+  type SnapshotKind,
+  tabletPythonRequest,
+} from "./sandbox_snapshot.ts";
 import type { JupyterReply, JupyterStream } from "./jupyter.ts";
+import { capturePackages, isUploadedSnapshotId } from "./snapshot_source.ts";
 import {
   type DesktopInfo,
   desktopInfo,
@@ -36,27 +85,99 @@ import {
   type YurtTransport,
 } from "./agent_api.ts";
 import type { ExecOptions } from "./executions.ts";
+import { siteUrl } from "./site_url.ts";
+import {
+  answerTokenRequest,
+  loadNetwork,
+  type NetworkControls,
+  networkWanted,
+  pageSessionStorage,
+  wireNetworkToggle,
+} from "./network_toggle.ts";
+import type { NetworkStatus } from "./network.ts";
 
 type FromWorker =
   | { type: "status"; text: string }
   | { type: "out"; bytes: number[] }
-  | { type: "error"; message: string }
+  // `endsBoot`: the start's own outcome, not a later error (a cell's).
+  | { type: "error"; message: string; endsBoot?: true }
   | { type: "notebook-ready" }
   | { type: "shell-ready" }
   // The image has no python3: the shell runs, Jupyter was not launched.
   | { type: "python-missing"; error?: string }
   | { type: "pkg-progress"; req: number; text: string }
+  | InstalledReport
+  | { type: "snapshot-captured"; blob: Blob; ms: number }
+  | { type: "linux-remark"; remark: string }
+  | { type: "suspended"; why?: string }
   | {
-    type: "yurt-reply" | "pkg-reply";
+    type: "yurt-reply";
     req: number;
     ok: boolean;
     value?: unknown;
     error?: string;
   }
+  | InstallReply
   | { type: "cell-stream"; id: string; chunk: JupyterStream }
   | { type: "cell-result"; id: string; result: JupyterReply }
   | { type: "cell-error"; id: string; message: string }
-  | MemoryRefusedMessage;
+  | MemoryRefusedMessage
+  | { type: "network-status"; status: NetworkStatus }
+  | { type: "network-token"; req: number }
+  | CdpFromWorker;
+
+/** The in-tab sandbox seals after each agent run; `?suspend=0` keeps it running,
+ * and the desktop app's native sandbox does not seal. */
+function agentSeals(desktop: DesktopInfo | undefined): boolean {
+  return desktop === undefined &&
+    new URL(location.href).searchParams.get("suspend") !== "0";
+}
+
+function agentOnlySandbox(desktop: DesktopInfo | undefined): boolean {
+  return agentSeals(desktop) && location.hash === "#agent";
+}
+
+/** Which sandbox this page started: each tab has its own, so going to the other
+ * tab loads that one. Unset until a sandbox starts. */
+let startedAs: "agent" | "shell" | undefined;
+
+function switchSandboxes(desktop: DesktopInfo | undefined): void {
+  if (!agentSeals(desktop)) return;
+  document.querySelector("[data-testid=view-shell]")?.addEventListener(
+    "click",
+    () => {
+      if (startedAs === "agent" && !agentBusy()) reloadOnPurpose();
+    },
+  );
+  document.querySelector("[data-testid=view-agent]")?.addEventListener(
+    "click",
+    () => {
+      // A saved chat comes back on a load at the Agent tab.
+      if (agentBusy()) return;
+      if (startedAs === "shell" || savedAgentChat()) reloadOnPurpose();
+    },
+  );
+}
+
+/** A run, or the seal after it, is in progress (src/agent_pane.ts): a reload
+ * now would lose it, or pair a new seal with the old chat. */
+function agentBusy(): boolean {
+  return document.getElementById("agent")?.hasAttribute("data-agent-busy") ===
+    true;
+}
+
+/** Whether a sealed agent run's chat is here (src/agent_pane.ts). */
+function savedAgentChat(): boolean {
+  try {
+    return localStorage.getItem(AGENT_CHAT_STORAGE) !== null;
+  } catch {
+    return false;
+  }
+}
+
+/** Seal the sandbox after an agent run; resolves to why it could not. Set at
+ * boot. */
+let suspendSandbox: (() => Promise<string | undefined>) | undefined;
 
 /** A package install in the in-tab sandbox, once it boots: the coordinator
  * runs it (src/packages.ts), one install at a time with the automatic Python
@@ -66,8 +187,35 @@ let packageInstall:
   | ((name: string, progress: (text: string) => void) => Promise<string>)
   | undefined;
 
+/** Asks the coordinator to read pkg's installed list again; set at boot. */
+let askInstalled = () => {};
+/** Show the Packages panel's marks, and its note; set once it is wired. */
+let renderInstalled: (known: ReadonlySet<string>) => void = () => {};
+let showInstalledNote: (note: string) => void = () => {};
+/** What pkg has installed in this sandbox, as the coordinator reports it
+ * (`pkg-installed`), and the panel's own installs (src/installed_list.ts). */
+const installedPanel = installedMarks(
+  () => askInstalled(),
+  (known) => renderInstalled(known),
+  (note) => showInstalledNote(note),
+);
+
 /** Answers other tabs' "who has a sandbox?" while this one has one. */
 let stopAnnouncing: () => void = () => {};
+/** What this page runs as (src/device.ts choosePlatform): its device's,
+ * or the one `?platform=` asks for. Set first thing by runPage. */
+let platform: Platform = "desktop";
+/** What a desktop browser's sandbox is set up for (src/device.ts
+ * chooseEnv): `?env=go`, or the start screen's choice, restores the Go
+ * snapshot instead of the Python one. Python's on every other page. */
+let env: Env = "python";
+/** The site pins a Playwright snapshot (src/snapshot_pin.ts): a Playwright
+ * page restores it; without one it boots the desktop's and installs live
+ * (src/playwright_demo.ts). */
+let playwrightPinned = false;
+/** Whether this page's sandbox is the Playwright snapshot's: no Python in
+ * it, so no Python install and no Notebook. */
+const playwrightSandbox = () => env === "playwright" && playwrightPinned;
 
 /**
  * window.yurt (src/agent_api.ts): a driver's view of the sandbox, present
@@ -152,7 +300,67 @@ function watchNetwork(net: HTMLElement): void {
  * the reloaded page can tell a cut-off boot from a first visit.
  */
 const BOOTING_KEY = "yurt-playground-booting";
+let reloading = false;
+const OWN_RELOAD_KEY = "yurt-agent-own-reload";
+/** Set by forgetChatOnRefresh: this load is one of the page's own reloads. */
+let ownReload = false;
+
+/** A refresh is the visitor starting over: the agent's chat goes, and with it
+ * its seal (a sandbox resumes only with its chat). The page's own reloads, which
+ * resume a sealed sandbox, say so first. */
+function forgetChatOnRefresh(): void {
+  try {
+    const own = sessionStorage.getItem(OWN_RELOAD_KEY) !== null;
+    ownReload = own;
+    sessionStorage.removeItem(OWN_RELOAD_KEY);
+    const entry = performance.getEntriesByType("navigation")[0] as
+      | PerformanceNavigationTiming
+      | undefined;
+    if (!own && entry?.type === "reload") {
+      localStorage.removeItem(AGENT_CHAT_STORAGE);
+    }
+  } catch {
+    // Storage blocked: there is no chat to forget.
+  }
+}
+/** Reload on purpose: not a boot the browser cut off. */
+function reloadOnPurpose(): void {
+  cutOffBoot();
+  reloading = true;
+  try {
+    sessionStorage.setItem(OWN_RELOAD_KEY, "1");
+  } catch {
+    // Storage blocked: the load reads as a refresh, and starts over.
+  }
+  location.reload();
+}
+/** Leave for another site on purpose (OpenRouter's sign-in), as
+ * {@link reloadOnPurpose} reloads: the page that loads on the way back is not
+ * a boot the browser cut off. */
+function leaveOnPurpose(url: string): void {
+  // Only once the page really goes: a navigation that never completes
+  // leaves the boot memory as it was, and stops listening after a while.
+  const going = () => {
+    cutOffBoot();
+    reloading = true;
+  };
+  addEventListener("pagehide", going, { once: true });
+  setTimeout(() => removeEventListener("pagehide", going), 15_000);
+  // Back from the other site to this very page (the back/forward cache):
+  // the page goes on, and so does its boot memory, as it stood.
+  addEventListener("pageshow", (event) => {
+    if (!(event as PageTransitionEvent).persisted) return;
+    reloading = false;
+    rememberBooting(bootStatus);
+  }, { once: true });
+  location.assign(url);
+}
+/** The boot's last status: what {@link leaveOnPurpose} puts back. */
+let bootStatus: string | undefined;
 function rememberBooting(status: string | undefined): void {
+  bootStatus = status;
+  // A status can still arrive between asking for a reload and the page going.
+  if (reloading) return;
   try {
     if (status === undefined) sessionStorage.removeItem(BOOTING_KEY);
     else sessionStorage.setItem(BOOTING_KEY, status);
@@ -173,24 +381,18 @@ function cutOffBoot(): string | undefined {
 /**
  * The failure pane in the terminal's place: one paragraph for the known
  * cause (`why`), the browser's own words as `reason` when there are any.
- * A phone is refused before Start; the others come from the boot.
  */
 function showFailure(
-  why: "phone" | "tablet" | "reloaded" | "error",
+  why: "tablet" | "reloaded" | "error",
   reason?: string,
 ): void {
   byId("start").hidden = true;
-  // A phone is not a boot that failed: nothing was started.
-  byId("failed-title").textContent = why === "phone"
-    ? "The sandbox does not run on phones"
-    : "The sandbox did not start";
   const failed = byId("failed");
   for (const p of failed.querySelectorAll<HTMLElement>("[data-why]")) {
     p.hidden = p.dataset.why !== why;
   }
   byId("failed-reason").hidden = reason === undefined;
   byId("failed-reason").textContent = reason ?? "";
-  byId("failed-retry").hidden = why === "phone";
   failed.hidden = false;
 }
 
@@ -201,8 +403,8 @@ function boot(
   interruptCell: { current: (id: string) => void },
   desktop: DesktopInfo | undefined,
   stopWatchingForAnotherSandbox: () => void,
-  /** The shell alone: no Python install and no Jupyter (a tablet, or a
-   * phone started anyway). */
+  /** The shell alone: no Python install and no Jupyter (a tablet or a
+   * phone, which restore the tablet's snapshot with python). */
   noPython: boolean,
   status: StatusLine,
   smallDevice: boolean,
@@ -213,8 +415,14 @@ function boot(
   const term = createPlaygroundTerminal(byId("term"));
   // Classic worker: Chrome will not start a nested *module* Worker.
   // A classic coordinator can spawn the module guest bootstrap.
-  const worker = new Worker("/coordinator.bundle.js");
+  const worker = new Worker(siteUrl("./coordinator.bundle.js"));
   attachGuestWorkerFactory(worker);
+  let suspendAnswer: ((why?: string) => void) | undefined;
+  suspendSandbox = () =>
+    new Promise((resolve) => {
+      suspendAnswer = resolve;
+      worker.postMessage({ type: "suspend" });
+    });
   execute.current = (id, code) => {
     worker.postMessage({ type: "cell", id, code });
   };
@@ -231,7 +439,42 @@ function boot(
   // (a restart refused) must not say "Jupyter did not start" over it.
   let pythonMissing = false;
   let installingPython = false;
+  // From Start (or an Install after python-missing, which may start a fresh
+  // sandbox) until that boot ends: only then is a status worth keeping for
+  // a reloaded tab. A later one (a Jupyter restart) is not a boot.
+  let booting = true;
+  // `?snapshot=capture`: each end of the boot marks its outcome on <html>,
+  // where scripts/release-snapshot.ts waits (src/capture_outcome.ts).
+  const capturing = snapshotMode() === "capture";
+  // The snapshot this start restores (the device's own, or Go's on a
+  // desktop that chose it) or captures.
+  // Two sandboxes that do not mix. Shell & Python is the default snapshot with
+  // Jupyter. The agent needs little: the tablet's snapshot (python alone,
+  // without Jupyter) on every platform, and what it installs stays in each
+  // seal. Decided here, from the tab that asked.
+  const agentOnly = !capturing && agentOnlySandbox(desktop);
+  startedAs = agentOnly ? "agent" : "shell";
+  const kind: SnapshotKind = agentOnly
+    ? "tablet"
+    : capturing
+    ? captureKindOf(snapshotParam())!
+    : platform === "desktop" && env === "go"
+    ? "go"
+    : platform === "desktop" && playwrightSandbox()
+    ? "playwright"
+    : platformSnapshotKind(platform);
+  const endBoot = (why?: string) => {
+    booting = false;
+    rememberBooting(undefined);
+    markBootEnded(document.documentElement.dataset, capturing, why);
+  };
   const pinsPromise = fetchSitePins();
+  // The desktop app's sandbox has the machine's network; the tab's has
+  // one only through a configured relay, and only once the user says so.
+  const relayPromise = desktop === undefined
+    ? loadNetwork()
+    : Promise.resolve(undefined);
+  let networkControls: NetworkControls | undefined;
   // The cell's Install: enabled when the pins name a slim image; after a
   // failed install it says why and tries again.
   const showPythonMissing = (error: string | undefined) =>
@@ -242,6 +485,7 @@ function boot(
           // A retry: what comes next (a kernel that fails, say) is this
           // attempt's, not the missing Python's.
           pythonMissing = false;
+          booting = true;
           notebook.installing("installing Python");
           worker.postMessage({ type: "python-install" });
         },
@@ -254,7 +498,6 @@ function boot(
     stopWatchingForAnotherSandbox();
   };
   const fail = (message: string) => {
-    rememberBooting(undefined);
     if (!terminalEmpty) {
       status.failure(`failed: ${message}`);
       // The shell is up and stays; a Jupyter that did not start leaves
@@ -265,7 +508,7 @@ function boot(
       return;
     }
     status.failure("failed");
-    showFailure(deviceClass() === "tablet" ? "tablet" : "error", message);
+    showFailure(platform === "tablet" ? "tablet" : "error", message);
     notebook.unavailable("no sandbox");
   };
   // window.yurt (src/agent_api.ts): a driver's view of the same sandbox.
@@ -296,34 +539,41 @@ function boot(
       list: () => ask({ type: "yurt-list" }),
     };
   yurtState.connect(transport);
-  /** Each install's progress, by request. */
-  const progressOf = new Map<number, (text: string) => void>();
-  if (desktop === undefined) {
-    packageInstall = (name, progress) =>
-      new Promise<string>((resolve, reject) => {
-        const req = nextReq++;
-        progressOf.set(req, progress);
-        pending.set(req, {
-          resolve: (value) => {
-            progressOf.delete(req);
-            resolve(value as string);
-          },
-          reject: (error) => {
-            progressOf.delete(req);
-            reject(error);
-          },
-        });
-        worker.postMessage({
-          type: "pkg-install",
-          req,
-          name,
-          tablet: smallDevice,
-        });
-      });
-  }
+  askInstalled = () => worker.postMessage({ type: "pkg-read-installed" });
+  const installs = desktop === undefined
+    ? packageRequests((req, name) =>
+      worker.postMessage({
+        type: "pkg-install",
+        req,
+        name,
+        tablet: smallDevice,
+      })
+    )
+    : undefined;
+  if (installs !== undefined) packageInstall = installs.install;
   yurtState.set("booting");
+  // Playwright in the sandbox drives this browser through the bridge
+  // extension, when it is installed (src/browser_bridge.ts); the desktop
+  // app's guest has its own network instead.
+  // Only the sandbox the user set up for Playwright gets the endpoint: a
+  // guest that can reach it drives this browser, with its sign-ins.
+  const runtime = desktop === undefined && env === "playwright" &&
+      !agentOnly
+    ? extensionRuntime()
+    : undefined;
+  const cdpRelay = runtime === undefined
+    ? undefined
+    : createCdpRelay(runtime, (message) => worker.postMessage(message));
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     const msg = event.data;
+    if (
+      msg.type === "cdp-open" || msg.type === "cdp-message" ||
+      msg.type === "cdp-close"
+    ) {
+      cdpRelay?.handle(msg);
+      return;
+    }
+    installs?.heard();
     // The coordinator's empty status is "booted"; say so.
     if (msg.type === "status") {
       // Installing Python, then starting Jupyter on it, is the cell's
@@ -335,10 +585,11 @@ function boot(
         notebook.installing(msg.text);
       }
       status.progress(msg.text || "running");
-      rememberBooting(msg.text || "running");
+      if (booting) rememberBooting(msg.text || "running");
       if (msg.text === "") yurtState.running();
     }
     if (msg.type === "error") {
+      if (msg.endsBoot === true) endBoot(msg.message);
       fail(msg.message);
       // Only a boot failure is the sandbox's failure: an error once the
       // shell is up ("Jupyter is not ready", a restart that failed) leaves
@@ -357,13 +608,13 @@ function boot(
       notebookReady = true;
       notebook.ready();
       status.progress("running", { settled: true });
-      rememberBooting(undefined);
+      endBoot();
     }
     // A tablet's or phone's whole session is the shell; once it runs the
     // boot is over.
     if (msg.type === "shell-ready") {
       status.progress("running", { settled: true });
-      rememberBooting(undefined);
+      endBoot();
     }
     // The slim image: the shell is the session until Python is installed.
     // The boot is over here too, so a later reload is no cut-off boot.
@@ -371,15 +622,45 @@ function boot(
       pythonMissing = true;
       showPythonMissing(msg.error);
       status.progress("running", { settled: true });
-      rememberBooting(undefined);
+      endBoot();
     }
-    if (msg.type === "pkg-progress") progressOf.get(msg.req)?.(msg.text);
-    if (msg.type === "yurt-reply" || msg.type === "pkg-reply") {
+    if (msg.type === "pkg-progress" || msg.type === "pkg-reply") {
+      installs?.answer(msg);
+    }
+    if (msg.type === "pkg-installed") {
+      installedPanel.report(msg);
+    }
+    // A capture ends in the sealed sandbox, with no Jupyter to wait for.
+    // What this Linux holds, above the terminal (src/linux_remark.ts).
+    if (msg.type === "suspended") suspendAnswer?.(msg.why);
+    if (msg.type === "linux-remark") {
+      const note = byId("linux-remark");
+      byId("linux-remark-text").textContent = msg.remark;
+      note.hidden = false;
+    }
+    if (msg.type === "snapshot-captured") {
+      finishCapture(
+        document.documentElement.dataset,
+        () => saveSnapshot(msg.blob, msg.ms),
+        endBoot,
+        fail,
+      );
+    }
+    if (msg.type === "yurt-reply") {
       const waiter = pending.get(msg.req);
       pending.delete(msg.req);
       if (waiter === undefined) return;
       if (msg.ok) waiter.resolve(msg.value);
       else waiter.reject(new Error(msg.error ?? "yurt request failed"));
+    }
+    if (msg.type === "network-status") networkControls?.show(msg.status);
+    if (msg.type === "network-token") {
+      answerTokenRequest(
+        worker,
+        relayPromise,
+        () => byId("network-human"),
+        msg.req,
+      );
     }
     if (msg.type === "cell-stream") notebook.stream(msg.id, msg.chunk);
     if (msg.type === "cell-result") notebook.result(msg.id, msg.result);
@@ -387,12 +668,16 @@ function boot(
   };
   worker.onerror = (event) => {
     const message = event.message || "coordinator worker failed";
+    endBoot(message);
     fail(message);
     yurtState.failed(message);
     sandboxGone();
     // Nothing will answer them now.
     for (const waiter of pending.values()) waiter.reject(new Error(message));
     pending.clear();
+    installs?.failAll(message);
+    // A seal in progress ends with it, so the agent's run can finish.
+    suspendAnswer?.(message);
   };
   term.onData((text) => worker.postMessage({ type: "in", text }));
   term.onResize((size) =>
@@ -402,21 +687,149 @@ function boot(
   rememberBooting("booting");
   // On the slim image the coordinator installs the newest complete Python
   // set before Jupyter; a tablet's session, and a phone's, is the shell
-  // alone, and the desktop app's sandbox needs no page to install anything.
-  void pinsPromise.then((pins) =>
+  // (with the snapshot's python) alone, and the desktop app's sandbox
+  // needs no page to install anything.
+  void Promise.all([pinsPromise, relayPromise]).then(([pins, relay]) => {
+    const networkOn = relay !== undefined &&
+      networkWanted(pageSessionStorage() ?? undefined, ownReload);
+    // `?snapshot=capture&packages=a,b` (scripts/snapshot-local.ts): a
+    // name pkg would refuse fails the capture before it starts.
+    let extra: string[] | undefined;
+    try {
+      extra = capturing
+        ? capturePackages(new URL(location.href).searchParams.get("packages"))
+        : undefined;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      fail(message);
+      endBoot(message);
+      return;
+    }
+    const asked = new URL(location.href).searchParams.get("snapshot");
+    if (asked !== null && asked !== "0" && snapshotMode() === undefined) {
+      console.warn(
+        `[snapshot] ?snapshot=${asked} is not 0, 1, capture, capture-tablet, capture-go, capture-playwright or an uploaded snapshot's 40-digit commit sha; booting the image`,
+      );
+    }
     worker.postMessage({
       type: "start",
+      cdpBridge: cdpRelay !== undefined,
+      // Only the agent's sandbox is sealed; the shell's never reads that seal.
+      resumeSession: agentOnly && savedAgentChat(),
+      dropSession: agentOnly && !savedAgentChat(),
       cols: term.cols,
       rows: term.rows,
       isolated: globalThis.crossOriginIsolated === true,
       kernelPorts,
       apiToken: desktop?.apiToken,
-      noJupyter: noPython,
-      python: noPython || desktop !== undefined || pins === undefined
+      noJupyter: noPython || agentOnly,
+      // A capture installs its kind's Python: the set (desktop), python
+      // alone (tablet) -- or Go's go package (go), node (playwright).
+      python: desktop !== undefined || pins === undefined
+        ? undefined
+        : capturing
+        ? kind === "desktop"
+          ? pythonInstallRequest(pins)
+          : kind === "tablet"
+          ? tabletPythonRequest(pins)
+          : kind === "go"
+          ? goSetRequest(pins)
+          : kind === "playwright"
+          ? playwrightSetRequest(pins)
+          : undefined
+        : noPython || agentOnly
         ? undefined
         : pythonInstallRequest(pins),
+      // A tablet or phone installs no Python, but its snapshot holds
+      // python: the live index is asked about that for the snapshot's
+      // check; Go's
+      // snapshot likewise holds the go package.
+      snapshotPython: capturing || pins === undefined
+        ? undefined
+        : kind === "tablet"
+        ? tabletPythonRequest(pins)
+        : kind === "go"
+        ? goSetRequest(pins)
+        : kind === "playwright"
+        ? playwrightSetRequest(pins)
+        : undefined,
+      // Go's page installs go itself when Go's snapshot cannot be restored
+      // (src/go_fallback.ts).
+      goFallback: kind === "go" && !capturing && desktop === undefined &&
+          pins !== undefined
+        ? goSetRequest(pins)
+        : undefined,
+      snapshotKind: kind,
       tablet: smallDevice,
-    })
+      platform,
+      // A tablet's kernel, and a phone's on `?memory=1g`, keep 1 GiB.
+      fullKernelMemory: fullKernelMemory(platform, memoryParam()),
+      snapshot: snapshotMode(),
+      snapshotId: uploadedSnapshotId(),
+      capturePackages: extra,
+      networkRelay: relay?.relay,
+      networkOn,
+    });
+    if (relay !== undefined) {
+      networkControls = wireNetworkToggle(
+        {
+          toggle: byId("network-toggle") as HTMLButtonElement,
+          open: byId("network-open"),
+          cut: byId("network-cut") as HTMLButtonElement,
+          note: byId("network-note"),
+        },
+        networkOn,
+        (message) => worker.postMessage(message),
+      );
+    }
+  });
+}
+
+/** The page restores its device's sealed sandbox by default
+ * (src/snapshot_pin.ts SNAPSHOT_KINDS), booting the image when it
+ * cannot; `?snapshot=0` boots the image. `?snapshot=<id>` restores an
+ * uploaded one (src/snapshot_source.ts); `?snapshot=capture`,
+ * `capture-tablet`, `capture-go` and `capture-playwright` make one of each
+ * kind. */
+function snapshotMode(): "restore" | "capture" | undefined {
+  const value = snapshotParam();
+  if (value === null || value === "1" || isUploadedSnapshotId(value)) {
+    return "restore";
+  }
+  if (captureKindOf(value) !== undefined) return "capture";
+  return undefined;
+}
+
+function snapshotParam(): string | null {
+  return new URL(location.href).searchParams.get("snapshot");
+}
+
+/** `?snapshot=<id>`: the uploaded snapshot to restore instead of the
+ * pinned one (src/snapshot_source.ts), a commit sha and nothing else. */
+function uploadedSnapshotId(): string | undefined {
+  const value = new URL(location.href).searchParams.get("snapshot");
+  return isUploadedSnapshotId(value) ? value! : undefined;
+}
+
+/** `?snapshot=capture`'s result, saved as a download. */
+function saveSnapshot(blob: Blob, ms: number): void {
+  console.log(`[snapshot] sealed and encoded in ${ms} ms: ${blob.size} bytes`);
+  saveDownload(
+    {
+      createObjectURL: (file) => URL.createObjectURL(file),
+      revokeObjectURL: (url) => URL.revokeObjectURL(url),
+      click(href, name) {
+        const link = document.createElement("a");
+        link.href = href;
+        link.download = name;
+        document.body.append(link);
+        link.click();
+        link.remove();
+      },
+      later: (run, ms) => setTimeout(run, ms),
+    },
+    blob,
+    "sandbox.seal.zip",
   );
 }
 
@@ -513,13 +926,29 @@ function wirePackages(): void {
   // Its own line: the terminal's status is rewritten by the boot (Jupyter
   // starts after the shell), which would bury an install's outcome.
   const status = byId("packages-status");
+  // Its own line, so it never replaces an install's outcome; gone with the
+  // next read that works.
+  const installedError = byId("packages-installed-error");
+  // Truly empty (not the markup's whitespace), so it collapses (:empty).
+  installedError.textContent = "";
   let catalog: Awaited<ReturnType<typeof loadCatalog>> | undefined;
+  // What the image has outside pkg: not listed (the remark above the
+  // terminal names the tools, src/linux_remark.ts).
+  let inImage: ReadonlySet<string> = new Set();
+  const rows: PackageRow[] = [];
   let busy = false;
+  // The sandbox stopped answering (src/install_request.ts): the panel
+  // keeps that failure, with its reload note, and installs nothing more.
+  let stopped = false;
+  renderInstalled = (known) =>
+    markInstalled(rows, known, inImage, busy || stopped);
+  showInstalledNote = (note) => installedError.textContent = note;
   const install = async (name: string) => {
-    if (packageInstall === undefined || busy) return;
+    if (packageInstall === undefined || busy || stopped) return;
     busy = true;
     panel.dataset.install = "running";
-    for (const b of list.querySelectorAll("button")) b.disabled = true;
+    installedPanel.render();
+    const started = installedPanel.installStarted();
     try {
       const output = await packageInstall(
         name,
@@ -528,34 +957,29 @@ function wirePackages(): void {
       status.textContent = /^nothing to install$/m.test(output)
         ? `${name} is already installed`
         : `installed ${name}`;
-      // Everything pkg installed with it (its dependencies) is installed too.
-      const installed = new Set(
-        [...output.matchAll(/^install (\S+) /gm)].map((match) => match[1]),
-      );
-      installed.add(name);
-      for (const b of list.querySelectorAll<HTMLButtonElement>("button")) {
-        if (installed.has(b.dataset.package ?? "")) b.textContent = "Installed";
-      }
+      // Marked now; the coordinator's read of pkg's installed list, which
+      // follows, replaces the guess.
+      installedPanel.installed(started, plannedInstalls(output, name));
       panel.dataset.install = "done";
     } catch (error) {
       status.textContent = error instanceof Error
         ? error.message
         : String(error);
       panel.dataset.install = "failed";
+      stopped = error instanceof InstallsStopped;
     } finally {
       busy = false;
-      for (const b of list.querySelectorAll("button")) {
-        b.disabled = b.textContent === "Installed";
-      }
+      installedPanel.render();
     }
   };
   let loading = false;
   const show = async () => {
+    installedPanel.opened();
     if (catalog !== undefined || loading) return;
     loading = true;
+    const yurt = (globalThis as unknown as { yurt: Yurt }).yurt;
     try {
       // Images before the modular base image have no `pkg` to install with.
-      const yurt = (globalThis as unknown as { yurt: Yurt }).yurt;
       const image = await yurt.exec(
         `command -v pkg >/dev/null && command -v sudo >/dev/null && test -r ${TRUSTED_REPOS_PATH}`,
       );
@@ -573,9 +997,21 @@ function wirePackages(): void {
     } finally {
       loading = false;
     }
+    const offered = catalogRows(catalog);
+    try {
+      inImage = await packagesInImage(
+        offered.map((row) => row.name),
+        (cmd) => yurt.exec(cmd),
+      );
+    } catch (error) {
+      // Only what is listed depends on it: list everything, and pkg says
+      // why an install over the image's own files is refused.
+      console.warn(`Packages: every package listed: ${error}`);
+    }
     state.hidden = true;
-    for (const row of catalogRows(catalog)) {
+    for (const row of offered) {
       const tr = document.createElement("tr");
+      tr.dataset.package = row.name;
       const name = document.createElement("td");
       name.textContent = row.name;
       const version = document.createElement("td");
@@ -591,9 +1027,11 @@ function wirePackages(): void {
       button.dataset.package = row.name;
       button.addEventListener("click", () => install(row.name));
       action.append(button);
+      rows.push({ row: tr, button });
       tr.append(name, version, size, action);
       list.append(tr);
     }
+    installedPanel.render();
   };
   toggle.addEventListener("click", () => {
     panel.hidden = !panel.hidden;
@@ -603,6 +1041,44 @@ function wirePackages(): void {
 }
 
 async function runPage(): Promise<void> {
+  // The platform first, before anything is fetched: a URL without one
+  // gains the device's (`?platform=phone|tablet|desktop`), so it says which
+  // snapshot this page restores; one written by hand is kept, and run as
+  // far as this device can.
+  const chosen = choosePlatform(
+    deviceClass(),
+    new URL(location.href).searchParams.get("platform"),
+  );
+  platform = chosen.platform;
+  document.documentElement.dataset.platform = platform;
+  if (chosen.redirect) {
+    history.replaceState(
+      history.state,
+      "",
+      withPlatform(location.href, platform),
+    );
+  }
+  const notes: string[] = [];
+  if (chosen.note !== undefined) notes.push(chosen.note);
+  const showNotes = () => {
+    if (notes.length === 0) return;
+    // Text nodes only; the one name a note may carry as a link is the
+    // extension's zip (src/playwright_demo.ts BRIDGE_ZIP), made here.
+    const text = byId("platform-note-text");
+    text.replaceChildren();
+    notes.join(". ").split(BRIDGE_ZIP).forEach((part, at) => {
+      if (at > 0) {
+        const link = document.createElement("a");
+        link.href = `./${BRIDGE_ZIP}`;
+        link.download = "";
+        link.textContent = BRIDGE_ZIP;
+        text.append(link);
+      }
+      text.append(document.createTextNode(part));
+    });
+    byId("platform-note").hidden = false;
+  };
+  showNotes();
   watchNetwork(byId("net"));
   // One writer for #status: the boot's progress must not bury the outcome
   // of a Download home or an Upload (src/status_line.ts).
@@ -613,6 +1089,7 @@ async function runPage(): Promise<void> {
   // cross-origin isolation, and a page served without it cannot boot at all
   // and goes to the explanation.
   const desktop = await desktopInfo();
+  switchSandboxes(desktop);
   // The page's own claim is about the tab; the desktop app's sandbox is on
   // this machine and on the network, and the header should say which.
   if (desktop !== undefined) {
@@ -620,6 +1097,38 @@ async function runPage(): Promise<void> {
       "A Linux sandbox running natively on this machine, shown in this tab, " +
       "with network access.";
     byId("offline-note").hidden = true;
+  }
+  // Go or Python (`?env=`), once it is known whether this is the desktop
+  // app: a desktop browser's choice only, on a site that pins Go's
+  // snapshot, and never a capture's (each makes its own kind).
+  const askedEnv = new URL(location.href).searchParams.get("env");
+  const chosenEnv = chooseEnv(platform, askedEnv, {
+    nativeApp: desktop !== undefined,
+    goPinned: askedEnv?.toLowerCase() !== "go" ||
+      (await fetchSitePins())?.goSnapshot !== undefined,
+    capturing: snapshotMode() === "capture",
+  });
+  env = chosenEnv.env;
+  // Whether the site pins Playwright's snapshot: asked now without waiting,
+  // and waited for at the start, so choosing Playwright on the start screen
+  // (after this load) restores it too.
+  const playwrightPin: Promise<boolean> =
+    desktop === undefined && platform === "desktop"
+      ? fetchSitePins().then(
+        (pins) => pins?.playwrightSnapshot !== undefined,
+        () => false,
+      )
+      : Promise.resolve(false);
+  if (env === "playwright") playwrightPinned = await playwrightPin;
+  if (chosenEnv.note !== undefined) {
+    notes.push(chosenEnv.note);
+    showNotes();
+  }
+  if (desktop === undefined && isFirefox(navigator.userAgent)) {
+    status.failure("Firefox is not supported");
+    yurtState.failed("Firefox is not supported");
+    globalThis.location.replace("./unsupported.html#firefox");
+    throw new Error("Firefox is not supported");
   }
   if (desktop === undefined && globalThis.crossOriginIsolated !== true) {
     status.failure("need COOP/COEP");
@@ -636,52 +1145,111 @@ async function runPage(): Promise<void> {
     (id, code) => execute.current(id, code),
     (id) => interruptCell.current(id),
   );
-  // A tablet gets the Linux shell only. Jupyter (this cell, the Notebook and
-  // JupyterLab pages) and the agent need more memory than a tablet browser
-  // gives one tab: iPadOS refused new processes after ~13 while ipykernel
-  // started. The desktop app runs natively and keeps everything.
-  const device = deviceClass();
+  // A tablet's home page gets the Linux shell, and an agent whose model
+  // runs outside the tab (OpenRouter). Its sandbox restores the tablet's
+  // snapshot, which holds no Jupyter: this cell would need ipykernel beside
+  // the shell, and iPadOS refused new processes after ~13 while ipykernel
+  // started. An in-tab model beside the sandbox crashed the iPad. Jupyter
+  // runs on the Notebook and JupyterLab pages instead, each restoring the
+  // desktop's snapshot in a sandbox of its own (src/lite_bridge.ts), as
+  // does a phone's on `?memory=1g`. The desktop app runs natively and
+  // keeps everything.
+  const device = platform;
   const shellOnly = desktop === undefined && device === "tablet";
+  const memoryAsked = memoryParam();
+  // The Notebook and JupyterLab links carry `?memory=1g` on to their pages.
+  for (const testid of ["choose-notebook", "choose-lab"]) {
+    const link = document.querySelector<HTMLAnchorElement>(
+      `[data-testid=${testid}]`,
+    );
+    if (link && largeMemoryAsked(memoryAsked)) {
+      link.href = withMemory(link.href, memoryAsked);
+    }
+  }
   // The panel's installs run in the coordinator, capped like the tab's
   // other installs (16 MiB on a phone or tablet: boot's `smallDevice`).
   wirePackages();
   // Only the in-tab kernel has the memory problem; the desktop app's page
-  // runs the sandbox natively. A phone, and a tab the browser reloaded
-  // mid-boot, get no sandbox unless `?start-anyway`. Read (and clear) the
-  // boot memory either way, so `?start-anyway` does not leave it for the
-  // next load.
+  // runs the sandbox natively. A tab the browser reloaded mid-boot gets no
+  // sandbox unless `?start-anyway`. (A phone gets one: it restores the
+  // tablet's snapshot.) Read (and clear) the boot memory
+  // either way, so `?start-anyway` does not leave it for the next load.
   const cutOff = desktop === undefined ? cutOffBoot() : undefined;
   const refused = desktop === undefined &&
     !new URL(location.href).searchParams.has("start-anyway") &&
-    (device === "phone" || cutOff !== undefined);
+    cutOff !== undefined;
+  // A capture in the tab on a phone or tablet page would never start its
+  // install (shell-only, below) and wait forever (#356). The desktop app's
+  // sandbox is native and has no such limit.
+  const captureRefused = desktop === undefined &&
+      snapshotMode() === "capture"
+    ? captureRefusal(platform)
+    : undefined;
   const phone = device === "phone";
-  // A phone that starts anyway boots the shell (and the agent) without
-  // Python or Jupyter: the automatic Python install ran an iPhone tab out
-  // of memory for new processes. The phone note and the cell say so.
+  // A phone, like a tablet, restores the tablet's snapshot (python alone)
+  // and starts no Jupyter: the page installs no Python set there. The
+  // phone note and the cell say so.
   const noPython = shellOnly || (desktop === undefined && phone);
-  if (shellOnly) {
-    for (const id of ["notebook", "agent"]) byId(id).hidden = true;
+  // Go's sandbox holds no Python: no Notebook or JupyterLab there.
+  const applyEnv = () => {
+    // The agent is off in the Playwright sandbox (it would drive the
+    // browser): hidden too when the start screen switches to it. Only this
+    // hide is undone on a switch back; the pane's own (no model on offer)
+    // stays.
+    const agent = byId("agent");
+    if (env === "playwright" && !agent.hidden) {
+      agent.hidden = true;
+      agent.dataset.hiddenForPlaywright = "";
+    } else if (env !== "playwright" && "hiddenForPlaywright" in agent.dataset) {
+      agent.hidden = false;
+      delete agent.dataset.hiddenForPlaywright;
+    }
+    if (!shellOnly) {
+      byId("notebook").hidden = env === "go" || playwrightSandbox();
+    }
     for (const testid of ["choose-notebook", "choose-lab"]) {
       const link = document.querySelector<HTMLElement>(
         `[data-testid=${testid}]`,
       );
-      if (link) link.hidden = true;
+      if (link) link.hidden = env === "go" || playwrightSandbox();
     }
-  } else {
-    // The local agent (#140) drives the same sandbox through window.yurt; its
-    // Run starts the sandbox the way the Start button does, and only then.
-    // With the boot refused there is no sandbox to start, so the pane says
-    // so instead of offering a Run that does nothing (#197).
-    void mountAgentPane(byId("agent"), {
-      yurt: () => (globalThis as unknown as { yurt: Yurt }).yurt,
-      start: () => document.getElementById("start-sandbox")?.click(),
-      unavailable: refused
-        ? (phone ? "not on phones" : "no sandbox")
-        : undefined,
-    });
-  }
+  };
+  applyEnv();
+  if (shellOnly) byId("notebook").hidden = true;
+  // The local agent (#140) drives the same sandbox through window.yurt; its
+  // Run starts the sandbox the way the Start button does, and only then.
+  // With the boot refused there is no sandbox to start, so the pane says
+  // so instead of offering a Run that does nothing (#197).
+  void mountAgentPane(byId("agent"), {
+    // The agent never drives a sandbox that can drive this browser.
+    yurt: () => {
+      if (env === "playwright") {
+        throw new Error("the agent is off in the Playwright sandbox");
+      }
+      return (globalThis as unknown as { yurt: Yurt }).yurt;
+    },
+    start: () => document.getElementById("start-sandbox")?.click(),
+    // Playwright's sandbox hides the pane (applyEnv) and its yurt() refuses;
+    // no fixed note, so switching back to Python leaves a working pane.
+    unavailable: refused || captureRefused !== undefined
+      ? "no sandbox"
+      : undefined,
+    // Only the in-tab sandbox seals; `?suspend=0` keeps it running.
+    reload: reloadOnPurpose,
+    resumeRun: () => ownReload,
+    suspend: !agentSeals(desktop)
+      ? undefined
+      : () => suspendSandbox?.() ?? Promise.resolve("no sandbox is running"),
+    // A tablet or a phone: only models outside the tab (OpenRouter).
+    remoteOnly: shellOnly || (desktop === undefined && phone),
+    platform,
+    leave: leaveOnPurpose,
+  });
   const start = document.getElementById("start");
-  const begin = () => {
+  let playwrightNote: string | undefined;
+  const begin = async () => {
+    // The env the start uses: its snapshot pin, settled now.
+    playwrightPinned = env === "playwright" && await playwrightPin;
     if (start) start.hidden = true;
     // Two sandboxes in one browser share the CPU (yurt-playground#84): say
     // so before this one boots, and answer the next tab that asks. The
@@ -702,25 +1270,101 @@ async function runPage(): Promise<void> {
       interruptCell,
       desktop,
       stopWatchingForAnotherSandbox,
-      noPython,
+      noPython || env === "go" || playwrightSandbox(),
       status,
       device !== "desktop",
     );
+    // The agent's own tab gets no endpoint (boot), so no setup either.
+    if (env === "playwright" && !agentOnlySandbox(desktop)) {
+      const runtime = extensionRuntime();
+      void setUpPlaywright(
+        (globalThis as unknown as { yurt: Yurt }).yurt,
+        {
+          // A page another page opened can be scripted by it: never asks.
+          openedByAnother: globalThis.opener !== null &&
+            globalThis.opener !== undefined,
+          extension: runtime !== undefined && bridgeAnswers(runtime),
+          approval: runtime === undefined
+            ? undefined
+            : () => bridgeApproval(runtime),
+          // One note, replaced as the setup goes.
+          say: (text) => {
+            const at = notes.indexOf(playwrightNote ?? "");
+            if (at >= 0) notes[at] = text;
+            else notes.push(text);
+            playwrightNote = text;
+            showNotes();
+          },
+        },
+      );
+    }
   };
+  // A desktop browser's start screen offers Python or Go, once the site
+  // pins Go's snapshot (without it Go's page boots the image, with no go
+  // in it); the choice is written into the URL (`?env=go`), so a reload
+  // keeps it.
+  if (desktop === undefined && platform === "desktop") {
+    const choice = byId("env-choice");
+    // Playwright needs no snapshot of its own; Go's choice (hidden in the
+    // markup) is shown once the site's pins name Go's snapshot.
+    // Shown only when there is something besides Python to choose:
+    // Playwright in a Chromium browser, or Go once the pins name it.
+    const chromium = /Chrome\//.test(navigator.userAgent);
+    choice.hidden = !chromium;
+    // Playwright drives a Chromium browser through its extension: no choice
+    // in Safari or Firefox.
+    const playwright = choice.querySelector<HTMLElement>(
+      "[data-testid=env-playwright]",
+    )?.closest("label");
+    if (playwright && !/Chrome\//.test(navigator.userAgent)) {
+      playwright.hidden = true;
+      const get = choice.querySelector<HTMLElement>("[data-testid=bridge-get]");
+      if (get) get.hidden = true;
+    }
+    void fetchSitePins().then((pins) => {
+      const go = choice.querySelector<HTMLElement>("[data-testid=env-go]")
+        ?.closest("label");
+      if (go && pins?.goSnapshot !== undefined) {
+        go.hidden = false;
+        choice.hidden = false;
+      }
+    }).catch(() => {});
+    for (
+      const radio of choice.querySelectorAll<HTMLInputElement>(
+        "input[name=env]",
+      )
+    ) {
+      radio.checked = radio.value === env;
+      radio.addEventListener("change", () => {
+        if (!radio.checked) return;
+        env = radio.value === "go" || radio.value === "playwright"
+          ? radio.value
+          : "python";
+        history.replaceState(
+          history.state,
+          "",
+          withEnv(location.href, env),
+        );
+        applyEnv();
+      });
+    }
+  }
   if (desktop === undefined) {
     if (device === "tablet") byId("mobile-note").hidden = false;
     if (refused) {
-      status.failure(phone ? "not on phones" : "failed");
-      showFailure(phone ? "phone" : "reloaded", phone ? undefined : cutOff);
-      notebook.unavailable(phone ? "not on phones" : "no sandbox");
-      yurtState.failed(
-        phone ? "not on phones" : `a previous boot was cut off at ${cutOff}`,
-      );
+      status.failure("failed");
+      showFailure("reloaded", cutOff);
+      notebook.unavailable("no sandbox");
+      yurtState.failed(`a previous boot was cut off at ${cutOff}`);
       return;
     }
     if (phone) {
       byId("phone-note").hidden = false;
-      notebook.unavailable("not on phones");
+      notebook.unavailable(
+        fullKernelMemory(platform, memoryAsked)
+          ? "Jupyter runs on the Notebook and JupyterLab pages"
+          : "no Jupyter on phones",
+      );
     }
   }
   // The boot memory has been read (and cleared) by now; a test that plants
@@ -731,13 +1375,30 @@ async function runPage(): Promise<void> {
     "click",
     () => location.reload(),
   );
+  // A refused capture boots nothing; say why where
+  // scripts/release-snapshot.ts and the reader look.
+  if (captureRefused !== undefined) {
+    markBootEnded(document.documentElement.dataset, true, captureRefused);
+    status.failure("failed");
+    showFailure("error", captureRefused);
+    notebook.unavailable("no sandbox");
+    yurtState.failed(captureRefused);
+    return;
+  }
   // The workspace opens with one action; `?start` (the old terminal page's
   // redirect, and the acceptance tests) skips it.
   if (start === null || new URL(location.href).searchParams.has("start")) {
-    begin();
+    void begin();
     return;
   }
-  byId("start-sandbox").addEventListener("click", begin, { once: true });
+  byId("start-sandbox").addEventListener("click", () => void begin(), {
+    once: true,
+  });
 }
 
+forgetChatOnRefresh();
+// Back from OpenRouter's sign-in: its `#agent` first, before the sidebar
+// reads the fragment to choose its tab.
+restoreAfterSignIn();
+mountSidebar();
 void runPage();

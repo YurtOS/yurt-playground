@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Yurt browser bridge</title>
+<style>
+  body {
+    font: 14px/1.45 system-ui, sans-serif;
+    margin: 20px;
+    max-width: 420px;
+  }
+  h1 {
+    font-size: 16px;
+    margin: 0 0 10px;
+  }
+  p {
+    margin: 0 0 12px;
+    color: #444;
+  }
+  code {
+    background: #f3f3f3;
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+  button {
+    font: inherit;
+    padding: 6px 14px;
+    margin-right: 8px;
+  }
+</style>
+<h1>Let a sandbox drive this browser?</h1>
+<p>
+  A Playwright script in the Yurt sandbox on <code id="origin"></code> asks to
+  open tabs in this browser and control them.
+</p>
+<p>
+  Those tabs use this browser's sign-ins and cookies, and anything on that page
+  can use them. Allow it only if you chose Playwright on that page yourself,
+  just now. It lasts while that page stays open.
+</p>
+<button id="allow" type="button" disabled>Allow</button>
+<button id="deny" type="button" disabled>Deny</button>
+<script src="approve.js"></script>

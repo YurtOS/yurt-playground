@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # install-pinned-artifacts.sh — fetch the pinned kernel wasm and playground
 # image from their yurt-packages releases into artifacts/, and the notebook
-# kernel's sealable CPython from its yurt-playground release into public/demo/.
+# kernel's sealable CPython from its yurt-playground release into public/demo/,
+# and the sealed sandbox snapshot, when pinned, into public/snapshot/.
 #
 # Neither blob can be rebuilt by a consumer: the kernel wasm is deterministic
 # on a host but not across hosts, and the image needs a guest toolchain and
@@ -24,6 +25,29 @@ done
 cache=$(mktemp -d "${TMPDIR:-/tmp}/yurt-pinned-artifacts.XXXXXX")
 trap 'rm -rf "$cache"' EXIT HUP INT TERM
 
+# Retried: the API answers a transient 5xx often enough to matter now that
+# CI fetches these per job rather than once (yurt-playground#123). The
+# checksum the caller checks is what decides the bytes are right, so a
+# retry can only cost time. A 404 is not transient -- a wrong pin should
+# say so at once.
+download() {
+  local tag=$1 repo=$2 pattern=$3 dir=$4 attempt=1
+  until gh release download "$tag" --repo "$repo" --pattern "$pattern" \
+    --dir "$dir" --clobber 2>"$cache/download.err"; do
+    cat "$cache/download.err" >&2
+    if grep -qiE "HTTP 4[0-9][0-9]|not found|release not found" "$cache/download.err"; then
+      exit 1
+    fi
+    if [[ $attempt -ge 3 ]]; then
+      echo "$pattern: giving up after $attempt attempts" >&2
+      exit 1
+    fi
+    echo "$pattern: attempt $attempt failed, retrying in $((attempt * 5))s" >&2
+    sleep $((attempt * 5))
+    attempt=$((attempt + 1))
+  done
+}
+
 fetch() {
   local key=$1 asset=$2 dest=$3
   local tag expected actual repo
@@ -37,25 +61,7 @@ fetch() {
     exit 1
   }
   echo "fetching $asset from $repo $tag" >&2
-  # Retried: the API answers a transient 5xx often enough to matter now that
-  # CI fetches these per job rather than once (yurt-playground#123). The
-  # checksum below is what decides the bytes are right, so a retry can only
-  # cost time. A 404 is not transient -- a wrong pin should say so at once.
-  attempt=1
-  until gh release download "$tag" --repo "$repo" --pattern "$asset" \
-    --dir "$cache" --clobber 2>"$cache/download.err"; do
-    cat "$cache/download.err" >&2
-    if grep -qiE "HTTP 4[0-9][0-9]|not found|release not found" "$cache/download.err"; then
-      exit 1
-    fi
-    if [[ $attempt -ge 3 ]]; then
-      echo "$asset: giving up after $attempt attempts" >&2
-      exit 1
-    fi
-    echo "$asset: attempt $attempt failed, retrying in $((attempt * 5))s" >&2
-    sleep $((attempt * 5))
-    attempt=$((attempt + 1))
-  done
+  download "$tag" "$repo" "$asset" "$cache"
   actual=$(shasum -a 256 "$cache/$asset" | cut -d' ' -f1)
   if [[ "$actual" != "$expected" ]]; then
     echo "$asset sha256 mismatch: got $actual, pin $expected" >&2
@@ -76,3 +82,54 @@ else
   rm -f "$root/artifacts/playground-slim.yurtimg"
 fi
 fetch pythonSeal python3-seal.wasm public/demo/python3-seal.wasm
+# Each device's sealed sandbox (src/snapshot_pin.ts SNAPSHOT_KINDS:
+# `snapshot` the desktop's, `tabletSnapshot` (a phone's too),
+# `goSnapshot`, `playwrightSnapshot`), when the
+# train pins it and the caller asks for it: YURT_INSTALL_SNAPSHOT=1 fetches
+# every kind (the deploy, which publishes them), or a space-separated list of
+# pin keys only those (CI's jupyterlite scene, whose notebook must restore
+# `snapshot`). Up to 132 MB each, so no other test fetches one. A
+# yurt-playground release of its parts, joined here and checked against
+# the whole file's sha256 the pin records. Each is optional: any problem
+# with one -- a malformed entry, a failed download, a wrong sha256 -- is a
+# warning and no snapshot of that kind, never a failed install (the
+# default page must still ship, booting the image).
+# install_snapshot KEY ASSET
+install_snapshot() (
+  key=$1 asset=$2
+  repo=$(jq -er ".$key.releaseRepo | strings" "$pins") || exit 1
+  tag=$(jq -er ".$key.release | strings" "$pins") || exit 1
+  expected=$(jq -er ".$key.sha256 | strings" "$pins") || exit 1
+  echo "fetching $asset from $repo $tag" >&2
+  download "$tag" "$repo" "$asset.[0-9]*" "$cache/$key" || exit 1
+  # The parts are transport only: joined in order, and the whole checked.
+  count=$(find "$cache/$key" -name "$asset.[0-9]*" | wc -l | tr -d ' ')
+  : > "$cache/$asset" || exit 1
+  for ((i = 0; i < count; i++)); do
+    cat "$cache/$key/$asset.$i" >> "$cache/$asset" || exit 1
+  done
+  actual=$(shasum -a 256 "$cache/$asset" | cut -d' ' -f1)
+  if [[ "$actual" != "$expected" ]]; then
+    echo "$asset sha256 mismatch: got $actual, pin $expected" >&2
+    exit 1
+  fi
+  mkdir -p "$root/public/snapshot" &&
+    mv "$cache/$asset" "$root/public/snapshot/$asset" || exit 1
+  echo "installed $tag/$asset as public/snapshot/$asset" >&2
+)
+
+for kind in snapshot:sandbox.seal.zip tabletSnapshot:tablet.seal.zip goSnapshot:go.seal.zip playwrightSnapshot:playwright.seal.zip; do
+  key=${kind%%:*} asset=${kind#*:}
+  if [[ "$(jq -r ".$key // empty" "$pins")" == "" ]]; then
+    # One from earlier pins would be checked and left out by the static
+    # build; it is not this train's.
+    rm -f "$root/public/snapshot/$asset"
+  elif [[ "${YURT_INSTALL_SNAPSHOT:-}" == 1 || " ${YURT_INSTALL_SNAPSHOT:-} " == *" $key "* ]]; then
+    if ! install_snapshot "$key" "$asset"; then
+      echo "WARNING: the pinned $key was not installed; the site ships without it (that device boots the image)" >&2
+      rm -f "$root/public/snapshot/$asset"
+    fi
+  else
+    echo "$asset not fetched (YURT_INSTALL_SNAPSHOT=1 fetches it)" >&2
+  fi
+done

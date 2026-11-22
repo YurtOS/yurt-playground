@@ -119,7 +119,7 @@ async function verify() {
   results.append(summary);
   // The desktop app runs the sandbox natively, outside the tab; its bundle
   // carries no kernel wasm or image for the page to hash.
-  const desktop = await fetch("/desktop.json")
+  const desktop = await fetch("./desktop.json")
     .then((r) =>
       r.ok && (r.headers.get("content-type") ?? "").includes("json")
         ? r.json()
@@ -186,8 +186,8 @@ button.addEventListener("click", () => {
 
 // The release notes (GitHub Pages) have one entry per train, anchored by the
 // train name. Point the links at the train pins.json names and say so. The
-// page's own code may be newer than that train (main deploys on every
-// push); the train is what its kernel and image are pinned to. The desktop
+// page's own code may be newer than that train (main is deployed when
+// asked, between trains); the train is what its kernel and image are pinned to. The desktop
 // app ships pins.json too, so it names the train it was built for.
 // When pins.json is unavailable or names no train, the links keep pointing
 // at the top of the notes.
@@ -211,9 +211,20 @@ async function showTrain() {
   }
   const label = document.getElementById("release-train");
   if (label) {
-    label.textContent = ` (this page is pinned to train ${train})`;
+    label.textContent = ` Version ${trainVersion(train)}.`;
     label.hidden = false;
   }
+}
+
+// What a visitor reads as the version: the train's date, with its `.N`
+// suffix when the day had several (`playground-2026.10.27-3d32068.2` is
+// 2026-10-27.2). A name of another shape is shown as it is.
+function trainVersion(train) {
+  const match = /^playground-(\d{4})\.(\d{2})\.(\d{2})-[0-9a-f]+(?:\.(\d+))?$/
+    .exec(train);
+  if (!match) return train;
+  const [, year, month, day, n] = match;
+  return `${year}-${month}-${day}${n ? `.${n}` : ""}`;
 }
 
 showTrain();

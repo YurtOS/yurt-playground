@@ -1,3 +1,9 @@
+/** Bound on one cell of the terminal page's demo notebook. The first
+ * execute after boot is JIT-bound like the boot itself: ~2 s on a laptop,
+ * tens of seconds on a 2-vCPU CI runner. Here, not in src/jupyter.ts,
+ * because tests/desktop_e2e.ts reads it without the kernel checkout. */
+export const EXECUTE_TIMEOUT_MS = 120_000;
+
 const DELIMITER = new TextEncoder().encode("<IDS|MSG>");
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

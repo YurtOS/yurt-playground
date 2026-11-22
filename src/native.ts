@@ -15,6 +15,7 @@ import {
 import type { YurtTransport } from "./agent_api.ts";
 import type { RawResult, Result } from "./executions.ts";
 import { createSessionController } from "./session_controller.ts";
+import { siteUrl } from "./site_url.ts";
 
 /** What the launcher serves at `/desktop.json`; absent on the hosted site. */
 export type DesktopInfo = {
@@ -123,15 +124,15 @@ export function nativeYurtTransport(
   };
 }
 
-/** The launcher's answer, or `undefined` on the hosted site. Absolute, so
- * the JupyterLite pages under /jupyter/ ask the same place; JSON only, so a
- * host that answers every unknown path with the home page and a 200
+/** The launcher's answer, or `undefined` on the hosted site. At the site's
+ * root (src/site_url.ts), so the JupyterLite pages under jupyter/ ask the
+ * same place; JSON only, so a host that answers every unknown path with the home page and a 200
  * (Cloudflare Pages does) reads as "not the app"; never throws. */
 export async function desktopInfo(
   fetchJson: (path: string) => Promise<Response> = (path) => fetch(path),
 ): Promise<DesktopInfo | undefined> {
   try {
-    const response = await fetchJson("/desktop.json");
+    const response = await fetchJson(siteUrl("./desktop.json"));
     if (!response.ok) return undefined;
     if (!(response.headers.get("content-type") ?? "").includes("json")) {
       return undefined;

@@ -34,11 +34,6 @@
       "size": 1445,
       "url": "packages/pkg.json"
     },
-    "yurt-greet": {
-      "sha256": "957dce83d9b6e8f6951a9abe93030c31a7cf6cb96a6377841998cf4f0224e2c5",
-      "size": 534,
-      "url": "packages/yurt-greet.json"
-    },
     "zlib": {
       "sha256": "bc9b658de5a79de1fcc00c61767d0c83111e0e0d9d9f7da0ad5f12a78c5cc94f",
       "size": 506,

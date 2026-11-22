@@ -2,8 +2,12 @@ import type { SandboxPortConn } from "@yurt/kernel-host-interface-js";
 import {
   createJupyterTransport,
   type JupyterConfig,
+  type JupyterRequestChannel,
   type JupyterTransport,
 } from "./jupyter_transport.ts";
+import { isJavaScriptCore } from "./boot.ts";
+import { EXECUTE_TIMEOUT_MS } from "./jupyter_protocol.ts";
+import { asWaitStatus, signalName, type WaitStatus } from "./executions.ts";
 
 export const JUPYTER_CONNECTION_FILE = "/tmp/yurt-kernel.json";
 /** The launched ipykernel's pid, so a restart can kill exactly that process. */
@@ -11,7 +15,15 @@ export const JUPYTER_PID_FILE = "/tmp/yurt-kernel.pid";
 export const JUPYTER_LOG_FILE = "/tmp/yurt-jupyter.log";
 /** How long the guest waits for ipykernel to write its connection file. */
 export const CONNECTION_FILE_WAIT_SECONDS = 240;
-const JUPYTER_KEY = "yurt";
+
+/** A fresh random HMAC key for one kernel launch: 32 bytes, hex. A fixed
+ * key would let any holder of the source forge messages to a kernel's
+ * ports (YurtOS/yurt-sandbox#384). The page reads it back from the
+ * kernel's connection file, so nothing else needs to know it. */
+export function generateJupyterKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
 const encoder = new TextEncoder();
 
 export type JupyterLaunchSession = {
@@ -89,6 +101,7 @@ export type JupyterReply = {
 export type KernelPorts = [number, number, number, number, number];
 
 export function buildKernelLaunchCommand(
+  key: string,
   connectionFile = JUPYTER_CONNECTION_FILE,
   ports?: KernelPorts,
 ): string {
@@ -98,7 +111,7 @@ export function buildKernelLaunchCommand(
     // non-loopback bind; in the tab the dial is loopback anyway.
     ports === undefined ? "--ip=127.0.0.1" : "--ip=0.0.0.0",
     "--transport=tcp",
-    `--Session.key=${JUPYTER_KEY}`,
+    `--Session.key=${key}`,
     `--f=${connectionFile}`,
   ];
   if (ports !== undefined) {
@@ -122,13 +135,16 @@ export function buildKernelLaunchCommand(
  * session without `spawn` gets: a launcher older than the /api/sessions
  * route. */
 export function buildKernelStartLine(
+  key: string,
   ports?: KernelPorts,
   connectionFile = JUPYTER_CONNECTION_FILE,
   logFile = JUPYTER_LOG_FILE,
   pidFile = JUPYTER_PID_FILE,
 ): string {
-  return `${
-    buildKernelLaunchCommand(connectionFile, ports)
+  // A leftover file from an earlier launch is removed first: ipykernel
+  // reloads an existing --f file and would keep its old key and ports.
+  return `rm -f ${connectionFile}; ${
+    buildKernelLaunchCommand(key, connectionFile, ports)
   } >${logFile} 2>&1 & echo $! > ${pidFile}`;
 }
 
@@ -139,13 +155,14 @@ export function buildKernelStartLine(
  * and `kill %1` killed it (yurt-playground#82); as its own process it is
  * in no job table. */
 export function buildKernelOwnProcessLine(
+  key: string,
   ports?: KernelPorts,
   connectionFile = JUPYTER_CONNECTION_FILE,
   logFile = JUPYTER_LOG_FILE,
   pidFile = JUPYTER_PID_FILE,
 ): string {
-  return `echo $$ > ${pidFile}; exec ${
-    buildKernelLaunchCommand(connectionFile, ports)
+  return `echo $$ > ${pidFile}; rm -f ${connectionFile}; exec ${
+    buildKernelLaunchCommand(key, connectionFile, ports)
   } >${logFile} 2>&1`;
 }
 
@@ -199,15 +216,45 @@ export async function stopGuestKernel(
   await runShell(session, buildKernelStopCommand(), 30_000);
 }
 
+/** Drop an exited kernel's files without the user's shell, so the next
+ * launch reads no stale connection file and no stop kills a reused pid. */
+async function clearKernelFiles(session: JupyterLaunchSession): Promise<void> {
+  const cleared = await session.spawn?.(
+    `rm -f ${JUPYTER_CONNECTION_FILE} ${JUPYTER_PID_FILE}`,
+  );
+  // An rm still running when the next launch starts could delete that
+  // launch's files, so one that does not finish in time ends the start.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const done = await Promise.race([
+      cleared?.exited.then(() => true),
+      new Promise<false>((resolve) =>
+        timer = setTimeout(() => resolve(false), CLEAR_FILES_MS)
+      ),
+    ]);
+    if (done === false) {
+      throw new Error(
+        `the old kernel's files were not removed in ${CLEAR_FILES_MS / 1000} s`,
+      );
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** How long a relaunch waits for the old kernel's files to be removed. */
+const CLEAR_FILES_MS = 30_000;
+
 /** Replace the guest kernel with a fresh process. */
 export async function restartGuestKernel(
   session: JupyterLaunchSession,
   previous: JupyterTransport | undefined,
   ports?: KernelPorts,
+  options: StartOptions = {},
 ): Promise<JupyterTransport> {
   await previous?.close().catch(() => {});
   await stopGuestKernel(session);
-  return await startGuestKernel(session, ports);
+  return await startGuestKernel(session, ports, options);
 }
 
 // The PTY echoes the typed command, so the marker must not appear in it:
@@ -215,19 +262,294 @@ export async function restartGuestKernel(
 const CONNECTION_MARKER = "YURT_JUPYTER_CONNECTION_READY";
 const TYPED_CONNECTION_MARKER = 'YURT_JUPYTER_CONNECTION_""READY';
 
+type StartOptions = {
+  pollMs?: number;
+  /** The attach's dial of a running kernel (see attachRunningKernel):
+   * tries and each try's bound. */
+  attach?: { dials?: number; dialMs?: number };
+  /** The dial's retry budget -- production waits out a kernel that is
+   * still binding its ports; a test that never dials says so instead of
+   * paying the whole backoff (yurt-playground#123). */
+  connect?: { attempts?: number; delayMs?: number };
+  /** Told before launch N (2 and up) after a stack overflow. */
+  relaunching?: (launch: number) => void;
+  /** The engine's; the relaunch is JavaScriptCore's alone. */
+  userAgent?: string;
+  relaunchDelayMs?: number;
+};
+
+/** How many times ipykernel is launched when it dies of a stack overflow. */
+export const STACK_OVERFLOW_LAUNCHES = 5;
+
+/** The wait before a relaunch: the measured launch 2 came a few seconds
+ * after launch 1, and nothing here needs it sooner. */
+const RELAUNCH_DELAY_MS = 1000;
+
+const STACK_OVERFLOW = "overflowed the browser's stack";
+
+/** What the status line says about launch N after a stack overflow. */
+export function relaunchNote(launch: number): string {
+  return `launch ${launch}: the last one ${STACK_OVERFLOW}`;
+}
+
+/** The guest kernel died before writing its connection file. `status` is
+ * what the host's `exited` resolved with: its number (128+n for a
+ * signal), a wait status, or nothing. */
+class KernelExited extends Error {
+  constructor(message: string, readonly status: unknown) {
+    super(message);
+  }
+}
+
+/** The exit as the host reported it (a number or a wait status), or
+ * `undefined` for a host that gave none. */
+function exitOf(status: unknown): WaitStatus | undefined {
+  return status === undefined || status === null
+    ? undefined
+    : asWaitStatus(status as WaitStatus | number);
+}
+
+/** " (exit N)" or " (signal SIGNAME)"; nothing for an exit with no status. */
+function exitClause(status: unknown): string {
+  const exit = exitOf(status);
+  if (exit?.code != null) return ` (exit ${exit.code})`;
+  if (exit?.signal != null) return ` (signal ${signalName(exit.signal)})`;
+  return "";
+}
+
+/** SIGSEGV: 139 as the host folds it, or signal 11 in a wait status. */
+function isSegfault(status: unknown): boolean {
+  const exit = exitOf(status);
+  return exit?.code === 139 || exit?.signal === 11;
+}
+
+/**
+ * Start the guest kernel and connect to it.
+ *
+ * On Safari the first ipykernel launch in a page can die with SIGSEGV
+ * (exit 139): JavaScriptCore throws "Maximum call stack size exceeded" in
+ * the guest Worker (yurtos-kernel#4204). A launch a few seconds later in the
+ * same page fits (measured: launch 2 started every time) -- most likely
+ * because CPython then runs as optimised wasm with smaller frames than the
+ * first, baseline tier's. So on JavaScriptCore that one failure is launched
+ * again, up to STACK_OVERFLOW_LAUNCHES launches. Elsewhere a SIGSEGV is a
+ * real one, and like any other failure it is final at once: re-running
+ * ipykernel's import would only take minutes to fail the same way.
+ */
 export async function startGuestKernel(
   session: JupyterLaunchSession,
   ports?: KernelPorts,
-  /** `connect` is the dial's retry budget -- production waits out a kernel
-   * that is still binding its ports; a test that never dials says so
-   * instead of paying the whole backoff (yurt-playground#123). */
-  options: {
-    pollMs?: number;
-    connect?: { attempts?: number; delayMs?: number };
-  } = {},
+  options: StartOptions = {},
+): Promise<JupyterTransport> {
+  const running = await attachRunningKernel(session, ports, options.attach);
+  if (running !== undefined) return running;
+  const relaunches = isJavaScriptCore(
+    options.userAgent ?? globalThis.navigator?.userAgent,
+  );
+  for (let launch = 1;; launch++) {
+    try {
+      return await launchGuestKernel(session, ports, options);
+    } catch (error) {
+      if (
+        !relaunches || !(error instanceof KernelExited) ||
+        !isSegfault(error.status)
+      ) throw error;
+      if (launch >= STACK_OVERFLOW_LAUNCHES) {
+        throw new Error(
+          `the Jupyter kernel died of SIGSEGV on all ${launch} launches ` +
+            `(on Safari most likely the browser's stack, yurtos-kernel#4204); ` +
+            `the last: ${error.message}`,
+        );
+      }
+      options.relaunching?.(launch + 1);
+      await new Promise((resolve) =>
+        setTimeout(resolve, options.relaunchDelayMs ?? RELAUNCH_DELAY_MS)
+      );
+    }
+  }
+}
+
+/** A kernel an earlier start left running in this sandbox. On the desktop
+ * every page shares the app's one native sandbox, and the kernel binds the
+ * host's fixed kernel ports: when the Notebook page opens after the main
+ * page started Jupyter, a second launch cannot bind them (ZMQError: Address
+ * in use) and waits out the whole connection-file bound. So a page that
+ * finds a valid connection file first dials the ports it names, under its
+ * key, and asks for kernel_info on the control channel, which ipykernel
+ * answers from its control thread even while a cell runs. A kernel that
+ * answers is attached to. One whose ports do not open in a few bounded
+ * tries is taken for gone and a fresh kernel is launched, which replaces
+ * the files (the desktop page cannot see the pid's liveness; a live kernel
+ * whose dial fails every try is then stranded, as before this look --
+ * yurt-playground#351 owns that). A kernel that is dialed but does not
+ * answer fails the start, and is not stopped: it may be another page's.
+ * Undefined when there is nothing to attach to. */
+async function attachRunningKernel(
+  session: JupyterLaunchSession,
+  ports: KernelPorts | undefined,
+  bounds: StartOptions["attach"] = {},
+): Promise<JupyterTransport | undefined> {
+  const dials = bounds.dials ?? ATTACH_DIALS;
+  const dialMs = bounds.dialMs ?? ATTACH_DIAL_MS;
+  // A file read that fails is "nothing found": the launch below makes the
+  // same reads and reports their failure as it always has. A typed look
+  // that fails ends the start: the launch would type into the same shell.
+  const readFile = session.readFile;
+  const bytes = readFile !== undefined
+    ? await Promise.resolve()
+      .then(() => readFile(JUPYTER_CONNECTION_FILE))
+      .catch(() => undefined)
+    : await peekConnectionFileTyped(session);
+  if (bytes === undefined || bytes.byteLength === 0) return undefined;
+  let connection: KernelConnection;
+  try {
+    connection = JSON.parse(new TextDecoder().decode(bytes));
+    checkConnection(connection, ports);
+  } catch {
+    return undefined;
+  }
+  let transport: JupyterTransport | undefined;
+  for (let dial = 1; transport === undefined; dial++) {
+    // A try that outlasts its bound is abandoned whole: the ports it
+    // dialed are closed (a handshake waiting on one then fails), and a
+    // transport that opens after all is closed too.
+    const dialed: SandboxPortConn[] = [];
+    const opening = createJupyterTransport(
+      (port) => {
+        const conn = session.dialSandboxPort(port);
+        dialed.push(conn);
+        return conn;
+      },
+      configOf(connection),
+    );
+    try {
+      transport = await withTimeout(
+        opening,
+        dialMs,
+        "the dial of the running kernel's ports did not open",
+      );
+    } catch {
+      opening.then((late) => late.close(), () => {});
+      await Promise.all(dialed.map((conn) => conn.close().catch(() => {})));
+      if (dial >= dials) return undefined;
+      await new Promise((resolve) => setTimeout(resolve, ATTACH_RETRY_MS));
+    }
+  }
+  try {
+    await waitForKernelInfo(transport, "control");
+    return transport;
+  } catch (error) {
+    await transport.close().catch(() => {});
+    throw new Error(
+      "the Jupyter kernel already running in this sandbox did not answer: " +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+}
+
+/** The attach's dial: how many tries, each bounded, and the pause between. */
+const ATTACH_DIALS = 3;
+const ATTACH_DIAL_MS = 5_000;
+const ATTACH_RETRY_MS = 300;
+
+/** The connection file's bytes, looked at once by a line typed into the
+ * user's shell (hushed), for a session that cannot read guest files itself
+ * -- the desktop's Notebook page; undefined when there is none. */
+async function peekConnectionFileTyped(
+  session: JupyterLaunchSession,
+): Promise<Uint8Array | undefined> {
+  const marker = `YURT_SHELL_DONE_${Math.random().toString(36).slice(2, 8)}`;
+  const typedMarker = marker.replace("DONE_", 'DONE_""');
+  let text = "";
+  let resolveOutput: (() => void) | undefined;
+  // A look that outlasts its wait fails the start: no launch is typed
+  // behind a look still queued, whose late marker would show the screen in
+  // the middle of the launch's own hush. The screen is shown again then: a
+  // terminal hidden for good is worse than the file printed late (its key
+  // is a running kernel's, readable in the guest anyway).
+  const release = hushUntil(session, marker);
+  const remove = session.onOutput((chunk) => {
+    text += new TextDecoder().decode(chunk);
+    if (text.includes(marker)) resolveOutput?.();
+  });
+  try {
+    await session.terminal.write(
+      encoder.encode(
+        `if [ -s ${JUPYTER_CONNECTION_FILE} ]; then cat ${JUPYTER_CONNECTION_FILE}; fi; echo ${typedMarker}\n`,
+      ),
+    );
+    if (!text.includes(marker)) {
+      await withTimeout(
+        new Promise<void>((resolve) => resolveOutput = resolve),
+        PEEK_MS,
+        "the shell did not answer the look at the kernel's connection file",
+      );
+    }
+  } catch (error) {
+    release();
+    throw error;
+  } finally {
+    remove();
+  }
+  const output = text.slice(0, text.indexOf(marker));
+  const start = output.indexOf("{");
+  const end = output.lastIndexOf("}");
+  return start < 0 || end < start
+    ? undefined
+    : encoder.encode(output.slice(start, end + 1));
+}
+
+/** How long the typed look at the connection file may take: as long as
+ * the launch's own wait for the file, which a busy shell holds up alike. */
+const PEEK_MS = (CONNECTION_FILE_WAIT_SECONDS + 10) * 1000;
+
+/** A connection file the page may dial: tcp, five valid ports and, when
+ * the host maps fixed kernel ports, exactly those. Throws otherwise. */
+function checkConnection(
+  connection: KernelConnection,
+  ports?: KernelPorts,
+): void {
+  if (connection.transport !== "tcp") {
+    throw new Error("Jupyter transport is not tcp");
+  }
+  const named = [
+    connection.shell_port,
+    connection.iopub_port,
+    connection.stdin_port,
+    connection.control_port,
+    connection.hb_port,
+  ];
+  for (const port of named) {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error("Jupyter connection file has an invalid port");
+    }
+  }
+  if (ports !== undefined && named.some((port, i) => port !== ports[i])) {
+    throw new Error(
+      "Jupyter connection file names other ports than the host's",
+    );
+  }
+}
+
+function configOf(connection: KernelConnection): JupyterConfig {
+  return {
+    key: connection.key,
+    shell: connection.shell_port,
+    iopub: connection.iopub_port,
+    stdin: connection.stdin_port,
+    control: connection.control_port,
+    heartbeat: connection.hb_port,
+  };
+}
+
+async function launchGuestKernel(
+  session: JupyterLaunchSession,
+  ports: KernelPorts | undefined,
+  options: StartOptions,
 ): Promise<JupyterTransport> {
   // Only what is typed into the user's shell needs hushing; a session that
   // spawns the launch and reads the file itself types nothing.
+  const key = generateJupyterKey();
   const typesIntoShell = session.spawn === undefined ||
     session.readFile === undefined;
   const release = typesIntoShell
@@ -237,14 +559,14 @@ export async function startGuestKernel(
   try {
     let exited: Promise<unknown> | undefined;
     if (session.spawn !== undefined) {
-      exited = (await session.spawn(buildKernelOwnProcessLine(ports)))
+      exited = (await session.spawn(buildKernelOwnProcessLine(key, ports)))
         ?.exited;
     } else {
       // No way to start a process of the page's own (a launcher older
       // than /api/sessions): the launch is a background job of the user's
       // shell (yurt-playground#82).
       await session.terminal.write(
-        encoder.encode(`${buildKernelStartLine(ports)}\n`),
+        encoder.encode(`${buildKernelStartLine(key, ports)}\n`),
       );
     }
     try {
@@ -253,32 +575,44 @@ export async function startGuestKernel(
           session.readFile,
           options.pollMs ?? CONNECTION_FILE_POLL_MS,
           exited,
+          key,
         )
         : await readConnectionFile(session);
+      // The polled file is already ours; the typed read has no such
+      // filter. Never talk under any key but this launch's (a stale file
+      // may carry the old fixed one); thrown here, the kernel is stopped.
+      if (connection.key !== key) {
+        throw new Error(
+          "the Jupyter connection file's key is not the one this launch " +
+            "set; a stale kernel connection file was read",
+        );
+      }
     } catch (error) {
-      // The launch is out (a process of its own, or a job of the shell)
-      // and its connection file never came, or could not be read: it is
-      // not left running for nobody. The stop is typed and hushed, and
-      // its own failure is not the news here.
-      await stopGuestKernel(session).catch(() => {});
+      if (error instanceof KernelExited) {
+        // Nothing is left to kill, and its pid may be another process's
+        // by now: only the files go, by a process of the page's own (the
+        // one that saw the exit), so nothing is typed into the user's
+        // shell -- on Safari this runs on most boots.
+        // A cleanup that fails ends the start with its own error: no
+        // relaunch may race an rm that is still running.
+        await clearKernelFiles(session);
+      } else {
+        // The launch is out (a process of its own, or a job of the shell)
+        // and its connection file never came, or could not be read: it is
+        // not left running for nobody. The stop is typed and hushed, and
+        // its own failure is not the news here.
+        await stopGuestKernel(session).catch(() => {});
+      }
       throw error;
     }
   } finally {
     release();
   }
-  const config: JupyterConfig = {
-    key: connection.key,
-    shell: connection.shell_port,
-    iopub: connection.iopub_port,
-    stdin: connection.stdin_port,
-    control: connection.control_port,
-    heartbeat: connection.hb_port,
-  };
   return await connectJupyterWithRetries(
     () =>
       createJupyterTransport(
         (port) => session.dialSandboxPort(port),
-        config,
+        configOf(connection),
       ),
     waitForKernelInfo,
     options.connect,
@@ -331,17 +665,27 @@ async function pollConnectionFile(
   pollMs: number,
   /** The kernel process's end, when the session can see it: once it has
    * exited, one last look, and the wait is over. */
-  exited?: Promise<unknown>,
+  exited: Promise<unknown> | undefined,
+  /** The key this launch set: a file under any other key is a stale one
+   * from an earlier launch (or page), not this kernel's yet. */
+  key: string,
 ): Promise<KernelConnection> {
   const deadline = performance.now() + CONNECTION_FILE_WAIT_SECONDS * 1000;
   const decoder = new TextDecoder();
   let gone = false;
   /** The host's own failure to run the process, apart from an exit. */
   let failed: string | undefined;
-  exited?.then(() => gone = true, (error) => {
+  /** How it exited, as the host's `exited` resolved. */
+  let status: unknown;
+  exited?.then((value) => {
+    status = value;
+    gone = true;
+  }, (error) => {
     failed = error instanceof Error ? error.message : String(error);
     gone = true;
   });
+  /** A file was there, under a key that is not this launch's. */
+  let foreignKey = false;
   for (;;) {
     // Read before deciding: a kernel that wrote the file and then exited
     // still gets its file read once.
@@ -352,7 +696,9 @@ async function pollConnectionFile(
       // ipykernel writes the file in one go, but a look can land between
       // the create and the write: an unparsable file is "not yet".
       try {
-        return JSON.parse(decoder.decode(bytes)) as KernelConnection;
+        const parsed = JSON.parse(decoder.decode(bytes)) as KernelConnection;
+        if (parsed.key === key) return parsed;
+        foreignKey = true;
       } catch {
         // fall through to the next look
       }
@@ -364,11 +710,19 @@ async function pollConnectionFile(
   const tail = log === undefined
     ? "(no log)"
     : decoder.decode(log).split("\n").slice(-30).join("\n");
+  if (failed === undefined && gone) {
+    throw new KernelExited(
+      `the Jupyter kernel exited before writing its connection file${
+        exitClause(status)
+      }; kernel log:\n${tail}`,
+      status,
+    );
+  }
   throw new Error(
     failed !== undefined
       ? `the Jupyter kernel process failed to run: ${failed}; kernel log:\n${tail}`
-      : gone
-      ? `the Jupyter kernel exited before writing its connection file; kernel log:\n${tail}`
+      : foreignKey
+      ? `Jupyter connection file stayed under a key other than this launch's for ${CONNECTION_FILE_WAIT_SECONDS} s (a stale file the kernel kept?); kernel log:\n${tail}`
       : `Jupyter connection file was not written within ${CONNECTION_FILE_WAIT_SECONDS} s; kernel log:\n${tail}`,
   );
 }
@@ -417,32 +771,12 @@ async function readConnectionFile(
     const connection = JSON.parse(
       text.slice(jsonStart, jsonEnd + 1),
     ) as KernelConnection;
-    if (connection.transport !== "tcp") {
-      throw new Error("Jupyter transport is not tcp");
-    }
-    for (
-      const port of [
-        connection.shell_port,
-        connection.iopub_port,
-        connection.stdin_port,
-        connection.control_port,
-        connection.hb_port,
-      ]
-    ) {
-      if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        throw new Error("Jupyter connection file has an invalid port");
-      }
-    }
+    checkConnection(connection);
     return connection;
   } finally {
     remove();
   }
 }
-
-/** Bound on one cell of the terminal page's demo notebook. The first
- * execute after boot is JIT-bound like the boot itself: ~2 s on a laptop,
- * tens of seconds on a 2-vCPU CI runner. */
-export const EXECUTE_TIMEOUT_MS = 120_000;
 
 export async function executeCell(
   transport: JupyterTransport,
@@ -560,7 +894,12 @@ export function interruptKernel(transport: JupyterTransport): Promise<void> {
   }, "control");
 }
 
-async function waitForKernelInfo(transport: JupyterTransport): Promise<void> {
+/** Ask for kernel_info and wait for the reply. On `control` ipykernel
+ * answers from its control thread even while a cell runs on shell. */
+async function waitForKernelInfo(
+  transport: JupyterTransport,
+  channel: JupyterRequestChannel = "shell",
+): Promise<void> {
   const msgId = crypto.randomUUID();
   let unsubscribe: (() => void) | undefined;
   const result = new Promise<void>((resolve, reject) => {
@@ -585,7 +924,7 @@ async function waitForKernelInfo(transport: JupyterTransport): Promise<void> {
       parent_header: {},
       metadata: {},
       content: {},
-    }).catch((error) => {
+    }, channel).catch((error) => {
       unsubscribe?.();
       unsubscribe = undefined;
       reject(error);

@@ -13,6 +13,7 @@ import {
   modelUrl,
 } from "./llm_models.ts";
 import type { FromWorker, ToWorker } from "./llm_worker.ts";
+import { siteUrl } from "./site_url.ts";
 
 export type LoadProgress =
   | { phase: "download"; loaded: number; total: number }
@@ -45,7 +46,7 @@ export async function loadLocalModel(
   model: LocalModel,
   onProgress: (p: LoadProgress) => void,
 ): Promise<LocalLlm> {
-  const worker = new Worker("/llm_worker.bundle.js");
+  const worker = new Worker(siteUrl("./llm_worker.bundle.js"));
   let nextId = 1;
   const waiting = new Map<
     number,
@@ -112,7 +113,7 @@ export async function loadLocalModel(
       const id = nextId++;
       const done = new Promise<Done>((resolve, reject) => {
         waiting.set(id, { resolve, reject });
-        post({ type: "generate", id, system, prompt, maxOutputTokens: 512 });
+        post({ type: "generate", id, system, prompt, maxOutputTokens: 1024 });
       });
       const cancel = () => post({ type: "cancel" });
       signal.addEventListener("abort", cancel, { once: true });

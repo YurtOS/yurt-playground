@@ -239,19 +239,43 @@ export function nativeSpawner(
   return { spawn, signal };
 }
 
+/** How long, in the guest's centiseconds (/proc/uptime), a SIGKILL's tree
+ * kill looks for the killed descendants before it gives up on them: the
+ * registry's KILL_GRACE_MS, well over init's pace (below). */
+export const TREE_KILL_WAIT_CS = 200;
+
 /** One shell line that signals `pid` and every process descended from
  * it, collected first so a parent's death cannot orphan a child out of
- * the set. Shell builtins only (`read`, `kill`); no process per entry. */
+ * the set. Shell builtins only (`read`, `kill`); no process per entry.
+ *
+ * A SIGKILL also waits, bounded, until the descendants are gone from
+ * /proc, zombies included (yurt-sandbox#357). Killing `pid` orphans them:
+ * they die as zombies of init, and the guest's init (BusyBox) reaps at
+ * its own pace -- after each round of reaping it sleeps a second, so a
+ * zombie can stay listed for up to that long after the kill. The root
+ * itself is the host's child, and its exit is the session's. */
 export function buildTreeKill(pid: number, signal: number): string {
-  return [
+  const kill = [
     `t='${pid}'; n="$t"`,
     'while [ -n "$n" ]; do c=""',
     'for d in /proc/[0-9]*; do read -r s < "$d/stat" 2>/dev/null || continue',
     "r=${s##*) }; set -- $r",
     'for q in $n; do [ "$2" = "$q" ] && c="$c ${d#/proc/}"; done; done',
     'n="$c"; t="$t$c"; done',
-    `kill -${signal} $t 2>/dev/null; true`,
-  ].join("; ");
+    `kill -${signal} $t 2>/dev/null`,
+  ];
+  if (signal === 9) {
+    kill.push(
+      // Centiseconds since boot: "12.34 ..." read as 1234 (the fraction
+      // is two digits; a 1 in front keeps "08" from reading as octal).
+      'cs() { read -r u _ < /proc/uptime; echo "$((${u%.*} * 100 + 1${u#*.} - 100))"; }',
+      `e=$(($(cs) + ${TREE_KILL_WAIT_CS})); set -- $t; shift`,
+      'while [ $# -gt 0 ] && [ "$(cs)" -lt "$e" ]; do l=""',
+      'for q; do [ -e "/proc/$q" ] && l="$l $q"; done',
+      "set -- $l; [ $# -gt 0 ] && sleep 0.05; done",
+    );
+  }
+  return [...kill, "true"].join("; ");
 }
 
 /** An error code a driver can act on, from the message. */
@@ -408,6 +432,10 @@ export function createDesktopApi(options: {
   /** False for a host without the session routes (desktop-host before
    * v0.1.3): every authorized request is then a 503 that says so. */
   available?: boolean;
+  /** Whether an `Origin` is the launcher's own page: the launcher passes its
+   * boundary's predicate, fixed when the port was bound. Required: judging an
+   * origin by the request's own URL would let the request vouch for itself. */
+  ownOrigin: (origin: string) => boolean;
   pollMs?: number;
   sweepMs?: number;
 }): DesktopApi {
@@ -432,18 +460,17 @@ export function createDesktopApi(options: {
     throw new Error("download: not on the launcher");
   });
 
-  const authorize = (req: Request, url: URL): Response | undefined => {
+  const authorize = (req: Request): Response | undefined => {
     const auth = req.headers.get("authorization") ?? "";
     const presented = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
     if (presented === "" || !sameToken(presented, options.token)) {
       return refuse(401, "Unauthorized", "Authorization: Bearer <token>");
     }
-    // The launcher's own origin is the one this request was made to: the
-    // same page reaches it as 127.0.0.1 or as localhost, and a same-origin
-    // request names that host in both places. Anything else is a page from
-    // elsewhere.
+    // Only the launcher's own page may call the API. The launcher says which
+    // origins those are (the same page reaches it as 127.0.0.1 or as
+    // localhost); anything else is a page from elsewhere.
     const origin = req.headers.get("origin");
-    if (origin !== null && origin !== url.origin) {
+    if (origin !== null && !options.ownOrigin(origin)) {
       return refuse(403, "Forbidden", `not this page: ${origin}`);
     }
     if (req.headers.get("sec-fetch-site") === "cross-site") {
@@ -599,7 +626,7 @@ export function createDesktopApi(options: {
       if (url.pathname !== "/api" && !url.pathname.startsWith("/api/")) {
         return undefined;
       }
-      const refused = authorize(req, url) ??
+      const refused = authorize(req) ??
         (options.available === false
           ? refuse(
             503,

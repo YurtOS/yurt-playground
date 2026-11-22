@@ -1,8 +1,9 @@
 /**
- * Which kind of device the page runs on. A phone or tablet tab has too
- * little memory for Python and Jupyter: a tablet gets the shell only; a
- * phone gets no Start unless `?start-anyway`, and then no Python, and the
- * Notebook and JupyterLab pages boot nothing on a phone.
+ * Which kind of device the page runs on. A phone's or tablet's home page
+ * runs the shell only, restoring the tablet's snapshot (python alone, no
+ * Jupyter). A tablet's Notebook and JupyterLab pages run Jupyter from the
+ * desktop's snapshot, in a sandbox of their own with a 1 GiB kernel; a
+ * phone's boot nothing unless `?memory=1g` ({@link fullKernelMemory}).
  *
  * iPadOS Safari reports a Mac, at any width (a 13" iPad in landscape is
  * wider than many laptops). An iPad reports 5 touch points, a Mac 0
@@ -39,4 +40,257 @@ export function deviceClass(): "phone" | "tablet" | "desktop" {
     (coarse && innerWidth < 900)
   ) return "tablet";
   return "desktop";
+}
+
+/** Whether the page is typed into with an on-screen keyboard: a coarse
+ * pointer, or iOS. iPadOS reports a Mac with touch points (deviceClass), and
+ * an iPad with a trackpad attached reports a fine pointer. */
+export function touchDevice(): boolean {
+  const ua = navigator.userAgent;
+  return matchMedia("(pointer: coarse)").matches ||
+    /iPad|iPhone|iPod/.test(ua) ||
+    (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+}
+
+/** Firefox, and the Gecko browsers built from it: their user agent carries
+ * a `Firefox/` token. Firefox on iOS is WebKit and says `FxiOS/` instead.
+ * The in-tab sandbox does not start there (the kernel's workers never
+ * signal ready), so the page sends it to unsupported.html. */
+export function isFirefox(userAgent: string): boolean {
+  return /\bFirefox\//.test(userAgent);
+}
+
+/** Which kind of page this is: what it starts (the shell only on a phone
+ * or tablet, Jupyter on a desktop) and which snapshot it restores
+ * (src/snapshot_pin.ts SNAPSHOT_KINDS). `?platform=` says it in the
+ * URL: the page writes its device's there when there is none, and a hand
+ * written one overrides the device -- as far as the device can run it. */
+export type Platform = "phone" | "tablet" | "desktop";
+
+/** The snapshot a page on `platform` restores (src/snapshot_pin.ts
+ * SNAPSHOT_KINDS): a desktop's own, with the Python set and Jupyter; on a
+ * phone or tablet the tablet's, python alone. The Agent tab's own sandbox
+ * restores the tablet's on every platform (src/page.ts). */
+export function platformSnapshotKind(
+  platform: Platform,
+): "desktop" | "tablet" {
+  return platform === "desktop" ? "desktop" : "tablet";
+}
+
+const PLATFORM_ALIASES: Record<string, Platform> = {
+  phone: "phone",
+  iphone: "phone",
+  tablet: "tablet",
+  ipad: "tablet",
+  desktop: "desktop",
+  mac: "desktop",
+};
+
+/** How much a platform asks of the device's memory. */
+const PLATFORM_SIZE: Record<Platform, number> = {
+  phone: 0,
+  tablet: 1,
+  desktop: 2,
+};
+
+/** `?platform=`'s value as a platform (case aside), or undefined. */
+export function parsePlatform(value: string | null): Platform | undefined {
+  return value === null ? undefined : PLATFORM_ALIASES[value.toLowerCase()];
+}
+
+/** The platform a page on `device` runs as, given `?platform=` (`asked`):
+ *
+ * - none: the device's own, and the URL gains it (`redirect`);
+ * - one the device can run (its own, or a smaller one: a desktop trying
+ *   the phone's page): that one;
+ * - a bigger one than the device (the desktop's on a phone) or a value
+ *   that is no platform: the device's own, with a `note` saying so. An
+ *   asked platform is never written away from the URL.
+ */
+export function choosePlatform(
+  device: Platform,
+  asked: string | null,
+): { platform: Platform; redirect: boolean; note?: string } {
+  if (asked === null) return { platform: device, redirect: true };
+  const platform = parsePlatform(asked);
+  if (platform === undefined) {
+    return {
+      platform: device,
+      redirect: false,
+      note:
+        `?platform=${asked} is not phone, tablet or desktop (or iphone, ipad, mac): this page runs as this ${device}`,
+    };
+  }
+  if (PLATFORM_SIZE[platform] > PLATFORM_SIZE[device]) {
+    return {
+      platform: device,
+      redirect: false,
+      note:
+        `This ${device} has too little memory for the ${platform} page, so it runs the ${device}'s instead`,
+    };
+  }
+  return { platform, redirect: false };
+}
+
+/** `href` with `?platform=<platform>` added, every other parameter and the
+ * fragment kept. */
+export function withPlatform(href: string, platform: Platform): string {
+  const url = new URL(href);
+  url.searchParams.set("platform", platform);
+  return url.href;
+}
+
+/** What a desktop page's sandbox is set up for: the Python set and the
+ * Notebook (the default), or Go -- the go package with its standard
+ * library already compiled, and no Python (src/snapshot_pin.ts, kind
+ * `go`). `?env=go` says it in the URL; the start screen's choice writes
+ * it there. */
+export type Env = "python" | "go" | "playwright";
+
+/** The env a page running as `platform` takes, given `?env=` (`asked`).
+ * Go is a desktop browser's only: its snapshot needs more memory than a
+ * phone or tablet tab has, so there (and in the desktop app, whose
+ * sandbox is native and installs what it likes) `?env=go` is Python's,
+ * with a `note` saying so. So is it on a site that pins no Go snapshot
+ * (`goPinned` false: a bookmark or a shared link from elsewhere), which
+ * would otherwise boot an image with neither Go nor Python; and in a
+ * capture (`capturing`), which makes its kind's snapshot whatever the
+ * env (`?snapshot=capture-go` is Go's). */
+export function chooseEnv(
+  platform: Platform,
+  asked: string | null,
+  { nativeApp = false, goPinned = true, capturing = false }: {
+    nativeApp?: boolean;
+    goPinned?: boolean;
+    capturing?: boolean;
+  } = {},
+): { env: Env; note?: string } {
+  if (asked === null || asked.toLowerCase() === "python" || capturing) {
+    return { env: "python" };
+  }
+  // Playwright in the sandbox drives this browser (src/playwright_demo.ts):
+  // a desktop browser's, beside Python.
+  if (asked.toLowerCase() === "playwright") {
+    return nativeApp || platform !== "desktop"
+      ? {
+        env: "python",
+        note: `Playwright drives a desktop browser's tabs: this ${
+          nativeApp ? "app" : platform
+        } page sets up Python`,
+      }
+      : { env: "playwright" };
+  }
+  if (asked.toLowerCase() !== "go") {
+    return {
+      env: "python",
+      note:
+        `?env=${asked} is not python, go or playwright: this page sets up Python`,
+    };
+  }
+  if (nativeApp) {
+    return {
+      env: "python",
+      note:
+        "The desktop app's sandbox installs Go itself (sudo pkg install go)",
+    };
+  }
+  if (platform !== "desktop") {
+    return {
+      env: "python",
+      note:
+        `Go is for desktop browsers only: a ${platform} tab has too little memory for it`,
+    };
+  }
+  if (!goPinned) {
+    return {
+      env: "python",
+      note:
+        "This site has no Go sandbox yet, so it sets up Python; sudo pkg install go works in its terminal",
+    };
+  }
+  return { env: "go" };
+}
+
+/** `href` with `?env=<env>` set (Python's is the default: no parameter),
+ * every other parameter and the fragment kept. */
+export function withEnv(href: string, env: Env): string {
+  const url = new URL(href);
+  if (env === "python") url.searchParams.delete("env");
+  else url.searchParams.set("env", env);
+  return url.href;
+}
+
+/** `?memory=` (case aside): `1g` gives a phone's page what a tablet's has
+ * ({@link fullKernelMemory}); anything else, or none, changes nothing. */
+export const MEMORY_PARAM = "memory";
+
+/** Whether `?memory=` (`asked`) asks for the 1 GiB kernel. */
+export function largeMemoryAsked(asked: string | null | undefined): boolean {
+  return asked?.toLowerCase() === "1g";
+}
+
+/** `?memory=` in `href`, or null when it has none (or there is no URL). */
+export function memoryParam(
+  href: string | undefined = globalThis.location?.href,
+): string | null {
+  return href === undefined
+    ? null
+    : new URL(href).searchParams.get(MEMORY_PARAM);
+}
+
+/**
+ * Whether a page running as `platform` gives its kernel the kernel host's
+ * default 1 GiB maximum. A desktop and a tablet always do: an iPad's
+ * Notebook ran numpy beside a 1 GiB kernel. A phone's kernel takes the
+ * smaller maximum an iPhone tab's cap leaves room for
+ * (src/guest_memory_reservation.ts SMALL_CAP_KERNEL_MEMORY_BYTES) and runs
+ * no Jupyter, unless `?memory=1g` (`asked`) says to try what a tablet runs.
+ */
+export function fullKernelMemory(
+  platform: Platform,
+  asked: string | null | undefined,
+): boolean {
+  return platform !== "phone" || largeMemoryAsked(asked);
+}
+
+/**
+ * What the Notebook and JupyterLab pages (src/lite_bridge.ts) ask the
+ * coordinator for on `device`, given `?memory=` (`asked`): wherever they
+ * run Jupyter in the tab ({@link fullKernelMemory}), the desktop's snapshot,
+ * which holds the Python set and the Jupyter kernel, with no fallback to
+ * the image (installing them took a minute or more on every visit, and on
+ * an iPad the install ran the tab out of memory) and the kernel's full
+ * 1 GiB. A phone without `?memory=1g`, and the desktop app (`nativeApp`,
+ * whose sandbox is native), ask for none of it.
+ */
+export function notebookStart(
+  device: Platform,
+  asked: string | null | undefined,
+  nativeApp: boolean,
+): {
+  snapshot?: "restore";
+  snapshotKind?: "desktop";
+  snapshotRequired?: true;
+  fullKernelMemory?: true;
+} {
+  if (nativeApp || !fullKernelMemory(device, asked)) return {};
+  return {
+    snapshot: "restore",
+    snapshotKind: "desktop",
+    snapshotRequired: true,
+    fullKernelMemory: true,
+  };
+}
+
+/** `href` with `?memory=1g` set when `asked` asks for it, every other
+ * parameter and the fragment kept: the home page's Notebook and JupyterLab
+ * links carry it on. */
+export function withMemory(
+  href: string,
+  asked: string | null | undefined,
+): string {
+  if (!largeMemoryAsked(asked)) return href;
+  const url = new URL(href);
+  url.searchParams.set(MEMORY_PARAM, "1g");
+  return url.href;
 }

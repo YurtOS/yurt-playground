@@ -39,7 +39,9 @@ export function setPidCredentials(
   }
   const { rc } = mk.syscall(METHOD.KERNEL_SET_PROCESS_CREDENTIALS, req, 0);
   if (Number(rc) !== 0) {
-    throw new Error(`set credentials pid=${pid} uid=${uid}: rc=${rc}`);
+    throw new Error(
+      `set credentials pid=${pid} uid=${uid}: ${errnoText(Number(rc))}`,
+    );
   }
 }
 
@@ -58,7 +60,9 @@ function chownPath(
   req.set(pathBytes, 8);
   const { rc } = mk.syscall(SYS_CHOWN, req, 0);
   if (Number(rc) !== 0) {
-    throw new Error(`chown ${path} ${uid}:${gid} failed: rc=${rc}`);
+    throw new Error(
+      `chown ${path} ${uid}:${gid} failed: ${errnoText(Number(rc))}`,
+    );
   }
 }
 
@@ -70,6 +74,83 @@ function entryTypeBits(type: string): number {
   if (type === "dir") return S_IFDIR;
   if (type === "symlink") return S_IFLNK;
   return S_IFREG;
+}
+
+/** `kernel_vfs_set_metadata`'s request head: mode, uid, gid (u32 each),
+ * then mtime, atime and ctime as i64 nanoseconds, before the path
+ * (yurtos-kernel#4431). A kernel older than that has a 20-byte head with the
+ * mtime alone. */
+const SET_METADATA_HEAD = 36;
+const SET_METADATA_HEAD_LEGACY = 20;
+
+/** `kernel_vfs_stat`'s response: 32 bytes before #4431 (type, mode, uid,
+ * gid, size, mtime), 48 after it (atime and ctime appended); later kernels
+ * append more, which is ignored. The buffer asked for leaves room for that,
+ * and the size the kernel answers tells which layout it speaks. */
+const VFS_STAT_LEGACY_RECORD = 32;
+const VFS_STAT_RECORD = 48;
+const VFS_STAT_RESPONSE_CAP = 72;
+
+/** Which layout of the two host-control VFS calls a kernel speaks, found
+ * once per kernel from the size of a stat record of `/`. The pinned kernel
+ * wasm moves with the release train, and the two layouts must both stage. */
+const kernelLayouts = new WeakMap<KernelHostInterface, "legacy" | "current">();
+
+function kernelLayout(mk: KernelHostInterface): "legacy" | "current" {
+  let layout = kernelLayouts.get(mk);
+  if (layout === undefined) {
+    // A failed or malformed answer throws and caches nothing: a layout is
+    // only ever taken from a record the kernel really sent.
+    const { rc, response } = mk.syscall(
+      KERNEL_VFS_STAT,
+      s("/"),
+      VFS_STAT_RESPONSE_CAP,
+    );
+    const size = statRecordSize("/", Number(rc), response);
+    layout = size === VFS_STAT_LEGACY_RECORD ? "legacy" : "current";
+    kernelLayouts.set(mk, layout);
+  }
+  return layout;
+}
+
+/** The size of the stat record in a `kernel_vfs_stat` answer, refusing
+ * an errno and a size neither layout has: 32 bytes, or 48 up to the buffer
+ * asked for, and never past the response it came in. */
+function statRecordSize(
+  path: string,
+  code: number,
+  response: Uint8Array | undefined,
+): number {
+  if (code < 0) throw new Error(`stat ${path}: ${errnoText(code)}`);
+  if (
+    code !== VFS_STAT_LEGACY_RECORD &&
+    (code < VFS_STAT_RECORD || code > VFS_STAT_RESPONSE_CAP)
+  ) {
+    throw new Error(
+      `stat ${path}: the kernel answered ${code} bytes, not a ${VFS_STAT_LEGACY_RECORD}-byte record or one of ${VFS_STAT_RECORD} to ${VFS_STAT_RESPONSE_CAP}`,
+    );
+  }
+  const held = response?.byteLength ?? 0;
+  if (held < code) {
+    throw new Error(
+      `stat ${path}: the kernel answered ${code} bytes in a ${held}-byte response`,
+    );
+  }
+  return code;
+}
+
+const I64_MAX = (1n << 63n) - 1n;
+const I64_MIN = -(1n << 63n);
+
+/** Division that rounds toward negative infinity: a time before 1970 with
+ * a sub-second part is in the earlier second. */
+function floorDiv(value: bigint, by: bigint): bigint {
+  const quotient = value / by;
+  return value % by < 0n ? quotient - 1n : quotient;
+}
+
+function clampI64(value: bigint): bigint {
+  return value > I64_MAX ? I64_MAX : value < I64_MIN ? I64_MIN : value;
 }
 
 /** Apply the image's mode, owner, and mtime to a staged entry. */
@@ -85,7 +166,9 @@ function setEntryMetadata(
   },
 ): void {
   const pathBytes = s(path);
-  const req = new Uint8Array(20 + pathBytes.byteLength);
+  const legacy = kernelLayout(mk) === "legacy";
+  const head = legacy ? SET_METADATA_HEAD_LEGACY : SET_METADATA_HEAD;
+  const req = new Uint8Array(head + pathBytes.byteLength);
   const view = new DataView(req.buffer);
   view.setUint32(
     0,
@@ -94,18 +177,21 @@ function setEntryMetadata(
   );
   view.setUint32(4, entry.uid >>> 0, true);
   view.setUint32(8, entry.gid >>> 0, true);
-  view.setBigUint64(
-    12,
-    BigInt(Math.trunc(entry.mtime)) * NANOS_PER_SECOND,
-    true,
-  );
-  req.set(pathBytes, 20);
+  // The image records one time; it is the mtime, atime and ctime alike
+  // (the kernel's own vfs-stage.ts does the same).
+  const timeNs = clampI64(BigInt(Math.trunc(entry.mtime)) * NANOS_PER_SECOND);
+  view.setBigInt64(12, timeNs, true); // mtime
+  if (!legacy) {
+    view.setBigInt64(20, timeNs, true); // atime
+    view.setBigInt64(28, timeNs, true); // ctime
+  }
+  req.set(pathBytes, head);
   const { rc } = mk.syscall(KERNEL_VFS_SET_METADATA, req, 0);
   if (Number(rc) !== 0) {
     throw new Error(
-      `set metadata on ${path} (mode ${
-        entry.mode.toString(8)
-      }) failed: rc=${rc}`,
+      `set metadata on ${path} (mode ${entry.mode.toString(8)}) failed: ${
+        errnoText(Number(rc))
+      }`,
     );
   }
 }
@@ -115,6 +201,10 @@ function setEntryMetadata(
  * it accepts (directories are always kept): the ramfs lives in the kernel's
  * memory, and a sandbox that will be sealed pays for every staged byte on
  * every seal, so a demo stages what its one program needs.
+ *
+ * `host` gets each staged file's bytes under every name that reaches it:
+ * its own, its hardlinks' and its symlinks'. The names of one file share
+ * one buffer, so its values are read-only.
  */
 export async function stageYurtimg(
   mk: KernelHostInterface,
@@ -135,23 +225,33 @@ export async function stageYurtimg(
     registerRamfsDirectory(mk, path);
     knownDirectories.add(path);
   }
+  // One copy of each file's bytes, shared by every name that reaches it
+  // (its hardlinks, and its symlinks, which `stat` follows to the same
+  // inode). A copy per symlink -- 154 of busybox and 149 of git -- held
+  // ~1.3 GB at once and ran an iPhone tab out of memory. Sharing is safe
+  // because nothing writes these buffers: the kernel copies what it is
+  // given, so a guest write to one path never reaches them.
+  const bytesByInode = new Map<bigint, Uint8Array>();
+  const fileBytes = (path: string): Uint8Array => {
+    const inode = provider.stat(path).inode;
+    let bytes = bytesByInode.get(inode);
+    if (bytes === undefined) {
+      bytes = provider.readFile(path);
+      bytesByInode.set(inode, bytes);
+    }
+    return bytes;
+  };
   for (const [path, entry] of Object.entries(index.entries)) {
     if (entry.type !== "file" && entry.type !== "hardlink") continue;
     if (!include(path)) continue;
-    stageRamfsFile(
-      mk,
-      host,
-      path,
-      provider.readFile(path),
-      knownDirectories,
-    );
+    stageRamfsFile(mk, host, path, fileBytes(path), knownDirectories);
   }
   for (const [path, entry] of Object.entries(index.entries)) {
     if (entry.type !== "symlink") continue;
     if (!include(path)) continue;
     registerRamfsSymlink(mk, entry.target, path);
     try {
-      host.set(path, provider.readFile(path));
+      host.set(path, fileBytes(path));
     } catch {
       // Dangling or non-file symlink: valid VFS entry, not a module.
     }
@@ -205,7 +305,7 @@ function registerRamfsDirectory(mk: KernelHostInterface, path: string): void {
   const { rc } = mk.syscall(METHOD.KERNEL_FS_MKDIR, s(path), 0);
   const code = Number(rc);
   if (code !== 0 && code !== NEG_EEXIST) {
-    throw new Error(`kernel mkdir failed for ${path}: rc=${rc}`);
+    throw new Error(`kernel mkdir failed for ${path}: ${errnoText(code)}`);
   }
 }
 
@@ -222,7 +322,9 @@ function registerRamfsSymlink(
   req.set(linkBytes, 4 + targetBytes.byteLength);
   const { rc } = mk.syscall(METHOD.KERNEL_FS_SYMLINK, req, 0);
   if (Number(rc) !== 0) {
-    throw new Error(`kernel symlink failed for ${linkPath}: rc=${rc}`);
+    throw new Error(
+      `kernel symlink failed for ${linkPath}: ${errnoText(Number(rc))}`,
+    );
   }
 }
 
@@ -378,8 +480,19 @@ function responseCap(mk: KernelHostInterface): number {
 
 const textDecoder = new TextDecoder();
 
+/** The kernel's drain records (yurtos-kernel `vfs/dirty.rs`):
+ * `u8 tag + 16-byte identity + u32 length + path`. A
+ * `PATH` record names a path whose content or structure changed; an
+ * `ATTR` record, an inode with several names whose attributes or link
+ * count changed, with one visible name of it as a hint (empty when none
+ * is visible). */
+const DIRTY_TAG_PATH = 0;
+const DIRTY_TAG_ATTR = 1;
+const DIRTY_RECORD_HEAD = 1 + 16 + 4;
+
 /** Every path the guest's filesystem marked as touched since the last
- * drain (creates, writes, renames, removals; one set), and the log empty
+ * drain (creates, writes, renames, removals, and the visible name of a
+ * linked inode whose attributes changed; one set), and the log empty
  * again. A path may no longer exist. */
 export function drainDirtyPaths(mk: KernelHostInterface): string[] {
   const paths: string[] = [];
@@ -390,7 +503,9 @@ export function drainDirtyPaths(mk: KernelHostInterface): string[] {
       responseCap(mk),
     );
     const written = Number(rc);
-    if (written < 0) throw new Error(`drain dirty paths: rc=${rc}`);
+    if (written < 0) {
+      throw new Error(`drain dirty paths: ${errnoText(written)}`);
+    }
     if (written === 0) return paths;
     const view = new DataView(
       response.buffer,
@@ -398,12 +513,24 @@ export function drainDirtyPaths(mk: KernelHostInterface): string[] {
       response.byteLength,
     );
     let at = 0;
-    while (at + 4 <= written) {
-      const length = view.getUint32(at, true);
-      paths.push(
-        textDecoder.decode(response.subarray(at + 4, at + 4 + length)),
+    while (at < written) {
+      const tag = response[at];
+      const end = at + DIRTY_RECORD_HEAD > written
+        ? Infinity
+        : at + DIRTY_RECORD_HEAD + view.getUint32(at + 17, true);
+      if (
+        end > written ||
+        (tag !== DIRTY_TAG_PATH && tag !== DIRTY_TAG_ATTR)
+      ) {
+        throw new Error(
+          `drain dirty paths: a malformed record at byte ${at} of ${written}`,
+        );
+      }
+      const path = textDecoder.decode(
+        response.subarray(at + DIRTY_RECORD_HEAD, end),
       );
-      at += 4 + length;
+      if (tag === DIRTY_TAG_PATH || path !== "") paths.push(path);
+      at = end;
     }
   }
 }
@@ -423,12 +550,16 @@ export function vfsStat(
     mtime: number;
   }
   | undefined {
-  const { rc, response } = mk.syscall(KERNEL_VFS_STAT, s(path), 32);
+  const { rc, response } = mk.syscall(
+    KERNEL_VFS_STAT,
+    s(path),
+    VFS_STAT_RESPONSE_CAP,
+  );
   const code = Number(rc);
   // Gone (or a parent that is no directory now): no entry. Anything else
   // is an error, not an absence a layer may silently skip.
-  if (code === -2 || code === -20) return undefined;
-  if (code !== 32) throw new Error(`stat ${path}: rc=${rc}`);
+  if (missing(code)) return undefined;
+  statRecordSize(path, code, response);
   const view = new DataView(
     response.buffer,
     response.byteOffset,
@@ -447,8 +578,45 @@ export function vfsStat(
     uid: view.getUint32(8, true),
     gid: view.getUint32(12, true),
     size: Number(view.getBigUint64(16, true)),
-    mtime: Number(view.getBigUint64(24, true) / NANOS_PER_SECOND),
+    mtime: Number(floorDiv(view.getBigInt64(24, true), NANOS_PER_SECOND)),
   };
+}
+
+/** A VFS read's request (offset 0, then `path`; `view` sets the offset),
+ * and the most it can answer: the request and the response share the
+ * kernel's scratch buffer. */
+function vfsReadRequest(mk: KernelHostInterface, path: string) {
+  const pathBytes = s(path);
+  const request = new Uint8Array(8 + pathBytes.byteLength);
+  request.set(pathBytes, 8);
+  return {
+    request,
+    view: new DataView(request.buffer),
+    cap: responseCap(mk) - request.byteLength,
+  };
+}
+
+/** A path that is not there: no entry (ENOENT), or a parent that is no
+ * directory (ENOTDIR). Anything else is an error, not an absence. */
+function missing(rc: number): boolean {
+  return rc === -2 || rc === -20;
+}
+
+/** The errnos the kernel answers these calls with, in words. */
+const ERRNO_WORDS: Record<number, string> = {
+  1: "operation not permitted",
+  2: "no such file",
+  5: "I/O error",
+  9: "bad file descriptor",
+  13: "permission denied",
+  17: "file exists",
+  20: "not a directory",
+  21: "is a directory",
+  22: "invalid argument",
+  40: "too many levels of symbolic links",
+};
+function errnoText(rc: number): string {
+  return ERRNO_WORDS[-rc] ?? `error ${-rc}`;
 }
 
 /** A regular file's bytes (`size` of them, as its stat says). */
@@ -458,12 +626,7 @@ export function vfsReadFile(
   size: number,
 ): Uint8Array {
   const out = new Uint8Array(size);
-  const pathBytes = s(path);
-  const request = new Uint8Array(8 + pathBytes.byteLength);
-  request.set(pathBytes, 8);
-  const view = new DataView(request.buffer);
-  // The request and the response share the kernel's scratch buffer.
-  const cap = responseCap(mk) - request.byteLength;
+  const { request, view, cap } = vfsReadRequest(mk, path);
   let at = 0;
   while (at < size) {
     view.setBigUint64(0, BigInt(at), true);
@@ -473,7 +636,7 @@ export function vfsReadFile(
       Math.min(cap, size - at),
     );
     const count = Number(rc);
-    if (count < 0) throw new Error(`read ${path}: rc=${rc}`);
+    if (count < 0) throw new Error(`read ${path}: ${errnoText(count)}`);
     if (count === 0) break;
     out.set(response.subarray(0, count), at);
     at += count;
@@ -484,11 +647,29 @@ export function vfsReadFile(
   return out;
 }
 
+/** A whole file in one VFS read, so one version of it even if it is
+ * replaced meanwhile; `undefined` when there is none. A file that fills
+ * the read (the kernel's scratch room) may go on past it, and throws. */
+export function vfsReadWhole(
+  mk: KernelHostInterface,
+  path: string,
+): Uint8Array | undefined {
+  const { request, cap } = vfsReadRequest(mk, path);
+  const { rc, response } = mk.syscall(KERNEL_VFS_READ, request, cap);
+  const count = Number(rc);
+  if (missing(count)) return undefined;
+  if (count < 0) throw new Error(`read ${path}: ${errnoText(count)}`);
+  if (count >= cap) {
+    throw new Error(`${path} does not fit one read (${cap} bytes)`);
+  }
+  return response.slice(0, count);
+}
+
 /** A symlink's target. */
 export function vfsReadlink(mk: KernelHostInterface, path: string): string {
   const { rc, response } = mk.syscall(KERNEL_VFS_READLINK, s(path), 4096);
   const length = Number(rc);
-  if (length < 0) throw new Error(`readlink ${path}: rc=${rc}`);
+  if (length < 0) throw new Error(`readlink ${path}: ${errnoText(length)}`);
   return textDecoder.decode(response.subarray(0, length));
 }
 
@@ -500,7 +681,7 @@ export function vfsReaddir(mk: KernelHostInterface, path: string): string[] {
   for (;;) {
     const { rc, response } = mk.syscall(KERNEL_VFS_READDIR, request, cap);
     const needed = Number(rc);
-    if (needed < 0) throw new Error(`readdir ${path}: rc=${rc}`);
+    if (needed < 0) throw new Error(`readdir ${path}: ${errnoText(needed)}`);
     if (needed > cap) {
       if (needed > most) {
         throw new Error(`readdir ${path}: ${needed} bytes of names`);
@@ -554,7 +735,7 @@ export function stageLayer(
     if (existing !== undefined) {
       const { rc } = mk.syscall(KERNEL_VFS_UNLINK_TREE, s(entry.path), 0);
       if (Number(rc) !== 0) {
-        throw new Error(`replace ${entry.path}: rc=${rc}`);
+        throw new Error(`replace ${entry.path}: ${errnoText(Number(rc))}`);
       }
     }
     if (entry.type === "file") writeRamfsFile(mk, entry.path, entry.bytes);

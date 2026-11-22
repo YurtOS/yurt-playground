@@ -1,0 +1,369 @@
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  compiledPackages,
+  OPTIONAL_KINDS,
+  SNAPSHOT_EXPECTED,
+  type SnapshotProbe,
+  verifySnapshotPins,
+  verifySnapshotProbe,
+} from "../scripts/verify-snapshots.ts";
+
+type Pinned = {
+  contents: { packages: { name: string; version: string; build: string }[] };
+  builtFrom: { pythonSet: string | null };
+  memoryBytes: number;
+  size: number;
+  restorePeakMiB?: number;
+};
+
+const IMAGE = "e".repeat(64);
+
+function release(name: string, version: string) {
+  return { name, version, build: "yurt_0" };
+}
+
+/** A snapshot pin of the shape release-snapshot.ts writes. */
+function pin(
+  tag: string,
+  names: [string, string][],
+  pythonSet: string | null,
+  memoryBytes: number,
+  size: number,
+  restorePeakMiB: number,
+): Record<string, unknown> {
+  return {
+    releaseRepo: "YurtOS/yurt-playground",
+    release: tag,
+    format: 4,
+    sha256: "a".repeat(64),
+    size,
+    builtFrom: {
+      kernelSha256: "d".repeat(64),
+      kernelRev: "r",
+      sealVersion: 1,
+      bootSetup: 2,
+      imageSha256: IMAGE,
+      pythonSealSha256: pythonSet === null ? null : "f".repeat(64),
+      pythonSet,
+    },
+    memoryBytes,
+    restorePeakMiB,
+    contents: {
+      packages: [
+        release("ca-certificates", "2026.9.25"),
+        release("git", "2.55.0"),
+        ...names.map(([name, version]) => release(name, version)),
+      ],
+      remark: "BusyBox shell",
+    },
+  };
+}
+
+/** Three kinds as a train pins them: desktop > tablet, and Go beside them. */
+function fixture(): Record<string, Record<string, unknown>> {
+  return {
+    snapshot: pin(
+      "snapshot-t",
+      [["jupyter-kernel", "0.0.1"], ["numpy", "2.5.0"], ["python", "3.14.7"], [
+        "pyzmq",
+        "26.4.0",
+      ]],
+      `${IMAGE}/jupyter-kernel@0.0.1-yurt_0:1+numpy@2.5.0-yurt_0:2+python@3.14.7-yurt_0:3+pyzmq@26.4.0-yurt_0:4`,
+      546_701_312,
+      130_826_562,
+      2459,
+    ),
+    tabletSnapshot: pin(
+      "snapshot-tablet-t",
+      [["python", "3.14.7"]],
+      `${IMAGE}/python@3.14.7-yurt_0:3`,
+      399_245_312,
+      94_664_921,
+      1267,
+    ),
+    goSnapshot: pin(
+      "snapshot-go-t",
+      [["go", "1.28.0-devel"]],
+      `${IMAGE}/go@1.28.0-devel-yurt_1:5`,
+      420_000_000,
+      60_000_000,
+      1300,
+    ),
+  };
+}
+
+function problemsWith(key: string, edit: (pin: Pinned) => void): string[] {
+  const pins = fixture();
+  edit(pins[key] as unknown as Pinned);
+  return verifySnapshotPins(pins);
+}
+
+Deno.test("the committed snapshot pins hold what their kinds are for, largest first", async () => {
+  // complete: false -- mid-train, a commit has some pins dropped or not
+  // yet measured (scripts/verify-snapshots.ts checks a finished train).
+  const pins = JSON.parse(
+    await Deno.readTextFile(new URL("../artifacts/pins.json", import.meta.url)),
+  );
+  // Apart from their format: the train that merges the zip format
+  // recaptures every kind (format 3 is the gzip of before it).
+  assertEquals(
+    verifySnapshotPins(pins, { complete: false }).filter((problem) =>
+      !problem.includes("is format 3, not 4: a gzip of the kernel memory")
+    ),
+    [],
+  );
+});
+
+Deno.test("a complete train without a Go snapshot passes: Go's is optional", () => {
+  const pins = fixture();
+  delete pins.goSnapshot;
+  assertEquals(verifySnapshotPins(pins), []);
+});
+
+Deno.test("a pinned but unmeasured Go snapshot is still refused when the train is complete", () => {
+  const pins = fixture();
+  delete (pins.goSnapshot as unknown as Pinned).restorePeakMiB;
+  assertEquals(verifySnapshotPins(pins), [
+    "go: the pin records no restorePeakMiB (scripts/measure-boot.ts)",
+  ]);
+});
+
+Deno.test("a train's three snapshots pass", () => {
+  assertEquals(verifySnapshotPins(fixture()), []);
+});
+
+Deno.test("on a kernel whose root is a YurtFS store, a pin of a zip without the store is refused", () => {
+  const pins = fixture();
+  const identity = {
+    lineage: "1".repeat(32),
+    sequence: "7",
+    hash: "2".repeat(64),
+  };
+  for (const key of ["snapshot", "goSnapshot"]) {
+    pins[key].store = { identity, files: 2, bytes: 640, pieceBytes: 600 };
+  }
+  // Undefined (a kernel not asked) takes either, as acceptedSnapshot.
+  assertEquals(verifySnapshotPins(pins), []);
+  // Today's kernel restores neither of the two that carry one.
+  assertEquals(verifySnapshotPins(pins, { rootStore: false }), [
+    "desktop: the pinned snapshot carries a YurtFS root store, and this kernel keeps its root filesystem in its memory",
+    "go: the pinned snapshot carries a YurtFS root store, and this kernel keeps its root filesystem in its memory",
+  ]);
+  assertEquals(verifySnapshotPins(pins, { rootStore: true }), [
+    "tablet: the pinned snapshot holds the kernel memory alone, and this kernel's root filesystem is a YurtFS store that it does not hold; capture it again",
+  ]);
+});
+
+Deno.test("a desktop snapshot without numpy is refused", () => {
+  const problems = problemsWith("snapshot", (pin) => {
+    pin.contents.packages = pin.contents.packages.filter((p) =>
+      p.name !== "numpy"
+    );
+  });
+  assertEquals(problems, ["desktop: lacks numpy"]);
+});
+
+Deno.test("a tablet snapshot with Jupyter in it is refused", () => {
+  const problems = problemsWith("tabletSnapshot", (pin) => {
+    pin.contents.packages.push(release("jupyter-kernel", "0.0.1"));
+  });
+  assertEquals(problems, ["tablet: holds jupyter-kernel"]);
+});
+
+Deno.test("a tablet snapshot whose Python set key holds numpy is refused", () => {
+  const problems = problemsWith("tabletSnapshot", (pin) => {
+    pin.builtFrom.pythonSet =
+      `${IMAGE}/numpy@2.5.0-yurt_0:2+python@3.14.7-yurt_0:3`;
+  });
+  assertEquals(problems, ["tablet: its Python set key holds numpy"]);
+});
+
+Deno.test("a Go snapshot with Python in it, or without go, is refused", () => {
+  assertEquals(
+    problemsWith("goSnapshot", (pin) => {
+      pin.contents.packages.push(release("python", "3.14.7"));
+    }),
+    ["go: holds python"],
+  );
+  assertEquals(
+    problemsWith("goSnapshot", (pin) => {
+      pin.contents.packages = pin.contents.packages.filter((p) =>
+        p.name !== "go"
+      );
+    }),
+    ["go: lacks go"],
+  );
+  assertEquals(
+    problemsWith("goSnapshot", (pin) => {
+      pin.builtFrom.pythonSet = `${IMAGE}/python@3.14.7-yurt_0:3`;
+    }),
+    [
+      "go: its Python set key lacks go",
+      "go: its Python set key holds python",
+    ],
+  );
+  assertStringIncludes(
+    problemsWith("goSnapshot", (pin) => {
+      pin.builtFrom.pythonSet = null;
+    }).join("\n"),
+    "go: built with no Python set",
+  );
+});
+
+Deno.test("the desktop's Python snapshot with go in it is refused", () => {
+  assertEquals(
+    problemsWith("snapshot", (pin) => {
+      pin.contents.packages.push(release("go", "1.28.0-devel"));
+    }),
+    ["desktop: holds go"],
+  );
+});
+
+Deno.test("a tablet snapshot as large as the desktop's is refused", () => {
+  const problems = problemsWith("tabletSnapshot", (pin) => {
+    pin.memoryBytes = 546_701_312;
+  });
+  assertEquals(problems, [
+    "memoryBytes: desktop (546701312) is not larger than tablet (546701312)",
+  ]);
+});
+
+Deno.test("the Playwright snapshot is optional, holds node and loads playwright-core", () => {
+  // Not pinned: a complete train is whole without it (the page installs
+  // live), like Go's.
+  assertEquals(OPTIONAL_KINDS.includes("playwright"), true);
+  assertEquals(SNAPSHOT_EXPECTED.playwright.has, ["node"]);
+  assertEquals(SNAPSHOT_EXPECTED.playwright.playwright, true);
+  for (const kind of ["desktop", "tablet", "go"] as const) {
+    assertEquals(SNAPSHOT_EXPECTED[kind].playwright, false);
+  }
+  assertEquals(verifySnapshotPins(fixture()), []);
+  // A restore whose node does not load playwright-core is refused.
+  const probe: SnapshotProbe = {
+    kind: "playwright",
+    restored: true,
+    restoredBytes: null,
+    processes: [],
+    python: false,
+    go: false,
+    playwright: false,
+    goCompiled: null,
+    goBuildSeconds: null,
+    imports: { numpy: false, zmq: false },
+    notebook: false,
+    memTotalKiB: null,
+    df: "",
+  };
+  assertEquals(verifySnapshotProbe(probe), [
+    "playwright: node does not load playwright-core and yurt-chrome",
+  ]);
+});
+
+Deno.test("a missing or unmeasured snapshot is refused only when the train is complete", () => {
+  const pins = fixture();
+  delete pins.tabletSnapshot;
+  delete (pins.snapshot as unknown as Pinned).restorePeakMiB;
+  assertEquals(verifySnapshotPins(pins), [
+    "desktop: the pin records no restorePeakMiB (scripts/measure-boot.ts)",
+    "tablet: no tabletSnapshot pin",
+  ]);
+  assertEquals(verifySnapshotPins(pins, { complete: false }), []);
+});
+
+Deno.test("a live probe is held to its kind", () => {
+  const probe: SnapshotProbe = {
+    kind: "tablet",
+    restored: true,
+    restoredBytes: 1,
+    processes: [],
+    python: true,
+    go: false,
+    playwright: false,
+    goCompiled: null,
+    goBuildSeconds: null,
+    imports: { numpy: false, zmq: false },
+    notebook: false,
+    memTotalKiB: null,
+    df: "",
+  };
+  assertEquals(verifySnapshotProbe(probe), []);
+  assertEquals(verifySnapshotProbe({ ...probe, python: false }), [
+    "tablet: python3 is not on the PATH",
+  ]);
+  assertEquals(
+    verifySnapshotProbe({
+      ...probe,
+      kind: "desktop",
+      python: true,
+      imports: { numpy: true, zmq: false },
+      notebook: true,
+    }),
+    ["desktop: import zmq fails"],
+  );
+  assertEquals(verifySnapshotProbe({ ...probe, restored: false }), [
+    "tablet: not restored from its snapshot",
+  ]);
+});
+
+Deno.test("a live probe of Go's snapshot needs go and a warm build cache", () => {
+  const probe: SnapshotProbe = {
+    kind: "go",
+    restored: true,
+    restoredBytes: 1,
+    processes: [],
+    python: false,
+    go: true,
+    playwright: false,
+    goCompiled: [],
+    goBuildSeconds: 20,
+    imports: { numpy: false, zmq: false },
+    notebook: false,
+    memTotalKiB: null,
+    df: "",
+  };
+  assertEquals(verifySnapshotProbe(probe), []);
+  assertEquals(verifySnapshotProbe({ ...probe, go: false, goCompiled: null }), [
+    "go: go is not on the PATH",
+  ]);
+  assertEquals(
+    verifySnapshotProbe({ ...probe, goCompiled: ["fmt", "os"] }),
+    [
+      "go: a first go build compiled the standard library's fmt, os (the build cache is cold)",
+    ],
+  );
+  assertEquals(
+    verifySnapshotProbe({
+      ...probe,
+      kind: "desktop",
+      python: true,
+      imports: { numpy: true, zmq: true },
+      notebook: true,
+    }),
+    ["desktop: go is on the PATH"],
+  );
+});
+
+Deno.test("compiledPackages reads the packages go build -x compiled", () => {
+  const log = [
+    "WORK=/tmp/go-build1",
+    "mkdir -p $WORK/b001/",
+    '/usr/lib/go/pkg/tool/linux_wasm32/compile -o $WORK/b001/_pkg_.a -trimpath "$WORK/b001=>" -p main -lang=go1.28 -complete -buildid x/x -goversion go1.28 -c=4 -nolocalimports -importcfg $WORK/b001/importcfg -pack ./go-probe.go',
+    "/usr/lib/go/pkg/tool/linux_wasm32/link -o $WORK/b001/exe/a.out",
+  ].join("\n");
+  assertEquals(compiledPackages(log), []);
+  assertEquals(
+    compiledPackages(
+      `${log}\n/usr/lib/go/pkg/tool/linux_wasm32/compile -o $WORK/b014/_pkg_.a -p strings -std -complete\n` +
+        "/usr/lib/go/pkg/tool/linux_wasm32/compile -o $WORK/b002/_pkg_.a -p fmt -std",
+    ),
+    ["strings", "fmt"],
+  );
+});
+
+Deno.test("a pin of another format than the page's is refused", () => {
+  const pins = fixture();
+  (pins.tabletSnapshot as Record<string, unknown>).format = 3;
+  assertEquals(verifySnapshotPins(pins), [
+    "tablet: the pinned snapshot is format 3, not 4: a gzip of the kernel memory, from before the zip; capture it again",
+  ]);
+});

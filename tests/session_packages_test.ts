@@ -1,10 +1,13 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
+  type BootedSession,
   HEARTBEAT,
+  recoverScript,
   runStaged,
   withHeartbeat,
+  workerPackageHost,
 } from "../src/session_packages.ts";
-import { STAGING_DIR } from "../src/packages.ts";
+import { relayedInstallScript, STAGING_DIR } from "../src/packages.ts";
 import type { SpawnedProcess } from "../src/executions.ts";
 
 const enc = new TextEncoder();
@@ -230,4 +233,58 @@ Deno.test("a run the install gave up on stops being watched", async () => {
   // Deno's leak check fails the test if the poll were still running; and
   // no cleanup is spawned into a sandbox that may not run it.
   assertEquals(lines.length, 1);
+});
+
+Deno.test("the worker's host runs pkg recover as root, watched, staging nothing", async () => {
+  const { session, lines } = fakeSession([
+    { stderr: HEARTBEAT },
+    { stdout: "recovered 0001\n" },
+  ], 10);
+  const host = workerPackageHost(session as unknown as BootedSession);
+  const result = await host.recover!({
+    alive: () => {},
+    signal: new AbortController().signal,
+  });
+  // The beats are not its output; it runs with the heartbeat (watched),
+  // and no clean-up of the staging copy follows it.
+  assertEquals(result, { code: 0, stdout: "recovered 0001\n", stderr: "" });
+  assertEquals(lines, [
+    `exec /bin/sh -c '${
+      withHeartbeat(recoverScript()).replaceAll("'", "'\\''")
+    }'`,
+  ]);
+});
+
+Deno.test("pkg recover alone gives the heartbeat no child to see; in a shell that waits on it, it beats", async () => {
+  // The guest's BusyBox ash, given `sh -c` with one simple command, execs
+  // it in place of the shell, which then has no child: the loop beats
+  // nothing, and a recovery waiting on pkg's lock would look stopped.
+  // Host shells differ (Ubuntu's dash keeps the shell here), so the lone
+  // case says `exec` itself. The recovery's script keeps the shell on
+  // any of them: its last command is the `exit` builtin.
+  const lone = await hostHeartbeat("exec sleep 1.2", [1000]);
+  assertEquals(lone.beats[0], 0, `beats ${lone.beats}`);
+  const kept = await hostHeartbeat(recoverScript("sleep 1.2"), [1000]);
+  assertEquals(kept.beats[0] >= 3, true, `beats ${kept.beats}`);
+  assertEquals(recoverScript(), "sudo pkg recover; exit $?");
+});
+
+Deno.test("the relayed install keeps beating through its last command", async () => {
+  // `pkg` replaced by a sleep: both of its commands take 1.2 s. Beats are
+  // counted at 1.0 s (the update) and in the install, from 1.6 s to 2.2 s.
+  const script = relayedInstallScript("greet", "sleep 1.2; :");
+  const { beats } = await hostHeartbeat(script, [1000, 1600, 2200]);
+  assert(beats[0] >= 3, `beats ${beats}`);
+  assert(beats[2] - beats[1] >= 2, `beats ${beats}`);
+  // The guest's BusyBox ash execs a script's last simple command in the
+  // shell's place: the `exit` builtin must come after pkg.
+  assert(
+    relayedInstallScript("greet").endsWith("sudo pkg install 'greet'; exit $?"),
+  );
+  // What an `exec` of the last command would do: nothing beats after it.
+  const execed = await hostHeartbeat(
+    "sleep 1.2; : update || exit 1\nexec sleep 1.2",
+    [1000, 1600, 2200],
+  );
+  assertEquals(execed.beats[2] - execed.beats[1], 0, `beats ${execed.beats}`);
 });

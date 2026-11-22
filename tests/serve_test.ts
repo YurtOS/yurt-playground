@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   handlePlaygroundRequest,
+  ISOLATION_HEADERS,
   resolvePlaygroundPath,
 } from "../src/serve.ts";
 import { kernelImportMap, resolveKernelRoot } from "../scripts/serve.ts";
@@ -38,6 +39,53 @@ Deno.test("the bundle import map resolves a relative kernel root", () => {
   }
 });
 
+Deno.test("the bundle import map maps every package the kernel's browser host imports", async () => {
+  // deno bundle takes public/import-map.json instead of the kernel's deno.json
+  // imports, so a package the kernel host starts importing (hash-wasm, #4394)
+  // fails the page bundle until it is listed here too. The scan covers the
+  // two kernel trees the map points into (@yurt/kernel-host-interface-js,
+  // @yurt/worker-bootstrap and @yurt/tar-image), test files excluded.
+  const { kernelPath, imports } = kernelImportMap(
+    Deno.env.get("YURT_KERNEL_ROOT") ?? "../yurtos-kernel",
+  );
+  const roots = [
+    "packages/kernel-host-interface-js",
+    "packages/runner/src/vfs",
+  ].map((dir) => join(kernelPath, dir));
+  const missing = new Set<string>();
+  async function scan(dir: string): Promise<void> {
+    for await (const entry of Deno.readDir(dir)) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory) {
+        if (!/^(__tests__|tests?|node_modules)$/.test(entry.name)) {
+          await scan(path);
+        }
+        continue;
+      }
+      if (!entry.isFile || !entry.name.endsWith(".ts")) continue;
+      if (/[._]test\.ts$/.test(entry.name)) continue;
+      const text = await Deno.readTextFile(path);
+      for (
+        const match of text.matchAll(
+          /^\s*(?:import|export)\b[^;]*?\bfrom\s+"([^"]+)"/gm,
+        )
+      ) {
+        const specifier = match[1];
+        if (/^(\.|\/|node:|npm:|jsr:|https?:)/.test(specifier)) continue;
+        if (!(specifier in imports)) {
+          missing.add(`${specifier} (${path.slice(kernelPath.length + 1)})`);
+        }
+      }
+    }
+  }
+  for (const root of roots) await scan(root);
+  assertEquals(
+    [...missing].sort(),
+    [],
+    "packages missing from kernelImportMap",
+  );
+});
+
 Deno.test("playground HTTP responses carry COOP/COEP", async () => {
   const res = await handlePlaygroundRequest(new Request("http://playground/"));
   assertEquals(res.headers.get("Cross-Origin-Opener-Policy"), isolation.coop);
@@ -53,6 +101,18 @@ Deno.test("playground HTTP responses carry COOP/COEP", async () => {
   const html = await res.text();
   assertEquals(html.includes('id="term"'), true);
   assertEquals(html.includes('data-testid="start-sandbox"'), true);
+});
+
+Deno.test("the dev server serves the agent's model list from config/ (#368)", () => {
+  assertEquals(
+    resolvePlaygroundPath("/config/agent-models.json"),
+    join(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "config",
+      "agent-models.json",
+    ),
+  );
 });
 
 Deno.test("path resolver rejects a .. segment", () => {
@@ -138,4 +198,53 @@ Deno.test("dev server applies Pages' directory rule to the Jupyter apps", async 
   assertEquals(bare.headers.get("location"), "/jupyter/?path=welcome.ipynb");
   assertEquals(bare.headers.get("Cross-Origin-Opener-Policy"), isolation.coop);
   await bare.body?.cancel();
+});
+
+Deno.test("the dev server serves the bridge extension's zip, with every file in it", async () => {
+  const res = await handlePlaygroundRequest(
+    new Request("http://playground/yurt-browser-bridge.zip"),
+  );
+  assertEquals(res.status, 200);
+  assertEquals(res.headers.get("content-type"), "application/zip");
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  // A zip (local file header "PK\x03\x04") naming the extension's files.
+  assertEquals([...bytes.subarray(0, 4)], [0x50, 0x4b, 0x03, 0x04]);
+  const names = new TextDecoder("latin1").decode(bytes);
+  for (
+    const file of ["manifest.json", "bridge.js", "approve.html", "approve.js"]
+  ) {
+    assertEquals(names.includes(file), true, file);
+  }
+});
+
+Deno.test("every response denies the powerful features a guest could prompt for", () => {
+  // Script that runs in the page origin must not be able to raise camera,
+  // microphone or location prompts under the playground's name
+  // (yurt-sandbox#382). Clipboard and GPU stay: the terminal and agent use them.
+  const denied = ISOLATION_HEADERS["Permissions-Policy"].split(", ");
+  for (
+    const feature of [
+      "camera",
+      "microphone",
+      "geolocation",
+      "usb",
+      "serial",
+      "bluetooth",
+      "hid",
+      "payment",
+      "display-capture",
+      "midi",
+      "accelerometer",
+      "gyroscope",
+      "magnetometer",
+      "xr-spatial-tracking",
+    ]
+  ) {
+    assertEquals(denied.includes(`${feature}=()`), true, feature);
+  }
+  // The terminal and the agent need these.
+  assertEquals(
+    denied.some((d) => /^(clipboard|gpu|fullscreen)/.test(d)),
+    false,
+  );
 });

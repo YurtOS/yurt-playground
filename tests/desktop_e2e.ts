@@ -3,10 +3,11 @@
 // carries, serves the site, and in a real browser Jupyter runs a cell and
 // reaches the internet from the guest. Run it after the build; it is the
 // acceptance for the shipped artifact, not the source tree.
-import { chromium } from "playwright";
+import { launchBrowser } from "../scripts/browser.ts";
+import { showAllSections } from "./show_all_sections.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EXECUTE_TIMEOUT_MS } from "../src/jupyter.ts";
+import { EXECUTE_TIMEOUT_MS } from "../src/jupyter_protocol.ts";
 import { watchCspViolations } from "./csp_watch.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -130,7 +131,14 @@ async function driveApi(
     throw new Error(`exec: ${JSON.stringify(result)}`);
   }
   const started = Date.now();
-  const killed = await exec({ cmd: "sleep 60 | sleep 60", timeoutMs: 1500 });
+  // The orphan `sleep 1` makes the guest's init (BusyBox) reap it at 1 s
+  // and then sleep a second, so the pipeline the deadline kills at 1.5 s
+  // dies into zombies init leaves listed until about 2 s: the reply has
+  // to wait them out, every run (yurt-sandbox#357).
+  const killed = await exec({
+    cmd: "(sleep 1 &); sleep 60 | sleep 60",
+    timeoutMs: 1500,
+  });
   if (killed.signal !== "SIGKILL" || killed.timedOut !== true) {
     throw new Error(`timeout: ${JSON.stringify(killed)}`);
   }
@@ -170,9 +178,9 @@ async function driveApi(
 if (import.meta.main) {
   const app = await startApp();
   const apiPresent = await driveApi(app);
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   try {
-    const page = await browser.newPage();
+    const page = await showAllSections(await browser.newPage());
     const started = Date.now();
     const csp = watchCspViolations(page);
     // The app runs the sandbox natively: the launcher says so, and the boot
