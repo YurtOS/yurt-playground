@@ -166,22 +166,22 @@ for (
           "lacks disabledExtensions",
         );
       }
-      await assertRejects(
-        () => Deno.stat(`${lite.root}/public/jupyter`),
-        Deno.errors.NotFound,
+      // Nothing under the served tree, not even a staging copy.
+      assertEquals(
+        await Array.fromAsync(
+          Deno.readDir(`${lite.root}/public`),
+          (e) => e.name,
+        ),
+        [],
       );
     });
   });
 }
 
-Deno.test("build.sh refuses `.` as its output dir and deletes nothing", async () => {
+Deno.test("a `.` output dir fails the build and deletes nothing", async () => {
+  // rm refuses `.`, so the argument must reach it as given.
   await withLiteBuild(async (lite) => {
-    const out = await lite.build({}, ["."]);
-    assertEquals(out.success, false);
-    assertStringIncludes(
-      new TextDecoder().decode(out.stderr),
-      "refusing to remove",
-    );
+    assertEquals((await lite.build({}, ["."])).success, false);
     await Deno.stat(`${lite.root}/jupyterlite/jupyter-lite.json`);
     await Deno.stat(`${lite.root}/bin/jupyter`);
   });
