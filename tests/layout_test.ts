@@ -817,7 +817,8 @@ Deno.test("the Density view names the machine and the build its numbers come fro
     new URL("../public/index.html", import.meta.url),
   );
   assertEquals(html.includes('data-view-button="density"'), true);
-  const flat = html.replace(/\s+/g, " ");
+  // deno fmt wraps long tags as `<code\n>yurt</code>`.
+  const flat = html.replace(/\s+/g, " ").replaceAll("<code >", "<code>");
   assertEquals(/id="density"[^>]*data-view="density"/.test(flat), true);
   const start = flat.indexOf('id="density"');
   const density = flat.slice(start, flat.indexOf("</details>", start));
@@ -827,8 +828,10 @@ Deno.test("the Density view names the machine and the build its numbers come fro
       "t2a-standard-8",
       "Arm (aarch64)",
       "development build",
-      "next <code>yurt</code> release",
+      "not from the current <code>yurt</code> download",
       "YURT_SHARED_IMAGE_LOWER=1",
+      "opt-in",
+      "Today it only warns",
     ]
   ) {
     assertEquals(density.includes(fact), true, fact);
