@@ -812,6 +812,32 @@ Deno.test("the GitHub Pages preview writes only from jobs that run none of the b
   }
 });
 
+Deno.test("the Density view names the machine and the build its numbers come from", async () => {
+  const html = await Deno.readTextFile(
+    new URL("../public/index.html", import.meta.url),
+  );
+  assertEquals(html.includes('data-view-button="density"'), true);
+  // deno fmt wraps long tags as `<code\n>yurt</code>`.
+  const flat = html.replace(/\s+/g, " ").replaceAll("<code >", "<code>");
+  assertEquals(/id="density"[^>]*data-view="density"/.test(flat), true);
+  const start = flat.indexOf('id="density"');
+  const density = flat.slice(start, flat.indexOf("</details>", start));
+  // A density claim without its machine and build would read as a promise.
+  for (
+    const fact of [
+      "t2a-standard-8",
+      "Arm (aarch64)",
+      "development build",
+      "not from the current <code>yurt</code> download",
+      "YURT_SHARED_IMAGE_LOWER=1",
+      "opt-in",
+      "Today it only warns",
+    ]
+  ) {
+    assertEquals(density.includes(fact), true, fact);
+  }
+});
+
 Deno.test("the partner section is in About and gives an email to write to", async () => {
   const html = await Deno.readTextFile(
     new URL("../public/index.html", import.meta.url),
