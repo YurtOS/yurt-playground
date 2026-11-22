@@ -223,6 +223,156 @@
           </li>
         </ul>
       </article>
+      <article class="pane" id="playground-2026.11.18-ac8686f">
+        <h1>playground-2026.11.18-ac8686f</h1>
+        <p class="date">2026-11-18 · browser · kernel 0.0.19, build ac8686f</p>
+        <p class="summary">iPhones and iPads give the sandbox 512 MiB instead of 1 GiB, so the tab is far less likely to be killed.</p>
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            <strong>Memory that fits a phone or tablet.</strong> The page sizes the kernel's memory, and <code>/proc/meminfo</code> reports it: 1 GiB on a desktop, 512 MiB on an iPad or iPhone. The tablet snapshot fits under that cap.
+          </li>
+          <li>
+            <strong><code>dmesg</code></strong> is in the image.
+          </li>
+          <li>
+            <strong>Safer notebook output.</strong> HTML output renders in a sandboxed frame that runs no script; the JavaScript output renderer is off; a notebook's “trusted” flag is ignored; Markdown fetches no URL but <code>data:</code>; the page asks for no device permissions.
+          </li>
+          <li>
+            The touch key bar gains Esc, Tab and a sticky Ctrl.
+          </li>
+          <li>
+            Firefox, which is not supported, now gets a page that says why.
+          </li>
+          <li>
+            Faster kernel calls: exec images resolve with one copy, and kernel-call responses are copied in place.
+          </li>
+        </ul>
+        <h2>Page updates</h2>
+        <p>Shipped to the live page after the train, on the same artifacts.</p>
+        <ul>
+          <li>
+            2026-11-19: <strong>network in the tab.</strong> Programs in the
+            sandbox can open TCP connections through a WebSocket relay, after a
+            human check; the Notebook and Lab pages get it too.
+          </li>
+          <li>
+            2026-11-19: only a phone keeps the 512 MiB kernel; an iPad's
+            kernel gets 1 GiB again.
+          </li>
+          <li>
+            2026-11-19: a tablet runs Jupyter from the desktop snapshot, and
+            <code>?memory=1g</code> lets a phone try.
+          </li>
+          <li>
+            2026-11-19: <code>~/.local/bin</code> is on the terminal's
+            <code>PATH</code>; the first name lookup after turning the network
+            on no longer fails; the terminal bar wraps on a phone.
+          </li>
+        </ul>
+      </article>
+      <article class="pane" id="playground-2026.11.17-cb7a4b7.4">
+        <h1>playground-2026.11.17-cb7a4b7.4</h1>
+        <p class="date">2026-11-17 · desktop app and yurt CLI · replaces playground-2026.11.17-cb7a4b7.3</p>
+        <p class="summary">The desktop app's first Jupyter start no longer stalls.</p>
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            A sandbox created without a CPU count now gets the host's CPUs (up to 4) instead of one shared slot. That shared slot is what stalled the desktop app's first Jupyter start.
+          </li>
+          <li>
+            The kernel, the image and the snapshots are the same as playground-2026.11.17-cb7a4b7.
+          </li>
+        </ul>
+      </article>
+      <article class="pane" id="playground-2026.11.17-cb7a4b7.3">
+        <h1>playground-2026.11.17-cb7a4b7.3</h1>
+        <p class="date">2026-11-17 · desktop app and yurt CLI · kernel 0.0.18, build cb7a4b7</p>
+        <p class="summary">The desktop app and the yurt CLI get the browser's fix for the slow first file creation after a restore.</p>
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            Brings the desktop app and the CLI level with playground-2026.11.17-cb7a4b7: the same kernel and its creation-clock fix.
+          </li>
+          <li>
+            The image is unchanged from playground-2026.11.16-44de663.
+          </li>
+        </ul>
+      </article>
+      <article class="pane" id="playground-2026.11.17-cb7a4b7">
+        <h1>playground-2026.11.17-cb7a4b7</h1>
+        <p class="date">2026-11-17 · browser · kernel 0.0.18, build cb7a4b7</p>
+        <p class="summary">No more 92-second stall on the desktop after a snapshot restore.</p>
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            <strong>The restore stall is gone.</strong> The first file created after a snapshot restore spun on a stale creation clock for about 92 seconds; the kernel fix ends that, and the snapshots were captured again.
+          </li>
+          <li>
+            A phone restores the tablet's snapshot, so a phone has Python too.
+          </li>
+          <li>
+            A Notebook page attaches to the kernel another page left running.
+          </li>
+        </ul>
+      </article>
+      <article class="pane" id="playground-2026.11.16-44de663">
+        <h1>playground-2026.11.16-44de663</h1>
+        <p class="date">2026-11-16 · browser · kernel build 44de663</p>
+        <p class="summary">A browser-only train with a new kernel; all snapshots captured again.</p>
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            Each Jupyter kernel launch gets its own random HMAC key, instead of a fixed one.
+          </li>
+          <li>
+            The desktop app's local server answers only a loopback Host name (DNS-rebinding protection).
+          </li>
+          <li>
+            Closing a sandbox cancels its pending output and refuses new processes.
+          </li>
+        </ul>
+      </article>
+      <article class="pane" id="playground-2026.11.12-846dddb">
+        <h1>playground-2026.11.12-846dddb</h1>
+        <p class="date">2026-11-12 · kernel build 846dddb · replaces playground-2026.11.11-1d31f65</p>
+        <p class="summary">A kernel update on the 11-11 train.</p>
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            A new kernel build; the image is unchanged.
+          </li>
+          <li>
+            Staging files into the sandbox reads the kernel's current file-metadata records again.
+          </li>
+        </ul>
+      </article>
+      <article class="pane" id="playground-2026.11.11-1d31f65">
+        <h1>playground-2026.11.11-1d31f65</h1>
+        <p class="date">2026-11-11 · kernel build 1d31f65</p>
+        <p class="summary">An agent that edits a PDF by chat, a Go snapshot on the desktop, and one-file snapshots.</p>
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            <strong>An agent in the page.</strong> It edits a PDF demo by chat and seals the sandbox after each run. It runs on an in-tab model or on OpenRouter with your own key, on a desktop or a tablet.
+          </li>
+          <li>
+            <strong>Go on the desktop.</strong> A desktop-only snapshot with Go and a warm build cache.
+          </li>
+          <li>
+            <strong>One-file snapshots.</strong> A snapshot is one zip, with the kernel memory and the file store, checked by one sha256.
+          </li>
+          <li>
+            Playwright in the sandbox can drive this browser through the bridge extension.
+          </li>
+          <li>
+            The kernel's JavaScript host recovers from running out of memory.
+          </li>
+          <li>
+            The shell starts with <code>LANG=C.UTF-8</code>. The About section gives an email to reach us, and the page can load a cookieless analytics beacon.
+          </li>
+        </ul>
+      </article>
       <article class="pane" id="playground-2026.10.31-3d32068.2">
         <h1>playground-2026.10.31-3d32068.2</h1>
         <p class="date">
