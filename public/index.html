@@ -1534,9 +1534,10 @@ yurt stop web</pre>
                     (65 MB at 10), when the sandboxes share one read-only copy
                     of the image (<code>YURT_SHARED_IMAGE_LOWER=1</code>), and
                     117 MB without it. An empty sandbox (no program running) is
-                    about 31 MB with the shared image, flat up to about 600
-                    sandboxes; past that, sandboxes began to exit for a reason
-                    we are still tracking down (yurt-sandbox#449).
+                    about 31 MB with the shared image, measured up to 600
+                    sandboxes. A sandbox with nothing running counts as idle,
+                    and the daemon removes it after 30 minutes by default (<code
+                    >--sandbox-idle-timeout</code>, 0 turns it off).
                   </p>
                 </article>
                 <article class="check">
