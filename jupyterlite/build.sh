@@ -9,12 +9,12 @@
 #
 # Needs python3 (3.10+) and node/npm. The Python deps go into a venv under
 # jupyterlite/.venv unless JUPYTERLITE_PYTHON names an interpreter that already
-# has jupyterlite/requirements.txt installed (CI does that).
+# has jupyterlite/requirements.txt installed (CI does that). A relative output
+# dir is relative to jupyterlite/, where `jupyter lite build` runs.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 out=${1:-"$here/../public/jupyter"}
-# Absolute, because jupyter runs from $here and the check below does not.
-[[ "$out" == /* ]] || out="$PWD/$out"
+out=${out%/} # so "$out.partial" is a sibling, not a child
 
 python=${JUPYTERLITE_PYTHON:-}
 if [[ -z "$python" ]]; then
@@ -36,22 +36,22 @@ rm -rf "$here/ext"
 mkdir -p "$here/ext/@yurt"
 cp -R "$here/yurt-kernel/yurt_jupyterlite_kernel/labextension" "$here/ext/@yurt/jupyterlite-yurt-kernel"
 
-# 2. The site. The doit database goes with the output: left behind, it marks
+# 2. The site. The doit database goes with the old site: left behind, it marks
 # the config patch up to date and the rebuilt site ships without our config.
-rm -rf "$out" "$here"/.jupyterlite.doit.db*
-# A failed or rejected build leaves no site for serve.ts or build-static.ts.
-trap 'rm -rf "$out"' ERR
-(
-  cd "$here"
-  "$bin/jupyter" lite build --output-dir "$out"
-)
+# The site is built and checked under a staging name and moved into place only
+# once it passes, so a failed, rejected or interrupted build leaves no site
+# for serve.ts or build-static.ts.
+cd "$here"
+rm -rf "$out" "$out.partial" .jupyterlite.doit.db*
+"$bin/jupyter" lite build --output-dir "$out.partial"
 # The disabled extensions keep guest-controlled output from running script or
 # fetching URLs in the page; a site without them must not ship.
-"$python" - "$here/jupyter-lite.json" "$out/jupyter-lite.json" <<'EOF'
+"$python" - jupyter-lite.json "$out.partial/jupyter-lite.json" <<'EOF'
 import json, sys
 want, got = (json.load(open(p))["jupyter-config-data"].get("disabledExtensions", []) for p in sys.argv[1:])
 missing = set(want) - set(got)
 if missing:
     sys.exit(f"{sys.argv[2]} lacks disabledExtensions {sorted(missing)}")
 EOF
+mv "$out.partial" "$out"
 echo "built JupyterLite site at $out"
