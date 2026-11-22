@@ -95,6 +95,18 @@ import {
   uploadedSnapshotPath,
 } from "./snapshot_source.ts";
 import { runQueue } from "./run_queue.ts";
+import {
+  loadSandbox,
+  type ReplaceOutcome,
+  type SandboxFileDeps,
+  type SandboxFileMessage,
+  sandboxFileOk,
+  saveSandbox,
+  type SealBox,
+} from "./sandbox_file.ts";
+import { KernelHostInterface } from "@yurt/kernel-host-interface-js";
+import { type PageSeal, rootStoreOf } from "./root_store.ts";
+import { indexedDbKeyStore, saveKeys } from "./save_key.ts";
 import { type NetworkStatus, TabNetwork } from "./network.ts";
 import { type BootedSession, workerPackageHost } from "./session_packages.ts";
 import {
@@ -206,6 +218,11 @@ type ToWorker =
   // An agent run ended: seal the sandbox into browser storage. It runs nothing
   // more; the page reloads to resume it. Answered by `suspended`.
   | { type: "suspend" }
+  // Save sandbox / Load sandbox (src/sandbox_file.ts): answered by
+  // `sandbox-saved` (Save's file), `sandbox-replacing` when the sandbox is
+  // replaced (a boot's reports follow) and `sandbox-done`.
+  | { type: "sandbox-save" }
+  | { type: "sandbox-load"; file: Blob }
   // The extension's side of a DevTools connection (src/browser_bridge.ts):
   // a CDP message for the guest, or the connection ended there.
   | { type: "cdp-send"; conn: number; text: string }
@@ -315,6 +332,7 @@ type FromWorker =
   // What this Linux holds (src/linux_remark.ts), as the shell starts.
   | { type: "linux-remark"; remark: string }
   | { type: "suspended"; why?: string }
+  | SandboxFileMessage
   | {
     type: "pkg-reply";
     req: number;
@@ -454,7 +472,8 @@ let installPython:
  * sandbox; the Packages panel installs nothing more into this one. */
 let sandboxStalled = false;
 /** Why the sandbox takes no more installs (set with `sandboxStalled`). */
-let stalledWhy = "an earlier install stopped making progress";
+const STALLED_WHY = "an earlier install stopped making progress";
+let stalledWhy = STALLED_WHY;
 const stalledSandbox = () =>
   `${stalledWhy} in this sandbox, so it installs nothing more; ` +
   "reload the page for a fresh one";
@@ -634,8 +653,71 @@ async function captureStep(
 }
 
 /** Drop the in-tab sandbox and start a fresh one the way the page's start
- * did: boot, then the Python install, then Jupyter. Set by `start`. */
-let startFresh: (() => Promise<void>) | undefined;
+ * did: boot, then the Python install, then Jupyter; whether its shell came
+ * up. Set by `start`. */
+let startFresh: (() => Promise<boolean>) | undefined;
+
+/** Aborted when the in-tab sandbox is dropped: what was in flight on it (a
+ * cell) settles at once and lets go of it. */
+let sandboxScope = new AbortController();
+
+/** Drop the in-tab sandbox and start the shell and Jupyter on `image` (a
+ * seal with no process) the way the page's start did: whether its shell
+ * came up. Set by `start`; not for a capture or the desktop app. */
+let replaceSandbox: ((box: SealBox) => Promise<ReplaceOutcome>) | undefined;
+/** This origin's save key: what Save signs with and Load checks
+ * (src/save_key.ts). */
+const sandboxKeys = saveKeys(() => indexedDbKeyStore());
+/** A phone or tablet page: Load takes less memory there. */
+let smallDevice = false;
+/** The worker's terminal, once `start` made it. */
+let sandboxTerm: PlaygroundTerm | undefined;
+
+/** Save sandbox and Load sandbox: in the kernel lifecycle's queue (after
+ * a Jupyter restart or a Python install, refused while a start runs) and
+ * the install queue's turn for the seal, so nothing is installed into a
+ * sandbox being sealed or dropped. */
+function sandboxFileDeps(): SandboxFileDeps {
+  // Nothing here holds the running session: it is looked up when used, so
+  // once dropped, its kernel can go before the next one is restored.
+  return {
+    // Not on a kernel whose root is a YurtFS store: its seal carries the
+    // store, which this restore does not put back (src/root_store.ts).
+    canReplace: replaceSandbox !== undefined &&
+      rootStoreOf(KernelHostInterface) === undefined,
+    seal: packageSession?.seal === undefined ? undefined : async (sealing) => {
+      let image: PageSeal | undefined;
+      // The turn resolves to nothing: the install queue keeps its last
+      // turn's value, which must not be the (up to 1 GiB) seal.
+      await installs(async () => {
+        const seal = packageSession?.seal;
+        if (seal === undefined) throw new Error("no sandbox runs to save");
+        sealing();
+        post({ type: "status", text: "saving the sandbox" });
+        image = await seal();
+      });
+      return image!;
+    },
+    pins: playgroundPins,
+    key: () => sandboxKeys.key(),
+    held: () => sandboxKeys.held(),
+    smallDevice,
+    replace: (box) => replaceSandbox!(box),
+    startFresh: async (why) => {
+      sandboxTerm?.write(`\r\n[${why}]\r\n`);
+      return await startFresh!();
+    },
+    post: (message) => {
+      if (message.type === "sandbox-done") {
+        post({
+          type: "status",
+          text: sandboxFileOk(message) ? "" : message.why ?? "failed",
+        });
+      }
+      post(message);
+    },
+  };
+}
 
 /** Install Python again, then start the kernel (`python-install`, or a
  * frontend restart while Python is missing). After a stalled install, in
@@ -788,6 +870,24 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       });
     }
   }
+  if (msg.type === "sandbox-save" || msg.type === "sandbox-load") {
+    const action = msg.type === "sandbox-save" ? "save" : "load";
+    await lifecycle.restart(
+      () =>
+        msg.type === "sandbox-save"
+          ? saveSandbox(sandboxFileDeps())
+          : loadSandbox(sandboxFileDeps(), msg.file),
+      () =>
+        post({
+          type: "sandbox-done",
+          action,
+          outcome: "refused",
+          why: "the sandbox is still starting",
+          ms: 0,
+        }),
+    );
+    return;
+  }
   if (msg.type === "jupyter-send") {
     if (jupyter === undefined) {
       post({ type: "error", message: "Jupyter is not ready" });
@@ -867,6 +967,7 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
           {
             onStream: (chunk) =>
               post({ type: "cell-stream", id: msg.id, chunk }),
+            signal: sandboxScope.signal,
           },
         ),
       });
@@ -893,7 +994,13 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   // install's stored-layer question, from one read. Made by each begin()
   // below, so a fresh sandbox asks again.
   let live: ReturnType<typeof liveAnswers>;
+  /** The seal `replaceSandbox` restores, until its boot takes it. */
+  let sealBox: SealBox | undefined;
+  /** What became of Jupyter in the boot `begin` runs now. */
+  let bootJupyter: ReplaceOutcome["jupyter"];
   const term = workerTerm({ cols: msg.cols, rows: msg.rows });
+  sandboxTerm = term;
+  smallDevice = msg.tablet === true;
   const restoreKind: SnapshotKind = msg.snapshotKind ?? "desktop";
   runningKind = restoreKind;
   const env = {
@@ -933,6 +1040,12 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
       ? () => loadAgentSession(restoreKind)
       : undefined,
     dropSavedSession: dropAgentSession,
+    // Save's or Load's seal, taken out of its box by the boot it starts.
+    sealImage: () => {
+      const image = sealBox?.image;
+      if (sealBox !== undefined) sealBox.image = undefined;
+      return image;
+    },
     kernelSha256: (sha256: string) => runningKernelSha256 = sha256,
     // The terminal's `pkg` fetches through the page (src/pkg_relay.ts);
     // the desktop app's guest has the network itself.
@@ -1067,6 +1180,9 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         if (session.process !== undefined && session.signal !== undefined) {
           executions = new ExecutionRegistry(session.process, session.signal);
         }
+        // A restored seal holds what its user installed: no stored Python
+        // layer is applied over it or made from it (src/python_layer.ts).
+        if (sealBox !== undefined) pkgTouched.add(session);
         packageSession = session;
         void installed.read();
       },
@@ -1106,12 +1222,20 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         : undefined,
       post: (report) => {
         if (report.type === "python-missing") pythonMissing = true;
+        if (report.type === "notebook-ready") bootJupyter = "ready";
+        if (report.type === "shell-ready") bootJupyter = "none";
+        if (report.type === "python-missing") bootJupyter = "missing";
+        if (report.type === "error" && report.endsBoot === true) {
+          bootJupyter = "failed";
+        }
         dropLayerIfKernelFailed(report);
         if (report.type === "error") {
           bootError = report.message;
           // A fresh sandbox's failed boot is said once, below, where
-          // Python's Try again is.
-          if (freshBoot && packageSession === undefined) return;
+          // Python's Try again is; a replace's, in its sandbox-done.
+          if (
+            (freshBoot || sealBox !== undefined) && packageSession === undefined
+          ) return;
         }
         post(report);
       },
@@ -1170,14 +1294,28 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
    * nothing keeps its kernel (with what was staged in it) reachable -- the
    * terminal's handlers were the stopped session's last references. Apart
    * from `startFresh` so no local of that long await holds it. */
-  const dropSandbox = () => {
+  const dropSandbox = (why: string) => {
     // What the fresh one has is unknown until it boots.
     installed.dropped();
     const stale = packageSession;
+    const transport = jupyter;
     packageSession = undefined;
     launchSession = undefined;
+    // A driver's wait on it ends with the reason, not the dead kernel's.
+    executions?.abandon(why);
     executions = undefined;
     jupyter = undefined;
+    cdpBridge = undefined;
+    // What was said of the old sandbox is not said of the next one.
+    pythonMissing = false;
+    sandboxStalled = false;
+    stalledWhy = STALLED_WHY;
+    layerInstalled = undefined;
+    // A cell running on it fails now, not at its timeout, and holds
+    // nothing of it.
+    sandboxScope.abort(new Error(why));
+    sandboxScope = new AbortController();
+    void transport?.close().catch(() => {});
     try {
       stale?.dispose?.();
     } catch {
@@ -1188,15 +1326,13 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
   if (kernelPorts === undefined) {
     startFresh = async () => {
       const why = sandboxStalled ? `${stalledWhy}; ` : "";
-      pythonMissing = false;
-      sandboxStalled = false;
       bootError = undefined;
       env.term.write(
         `\r\n[${why}starting a fresh sandbox ` +
           "(this shell and its files go with the old one)]\r\n",
       );
       post({ type: "status", text: "starting a fresh sandbox" });
-      dropSandbox();
+      dropSandbox("the sandbox was replaced by a fresh one");
       freshBoot = true;
       try {
         await lifecycle.start(begin);
@@ -1214,7 +1350,30 @@ self.addEventListener("message", async (event: MessageEvent<ToWorker>) => {
         });
         installed.freshFailed(bootError ?? "unknown");
       }
+      return packageSession !== undefined;
     };
+    if (!capturing) {
+      replaceSandbox = async (box) => {
+        bootError = undefined;
+        bootJupyter = undefined;
+        // The old sandbox's shell is gone (sealed, or dropped now): its
+        // screen stays, and the new shell starts below it. Not in an
+        // install's turn: dropping it is what ends a hung pkg.
+        env.term.write("\r\n[restoring the sandbox]\r\n");
+        dropSandbox("the sandbox was replaced");
+        sealBox = box;
+        try {
+          await lifecycle.start(begin);
+        } finally {
+          sealBox = undefined;
+        }
+        return {
+          up: packageSession !== undefined,
+          jupyter: bootJupyter,
+          ...(bootError === undefined ? {} : { error: bootError }),
+        };
+      };
+    }
   }
   await lifecycle.start(begin);
 });
