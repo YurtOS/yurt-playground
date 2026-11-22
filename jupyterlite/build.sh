@@ -34,10 +34,20 @@ rm -rf "$here/ext"
 mkdir -p "$here/ext/@yurt"
 cp -R "$here/yurt-kernel/yurt_jupyterlite_kernel/labextension" "$here/ext/@yurt/jupyterlite-yurt-kernel"
 
-# 2. The site.
-rm -rf "$out"
+# 2. The site. The doit database goes with the output: left behind, it marks
+# the config patch up to date and the rebuilt site ships without our config.
+rm -rf "$out" "$here"/.jupyterlite.doit.db*
 (
   cd "$here"
   "$bin/jupyter" lite build --output-dir "$out"
 )
+# The disabled extensions keep guest-controlled output from running script or
+# fetching URLs in the page; a site without them must not ship.
+"$python" - "$here/jupyter-lite.json" "$out/jupyter-lite.json" <<'EOF'
+import json, sys
+want, got = (json.load(open(p))["jupyter-config-data"].get("disabledExtensions", []) for p in sys.argv[1:])
+missing = set(want) - set(got)
+if missing:
+    sys.exit(f"{sys.argv[2]} lacks disabledExtensions {sorted(missing)}")
+EOF
 echo "built JupyterLite site at $out"
