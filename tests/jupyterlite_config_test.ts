@@ -1,4 +1,4 @@
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 
 Deno.test("the JavaScript output renderer is disabled in JupyterLite", async () => {
   // @jupyterlab/javascript-extension evals application/javascript outputs of a
@@ -47,11 +47,16 @@ Deno.test("no output renderer that fetches a URL the notebook names is loaded", 
 
 type LiteBuild = {
   /** Runs build.sh from the scratch root with the relative output `out`. */
-  build: (env?: Record<string, string>) => Promise<Deno.CommandOutput>;
+  build: (
+    env?: Record<string, string>,
+    out?: string,
+  ) => Promise<Deno.CommandOutput>;
   /** The built site's jupyter-lite.json, or undefined if there is none. */
   built: () => Promise<
     { "jupyter-config-data": { disabledExtensions?: string[] } } | undefined
   >;
+  /** The scratch root build.sh runs from. */
+  root: string;
 };
 
 /** Runs `fn` against a copy of jupyterlite/build.sh in a scratch tree, with
@@ -90,11 +95,13 @@ async function withLiteBuild(fn: (lite: LiteBuild) => Promise<void>) {
       await Deno.chmod(`${bin}/${name}`, 0o755);
     }
     await fn({
-      build: (env = {}) =>
+      root,
+      build: (env = {}, out = "out") =>
         new Deno.Command(`${here}/build.sh`, {
-          args: ["out"],
+          args: [out],
           cwd: root,
-          // The python3 stub execs the real one, found past its own dir.
+          // bin/ is not on PATH, so the python3 stub execs the real one.
+          clearEnv: true,
           env: {
             JUPYTERLITE_PYTHON: `${bin}/python3`,
             PATH: Deno.env.get("PATH") ?? "",
@@ -149,6 +156,16 @@ Deno.test("build.sh fails and leaves no site when the build lacks the disabled e
       new TextDecoder().decode(out.stderr),
       "lacks disabledExtensions",
     );
-    assertEquals(await lite.built(), undefined);
+    await assertRejects(
+      () => Deno.stat(`${lite.root}/out`),
+      Deno.errors.NotFound,
+    );
+  });
+});
+
+Deno.test("build.sh refuses `.` as its output dir and deletes nothing", async () => {
+  await withLiteBuild(async (lite) => {
+    assertEquals((await lite.build({}, ".")).success, false);
+    await Deno.stat(`${lite.root}/jupyterlite/build.sh`);
   });
 });
