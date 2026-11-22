@@ -4,7 +4,8 @@ The [Yurt playground](https://yurt-playground.pages.dev) is a Linux sandbox that
 runs inside a browser tab. Yurt, an original Linux-compatible kernel compiled to
 WebAssembly, runs BusyBox, CPython, NumPy, Jupyter, Node.js and Gemini CLI, with
 nothing running on a server. The desktop app runs the same sandbox natively,
-with network access.
+with network access. Where that is the right tool, and where it is not:
+[Where Yurt works best](https://github.com/YurtOS/yurtos-kernel/blob/main/docs/WHY_YURT.md).
 
 This page says where the playground is going. It is a plan, not a promise: items
 move between sections, and some will change shape or be dropped. What has

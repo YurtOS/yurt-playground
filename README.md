@@ -11,7 +11,8 @@ on your machine as a desktop app.
 What a sandbox in a tab is for: coding environments that need no server per
 user, a place to run the tools an AI agent calls, away from your machine,
 notebooks that keep working offline, and sandboxes embedded in a product of your
-own.
+own. Where that is the right tool, and where it is not:
+[Where Yurt works best](https://github.com/YurtOS/yurtos-kernel/blob/main/docs/WHY_YURT.md).
 
 ## Try it
 
