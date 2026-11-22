@@ -14,7 +14,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 out=${1:-"$here/../public/jupyter"}
 # Absolute, because jupyter runs from $here and the check below does not.
-mkdir -p "$out" && out=$(cd "$out" && pwd)
+[[ "$out" == /* ]] || out="$PWD/$out"
 
 python=${JUPYTERLITE_PYTHON:-}
 if [[ -z "$python" ]]; then
@@ -39,13 +39,15 @@ cp -R "$here/yurt-kernel/yurt_jupyterlite_kernel/labextension" "$here/ext/@yurt/
 # 2. The site. The doit database goes with the output: left behind, it marks
 # the config patch up to date and the rebuilt site ships without our config.
 rm -rf "$out" "$here"/.jupyterlite.doit.db*
+# A failed or rejected build leaves no site for serve.ts or build-static.ts.
+trap 'rm -rf "$out"' ERR
 (
   cd "$here"
   "$bin/jupyter" lite build --output-dir "$out"
 )
 # The disabled extensions keep guest-controlled output from running script or
-# fetching URLs in the page; a site without them must not ship, or stay.
-"$python" - "$here/jupyter-lite.json" "$out/jupyter-lite.json" <<'EOF' || { rm -rf "$out"; exit 1; }
+# fetching URLs in the page; a site without them must not ship.
+"$python" - "$here/jupyter-lite.json" "$out/jupyter-lite.json" <<'EOF'
 import json, sys
 want, got = (json.load(open(p))["jupyter-config-data"].get("disabledExtensions", []) for p in sys.argv[1:])
 missing = set(want) - set(got)
