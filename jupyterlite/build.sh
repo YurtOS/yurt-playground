@@ -14,7 +14,6 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 out=${1:-"$here/../public/jupyter"}
-out=${out%/} # so "$out.partial" is a sibling, not a child
 
 python=${JUPYTERLITE_PYTHON:-}
 if [[ -z "$python" ]]; then
@@ -38,20 +37,21 @@ cp -R "$here/yurt-kernel/yurt_jupyterlite_kernel/labextension" "$here/ext/@yurt/
 
 # 2. The site. The doit database goes with the old site: left behind, it marks
 # the config patch up to date and the rebuilt site ships without our config.
-# The site is built and checked under a staging name and moved into place only
-# once it passes, so a failed, rejected or interrupted build leaves no site
-# for serve.ts or build-static.ts.
+# The site is built and checked in .site-build, outside the served tree, and
+# moved into place only once it passes, so a failed, rejected or interrupted
+# build leaves no site for serve.ts or build-static.ts.
 cd "$here"
-rm -rf "$out" "$out.partial" .jupyterlite.doit.db*
-"$bin/jupyter" lite build --output-dir "$out.partial"
+rm -rf "$out" .site-build .jupyterlite.doit.db*
+"$bin/jupyter" lite build --output-dir .site-build
 # The disabled extensions keep guest-controlled output from running script or
 # fetching URLs in the page; a site without them must not ship.
-"$python" - jupyter-lite.json "$out.partial/jupyter-lite.json" <<'EOF'
+"$python" - jupyter-lite.json .site-build/jupyter-lite.json <<'EOF'
 import json, sys
-want, got = (json.load(open(p))["jupyter-config-data"].get("disabledExtensions", []) for p in sys.argv[1:])
+want, got = (json.load(open(p)).get("jupyter-config-data", {}).get("disabledExtensions", []) for p in sys.argv[1:])
 missing = set(want) - set(got)
 if missing:
     sys.exit(f"{sys.argv[2]} lacks disabledExtensions {sorted(missing)}")
 EOF
-mv "$out.partial" "$out"
+mkdir -p "$(dirname "$out")"
+mv .site-build "$out"
 echo "built JupyterLite site at $out"
