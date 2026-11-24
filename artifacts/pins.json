@@ -107,5 +107,62 @@
       ],
       "remark": "BusyBox shell, git 2.55.0, Python 3.14.7, 2 more packages (pkg list); also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter"
     }
+  },
+  "snapshot": {
+    "releaseRepo": "YurtOS/yurt-playground",
+    "release": "snapshot-playground-2026.11.24-d1b6f29",
+    "format": 4,
+    "sha256": "3d00ed907f1d9b83803b0489e8b3a69479e7a0ca0335bd051e4ef82ed9a6890b",
+    "size": 145778069,
+    "builtFrom": {
+      "kernelSha256": "73d63a97546207e57696791d4d72237e461b20e108b62e36b86105075a7de955",
+      "kernelRev": "d1b6f2982837e4c6934c629ac3757635c8ec6cbc",
+      "sealVersion": 2,
+      "bootSetup": 2,
+      "imageSha256": "306f32e98c98fa03a92175e057e1116ae59f80ae97c2d1b4f2f6f8cc2d1c2c07",
+      "pythonSealSha256": "c59c5e2ff333ca1b8ca4aaab0e7c2c8f0fd82c599e818d8919a7e899bc5d9c9f",
+      "pythonSet": "306f32e98c98fa03a92175e057e1116ae59f80ae97c2d1b4f2f6f8cc2d1c2c07/jupyter-kernel@0.0.1-yurt_1:f9302820ab5dd3ea+numpy@2.5.0-yurt_1:ec98eb7d492b3a9d+python@3.14.7-yurt_1:6ca989d59e71cb4b+pyzmq@26.4.0-yurt_1:148044ab0236a572"
+    },
+    "memoryBytes": 630849536,
+    "contents": {
+      "packages": [
+        {
+          "name": "ca-certificates",
+          "version": "2026.9.25",
+          "build": "yurt_0"
+        },
+        {
+          "name": "git",
+          "version": "2.55.0",
+          "build": "yurt_0"
+        },
+        {
+          "name": "jupyter-kernel",
+          "version": "0.0.1",
+          "build": "yurt_1"
+        },
+        {
+          "name": "numpy",
+          "version": "2.5.0",
+          "build": "yurt_1"
+        },
+        {
+          "name": "pip",
+          "version": "26.1.0",
+          "build": "yurt_0"
+        },
+        {
+          "name": "python",
+          "version": "3.14.7",
+          "build": "yurt_1"
+        },
+        {
+          "name": "pyzmq",
+          "version": "26.4.0",
+          "build": "yurt_1"
+        }
+      ],
+      "remark": "BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, 2 more packages (pkg list); also zsh, make, curl, jq, sqlite3, zstd, xz"
+    }
   }
 }
