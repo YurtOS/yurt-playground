@@ -967,9 +967,14 @@ async function packagesInstall(page: Page): Promise<void> {
   const install = page.locator(
     `[data-testid=packages-list] button[data-package="${name}"]`,
   );
+  // The panel hides a package the image already holds outside pkg
+  // (src/packages.ts: `inImage` and not installed), and since the 11-24
+  // image busybox is one and sorts first. Wait for the first row a user
+  // can see, not the first row in the DOM.
   await (expectInstall
     ? install
-    : page.locator("[data-testid=packages-list] tr[data-package]").first())
+    : page.locator("[data-testid=packages-list] tr[data-package]:visible")
+      .first())
     .waitFor({ timeout: 60_000 });
   // The image bakes zsh into its base outside pkg, which refuses to
   // install over it ("would overwrite unmanaged path bin/zsh"): the panel
