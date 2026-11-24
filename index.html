@@ -142,16 +142,17 @@
         <p class="date">Not released yet · directions, not promises</p>
         <p>Some of what we are working on:</p>
         <ul>
+          <li>Run an existing Docker image natively: <code>yurt migrate</code> reads a Python or Node image you already run in Docker and rebuilds it to run as WebAssembly on Yurt.</li>
+          <li>Suspend and resume a whole sandbox from the <code>yurt</code> command line, not only in the browser.</li>
+          <li>Faster sandbox start for large images.</li>
           <li>Files that survive a page reload.</li>
-          <li>More of the playground on tablets.</li>
           <li>Python native extensions loaded at run time.</li>
-          <li>Faster JavaScript for Node, compiled to WebAssembly as it runs.</li>
           <li>Ctrl-C that reaches a busy Python program.</li>
         </ul>
       </article>
       <article class="pane" id="packages">
         <h1>Packages</h1>
-        <p class="date">Updated 2026-10-31 · released independently of trains</p>
+        <p class="date">Updated 2026-11-24 · released independently of trains</p>
         <p>
           Packages come from the signed
           <a href="https://github.com/YurtOS/yurt-packages">YurtOS/yurt-packages</a>
@@ -179,7 +180,7 @@
             <tr><td>jupyter-kernel</td><td>0.0.1</td><td>9.5 MB</td><td>ipykernel for the Notebook and JupyterLab</td></tr>
             <tr><td>python-seal</td><td>3.14.7</td><td>11.5 MB</td><td>the Python that notebook Suspend/Resume runs</td></tr>
             <tr><td>python-dev</td><td>3.14.7</td><td>39.5 MB</td><td>CPython headers and static <code>libpython3.14.a</code>, for building extensions; needs python</td></tr>
-            <tr><td>node</td><td>22.23.3 (yurt.4)</td><td>13.5 MB</td><td>built with Guest SDK 0.0.31</td></tr>
+            <tr><td>node</td><td>22.23.3 (yurt.5)</td><td>13.5 MB</td><td>yurt.5 (2026-11-24) is built with Guest SDK 0.0.44</td></tr>
             <tr><td>gemini-cli</td><td>0.64.0</td><td>17.0 MB</td><td>needs node</td></tr>
             <tr><td>perl</td><td>5.44.0</td><td>22.3 MB</td><td>with Encode</td></tr>
             <tr><td>gettext</td><td>1.0.0</td><td>7.3 MB</td><td><code>msgfmt</code> and friends</td></tr>
@@ -189,7 +190,7 @@
             <tr><td>zstd</td><td>1.5.7</td><td>0.55 MB</td><td>also in the base image</td></tr>
             <tr><td>ncurses</td><td>6.5.0</td><td>0.28 MB</td><td>library and headers</td></tr>
             <tr><td>zsh</td><td>5.9.0 (yurt_3)</td><td>0.80 MB</td><td>also in the base image; needs ncurses. yurt_3 (2026-10-31) no longer dies with "Illegal instruction" on the first key; <code>sudo pkg upgrade</code> picks it up</td></tr>
-            <tr><td>go</td><td>1.28.0-devel (yurt_1)</td><td>59.4 MB</td><td><code>go build</code> runs inside the sandbox; one thread. yurt_1 (2026-10-31) runs in the browser too (the previous build died with "Segmentation fault" there); in the browser the first <code>go build</code> compiles the standard library and takes about 17 minutes</td></tr>
+            <tr><td>go</td><td>1.28.0-devel (yurt_4)</td><td>59.9 MB</td><td><code>go build</code> runs inside the sandbox; one thread. yurt_4 (2026-11-24) compiles one package at a time, so a first <code>go build</code> in the browser (it compiles the standard library, about 13 minutes) no longer runs out of memory</td></tr>
             <tr><td>clang</td><td>23.1.3</td><td>54.2 MB</td><td>new 2026-10-31: C and C++ compiler and linker with the sandbox's headers and libraries (<code>cc hello.c -o hello</code>); works in the browser. Use <code>llvm-ar</code> for static libraries</td></tr>
             <tr><td>gh</td><td>2.102.0 (yurt_1)</td><td>15.8 MB</td><td>needs git and ca-certificates (in the base image). yurt_1 (2026-10-31) runs in the browser too</td></tr>
             <tr><td>openssl</td><td>3.5.8</td><td>2.97 MB</td><td>new 2026-10-31: static <code>libssl.a</code>/<code>libcrypto.a</code> and headers, for building with clang (Python, curl and git already have it built in); replaces the unusable 4.0.0, which is yanked</td></tr>
@@ -202,6 +203,35 @@
           built together: numpy and pyzmq are compiled into the interpreter.
           Install them together, at the same build.
         </p>
+      </article>
+      <article class="pane" id="playground-2026.11.24-d1b6f29">
+        <h1>playground-2026.11.24-d1b6f29</h1>
+        <p class="date">2026-11-24 · browser and desktop · kernel 0.0.20, build d1b6f29</p>
+        <p class="summary">Save a running sandbox to a file and load it later, and Go builds in the browser again.</p>
+        <h2>Highlights</h2>
+        <ul>
+          <li>
+            <strong>Save sandbox and Load sandbox.</strong> Save the running sandbox, its files and its running programs, to a file on your computer, and load it back later in a fresh tab.
+          </li>
+          <li>
+            <strong>Go builds in the browser again.</strong> The Go page starts from a new snapshot, and <code>go build</code> compiles one package at a time in the tab, so the first build no longer runs out of memory.
+          </li>
+          <li>
+            <strong>Signals during a wait.</strong> A program interrupted by a signal while it waits (in <code>sleep</code>, <code>select</code> or a read) now finishes the wait correctly. Every program in the image and the Python, Node and Go packages are rebuilt with Guest SDK 0.0.44 for this.
+          </li>
+          <li>
+            <code>wget</code> fetches HTTPS URLs and checks their certificates; <code>pip</code> is its own package.
+          </li>
+          <li>
+            The Density view says that idle sandboxes are reaped rather than hitting an unexplained limit.
+          </li>
+        </ul>
+        <h2>Desktop app</h2>
+        <ul>
+          <li>
+            Python and the kernel ship precompiled, so the first <code>python3</code> no longer compiles CPython before it starts, and sandboxes share that code instead of each keeping a copy.
+          </li>
+        </ul>
       </article>
       <article class="pane" id="page-2026.11.22">
         <h1>Page update, 2026-11-22</h1>
