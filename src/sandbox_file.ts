@@ -45,9 +45,11 @@ const WASM_PAGE_BYTES = 64 * 1024;
  * its kernel_executor_pool.ts), which its restore refuses to shrink. */
 export const LOAD_MEMORY_MIN_BYTES = 83 * WASM_PAGE_BYTES;
 
-/** The most kernel memory a Load allocates: the kernel's own maximum
- * (`KERNEL_MAXIMUM_PAGES`, 16,384 pages of 64 KiB, in the kernel's JS
- * host), which a restore could not grow past anyway. */
+/** The most kernel memory a Load allocates: the memory the kernel's JS host
+ * creates a kernel with (`DEFAULT_KERNEL_MEMORY_MAXIMUM_BYTES`, 16,384 pages
+ * of 64 KiB, in its kernel_executor_pool.ts), as this page's kernel has.
+ * The module's declared maximum (`KERNEL_MAXIMUM_PAGES`) is higher, 4 GiB
+ * less a page since yurtos-kernel#5080; a Load does not take that much. */
 export const LOAD_MEMORY_MAX_BYTES = 1024 * MIB;
 
 /** The most a phone or tablet page loads: about twice its own snapshot's
