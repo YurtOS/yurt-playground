@@ -504,12 +504,21 @@ Deno.test("the page's memory bounds are the kernel host's own", async () => {
   const source = await Deno.readTextFile(
     `${root}/packages/kernel-host-interface-js/kernel-host-interface/kernel_executor_pool.ts`,
   );
-  const pages = (name: string) =>
+  const pages = (name: string, unit = "") =>
     Number(
-      source.match(new RegExp(`${name} = ([0-9_]+);`))![1].replace(/_/g, ""),
+      source.match(new RegExp(`${name} = ([0-9_]+)${unit};`))![1].replace(
+        /_/g,
+        "",
+      ),
     );
   assertEquals(LOAD_MEMORY_MIN_BYTES, pages("KERNEL_INITIAL_PAGES") * PAGE);
-  assertEquals(LOAD_MEMORY_MAX_BYTES, pages("KERNEL_MAXIMUM_PAGES") * PAGE);
+  // The memory the host creates a kernel with, not the module's declared
+  // maximum (KERNEL_MAXIMUM_PAGES, 4 GiB since yurtos-kernel#5080).
+  assertEquals(
+    LOAD_MEMORY_MAX_BYTES,
+    pages("DEFAULT_KERNEL_MEMORY_MAXIMUM_BYTES", " \\* WASM_PAGE_BYTES") *
+      PAGE,
+  );
 });
 
 Deno.test("the memory bounds", () => {

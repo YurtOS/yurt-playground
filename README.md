@@ -328,16 +328,16 @@ Packages are signed and published in
 <!-- snapshot-table:start (scripts/snapshot-table.ts) -->
 <!-- deno-fmt-ignore-start -->
 
-Train `playground-2026.11.18-ac8686f`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
+Train `playground-2026.11.24-d1b6f29`. Generated from artifacts/pins.json; `deno run -A scripts/snapshot-table.ts` rewrites it.
 
 The desktop's holds the Python set and starts the Notebook, the tablet's, which a phone's home page restores too (a tablet's Notebook and JupyterLab restore the desktop's), the interpreter alone; Go's, which a desktop browser restores when Go is chosen, holds the go package and its standard library already compiled, and no Python. A snapshot is sealed with no process in it, so nothing runs or is imported until a restore starts the shell (and, on a desktop, Jupyter). `deno run -A scripts/verify-snapshots.ts [--files] [--live]` checks each against its kind.
 
 | Kind | Restored by | Release | Download | Kernel memory | RAM to restore (peak) | This Linux |
 | --- | --- | --- | --- | --- | --- | --- |
-| desktop | desktop browser (Mac, PC): `?platform=desktop`; the Notebook and JupyterLab on a tablet (iPad), and on a phone with `?memory=1g` | `snapshot-playground-2026.11.18-ac8686f` | 143.4 MB in 7 parts | 593.7 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz |
-| tablet | home page on a tablet (iPad) and phone (iPhone): `?platform=tablet`, `?platform=phone` | `snapshot-tablet-playground-2026.11.18-ac8686f` | 77.9 MB in 4 parts | 241.4 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
-| go | desktop browser that chose Go: `?platform=desktop&env=go` | `snapshot-go-playground-2026.11.18-ac8686f` | 233.7 MB in 12 parts | 798.8 MiB | ? | BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
-| playwright | desktop browser that chose Playwright: `?platform=desktop&env=playwright` | `snapshot-playwright-playground-2026.11.18-ac8686f` | 69.1 MB in 4 parts | 197.4 MiB | ? | BusyBox shell, git 2.55.0, Node 22.23.3, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
+| desktop | desktop browser (Mac, PC): `?platform=desktop`; the Notebook and JupyterLab on a tablet (iPad), and on a phone with `?memory=1g` | `snapshot-playground-2026.11.24-d1b6f29` | 145.8 MB in 7 parts | 601.6 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, numpy 2.5.0, pyzmq 26.4.0, Jupyter kernel 0.0.1, 2 more packages (pkg list); also zsh, make, curl, jq, sqlite3, zstd, xz |
+| tablet | home page on a tablet (iPad) and phone (iPhone): `?platform=tablet`, `?platform=phone` | `snapshot-tablet-playground-2026.11.24-d1b6f29` | 85.1 MB in 5 parts | 272.4 MiB | ? | BusyBox shell, git 2.55.0, Python 3.14.7, 2 more packages (pkg list); also zsh, make, curl, jq, sqlite3, zstd, xz; no Jupyter |
+| go | desktop browser that chose Go: `?platform=desktop&env=go` | `snapshot-go-playground-2026.11.24-d1b6f29` | 237.8 MB in 12 parts | 811.2 MiB | ? | BusyBox shell, git 2.55.0, Go 1.28.0-devel, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
+| playwright | desktop browser that chose Playwright: `?platform=desktop&env=playwright` | `snapshot-playwright-playground-2026.11.24-d1b6f29` | 72.0 MB in 4 parts | 206.2 MiB | ? | BusyBox shell, git 2.55.0, Node 22.23.3, ca-certificates; also zsh, make, curl, jq, sqlite3, zstd, xz; no Python, no Jupyter |
 
 <!-- deno-fmt-ignore-end -->
 <!-- snapshot-table:end -->
